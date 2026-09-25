@@ -711,13 +711,13 @@ impl RemoteConnectionManager {
             task
         };
         let _ = status.send("Preparing installation…".into());
-        let result = match tokio::time::timeout(Duration::from_secs(360), &mut task).await {
+        let result = match tokio::time::timeout(Duration::from_secs(900), &mut task).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err("Installation cancelled".into()),
             Err(_) => {
                 task.abort();
                 let _ = task.await;
-                Err("Installation timed out after 6 minutes".into())
+                Err("Installation timed out after 15 minutes".into())
             }
         };
         self.attempts.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&operation_id);

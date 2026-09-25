@@ -103,7 +103,7 @@
     } catch (reason) {
       if (mounted) {
         status = '';
-        error = attempt.signal.aborted ? `${install ? 'Installation' : 'Connection'} cancelled.` : String(reason);
+        error = attempt.signal.aborted ? `${install ? 'Installation' : 'Connection'} cancelled.` : reason instanceof Error ? reason.message : typeof reason === 'object' && reason !== null && 'message' in reason ? String(reason.message) : String(reason);
       }
     } finally {
       if (owner === attempt) { owner = null; busy = false; }
