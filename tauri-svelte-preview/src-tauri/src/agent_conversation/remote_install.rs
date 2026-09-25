@@ -115,7 +115,7 @@ impl RemoteStage {
     async fn cleanup(&mut self) -> Result<(), String> {
         ssh_output(
             &self.target,
-            &format!("find '{}' -depth -delete 2>/dev/null || true", self.path),
+            &format!("find {} -depth -delete 2>/dev/null || true", shell_quote(&self.path)),
         )
         .await?;
         self.armed = false;
@@ -129,7 +129,7 @@ impl Drop for RemoteStage {
             return;
         }
         let target = self.target.clone();
-        let command = format!("find '{}' -depth -delete 2>/dev/null || true", self.path);
+        let command = format!("find {} -depth -delete 2>/dev/null || true", shell_quote(&self.path));
         std::thread::spawn(move || {
             let _ = std::process::Command::new("ssh")
                 .args([
@@ -180,14 +180,16 @@ pub async fn install_latest(
         return Err(format!("Unsupported remote platform: {platform}"));
     }
 
+    let home = remote_home(ssh_target).await?;
     let staging_path = format!(
-        "/tmp/.assembly-install-{}-{}",
+        "{home}/.cache/.assembly-install-{}-{}",
         &inspected.commit[..12],
         uuid::Uuid::new_v4()
     );
     let mut remote_stage = RemoteStage::new(ssh_target, staging_path.clone());
     let remote_archive = format!("{staging_path}/package.tar.gz");
-    ssh_output(ssh_target, &format!("install -d -m 700 '{staging_path}'")).await?;
+    let quoted_stage = shell_quote(&staging_path);
+    ssh_output(ssh_target, &format!("install -d -m 700 {quoted_stage}")).await?;
     let result: Result<(), String> = async {
         let _ = status.send("Uploading the prebuilt backend package…".into());
         command_output(tokio::process::Command::new("scp")
@@ -195,7 +197,7 @@ pub async fn install_latest(
             .arg(&archive_path)
             .arg(format!("{ssh_target}:{remote_archive}")), "Backend upload").await?;
         let _ = status.send("Installing and starting the backend…".into());
-        ssh_output(ssh_target, &format!("set -eu; cd '{staging_path}'; tar -xzf package.tar.gz; sh install.sh")).await?;
+        ssh_output(ssh_target, &format!("set -eu; cd {quoted_stage}; tar -xzf package.tar.gz; sh install.sh")).await?;
         let _ = status.send("Verifying the service, database, and loopback listener…".into());
         let receipt = ssh_output(ssh_target, "set -eu; systemctl --user is-active --quiet assembly-remote.service; test -f \"$HOME/.local/share/assembly/sessions.db\"; listeners=$(ss -ltnH 'sport = :7777'); test -n \"$listeners\"; printf '%s\\n' \"$listeners\" | awk '$4 != \"127.0.0.1:7777\" { exit 1 } END { if (NR == 0) exit 1 }'; sha256sum \"$HOME/.local/bin/assembly-remote-server\" | awk '{print $1}'").await?;
         if receipt != inspected.server_sha256 {
