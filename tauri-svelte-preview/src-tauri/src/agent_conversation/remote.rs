@@ -26,6 +26,7 @@ use super::prompt_content::prompt_from_blocks;
 use super::protocol::{
     AgentCapabilities, AgentConfigOption, AgentConversationConfigState,
     AgentConversationConnection, AgentConversationEvent, AgentConversationEventPage,
+    AgentConversationProvider,
     AgentConversationSessionRecord, AgentConversationSnapshot,
     ChangeAgentConversationCheckoutRequest, EnsureAgentConversationRequest, ExecutionEnvironment,
     RespondAgentConversationApprovalRequest, RespondAgentConversationInputRequest,
@@ -58,6 +59,7 @@ enum ClientFrame {
 #[serde(tag = "command", content = "input", rename_all = "camelCase")]
 enum RemoteCommand {
     Workspace { operation: String, args: serde_json::Value },
+    ProbeProviderConfig { provider: AgentConversationProvider, cwd: String },
     ListSessions,
     CheckProviderUpdates,
     InstallProviderUpdates,
@@ -1207,6 +1209,23 @@ impl RemoteConnectionManager {
         Ok(config)
     }
 
+    pub async fn probe_provider_config(
+        &self,
+        profile_id: &str,
+        provider: AgentConversationProvider,
+        cwd: String,
+        request_id: u64,
+    ) -> Result<AgentConversationConfigState, String> {
+        match self.request_with_id(
+            profile_id,
+            request_id,
+            RemoteCommand::ProbeProviderConfig { provider, cwd },
+        ).await? {
+            RemoteResponse::Config(config) => Ok(config),
+            _ => Err("Remote Assembly returned the wrong provider catalog response".into()),
+        }
+    }
+
     pub async fn warm_config(
         &self,
         owned_id: String,
@@ -2188,6 +2207,10 @@ async fn execute_remote_command(
     match command {
         RemoteCommand::RestartForProviderUpdates => Err("Remote restart requires exclusive request ownership".into()),
         RemoteCommand::Workspace { operation, args } => super::remote_workspace::execute(operation, args).await.map(RemoteResponse::Workspace),
+        RemoteCommand::ProbeProviderConfig { provider, cwd } => manager
+            .probe_provider_config(provider, &cwd)
+            .await
+            .map(RemoteResponse::Config),
         RemoteCommand::CheckProviderUpdates | RemoteCommand::InstallProviderUpdates => {
             let data_dir = std::env::var_os("ASSEMBLY_SERVER_DATA_DIR").map(PathBuf::from)
                 .ok_or_else(|| "Remote server data directory is unavailable".to_string())?;

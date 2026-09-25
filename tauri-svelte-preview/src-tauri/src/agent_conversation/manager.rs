@@ -320,6 +320,7 @@ pub struct AgentRuntimeManager {
     latest_snapshot_request: Arc<AtomicU64>,
     store: Arc<SessionStore>,
     adapter_pools: Arc<AsyncMutex<HashMap<AdapterPoolKey, AdapterPoolEntry>>>,
+    probe_cancellations: tokio::sync::watch::Sender<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -383,6 +384,7 @@ impl AgentRuntimeManager {
             latest_snapshot_request: Arc::new(AtomicU64::new(0)),
             store,
             adapter_pools: Arc::new(AsyncMutex::new(HashMap::new())),
+            probe_cancellations: tokio::sync::watch::channel(0).0,
             authentications: Authentications::default(),
         })
     }
@@ -602,6 +604,70 @@ impl AgentRuntimeManager {
 
     pub fn providers(&self) -> &ProviderRegistry {
         &self.providers
+    }
+
+    /// Read the provider's current choices without creating an Assembly session.
+    pub async fn probe_provider_config(
+        &self,
+        provider: AgentConversationProvider,
+        cwd: &str,
+    ) -> Result<AgentConversationConfigState, String> {
+        let cwd = validated_conversation_cwd(cwd)?;
+        let manifest = self.providers.manifest(provider)?;
+        let probe = async {
+            let mut adapter = AcpRuntimeAdapter::with_environment(
+                manifest,
+                "provider-catalog".into(),
+                cwd.clone(),
+                session_spawn_environment(provider),
+            );
+            let result = async {
+                adapter.initialize(InitializeAgentInput { provider }).await?;
+                adapter
+                    .new_session(NewAgentSession { cwd })
+                    .await
+                    .map(|started| started.config)
+            }
+            .await;
+            // session/new may leave a provider-native empty session, but its
+            // adapter process never remains resident and no Assembly row is saved.
+            let stopped = adapter.detach_session().await;
+            let config = result.map_err(|error| error.to_string())?;
+            stopped.map_err(|error| error.to_string())?;
+            Ok(config)
+        };
+        tokio::time::timeout(Duration::from_secs(15), probe)
+            .await
+            .map_err(|_| "Provider catalog did not answer within 15 seconds".to_string())?
+    }
+
+    pub async fn probe_provider_config_for_request(
+        &self,
+        provider: AgentConversationProvider,
+        cwd: &str,
+        request_id: u64,
+    ) -> Result<AgentConversationConfigState, String> {
+        tokio::select! {
+            biased;
+            _ = self.wait_for_probe_cancellation(request_id) => Err("Provider catalog request was cancelled".into()),
+            result = self.probe_provider_config(provider, cwd) => result,
+        }
+    }
+
+    pub async fn wait_for_probe_cancellation(&self, request_id: u64) {
+        let mut cancellations = self.probe_cancellations.subscribe();
+        loop {
+            if *cancellations.borrow_and_update() >= request_id { break; }
+            if cancellations.changed().await.is_err() { break; }
+        }
+    }
+
+    pub fn cancel_provider_probe(&self, request_id: u64) {
+        self.probe_cancellations.send_modify(|latest| *latest = (*latest).max(request_id));
+    }
+
+    pub fn provider_probe_cancelled(&self, request_id: u64) -> bool {
+        *self.probe_cancellations.borrow() >= request_id
     }
 
     pub fn add_session_annotation(
@@ -1576,15 +1642,19 @@ impl AgentRuntimeManager {
             requested.approval_policy = None;
         }
         if requested != AgentConversationConfigUpdate::default() {
-            match runtime
+            let configured = runtime
                 .lock()
                 .await
                 .set_conversation_config_on(&started.native_session_id, &requested)
-                .await
-            {
+                .await;
+            match configured {
                 Ok(config) => started.config = config,
+                Err(error) if requested.model.is_some() || requested.reasoning_effort.is_some() => {
+                    let _ = self.release_pool_scope(&pool_key, owned_id, Some(&started.native_session_id), false).await;
+                    return Err(format!("The selected model or effort could not be applied: {error}"));
+                }
                 Err(error) => crate::debug_log::stderr_log!(
-                    "{owned_id}: the settings chosen for this session were not applied: {error}"
+                    "{owned_id}: the approval setting was not applied: {error}"
                 ),
             }
         }
@@ -1649,31 +1719,21 @@ impl AgentRuntimeManager {
         session.pool_key = Some(pool_key);
         session.transport = Some(Arc::clone(&transport));
         session.ordered_events = Some(ordered_tx);
-        if was_suspended {
-            record_payload_for_session_and_dispatch_with_lifecycle(
-                session,
-                &self.emitter,
-                AgentConversationPayload::Connection {
-                    state: ConversationConnectionState::Connected,
-                    native_session_id: session.native_session_id.clone(),
-                },
-                SessionLifecycleUpdate {
-                    state: AgentRuntimeState::Ready,
-                    connection_state: ConversationConnectionState::Connected,
-                    owner,
-                    writer_owner,
-                    native_session_mode: None,
-                },
-            )?;
-        } else {
-            session.transition_lifecycle(
-                AgentRuntimeState::Ready,
-                ConversationConnectionState::Connected,
+        record_payload_for_session_and_dispatch_with_lifecycle(
+            session,
+            &self.emitter,
+            AgentConversationPayload::Connection {
+                state: ConversationConnectionState::Connected,
+                native_session_id: session.native_session_id.clone(),
+            },
+            SessionLifecycleUpdate {
+                state: AgentRuntimeState::Ready,
+                connection_state: ConversationConnectionState::Connected,
                 owner,
                 writer_owner,
-            )?;
-            persist_session(session)?;
-        }
+                native_session_mode: None,
+            },
+        )?;
         let connection = session.connection.clone();
         drop(sessions);
         if let Some(inbound) = inbound {
@@ -7438,6 +7498,15 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_prompt_streams_updates_and_lifecycle_through_the_emitter() {
         let fixture = fixture_manager_with_acp_session("prompt_with_update").await;
+        let ready = fixture.manager.snapshot(&fixture.owned_id).unwrap().unwrap();
+        assert_eq!(ready.events[0].sequence, 1);
+        assert!(matches!(
+            ready.events[0].payload,
+            AgentConversationPayload::Connection {
+                state: ConversationConnectionState::Connected,
+                ..
+            }
+        ));
         let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
         let sink = Arc::clone(&seen);
         fixture
@@ -7476,7 +7545,7 @@ mod tests {
                 kinds.contains(&"assistantDelta"),
                 "streamed delta missing: {kinds:?}"
             );
-            assert_eq!(seen[0].sequence, 1, "manager sequences start at 1");
+            assert_eq!(seen[0].sequence, ready.events[0].sequence + 1);
             assert!(seen
                 .windows(2)
                 .all(|events| events[1].sequence == events[0].sequence + 1));
@@ -8785,6 +8854,56 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn first_ready_connection_exposes_advertised_steering() {
+        let root = temp_root();
+        let log = root.join("steering.jsonl");
+        let manifest =
+            super::super::providers::acp_client::tests::fixture_manifest_named(&log, "steering");
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let owned_id = "owned-first-ready-steering";
+        let connection = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                owned_id,
+                AgentConversationProvider::Claude,
+            ))
+            .expect("ensure")
+            .0;
+        let store = Arc::clone(&manager.store);
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&observed);
+        manager.set_emitter(Arc::new(move |event| {
+            if let AgentConversationPayload::Connection {
+                state: ConversationConnectionState::Connected,
+                ..
+            } = &event.payload
+            {
+                let row = store
+                    .get_session(&event.owned_id)
+                    .expect("read ready session")
+                    .expect("persisted ready session");
+                let stored: StoredSessionExtra =
+                    serde_json::from_str(&row.extra_json).expect("stored capabilities");
+                sink.lock().unwrap().push(stored.capabilities.session.steering);
+            }
+        }));
+
+        manager
+            .activate(owned_id, connection.generation)
+            .await
+            .expect("first activation");
+
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 1);
+        assert!(observed[0], "steering must be readable when ready is emitted");
+        drop(observed);
+        manager.close(owned_id, connection.generation).await.unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn ensure_after_suspend_resumes_with_same_native_session_id() {
         let fixture = fixture_manager_with_acp_session("suspend_resume").await;
         let native_session_id = fixture
@@ -8866,6 +8985,7 @@ mod tests {
         assert_eq!(
             connection_states,
             [
+                ConversationConnectionState::Connected,
                 ConversationConnectionState::Disconnected,
                 ConversationConnectionState::Connected,
                 ConversationConnectionState::Disconnected
@@ -9859,12 +9979,11 @@ mod tests {
             .expect("fixture provider");
         let manager = AgentRuntimeManager::new(providers);
         let owned_id = "owned-standard_config".to_string();
-        let mut ensure_request = request(
+        let ensure_request = request(
             root.to_str().unwrap(),
             &owned_id,
             AgentConversationProvider::Claude,
         );
-        ensure_request.reasoning_effort = Some("medium".to_string());
         let connection = manager.ensure_inner(ensure_request).expect("ensure").0;
         manager
             .activate(&owned_id, connection.generation)
@@ -9873,7 +9992,7 @@ mod tests {
 
         let before = manager.conversation_config(&owned_id).expect("config");
         assert_eq!(before.available_efforts, ["low", "medium", "high", "max"]);
-        assert_eq!(before.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(before.reasoning_effort, None);
 
         let after = manager
             .set_conversation_config(SetAgentConversationConfigRequest {
@@ -9891,7 +10010,7 @@ mod tests {
             ["low", "medium", "high", "max"],
             "changing the model must not empty the effort list"
         );
-        assert_eq!(after.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(after.reasoning_effort, None);
 
         manager
             .close(&owned_id, connection.generation)
@@ -10215,6 +10334,12 @@ mod tests {
         wait_until(|| completed_turns(&seen) == 1).await;
         let title = stored_title(&fixture).expect("the prompt names the session");
         assert_eq!(stored_title_source(&fixture).as_deref(), Some("prompt"));
+        wait_until(|| {
+            fixture
+                .manager
+                .session_is_suspended(&fixture.owned_id, fixture.generation)
+        })
+        .await;
 
         // A live change lands on the effort the adapter answers with, which is
         // not the one the session was started with.
@@ -10707,38 +10832,77 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn session_start_effort_failure_keeps_session_ready() {
-        let fixture = fixture_manager_with_provider(
-            "config_update_failure",
-            AgentConversationProvider::Codex,
-            Some("xhigh"),
-        )
-        .await;
+    async fn refused_selected_effort_never_prompts() {
+        let root = temp_root();
+        let log = root.join("config_update_failure.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&log, "config_update_failure");
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)]).unwrap();
+        let manager = AgentRuntimeManager::new(providers);
+        let mut ensure = request(root.to_str().unwrap(), "owned-refused-effort", AgentConversationProvider::Codex);
+        ensure.reasoning_effort = Some("xhigh".into());
+        let connection = manager.ensure_inner(ensure).unwrap().0;
+        let error = manager.send_message(&connection.owned_id, connection.generation, test_prompt("must not send"), None, None)
+            .await.unwrap_err();
+        assert!(error.contains("selected model or effort could not be applied"));
+        let requests = fs::read_to_string(&log).unwrap();
+        assert!(requests.contains("session/set_config_option"));
+        assert!(!requests.contains("session/prompt"));
+        assert!(manager.resource_roots().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
 
-        let snapshot = fixture
-            .manager
-            .snapshot(&fixture.owned_id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            snapshot.connection.state,
-            ConversationConnectionState::Connected
-        );
-        assert_eq!(snapshot.connection.config.reasoning_effort, None);
-        assert!(!snapshot
-            .events
-            .iter()
-            .any(|event| matches!(event.payload, AgentConversationPayload::Error { .. })));
-        let requests = fs::read_to_string(fixture.root.join("config_update_failure.jsonl"))
-            .expect("fixture request log");
-        assert!(requests.contains(r#""method":"session/set_config_option""#));
+    #[tokio::test(flavor = "current_thread")]
+    async fn provider_probe_reads_choices_without_saving_or_prompting() {
+        let root = temp_root();
+        let log = root.join("catalog.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&log, "config_options");
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)]).unwrap();
+        let manager = AgentRuntimeManager::new(providers);
+        let config = manager.probe_provider_config(AgentConversationProvider::Claude, root.to_str().unwrap())
+            .await.unwrap();
+        assert!(config.available_models.contains(&"opus[1m]".to_string()));
+        assert_eq!(config.model_labels.get("opus[1m]").map(String::as_str), Some("Opus (1M context)"));
+        assert_eq!(manager.resource_diagnostics().unwrap().durable_session_rows, 0);
+        let requests = fs::read_to_string(&log).unwrap();
+        assert!(requests.contains("session/new"));
+        assert!(!requests.contains("session/prompt"));
+        fs::remove_dir_all(root).unwrap();
+    }
 
-        fixture
-            .manager
-            .close(&fixture.owned_id, fixture.generation)
-            .await
-            .unwrap();
-        fs::remove_dir_all(fixture.root).unwrap();
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_provider_probe_stops_before_a_late_answer() {
+        let root = temp_root();
+        let log = root.join("slow-catalog.jsonl");
+        let mut manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&log, "config_options");
+        manifest.args[1] = format!("sleep 30\n{}", manifest.args[1].clone());
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)]).unwrap();
+        let manager = AgentRuntimeManager::new(providers);
+        let probe = manager.probe_provider_config_for_request(AgentConversationProvider::Claude, root.to_str().unwrap(), 42);
+        let result = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::pin!(probe);
+            tokio::select! {
+                result = &mut probe => result,
+                _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                    manager.cancel_provider_probe(42);
+                    probe.await
+                }
+            }
+        }).await.unwrap();
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert_eq!(manager.resource_diagnostics().unwrap().durable_session_rows, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn late_provider_probe_cancellations_keep_one_high_water_mark() {
+        let manager = AgentRuntimeManager::new(ProviderRegistry::default());
+        for request_id in 1..=10_000 {
+            manager.cancel_provider_probe(request_id);
+        }
+        manager.cancel_provider_probe(42);
+        assert_eq!(*manager.probe_cancellations.borrow(), 10_000);
+        assert!(manager.provider_probe_cancelled(10_000));
+        assert!(!manager.provider_probe_cancelled(10_001));
     }
 
     #[tokio::test(flavor = "current_thread")]

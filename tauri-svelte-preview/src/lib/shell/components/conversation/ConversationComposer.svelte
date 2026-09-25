@@ -512,7 +512,9 @@
                 <LoaderCircle size={15} aria-hidden="true" />
                 <span>{workingLabel}…</span>
               </span>
-              <button class="round-control send stop" data-testid="conversation-stop" type="button" aria-label="Stop generation" onclick={() => void onStop?.()}><Square size={13} fill="currentColor" /></button>
+              {#if !hasSendableContent || !supportsSteering}
+                <button class="round-control send stop" data-testid="conversation-stop" type="button" aria-label="Stop generation" onclick={() => void onStop?.()}><Square size={13} fill="currentColor" /></button>
+              {/if}
             {/if}
             {#if hasSendableContent && (!sending || supportsSteering)}
               <button class="round-control send" data-testid="conversation-send" type="submit" aria-label={sending ? 'Steer current turn' : 'Send message'}><ArrowUp size={17} strokeWidth={2.2} /></button>

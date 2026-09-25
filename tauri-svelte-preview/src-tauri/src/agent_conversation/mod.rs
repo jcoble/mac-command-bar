@@ -23,6 +23,7 @@ use mcb_core::session_store::AnnotationRow;
 use prompt_content::prompt_from_blocks;
 use protocol::{
     AgentCapabilities, AgentConversationConfigState, AgentConversationConnection,
+    AgentConversationProvider, ExecutionEnvironment,
     AgentConversationEvent, AgentConversationEventPage, AgentConversationSessionRecord,
     AgentConversationSnapshot, ChangeAgentConversationCheckoutRequest, CommandResult,
     EnsureAgentConversationRequest, RespondAgentConversationApprovalRequest,
@@ -479,6 +480,48 @@ pub async fn warm_agent_conversation_config(
             .warm_conversation_config(&owned_id, generation)
             .await,
     )
+}
+
+#[tauri::command]
+/// Reads one machine's provider choices without saving a conversation.
+pub async fn probe_agent_provider_config(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    provider: AgentConversationProvider,
+    execution_environment: ExecutionEnvironment,
+    remote_profile_id: Option<String>,
+    cwd: String,
+    request_id: u64,
+) -> CommandResult<AgentConversationConfigState> {
+    if manager.provider_probe_cancelled(request_id) {
+        return command_result(Err("Provider catalog request was cancelled".into()));
+    }
+    if execution_environment == ExecutionEnvironment::Remote {
+        let Some(profile_id) = remote_profile_id.filter(|id| !id.is_empty()) else {
+            return command_result(Err("Choose a connected remote machine first".into()));
+        };
+        let result = tokio::select! {
+            biased;
+            _ = manager.wait_for_probe_cancellation(request_id) => {
+                remote.cancel_request(request_id).await;
+                Err("Provider catalog request was cancelled".into())
+            }
+            result = remote.probe_provider_config(&profile_id, provider, cwd, request_id) => result,
+        };
+        return command_result(result);
+    }
+    command_result(manager.probe_provider_config_for_request(provider, &cwd, request_id).await)
+}
+
+#[tauri::command]
+pub async fn cancel_agent_provider_probe(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    request_id: u64,
+) -> CommandResult<()> {
+    manager.cancel_provider_probe(request_id);
+    remote.cancel_request(request_id).await;
+    Ok(())
 }
 
 #[tauri::command]
