@@ -7498,6 +7498,15 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn a_prompt_streams_updates_and_lifecycle_through_the_emitter() {
         let fixture = fixture_manager_with_acp_session("prompt_with_update").await;
+        let ready = fixture.manager.snapshot(&fixture.owned_id).unwrap().unwrap();
+        assert_eq!(ready.events[0].sequence, 1);
+        assert!(matches!(
+            ready.events[0].payload,
+            AgentConversationPayload::Connection {
+                state: ConversationConnectionState::Connected,
+                ..
+            }
+        ));
         let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
         let sink = Arc::clone(&seen);
         fixture
@@ -7536,7 +7545,7 @@ mod tests {
                 kinds.contains(&"assistantDelta"),
                 "streamed delta missing: {kinds:?}"
             );
-            assert_eq!(seen[0].sequence, 1, "manager sequences start at 1");
+            assert_eq!(seen[0].sequence, ready.events[0].sequence + 1);
             assert!(seen
                 .windows(2)
                 .all(|events| events[1].sequence == events[0].sequence + 1));
@@ -8976,6 +8985,7 @@ mod tests {
         assert_eq!(
             connection_states,
             [
+                ConversationConnectionState::Connected,
                 ConversationConnectionState::Disconnected,
                 ConversationConnectionState::Connected,
                 ConversationConnectionState::Disconnected
@@ -9969,12 +9979,11 @@ mod tests {
             .expect("fixture provider");
         let manager = AgentRuntimeManager::new(providers);
         let owned_id = "owned-standard_config".to_string();
-        let mut ensure_request = request(
+        let ensure_request = request(
             root.to_str().unwrap(),
             &owned_id,
             AgentConversationProvider::Claude,
         );
-        ensure_request.reasoning_effort = Some("medium".to_string());
         let connection = manager.ensure_inner(ensure_request).expect("ensure").0;
         manager
             .activate(&owned_id, connection.generation)
@@ -9983,7 +9992,7 @@ mod tests {
 
         let before = manager.conversation_config(&owned_id).expect("config");
         assert_eq!(before.available_efforts, ["low", "medium", "high", "max"]);
-        assert_eq!(before.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(before.reasoning_effort, None);
 
         let after = manager
             .set_conversation_config(SetAgentConversationConfigRequest {
@@ -10001,7 +10010,7 @@ mod tests {
             ["low", "medium", "high", "max"],
             "changing the model must not empty the effort list"
         );
-        assert_eq!(after.reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(after.reasoning_effort, None);
 
         manager
             .close(&owned_id, connection.generation)
@@ -10325,6 +10334,12 @@ mod tests {
         wait_until(|| completed_turns(&seen) == 1).await;
         let title = stored_title(&fixture).expect("the prompt names the session");
         assert_eq!(stored_title_source(&fixture).as_deref(), Some("prompt"));
+        wait_until(|| {
+            fixture
+                .manager
+                .session_is_suspended(&fixture.owned_id, fixture.generation)
+        })
+        .await;
 
         // A live change lands on the effort the adapter answers with, which is
         // not the one the session was started with.
