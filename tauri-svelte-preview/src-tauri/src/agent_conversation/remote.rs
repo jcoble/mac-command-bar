@@ -1,6 +1,7 @@
 //! One authenticated WebSocket boundary for conversations owned by a remote machine.
 
 use std::collections::{BTreeMap, HashMap};
+use std::future::IntoFuture;
 use std::net::{TcpListener as StdTcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -34,7 +35,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-const PROTOCOL_VERSION: u16 = 1;
+const PROTOCOL_VERSION: u16 = 2;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 const OUTBOUND_FRAME_CAPACITY: usize = 8;
 const REPLAY_PAGE_BYTES: u32 = 1024 * 1024;
@@ -58,6 +59,9 @@ enum ClientFrame {
 enum RemoteCommand {
     Workspace { operation: String, args: serde_json::Value },
     ListSessions,
+    CheckProviderUpdates,
+    InstallProviderUpdates,
+    RestartForProviderUpdates,
     Ensure(EnsureAgentConversationRequest),
     Snapshot {
         owned_id: String,
@@ -135,6 +139,8 @@ enum RemoteCommand {
 enum RemoteResponse {
     Workspace(serde_json::Value),
     Sessions(Vec<AgentConversationSessionRecord>),
+    ProviderUpdates(super::providers::updates::ProviderUpdateStatus),
+    Restarting,
     Connection(AgentConversationConnection),
     Snapshot(#[serde(deserialize_with = "deserialize_wire_payload")] Option<AgentConversationSnapshot>),
     EventPage(#[serde(deserialize_with = "deserialize_wire_payload")] AgentConversationEventPage),
@@ -169,6 +175,10 @@ where D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned {
 struct ServerState {
     manager: AgentRuntimeManager,
     token: Arc<str>,
+    maintenance: Arc<tokio::sync::RwLock<()>>,
+    restarting: Arc<AtomicBool>,
+    restart_requested: Arc<tokio::sync::Notify>,
+    restart_flushed: Arc<tokio::sync::Notify>,
     events: broadcast::Sender<AgentConversationEvent>,
 }
 
@@ -1790,7 +1800,7 @@ async fn client_loop(
                 .map_err(|error| error.to_string())?;
             match parse_server_frame(hello)? {
                 Some(ServerFrame::Ready { protocol_version }) if protocol_version == PROTOCOL_VERSION => Ok(()),
-                Some(ServerFrame::Ready { protocol_version }) => Err(format!("Unsupported remote protocol {protocol_version}; expected {PROTOCOL_VERSION}")),
+                Some(ServerFrame::Ready { protocol_version }) => Err(format!("Remote backend protocol {protocol_version} needs an update; this Assembly requires {PROTOCOL_VERSION}")),
                 _ => Err("Backend did not announce protocol readiness".into()),
             }
         }).await.unwrap_or_else(|_| Err("Backend readiness timed out".into()));
@@ -1958,7 +1968,7 @@ pub fn run_server_from_environment() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     runtime.block_on(async move {
         let manager = AgentRuntimeManager::open(
-            ProviderRegistry::bundled_from_environment()?,
+            ProviderRegistry::bundled_from_environment_at(Some(&data_dir))?,
             &data_dir.join("sessions.db"),
         )?;
         let (events, _) = broadcast::channel(256);
@@ -1969,8 +1979,14 @@ pub fn run_server_from_environment() -> Result<(), String> {
         let state = ServerState {
             manager,
             token: Arc::from(token),
+            maintenance: Arc::new(tokio::sync::RwLock::new(())),
+            restarting: Arc::new(AtomicBool::new(false)),
+            restart_requested: Arc::new(tokio::sync::Notify::new()),
+            restart_flushed: Arc::new(tokio::sync::Notify::new()),
             events,
         };
+        let restart_requested = state.restart_requested.clone();
+        let restart_flushed = state.restart_flushed.clone();
         let app = Router::new()
             .route("/assembly", get(upgrade_remote_socket))
             .with_state(state);
@@ -1979,14 +1995,26 @@ pub fn run_server_from_environment() -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         println!("Assembly remote server listening on {bind}");
         use axum::serve::ListenerExt;
-        axum::serve(listener.tap_io(|stream| {
-            if let Err(error) = stream.set_nodelay(true) {
-                eprintln!("Could not disable remote socket packet delay: {error}");
+        tokio::select! {
+            result = axum::serve(listener.tap_io(|stream| {
+                if let Err(error) = stream.set_nodelay(true) {
+                    eprintln!("Could not disable remote socket packet delay: {error}");
+                }
+            }), app).into_future() => result.map_err(|error| error.to_string()),
+            _ = wait_for_provider_restart(&restart_requested, &restart_flushed) => {
+                // The service uses Restart=on-failure. The server owns the
+                // accepted restart even if its requesting socket disappears.
+                std::process::exit(75);
             }
-        }), app)
-            .await
-            .map_err(|error| error.to_string())
+        }
     })
+}
+
+async fn wait_for_provider_restart(requested: &tokio::sync::Notify, flushed: &tokio::sync::Notify) {
+    requested.notified().await;
+    // Allow the acknowledgement to flush, but a dropped or stalled socket
+    // must not strand the server in its no-new-requests state.
+    let _ = tokio::time::timeout(Duration::from_secs(2), flushed.notified()).await;
 }
 
 async fn upgrade_remote_socket(
@@ -2011,6 +2039,7 @@ async fn upgrade_remote_socket(
 async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
     let (mut writer, mut reader) = socket.split();
     let (outbound, mut outgoing) = mpsc::channel::<ServerFrame>(OUTBOUND_FRAME_CAPACITY);
+    let restart_flushed = state.restart_flushed.clone();
     let writer_task = tokio::spawn(async move {
         while let Some(frame) = outgoing.recv().await {
             let Ok(json) = serde_json::to_string(&frame) else {
@@ -2019,9 +2048,12 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
             if json.len() > MAX_WIRE_FRAME_BYTES {
                 continue;
             }
-            if writer.send(AxumMessage::Text(json.into())).await.is_err() {
-                break;
+            let restarting = matches!(frame, ServerFrame::Response { response: RemoteResponse::Restarting, .. });
+            let sent = writer.send(AxumMessage::Text(json.into())).await;
+            if restarting {
+                restart_flushed.notify_one();
             }
+            if sent.is_err() { break; }
         }
     });
     let _ = outbound
@@ -2073,10 +2105,10 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
         };
         match frame {
             ClientFrame::Request { id, command } => {
-                let manager = state.manager.clone();
+                let request_state = state.clone();
                 let completion_sink = completed.clone();
                 let task = tokio::spawn(async move {
-                    let response = execute_remote_command(&manager, command).await;
+                    let response = execute_server_command(&request_state, command).await;
                     let _ = completion_sink.send((id, response)).await;
                 });
                 if let Some(previous) = request_tasks.insert(id, task.abort_handle()) {
@@ -2123,12 +2155,45 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
     let _ = writer_task.await;
 }
 
+async fn execute_server_command(state: &ServerState, command: RemoteCommand) -> Result<RemoteResponse, String> {
+    if matches!(command, RemoteCommand::RestartForProviderUpdates) {
+        let _exclusive = state.maintenance.write().await;
+        if state.manager.has_pending_provider_work() {
+            return Err("Finish or stop remote conversations before restarting the remote server".into());
+        }
+        if state.restarting.swap(true, Ordering::AcqRel) {
+            return Err("The remote server is already restarting".into());
+        }
+        state.restart_requested.notify_one();
+        return Ok(RemoteResponse::Restarting);
+    }
+    let _request = state.maintenance.read().await;
+    if state.restarting.load(Ordering::Acquire) {
+        return Err("The remote server is restarting; reconnect before continuing".into());
+    }
+    execute_remote_command(&state.manager, command).await
+}
+
 async fn execute_remote_command(
     manager: &AgentRuntimeManager,
     command: RemoteCommand,
 ) -> Result<RemoteResponse, String> {
     match command {
+        RemoteCommand::RestartForProviderUpdates => Err("Remote restart requires exclusive request ownership".into()),
         RemoteCommand::Workspace { operation, args } => super::remote_workspace::execute(operation, args).await.map(RemoteResponse::Workspace),
+        RemoteCommand::CheckProviderUpdates | RemoteCommand::InstallProviderUpdates => {
+            let data_dir = std::env::var_os("ASSEMBLY_SERVER_DATA_DIR").map(PathBuf::from)
+                .ok_or_else(|| "Remote server data directory is unavailable".to_string())?;
+            let status = if matches!(command, RemoteCommand::InstallProviderUpdates) {
+                if manager.has_pending_provider_work() {
+                    return Err("Finish or stop remote conversations before updating their adapters".into());
+                }
+                super::providers::updates::install_at(&data_dir, manager.providers()).await?
+            } else {
+                super::providers::updates::check_at(&data_dir, manager.providers()).await?
+            };
+            Ok(RemoteResponse::ProviderUpdates(status))
+        }
         RemoteCommand::ListSessions => {
             let mut sessions = manager.list_sessions()?;
             for session in &mut sessions {
@@ -2740,5 +2805,70 @@ pub async fn remote_workspace(
     match remote.request_for_profile(&profile_id, RemoteCommand::Workspace { operation, args }).await? {
         RemoteResponse::Workspace(value) => Ok(value),
         _ => Err("The remote backend returned an incompatible workspace response".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn check_remote_provider_updates(
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    profile_id: String,
+) -> Result<super::providers::updates::ProviderUpdateStatus, String> {
+    match remote.request_for_profile(&profile_id, RemoteCommand::CheckProviderUpdates).await? {
+        RemoteResponse::ProviderUpdates(status) => Ok(status),
+        _ => Err("The remote backend does not support provider updates; update its backend first".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn install_remote_provider_updates(
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    profile_id: String,
+) -> Result<super::providers::updates::ProviderUpdateStatus, String> {
+    match remote.request_for_profile(&profile_id, RemoteCommand::InstallProviderUpdates).await? {
+        RemoteResponse::ProviderUpdates(status) => Ok(status),
+        _ => Err("The remote backend does not support provider updates; update its backend first".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn restart_remote_for_provider_updates(
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    profile_id: String,
+) -> Result<(), String> {
+    match remote.request_for_profile(&profile_id, RemoteCommand::RestartForProviderUpdates).await? {
+        RemoteResponse::Restarting => Ok(()),
+        _ => Err("The remote backend returned an incompatible restart response".into()),
+    }
+}
+
+#[cfg(test)]
+mod provider_restart_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn server_does_not_restart_without_an_accepted_request() {
+        let requested = tokio::sync::Notify::new();
+        let flushed = tokio::sync::Notify::new();
+        assert!(tokio::time::timeout(Duration::from_millis(20),
+            wait_for_provider_restart(&requested, &flushed)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn accepted_restart_survives_missing_socket_acknowledgement() {
+        let requested = tokio::sync::Notify::new();
+        let flushed = tokio::sync::Notify::new();
+        requested.notify_one();
+        tokio::time::timeout(Duration::from_secs(3), wait_for_provider_restart(&requested, &flushed))
+            .await.expect("a disconnected client must not prevent restart");
+    }
+
+    #[tokio::test]
+    async fn flushed_restart_acknowledgement_does_not_wait_for_deadline() {
+        let requested = tokio::sync::Notify::new();
+        let flushed = tokio::sync::Notify::new();
+        requested.notify_one();
+        flushed.notify_one();
+        tokio::time::timeout(Duration::from_millis(100), wait_for_provider_restart(&requested, &flushed))
+            .await.expect("a flushed response should release restart immediately");
     }
 }

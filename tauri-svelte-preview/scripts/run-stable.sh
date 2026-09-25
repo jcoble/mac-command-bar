@@ -7,18 +7,17 @@
 # vite server, so nothing restarts until you ask it to. Rebuild by hand with
 # `cargo build --manifest-path src-tauri/Cargo.toml` and run this again.
 #
-# Adapter wrappers come from ~/.mac-command-bar, which dev-app.sh writes.
+# Adapter wrappers come from the downloaded payloads under src-tauri/adapters.
 set -eu
 
-APP_HOME="$HOME/.mac-command-bar"
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+APP_HOME="$SCRIPT_DIR/../src-tauri/adapters"
 APP_DIR="$SCRIPT_DIR/.."
 BIN="$APP_DIR/src-tauri/target/debug/mac-command-bar-webview-preview"
 
-CODEX_WRAPPER="$APP_HOME/codex-acp-bridge.sh"
-[ -x "$CODEX_WRAPPER" ] || CODEX_WRAPPER="$APP_HOME/codex-acp-dev.sh"
-CLAUDE_WRAPPER="$APP_HOME/claude-acp-wrapper.sh"
-AGY_WRAPPER="$APP_HOME/agy-acp-wrapper.sh"
+CODEX_WRAPPER="$APP_HOME/codex-acp"
+CLAUDE_WRAPPER="$APP_HOME/claude-agent-acp"
+AGY_WRAPPER="$APP_HOME/agy-acp"
 
 if [ ! -x "$BIN" ]; then
   echo "run-stable: no debug binary. Build it first:" >&2
@@ -27,7 +26,7 @@ if [ ! -x "$BIN" ]; then
 fi
 if [ ! -x "$CODEX_WRAPPER" ] || [ ! -x "$CLAUDE_WRAPPER" ]; then
   echo "run-stable: adapter wrappers not found under $APP_HOME." >&2
-  echo "run-stable: run 'pnpm tauri:dev' once first - it writes them." >&2
+  echo "run-stable: run 'pnpm prepare:release-adapters' first." >&2
   exit 1
 fi
 
@@ -47,6 +46,7 @@ if [ -x "$AGY_WRAPPER" ]; then
 fi
 
 export MCB_ALLOW_KEYCHAIN_CREDENTIALS=1
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SSE_PORT CLAUDE_CODE_PLUGIN_ROOT CLAUDE_PLUGIN_DATA
 
 # The checkout the dev server on 5177 is serving from, or nothing.
 serving_dir() {

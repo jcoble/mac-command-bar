@@ -138,39 +138,48 @@ pub struct ProviderRegistry {
 }
 
 impl ProviderRegistry {
-    pub fn bundled_from_environment() -> Result<Self, String> {
-        Self::bundled_from_environment_at(None)
-    }
-
     pub fn bundled_from_environment_at(app_data_dir: Option<&Path>) -> Result<Self, String> {
         let configured_pair = |path_name: &str, hash_name: &str| match (
             std::env::var_os(path_name),
             std::env::var(hash_name).ok(),
         ) {
             (None, None) => Ok(None),
-            (Some(path), Some(hash)) => Ok(Some(packaged::AdapterPackage {
-                executable: path.into(),
-                content_hash: hash,
-                version: String::new(),
-            })),
+            (Some(path), Some(hash)) => {
+                let executable = PathBuf::from(path);
+                let manifest_path = executable.parent().unwrap_or(Path::new(".")).join("manifest.json");
+                let manifest: packaged::PackagedManifest = serde_json::from_slice(
+                    &std::fs::read(&manifest_path).map_err(|error| format!("Could not read configured adapter manifest: {error}"))?
+                ).map_err(|error| format!("Configured adapter manifest is invalid: {error}"))?;
+                let adapter = manifest.adapters.iter().find(|adapter| {
+                    executable.file_name().and_then(|name| name.to_str()) == Some(adapter.executable.as_str())
+                        && adapter.files.iter().any(|file| file.path == adapter.executable && file.sha256.eq_ignore_ascii_case(&hash))
+                }).ok_or_else(|| "Configured adapter does not match its manifest".to_string())?;
+                Ok(Some(packaged::AdapterPackage {
+                    executable,
+                    content_hash: hash,
+                    version: adapter.version.clone(),
+                }))
+            },
             _ => Err(
                 "Packaged ACP adapter paths and SHA-256 values must be configured together"
                     .to_string(),
             ),
         };
-        let mut codex = configured_pair("MCB_CODEX_ACP_PATH", "MCB_CODEX_ACP_SHA256")?;
-        let mut claude =
-            configured_pair("MCB_CLAUDE_AGENT_ACP_PATH", "MCB_CLAUDE_AGENT_ACP_SHA256")?;
-        let mut antigravity = configured_pair("MCB_AGY_ACP_PATH", "MCB_AGY_ACP_SHA256")?;
-        if codex.is_none() && claude.is_none() && antigravity.is_none() {
-            if let Some(app_data_dir) = app_data_dir {
-                match updates::discover_active(app_data_dir) {
-                    Ok(active) => (codex, claude, antigravity) = active,
-                    Err(error) => crate::debug_log::stderr_log!(
-                        "Ignoring invalid active provider adapters and using the bundled set: {error}"
-                    ),
-                }
+        // An explicitly installed update wins even when a dev relaunch inherits
+        // the bootstrap wrappers in its environment.
+        let (mut codex, mut claude, mut antigravity) = (None, None, None);
+        if let Some(app_data_dir) = app_data_dir {
+            match updates::discover_active(app_data_dir) {
+                Ok(active) => (codex, claude, antigravity) = active,
+                Err(error) => crate::debug_log::stderr_log!(
+                    "Ignoring invalid active provider adapters and using the bundled set: {error}"
+                ),
             }
+        }
+        if codex.is_none() && claude.is_none() && antigravity.is_none() {
+            codex = configured_pair("MCB_CODEX_ACP_PATH", "MCB_CODEX_ACP_SHA256")?;
+            claude = configured_pair("MCB_CLAUDE_AGENT_ACP_PATH", "MCB_CLAUDE_AGENT_ACP_SHA256")?;
+            antigravity = configured_pair("MCB_AGY_ACP_PATH", "MCB_AGY_ACP_SHA256")?;
         }
         if codex.is_none() && claude.is_none() && antigravity.is_none() {
             (codex, claude, antigravity) = packaged::discover()?;
@@ -183,9 +192,6 @@ impl ProviderRegistry {
                 }
                 if claude.is_none() {
                     claude = discover_home_wrapper(&home, &["claude-acp-wrapper.sh"])?;
-                }
-                if antigravity.is_none() {
-                    antigravity = discover_home_wrapper(&home, &["agy-acp-wrapper.sh"])?;
                 }
             }
         }
@@ -293,7 +299,7 @@ fn discover_home_wrappers(
 > {
     let codex = discover_home_wrapper(home, &["codex-acp-bridge.sh", "codex-acp-dev.sh"])?;
     let claude = discover_home_wrapper(home, &["claude-acp-wrapper.sh"])?;
-    let antigravity = discover_home_wrapper(home, &["agy-acp-wrapper.sh"])?;
+    let antigravity = None;
     Ok((codex, claude, antigravity))
 }
 
@@ -341,13 +347,17 @@ fn executable_wrapper(directory: &Path, names: &[&str]) -> Option<PathBuf> {
 }
 
 fn file_sha256(path: &Path) -> Result<String, String> {
-    let contents = std::fs::read(path).map_err(|error| {
-        format!(
-            "Could not read ACP adapter wrapper {}: {error}",
-            path.display()
-        )
-    })?;
-    Ok(format!("{:x}", Sha256::digest(contents)))
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| format!("Could not read ACP adapter {}: {error}", path.display()))?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if read == 0 { break; }
+        hash.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
 }
 
 #[cfg(test)]
@@ -391,6 +401,34 @@ mod tests {
             .manifests
             .iter()
             .all(|(_, manifest)| !manifest.args.iter().any(|arg| arg.contains("@latest"))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_bundle_is_selected_with_its_actual_versions() {
+        let app_data = std::env::temp_dir().join(format!("mcb-installed-adapters-{}", uuid::Uuid::new_v4()));
+        let root = app_data.join("provider-adapters");
+        let bundle = root.join("verified-test-bundle");
+        std::fs::create_dir_all(&bundle).unwrap();
+        let mut adapters = Vec::new();
+        for (provider, id) in [("codex", "codex-acp"), ("claude", "claude-agent-acp"), ("antigravity", "agy-acp")] {
+            let executable = bundle.join(id);
+            write_executable(&executable, b"#!/bin/sh\nexit 0\n", 0o755);
+            adapters.push(serde_json::json!({
+                "provider": provider, "id": id, "version": "99.0.0", "executable": id,
+                "files": [{"path": id, "sha256": file_sha256(&executable).unwrap()}]
+            }));
+        }
+        std::fs::write(bundle.join("manifest.json"), serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1, "adapters": adapters
+        })).unwrap()).unwrap();
+        std::fs::write(root.join("active.json"), br#"{"directory":"verified-test-bundle"}"#).unwrap();
+        let registry = ProviderRegistry::bundled_from_environment_at(Some(&app_data)).unwrap();
+        for (_, manifest) in registry.manifests.iter() {
+            assert_eq!(manifest.version, "99.0.0");
+        }
+        assert_eq!(registry.manifests.len(), 3);
+        std::fs::remove_dir_all(app_data).unwrap();
     }
 
     #[test]

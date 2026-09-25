@@ -59,7 +59,6 @@ import {
   setConversationCapabilityError,
   setConversationConnection,
   setConversationDraft,
-  setConversationProviderNotice,
   setConversationSending,
   setConversationWriterLeaseTransition
 } from './conversationStore.svelte.ts';
@@ -1255,21 +1254,6 @@ export async function sendStructuredMessage(
       return;
     }
     if (state.generation < 1) throw new Error('The structured conversation is not connected');
-    // Antigravity's adapter reads only the words of a prompt, so a screenshot
-    // sent with one arrives as nothing at all. The message still goes; the
-    // notice beside the box says what was left behind.
-    if (state.provider === 'antigravity' && state.attachments.length > 0) {
-      await Promise.all(
-        state.attachments.map((attachment) => cleanupConversationAttachment(ownedId, attachment))
-      );
-      setConversationAttachments(ownedId, []);
-      setConversationProviderNotice(ownedId, 'Antigravity cannot take images yet; they were left out.');
-      // A screenshot on its own leaves nothing to say, so nothing is sent.
-      if (!text.trim()) {
-        setConversationSending(ownedId, false);
-        return;
-      }
-    }
     // An unread or stale capability snapshot is not a refusal. Blocking the
     // send here left a screenshot that could never go out and no way to learn
     // why, so only a connected session's own answer refuses.

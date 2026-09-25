@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import ProviderUpdateControl from './ProviderUpdateControl.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { hydrateOwned, rail } from '$lib/shell/stores/sessionRailStore.svelte';
@@ -170,6 +171,9 @@
         <Button variant="ghost" size="xs" disabled={busy} onclick={() => { confirmingUninstallId = saved.id; status = ''; error = ''; }}>Uninstall</Button>
         <Button variant="ghost" size="xs" disabled={busy} onclick={() => void changeConnection(saved, true)}>Remove</Button>
       </div>
+      {#if environment.readyProfileIds.includes(saved.id)}
+        <ProviderUpdateControl profileId={saved.id} machineName={saved.name} />
+      {/if}
       {#if confirmingUninstallId === saved.id}
         <div class="uninstall-confirm">
           <strong>Uninstall the backend from {saved.name}?</strong>

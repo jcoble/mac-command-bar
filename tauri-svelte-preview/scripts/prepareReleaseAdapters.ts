@@ -1,7 +1,10 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
+import { createReadStream } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = new URL('../', import.meta.url);
@@ -12,7 +15,7 @@ for (const signalName of ['SIGINT', 'SIGTERM']) {
   process.once(signalName, () => stopController.abort(new Error(`Adapter build stopped by ${signalName}`)));
 }
 
-async function run(command, args) {
+async function run(command: string, args: string[]) {
   const { stdout, stderr } = await execFileAsync(command, args, {
     cwd: projectRoot,
     signal: stopController.signal,
@@ -22,18 +25,20 @@ async function run(command, args) {
   if (stderr.trim()) process.stderr.write(stderr);
 }
 
-async function packageVersion(packageName) {
+async function packageVersion(packageName: string) {
   const packageJson = JSON.parse(
     await readFile(new URL(`node_modules/${packageName}/package.json`, projectRoot), 'utf8')
   );
   return packageJson.version;
 }
 
-async function sha256(path) {
-  return createHash('sha256').update(await readFile(path)).digest('hex');
+async function sha256(path: URL) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  return hash.digest('hex');
 }
 
-function launcher({ cli, displayName, environment, runtime }) {
+function launcher({ cli, displayName, environment, runtime }: { cli: string; displayName: string; environment: string; runtime: string }) {
   const environmentLines = environment === 'PATH'
     ? 'PATH="$(dirname "$cli_path"):$PATH"\nexport PATH'
     : `${environment}="$cli_path"\nexport ${environment}`;
@@ -67,7 +72,7 @@ exec "$adapter_dir/${runtime}" "$@"
 
 function bunTarget() {
   const key = `${process.platform}-${process.arch}`;
-  const targets = {
+  const targets: Record<string, string> = {
     'darwin-arm64': 'bun-darwin-arm64',
     'darwin-x64': 'bun-darwin-x64-baseline',
     'linux-arm64': 'bun-linux-arm64',
@@ -82,13 +87,13 @@ function bunTarget() {
 
 async function main() {
   await mkdir(adapterDir, { recursive: true });
-  const executableSuffix = process.platform === 'win32' ? '.exe' : '';
   if (process.platform === 'win32') {
     throw new Error('Release adapter launchers are not implemented for Windows');
   }
   const codexOutput = new URL('codex-acp-runtime', adapterDir);
   const claudeOutput = new URL('claude-agent-acp-runtime', adapterDir);
-  const agyOutput = new URL('agy-acp-runtime', adapterDir);
+  const agyOutput = new URL('agy_acp_server.par', adapterDir);
+  const agyHarness = new URL('localharness_external', adapterDir);
   const codexLauncher = new URL('codex-acp', adapterDir);
   const claudeLauncher = new URL('claude-agent-acp', adapterDir);
   const agyLauncher = new URL('agy-acp', adapterDir);
@@ -109,15 +114,26 @@ async function main() {
     `--target=${bunTarget()}`,
     `--outfile=${claudeOutput.pathname}`
   ]);
-  await run('cargo', [
-    'build',
-    '--locked',
-    '--release',
-    '--manifest-path',
-    'tools/agy-acp/Cargo.toml'
-  ]);
-  const agyBuild = new URL(`tools/agy-acp/target/release/agy-acp${executableSuffix}`, projectRoot);
-  await copyFile(agyBuild, agyOutput);
+  // Resolve only Google's official ACP distribution, then package its two files.
+  const registry = await fetch('https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json', { signal: stopController.signal });
+  if (!registry.ok) throw new Error(`ACP registry: HTTP ${registry.status}`);
+  const catalog = await registry.json() as { agents: Array<{ id: string; version: string; distribution: { binary: Record<string, { archive: string }> } }> };
+  const official = catalog.agents.find(agent => agent.id === 'antigravity-acp');
+  const platform = `${process.platform}-${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}`;
+  const archive = official?.distribution.binary[platform]?.archive;
+  if (!official || !archive || new URL(archive).origin !== 'https://dl.google.com') {
+    throw new Error(`Official Antigravity download unavailable for ${platform}`);
+  }
+  const downloadDir = await mkdtemp(join(tmpdir(), 'assembly-official-agy-'));
+  try {
+    const zip = join(downloadDir, 'adapter.zip');
+    await run('curl', ['--fail', '--location', '--proto', '=https', '--output', zip, archive]);
+    await run('unzip', ['-q', zip, 'agy_acp_server.par', 'localharness_external', '-d', downloadDir]);
+    await copyFile(join(downloadDir, 'agy_acp_server.par'), agyOutput);
+    await copyFile(join(downloadDir, 'localharness_external'), agyHarness);
+  } finally {
+    await rm(downloadDir, { recursive: true, force: true });
+  }
   await writeFile(codexLauncher, launcher({
     cli: 'codex',
     displayName: 'Codex',
@@ -130,16 +146,16 @@ async function main() {
     environment: 'CLAUDE_CODE_EXECUTABLE',
     runtime: 'claude-agent-acp-runtime'
   }));
-  await writeFile(agyLauncher, launcher({
-    cli: 'agy',
-    displayName: 'Antigravity',
-    environment: 'PATH',
-    runtime: 'agy-acp-runtime'
-  }));
-
-  for (const path of [codexOutput, claudeOutput, agyOutput, codexLauncher, claudeLauncher, agyLauncher]) {
+  await writeFile(agyLauncher, `#!/bin/sh
+set -eu
+adapter_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
+exec "$adapter_dir/agy_acp_server.par" ${process.platform === 'linux' ? '--uid= ' : ''}"$@"
+`);
+  for (const path of [codexOutput, claudeOutput, agyOutput, agyHarness, codexLauncher, claudeLauncher, agyLauncher]) {
     await chmod(path, 0o755);
   }
+  // Remove the superseded generated community binary so it cannot ship again.
+  await rm(new URL('agy-acp-runtime', adapterDir), { force: true });
 
   const adapters = [
     {
@@ -165,11 +181,12 @@ async function main() {
     {
       provider: 'antigravity',
       id: 'agy-acp',
-      version: '0.1.0',
+      version: official.version,
       executable: 'agy-acp',
       files: [
         { path: 'agy-acp', sha256: await sha256(agyLauncher) },
-        { path: 'agy-acp-runtime', sha256: await sha256(agyOutput) }
+        { path: 'agy_acp_server.par', sha256: await sha256(agyOutput) },
+        { path: 'localharness_external', sha256: await sha256(agyHarness) }
       ]
     }
   ];

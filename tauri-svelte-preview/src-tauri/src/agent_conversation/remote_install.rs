@@ -20,7 +20,7 @@ const TARGET: &str = "x86_64-unknown-linux-gnu";
 const SIGNING_PUBLIC_KEY: &str = "RWQZvQJuc5RPnp9xO8+V9ppE3cCiodEFHPYqJpIMMVRhAnaxo0udp8xh";
 const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_SIGNATURE_BYTES: u64 = 16 * 1024;
-const PAYLOAD_FILES: [&str; 9] = [
+const PAYLOAD_FILES: [&str; 10] = [
     "payload/assembly-remote-server",
     "payload/adapters/manifest.json",
     "payload/adapters/codex-acp",
@@ -28,7 +28,8 @@ const PAYLOAD_FILES: [&str; 9] = [
     "payload/adapters/claude-agent-acp",
     "payload/adapters/claude-agent-acp-runtime",
     "payload/adapters/agy-acp",
-    "payload/adapters/agy-acp-runtime",
+    "payload/adapters/agy_acp_server.par",
+    "payload/adapters/localharness_external",
     "install.sh",
 ];
 

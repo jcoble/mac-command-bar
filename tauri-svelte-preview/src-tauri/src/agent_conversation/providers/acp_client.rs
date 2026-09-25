@@ -584,7 +584,8 @@ impl AcpClient {
         &mut self,
         cwd: &Path,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
-        let request = acp::NewSessionRequest::new(cwd);
+        let cwd = provider_session_cwd(self.provider, cwd)?;
+        let request = acp::NewSessionRequest::new(&cwd);
         self.start_session("session/new", &request, None).await
     }
 
@@ -599,7 +600,8 @@ impl AcpClient {
         cwd: &Path,
         native_session_id: &str,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
-        let request = acp::ResumeSessionRequest::new(native_session_id.to_string(), cwd);
+        let cwd = provider_session_cwd(self.provider, cwd)?;
+        let request = acp::ResumeSessionRequest::new(native_session_id.to_string(), &cwd);
         self.start_session("session/resume", &request, Some(native_session_id))
             .await
     }
@@ -622,7 +624,8 @@ impl AcpClient {
         cwd: &Path,
         native_session_id: &str,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
-        let request = acp::LoadSessionRequest::new(native_session_id.to_string(), cwd);
+        let cwd = provider_session_cwd(self.provider, cwd)?;
+        let request = acp::LoadSessionRequest::new(native_session_id.to_string(), &cwd);
         self.start_session("session/load", &request, Some(native_session_id))
             .await
     }
@@ -1427,6 +1430,21 @@ fn transport_error(message: String) -> AgentRuntimeError {
     AgentRuntimeError::new("transport", message)
 }
 
+fn provider_session_cwd(
+    provider: Option<AgentConversationProvider>,
+    cwd: &Path,
+) -> Result<std::path::PathBuf, AgentRuntimeError> {
+    if provider != Some(AgentConversationProvider::Antigravity) {
+        return Ok(cwd.to_path_buf());
+    }
+    cwd.canonicalize().map_err(|error| {
+        AgentRuntimeError::new(
+            "cwd-canonicalization",
+            format!("Could not canonicalize Antigravity session cwd: {error}"),
+        )
+    })
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::PathBuf;
@@ -1461,7 +1479,7 @@ while IFS= read -r line; do
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":true,"close":true,"multiSession":true}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
 	    elif [ "$fixture" = "steering" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"steering":true}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
-	    elif [ "$fixture" = "agy" ]; then
+	    elif [ "$fixture" = "agy" ] || [ "$fixture" = "agy_ignored_cancel" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":{{}}}}}},"agentInfo":{{"name":"agy","version":"0.1.0"}},"authMethods":[],"protocolVersion":1}}}}\n' "$id"
 	    elif [ "${{fixture#suspend_}}" != "$fixture" ] && [ "$fixture" != "suspend_no_resume" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":{{}}}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
@@ -1473,7 +1491,7 @@ while IFS= read -r line; do
         session_count=$((session_count + 1))
         session_id="session-$session_count"
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"%s","availableCommands":[{{"name":"initial-%s"}}]}}}}\n' "$id" "$session_id" "$session_count"
-      elif [ "$fixture" = "agy" ]; then
+      elif [ "$fixture" = "agy" ] || [ "$fixture" = "agy_ignored_cancel" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"configOptions":[{{"category":"model","currentValue":"Gemini 3.7 Flash (High)","id":"model","name":"Model","options":[{{"name":"Gemini 3.7 Flash (High)","value":"Gemini 3.7 Flash (High)"}}],"type":"select"}}],"models":{{"availableModels":[{{"modelId":"Gemini 3.7 Flash (High)","name":"Gemini 3.7 Flash (High)"}}],"currentModelId":"Gemini 3.7 Flash (High)"}},"sessionId":"agy-session"}}}}\n' "$id"
       elif [ "$fixture" = "command_capture" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","availableCommands":[{{"name":"initial","description":"Initial command","input":{{"hint":"path"}}}}]}}}}\n' "$id"
@@ -1500,6 +1518,9 @@ while IFS= read -r line; do
 	    *'"method":"session/resume"'*)
 	      if [ "$fixture" = "resume_failure" ]; then
 	        printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32001,"message":"fixture resume failed"}}}}\n' "$id"
+	        continue
+	      elif [ "$fixture" = "agy_ignored_cancel" ]; then
+	        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"agy-session"}}}}\n' "$id"
 	        continue
 	      elif [ "$fixture" = "replay_on_resume" ]; then
 	        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"historical-message","content":{{"type":"text","text":"historical answer"}},"turnId":"historical-turn","_meta":{{"replay":true}}}}}}}}\n'
@@ -1598,6 +1619,10 @@ while IFS= read -r line; do
             *'"method":"session/cancel"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-cancelled","stopReason":"cancelled"}}}}\n' "$id"; break ;;
           esac
         done
+      elif [ "$fixture" = "agy_ignored_cancel" ]; then
+        while IFS= read -r response; do
+          printf '%s\n' "$response" >> "$log"
+        done
       else
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"generated text"}},"turnId":"%s"}}}}}}\n' "$turn"
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"%s","stopReason":"end_turn"}}}}\n' "$id" "$turn"
@@ -1657,6 +1682,32 @@ done"#,
 
         assert_eq!(error.code, "serialization");
         assert_eq!(params, Value::Null);
+    }
+
+    #[test]
+    fn antigravity_session_cwd_is_canonical_and_errors_are_returned() {
+        let root = fixture_root();
+        let actual = root.join("actual");
+        let alias = root.join("alias");
+        std::fs::create_dir(&actual).unwrap();
+        std::os::unix::fs::symlink(&actual, &alias).unwrap();
+
+        assert_eq!(
+            provider_session_cwd(Some(AgentConversationProvider::Antigravity), &alias).unwrap(),
+            actual.canonicalize().unwrap()
+        );
+        assert_eq!(
+            provider_session_cwd(Some(AgentConversationProvider::Codex), &alias).unwrap(),
+            alias
+        );
+        let error = provider_session_cwd(
+            Some(AgentConversationProvider::Antigravity),
+            &root.join("missing"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "cwd-canonicalization");
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
