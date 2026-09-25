@@ -1159,6 +1159,8 @@ export async function changeStructuredConversationCheckout(
   return record;
 }
 
+const preparingSends = new Map<string, { cancelled: boolean }>();
+
 /** Sends one message through the current writer while preserving attachment recovery. */
 export async function sendStructuredMessage(
   ownedId: string,
@@ -1173,6 +1175,8 @@ export async function sendStructuredMessage(
   if (!state) return;
   if (!text.trim() && state.attachments.length === 0) return;
   const turnWasAlreadyActive = state.sending;
+  const preparation = { cancelled: false };
+  if (!turnWasAlreadyActive) preparingSends.set(ownedId, preparation);
   setConversationSending(ownedId, true);
   try {
     const owned = rail.owned.find((session) => session.ownedId === ownedId) ?? null;
@@ -1286,6 +1290,13 @@ export async function sendStructuredMessage(
     // The transcript keeps only display metadata: thumbnails show what went out,
     // and no provider echoes the image back for it to render from.
     recordSentConversationAttachments(ownedId, state.attachments.map(attachmentDisplayMetadata));
+    if (preparation.cancelled) {
+      await invoke('stop_agent_conversation_turn', {
+        request: { ownedId, generation: validatedGeneration }
+      });
+      throw new Error('Message cancelled before sending.');
+    }
+    if (preparingSends.get(ownedId) === preparation) preparingSends.delete(ownedId);
     const requestedModel = startConfig?.model ?? null;
     const requestedApprovalPolicy = startConfig?.approvalPolicy ?? null;
     await invoke('send_agent_conversation_message', {
@@ -1315,11 +1326,18 @@ export async function sendStructuredMessage(
     recordSentConversationAttachments(ownedId, []);
     if (!turnWasAlreadyActive) setConversationSending(ownedId, false);
     throw error;
+  } finally {
+    if (preparingSends.get(ownedId) === preparation) preparingSends.delete(ownedId);
   }
 }
 
 /** Stops the active turn for the conversation's current generation. */
 export async function stopStructuredTurn(ownedId: string): Promise<void> {
+  const preparation = preparingSends.get(ownedId);
+  if (preparation) {
+    preparation.cancelled = true;
+    return;
+  }
   const state = getConversationSession(ownedId);
   if (!state || state.generation < 1) return;
   await invoke('stop_agent_conversation_turn', {

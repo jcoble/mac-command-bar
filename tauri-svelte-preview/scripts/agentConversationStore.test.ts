@@ -1019,7 +1019,7 @@ await test('sendStructuredMessage resolves the terminal from the owned session, 
     'cleanupConversationAttachmentPreview',
     'setConversationAttachments',
     'recordSentConversationAttachments',
-    `${serviceJavaScript}\nreturn sendStructuredMessage;`
+    `const preparingSends = new Map();\n${serviceJavaScript}\nreturn sendStructuredMessage;`
   )(
     () => state,
     () => undefined,
@@ -1384,3 +1384,45 @@ assert.ok(store.getConversationSession('owned-b'));
 }
 
 console.log('agent conversation store tests passed');
+
+await test('Stop during revival prevents dispatch and releases the prepared runtime', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('const preparingSends ='), source.indexOf('/** Answers one legacy approval'));
+  const code = stripTypeScriptTypes(block.replaceAll('export async function', 'async function'), { mode: 'strip' });
+  let finishRevival!: () => void;
+  const revival = new Promise<void>((resolve) => { finishRevival = resolve; });
+  const state = { sending: false, generation: 1, attachments: [], agentConfig: {}, connectionState: 'disconnected' };
+  const calls: string[] = [];
+  const dependencies = {
+    getConversationSession: () => state,
+    setConversationSending: (_id: string, sending: boolean) => { state.sending = sending; },
+    rail: { owned: [{ ownedId: 'cancel-test', agent: 'antigravity', cwd: '/tmp', nativeSessionId: 'native-original' }] },
+    shouldReviveBeforeSend: () => true,
+    decideConversationActivation: () => ({ kind: 'structured', nativeSessionMode: 'resume' }),
+    ensureStructuredConversation: async () => { await revival; state.generation = 2; return { generation: 2 }; },
+    generationForSend: (_before: number, after: number) => after,
+    sendSupportsImages: () => false,
+    buildConversationPrompt: (text: string) => ({ text, content: [] }),
+    hasBackendCapability: async () => true,
+    ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY: 'test',
+    sendTargetGeneration: () => state.generation,
+    updateOwnedSession: () => undefined,
+    recordSentConversationAttachments: () => undefined,
+    attachmentDisplayMetadata: () => undefined,
+    invoke: async (command: string) => { calls.push(command); },
+    setConversationAttachments: () => undefined
+  };
+  const api = Function(...Object.keys(dependencies), `${code}\nreturn { sendStructuredMessage, stopStructuredTurn, preparingSends };`)(...Object.values(dependencies)) as {
+    sendStructuredMessage: (id: string, text: string) => Promise<void>;
+    stopStructuredTurn: (id: string) => Promise<void>;
+    preparingSends: Map<string, unknown>;
+  };
+  const sending = api.sendStructuredMessage('cancel-test', 'Must not reach the provider');
+  const cancelled = assert.rejects(sending, /cancelled before sending/);
+  await api.stopStructuredTurn('cancel-test');
+  finishRevival();
+  await cancelled;
+  assert.deepEqual(calls, ['stop_agent_conversation_turn']);
+  assert.equal(state.sending, false);
+  assert.equal(api.preparingSends.size, 0, 'no retained send bookkeeping');
+});

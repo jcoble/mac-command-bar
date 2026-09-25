@@ -2441,6 +2441,9 @@ impl AgentRuntimeManager {
     }
 
     pub async fn cancel_turn(&self, owned_id: &str, generation: u64) -> Result<(), String> {
+        // A send may still be activating the adapter. Inspect its turn only after
+        // that lifecycle operation has recorded the accepted prompt.
+        let lifecycle = self.lifecycle_guard(owned_id).await?;
         let runtime = self.runtime(owned_id, generation)?;
         let transport = {
             let runtime = runtime.lock().await;
@@ -2472,6 +2475,7 @@ impl AgentRuntimeManager {
             }
         };
         let Some(turn_id) = turn_id else {
+            drop(lifecycle);
             self.suspend_if_quiescent(owned_id, generation).await?;
             return Ok(());
         };
@@ -10927,6 +10931,26 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_waits_for_prompt_acceptance() {
+        let fixture = fixture_manager_with_acp_session("cancelled_turn").await;
+        let lifecycle = fixture.manager.lifecycle_guard(&fixture.owned_id).await.unwrap();
+        let manager = fixture.manager.clone();
+        let owned_id = fixture.owned_id.clone();
+        let generation = fixture.generation;
+        let cancel = tokio::spawn(async move { manager.cancel_turn(&owned_id, generation).await });
+        tokio::task::yield_now().await;
+        assert!(!cancel.is_finished());
+        fixture.manager.prompt(&fixture.owned_id, generation, test_prompt("hello"))
+            .await.unwrap();
+        drop(lifecycle);
+        cancel.await.unwrap().unwrap();
+        let log = fixture.root.join("cancelled_turn.jsonl");
+        wait_until(|| fs::read_to_string(&log).unwrap_or_default().contains("session/cancel")).await;
+        fixture.manager.close(&fixture.owned_id, generation).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn cancelled_prompt_emits_interrupted_turn() {
         let fixture = fixture_manager_with_acp_session("cancelled_turn").await;
         let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
@@ -11148,6 +11172,13 @@ mod tests {
             )
         }));
         drop(seen);
+        // Interrupted is emitted before the asynchronous wire response is read
+        // by the fixture. Wait for that separate receipt before asserting it.
+        wait_until(|| {
+            fs::read_to_string(fixture.root.join("permission_cancelled.jsonl"))
+                .is_ok_and(|log| log.contains(r#""outcome":{"outcome":"cancelled"}"#))
+        })
+        .await;
         let fixture_log = fs::read_to_string(fixture.root.join("permission_cancelled.jsonl"))
             .expect("permission cancellation fixture log");
         assert!(
