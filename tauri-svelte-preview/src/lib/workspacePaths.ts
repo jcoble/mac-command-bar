@@ -31,8 +31,10 @@ export function sessionWorkspaceRoot(session: { cwd: string; projectPath?: strin
   return path && session.remoteProfileId ? remoteWorkspacePath(session.remoteProfileId, path) : '';
 }
 
-const pathKeys = new Set(['root', 'path', 'directory', 'source', 'target', 'roots', 'paths', 'projectRoot', 'projectPath', 'worktreePath', 'checkoutPath', 'gitRoot']);
-export function remoteWorkspaceRequest(args: Record<string, unknown>): { profileId: string; args: Record<string, unknown> } | null {
+const pathKeys = new Set(['root', 'path', 'directory', 'source', 'target', 'roots', 'paths', 'projectRoot', 'projectPath', 'worktreePath', 'checkoutPath', 'gitRoot', 'localRoot', 'projectFilter']);
+/** Hosted PR commands wrap their root in one request object. */
+const nestedRequestCommands = new Set(['list_github_pull_requests', 'read_github_pull_request_file', 'submit_github_pull_request_review', 'reply_github_pull_request_comment', 'merge_github_pull_request']);
+export function remoteWorkspaceRequest(args: Record<string, unknown>, command = ''): { profileId: string; args: Record<string, unknown> } | null {
   let profileId: string | null = null;
   let localAbsolute = false;
   const decode = (value: unknown): unknown => {
@@ -44,7 +46,13 @@ export function remoteWorkspaceRequest(args: Record<string, unknown>): { profile
     profileId = remote.profileId;
     return remote.path;
   };
-  const result = Object.fromEntries(Object.entries(args).map(([key, value]) => [key, pathKeys.has(key) ? decode(value) : value]));
+  const decodeKeys = (fields: Record<string, unknown>): Record<string, unknown> =>
+    Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, pathKeys.has(key) ? decode(value) : value]));
+  const nested = nestedRequestCommands.has(command);
+  const result = Object.fromEntries(Object.entries(decodeKeys(args)).map(([key, value]) => [
+    key,
+    nested && value && typeof value === 'object' && !Array.isArray(value) ? decodeKeys(value as Record<string, unknown>) : value
+  ]));
   if (profileId && localAbsolute) throw new Error('A workspace operation cannot mix Mac and remote paths');
   return profileId ? { profileId, args: result } : null;
 }

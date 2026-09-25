@@ -57,6 +57,13 @@ pub(super) async fn execute(operation: String, mut args: Value) -> Result<Value,
         "init_project_repository" => return json(git::init_project_repository(arg(&args, "root")?).await?),
         "remove_project_worktree" => return json(git::remove_project_worktree(arg(&args, "root")?, arg(&args, "path")?, arg(&args, "force")?).await?),
         "archive_project_worktree" => return json(git::archive_project_worktree(arg(&args, "root")?, arg(&args, "path")?).await?),
+        // Hosted PR commands run gh here, with the same stale-head guards as the Mac.
+        "list_github_pull_requests" => return json(crate::github::list_github_pull_requests(arg(&args, "query")?).await?),
+        "read_github_pull_request" => return json(crate::github::read_github_pull_request(arg(&args, "root")?, arg(&args, "number")?).await?),
+        "read_github_pull_request_file" => return json(crate::github::read_github_pull_request_file(arg(&args, "query")?).await?),
+        "submit_github_pull_request_review" => return json(crate::github::submit_github_pull_request_review(arg(&args, "submission")?).await?),
+        "reply_github_pull_request_comment" => return json(crate::github::reply_github_pull_request_comment(arg(&args, "reply")?).await?),
+        "merge_github_pull_request" => return json(crate::github::merge_github_pull_request(arg(&args, "request")?).await?),
         _ => {}
     }
     tokio::task::spawn_blocking(move || {
@@ -132,5 +139,12 @@ mod tests {
     async fn unsupported_and_relative_workspace_requests_are_rejected() {
         assert!(execute("run_terminal_command".into(), serde_json::json!({"root": "/tmp"})).await.unwrap_err().contains("not available"));
         assert!(execute("workspace_write_text".into(), serde_json::json!({"path": "relative", "content": "no"})).await.unwrap_err().contains("absolute"));
+    }
+    #[tokio::test]
+    async fn github_requests_reach_the_hosted_pr_validation() {
+        let query = serde_json::json!({"query": {"roots": [], "mode": "open", "pageSize": 30}});
+        assert!(execute("list_github_pull_requests".into(), query).await.unwrap_err().contains("between one and 32"));
+        let merge = serde_json::json!({"request": {"root": "/tmp", "number": 1, "expectedHeadSha": "a".repeat(40), "expectedBaseSha": "b".repeat(40), "method": "delete"}});
+        assert_eq!(execute("merge_github_pull_request".into(), merge).await.unwrap_err(), "Invalid pull request merge target or method");
     }
 }
