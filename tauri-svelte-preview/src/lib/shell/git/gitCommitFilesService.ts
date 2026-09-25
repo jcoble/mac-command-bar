@@ -33,14 +33,14 @@ import {
   COMMIT_FILES_DESKTOP_ONLY_MESSAGE,
   UNREADABLE_PATH_MESSAGE,
   commitFilesEntry,
-  createGitCommitFilesEntry,
   gitCommitFiles,
+  gitCommitFilesView,
   isCommitExpanded,
   isUnreadableGitPath,
   resetGitCommitFilesState,
   type GitCommitFilesState
 } from './gitCommitFilesStore.svelte.ts';
-import { gitPanel } from './gitPanelStore.svelte.ts';
+import { gitPanel, type GitSurfaceOwner } from './gitPanelStore.svelte.ts';
 import { gitService } from './gitService.ts';
 import type { SourceGitDiff } from '../../tauriSource.ts';
 
@@ -48,6 +48,9 @@ import type { SourceGitDiff } from '../../tauriSource.ts';
 export interface CommitDiffTarget {
   root: string | null;
   selectedPath: string;
+  selectedPaths: Record<GitSurfaceOwner, string>;
+  diffOwner: GitSurfaceOwner | null;
+  diffRevision: number;
   selectedDiff: SourceGitDiff | null;
   diffLoading: boolean;
   diffError: string;
@@ -56,6 +59,7 @@ export interface CommitDiffTarget {
 export interface GitCommitFilesServiceOptions {
   state?: GitCommitFilesState;
   panel?: CommitDiffTarget;
+  owner?: GitSurfaceOwner;
   /** The top of the repository a folder belongs to, or null when unknown. */
   resolveTop?(root: string): Promise<string | null>;
   readFiles?(root: string, sha: string): Promise<GitCommitFileChange[] | null>;
@@ -77,12 +81,14 @@ export interface GitCommitFilesService {
   release(): void;
   /** Open or close one commit, reading its file list the first time it opens. */
   toggleCommit(sha: string, isMerge: boolean): Promise<void>;
-  /** Read one commit's file list, whether or not the row is open. */
+  /** Read one open commit's file list. */
   loadCommitFiles(sha: string, isMerge: boolean): Promise<void>;
   /** Show what one file of one commit changed. */
   selectCommitFile(sha: string, file: GitCommitFileChange): Promise<void>;
   /** Stop showing a commit's file. */
   clearSelection(): void;
+  /** Re-materialize this surface's retained selection into the shared Diff. */
+  restoreSelection(): Promise<void>;
 }
 
 function describeError(error: unknown, fallback: string): string {
@@ -95,16 +101,16 @@ export function createGitCommitFilesService(
 ): GitCommitFilesService {
   const state = options.state ?? gitCommitFiles;
   const panel = options.panel ?? gitPanel;
+  const owner = options.owner ?? 'compact';
+  const view = () => gitCommitFilesView(state, owner);
   const resolveTop = options.resolveTop ?? resolveRepositoryTop;
   const readFiles = options.readFiles ?? readCommitFiles;
   const readDiff = options.readDiff ?? readCommitFileDiff;
-  const clearPanelSelection = options.clearPanelSelection ?? (() => gitService.clearSelection());
+  const clearPanelSelection = options.clearPanelSelection ?? (() => gitService.clearSelection(owner));
   const diffTimeoutMs = options.diffTimeoutMs ?? 20_000;
 
   /** The one in-flight look-up of the repository top, shared by every caller. */
   let topRequest: Promise<string> | null = null;
-  /** Newest file-list request per commit, so a slow one cannot win. */
-  const fileRequests = new Map<string, number>();
   let diffRequest = 0;
 
   function currentRoot(): string | null {
@@ -133,43 +139,42 @@ export function createGitCommitFilesService(
     return top;
   }
 
-  function writeEntry(
-    sha: string,
-    changes: Partial<ReturnType<typeof createGitCommitFilesEntry>>
-  ): void {
-    state.byCommit[sha] = { ...commitFilesEntry(state, sha), ...changes };
-  }
-
   async function loadCommitFiles(sha: string): Promise<void> {
     const root = currentRoot();
     if (!root || sha.trim() === '') return;
 
     const revision = state.revision;
-    const id = (fileRequests.get(sha) ?? 0) + 1;
-    fileRequests.set(sha, id);
-    writeEntry(sha, { loading: true, error: '' });
+    state.byCommit[sha] = { ...commitFilesEntry(state, sha), loading: true, error: '' };
+    const entry = state.byCommit[sha];
 
     const stillCurrent = () =>
-      fileRequests.get(sha) === id && state.root === root && state.revision === revision;
+      state.byCommit[sha] === entry &&
+      state.root === root &&
+      state.revision === revision &&
+      (isCommitExpanded(state, sha, 'compact') || isCommitExpanded(state, sha, 'large'));
 
     try {
       const top = await repositoryTopFor(root);
       const files = await readFiles(top, sha);
       if (!stillCurrent()) return;
       if (!files) {
-        writeEntry(sha, { files: [], loaded: false, error: COMMIT_FILES_DESKTOP_ONLY_MESSAGE });
+        Object.assign(entry, {
+          files: [],
+          loaded: false,
+          error: COMMIT_FILES_DESKTOP_ONLY_MESSAGE
+        });
         return;
       }
-      writeEntry(sha, { files, loaded: true, error: '' });
+      Object.assign(entry, { files, loaded: true, error: '' });
     } catch (error) {
       if (!stillCurrent()) return;
-      writeEntry(sha, {
+      Object.assign(entry, {
         files: [],
         loaded: false,
         error: describeError(error, 'Could not read what this commit changed.')
       });
     } finally {
-      if (stillCurrent()) writeEntry(sha, { loading: false });
+      if (stillCurrent()) entry.loading = false;
     }
   }
 
@@ -181,9 +186,12 @@ export function createGitCommitFilesService(
     // Whatever the working-copy side was showing is let go of first, so its own
     // in-flight read cannot land on top of this one.
     clearPanelSelection();
-    state.selectedCommitSha = sha;
-    state.selectedRelativePath = file.relativePath;
+    view().selectedCommitSha = sha;
+    view().selectedRelativePath = file.relativePath;
     panel.selectedPath = file.relativePath;
+    panel.selectedPaths[owner] = file.relativePath;
+    panel.diffOwner = owner;
+    panel.diffRevision += 1;
     panel.selectedDiff = null;
     panel.diffError = '';
 
@@ -197,8 +205,12 @@ export function createGitCommitFilesService(
     diffRequest += 1;
     const id = diffRequest;
     panel.diffLoading = true;
+    const panelRevision = panel.diffRevision;
     const stillCurrent = () =>
-      diffRequest === id && state.root === root && state.revision === revision;
+      diffRequest === id &&
+      state.root === root &&
+      state.revision === revision &&
+      panel.diffRevision === panelRevision;
 
     try {
       const diff = await withGitDiffTimeout(
@@ -221,9 +233,19 @@ export function createGitCommitFilesService(
 
   function clearSelection(): void {
     diffRequest += 1;
-    state.selectedCommitSha = '';
-    state.selectedRelativePath = '';
+    view().selectedCommitSha = '';
+    view().selectedRelativePath = '';
     clearPanelSelection();
+  }
+
+  async function restoreSelection(): Promise<void> {
+    const selected = view();
+    if (!selected.selectedCommitSha || !selected.selectedRelativePath) return;
+    await selectCommitFile(selected.selectedCommitSha, {
+      relativePath: selected.selectedRelativePath,
+      status: 'modified',
+      badge: 'M'
+    });
   }
 
   return {
@@ -232,29 +254,29 @@ export function createGitCommitFilesService(
     activate(root: string | null): void {
       if (root === state.root) return;
       topRequest = null;
-      fileRequests.clear();
       diffRequest += 1;
-      if (state.selectedCommitSha !== '' || panel.diffLoading) clearPanelSelection();
+      if (view().selectedCommitSha !== '' || panel.diffLoading) clearPanelSelection();
       resetGitCommitFilesState(state, root);
     },
 
     release(): void {
       topRequest = null;
-      fileRequests.clear();
       diffRequest += 1;
-      if (state.selectedCommitSha !== '' || panel.diffLoading) clearPanelSelection();
+      if (view().selectedCommitSha !== '' || panel.diffLoading) clearPanelSelection();
       resetGitCommitFilesState(state, null);
     },
 
     async toggleCommit(sha: string, isMerge: boolean): Promise<void> {
-      if (isCommitExpanded(state, sha)) {
-        state.expanded[sha] = false;
-        fileRequests.delete(sha);
-        delete state.byCommit[sha];
-        if (state.selectedCommitSha === sha) clearSelection();
+      if (isCommitExpanded(state, sha, owner)) {
+        delete view().expanded[sha];
+        const other: GitSurfaceOwner = owner === 'compact' ? 'large' : 'compact';
+        if (!isCommitExpanded(state, sha, other)) {
+          delete state.byCommit[sha];
+        }
+        if (view().selectedCommitSha === sha) clearSelection();
         return;
       }
-      state.expanded[sha] = true;
+      view().expanded[sha] = true;
       const entry = commitFilesEntry(state, sha);
       if (entry.loaded || entry.loading) return;
       await loadCommitFiles(sha);
@@ -268,7 +290,8 @@ export function createGitCommitFilesService(
 
     selectCommitFile,
 
-    clearSelection
+    clearSelection,
+    restoreSelection
   };
 }
 

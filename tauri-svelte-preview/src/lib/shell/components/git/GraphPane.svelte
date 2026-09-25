@@ -46,6 +46,7 @@
   import {
     commitFilesEntry,
     describeCommitFiles,
+    gitCommitFilesView,
     isCommitExpanded,
     isUnreadableGitPath,
     splitRepositoryPath,
@@ -77,6 +78,7 @@
 
   let open = $state(true);
   let requestedRoot = '';
+  const interaction = $derived(gitCommitFilesView(files));
 
   onMount(() => {
     service.ensureHistorySurface();
@@ -350,8 +352,8 @@
                       {@const parts = splitRepositoryPath(file.relativePath)}
                       {@const unreadable = isUnreadableGitPath(file.relativePath)}
                       {@const chosen =
-                        files.selectedCommitSha === commit.sha &&
-                        files.selectedRelativePath === file.relativePath}
+                        interaction.selectedCommitSha === commit.sha &&
+                        interaction.selectedRelativePath === file.relativePath}
                       <button
                         type="button"
                         class={cn(
