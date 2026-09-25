@@ -308,6 +308,7 @@
 				<ConversationSurface
 					owned={selection.railOwned}
 					activeOwnedId={selection.chatOwnedId}
+					showing={workbench.centerTab === "session"}
 					pendingFirstMessage={selection.newSession.pendingFirstMessage?.ownedId === selection.chatOwnedId ? selection.newSession.pendingFirstMessage.text : null}
 					rootAvailable={selection.activeRootAvailable}
 				/>
