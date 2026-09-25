@@ -43,8 +43,11 @@
     try {
       const statuses = await readRemoteBackendStatusesFromTauri(profiles);
       if (mounted) backends = Object.fromEntries(statuses.map((entry) => [entry.profileId, entry]));
-    } catch {
-      if (mounted) backends = {};
+    } catch (reason) {
+      if (mounted) {
+        backends = {};
+        error = `Could not check backend versions: ${reason instanceof Error ? reason.message : typeof reason === "object" && reason !== null && "message" in reason ? String(reason.message) : String(reason)}`;
+      }
     }
   }
 

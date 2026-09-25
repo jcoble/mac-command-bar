@@ -642,6 +642,23 @@ async fn command_output(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    #[ignore = "requires the published signed backend release and GitHub CLI access"]
+    async fn published_backend_signature_and_payloads_verify() {
+        let release = latest_release().await.unwrap();
+        let expected_version = release_version(&release.tag_name).unwrap();
+        let (archive_asset, signature_asset) = release_assets(release).unwrap();
+        let stage = LocalStage::create().unwrap();
+        let archive = stage.0.join("backend.tar.gz");
+        let signature = stage.0.join("backend.tar.gz.sig");
+        download(&archive_asset, &archive, MAX_ARCHIVE_BYTES).await.unwrap();
+        download(&signature_asset, &signature, MAX_SIGNATURE_BYTES).await.unwrap();
+        let receipt = tokio::task::spawn_blocking(move || inspect_package(&archive, &signature))
+            .await.unwrap().unwrap();
+        assert_eq!(receipt.version, expected_version);
+        println!("Verified published backend {} at {}", receipt.version, receipt.commit);
+    }
+
     fn write_release_archive(
         archive_path: &Path,
         bad_checksum: bool,
