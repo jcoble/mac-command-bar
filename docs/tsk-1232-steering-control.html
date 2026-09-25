@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TSK-1232 — composer: one action button while steering</title>
+<style>
+  body { margin: 0; padding: 32px; background: #111; color: #ddd; font: 14px/1.5 -apple-system, system-ui, sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p { margin: 0 0 20px; color: #999; }
+  .row { display: grid; grid-template-columns: 300px 1fr; gap: 16px; align-items: center; margin-bottom: 14px; }
+  .label { color: #bbb; }
+  .label b { color: #eee; }
+  .bar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 10px 14px; background: #222; border: 1px solid #3a3a3a; border-radius: 22px; }
+  .draft { flex: 1; color: #eee; }
+  .draft.empty { color: #666; }
+  .round { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 999px; background: #2e2e2e; color: #888; }
+  .send { background: #7fd6bf; color: #0d1f1a; }
+  .stop { background: #e39aa4; color: #1f0d10; }
+  .working { color: #aaa; font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>TSK-1232: composer shows one action button</h1>
+<p>Existing styles, no redesign. The square turns into an arrow when there is something to steer with, and back into a square once the draft is cleared or the steer is sent.</p>
+
+<div class="row"><div class="label"><b>Idle, empty</b>: no action</div>
+  <div class="bar"><span class="draft empty">Ask anything…</span><span class="round">🎙</span></div></div>
+
+<div class="row"><div class="label"><b>Idle, has text</b>: Send arrow</div>
+  <div class="bar"><span class="draft">fix the tests</span><span class="round">🎙</span><span class="round send">↑</span></div></div>
+
+<div class="row"><div class="label"><b>Working, empty</b>: Stop square</div>
+  <div class="bar"><span class="draft empty">Ask anything…</span><span class="round">🎙</span><span class="working">◌ Reviewing…</span><span class="round stop">■</span></div></div>
+
+<div class="row"><div class="label"><b>Working, has text, provider steers</b>: Steer arrow (replaces Stop)</div>
+  <div class="bar"><span class="draft">ifa</span><span class="round">🎙</span><span class="working">◌ Reviewing…</span><span class="round send">↑</span></div></div>
+
+<div class="row"><div class="label"><b>Working, has text, provider cannot steer</b>: Stop square</div>
+  <div class="bar"><span class="draft">ifa</span><span class="round">🎙</span><span class="working">◌ Reviewing…</span><span class="round stop">■</span></div></div>
+</body>
+</html>
