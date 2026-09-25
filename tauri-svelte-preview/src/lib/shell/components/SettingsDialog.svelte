@@ -63,6 +63,7 @@
     testHelperFromTauri,
     writeHelperSettingsFromTauri,
     type HelperSettingsView,
+    type HelperRoute,
     type HelperVendor
   } from '$lib/tauriSource';
   import { DEFAULT_THEME_ID } from '$lib/shell/themes/themeRegistry';
@@ -319,12 +320,19 @@
       keywords: 'agents acp adapters codex claude antigravity update'
     },
     {
+      id: 'helper-route',
+      section: 'helper',
+      card: 'Which model',
+      title: 'Connection',
+      description: 'Use your signed-in Codex or Claude CLI. Choose API only if you want to use your own API key.',
+      keywords: 'cli api connection transport'
+    },
+    {
       id: 'helper-vendor',
       section: 'helper',
       card: 'Which model',
       title: 'Service',
-      description:
-        'Who the small helper model is asked. The app pays nothing for this; the key is yours and the calls are billed to you.',
+      description: 'The selected provider runs session titles, Inspect, and pull request review drafts.',
       keywords: 'openai anthropic provider vendor byok'
     },
     {
@@ -332,23 +340,21 @@
       section: 'helper',
       card: 'Which model',
       title: 'Model',
-      description:
-        'Cheapest first. The work is a few hundred tokens at a time, so the cheapest model is usually the right one.',
+      description: 'Choose the model used by the selected connection.',
       keywords: 'gpt claude haiku cheap small'
     },
     {
       id: 'helper-key',
       section: 'helper',
-      card: 'Key',
+      card: 'Connection',
       title: 'API key',
-      description:
-        'Stored in your login Keychain, never in a settings file, and never shown again after it is saved. Saving an empty field removes the key and turns the helper off.',
+      description: 'Used only when Connection is API. Stored in your login Keychain and never shown again after saving.',
       keywords: 'secret token keychain password credentials'
     },
     {
       id: 'helper-test',
       section: 'helper',
-      card: 'Key',
+      card: 'Connection',
       title: 'Test',
       description: 'Makes one tiny call and says what came back.',
       keywords: 'check verify connection try'
@@ -468,9 +474,13 @@
   let helperNote = $state<string | null>(null);
   let helperTesting = $state(false);
 
-  const helperVendorItems = [
-    { value: 'openai', label: 'OpenAI' },
-    { value: 'anthropic', label: 'Anthropic' }
+  const helperVendorItems = $derived([
+    { value: 'openai', label: helper?.route === 'api' ? 'OpenAI' : 'Codex CLI' },
+    { value: 'anthropic', label: helper?.route === 'api' ? 'Anthropic' : 'Claude CLI' }
+  ]);
+  const helperRouteItems = [
+    { value: 'cli', label: 'Signed-in CLI' },
+    { value: 'api', label: 'API key' }
   ];
 
   /** The models the chosen service offers, cheapest first. */
@@ -509,7 +519,7 @@
     helperNote = null;
     helperKey = '';
     try {
-      await writeHelperSettingsFromTauri({ vendor, model });
+      await writeHelperSettingsFromTauri({ vendor, model, route: helper.route });
     } catch (error) {
       helper = before;
       helperNote = String(error);
@@ -523,7 +533,22 @@
     const before = helper;
     helper = { ...helper, model };
     try {
-      await writeHelperSettingsFromTauri({ vendor: helper.vendor, model });
+      await writeHelperSettingsFromTauri({ vendor: helper.vendor, model, route: helper.route });
+    } catch (error) {
+      helper = before;
+      helperNote = String(error);
+    }
+  }
+
+  async function chooseHelperRoute(value: string): Promise<void> {
+    if (!helper) return;
+    const before = helper;
+    const route = value as HelperRoute;
+    helper = { ...helper, route };
+    helperNote = null;
+    try {
+      await writeHelperSettingsFromTauri({ vendor: helper.vendor, model: helper.model, route });
+      await loadHelper();
     } catch (error) {
       helper = before;
       helperNote = String(error);
@@ -806,6 +831,8 @@
                       {@render settingRow(id, appUpdateInstallControl)}
                     {:else if id === 'provider-updates'}
                       {@render settingRow(id, providerUpdateControl)}
+                    {:else if id === 'helper-route'}
+                      {@render settingRow(id, helperRouteControl)}
                     {:else if id === 'helper-vendor'}
                       {@render settingRow(id, helperVendorControl)}
                     {:else if id === 'helper-model'}
@@ -1071,6 +1098,15 @@
   />
 {/snippet}
 
+{#snippet helperRouteControl()}
+  <SettingsSelect
+    items={helperRouteItems}
+    value={helper?.route ?? 'cli'}
+    ariaLabel="Helper connection"
+    onChange={(value) => void chooseHelperRoute(value)}
+  />
+{/snippet}
+
 {#snippet helperModelControl()}
   <SettingsSelect
     items={helperModelItems}
@@ -1081,6 +1117,7 @@
 {/snippet}
 
 {#snippet helperKeyControl()}
+  {#if helper?.route === 'api'}
   <div class="flex flex-col gap-1.5">
     <div class="flex items-center gap-2">
       <Input
@@ -1098,6 +1135,7 @@
       {helper?.hasKey ? 'Key saved' : 'No key'}
     </p>
   </div>
+  {:else}<p class="text-[12px] text-[var(--color-text-2)]">Your selected CLI uses its existing sign-in.</p>{/if}
 {/snippet}
 
 {#snippet helperTestControl()}

@@ -15,10 +15,11 @@
  * selecting that tab is what mounts the handler that can place its native view.
  */
 import type { ConversationAttachment } from './conversation/conversationTypes.ts';
+import type { SourceGitDiff } from '../tauriSource.ts';
 import { requestOpenFile, type OpenFileRequest } from './openFileBus.ts';
 
 /** The four surfaces the center pane's corner tabs switch between. */
-export type CenterTabId = 'session' | 'editor' | 'diff' | 'git-history';
+export type CenterTabId = 'session' | 'editor' | 'diff' | 'git-history' | 'pull-requests';
 
 /** The nine panels the right column's icon strip switches between. */
 export type RightTabId =
@@ -36,7 +37,8 @@ export const CENTER_TAB_IDS: readonly CenterTabId[] = [
   'session',
   'editor',
   'diff',
-  'git-history'
+  'git-history',
+  'pull-requests'
 ];
 
 export const RIGHT_TAB_IDS: readonly RightTabId[] = [
@@ -56,6 +58,13 @@ export interface OpenDiffRequest {
   projectRoot: string;
   /** Path relative to `projectRoot`. */
   relativePath: string;
+}
+
+export interface OpenPullRequestDiffRequest {
+  projectRoot: string;
+  repository: string;
+  number: number;
+  diff: SourceGitDiff;
 }
 
 export interface OpenUrlRequest {
@@ -88,6 +97,7 @@ export interface WorkbenchNavigationHandlers {
   showCenterTab(id: CenterTabId): void;
   showRightTab(id: RightTabId): void;
   openDiff(request: OpenDiffRequest): void | Promise<void>;
+  openPullRequestDiff(request: OpenPullRequestDiffRequest): void;
   openFileTimeline(request: OpenDiffRequest): void | boolean | Promise<void | boolean>;
   openUrl(request: OpenUrlRequest): void | Promise<void>;
   focusComposer(handoff: ComposerHandoff): void | Promise<void>;
@@ -142,6 +152,12 @@ export function openFileInEditor(request: OpenFileRequest): void {
 /** Show one file's changes after the selected diff belongs to that file. */
 export async function openDiffForFile(request: OpenDiffRequest): Promise<void> {
   await handlers.openDiff?.(request);
+  showCenterTab('diff');
+}
+
+/** Show a hosted PR comparison in the existing center Diff tab. */
+export function openPullRequestDiff(request: OpenPullRequestDiffRequest): void {
+  handlers.openPullRequestDiff?.(request);
   showCenterTab('diff');
 }
 

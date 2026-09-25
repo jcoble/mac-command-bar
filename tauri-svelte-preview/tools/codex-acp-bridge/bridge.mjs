@@ -1041,7 +1041,7 @@ function appServerVersion(initializeResult) {
 
 async function newSession(params) {
   const cwd = typeof params?.cwd === "string" && params.cwd ? params.cwd : process.cwd();
-  const opened = await appRequest("thread/start", { cwd });
+  const opened = await appRequest("thread/start", { cwd, sandbox: "workspace-write" });
   const sessionId = requireString(opened?.thread?.id, "thread/start result.thread.id");
   const session = await sessionFromOpened(opened, cwd);
   sessions.set(sessionId, session);
@@ -1056,6 +1056,7 @@ async function resumeSession(params) {
     ...(typeof params?.cwd === "string" && params.cwd ? { cwd: params.cwd } : {}),
     ...(existing?.model ? { model: existing.model } : {}),
     ...(existing?.approvalPolicy ? { approvalPolicy: existing.approvalPolicy } : {}),
+    sandbox: "workspace-write",
   };
   const opened = await appRequest("thread/resume", request);
   const sessionId = requireString(opened?.thread?.id, "thread/resume result.thread.id");

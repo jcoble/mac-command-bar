@@ -36,6 +36,7 @@
       editor: Snippet;
       diff: Snippet;
       gitHistory: Snippet;
+      pullRequests: Snippet;
     };
     /** The right column: its tab strip, the open panel, and the bottom strip. */
     tools: Snippet;
@@ -96,6 +97,7 @@
   let editorSlot: HTMLElement;
   let diffSlot: HTMLElement;
   let gitHistorySlot: HTMLElement;
+  let pullRequestsSlot: HTMLElement;
 
   let frame: Frame | null = null;
   let centerDock: CenterDock | null = null;
@@ -168,7 +170,8 @@
               element: diffSlot,
               renderer: 'onlyWhenVisible'
             },
-            { id: 'git-history', title: 'Git History', element: gitHistorySlot, renderer: 'onlyWhenVisible' }
+            { id: 'git-history', title: 'Git History', element: gitHistorySlot, renderer: 'onlyWhenVisible' },
+            { id: 'pull-requests', title: 'Pull Requests', element: pullRequestsSlot, renderer: 'onlyWhenVisible' }
           ],
           onPanelLayout: (id) => {
             if (id === 'session') onSessionPanelLayout?.();
@@ -233,6 +236,7 @@
   <div class="slot" bind:this={editorSlot}>{@render center.editor()}</div>
   <div class="slot" bind:this={diffSlot}>{@render center.diff()}</div>
   <div class="slot" bind:this={gitHistorySlot}>{@render center.gitHistory()}</div>
+  <div class="slot" bind:this={pullRequestsSlot}>{@render center.pullRequests()}</div>
 </div>
 
 <style>

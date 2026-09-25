@@ -14,6 +14,7 @@
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
   import GitCompareArrows from '@lucide/svelte/icons/git-compare-arrows';
   import GitBranch from '@lucide/svelte/icons/git-branch';
+  import GitPullRequest from '@lucide/svelte/icons/git-pull-request';
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
   import PanelRightClose from '@lucide/svelte/icons/panel-right-close';
   import PanelRightOpen from '@lucide/svelte/icons/panel-right-open';
@@ -33,7 +34,8 @@
     { id: 'session', label: 'Session', icon: MessagesSquare },
     { id: 'editor', label: 'Editor', icon: FileCode2 },
     { id: 'diff', label: 'Diff', icon: GitCompareArrows },
-    { id: 'git-history', label: 'Git History', icon: GitBranch }
+    { id: 'git-history', label: 'Git History', icon: GitBranch },
+    { id: 'pull-requests', label: 'Pull Requests', icon: GitPullRequest }
   ];
 
   function choose(id: CenterTabId): void {

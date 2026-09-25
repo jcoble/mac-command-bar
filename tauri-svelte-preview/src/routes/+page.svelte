@@ -27,6 +27,7 @@
 	import EditorPanel from "$lib/shell/components/EditorPanel.svelte";
 	import GitDiffView from "$lib/shell/components/GitDiffView.svelte";
 	import GitHistoryView from "$lib/shell/components/git/GitHistoryView.svelte";
+	import PullRequestWorkspace from "$lib/shell/components/github/PullRequestWorkspace.svelte";
 	import RightPanel from "$lib/shell/components/RightPanel.svelte";
 	import RightPanelTabs from "$lib/shell/components/RightPanelTabs.svelte";
 	import SessionsColumn from "$lib/shell/components/SessionsColumn.svelte";
@@ -41,6 +42,7 @@
 	import { startShell, stopShell } from "$lib/shell/controllers/shellStartup";
 	import { gitService } from "$lib/shell/git/gitService";
 	import { gitPanel } from "$lib/shell/git/gitPanelStore.svelte";
+	import type { OpenPullRequestDiffRequest } from "$lib/shell/workbenchNavigation";
 	import { diffPathFor } from "$lib/shell/sessionWorkspaces";
 	import { registerSessionHistoryHost } from "$lib/shell/history/sessionHistoryHost";
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
@@ -66,6 +68,7 @@
 	let openUtility = $state<UtilityId | null>(null);
 	let sessionsRailWidth = $state(360);
 	let toolsRailWidth = $state(320);
+	let pullRequestDiff = $state<OpenPullRequestDiffRequest | null>(null);
 	let routeDisposal: Promise<void> | null = null;
 
 	if (import.meta.hot) {
@@ -96,7 +99,12 @@
 			showRightTab: selectRightTab,
 			openDiff: async (request) => {
 				if (!selection.activeRootAvailable) return;
+				pullRequestDiff = null;
 				await gitService.showStoredDiff(request.projectRoot, request.relativePath);
+			},
+			openPullRequestDiff: (request) => {
+				pullRequestDiff = request;
+				workbench.setDiffMode('side-by-side');
 			},
 			openFileTimeline: async (request) => {
 				const ownedId = selection.activeOwnedId;
@@ -161,6 +169,7 @@
 
 	async function selectSession(ownedId: string): Promise<void> {
 		if (selection.activeOwnedId === ownedId && selection.activeWorkspaceSnapshot !== null) return;
+		pullRequestDiff = null;
 		if (selection.activeOwnedId !== null) {
 			selection.rememberWorkspaceState(workbench.captureSessionState());
 		}
@@ -347,7 +356,8 @@
 	{#if workbench.centerTab === "diff"}
 		<GitDiffView
 			showing={true}
-			rootAvailable={selection.activeRootAvailable}
+			rootAvailable={pullRequestDiff !== null || selection.activeRootAvailable}
+			pullRequestDiff={pullRequestDiff}
 			mode={workbench.diffMode}
 			onModeChange={(mode) => workbench.setDiffMode(mode)}
 		/>
@@ -361,6 +371,10 @@
 		historyPath={gitPanel.historyPath}
 		showing={workbench.centerTab === "git-history"}
 	/>
+{/snippet}
+
+{#snippet pullRequestsArea()}
+	<PullRequestWorkspace showing={workbench.centerTab === "pull-requests"} />
 {/snippet}
 
 <main
@@ -393,6 +407,7 @@
 				editor: editorArea,
 				diff: diffArea,
 				gitHistory: gitHistoryArea,
+				pullRequests: pullRequestsArea,
 			}}
 			onSessionsWidthChange={(width) => (sessionsRailWidth = width)}
 			onToolsWidthChange={(width) => (toolsRailWidth = width)}

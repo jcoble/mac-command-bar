@@ -1,4 +1,4 @@
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -14,9 +14,19 @@ pub(crate) fn output(
     description: &str,
     timeout: Duration,
 ) -> io::Result<Output> {
+    output_with_input(command, description, timeout, None)
+}
+
+/// Run a bounded command with a request body that stays off the argument list.
+pub(crate) fn output_with_input(
+    command: &mut Command,
+    description: &str,
+    timeout: Duration,
+    input: Option<&[u8]>,
+) -> io::Result<Output> {
     command
         .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
@@ -32,6 +42,11 @@ pub(crate) fn output(
         .ok_or_else(|| io::Error::other("command stderr was unavailable"))?;
     let stdout_reader = thread::spawn(move || read_all(stdout));
     let stderr_reader = thread::spawn(move || read_all(stderr));
+    let stdin_writer = input.map(|bytes| {
+        let mut stdin = child.stdin.take().expect("piped stdin was unavailable");
+        let bytes = bytes.to_vec();
+        thread::spawn(move || stdin.write_all(&bytes))
+    });
     let deadline = Instant::now() + timeout;
 
     let status = loop {
@@ -42,14 +57,16 @@ pub(crate) fn output(
                 stop_process_group(&mut child);
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
+                if let Some(writer) = stdin_writer { let _ = writer.join(); }
                 return Err(error);
             }
         }
         if Instant::now() >= deadline {
-            stop_process_group(&mut child);
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            return Err(io::Error::new(
+                stop_process_group(&mut child);
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                if let Some(writer) = stdin_writer { let _ = writer.join(); }
+                return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
                     "{description} timed out after {} seconds",
@@ -62,6 +79,10 @@ pub(crate) fn output(
 
     let stdout = join_reader(stdout_reader, "stdout")?;
     let stderr = join_reader(stderr_reader, "stderr")?;
+    if let Some(writer) = stdin_writer {
+        let wrote = writer.join().map_err(|_| io::Error::other("command stdin writer panicked"))?;
+        if status.success() { wrote?; }
+    }
     Ok(Output {
         status,
         stdout,

@@ -17,6 +17,7 @@
   import type { DiffMode } from '$lib/shell/sessionWorkspaces';
   import type CodeMirrorGitDiffEditor from '$lib/shell/components/git/CodeMirrorGitDiffEditor.svelte';
   import { requestOpenFile } from '$lib/shell/openFileBus';
+  import { showCenterTab, type OpenPullRequestDiffRequest } from '$lib/shell/workbenchNavigation';
 
   interface Props {
     /** Whether the Diff tab is the center tab in front. A session that
@@ -26,8 +27,9 @@
     rootAvailable?: boolean;
     mode?: DiffMode;
     onModeChange?: (mode: DiffMode) => void;
+    pullRequestDiff?: OpenPullRequestDiffRequest | null;
   }
-  let { showing = false, rootAvailable = true, mode = 'unified', onModeChange }: Props = $props();
+  let { showing = false, rootAvailable = true, mode = 'unified', onModeChange, pullRequestDiff = null }: Props = $props();
 
   type DiffEditorComponent = typeof CodeMirrorGitDiffEditor;
   let DiffEditor = $state<DiffEditorComponent | null>(null);
@@ -37,7 +39,9 @@
   /** Long diffs are trimmed so one huge file cannot stall the panel. */
   const MAX_RENDERED_LINES = 2000;
 
-  const diff = $derived(gitPanel.selectedDiff);
+  const diff = $derived(pullRequestDiff?.diff ?? gitPanel.selectedDiff);
+  const diffRoot = $derived(pullRequestDiff?.projectRoot ?? gitPanel.root);
+  const diffPath = $derived(pullRequestDiff?.diff.relativePath ?? gitPanel.selectedPath);
   const parsed = $derived.by(() => {
     if (!diff) return null;
 
@@ -63,7 +67,7 @@
       diff?.originalContent !== undefined &&
       diff?.modifiedContent !== null &&
       diff?.modifiedContent !== undefined &&
-      Boolean(gitPanel.root)
+      Boolean(diffRoot)
   );
   const renderedLineCount = $derived(
     parsed ? parsed.hunks.reduce((total, hunk) => total + hunk.lines.length, 0) : 0
@@ -120,6 +124,7 @@
    * a language server.
    */
   function openAtLine(line: number | null): void {
+    if (pullRequestDiff) return;
     const root = gitPanel.root;
     const relativePath = diff?.relativePath ?? gitPanel.selectedPath;
     if (!rootAvailable || !root || !relativePath) return;
@@ -147,32 +152,33 @@
 <div class="diff-view" data-selectable="true">
   {#if !rootAvailable}
     <p class="notice">Checkout/Worktree deleted.</p>
-  {:else if gitPanel.selectedPath === ''}
+  {:else if diffPath === ''}
     <p class="notice">Pick a changed file to see what changed in it.</p>
   {:else}
     <header class="head">
-      <span class="path" title={gitPanel.selectedPath}>{gitPanel.selectedPath}</span>
+      <span class="path" title={diffPath}>{pullRequestDiff ? `${pullRequestDiff.repository} #${pullRequestDiff.number} · ` : ''}{diffPath}</span>
       {#if diff}
         <span class="summary">{diff.status} · {summary}</span>
       {/if}
-      <button
+      {#if pullRequestDiff}<button type="button" class="go-to-file" onclick={() => showCenterTab('pull-requests')}>Back to PR</button>{/if}
+      {#if !pullRequestDiff}<button
         type="button"
         class="go-to-file"
-        disabled={!gitPanel.root}
+        disabled={!diffRoot}
         title="Open this file as source"
         onclick={() => openAtLine(null)}
-      >Go to File</button>
+      >Go to File</button>{/if}
     </header>
 
-    {#if gitPanel.diffLoading}
+    {#if !pullRequestDiff && gitPanel.diffLoading}
       <p class="notice">Reading the changes…</p>
-    {:else if gitPanel.diffError}
+    {:else if !pullRequestDiff && gitPanel.diffError}
       <p class="notice error">{gitPanel.diffError}</p>
     {:else if !parsed}
       <p class="notice">No changes to show for this file.</p>
     {:else if parsed.isBinary}
       <p class="notice">This is a binary file, so there is no line-by-line comparison.</p>
-    {:else if parsed.isEmpty}
+    {:else if parsed.isEmpty && !(pullRequestDiff && hasNativeModels && mode === 'side-by-side')}
       <p class="notice">This file has no line changes compared with the last commit.</p>
     {:else}
       {#if hasNativeModels}
@@ -191,15 +197,15 @@
           >Side by side</button>
         </div>
       {/if}
-      {#if showing && mode === 'side-by-side' && hasNativeModels && diff && gitPanel.root}
+      {#if showing && mode === 'side-by-side' && hasNativeModels && diff && diffRoot}
         <div class="native-body">
         {#if DiffEditor}
           <DiffEditor
-            root={gitPanel.root}
+            root={diffRoot}
             relativePath={diff.relativePath}
             originalContent={diff.originalContent ?? ''}
             modifiedContent={diff.modifiedContent ?? ''}
-            onOpenLine={openAtLine}
+            onOpenLine={pullRequestDiff ? undefined : openAtLine}
           />
         {:else if diffEditorLoadError}
           <p class="notice error">Could not start the diff editor: {diffEditorLoadError}</p>

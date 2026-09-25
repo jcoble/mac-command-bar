@@ -451,6 +451,7 @@ tests.push([
     try {
       await peer.initialize();
       const session = await peer.newSession();
+      assert.equal(mock.frames().find((frame) => frame.method === "thread/start")?.params.sandbox, "workspace-write");
       assert.deepEqual(session._meta, {
         model: "gpt-5.6-sol",
         availableModels: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
@@ -502,6 +503,7 @@ tests.push([
       assert.equal(resumeFrames.length, 2);
       assert(resumeFrames.every((frame) => frame.params.model === "gpt-5.6-terra"));
       assert(resumeFrames.every((frame) => frame.params.approvalPolicy === "never"));
+      assert(resumeFrames.every((frame) => frame.params.sandbox === "workspace-write"));
 
       const closed = await peer.close(session.sessionId);
       assert.equal(closed.exited.code, 0, peer.stderr);

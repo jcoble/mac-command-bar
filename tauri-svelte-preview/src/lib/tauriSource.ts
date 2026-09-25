@@ -220,6 +220,89 @@ export type PullRequestSummary = {
   checkSummary: string;
 };
 
+export type GithubPullRequestSummary = {
+  repository: string;
+  localRoot: string;
+  number: number;
+  title: string;
+  url: string;
+  isDraft: boolean;
+  updatedAt: string;
+  state: string;
+  author: string;
+  headBranch: string;
+  baseBranch: string;
+};
+
+export type GithubPullRequestPage = {
+  items: GithubPullRequestSummary[];
+  nextCursor: string | null;
+  totalCount: number;
+};
+
+export type GithubPullRequestQuery = {
+  roots: string[];
+  mode: 'open' | 'mine' | 'needs-review';
+  projectFilter: string | null;
+  search: string | null;
+  cursor: string | null;
+  pageSize: number;
+};
+
+export type GithubPullRequestDetail = {
+  repository: string;
+  localRoot: string;
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  author: string;
+  headBranch: string;
+  baseBranch: string;
+  headSha: string;
+  baseSha: string;
+  state: string;
+  isDraft: boolean;
+  mergeable: string;
+  reviewDecision: string;
+  comments: Array<{ id: string; author: string; body: string; createdAt: string; path: string | null; line: number | null; side: string | null; replyToId: number | null }>;
+  reviews: Array<{ author: string; body: string; state: string; submittedAt: string }>;
+  reviewers: string[];
+  checks: Array<{ name: string; status: string; conclusion: string; url: string }>;
+  files: Array<{ path: string; previousPath: string | null; status: string; additions: number; deletions: number; patch: string | null }>;
+  moreFiles: boolean;
+};
+
+export type GithubFileVersionQuery = {
+  root: string;
+  path: string;
+  previousPath: string | null;
+  status: string;
+  baseSha: string;
+  headSha: string;
+};
+
+export type GithubFileVersions = {
+  originalContent: string;
+  modifiedContent: string;
+};
+
+export type GithubReviewSubmission = {
+  root: string;
+  number: number;
+  expectedHeadSha: string;
+  body: string;
+  comments: Array<{ path: string; line: number; side: 'LEFT' | 'RIGHT'; body: string }>;
+};
+
+export type GithubReviewReply = {
+  root: string;
+  number: number;
+  expectedHeadSha: string;
+  commentId: number;
+  body: string;
+};
+
 export type GitBranchSummary = {
   name: string;
   isCurrent: boolean;
@@ -939,14 +1022,16 @@ export async function refreshUsageHistoryFromTauri(): Promise<number | null> {
   return invoke<number>('refresh_usage_history');
 }
 
-/** Which service the helper model calls, and therefore which key it needs. */
+/** Which installed CLI or API service runs the Helper job. */
 export type HelperVendor = 'openai' | 'anthropic';
+export type HelperRoute = 'cli' | 'api';
 
 /** What Settings needs to draw the Helper section. The model lists come from
  *  the backend so that the ids live in one place. */
 export type HelperSettingsView = {
   vendor: HelperVendor;
   model: string;
+  route: HelperRoute;
   hasKey: boolean;
   openaiModels: string[];
   anthropicModels: string[];
@@ -965,7 +1050,7 @@ export async function readHelperSettingsFromTauri(): Promise<HelperSettingsView 
 }
 
 export async function writeHelperSettingsFromTauri(
-  settings: { vendor: HelperVendor; model: string }
+  settings: { vendor: HelperVendor; model: string; route: HelperRoute }
 ): Promise<void> {
   if (!isTauriRuntime()) return;
   const { invoke } = await import('./workspaceInvoke');
@@ -995,7 +1080,7 @@ export async function testHelperFromTauri(): Promise<HelperTestResult | null> {
  * "No key — helper off" among them.
  */
 export async function runHelperJobFromTauri(
-  job: 'title' | 'inspect',
+  job: 'title' | 'inspect' | 'review',
   input: string
 ): Promise<string> {
   if (!isTauriRuntime()) throw new Error('The helper only runs in the desktop app.');
@@ -1593,6 +1678,47 @@ export async function listOpenPullRequestsFromTauri(
 
   const { invoke } = await import('./workspaceInvoke');
   return invoke<PullRequestSummary[]>('list_open_pull_requests', { root });
+}
+
+export async function listGithubPullRequestsFromTauri(
+  query: GithubPullRequestQuery
+): Promise<GithubPullRequestPage | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<GithubPullRequestPage>('list_github_pull_requests', { query });
+}
+
+export async function readGithubPullRequestFromTauri(
+  root: string,
+  number: number
+): Promise<GithubPullRequestDetail | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<GithubPullRequestDetail>('read_github_pull_request', { root, number });
+}
+
+export async function readGithubPullRequestFileFromTauri(
+  query: GithubFileVersionQuery
+): Promise<GithubFileVersions | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<GithubFileVersions>('read_github_pull_request_file', { query });
+}
+
+export async function submitGithubPullRequestReviewFromTauri(
+  submission: GithubReviewSubmission
+): Promise<string> {
+  if (!isTauriRuntime()) throw new Error('Reviews can only be submitted from the desktop app.');
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<string>('submit_github_pull_request_review', { submission });
+}
+
+export async function replyGithubPullRequestCommentFromTauri(
+  reply: GithubReviewReply
+): Promise<string> {
+  if (!isTauriRuntime()) throw new Error('Review replies can only be submitted from the desktop app.');
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<string>('reply_github_pull_request_comment', { reply });
 }
 
 export async function generateCommitMessageFromTauri(
