@@ -772,9 +772,11 @@ impl AcpClient {
             }
         }
         if let Some(effort) = &update.reasoning_effort {
+            // Changing models can add or remove the effort control.
+            let offered = self.require_session(session_id)?.config_option_ids;
             let effort_option_id = ["effort", "reasoning_effort"]
                 .into_iter()
-                .find(|id| offers(id))
+                .find(|id| offered.iter().any(|option| option == id))
                 .ok_or_else(|| {
                     AgentRuntimeError::new(
                         "unsupported-config",
@@ -815,9 +817,13 @@ impl AcpClient {
                 json!({ "sessionId": session_id, "configId": config_id, "value": value }),
             )
             .await?;
-        self.update_session_config(session_id, |config| {
-            apply_config_options(&result, config);
-        })
+        let mut sessions = self.sessions.lock()
+            .map_err(|_| transport_error("session state is unavailable".to_string()))?;
+        let state = sessions.get_mut(session_id)
+            .ok_or_else(|| session_not_found(session_id))?;
+        apply_config_options(&result, &mut state.config);
+        state.config_option_ids = config_option_ids(&result);
+        Ok(())
     }
 
     /// Select a model on a specific native session using its negotiated config protocol.
@@ -2010,6 +2016,46 @@ done"#,
         assert_eq!(config.reasoning_effort.as_deref(), Some("medium"));
         assert_eq!(config.available_efforts, ["low", "medium", "high"]);
         assert_eq!(config_option_ids(&result), ["model", "reasoning_effort"]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn model_change_refreshes_advertised_effort_control() {
+        let root = fixture_root();
+        let log = root.join("model-enables-effort.jsonl");
+        let mut client = AcpClient::spawn(
+            &fixture_manifest_named(&log, "config_options"), &root, "model-enables-effort",
+        ).unwrap();
+        client.initialize(AgentConversationProvider::Codex).await.unwrap();
+        let started = client.new_session(&root).await.unwrap();
+        {
+            // A resumed model absent from the catalog offers no effort control.
+            // The next model-change reply from the fixture adds it back.
+            let mut sessions = client.sessions.lock().unwrap();
+            let state = sessions.get_mut(&started.native_session_id).unwrap();
+            state.config_option_ids.retain(|id| id != "effort");
+            state.config.reasoning_effort = None;
+            state.config.available_efforts.clear();
+        }
+        let result = client.set_conversation_config_on(
+            &started.native_session_id,
+            &AgentConversationConfigUpdate {
+                model: Some("sonnet".into()),
+                reasoning_effort: Some("high".into()),
+                approval_policy: None,
+            },
+        ).await;
+        client.close().await.unwrap();
+        let frames = std::fs::read_to_string(&log).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        let configured = result.expect("model reply makes effort available in the same update");
+        assert_eq!(configured.model.as_deref(), Some("sonnet"));
+        assert_eq!(configured.reasoning_effort.as_deref(), Some("high"));
+        assert!(frames.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .any(|frame| frame["method"] == "session/set_config_option"
+                && frame["params"] == json!({
+                    "configId": "effort", "sessionId": "new-session", "value": "high"
+                })));
+
     }
 
     #[tokio::test(flavor = "current_thread")]
