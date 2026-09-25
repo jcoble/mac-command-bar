@@ -663,6 +663,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-09-25 · TSK-936 · “Stop detached tool processes”</td><td>Shutdown captures descendants outside the adapter group and signals only matching process-birth identities, so cancelling official Antigravity also stops its detached tool commands.</td><td>01, 06</td></tr>
             <tr><td>2026-09-25 · TSK-936 · “Reconnect from the conversation”</td><td>Disconnected remote sessions offer Connect using the saved machine and existing connection command, cancel attempts on selection changes, and restore the selected workspace on success.</td><td>01</td></tr>
             <tr><td>2026-09-25 · TSK-1227 · “Use advertised ACP steering”</td><td>Claude and Codex steering uses initialize._meta.steering.supported and _session/steering. The request opts into promptRequired when the original turn has settled; unconsumed corrections return to draft recovery instead of being recorded as sent.</td><td>01, 09</td></tr>
             <tr><td>2026-09-25 · TSK-936 · “Refresh controls after model changes”</td><td>ACP config replies replace the session’s advertised control IDs as well as their values. A combined model-and-effort update resolves the effort control after the model reply, because changing models can add or remove it.</td><td>01, 09</td></tr>
@@ -1166,7 +1167,7 @@
         <span class="source"><code>agent_conversation/manager.rs:494-536,795-828,880-972</code></span>
 
         <h3>Why the stop is not immediate</h3>
-        <p>The process supervisor sends <code>SIGTERM</code> to the adapter’s whole process group, waits up to three seconds, and then uses <code>SIGKILL</code> as a fallback. The grace period exists because Claude can write its durable transcript shortly after returning the answer; immediate killing previously lost completed turns.</p>
+        <p>The process supervisor snapshots descendants before shutdown, including tools that created a separate process group. It sends <code>SIGTERM</code> to those observed tools and the adapter’s whole process group, then uses <code>SIGKILL</code> after the bounded grace. Each separately signaled tool must still match its captured PID and process-birth identity; reparenting is allowed, PID reuse is not. The snapshot is released after cleanup and adds no idle polling. The grace period exists because Claude can write its durable transcript shortly after returning the answer; immediate killing previously lost completed turns.</p>
         <span class="source"><code>providers/process.rs:17-23,127-180,233-289</code></span>
 
         <div class="callout current">
