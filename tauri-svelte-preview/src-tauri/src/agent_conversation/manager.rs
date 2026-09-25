@@ -1649,31 +1649,21 @@ impl AgentRuntimeManager {
         session.pool_key = Some(pool_key);
         session.transport = Some(Arc::clone(&transport));
         session.ordered_events = Some(ordered_tx);
-        if was_suspended {
-            record_payload_for_session_and_dispatch_with_lifecycle(
-                session,
-                &self.emitter,
-                AgentConversationPayload::Connection {
-                    state: ConversationConnectionState::Connected,
-                    native_session_id: session.native_session_id.clone(),
-                },
-                SessionLifecycleUpdate {
-                    state: AgentRuntimeState::Ready,
-                    connection_state: ConversationConnectionState::Connected,
-                    owner,
-                    writer_owner,
-                    native_session_mode: None,
-                },
-            )?;
-        } else {
-            session.transition_lifecycle(
-                AgentRuntimeState::Ready,
-                ConversationConnectionState::Connected,
+        record_payload_for_session_and_dispatch_with_lifecycle(
+            session,
+            &self.emitter,
+            AgentConversationPayload::Connection {
+                state: ConversationConnectionState::Connected,
+                native_session_id: session.native_session_id.clone(),
+            },
+            SessionLifecycleUpdate {
+                state: AgentRuntimeState::Ready,
+                connection_state: ConversationConnectionState::Connected,
                 owner,
                 writer_owner,
-            )?;
-            persist_session(session)?;
-        }
+                native_session_mode: None,
+            },
+        )?;
         let connection = session.connection.clone();
         drop(sessions);
         if let Some(inbound) = inbound {
@@ -8782,6 +8772,56 @@ mod tests {
         serde_json::from_str::<StoredSessionExtra>(&row.extra_json)
             .unwrap()
             .capabilities
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn first_ready_connection_exposes_advertised_steering() {
+        let root = temp_root();
+        let log = root.join("steering.jsonl");
+        let manifest =
+            super::super::providers::acp_client::tests::fixture_manifest_named(&log, "steering");
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)])
+            .expect("fixture provider");
+        let manager = AgentRuntimeManager::new(providers);
+        let owned_id = "owned-first-ready-steering";
+        let connection = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                owned_id,
+                AgentConversationProvider::Claude,
+            ))
+            .expect("ensure")
+            .0;
+        let store = Arc::clone(&manager.store);
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&observed);
+        manager.set_emitter(Arc::new(move |event| {
+            if let AgentConversationPayload::Connection {
+                state: ConversationConnectionState::Connected,
+                ..
+            } = &event.payload
+            {
+                let row = store
+                    .get_session(&event.owned_id)
+                    .expect("read ready session")
+                    .expect("persisted ready session");
+                let stored: StoredSessionExtra =
+                    serde_json::from_str(&row.extra_json).expect("stored capabilities");
+                sink.lock().unwrap().push(stored.capabilities.session.steering);
+            }
+        }));
+
+        manager
+            .activate(owned_id, connection.generation)
+            .await
+            .expect("first activation");
+
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 1);
+        assert!(observed[0], "steering must be readable when ready is emitted");
+        drop(observed);
+        manager.close(owned_id, connection.generation).await.unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -179,7 +179,7 @@
   const providerNotice = $derived(conversation?.providerNotice ?? '');
   const capabilityTarget = $derived(structured && active && conversation
     && ['claude', 'codex', 'antigravity'].includes(active.agent)
-    ? `${active.ownedId}:${conversation.generation}:${conversation.provider}:${conversation.connectionState}`
+    ? `${active.ownedId}:${conversation.generation}:${conversation.provider}:${conversation.connectionState}:${conversation.nativeSessionId ?? ''}`
     : '');
   let configRequest = '';
   /** A request key whose failure has already bought its one retry. The guard
