@@ -7,6 +7,7 @@
 	 * and uses controllers for state management.
 	 */
 	import { onMount } from "svelte";
+	import { Button } from "$lib/components/ui/button/index.js";
 
 	import { PRODUCT_DOCUMENT_TITLE } from "$lib/productIdentity";
 
@@ -171,6 +172,11 @@
 		}
 	}
 
+	async function connectSelectedRemote(): Promise<void> {
+		const profileId = await selection.connectSelectedRemote();
+		if (profileId) await refreshRemoteConnection(profileId);
+	}
+
 	async function refreshRemoteConnection(profileId: string): Promise<void> {
 		if (!(await selection.refreshRemoteConnection(profileId))) return;
 		await restoreSelectedWorkbench();
@@ -311,7 +317,11 @@
 			<div class="conversation-data-isolation" class:pending-first-send={selection.newSession.pendingFirstMessage?.ownedId === selection.activeOwnedId} aria-label={selection.selectionError ? "Conversation unavailable" : "Loading conversation"}>
                 {#if selection.newSession.pendingFirstMessage?.ownedId === selection.activeOwnedId}
                   <PendingFirstMessage text={selection.newSession.pendingFirstMessage.text} />
-				{:else if selection.selectionError}<p>{selection.selectionError}</p>
+				{:else if selection.selectionError}
+					<p>{selection.selectionError}</p>
+					{#if selection.disconnectedRemoteProfileId || selection.connectingRemote}
+						<Button disabled={selection.connectingRemote} onclick={() => void connectSelectedRemote()}>{selection.connectingRemote ? 'Connecting…' : 'Connect'}</Button>
+					{/if}
                 {:else}<p>Loading conversation…</p>{/if}
 			</div>
 		{:else if !selection.activeOwnedId}

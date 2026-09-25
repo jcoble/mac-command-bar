@@ -1783,12 +1783,19 @@ impl AgentRuntimeManager {
         if let Some(native_session_id) = steer_target {
             let attachment_ids = input.attachment_ids.clone();
             let text = input.text.clone();
+            let mut params = prompt_params(native_session_id, input);
+            // Keep any new turn owned by session/prompt, even when steering races completion.
+            params["_meta"]["steering"]["idleBehavior"] = serde_json::json!("promptRequired");
             let result = transport
-                .request("session/steer", prompt_params(native_session_id, input))
+                .request("_session/steering", params)
                 .await
                 .map_err(|error| error.to_string())?;
-            if result.get("outcome").and_then(Value::as_str) == Some("failed") {
-                return Err("The provider could not steer the active turn".to_string());
+            match result.get("outcome").and_then(Value::as_str) {
+                Some("injected") => {}
+                Some("promptRequired") => {
+                    return Err("The turn finished before the correction arrived. Your message was not sent; send it again as a new turn.".to_string());
+                }
+                _ => return Err("The provider did not confirm delivery of the correction. Your draft has been restored; check the conversation before resending.".to_string()),
             }
             let mut sessions = self
                 .sessions
@@ -7505,7 +7512,8 @@ mod tests {
             .iter()
             .any(|event| matches!(event.payload, AgentConversationPayload::Turn { .. })));
         let log = fs::read_to_string(fixture.root.join("steering.jsonl")).unwrap();
-        assert!(log.contains("\"method\":\"session/steer\""));
+        assert!(log.contains("\"method\":\"_session/steering\""));
+        assert!(log.contains("\"idleBehavior\":\"promptRequired\""));
 
         fixture
             .manager
@@ -7513,6 +7521,54 @@ mod tests {
             .await
             .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn steering_not_consumed_preserves_the_existing_turn_and_journal() {
+        for kind in ["steering_idle", "steering_failed"] {
+            let fixture = fixture_manager_with_acp_session(kind).await;
+            {
+                let mut sessions = fixture.manager.sessions.lock().unwrap();
+                let session = sessions.get_mut(&fixture.owned_id).unwrap();
+                session.active_turn_id = Some("turn-running".into());
+                session.state = AgentRuntimeState::Working;
+            }
+            let result = fixture
+                .manager
+                .prompt(
+                    &fixture.owned_id,
+                    fixture.generation,
+                    test_prompt("keep my correction"),
+                )
+                .await;
+            assert!(
+                result.is_err(),
+                "unconsumed input must return to draft recovery"
+            );
+            let events = fixture.manager.list_events(&fixture.owned_id, 0).unwrap();
+            assert!(!events.iter().any(|event| matches!(&event.payload, AgentConversationPayload::UserMessage { text, .. } if text == "keep my correction")));
+            assert_eq!(
+                fixture
+                    .manager
+                    .sessions
+                    .lock()
+                    .unwrap()
+                    .get(&fixture.owned_id)
+                    .unwrap()
+                    .active_turn_id
+                    .as_deref(),
+                Some("turn-running")
+            );
+            let wire = fs::read_to_string(fixture.root.join(format!("{kind}.jsonl"))).unwrap();
+            assert!(wire.contains("_session/steering"));
+            assert!(!wire.contains("\"method\":\"session/prompt\""));
+            fixture
+                .manager
+                .close(&fixture.owned_id, fixture.generation)
+                .await
+                .unwrap();
+            fs::remove_dir_all(fixture.root).unwrap();
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
