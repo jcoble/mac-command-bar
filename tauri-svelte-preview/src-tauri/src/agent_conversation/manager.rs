@@ -30,6 +30,7 @@ use super::protocol::{
     UpdateAgentConversationSessionMetaRequest,
 };
 use super::providers::acp_client::{AcpInbound, AcpTransport};
+use super::providers::authentication::{self, Authentications};
 use super::providers::process::validated_conversation_cwd;
 use super::providers::process::SidecarEnvironment;
 use super::providers::{
@@ -55,6 +56,7 @@ const SNAPSHOT_WINDOW_BYTES: u32 = 512 * 1024;
 const CATCH_UP_EVENT_CAP: u32 = 10_000;
 const SESSION_TITLE_CHAR_CAP: usize = 64;
 const BROKER_MESSAGE_TTL_MS: i64 = 30 * 60 * 1000;
+const ANTIGRAVITY_CANCEL_GRACE: Duration = Duration::from_secs(2);
 
 /// Where a session's name came from, as it is written to the row. A row with
 /// none of these on it was written before the app recorded this, and is read as
@@ -153,6 +155,7 @@ pub struct ManagedAgentSession {
     pub capabilities: AgentCapabilities,
     pub next_sequence: i64,
     pub active_turn_id: Option<String>,
+    cancel_deadline: Option<tokio::task::JoinHandle<()>>,
     prompt_once_active: bool,
     pub runtime: Option<Arc<AsyncMutex<StructuredRuntimeHandle>>>,
     pool_key: Option<AdapterPoolKey>,
@@ -307,6 +310,7 @@ pub struct AgentRuntimeManager {
     /// conversation events are always reconstructed from `store` at startup.
     sessions: Arc<Mutex<HashMap<String, ManagedAgentSession>>>,
     providers: Arc<ProviderRegistry>,
+    authentications: Authentications,
     emitter: Arc<Mutex<Option<ConversationEmitter>>>,
     broker_emitter: Arc<Mutex<Option<BrokerEmitter>>>,
     broker_statuses: Arc<Mutex<HashMap<String, AgentWorkStatus>>>,
@@ -379,6 +383,7 @@ impl AgentRuntimeManager {
             latest_snapshot_request: Arc::new(AtomicU64::new(0)),
             store,
             adapter_pools: Arc::new(AsyncMutex::new(HashMap::new())),
+            authentications: Authentications::default(),
         })
     }
 
@@ -869,6 +874,15 @@ impl AgentRuntimeManager {
         })
     }
 
+    pub fn has_pending_provider_work(&self) -> bool {
+        if self.authentications.pending() { return true; }
+        self.sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .any(|session| session.runtime.is_some() && !session_is_quiescent(session))
+    }
+
     /// Returns the capability snapshot advertised by the active ACP session. WorkflowEngine uses
     /// this to map role policy onto provider-owned config options without guessing option ids.
     pub fn capabilities(
@@ -942,6 +956,12 @@ impl AgentRuntimeManager {
             if let Some(task) = prior
                 .as_mut()
                 .and_then(|session| session.child_rollout_scan.take())
+            {
+                task.abort();
+            }
+            if let Some(task) = prior
+                .as_mut()
+                .and_then(|session| session.cancel_deadline.take())
             {
                 task.abort();
             }
@@ -1235,6 +1255,7 @@ impl AgentRuntimeManager {
                 capabilities: empty_capabilities(request.provider),
                 next_sequence,
                 active_turn_id: None,
+                cancel_deadline: None,
                 prompt_once_active: false,
                 runtime: None,
                 pool_key: None,
@@ -1697,9 +1718,30 @@ impl AgentRuntimeManager {
         // cannot detach the runtime between any of those steps. The guard is
         // released as soon as `prompt` records the active turn; streaming keeps
         // running independently.
-        let lifecycle = self.lifecycle_guard(owned_id).await?;
+        let mut lifecycle = self.lifecycle_guard(owned_id).await?;
+        let activation = self.activate_locked(owned_id, generation).await;
+        let activation = if let Err(error) = &activation {
+            let (provider, cwd) = {
+                let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let session = current_session(&sessions, owned_id, generation)?;
+                (session.provider, session.cwd.clone())
+            };
+            if authentication::required(provider, error) {
+                // Register cancellation before releasing the session guard. Stop
+                // checks both before and after acquiring it, covering either order.
+                let mut attempt = self.authentications.begin(owned_id, generation)?;
+                let manifest = self.providers.manifest(provider)?;
+                drop(lifecycle);
+                let authenticated = attempt.authenticate(&manifest, Path::new(&cwd)).await;
+                lifecycle = self.lifecycle_guard(owned_id).await?;
+                if attempt.was_cancelled() { return Err("Antigravity sign-in cancelled".into()); }
+                authenticated?;
+                drop(attempt);
+                self.activate_locked(owned_id, generation).await
+            } else { activation }
+        } else { activation };
         let sent = async {
-            self.activate_locked(owned_id, generation).await?;
+            activation?;
             if model.is_some() || approval_policy.is_some() {
                 self.apply_conversation_config(
                     SetAgentConversationConfigRequest {
@@ -1766,12 +1808,19 @@ impl AgentRuntimeManager {
         if let Some(native_session_id) = steer_target {
             let attachment_ids = input.attachment_ids.clone();
             let text = input.text.clone();
+            let mut params = prompt_params(native_session_id, input);
+            // Keep any new turn owned by session/prompt, even when steering races completion.
+            params["_meta"]["steering"]["idleBehavior"] = serde_json::json!("promptRequired");
             let result = transport
-                .request("session/steer", prompt_params(native_session_id, input))
+                .request("_session/steering", params)
                 .await
                 .map_err(|error| error.to_string())?;
-            if result.get("outcome").and_then(Value::as_str) == Some("failed") {
-                return Err("The provider could not steer the active turn".to_string());
+            match result.get("outcome").and_then(Value::as_str) {
+                Some("injected") => {}
+                Some("promptRequired") => {
+                    return Err("The turn finished before the correction arrived. Your message was not sent; send it again as a new turn.".to_string());
+                }
+                _ => return Err("The provider did not confirm delivery of the correction. Your draft has been restored; check the conversation before resending.".to_string()),
             }
             let mut sessions = self
                 .sessions
@@ -2424,30 +2473,43 @@ impl AgentRuntimeManager {
     }
 
     pub async fn cancel_turn(&self, owned_id: &str, generation: u64) -> Result<(), String> {
+        if self.authentications.cancel(owned_id, generation) { return Ok(()); }
+        // A send may still be activating the adapter. Inspect its turn only after
+        // that lifecycle operation has recorded the accepted prompt.
+        let lifecycle = self.lifecycle_guard(owned_id).await?;
+        if self.authentications.cancel(owned_id, generation) { return Ok(()); }
         let runtime = self.runtime(owned_id, generation)?;
         let transport = {
             let runtime = runtime.lock().await;
             runtime.transport().map_err(|error| error.to_string())?
         };
-        let native_session_id = {
+        let (native_session_id, turn_id, bounded_cancel) = {
             let mut sessions = self
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session_mut(&mut sessions, owned_id, generation)?;
-            if session.active_turn_id.is_none() {
-                None
-            } else {
+            if let Some(turn_id) = session.active_turn_id.clone() {
                 session.state = AgentRuntimeState::Interrupting;
-                Some(
-                    session
-                        .native_session_id
-                        .clone()
-                        .ok_or_else(|| "Structured provider session has not started".to_string())?,
+                let bounded_cancel = session.provider == AgentConversationProvider::Antigravity
+                    && session.cancel_deadline.is_none()
+                    && matches!(
+                        session.pool_key.as_ref(),
+                        Some(AdapterPoolKey::Isolated(AgentConversationProvider::Antigravity, _))
+                    );
+                (
+                    session.native_session_id.clone().ok_or_else(|| {
+                        "Structured provider session has not started".to_string()
+                    })?,
+                    Some(turn_id),
+                    bounded_cancel,
                 )
+            } else {
+                (String::new(), None, false)
             }
         };
-        let Some(native_session_id) = native_session_id else {
+        let Some(turn_id) = turn_id else {
+            drop(lifecycle);
             self.suspend_if_quiescent(owned_id, generation).await?;
             return Ok(());
         };
@@ -2457,7 +2519,66 @@ impl AgentRuntimeManager {
                 serde_json::json!({ "sessionId": native_session_id }),
             )
             .await
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        if bounded_cancel {
+            let manager = self.clone();
+            let owned_id = owned_id.to_string();
+            let task_owned_id = owned_id.clone();
+            let expected_transport = Arc::clone(&transport);
+            let expected_turn_id = turn_id.clone();
+            let task = tokio::spawn(async move {
+                tokio::time::sleep(ANTIGRAVITY_CANCEL_GRACE).await;
+                let ordered_events = {
+                    let sessions = manager
+                        .sessions
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    sessions.get(&task_owned_id).and_then(|session| {
+                        (session.generation == generation
+                            && session.state == AgentRuntimeState::Interrupting
+                            && session.active_turn_id.as_deref()
+                                == Some(expected_turn_id.as_str())
+                            && session.transport.as_ref().is_some_and(|transport| {
+                                Arc::ptr_eq(transport, &expected_transport)
+                            })
+                            && matches!(
+                                session.pool_key.as_ref(),
+                                Some(AdapterPoolKey::Isolated(
+                                    AgentConversationProvider::Antigravity,
+                                    _
+                                ))
+                            ))
+                        .then(|| session.ordered_events.clone())
+                        .flatten()
+                    })
+                };
+                if let Some(ordered_events) = ordered_events {
+                    let _ = ordered_events.send(OrderedSessionEvent::PromptResult {
+                        turn_id: expected_turn_id,
+                        result: Ok(serde_json::json!({ "stopReason": "cancelled" })),
+                    });
+                }
+            });
+            let mut sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = current_session_mut(&mut sessions, &owned_id, generation)?;
+            if session.active_turn_id.as_deref() == Some(turn_id.as_str())
+                && session.state == AgentRuntimeState::Interrupting
+                && session
+                    .transport
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &transport))
+            {
+                if let Some(previous) = session.cancel_deadline.replace(task) {
+                    previous.abort();
+                }
+            } else {
+                task.abort();
+            }
+        }
+        Ok(())
     }
 
     pub fn snapshot(&self, owned_id: &str) -> Result<Option<AgentConversationSnapshot>, String> {
@@ -3174,10 +3295,12 @@ impl AgentRuntimeManager {
     }
 
     pub async fn close(&self, owned_id: &str, generation: u64) -> Result<bool, String> {
+        self.authentications.cancel(owned_id, generation);
         if !self.hydrate_overlay_from_store(owned_id)? {
             return Ok(false);
         }
         let _lifecycle = self.lifecycle_guard(owned_id).await?;
+        self.authentications.cancel(owned_id, generation);
         let (runtime, transport, pool_key, native_session_id, pending_permissions, pending_inputs) = {
             let mut sessions = self
                 .sessions
@@ -3195,6 +3318,7 @@ impl AgentRuntimeManager {
             if let Some(task) = session.child_rollout_scan.take() {
                 task.abort();
             }
+            abort_cancel_deadline(session);
             session.ordered_events = None;
             let pending_permission_rows = session.permission_requests.drain().collect::<Vec<_>>();
             let mut pending_permissions = Vec::with_capacity(pending_permission_rows.len());
@@ -3910,6 +4034,7 @@ fn recovered_session_from_row(
         capabilities: stored.capabilities,
         next_sequence,
         active_turn_id: None,
+        cancel_deadline: None,
         prompt_once_active: false,
         runtime: None,
         pool_key: None,
@@ -4652,6 +4777,7 @@ async fn settle_closed_transport(
             if let Some(task) = session.child_rollout_scan.take() {
                 task.abort();
             }
+            abort_cancel_deadline(session);
             session.runtime = None;
             session.transport = None;
             session.ordered_events = None;
@@ -5089,6 +5215,7 @@ async fn handle_ordered_session_event(
                 {
                     return true;
                 }
+                abort_cancel_deadline(session);
                 let pending_permissions = session.permission_requests.drain().collect::<Vec<_>>();
                 for (request_id, pending) in &pending_permissions {
                     if let Err(error) = record_payload_for_session_and_dispatch(
@@ -6238,6 +6365,12 @@ fn session_is_quiescent(session: &ManagedAgentSession) -> bool {
         && session.live_tool_calls.is_empty()
         && session.background_work.is_empty()
 }
+
+fn abort_cancel_deadline(session: &mut ManagedAgentSession) {
+    if let Some(task) = session.cancel_deadline.take() {
+        task.abort();
+    }
+}
 fn required_id(value: &str, label: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
@@ -6356,6 +6489,7 @@ mod tests {
     #[test]
     fn stale_codex_composite_choice_becomes_live_model_and_effort_controls() {
         let current = AgentConversationConfigState {
+            model_labels: Default::default(),
             model: Some("gpt-6-astra".into()),
             available_models: vec!["gpt-6-astra".into(), "gpt-5.6-sol".into()],
             reasoning_effort: Some("medium".into()),
@@ -7407,7 +7541,8 @@ mod tests {
             .iter()
             .any(|event| matches!(event.payload, AgentConversationPayload::Turn { .. })));
         let log = fs::read_to_string(fixture.root.join("steering.jsonl")).unwrap();
-        assert!(log.contains("\"method\":\"session/steer\""));
+        assert!(log.contains("\"method\":\"_session/steering\""));
+        assert!(log.contains("\"idleBehavior\":\"promptRequired\""));
 
         fixture
             .manager
@@ -7415,6 +7550,54 @@ mod tests {
             .await
             .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn steering_not_consumed_preserves_the_existing_turn_and_journal() {
+        for kind in ["steering_idle", "steering_failed"] {
+            let fixture = fixture_manager_with_acp_session(kind).await;
+            {
+                let mut sessions = fixture.manager.sessions.lock().unwrap();
+                let session = sessions.get_mut(&fixture.owned_id).unwrap();
+                session.active_turn_id = Some("turn-running".into());
+                session.state = AgentRuntimeState::Working;
+            }
+            let result = fixture
+                .manager
+                .prompt(
+                    &fixture.owned_id,
+                    fixture.generation,
+                    test_prompt("keep my correction"),
+                )
+                .await;
+            assert!(
+                result.is_err(),
+                "unconsumed input must return to draft recovery"
+            );
+            let events = fixture.manager.list_events(&fixture.owned_id, 0).unwrap();
+            assert!(!events.iter().any(|event| matches!(&event.payload, AgentConversationPayload::UserMessage { text, .. } if text == "keep my correction")));
+            assert_eq!(
+                fixture
+                    .manager
+                    .sessions
+                    .lock()
+                    .unwrap()
+                    .get(&fixture.owned_id)
+                    .unwrap()
+                    .active_turn_id
+                    .as_deref(),
+                Some("turn-running")
+            );
+            let wire = fs::read_to_string(fixture.root.join(format!("{kind}.jsonl"))).unwrap();
+            assert!(wire.contains("_session/steering"));
+            assert!(!wire.contains("\"method\":\"session/prompt\""));
+            fixture
+                .manager
+                .close(&fixture.owned_id, fixture.generation)
+                .await
+                .unwrap();
+            fs::remove_dir_all(fixture.root).unwrap();
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -10833,6 +11016,26 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_waits_for_prompt_acceptance() {
+        let fixture = fixture_manager_with_acp_session("cancelled_turn").await;
+        let lifecycle = fixture.manager.lifecycle_guard(&fixture.owned_id).await.unwrap();
+        let manager = fixture.manager.clone();
+        let owned_id = fixture.owned_id.clone();
+        let generation = fixture.generation;
+        let cancel = tokio::spawn(async move { manager.cancel_turn(&owned_id, generation).await });
+        tokio::task::yield_now().await;
+        assert!(!cancel.is_finished());
+        fixture.manager.prompt(&fixture.owned_id, generation, test_prompt("hello"))
+            .await.unwrap();
+        drop(lifecycle);
+        cancel.await.unwrap().unwrap();
+        let log = fixture.root.join("cancelled_turn.jsonl");
+        wait_until(|| fs::read_to_string(&log).unwrap_or_default().contains("session/cancel")).await;
+        fixture.manager.close(&fixture.owned_id, generation).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn cancelled_prompt_emits_interrupted_turn() {
         let fixture = fixture_manager_with_acp_session("cancelled_turn").await;
         let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
@@ -10883,6 +11086,165 @@ mod tests {
             .windows(2)
             .all(|events| events[1].sequence == events[0].sequence + 1));
         drop(seen);
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn antigravity_authentication_send_retries_once_and_stop_preserves_unsent_prompt() {
+        for fixture_name in ["auth", "auth_wait", "auth_close"] {
+            let root = temp_root();
+            let log = root.join("authentication.jsonl");
+            let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&log, if fixture_name == "auth_close" { "auth_wait" } else { fixture_name });
+            let manager = AgentRuntimeManager::new(ProviderRegistry::new([
+                (AgentConversationProvider::Antigravity, manifest)
+            ]).unwrap());
+            let owned_id = "auth-owned";
+            let connection = manager.ensure_inner(request(root.to_str().unwrap(), owned_id,
+                AgentConversationProvider::Antigravity)).unwrap().0;
+            let generation = connection.generation;
+            let sender = manager.clone();
+            let send = tokio::spawn(async move {
+                sender.send_message(owned_id, generation, test_prompt("unsent until authenticated"), None, None).await
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !fs::read_to_string(&log).unwrap_or_default().contains("\"method\":\"authenticate\"") {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.unwrap();
+            if fixture_name != "auth" {
+                assert!(manager.has_pending_provider_work());
+                if fixture_name == "auth_close" {
+                    tokio::time::timeout(Duration::from_secs(5), manager.close(owned_id, generation)).await.unwrap().unwrap();
+                } else {
+                    tokio::time::timeout(Duration::from_secs(5), manager.cancel_turn(owned_id, generation)).await.unwrap().unwrap();
+                }
+                assert!(tokio::time::timeout(Duration::from_secs(5), send).await.unwrap().unwrap().unwrap_err().contains("cancelled"));
+                assert!(!fs::read_to_string(&log).unwrap().contains("\"method\":\"session/prompt\""));
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), send).await.unwrap().unwrap().unwrap();
+                // Send acknowledges acceptance before the prompt task writes its frame.
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while !fs::read_to_string(&log).unwrap_or_default().contains("\"method\":\"session/prompt\"") {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }).await.unwrap();
+                let frames = fs::read_to_string(&log).unwrap();
+                assert_eq!(frames.matches("\"method\":\"authenticate\"").count(), 1);
+                assert_eq!(frames.matches("\"method\":\"session/prompt\"").count(), 1);
+            }
+            assert!(!manager.authentications.pending());
+            manager.close(owned_id, generation).await.unwrap();
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ignored_antigravity_cancel_stops_runtime_and_preserves_resume_id() {
+        let fixture = fixture_manager_with_provider(
+            "agy_ignored_cancel",
+            AgentConversationProvider::Antigravity,
+            None,
+        )
+        .await;
+        let native_session_id = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .unwrap()
+            .unwrap()
+            .connection
+            .native_session_id
+            .expect("native session id");
+
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await
+            .expect("prompt starts");
+        fixture
+            .manager
+            .cancel_turn(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("cancel notification");
+        let first_deadline = fixture
+            .manager
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&fixture.owned_id)
+            .unwrap()
+            .cancel_deadline
+            .as_ref()
+            .unwrap()
+            .id();
+        fixture
+            .manager
+            .cancel_turn(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("repeated cancel notification");
+        let sessions = fixture.manager.sessions.lock().unwrap();
+        assert_eq!(
+            sessions[&fixture.owned_id]
+                .cancel_deadline
+                .as_ref()
+                .unwrap()
+                .id(),
+            first_deadline,
+            "repeated cancellation must not extend the deadline"
+        );
+        drop(sessions);
+
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let snapshot = fixture
+                    .manager
+                    .snapshot(&fixture.owned_id)
+                    .unwrap()
+                    .unwrap();
+                let interrupted = snapshot.events.iter().any(|event| {
+                    matches!(
+                        event.payload,
+                        AgentConversationPayload::Turn {
+                            state: super::super::protocol::TurnState::Interrupted,
+                            ..
+                        }
+                    )
+                });
+                if interrupted
+                    && snapshot.connection.state == ConversationConnectionState::Disconnected
+                    && fixture.manager.resource_diagnostics().unwrap().sidecar_processes == 0
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("ignored cancellation must be bounded");
+
+        let snapshot = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            snapshot.connection.native_session_id.as_deref(),
+            Some(native_session_id.as_str())
+        );
+        fixture
+            .manager
+            .activate(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("resume after bounded cancellation");
+        let fixture_log = fs::read_to_string(fixture.root.join("agy_ignored_cancel.jsonl"))
+            .expect("Antigravity fixture log");
+        assert!(fixture_log.contains(r#""method":"session/resume""#));
+        assert!(fixture_log.contains(&format!(r#""sessionId":"{native_session_id}""#)));
+
         fixture
             .manager
             .close(&fixture.owned_id, fixture.generation)
@@ -10944,6 +11306,13 @@ mod tests {
             )
         }));
         drop(seen);
+        // Interrupted is emitted before the asynchronous wire response is read
+        // by the fixture. Wait for that separate receipt before asserting it.
+        wait_until(|| {
+            fs::read_to_string(fixture.root.join("permission_cancelled.jsonl"))
+                .is_ok_and(|log| log.contains(r#""outcome":{"outcome":"cancelled"}"#))
+        })
+        .await;
         let fixture_log = fs::read_to_string(fixture.root.join("permission_cancelled.jsonl"))
             .expect("permission cancellation fixture log");
         assert!(

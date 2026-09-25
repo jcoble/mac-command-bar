@@ -445,6 +445,7 @@ pub struct AcpClient {
     sessions: Arc<Mutex<HashMap<SessionId, AcpSessionState>>>,
     primary_session_id: Option<SessionId>,
     provider: Option<AgentConversationProvider>,
+    personal_authentication: bool,
 }
 
 const CLAUDE_VERIFIED_EXTRA_MODELS: [&str; 3] = ["opus", "claude-opus-5", "claude-fable-5"];
@@ -481,6 +482,7 @@ impl AcpClient {
             sessions,
             primary_session_id: None,
             provider: None,
+            personal_authentication: false,
         })
     }
 
@@ -505,6 +507,8 @@ impl AcpClient {
     ) -> Result<AgentCapabilities, AgentRuntimeError> {
         let request = acp::InitializeRequest::new(ProtocolVersion::V1);
         let result = self.request("initialize", &request).await?;
+        self.personal_authentication = result.get("authMethods").and_then(Value::as_array)
+            .is_some_and(|methods| methods.iter().any(|method| method.get("id").and_then(Value::as_str) == Some("oauth-personal")));
         let implementation = result.get("agentInfo").or_else(|| result.get("agent_info"));
         let capabilities = AgentCapabilities {
             revision: 1,
@@ -539,10 +543,7 @@ impl AcpClient {
                     &result,
                     &["agentCapabilities", "sessionCapabilities", "close"],
                 ),
-                steering: capability_at(
-                    &result,
-                    &["agentCapabilities", "sessionCapabilities", "steering"],
-                ),
+                steering: bool_at(&result, &["_meta", "steering", "supported"]),
                 fork: capability_at(
                     &result,
                     &["agentCapabilities", "sessionCapabilities", "fork"],
@@ -580,11 +581,21 @@ impl AcpClient {
         Ok(capabilities)
     }
 
+    pub(crate) async fn authenticate_personal(&mut self) -> Result<(), AgentRuntimeError> {
+        self.initialize(AgentConversationProvider::Antigravity).await?;
+        if !self.personal_authentication {
+            return Err(AgentRuntimeError::new("authentication-unavailable", "This Antigravity adapter does not advertise Google personal sign-in"));
+        }
+        self.request("authenticate", &json!({"methodId":"oauth-personal"})).await?;
+        Ok(())
+    }
+
     pub async fn new_session(
         &mut self,
         cwd: &Path,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
-        let request = acp::NewSessionRequest::new(cwd);
+        let cwd = provider_session_cwd(self.provider, cwd)?;
+        let request = acp::NewSessionRequest::new(&cwd);
         self.start_session("session/new", &request, None).await
     }
 
@@ -599,7 +610,8 @@ impl AcpClient {
         cwd: &Path,
         native_session_id: &str,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
-        let request = acp::ResumeSessionRequest::new(native_session_id.to_string(), cwd);
+        let cwd = provider_session_cwd(self.provider, cwd)?;
+        let request = acp::ResumeSessionRequest::new(native_session_id.to_string(), &cwd);
         self.start_session("session/resume", &request, Some(native_session_id))
             .await
     }
@@ -622,7 +634,8 @@ impl AcpClient {
         cwd: &Path,
         native_session_id: &str,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
-        let request = acp::LoadSessionRequest::new(native_session_id.to_string(), cwd);
+        let cwd = provider_session_cwd(self.provider, cwd)?;
+        let request = acp::LoadSessionRequest::new(native_session_id.to_string(), &cwd);
         self.start_session("session/load", &request, Some(native_session_id))
             .await
     }
@@ -769,9 +782,11 @@ impl AcpClient {
             }
         }
         if let Some(effort) = &update.reasoning_effort {
+            // Changing models can add or remove the effort control.
+            let offered = self.require_session(session_id)?.config_option_ids;
             let effort_option_id = ["effort", "reasoning_effort"]
                 .into_iter()
-                .find(|id| offers(id))
+                .find(|id| offered.iter().any(|option| option == id))
                 .ok_or_else(|| {
                     AgentRuntimeError::new(
                         "unsupported-config",
@@ -812,9 +827,13 @@ impl AcpClient {
                 json!({ "sessionId": session_id, "configId": config_id, "value": value }),
             )
             .await?;
-        self.update_session_config(session_id, |config| {
-            apply_config_options(&result, config);
-        })
+        let mut sessions = self.sessions.lock()
+            .map_err(|_| transport_error("session state is unavailable".to_string()))?;
+        let state = sessions.get_mut(session_id)
+            .ok_or_else(|| session_not_found(session_id))?;
+        apply_config_options(&result, &mut state.config);
+        state.config_option_ids = config_option_ids(&result);
+        Ok(())
     }
 
     /// Select a model on a specific native session using its negotiated config protocol.
@@ -1273,6 +1292,14 @@ fn apply_config_options(value: &Value, config: &mut AgentConversationConfigState
             .filter_map(|choice| choice.get("value").and_then(Value::as_str))
             .map(str::to_string)
             .collect::<Vec<_>>();
+        if option.get("id").and_then(Value::as_str) == Some("model") {
+            config.model_labels = option.get("options").and_then(Value::as_array)
+                .into_iter().flatten().filter_map(|choice| {
+                    let id = choice.get("value")?.as_str()?;
+                    let name = choice.get("name")?.as_str()?.trim();
+                    (!name.is_empty()).then(|| (id.to_string(), name.to_string()))
+                }).collect();
+        }
         let (chosen, available) = match option.get("id").and_then(Value::as_str) {
             Some("model") => (&mut config.model, &mut config.available_models),
             Some("effort" | "reasoning_effort") => {
@@ -1378,6 +1405,7 @@ fn parse_standard_conversation_config(
     let models = value.get("models");
     let modes = value.get("modes");
     let mut config = AgentConversationConfigState {
+        model_labels: Default::default(),
         model: models
             .and_then(|models| models.get("currentModelId"))
             .and_then(Value::as_str)
@@ -1427,6 +1455,21 @@ fn transport_error(message: String) -> AgentRuntimeError {
     AgentRuntimeError::new("transport", message)
 }
 
+fn provider_session_cwd(
+    provider: Option<AgentConversationProvider>,
+    cwd: &Path,
+) -> Result<std::path::PathBuf, AgentRuntimeError> {
+    if provider != Some(AgentConversationProvider::Antigravity) {
+        return Ok(cwd.to_path_buf());
+    }
+    cwd.canonicalize().map_err(|error| {
+        AgentRuntimeError::new(
+            "cwd-canonicalization",
+            format!("Could not canonicalize Antigravity session cwd: {error}"),
+        )
+    })
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::PathBuf;
@@ -1457,11 +1500,13 @@ while IFS= read -r line; do
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
 	  *'"method":"initialize"'*)
-	    if [ "$fixture" = "multiplex" ]; then
+	    if [ "$fixture" = "auth" ] || [ "$fixture" = "auth_wait" ]; then
+          printf '{{"jsonrpc":"2.0","id":%s,"result":{{"authMethods":[{{"id":"oauth-personal","name":"Google"}}],"agentCapabilities":{{}},"agentInfo":{{"name":"antigravity-acp","version":"1.2.1"}}}}}}\n' "$id"
+        elif [ "$fixture" = "multiplex" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":true,"close":true,"multiSession":true}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
-	    elif [ "$fixture" = "steering" ]; then
-	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"steering":true}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
-	    elif [ "$fixture" = "agy" ]; then
+	    elif [ "$fixture" = "steering" ] || [ "$fixture" = "steering_idle" ] || [ "$fixture" = "steering_failed" ]; then
+	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"_meta":{{"steering":{{"supported":true}}}},"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
+	    elif [ "$fixture" = "agy" ] || [ "$fixture" = "agy_ignored_cancel" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":{{}}}}}},"agentInfo":{{"name":"agy","version":"0.1.0"}},"authMethods":[],"protocolVersion":1}}}}\n' "$id"
 	    elif [ "${{fixture#suspend_}}" != "$fixture" ] && [ "$fixture" != "suspend_no_resume" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":{{}}}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
@@ -1469,11 +1514,15 @@ while IFS= read -r line; do
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
 	    fi ;;
     *'"method":"session/new"'*)
+      if {{ [ "$fixture" = "auth" ] || [ "$fixture" = "auth_wait" ]; }} && [ ! -f "$log.authenticated" ]; then
+        printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32000,"message":"Authentication required"}}}}\n' "$id"
+        continue
+      fi
       if [ "$fixture" = "multiplex" ]; then
         session_count=$((session_count + 1))
         session_id="session-$session_count"
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"%s","availableCommands":[{{"name":"initial-%s"}}]}}}}\n' "$id" "$session_id" "$session_count"
-      elif [ "$fixture" = "agy" ]; then
+      elif [ "$fixture" = "agy" ] || [ "$fixture" = "agy_ignored_cancel" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"configOptions":[{{"category":"model","currentValue":"Gemini 3.7 Flash (High)","id":"model","name":"Model","options":[{{"name":"Gemini 3.7 Flash (High)","value":"Gemini 3.7 Flash (High)"}}],"type":"select"}}],"models":{{"availableModels":[{{"modelId":"Gemini 3.7 Flash (High)","name":"Gemini 3.7 Flash (High)"}}],"currentModelId":"Gemini 3.7 Flash (High)"}},"sessionId":"agy-session"}}}}\n' "$id"
       elif [ "$fixture" = "command_capture" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","availableCommands":[{{"name":"initial","description":"Initial command","input":{{"hint":"path"}}}}]}}}}\n' "$id"
@@ -1500,6 +1549,9 @@ while IFS= read -r line; do
 	    *'"method":"session/resume"'*)
 	      if [ "$fixture" = "resume_failure" ]; then
 	        printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32001,"message":"fixture resume failed"}}}}\n' "$id"
+	        continue
+	      elif [ "$fixture" = "agy_ignored_cancel" ]; then
+	        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"agy-session"}}}}\n' "$id"
 	        continue
 	      elif [ "$fixture" = "replay_on_resume" ]; then
 	        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"historical-message","content":{{"type":"text","text":"historical answer"}},"turnId":"historical-turn","_meta":{{"replay":true}}}}}}}}\n'
@@ -1598,6 +1650,10 @@ while IFS= read -r line; do
             *'"method":"session/cancel"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-cancelled","stopReason":"cancelled"}}}}\n' "$id"; break ;;
           esac
         done
+      elif [ "$fixture" = "agy_ignored_cancel" ]; then
+        while IFS= read -r response; do
+          printf '%s\n' "$response" >> "$log"
+        done
       else
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"generated text"}},"turnId":"%s"}}}}}}\n' "$turn"
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"%s","stopReason":"end_turn"}}}}\n' "$id" "$turn"
@@ -1612,7 +1668,16 @@ while IFS= read -r line; do
       fi ;;
     *'"method":"session/set_model"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
     *'"method":"session/set_mode"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id" ;;
-    *'"method":"session/steer"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"outcome":"injected"}}}}\n' "$id" ;;
+    *'"method":"_session/steering"'*)
+      outcome=injected
+      [ "$fixture" = "steering_idle" ] && outcome=promptRequired
+      [ "$fixture" = "steering_failed" ] && outcome=failed
+      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"outcome":"%s"}}}}\n' "$id" "$outcome" ;;
+    *'"method":"authenticate"'*)
+      if [ "$fixture" = "auth_wait" ]; then sleep 120; else
+        touch "$log.authenticated"
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"
+      fi ;;
     *'"method":"session/close"'*)
       printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"
       if [ "$fixture" != "multiplex" ]; then exit 0; fi ;;
@@ -1650,6 +1715,28 @@ done"#,
     }
 
     #[test]
+    fn model_catalog_keeps_provider_names_and_replaces_old_labels() {
+        let mut config = AgentConversationConfigState::default();
+        apply_config_options(&json!({"configOptions":[{
+            "id":"model", "currentValue":"opus", "options":[
+                {"value":"opus","name":"Opus 5.5"},
+                {"value":"sonnet","name":"Sonnet 5"}
+            ]
+        }]}), &mut config);
+        assert_eq!(config.model.as_deref(), Some("opus"));
+        assert_eq!(config.model_labels.get("opus").map(String::as_str), Some("Opus 5.5"));
+        assert_eq!(config.available_models, ["opus", "sonnet"]);
+        let stored = serde_json::to_vec(&config).unwrap();
+        let loaded: AgentConversationConfigState = serde_json::from_slice(&stored).unwrap();
+        assert_eq!(loaded, config);
+        apply_config_options(&json!({"configOptions":[{
+            "id":"model", "currentValue":"opus", "options":[{"value":"opus","name":"New provider name"}]
+        }]}), &mut config);
+        assert_eq!(config.model_labels.len(), 1);
+        assert!(!config.model_labels.contains_key("sonnet"));
+    }
+
+    #[test]
     fn prompt_turn_id_insertion_rejects_non_object_params() {
         let mut params = Value::Null;
 
@@ -1657,6 +1744,32 @@ done"#,
 
         assert_eq!(error.code, "serialization");
         assert_eq!(params, Value::Null);
+    }
+
+    #[test]
+    fn antigravity_session_cwd_is_canonical_and_errors_are_returned() {
+        let root = fixture_root();
+        let actual = root.join("actual");
+        let alias = root.join("alias");
+        std::fs::create_dir(&actual).unwrap();
+        std::os::unix::fs::symlink(&actual, &alias).unwrap();
+
+        assert_eq!(
+            provider_session_cwd(Some(AgentConversationProvider::Antigravity), &alias).unwrap(),
+            actual.canonicalize().unwrap()
+        );
+        assert_eq!(
+            provider_session_cwd(Some(AgentConversationProvider::Codex), &alias).unwrap(),
+            alias
+        );
+        let error = provider_session_cwd(
+            Some(AgentConversationProvider::Antigravity),
+            &root.join("missing"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "cwd-canonicalization");
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1931,6 +2044,46 @@ done"#,
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn model_change_refreshes_advertised_effort_control() {
+        let root = fixture_root();
+        let log = root.join("model-enables-effort.jsonl");
+        let mut client = AcpClient::spawn(
+            &fixture_manifest_named(&log, "config_options"), &root, "model-enables-effort",
+        ).unwrap();
+        client.initialize(AgentConversationProvider::Codex).await.unwrap();
+        let started = client.new_session(&root).await.unwrap();
+        {
+            // A resumed model absent from the catalog offers no effort control.
+            // The next model-change reply from the fixture adds it back.
+            let mut sessions = client.sessions.lock().unwrap();
+            let state = sessions.get_mut(&started.native_session_id).unwrap();
+            state.config_option_ids.retain(|id| id != "effort");
+            state.config.reasoning_effort = None;
+            state.config.available_efforts.clear();
+        }
+        let result = client.set_conversation_config_on(
+            &started.native_session_id,
+            &AgentConversationConfigUpdate {
+                model: Some("sonnet".into()),
+                reasoning_effort: Some("high".into()),
+                approval_policy: None,
+            },
+        ).await;
+        client.close().await.unwrap();
+        let frames = std::fs::read_to_string(&log).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        let configured = result.expect("model reply makes effort available in the same update");
+        assert_eq!(configured.model.as_deref(), Some("sonnet"));
+        assert_eq!(configured.reasoning_effort.as_deref(), Some("high"));
+        assert!(frames.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .any(|frame| frame["method"] == "session/set_config_option"
+                && frame["params"] == json!({
+                    "configId": "effort", "sessionId": "new-session", "value": "high"
+                })));
+
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn acp_new_maps_and_sets_standard_session_config() {
         let root = fixture_root();
         let log = root.join("standard-config.jsonl");
@@ -1950,6 +2103,7 @@ done"#,
         assert_eq!(
             started.config,
             AgentConversationConfigState {
+                model_labels: Default::default(),
                 model: Some("default".into()),
                 available_models: vec![
                     "default".into(),

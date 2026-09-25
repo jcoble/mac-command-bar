@@ -33,8 +33,9 @@ function titleCasePart(part: string): string {
  * The leading vendor word is dropped because the conversation already knows
  * which agent it is talking to.
  */
-export function modelLabel(model: string | null | undefined): string {
+export function modelLabel(model: string | null | undefined, labels?: Readonly<Record<string, string>>): string {
   if (!model) return 'Default';
+  if (labels?.[model]) return labels[model];
   const parts = model
     .trim()
     .split(/[-_\s]+/)
@@ -137,10 +138,11 @@ export function approvalDescription(policy: string | null | undefined): string {
  */
 export function modelEffortLabel(
   model: string | null | undefined,
-  effort: string | null | undefined
+  effort: string | null | undefined,
+  labels?: Readonly<Record<string, string>>
 ): string {
   const parts: string[] = [];
-  if (model) parts.push(modelLabel(model));
+  if (model) parts.push(modelLabel(model, labels));
   if (effort) parts.push(effortLabel(effort));
   return parts.length ? parts.join(' ') : 'Agent settings';
 }

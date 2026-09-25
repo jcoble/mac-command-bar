@@ -7,8 +7,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "prepare:release-adapters": "node scripts/prepareReleaseAdapters.mjs",
-    "prepare:provider-release-assets": "node scripts/prepareProviderReleaseAssets.mjs",
+    "prepare:release-adapters": "node --experimental-strip-types scripts/prepareReleaseAdapters.ts",
+    "prepare:provider-release-assets": "node --experimental-strip-types scripts/prepareProviderReleaseAssets.ts",
     "prepare:remote-backend-package": "node --experimental-strip-types scripts/remoteBackendPackage.ts",
     "preview": "vite preview --host 127.0.0.1",
     "check": "svelte-kit sync && tsc --noEmit && pnpm check:rust",
@@ -124,8 +124,8 @@
     "test:markdown-preview": "node --experimental-strip-types scripts/markdownPreview.test.mjs"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.76.0",
-    "@agentclientprotocol/codex-acp": "1.11.0",
+    "@agentclientprotocol/claude-agent-acp": "0.81.2",
+    "@agentclientprotocol/codex-acp": "1.13.1",
     "@codemirror/autocomplete": "6.20.3",
     "@codemirror/commands": "6.11.0",
     "@codemirror/lang-cpp": "6.0.3",

@@ -2,14 +2,18 @@ import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const target = process.argv[2];
-if (!/^(aarch64|x86_64)-apple-darwin$/.test(target ?? '')) {
-  throw new Error('Expected a supported Rust target such as aarch64-apple-darwin');
+if (!/^(?:(aarch64|x86_64)-apple-darwin|x86_64-unknown-linux-gnu)$/.test(target ?? '')) {
+  throw new Error('Expected a supported macOS target or x86_64-unknown-linux-gnu');
 }
 
 const projectRoot = new URL('../', import.meta.url);
 const adapterDir = new URL('src-tauri/adapters/', projectRoot);
 const outputDir = new URL(`provider-release/${target}/`, projectRoot);
-const manifest = JSON.parse(await readFile(new URL('manifest.json', adapterDir), 'utf8'));
+interface ProviderManifest {
+  adapters: { files: { path: string }[] }[];
+}
+
+const manifest: ProviderManifest = JSON.parse(await readFile(new URL('manifest.json', adapterDir), 'utf8'));
 
 await rm(outputDir, { recursive: true, force: true });
 await mkdir(outputDir, { recursive: true });

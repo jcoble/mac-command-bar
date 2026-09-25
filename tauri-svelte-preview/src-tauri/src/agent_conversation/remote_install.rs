@@ -20,7 +20,7 @@ const TARGET: &str = "x86_64-unknown-linux-gnu";
 const SIGNING_PUBLIC_KEY: &str = "RWQZvQJuc5RPnp9xO8+V9ppE3cCiodEFHPYqJpIMMVRhAnaxo0udp8xh";
 const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_SIGNATURE_BYTES: u64 = 16 * 1024;
-const PAYLOAD_FILES: [&str; 9] = [
+const PAYLOAD_FILES: [&str; 10] = [
     "payload/assembly-remote-server",
     "payload/adapters/manifest.json",
     "payload/adapters/codex-acp",
@@ -28,7 +28,8 @@ const PAYLOAD_FILES: [&str; 9] = [
     "payload/adapters/claude-agent-acp",
     "payload/adapters/claude-agent-acp-runtime",
     "payload/adapters/agy-acp",
-    "payload/adapters/agy-acp-runtime",
+    "payload/adapters/agy_acp_server.par",
+    "payload/adapters/localharness_external",
     "install.sh",
 ];
 
@@ -114,7 +115,7 @@ impl RemoteStage {
     async fn cleanup(&mut self) -> Result<(), String> {
         ssh_output(
             &self.target,
-            &format!("find '{}' -depth -delete 2>/dev/null || true", self.path),
+            &format!("find {} -depth -delete 2>/dev/null || true", shell_quote(&self.path)),
         )
         .await?;
         self.armed = false;
@@ -128,7 +129,7 @@ impl Drop for RemoteStage {
             return;
         }
         let target = self.target.clone();
-        let command = format!("find '{}' -depth -delete 2>/dev/null || true", self.path);
+        let command = format!("find {} -depth -delete 2>/dev/null || true", shell_quote(&self.path));
         std::thread::spawn(move || {
             let _ = std::process::Command::new("ssh")
                 .args([
@@ -179,14 +180,16 @@ pub async fn install_latest(
         return Err(format!("Unsupported remote platform: {platform}"));
     }
 
+    let home = remote_home(ssh_target).await?;
     let staging_path = format!(
-        "/tmp/.assembly-install-{}-{}",
+        "{home}/.cache/.assembly-install-{}-{}",
         &inspected.commit[..12],
         uuid::Uuid::new_v4()
     );
     let mut remote_stage = RemoteStage::new(ssh_target, staging_path.clone());
     let remote_archive = format!("{staging_path}/package.tar.gz");
-    ssh_output(ssh_target, &format!("install -d -m 700 '{staging_path}'")).await?;
+    let quoted_stage = shell_quote(&staging_path);
+    ssh_output(ssh_target, &format!("install -d -m 700 {quoted_stage}")).await?;
     let result: Result<(), String> = async {
         let _ = status.send("Uploading the prebuilt backend package…".into());
         command_output(tokio::process::Command::new("scp")
@@ -194,7 +197,7 @@ pub async fn install_latest(
             .arg(&archive_path)
             .arg(format!("{ssh_target}:{remote_archive}")), "Backend upload").await?;
         let _ = status.send("Installing and starting the backend…".into());
-        ssh_output(ssh_target, &format!("set -eu; cd '{staging_path}'; tar -xzf package.tar.gz; sh install.sh")).await?;
+        ssh_output(ssh_target, &format!("set -eu; cd {quoted_stage}; tar -xzf package.tar.gz; sh install.sh")).await?;
         let _ = status.send("Verifying the service, database, and loopback listener…".into());
         let receipt = ssh_output(ssh_target, "set -eu; systemctl --user is-active --quiet assembly-remote.service; test -f \"$HOME/.local/share/assembly/sessions.db\"; listeners=$(ss -ltnH 'sport = :7777'); test -n \"$listeners\"; printf '%s\\n' \"$listeners\" | awk '$4 != \"127.0.0.1:7777\" { exit 1 } END { if (NR == 0) exit 1 }'; sha256sum \"$HOME/.local/bin/assembly-remote-server\" | awk '{print $1}'").await?;
         if receipt != inspected.server_sha256 {
@@ -640,6 +643,23 @@ async fn command_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires the published signed backend release and GitHub CLI access"]
+    async fn published_backend_signature_and_payloads_verify() {
+        let release = latest_release().await.unwrap();
+        let expected_version = release_version(&release.tag_name).unwrap();
+        let (archive_asset, signature_asset) = release_assets(release).unwrap();
+        let stage = LocalStage::create().unwrap();
+        let archive = stage.0.join("backend.tar.gz");
+        let signature = stage.0.join("backend.tar.gz.sig");
+        download(&archive_asset, &archive, MAX_ARCHIVE_BYTES).await.unwrap();
+        download(&signature_asset, &signature, MAX_SIGNATURE_BYTES).await.unwrap();
+        let receipt = tokio::task::spawn_blocking(move || inspect_package(&archive, &signature))
+            .await.unwrap().unwrap();
+        assert_eq!(receipt.version, expected_version);
+        println!("Verified published backend {} at {}", receipt.version, receipt.commit);
+    }
 
     fn write_release_archive(
         archive_path: &Path,

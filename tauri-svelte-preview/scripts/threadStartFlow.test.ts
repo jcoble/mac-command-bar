@@ -364,3 +364,15 @@ console.log('threadStartFlow.test.ts passed');
 }
 
 console.log('threadStartFlow: a branchless project can start');
+
+// Model IDs remain wire values while labels come from the live provider catalog.
+{
+  const groups = groupProviderModels([{
+    provider: 'claude', model: 'opus', availableModels: ['opus', 'sonnet'],
+    modelLabels: { opus: 'Opus 5.5', sonnet: 'Sonnet 5' },
+    reasoningEffort: null, availableEfforts: [], approvalPolicy: null, availableApprovalPolicies: []
+  }]);
+  const models = groups.find(group => group.provider === 'claude')!.models;
+  assert.equal(models.find(model => model.id === 'opus')!.label, 'Opus 5.5');
+  assert.equal(models.find(model => model.id === 'sonnet')!.label, 'Sonnet 5');
+}

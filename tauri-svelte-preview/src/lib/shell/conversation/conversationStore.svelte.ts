@@ -63,16 +63,6 @@ import {
   textBytes
 } from '../resourceDiagnostics.svelte.ts';
 
-/**
- * What an Antigravity session says about itself the first time it is opened.
- *
- * Its adapter cannot pass a permission question on to the app, so every tool
- * call is approved before the reader sees it. Saying so once is the honest
- * alternative to a permission panel that would never appear.
- */
-export const ANTIGRAVITY_PERMISSION_NOTICE =
-  'Antigravity runs with its own permission mode; it does not ask before acting.';
-
 export type ConversationViewMode = 'structured' | 'raw';
 
 export interface ConversationRecentEvent {
@@ -268,7 +258,7 @@ function freshState(
     draft: '',
     sendError: '',
     attachmentError: '',
-    providerNotice: provider === 'antigravity' ? ANTIGRAVITY_PERMISSION_NOTICE : '',
+    providerNotice: '',
     mode: 'structured',
     sending: false,
     attachments: [],

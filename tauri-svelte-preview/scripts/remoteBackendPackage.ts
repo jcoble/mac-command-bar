@@ -16,7 +16,8 @@ export const REMOTE_BACKEND_ADAPTER_FILES = [
   'claude-agent-acp',
   'claude-agent-acp-runtime',
   'agy-acp',
-  'agy-acp-runtime'
+  'agy_acp_server.par',
+  'localharness_external'
 ] as const;
 export const REMOTE_BACKEND_PAYLOAD_FILES = [
   'payload/assembly-remote-server',
@@ -59,7 +60,7 @@ adapter_stage="$HOME/.local/bin/.assembly-adapters.new"
 rm -rf "$adapter_stage"
 install -d -m 755 "$adapter_stage"
 install -m 644 payload/adapters/manifest.json "$adapter_stage/manifest.json"
-for adapter in codex-acp codex-acp-runtime claude-agent-acp claude-agent-acp-runtime agy-acp agy-acp-runtime; do
+for adapter in codex-acp codex-acp-runtime claude-agent-acp claude-agent-acp-runtime agy-acp agy_acp_server.par localharness_external; do
   install -m 755 "payload/adapters/$adapter" "$adapter_stage/$adapter"
 done
 rm -rf "$HOME/.local/bin/assembly-adapters"

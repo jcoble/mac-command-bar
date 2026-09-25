@@ -5,6 +5,7 @@ import { sessionWorkspaceRoot, parseRemoteWorkspacePath } from '../../workspaceP
 import {
 	ACTIVE_OWNED_SESSION_SETTING_KEY,
 	rail,
+	hydrateOwned,
 	setActiveOwned
 } from '../stores/sessionRailStore.svelte';
 import { SessionSelectionLayers, type SessionSelectionOwner } from '../sessionSelectionLayers.svelte';
@@ -16,8 +17,10 @@ import {
 	writeAssemblySettingFromTauri,
 	deleteAgentConversationSessionFromTauri,
 	validateProjectRootFromTauri,
+	readRemoteAssemblyEnvironmentFromTauri,
+	connectRemoteAssemblyFromTauri,
 } from '../../tauriSource';
-import type { OwnedSession } from '../ownedSessions';
+import { ownedSessionFromBackend, type OwnedSession } from '../ownedSessions';
 import { removeOwnedSession } from '../stores/sessionRailStore.svelte';
 import { shellPanels } from '../shellPanels';
 import { refresh as refreshExplorer } from '../explorer/explorerService.ts';
@@ -39,6 +42,8 @@ export class SessionSelectionController {
 	activeRootRemote = $state(false);
 	activeWorkspaceSnapshot = $state.raw<SessionWorkspaceSnapshot | null>(null);
 	selectionError = $state<string | null>(null);
+	connectingRemote = $state(false);
+	private remoteConnectAbort: AbortController | null = null;
 
 	private workspaceWriteQueue: Promise<void> | null = null;
 	private selectionGeneration = 0;
@@ -105,6 +110,7 @@ export class SessionSelectionController {
 	}
 
 	async selectSession(ownedId: string): Promise<void> {
+		this.remoteConnectAbort?.abort();
 		this.selectionError = null;
 		this.activeWorkspaceSnapshot = null;
 		this.controlledSelectionOwnedId = ownedId;
@@ -131,6 +137,43 @@ export class SessionSelectionController {
 			await work;
 		} finally {
 			if (this.selectionWork === work) this.selectionWork = null;
+		}
+	}
+
+	get disconnectedRemoteProfileId(): string | null {
+		const session = this.controlledSession;
+		const id = session?.executionEnvironment === 'remote' ? session.remoteProfileId : null;
+		return id && rail.remoteConnections[id] !== 'connected' ? id : null;
+	}
+
+	async connectSelectedRemote(): Promise<string | null> {
+		const profileId = this.disconnectedRemoteProfileId;
+		if (!profileId || this.connectingRemote) return null;
+		const attempt = new AbortController();
+		this.remoteConnectAbort = attempt;
+		this.connectingRemote = true;
+		this.selectionError = 'Connecting…';
+		try {
+			const environment = await readRemoteAssemblyEnvironmentFromTauri();
+			if (attempt.signal.aborted) return null;
+			const profile = environment.profiles.find((saved) => saved.id === profileId);
+			if (!profile) throw new Error('This saved machine is unavailable. Open Settings → Connections to configure it.');
+			const result = await connectRemoteAssemblyFromTauri(profile, attempt.signal, (message) => {
+				if (!attempt.signal.aborted) this.selectionError = message;
+			});
+			if (attempt.signal.aborted) return null;
+			const replaced = new Set([result.profile.id, result.replacedProfileId]);
+			hydrateOwned([...rail.owned.filter((session) => !replaced.has(session.remoteProfileId ?? '')),
+				...result.sessions.map(ownedSessionFromBackend)]);
+			return result.profile.id;
+		} catch (error) {
+			if (!attempt.signal.aborted) this.selectionError = `Could not connect. ${String(error)}`;
+			return null;
+		} finally {
+			if (this.remoteConnectAbort === attempt) {
+				this.remoteConnectAbort = null;
+				this.connectingRemote = false;
+			}
 		}
 	}
 
@@ -175,7 +218,7 @@ export class SessionSelectionController {
 				shellPanels.sessionPicked(false);
 				const detail = error instanceof Error ? error.message : String(error);
 				this.selectionError = session.executionEnvironment === 'remote' && detail.toLowerCase().includes('not connected')
-					? 'This remote machine is not connected. Open Settings → Connections to connect it.'
+					? 'This remote machine is not connected.'
 					: `Conversation could not be loaded. ${detail}`;
 			}
 		} else {
@@ -274,6 +317,7 @@ export class SessionSelectionController {
 	}
 
 	async dispose(): Promise<void> {
+		this.remoteConnectAbort?.abort();
 		this.cancelSelection();
 		this.newSession.dispose();
 		const editorDisposal = this.editorSessions.dispose();

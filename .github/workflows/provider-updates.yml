@@ -1,0 +1,92 @@
+name: Release provider adapters
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 8 * * *'
+  push:
+    branches: [main]
+    tags: ['assembly-providers-v*']
+    paths:
+      - '.github/workflows/provider-updates.yml'
+      - 'tauri-svelte-preview/scripts/prepareReleaseAdapters.ts'
+      - 'tauri-svelte-preview/scripts/prepareProviderReleaseAssets.ts'
+
+concurrency:
+  group: provider-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+      - name: Resolve current upstream adapters
+        working-directory: tauri-svelte-preview
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm update @agentclientprotocol/codex-acp @agentclientprotocol/claude-agent-acp --latest
+      - name: Package and sign adapters
+        working-directory: tauri-svelte-preview
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          pnpm prepare:release-adapters
+          pnpm prepare:provider-release-assets "${{ matrix.target }}"
+          pnpm exec tauri signer sign "provider-release/${{ matrix.target }}/provider-manifest-${{ matrix.target }}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: providers-${{ matrix.target }}
+          path: tauri-svelte-preview/provider-release/${{ matrix.target }}/*
+          retention-days: 2
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: providers-*
+          path: provider-release
+          merge-multiple: true
+      - name: Publish separate provider feed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=assembly-providers-stable
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --target "${{ github.sha }}" --title 'Assembly provider adapters' --notes 'Signed ACP adapters, installed independently from Assembly app updates.' --latest=false
+          fi
+          # Publish payloads first. A concurrent check can only install a complete,
+          # signed set: a hash mismatch keeps the existing installation intact.
+          for asset in provider-release/provider-*; do
+            [[ "$asset" == */provider-manifest-* ]] && continue
+            gh release upload "$tag" "$asset" --clobber
+          done
+          for manifest in provider-release/provider-manifest-*.json; do
+            gh release upload "$tag" "$manifest" "$manifest.sig" --clobber
+          done

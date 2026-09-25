@@ -674,6 +674,8 @@ pub struct ChangeAgentConversationCheckoutRequest {
 pub struct AgentConversationConfigState {
     pub model: Option<String>,
     pub available_models: Vec<String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub model_labels: std::collections::BTreeMap<String, String>,
     pub reasoning_effort: Option<String>,
     pub available_efforts: Vec<String>,
     pub approval_policy: Option<String>,
@@ -855,6 +857,7 @@ mod contract_tests {
     #[test]
     fn conversation_config_contract_uses_camel_case_fields() {
         let config = AgentConversationConfigState {
+            model_labels: Default::default(),
             model: Some("gpt-5.6-sol".into()),
             available_models: vec!["gpt-5.6-sol".into(), "gpt-5.6-terra".into()],
             reasoning_effort: Some("xhigh".into()),
