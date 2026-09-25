@@ -142,12 +142,25 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
   state.status = { branch: 'main', ahead: 0, behind: 0, hasUpstream: true, files: [] };
   state.commitMessage = 'wip';
   state.selectedPath = 'a.ts';
+  state.selectedPaths.compact = 'a.ts';
+  state.diffOwner = 'compact';
   state.selectedDiff = { relativePath: 'a.ts', status: 'modified', diff: 'x', isBinary: false };
 
   clearSelectedGitFile(state);
   assert.equal(state.selectedPath, '');
+  assert.deepEqual(state.selectedPaths, { compact: '', large: '' });
   assert.equal(state.selectedDiff, null);
   assert.equal(state.commitMessage, 'wip', 'clearing the diff keeps the draft commit message');
+
+  state.selectedPaths = { compact: 'still-reading.ts', large: 'old-large.ts' };
+  state.diffOwner = 'compact';
+  state.diffLoading = true;
+  const revision = state.diffRevision;
+  clearSelectedGitFile(state, 'large');
+  assert.equal(state.selectedPaths.large, '');
+  assert.equal(state.selectedPaths.compact, 'still-reading.ts');
+  assert.equal(state.diffLoading, true, 'clearing the other view keeps this diff read alive');
+  assert.equal(state.diffRevision, revision, 'clearing the other view does not supersede this read');
 
   resetGitPanelState(state, '/repo');
   assert.equal(state.root, '/repo');
@@ -451,6 +464,7 @@ function makeBackend(overrides = {}) {
   await git.selectFile(file('src/a.ts', '', 'modified', 'M'));
   assert.deepEqual(backend.calls, [['readDiff', '/repo', '/repo/src/a.ts']]);
   assert.equal(state.selectedPath, 'src/a.ts');
+  assert.equal(state.selectedPaths.compact, 'src/a.ts');
   assert.equal(state.diffLoading, false);
   assert.equal(state.diffError, '');
 
@@ -459,6 +473,16 @@ function makeBackend(overrides = {}) {
   assert.deepEqual(backend.calls, [['readDiff', '/repo', '/repo/src/gone.ts']]);
   assert.equal(state.selectedDiff?.relativePath, '/repo/src/gone.ts');
   assert.equal(state.diffError, '');
+
+  await git.selectFile(file('src/large.ts', '', 'modified', 'M'), 'large');
+  assert.equal(state.selectedPaths.compact, 'src/gone.ts', 'large does not replace compact');
+  assert.equal(state.selectedPaths.large, 'src/large.ts');
+  assert.equal(state.diffOwner, 'large');
+
+  git.clearSelection('large');
+  assert.equal(state.selectedPaths.compact, 'src/gone.ts');
+  assert.equal(state.selectedPaths.large, '');
+  assert.equal(state.selectedPath, '');
 
   git.clearSelection();
   assert.equal(state.selectedPath, '');

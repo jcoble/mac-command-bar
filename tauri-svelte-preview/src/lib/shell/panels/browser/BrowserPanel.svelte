@@ -367,7 +367,10 @@
   }
 
   function navigate(): void {
-    if (!root) return;
+    if (!root) {
+      failure = 'Select a session with an available workspace before opening a page.';
+      return;
+    }
     const next = normalizeBrowserUrl(addressValue);
     if (!next) {
       failure = 'Enter an http, https, or file address';

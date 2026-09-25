@@ -54,6 +54,7 @@
   } from '$lib/shell/git/gitCommitFilesService';
   import {
     gitCommitFiles as defaultCommitFilesState,
+    gitCommitFilesView,
     type GitCommitFilesState
   } from '$lib/shell/git/gitCommitFilesStore.svelte';
   import {
@@ -141,6 +142,7 @@
     'This folder is open for reading only — switch back to the session folder to change it.';
 
   const panel = $derived(service.state);
+  const commitInteraction = $derived(gitCommitFilesView(commitFilesState, 'compact'));
   const folder = $derived(panel.root ?? root ?? '');
 
   /** The session's own folder — the one the shell activates the service with. */
@@ -273,6 +275,7 @@
 
   /** The one place a scope becomes a real read. `activate` ignores a repeat. */
   let historyRoot = '';
+  let wasVisible = false;
 
   function releaseHistorySurface(): void {
     if (historyRoot === '') return;
@@ -281,6 +284,8 @@
   }
 
   $effect(() => {
+    const becameVisible = visible && !wasVisible;
+    wasVisible = visible;
     const scopedRoot = checkoutScope?.gitInspectionRoot ?? null;
     const target = scopedRoot && canonicalPath(scopedRoot) === canonicalPath(scopeRoot)
       ? scopedRoot
@@ -305,6 +310,12 @@
       void service.refreshStatus();
     }
     service.ensureHistorySurface();
+    if (becameVisible && panel.diffOwner !== 'compact') {
+      if (commitInteraction.selectedCommitSha) void commitFiles.restoreSelection();
+      else if (panel.selectedPaths.compact) {
+        void service.showStoredDiff(readableTarget, panel.selectedPaths.compact, 'compact');
+      }
+    }
   });
 
   /** A folder with no repository in it is an ordinary thing to be looking at,
@@ -725,7 +736,7 @@
                   <ChangedFileRow
                     {file}
                     root={scopeAvailable ? folder : ''}
-                    selected={panel.selectedPath === file.relativePath}
+                    selected={panel.selectedPaths.compact === file.relativePath}
                     canWrite={canChange}
                     canOpenInEditor={scopeAvailable && !readOnlyScope}
                     readOnlyReason={cannotChangeReason}

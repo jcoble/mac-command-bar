@@ -14,6 +14,7 @@
 		isNotARepositoryError,
 	} from "$lib/shell/git/gitPanelStore.svelte";
 	import { gitCommitFilesService } from "$lib/shell/git/gitCommitFilesService";
+	import { gitCommitFilesView } from "$lib/shell/git/gitCommitFilesStore.svelte";
 	import { createGitService } from "$lib/shell/git/gitService";
 	import { showCenterTab } from "$lib/shell/workbenchNavigation";
 	import { formatLastActivity } from "$lib/shell/relativeTime";
@@ -40,6 +41,7 @@
 
 	const panel = $state(createGitPanelState());
 	const service = createGitService({ state: panel });
+	const commitInteraction = $derived(gitCommitFilesView(gitCommitFilesService.state));
 	let viewport = $state<HTMLElement | null>(null);
 
 	$effect(() => {
@@ -143,8 +145,8 @@
 							<li title={`${commit.subject}\n${commit.author} · ${commit.shortSha}`}>
 								<button
 									type="button"
-									class:selected={gitCommitFilesService.state.selectedCommitSha === commit.sha &&
-										gitCommitFilesService.state.selectedRelativePath === relativePath}
+									class:selected={commitInteraction.selectedCommitSha === commit.sha &&
+										commitInteraction.selectedRelativePath === relativePath}
 									onclick={() => void openCommitDiff(commit.sha)}
 								>
 									<span class="commit-mark" aria-hidden="true"></span>

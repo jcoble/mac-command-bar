@@ -60,13 +60,14 @@
   import {
     commitFilesEntry,
     gitCommitFiles,
+    gitCommitFilesView,
     describeCommitFiles,
     isCommitExpanded,
     isUnreadableGitPath,
     splitRepositoryPath,
     summarizeCommitFiles
   } from '$lib/shell/git/gitCommitFilesStore.svelte';
-  import { gitCommitFilesService } from '$lib/shell/git/gitCommitFilesService';
+  import { createGitCommitFilesService } from '$lib/shell/git/gitCommitFilesService';
   import {
     canLoadMoreGitHistory,
     describeGitHistoryFooter,
@@ -91,20 +92,27 @@
   }
   let { root = '', rootAvailable = true, historyPath = '', showing = false }: Props = $props();
   let requestedHistory = '';
+  let wasShowing = false;
   let contextMenu = $state.raw<SourceControlMenuSnapshot | null>(null);
 
   const historyPanel = gitPanel;
   const historyService = gitService;
   const historyCommitFiles = gitCommitFiles;
-  const historyCommitFilesService = gitCommitFilesService;
+  const historyCommitFilesService = createGitCommitFilesService({ owner: 'large' });
+  const historyInteraction = $derived(gitCommitFilesView(historyCommitFiles, 'large'));
 
   $effect(() => {
+    const becameShowing = showing && !wasShowing;
+    wasShowing = showing;
     if (!showing) return;
     const targetRoot = rootAvailable ? root.trim() : '';
     const targetPath = historyPath.trim();
     const requestKey = `${targetRoot}\u0000${targetPath}`;
     if (requestKey === requestedHistory) {
       if (targetRoot) historyService.ensureHistorySurface();
+      if (becameShowing && historyPanel.diffOwner !== 'large') {
+        void historyCommitFilesService.restoreSelection();
+      }
       return;
     }
     requestedHistory = requestKey;
@@ -118,6 +126,9 @@
     historyCommitFilesService.activate(targetRoot);
     if (targetPath) void historyService.showFileHistory(targetRoot, targetPath);
     else historyService.ensureHistorySurface();
+    if (becameShowing && historyPanel.diffOwner !== 'large') {
+      void historyCommitFilesService.restoreSelection();
+    }
   });
 
   /** One row of the table is exactly this tall, so its SVG can be drawn to size. */
@@ -482,7 +493,7 @@
 
       {#each rows as commit, index (commit.sha)}
         {@const lane = layout.rows[index]}
-        {@const expanded = isCommitExpanded(historyCommitFiles, commit.sha)}
+        {@const expanded = isCommitExpanded(historyCommitFiles, commit.sha, 'large')}
         {@const entry = commitFilesEntry(historyCommitFiles, commit.sha)}
         {@const sentence = describeCommitFiles(entry, lane?.isMerge ?? false)}
         <button
@@ -554,8 +565,8 @@
                 {@const parts = splitRepositoryPath(file.relativePath)}
                 {@const unreadable = isUnreadableGitPath(file.relativePath)}
                 {@const chosen =
-                  historyCommitFiles.selectedCommitSha === commit.sha &&
-                  historyCommitFiles.selectedRelativePath === file.relativePath}
+                  historyInteraction.selectedCommitSha === commit.sha &&
+                  historyInteraction.selectedRelativePath === file.relativePath}
                 <button
                   type="button"
                   class="file-row"

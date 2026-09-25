@@ -41,6 +41,8 @@ export type GitActionKind =
   | 'pull'
   | 'push';
 
+export type GitSurfaceOwner = 'compact' | 'large';
+
 export interface GitPanelState {
   // ── which repository the panel is pointed at ─────────────────────────────
   /** Absolute path of the project the panel is showing, or null before it is
@@ -79,6 +81,11 @@ export interface GitPanelState {
   // ── the file whose diff is on screen ──────────────────────────────────────
   /** Repository-relative path of the selected file, or '' when none is selected. */
   selectedPath: string;
+  /** Small per-surface selections. The diff payload below exists only once. */
+  selectedPaths: Record<GitSurfaceOwner, string>;
+  diffOwner: GitSurfaceOwner | null;
+  /** Supersedes an in-flight diff read from either surface. */
+  diffRevision: number;
   selectedDiff: SourceGitDiff | null;
   diffLoading: boolean;
   diffError: string;
@@ -113,6 +120,9 @@ export function createGitPanelState(): GitPanelState {
     historyComplete: false,
     historyPaged: false,
     selectedPath: '',
+    selectedPaths: { compact: '', large: '' },
+    diffOwner: null,
+    diffRevision: 0,
     selectedDiff: null,
     diffLoading: false,
     diffError: '',
@@ -132,9 +142,17 @@ export function resetGitPanelState(state: GitPanelState, root: string | null): v
   Object.assign(state, fresh, { root });
 }
 
-/** Forget the file whose diff is on screen. */
-export function clearSelectedGitFile(state: GitPanelState): void {
+/** Forget one surface's selection, or every selection at the session boundary. */
+export function clearSelectedGitFile(
+  state: GitPanelState,
+  owner: GitSurfaceOwner | null = null
+): void {
+  if (owner) state.selectedPaths[owner] = '';
+  else state.selectedPaths = { compact: '', large: '' };
+  if (owner && state.diffOwner !== owner) return;
+  state.diffRevision += 1;
   state.selectedPath = '';
+  state.diffOwner = null;
   state.selectedDiff = null;
   state.diffLoading = false;
   state.diffError = '';

@@ -1,5 +1,5 @@
 /**
- * gitCommitFiles.test.mjs — expanding a commit to see what it changed.
+ * gitCommitFiles.test.ts — expanding a commit to see what it changed.
  *
  * The commit graph lets a row open in place and show the files that commit
  * touched, and clicking one of those files shows what changed inside it. Three
@@ -17,7 +17,7 @@
  *     git would match nothing and hand back a blank diff that looks clean. The
  *     row says so instead.
  *
- * Run: node --experimental-strip-types scripts/gitCommitFiles.test.mjs
+ * Run: node --experimental-strip-types scripts/gitCommitFiles.test.ts
  */
 
 globalThis.$state = (value) => value;
@@ -34,8 +34,10 @@ const {
   commitFilesEntry,
   createGitCommitFilesState,
   describeCommitFiles,
+  gitCommitFilesView,
   isCommitExpanded,
   isUnreadableGitPath,
+  resetGitCommitFilesView,
   resetGitCommitFilesState,
   splitRepositoryPath,
   summarizeCommitFiles
@@ -52,6 +54,9 @@ function panelState(root) {
   return {
     root,
     selectedPath: '',
+    selectedPaths: { compact: '', large: '' },
+    diffOwner: null,
+    diffRevision: 0,
     selectedDiff: null,
     diffLoading: false,
     diffError: ''
@@ -227,8 +232,8 @@ function fileChange(relativePath, status = 'modified', badge = 'M') {
   assert.equal(panel.diffLoading, false);
   assert.equal(panel.diffError, '');
   assert.equal(panel.selectedDiff.diff, '@@ -1 +1 @@');
-  assert.equal(state.selectedCommitSha, 'abc');
-  assert.equal(state.selectedRelativePath, 'app/src/main.ts');
+  assert.equal(gitCommitFilesView(state).selectedCommitSha, 'abc');
+  assert.equal(gitCommitFilesView(state).selectedRelativePath, 'app/src/main.ts');
 }
 
 // ── a file whose name git could not print is not asked about ────────────────
@@ -334,16 +339,142 @@ function fileChange(relativePath, status = 'modified', badge = 'M') {
 // ── pointing the panel at another repository forgets the old one ────────────
 {
   const state = createGitCommitFilesState();
-  state.expanded['abc'] = true;
+  gitCommitFilesView(state).expanded['abc'] = true;
   state.byCommit['abc'] = { files: [fileChange('a.ts')], loading: false, loaded: true, error: '' };
-  state.selectedCommitSha = 'abc';
+  gitCommitFilesView(state).selectedCommitSha = 'abc';
 
   resetGitCommitFilesState(state, '/other');
-  assert.deepEqual(state.expanded, {});
+  assert.deepEqual(gitCommitFilesView(state).expanded, {});
   assert.deepEqual(state.byCommit, {});
-  assert.equal(state.selectedCommitSha, '');
+  assert.equal(gitCommitFilesView(state).selectedCommitSha, '');
   assert.equal(state.root, '/other');
   assert.equal(state.repositoryTop, null);
+}
+
+// ── compact and large retain independent interaction over one payload store ──
+{
+  const state = createGitCommitFilesState();
+  const panel = panelState('/repo');
+  let fileReads = 0;
+  let diffReads = 0;
+  const options = {
+    state,
+    panel,
+    resolveTop: async () => '/repo',
+    readFiles: async () => {
+      fileReads += 1;
+      return [fileChange('shared.ts')];
+    },
+    readDiff: async (_root, _sha, relativePath) => {
+      diffReads += 1;
+      const mine = diffReads;
+      await new Promise((resolve) => setTimeout(resolve, relativePath === 'compact.ts' ? 20 : 0));
+      return { relativePath, status: 'modified', diff: `diff ${mine}`, isBinary: false };
+    },
+    clearPanelSelection: () => {}
+  };
+  const compact = createGitCommitFilesService({ ...options, owner: 'compact' });
+  const large = createGitCommitFilesService({ ...options, owner: 'large' });
+
+  compact.activate('/repo');
+  await compact.toggleCommit('abc', false);
+  await large.toggleCommit('abc', false);
+  assert.equal(fileReads, 1, 'both surfaces reuse one loaded commit payload');
+  assert.equal(isCommitExpanded(state, 'abc', 'compact'), true);
+  assert.equal(isCommitExpanded(state, 'abc', 'large'), true);
+
+  await compact.toggleCommit('abc', false);
+  assert.equal(commitFilesEntry(state, 'abc').loaded, true, 'large still owns the shared payload');
+
+  const slow = compact.selectCommitFile('abc', fileChange('compact.ts'));
+  const quick = large.selectCommitFile('abc', fileChange('large.ts'));
+  await Promise.all([slow, quick]);
+  assert.equal(gitCommitFilesView(state, 'compact').selectedRelativePath, 'compact.ts');
+  assert.equal(gitCommitFilesView(state, 'large').selectedRelativePath, 'large.ts');
+  assert.equal(panel.selectedDiff.relativePath, 'large.ts', 'only the current surface materializes');
+
+  compact.release();
+  assert.deepEqual(gitCommitFilesView(state, 'compact').expanded, {});
+  assert.deepEqual(gitCommitFilesView(state, 'large').expanded, {});
+  assert.deepEqual(state.byCommit, {}, 'session release drops the shared payload');
+}
+
+// ── in-flight payloads follow whichever view still owns the expansion ───────
+{
+  const state = createGitCommitFilesState();
+  const panel = panelState('/repo');
+  const finishReads = [];
+  const options = {
+    state,
+    panel,
+    resolveTop: async () => '/repo',
+    readFiles: async () => new Promise((resolve) => { finishReads.push(resolve); }),
+    readDiff: async () => null,
+    clearPanelSelection: () => {}
+  };
+  const compact = createGitCommitFilesService({ ...options, owner: 'compact' });
+  const large = createGitCommitFilesService({ ...options, owner: 'large' });
+
+  compact.activate('/repo');
+  const pending = compact.toggleCommit('shared', false);
+  await settle();
+  await large.toggleCommit('shared', false);
+  await compact.toggleCommit('shared', false);
+  finishReads.shift()([fileChange('shared.ts')]);
+  await pending;
+
+  assert.equal(isCommitExpanded(state, 'shared', 'large'), true);
+  assert.equal(commitFilesEntry(state, 'shared').loading, false);
+  assert.equal(commitFilesEntry(state, 'shared').loaded, true);
+
+  await large.toggleCommit('shared', false);
+  assert.equal(state.byCommit.shared, undefined, 'the last owner releases the settled payload');
+  assert.deepEqual(gitCommitFilesView(state, 'compact').expanded, {});
+  assert.deepEqual(gitCommitFilesView(state, 'large').expanded, {});
+
+  const reopened = compact.toggleCommit('shared', false);
+  await settle();
+  finishReads.shift()([fileChange('reopened.ts')]);
+  await reopened;
+  assert.equal(commitFilesEntry(state, 'shared').files[0].relativePath, 'reopened.ts');
+
+  await compact.toggleCommit('shared', false);
+  // Resetting the request origin must still finish for the other open view.
+  const transferred = large.toggleCommit('transferred', false);
+  await settle();
+  await compact.toggleCommit('transferred', false);
+  resetGitCommitFilesView(state, 'large');
+  finishReads.shift()([fileChange('transferred.ts')]);
+  await transferred;
+
+  assert.equal(isCommitExpanded(state, 'transferred', 'compact'), true);
+  assert.equal(commitFilesEntry(state, 'transferred').loading, false);
+  assert.equal(commitFilesEntry(state, 'transferred').loaded, true);
+
+  await compact.toggleCommit('transferred', false);
+  // With no remaining owner, reset drops the payload and rejects the late answer.
+  const released = large.toggleCommit('released', false);
+  await settle();
+  resetGitCommitFilesView(state, 'large');
+  finishReads.shift()([fileChange('late.ts')]);
+  await released;
+
+  assert.equal(state.byCommit.released, undefined);
+
+  // An old request cannot replace a new opposite-owner request for the same SHA.
+  const old = compact.toggleCommit('race', false);
+  await settle();
+  await large.toggleCommit('race', false);
+  await compact.toggleCommit('race', false);
+  await large.toggleCommit('race', false);
+  const newer = large.toggleCommit('race', false);
+  await settle();
+  finishReads[1]([fileChange('new.ts')]);
+  await newer;
+  finishReads[0]([fileChange('old.ts')]);
+  await old;
+
+  assert.equal(commitFilesEntry(state, 'race').files[0].relativePath, 'new.ts');
 }
 
 // ── a slow answer never overwrites a newer one ──────────────────────────────
@@ -376,4 +507,4 @@ function fileChange(relativePath, status = 'modified', badge = 'M') {
   assert.equal(panel.diffLoading, false);
 }
 
-console.log('gitCommitFiles.test.mjs: all checks passed');
+console.log('gitCommitFiles.test.ts: all checks passed');

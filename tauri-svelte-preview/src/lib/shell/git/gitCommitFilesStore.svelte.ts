@@ -19,6 +19,7 @@
  */
 
 import type { GitCommitFileChange } from './gitBackendExtra.ts';
+import type { GitSurfaceOwner } from './gitPanelStore.svelte.ts';
 
 /** Said when nothing on this page can answer a question about the history. */
 export const COMMIT_FILES_DESKTOP_ONLY_MESSAGE =
@@ -51,6 +52,13 @@ export interface GitCommitFilesEntry {
   error: string;
 }
 
+export interface GitCommitFilesViewState {
+  /** Commit id -> is its row open in this presentation. */
+  expanded: Record<string, boolean>;
+  selectedCommitSha: string;
+  selectedRelativePath: string;
+}
+
 export interface GitCommitFilesState {
   /** Increments whenever loaded commit detail is released. */
   revision: number;
@@ -58,14 +66,14 @@ export interface GitCommitFilesState {
   root: string | null;
   /** The top of that repository, once it has been worked out. */
   repositoryTop: string | null;
-  /** Commit id -> is its row open. */
-  expanded: Record<string, boolean>;
   /** Commit id -> what it changed. */
   byCommit: Record<string, GitCommitFilesEntry>;
-  /** The commit whose file is currently shown in the diff view, or ''. */
-  selectedCommitSha: string;
-  /** That file's path inside the repository, or ''. */
-  selectedRelativePath: string;
+  /** Lightweight interaction state; both presentations share `byCommit`. */
+  views: Record<GitSurfaceOwner, GitCommitFilesViewState>;
+}
+
+function createGitCommitFilesViewState(): GitCommitFilesViewState {
+  return { expanded: {}, selectedCommitSha: '', selectedRelativePath: '' };
 }
 
 export function createGitCommitFilesEntry(): GitCommitFilesEntry {
@@ -77,10 +85,11 @@ export function createGitCommitFilesState(): GitCommitFilesState {
     revision: 0,
     root: null,
     repositoryTop: null,
-    expanded: {},
     byCommit: {},
-    selectedCommitSha: '',
-    selectedRelativePath: ''
+    views: {
+      compact: createGitCommitFilesViewState(),
+      large: createGitCommitFilesViewState()
+    }
   };
 }
 
@@ -92,14 +101,39 @@ export function resetGitCommitFilesState(
   state.revision = (state.revision ?? 0) + 1;
   state.root = root;
   state.repositoryTop = null;
-  state.expanded = {};
   state.byCommit = {};
-  state.selectedCommitSha = '';
-  state.selectedRelativePath = '';
+  state.views = {
+    compact: createGitCommitFilesViewState(),
+    large: createGitCommitFilesViewState()
+  };
 }
 
-export function isCommitExpanded(state: GitCommitFilesState, sha: string): boolean {
-  return state.expanded[sha] === true;
+export function gitCommitFilesView(
+  state: GitCommitFilesState,
+  owner: GitSurfaceOwner = 'compact'
+): GitCommitFilesViewState {
+  return state.views[owner];
+}
+
+export function isCommitExpanded(
+  state: GitCommitFilesState,
+  sha: string,
+  owner: GitSurfaceOwner = 'compact'
+): boolean {
+  return gitCommitFilesView(state, owner).expanded[sha] === true;
+}
+
+/** Release one presentation without discarding payload another still displays. */
+export function resetGitCommitFilesView(
+  state: GitCommitFilesState,
+  owner: GitSurfaceOwner
+): void {
+  const opened = Object.keys(state.views[owner].expanded);
+  state.views[owner] = createGitCommitFilesViewState();
+  const other: GitSurfaceOwner = owner === 'compact' ? 'large' : 'compact';
+  for (const sha of opened) {
+    if (!state.views[other].expanded[sha]) delete state.byCommit[sha];
+  }
 }
 
 /** What we know about this commit, or a blank entry when we know nothing. */

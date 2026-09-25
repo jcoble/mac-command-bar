@@ -64,9 +64,14 @@ import {
   gitPanel,
   resetGitPanelState,
   type GitActionKind,
-  type GitPanelState
+  type GitPanelState,
+  type GitSurfaceOwner
 } from './gitPanelStore.svelte.ts';
-import { gitCommitFiles, resetGitCommitFilesState } from './gitCommitFilesStore.svelte.ts';
+import {
+  gitCommitFiles,
+  gitCommitFilesView,
+  resetGitCommitFilesView
+} from './gitCommitFilesStore.svelte.ts';
 
 /** Fixed commit count for the first and every later cursor page. */
 export const COMMIT_HISTORY_LIMIT = 24;
@@ -250,16 +255,16 @@ export interface GitService {
   /** Return the history surface to the repository's complete history. */
   clearHistoryPath(): Promise<void>;
   /** Show this file's diff. */
-  selectFile(file: ProjectGitFileStatus): Promise<void>;
+  selectFile(file: ProjectGitFileStatus, owner?: GitSurfaceOwner): Promise<void>;
   /**
    * Put back a diff a session remembered, pointing the panel at that session's
    * repository first if it is somewhere else. The Diff tab is one tab for the
    * whole shell, so on a session switch what it shows must follow the session
    * in front — this is how a remembered diff comes back.
    */
-  showStoredDiff(root: string, relativePath: string): Promise<void>;
+  showStoredDiff(root: string, relativePath: string, owner?: GitSurfaceOwner): Promise<void>;
   /** Stop showing a diff. */
-  clearSelection(): void;
+  clearSelection(owner?: GitSurfaceOwner | null): void;
   stagePaths(paths: string[]): Promise<void>;
   unstagePaths(paths: string[]): Promise<void>;
   /** Commit the staged changes using `state.commitMessage` unless one is given. */
@@ -478,8 +483,8 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyComplete = false;
     state.historyPaged = false;
     if (pathChanged) {
-      resetGitCommitFilesState(gitCommitFiles, targetRoot);
-      clearSelection();
+      resetGitCommitFilesView(gitCommitFiles, 'large');
+      clearSelection('large');
     }
     if (!historySurfaceVisible) return;
     await loadHistory(null, false);
@@ -493,16 +498,26 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     state.historyNextCursor = null;
     state.historyComplete = false;
     state.historyPaged = false;
-    resetGitCommitFilesState(gitCommitFiles, state.root);
-    clearSelection();
+    resetGitCommitFilesView(gitCommitFiles, 'large');
+    clearSelection('large');
     if (!historySurfaceVisible) return;
     await loadHistory(null, false);
   }
 
-  async function selectFile(file: ProjectGitFileStatus): Promise<void> {
+  async function selectFile(
+    file: ProjectGitFileStatus,
+    owner: GitSurfaceOwner = 'compact'
+  ): Promise<void> {
     const root = state.root;
     if (!root) return;
 
+    state.diffRevision += 1;
+    const revision = state.diffRevision;
+    state.selectedPaths[owner] = file.relativePath;
+    state.diffOwner = owner;
+    const commitSelection = gitCommitFilesView(gitCommitFiles, owner);
+    commitSelection.selectedCommitSha = '';
+    commitSelection.selectedRelativePath = '';
     state.selectedPath = file.relativePath;
     state.selectedDiff = null;
     state.diffError = '';
@@ -516,7 +531,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
         backend.readDiff(root, absolutePathWithin(root, file.relativePath)),
         diffTimeoutMs
       );
-      if (!stillCurrent(diffGuard, id, root)) return;
+      if (!stillCurrent(diffGuard, id, root) || state.diffRevision !== revision) return;
       if (!diff) {
         state.desktopOnly = true;
         state.diffError = DESKTOP_ONLY_MESSAGE;
@@ -525,16 +540,18 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       state.selectedDiff = diff;
       publishGitDiagnostics();
     } catch (error) {
-      if (!stillCurrent(diffGuard, id, root)) return;
+      if (!stillCurrent(diffGuard, id, root) || state.diffRevision !== revision) return;
       state.diffError = describeError(error, 'Could not read the changes for this file.');
     } finally {
-      if (stillCurrent(diffGuard, id, root)) state.diffLoading = false;
+      if (stillCurrent(diffGuard, id, root) && state.diffRevision === revision) {
+        state.diffLoading = false;
+      }
     }
   }
 
-  function clearSelection(): void {
-    diffGuard.invalidate();
-    clearSelectedGitFile(state);
+  function clearSelection(owner: GitSurfaceOwner | null = null): void {
+    if (owner === null || state.diffOwner === owner) diffGuard.invalidate();
+    clearSelectedGitFile(state, owner);
     publishGitDiagnostics();
   }
 
@@ -554,7 +571,11 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     // them after activation so a history-only surface does not read status.
   }
 
-  async function showStoredDiff(root: string, relativePath: string): Promise<void> {
+  async function showStoredDiff(
+    root: string,
+    relativePath: string,
+    owner: GitSurfaceOwner = 'compact'
+  ): Promise<void> {
     const folder = root.trim();
     const path = relativePath.trim();
     if (!folder || !path) return;
@@ -567,8 +588,8 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     if (!state.status) await refreshStatus();
     if (!stillCurrent(diffGuard, id, folder)) return;
     const known = (state.status?.files ?? []).find((file) => file.relativePath === path);
-    if (known) return selectFile(known);
-    clearSelection();
+    if (known) return selectFile(known, owner);
+    clearSelection(owner);
   }
 
   /** Re-read the diff on screen after an action changed the working tree. */
@@ -577,10 +598,10 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     if (selected === '') return;
     const file = (state.status?.files ?? []).find((entry) => entry.relativePath === selected);
     if (!file) {
-      clearSelection();
+      clearSelection(state.diffOwner);
       return;
     }
-    void selectFile(file);
+    void selectFile(file, state.diffOwner ?? 'compact');
   }
 
   /**

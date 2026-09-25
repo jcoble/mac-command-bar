@@ -43,6 +43,7 @@
   import {
     commitFilesEntry,
     describeCommitFiles,
+    gitCommitFilesView,
     isCommitExpanded,
     isUnreadableGitPath,
     splitRepositoryPath,
@@ -67,6 +68,7 @@
   }
   let { panel, service, commitFiles, commitFilesState }: Props = $props();
   let contextMenu = $state.raw<SourceControlMenuSnapshot | null>(null);
+  const interaction = $derived(gitCommitFilesView(commitFilesState, 'compact'));
 
   const countLabel = $derived(describeGitHistoryCount(panel));
   const footer = $derived(describeGitHistoryFooter(panel));
@@ -273,8 +275,8 @@
                   <ListRow
                     onclick={() => void pickFile(commit.sha, file)}
                     oncontextmenu={(event) => openCommitFileMenu(commit.sha, file, event)}
-                    selected={commitFilesState.selectedCommitSha === commit.sha &&
-                      commitFilesState.selectedRelativePath === file.relativePath}
+                    selected={interaction.selectedCommitSha === commit.sha &&
+                      interaction.selectedRelativePath === file.relativePath}
                     data-testid={`source-control-commit-file-${file.relativePath}`}
                   >
                     <span
