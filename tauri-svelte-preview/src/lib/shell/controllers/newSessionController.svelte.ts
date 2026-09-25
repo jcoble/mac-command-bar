@@ -4,8 +4,10 @@ import { sessionWorkspaceRoot } from '../../workspacePaths';
 import {
 	conversationSessions,
 	getConversationSession,
+	setConversationDraft,
+	setConversationSendError,
 } from '../conversation/conversationStore.svelte';
-import { sendStructuredMessage } from '../conversation/conversationService';
+import { flushConversationSessionDraft, persistConversationSessionDraft, sendStructuredMessage } from '../conversation/conversationService';
 import { rememberLastUsed } from '../newSession/projectRootsStore.svelte';
 import {
 	deriveThreadStartProjects,
@@ -149,6 +151,7 @@ export class NewSessionController {
 			lastError: null,
 		});
 		shellPanels.allowSessionLoads();
+		let promptAccepted = false;
 
 		try {
 			await selectSession(owned.ownedId);
@@ -167,6 +170,7 @@ export class NewSessionController {
 				model: request.model,
 				approvalPolicy: request.approvalPolicy,
 			});
+			promptAccepted = true;
 			// A switch may stop draft ownership, but it must not cancel the agent turn
 			// that sendStructuredMessage has already handed to the background runtime.
 			const stillPresented = !stopSignal.aborted;
@@ -177,6 +181,16 @@ export class NewSessionController {
 			return owned.ownedId;
 		} catch (error) {
 			const detail = this.describeError(error);
+			if (!promptAccepted) {
+				const currentDraft = getConversationSession(owned.ownedId)?.draft ?? '';
+				const draft = currentDraft ? `${request.prompt}\n\n${currentDraft}` : request.prompt;
+				setConversationDraft(owned.ownedId, draft);
+				setConversationSendError(owned.ownedId, detail);
+				persistConversationSessionDraft(owned.ownedId, draft);
+				try { await flushConversationSessionDraft(owned.ownedId); } catch {
+					// Keep the draft in memory and report the original send failure.
+				}
+			}
 			updateOwnedSession(owned.ownedId, {
 				state: 'exited',
 				executionOwner: 'stopped',

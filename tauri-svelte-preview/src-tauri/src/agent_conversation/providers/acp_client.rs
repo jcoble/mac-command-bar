@@ -445,6 +445,7 @@ pub struct AcpClient {
     sessions: Arc<Mutex<HashMap<SessionId, AcpSessionState>>>,
     primary_session_id: Option<SessionId>,
     provider: Option<AgentConversationProvider>,
+    personal_authentication: bool,
 }
 
 const CLAUDE_VERIFIED_EXTRA_MODELS: [&str; 3] = ["opus", "claude-opus-5", "claude-fable-5"];
@@ -481,6 +482,7 @@ impl AcpClient {
             sessions,
             primary_session_id: None,
             provider: None,
+            personal_authentication: false,
         })
     }
 
@@ -505,6 +507,8 @@ impl AcpClient {
     ) -> Result<AgentCapabilities, AgentRuntimeError> {
         let request = acp::InitializeRequest::new(ProtocolVersion::V1);
         let result = self.request("initialize", &request).await?;
+        self.personal_authentication = result.get("authMethods").and_then(Value::as_array)
+            .is_some_and(|methods| methods.iter().any(|method| method.get("id").and_then(Value::as_str) == Some("oauth-personal")));
         let implementation = result.get("agentInfo").or_else(|| result.get("agent_info"));
         let capabilities = AgentCapabilities {
             revision: 1,
@@ -575,6 +579,15 @@ impl AcpClient {
         };
         self.provider = Some(provider);
         Ok(capabilities)
+    }
+
+    pub(crate) async fn authenticate_personal(&mut self) -> Result<(), AgentRuntimeError> {
+        self.initialize(AgentConversationProvider::Antigravity).await?;
+        if !self.personal_authentication {
+            return Err(AgentRuntimeError::new("authentication-unavailable", "This Antigravity adapter does not advertise Google personal sign-in"));
+        }
+        self.request("authenticate", &json!({"methodId":"oauth-personal"})).await?;
+        Ok(())
     }
 
     pub async fn new_session(
@@ -1487,7 +1500,9 @@ while IFS= read -r line; do
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
 	  *'"method":"initialize"'*)
-	    if [ "$fixture" = "multiplex" ]; then
+	    if [ "$fixture" = "auth" ] || [ "$fixture" = "auth_wait" ]; then
+          printf '{{"jsonrpc":"2.0","id":%s,"result":{{"authMethods":[{{"id":"oauth-personal","name":"Google"}}],"agentCapabilities":{{}},"agentInfo":{{"name":"antigravity-acp","version":"1.2.1"}}}}}}\n' "$id"
+        elif [ "$fixture" = "multiplex" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":true,"close":true,"multiSession":true}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
 	    elif [ "$fixture" = "steering" ] || [ "$fixture" = "steering_idle" ] || [ "$fixture" = "steering_failed" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"_meta":{{"steering":{{"supported":true}}}},"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
@@ -1499,6 +1514,10 @@ while IFS= read -r line; do
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
 	    fi ;;
     *'"method":"session/new"'*)
+      if {{ [ "$fixture" = "auth" ] || [ "$fixture" = "auth_wait" ]; }} && [ ! -f "$log.authenticated" ]; then
+        printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32000,"message":"Authentication required"}}}}\n' "$id"
+        continue
+      fi
       if [ "$fixture" = "multiplex" ]; then
         session_count=$((session_count + 1))
         session_id="session-$session_count"
@@ -1654,6 +1673,11 @@ while IFS= read -r line; do
       [ "$fixture" = "steering_idle" ] && outcome=promptRequired
       [ "$fixture" = "steering_failed" ] && outcome=failed
       printf '{{"jsonrpc":"2.0","id":%s,"result":{{"outcome":"%s"}}}}\n' "$id" "$outcome" ;;
+    *'"method":"authenticate"'*)
+      if [ "$fixture" = "auth_wait" ]; then sleep 120; else
+        touch "$log.authenticated"
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"
+      fi ;;
     *'"method":"session/close"'*)
       printf '{{"jsonrpc":"2.0","id":%s,"result":{{}}}}\n' "$id"
       if [ "$fixture" != "multiplex" ]; then exit 0; fi ;;

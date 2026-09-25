@@ -30,6 +30,7 @@ use super::protocol::{
     UpdateAgentConversationSessionMetaRequest,
 };
 use super::providers::acp_client::{AcpInbound, AcpTransport};
+use super::providers::authentication::{self, Authentications};
 use super::providers::process::validated_conversation_cwd;
 use super::providers::process::SidecarEnvironment;
 use super::providers::{
@@ -309,6 +310,7 @@ pub struct AgentRuntimeManager {
     /// conversation events are always reconstructed from `store` at startup.
     sessions: Arc<Mutex<HashMap<String, ManagedAgentSession>>>,
     providers: Arc<ProviderRegistry>,
+    authentications: Authentications,
     emitter: Arc<Mutex<Option<ConversationEmitter>>>,
     broker_emitter: Arc<Mutex<Option<BrokerEmitter>>>,
     broker_statuses: Arc<Mutex<HashMap<String, AgentWorkStatus>>>,
@@ -381,6 +383,7 @@ impl AgentRuntimeManager {
             latest_snapshot_request: Arc::new(AtomicU64::new(0)),
             store,
             adapter_pools: Arc::new(AsyncMutex::new(HashMap::new())),
+            authentications: Authentications::default(),
         })
     }
 
@@ -872,6 +875,7 @@ impl AgentRuntimeManager {
     }
 
     pub fn has_pending_provider_work(&self) -> bool {
+        if self.authentications.pending() { return true; }
         self.sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1714,9 +1718,30 @@ impl AgentRuntimeManager {
         // cannot detach the runtime between any of those steps. The guard is
         // released as soon as `prompt` records the active turn; streaming keeps
         // running independently.
-        let lifecycle = self.lifecycle_guard(owned_id).await?;
+        let mut lifecycle = self.lifecycle_guard(owned_id).await?;
+        let activation = self.activate_locked(owned_id, generation).await;
+        let activation = if let Err(error) = &activation {
+            let (provider, cwd) = {
+                let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let session = current_session(&sessions, owned_id, generation)?;
+                (session.provider, session.cwd.clone())
+            };
+            if authentication::required(provider, error) {
+                // Register cancellation before releasing the session guard. Stop
+                // checks both before and after acquiring it, covering either order.
+                let mut attempt = self.authentications.begin(owned_id, generation)?;
+                let manifest = self.providers.manifest(provider)?;
+                drop(lifecycle);
+                let authenticated = attempt.authenticate(&manifest, Path::new(&cwd)).await;
+                lifecycle = self.lifecycle_guard(owned_id).await?;
+                if attempt.was_cancelled() { return Err("Antigravity sign-in cancelled".into()); }
+                authenticated?;
+                drop(attempt);
+                self.activate_locked(owned_id, generation).await
+            } else { activation }
+        } else { activation };
         let sent = async {
-            self.activate_locked(owned_id, generation).await?;
+            activation?;
             if model.is_some() || approval_policy.is_some() {
                 self.apply_conversation_config(
                     SetAgentConversationConfigRequest {
@@ -2448,9 +2473,11 @@ impl AgentRuntimeManager {
     }
 
     pub async fn cancel_turn(&self, owned_id: &str, generation: u64) -> Result<(), String> {
+        if self.authentications.cancel(owned_id, generation) { return Ok(()); }
         // A send may still be activating the adapter. Inspect its turn only after
         // that lifecycle operation has recorded the accepted prompt.
         let lifecycle = self.lifecycle_guard(owned_id).await?;
+        if self.authentications.cancel(owned_id, generation) { return Ok(()); }
         let runtime = self.runtime(owned_id, generation)?;
         let transport = {
             let runtime = runtime.lock().await;
@@ -3268,10 +3295,12 @@ impl AgentRuntimeManager {
     }
 
     pub async fn close(&self, owned_id: &str, generation: u64) -> Result<bool, String> {
+        self.authentications.cancel(owned_id, generation);
         if !self.hydrate_overlay_from_store(owned_id)? {
             return Ok(false);
         }
         let _lifecycle = self.lifecycle_guard(owned_id).await?;
+        self.authentications.cancel(owned_id, generation);
         let (runtime, transport, pool_key, native_session_id, pending_permissions, pending_inputs) = {
             let mut sessions = self
                 .sessions
@@ -11063,6 +11092,55 @@ mod tests {
             .await
             .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn antigravity_authentication_send_retries_once_and_stop_preserves_unsent_prompt() {
+        for fixture_name in ["auth", "auth_wait", "auth_close"] {
+            let root = temp_root();
+            let log = root.join("authentication.jsonl");
+            let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&log, if fixture_name == "auth_close" { "auth_wait" } else { fixture_name });
+            let manager = AgentRuntimeManager::new(ProviderRegistry::new([
+                (AgentConversationProvider::Antigravity, manifest)
+            ]).unwrap());
+            let owned_id = "auth-owned";
+            let connection = manager.ensure_inner(request(root.to_str().unwrap(), owned_id,
+                AgentConversationProvider::Antigravity)).unwrap().0;
+            let generation = connection.generation;
+            let sender = manager.clone();
+            let send = tokio::spawn(async move {
+                sender.send_message(owned_id, generation, test_prompt("unsent until authenticated"), None, None).await
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !fs::read_to_string(&log).unwrap_or_default().contains("\"method\":\"authenticate\"") {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.unwrap();
+            if fixture_name != "auth" {
+                assert!(manager.has_pending_provider_work());
+                if fixture_name == "auth_close" {
+                    tokio::time::timeout(Duration::from_secs(5), manager.close(owned_id, generation)).await.unwrap().unwrap();
+                } else {
+                    tokio::time::timeout(Duration::from_secs(5), manager.cancel_turn(owned_id, generation)).await.unwrap().unwrap();
+                }
+                assert!(tokio::time::timeout(Duration::from_secs(5), send).await.unwrap().unwrap().unwrap_err().contains("cancelled"));
+                assert!(!fs::read_to_string(&log).unwrap().contains("\"method\":\"session/prompt\""));
+            } else {
+                tokio::time::timeout(Duration::from_secs(5), send).await.unwrap().unwrap().unwrap();
+                // Send acknowledges acceptance before the prompt task writes its frame.
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while !fs::read_to_string(&log).unwrap_or_default().contains("\"method\":\"session/prompt\"") {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }).await.unwrap();
+                let frames = fs::read_to_string(&log).unwrap();
+                assert_eq!(frames.matches("\"method\":\"authenticate\"").count(), 1);
+                assert_eq!(frames.matches("\"method\":\"session/prompt\"").count(), 1);
+            }
+            assert!(!manager.authentications.pending());
+            manager.close(owned_id, generation).await.unwrap();
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

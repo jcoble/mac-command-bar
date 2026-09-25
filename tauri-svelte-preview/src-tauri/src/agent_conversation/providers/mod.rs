@@ -1,5 +1,6 @@
 pub mod acp;
 pub mod acp_client;
+pub(crate) mod authentication;
 mod packaged;
 pub mod process;
 pub mod updates;
