@@ -5716,6 +5716,8 @@ fn main() {
             agent_conversation::set_agent_conversation_config_option,
             agent_conversation::read_agent_conversation_config,
             agent_conversation::warm_agent_conversation_config,
+            agent_conversation::probe_agent_provider_config,
+            agent_conversation::cancel_agent_provider_probe,
             agent_conversation::read_agent_conversation_capabilities,
             agent_conversation::close_agent_conversation,
             agent_conversation::delete_agent_conversation_session,

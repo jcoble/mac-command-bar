@@ -343,7 +343,6 @@
 			<DraftSessionSurface
 				sessionRoots={selection.newSession.sessionRoots}
 				presetProjectPath={selection.newSession.draftProjectPath}
-				providerConfigs={selection.newSession.providerConfigs}
 				stopSignal={selection.newSession.stopSignal}
 				onSend={startNewSession}
 				onClose={() => selection.newSession.close()}

@@ -7,10 +7,9 @@
   provider, project and branch on the left of the footer, and model, effort and
   approval through the same `ComposerConfigMenu` a running session uses.
 
-  Nothing is created here. The surface holds one `ThreadStartPickerState` and
-  hands it to `onSend` on the first message; the route owns every side effect
-  from there. Abandoning it — switching session, or the close button — discards
-  the state and leaves nothing behind.
+  No Assembly conversation is created here. A temporary ACP session reads the
+  selected provider's controls; its process stops after the read. The surface
+  hands one `ThreadStartPickerState` to `onSend` on the first message.
 -->
 <script lang="ts">
   import { parseRemoteWorkspacePath } from '$lib/workspacePaths';
@@ -45,18 +44,14 @@
     setSessionRoots
   } from '$lib/shell/newSession/projectRootsStore.svelte';
   import {
-    accessChoicesFor,
     buildThreadStartRequest,
     canSelectThreadStartGitRef,
     defaultThreadStartState,
     displayProvider,
-    effortChoicesFor,
     filterThreadStartGitRefs,
-    groupProviderModels,
     validateThreadStart,
     type ThreadStartPickerState,
     type ThreadStartProvider,
-    type ThreadStartProviderConfig,
     type ThreadStartRequest
   } from '$lib/shell/newSession/threadStartFlow.ts';
   import {
@@ -66,8 +61,9 @@
     type BackendAnswer,
     type ProjectGitRef
   } from '$lib/shell/newSession/newSessionBackend.ts';
-  import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
+  import { rememberAgentConfigChoice, rememberedAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
   import {
+    probeAgentProviderConfigFromTauri,
     readRemoteAssemblyEnvironmentFromTauri,
     type RemoteAssemblyEnvironment,
     type RemoteAssemblyProfile,
@@ -79,13 +75,12 @@
      * knows about projects nobody added by hand. */
     sessionRoots: string[];
     presetProjectPath: string | null;
-    providerConfigs: ThreadStartProviderConfig[];
     stopSignal: AbortSignal;
     onSend: (request: ThreadStartRequest) => void | Promise<void>;
     onClose: () => void;
   }
 
-  let { sessionRoots, presetProjectPath, providerConfigs, stopSignal, onSend, onClose }: Props = $props();
+  let { sessionRoots, presetProjectPath, stopSignal, onSend, onClose }: Props = $props();
 
   const PROVIDERS: readonly ThreadStartProvider[] = ['codex', 'claude', 'antigravity'];
   /** This build has no create-worktree command, so only existing checkouts. */
@@ -100,7 +95,7 @@
   // The preset is applied on mount after SQLite hydration; this is only what
   // the first frame paints.
   let draft = $state<ThreadStartPickerState>(
-    defaultThreadStartState({ projectPath: preferredRoot(null) })
+    { ...defaultThreadStartState({ projectPath: preferredRoot(null) }), model: '', effort: '', access: '' }
   );
   let composer = $state<{ focus(): void } | null>(null);
   let gitRefs = $state<ProjectGitRef[]>([]);
@@ -109,6 +104,10 @@
   let refSearch = $state('');
   let submitting = $state(false);
   let submitError = $state('');
+  let catalogConfig = $state<AgentConversationConfigState | null>(null);
+  let catalogKey = $state('');
+  let catalogError = $state('');
+  let hydrated = $state(false);
   let loadSequence = 0;
   let remoteAssembly = $state<RemoteAssemblyEnvironment>({ profiles: [], readyProfileIds: [] });
   let remoteSetupOpen = $state(false);
@@ -121,7 +120,10 @@
   });
 
   const roots = $derived(knownRoots());
-  const modelGroups = $derived(groupProviderModels(providerConfigs));
+  const selectedCatalogKey = $derived([
+    draft.executionEnvironment, draft.remoteProfileId ?? '', draft.provider, draft.cwd
+  ].join('\u0000'));
+  const currentCatalog = $derived(catalogKey === selectedCatalogKey ? catalogConfig : null);
   const problems = $derived(validateThreadStart(draft));
   const filteredRefs = $derived(filterThreadStartGitRefs(gitRefs, refSearch));
   const selectedRef = $derived(gitRefs.find((ref) => ref.name === draft.branch) ?? null);
@@ -147,23 +149,74 @@
    * exist yet.
    */
   const configState = $derived<AgentConversationConfigState>({
-    model: draft.model || null,
-    availableModels:
-      modelGroups
-        .find((group) => group.provider === draft.provider)
-        ?.models.filter((model) => model.available)
-        .map((model) => model.id) ?? [],
-    modelLabels: Object.fromEntries(modelGroups.find((group) => group.provider === draft.provider)?.models.map((model) => [model.id, model.label]) ?? []),
-    reasoningEffort: draft.effort || null,
-    availableEfforts: effortChoicesFor(draft.provider, providerConfigs),
-    approvalPolicy: draft.access || null,
-    availableApprovalPolicies: accessChoicesFor(draft.provider, providerConfigs)
+    model: currentCatalog ? (draft.model || null) : null,
+    availableModels: currentCatalog?.availableModels ?? [],
+    modelLabels: currentCatalog?.modelLabels ?? {},
+    reasoningEffort: currentCatalog ? (draft.effort || null) : null,
+    availableEfforts: currentCatalog?.availableEfforts ?? [],
+    approvalPolicy: currentCatalog ? (draft.access || null) : null,
+    availableApprovalPolicies: currentCatalog?.availableApprovalPolicies ?? []
   });
 
   function updateDraft(patch: Partial<ThreadStartPickerState>): void {
-    draft = { ...draft, ...patch };
+    const targetChanged = (patch.executionEnvironment !== undefined && patch.executionEnvironment !== draft.executionEnvironment)
+      || (patch.remoteProfileId !== undefined && patch.remoteProfileId !== draft.remoteProfileId)
+      || (patch.provider !== undefined && patch.provider !== draft.provider)
+      || (patch.cwd !== undefined && patch.cwd !== draft.cwd);
+    if (targetChanged) {
+      catalogConfig = null;
+      catalogKey = '';
+    }
+    draft = { ...draft, ...(targetChanged ? { model: '', effort: '', access: '' } : {}), ...patch };
     submitError = '';
   }
+
+  function offeredChoice(wanted: string | null | undefined, current: string | null, offered: string[]): string {
+    return (wanted && offered.includes(wanted) ? wanted : null)
+      ?? (current && offered.includes(current) ? current : null)
+      ?? offered[0] ?? '';
+  }
+
+  $effect(() => {
+    const key = selectedCatalogKey;
+    const [machine, profileId, providerId, cwd] = key.split('\u0000');
+    const executionEnvironment = machine as ExecutionEnvironment;
+    const remoteProfileId = profileId || null;
+    const provider = providerId as ThreadStartProvider;
+    if (!hydrated || !cwd.startsWith('/') || (executionEnvironment === 'remote' && !remoteProfileId) || stopSignal.aborted) return;
+    const controller = new AbortController();
+    const cancel = (): void => controller.abort();
+    stopSignal.addEventListener('abort', cancel, { once: true });
+    catalogConfig = null;
+    catalogError = '';
+    void (async () => {
+      try {
+        const config = await probeAgentProviderConfigFromTauri({
+          provider, executionEnvironment, remoteProfileId, cwd
+        }, controller.signal);
+        if (controller.signal.aborted || stopSignal.aborted || selectedCatalogKey !== key || !config) return;
+        if (!config.availableModels.length) throw new Error('The provider did not advertise any models for this machine.');
+        const remembered = rememberedAgentConfigChoice(provider);
+        draft = {
+          ...draft,
+          model: offeredChoice(remembered?.model, config.model, config.availableModels),
+          effort: offeredChoice(remembered?.reasoningEffort, config.reasoningEffort, config.availableEfforts),
+          access: offeredChoice(remembered?.approvalPolicy, config.approvalPolicy, config.availableApprovalPolicies)
+        };
+        catalogConfig = config;
+        catalogKey = key;
+        submitError = '';
+      } catch (error) {
+        if (controller.signal.aborted || stopSignal.aborted || selectedCatalogKey !== key) return;
+        catalogError = describeError(error);
+        submitError = catalogError;
+      }
+    })();
+    return () => {
+      controller.abort();
+      stopSignal.removeEventListener('abort', cancel);
+    };
+  });
 
   async function loadRefs(projectPath: string): Promise<void> {
     const sequence = ++loadSequence;
@@ -282,14 +335,7 @@
 
   function selectProvider(provider: ThreadStartProvider): void {
     if (provider === draft.provider) return;
-    const next = defaultThreadStartState({
-      projectPath: draft.projectPath,
-      cwd: draft.cwd,
-      branch: draft.branch,
-      provider,
-      providerConfigs
-    });
-    updateDraft({ provider, model: next.model, effort: next.effort, access: next.access });
+    updateDraft({ provider });
   }
 
   function chooseRef(ref: ProjectGitRef): void {
@@ -310,6 +356,12 @@
     let request = buildThreadStartRequest(draft);
     if (!request) {
       submitError = problems[0]?.message ?? 'This draft is not ready to send.';
+      return;
+    }
+    if (!currentCatalog || !currentCatalog.availableModels.includes(draft.model)
+      || (draft.effort && !currentCatalog.availableEfforts.includes(draft.effort))
+      || (draft.provider !== 'antigravity' && draft.access && !currentCatalog.availableApprovalPolicies.includes(draft.access))) {
+      submitError = catalogError || 'Wait for this machine’s model choices before sending.';
       return;
     }
     submitting = true;
@@ -367,10 +419,11 @@
     if (stopSignal.aborted || !owner.active || sequence !== loadSequence) return;
     const remote = presetProjectPath ? parseRemoteWorkspacePath(presetProjectPath) : null;
     const projectPath = remote?.path ?? preferredRoot(presetProjectPath);
-    draft = defaultThreadStartState({ projectPath, providerConfigs });
+    draft = { ...defaultThreadStartState({ projectPath }), model: '', effort: '', access: '' };
     if (remote) {
       draft = { ...draft, executionEnvironment: 'remote', remoteProfileId: remote.profileId };
     } else if (projectPath) void loadRefs(projectPath);
+    hydrated = true;
     composer?.focus();
   }
 
@@ -577,7 +630,7 @@
 <section class="draft-surface" data-testid="draft-session-surface" aria-label="New session">
   <div class="draft-topline">
     <span data-testid="draft-session-note">
-      New project folders get a local Git repository when selected. No session is created until you send.
+      New project folders get a local Git repository when selected. Your conversation starts when you send.
     </span>
     <Button
       data-testid="draft-session-close"

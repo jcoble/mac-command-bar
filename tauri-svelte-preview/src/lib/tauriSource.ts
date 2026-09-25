@@ -1,4 +1,6 @@
 import { parseRemoteWorkspacePath, remoteWorkspacePath, mapWorkspaceSnapshotPaths } from './workspacePaths.ts';
+import type { AgentConversationConfigState } from './shell/conversation/conversationConfig.ts';
+import type { AgentConversationProvider } from './shell/conversation/conversationTypes.ts';
 import { Channel } from '@tauri-apps/api/core';
 import type {
   ProjectRoot,
@@ -1939,6 +1941,35 @@ export async function cancelAgentConversationRequestFromTauri(requestId: number)
   if (!isTauriRuntime()) return;
   const { invoke } = await import('./workspaceInvoke');
   await invoke('cancel_agent_conversation_request', { requestId });
+}
+
+export async function probeAgentProviderConfigFromTauri(
+  input: {
+    provider: AgentConversationProvider;
+    executionEnvironment: ExecutionEnvironment;
+    remoteProfileId: string | null;
+    cwd: string;
+  },
+  signal: AbortSignal
+): Promise<AgentConversationConfigState | null> {
+  if (!isTauriRuntime() || signal.aborted) return null;
+  const requestId = createAgentConversationRequestId();
+  const { invoke } = await import('./workspaceInvoke');
+  const cancel = (): void => { void invoke('cancel_agent_provider_probe', { requestId }); };
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal.aborted) return null;
+    const result = await invoke<AgentConversationConfigState>('probe_agent_provider_config', {
+      ...input,
+      requestId
+    });
+    return signal.aborted ? null : result;
+  } catch (error) {
+    if (signal.aborted) return null;
+    throw error;
+  } finally {
+    signal.removeEventListener('abort', cancel);
+  }
 }
 
 export async function readAgentConversationSnapshotFromTauri(

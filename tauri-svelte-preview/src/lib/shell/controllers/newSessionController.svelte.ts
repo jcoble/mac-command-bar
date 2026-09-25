@@ -1,8 +1,6 @@
 /** Owns the draft surface and the side effects of its first send. */
-import { rememberedAgentConfigChoice } from '../conversation/agentConfigMemory';
 import { sessionWorkspaceRoot } from '../../workspacePaths';
 import {
-	conversationSessions,
 	getConversationSession,
 	setConversationDraft,
 	setConversationSendError,
@@ -11,7 +9,6 @@ import { flushConversationSessionDraft, persistConversationSessionDraft, sendStr
 import { rememberLastUsed } from '../newSession/projectRootsStore.svelte';
 import {
 	deriveThreadStartProjects,
-	type ThreadStartProviderConfig,
 	type ThreadStartRequest,
 } from '../newSession/threadStartFlow';
 import {
@@ -25,20 +22,6 @@ import {
 	updateOwnedSession,
 } from '../stores/sessionRailStore.svelte';
 import { updateAgentConversationSessionMetaFromTauri } from '../../tauriSource';
-
-const PROVIDERS = ['codex', 'claude', 'antigravity'] as const;
-
-function supportedChoice(
-	remembered: string | null | undefined,
-	current: string | null | undefined,
-	available: readonly string[],
-	hasKnownCatalog: boolean,
-): string | null {
-	if (!hasKnownCatalog) return remembered ?? current ?? null;
-	if (remembered && available.includes(remembered)) return remembered;
-	if (current && available.includes(current)) return current;
-	return available[0] ?? null;
-}
 
 export class NewSessionController {
 	draftOpen = $state(false);
@@ -56,49 +39,6 @@ export class NewSessionController {
 		return deriveThreadStartProjects(
 			rail.owned.filter((session) => session.executionEnvironment !== 'remote').map((session) => session.projectPath ?? session.cwd),
 		).map((project) => project.path);
-	}
-
-	get providerConfigs(): ThreadStartProviderConfig[] {
-		return PROVIDERS.map((provider) => {
-			const existing = [...rail.owned]
-				.sort(
-					(left, right) =>
-						Date.parse(right.lastActivity ?? '1970-01-01')
-						- Date.parse(left.lastActivity ?? '1970-01-01'),
-				)
-				.map((session) => conversationSessions[session.ownedId])
-				.find((session) => session?.provider === provider);
-			const config = existing?.agentConfig;
-			const chosen = rememberedAgentConfigChoice(provider);
-			const availableModels = config?.availableModels ?? [];
-			const availableEfforts = config?.availableEfforts ?? [];
-			const availableApprovalPolicies = config?.availableApprovalPolicies ?? [];
-			const hasKnownCatalog = Boolean(
-				availableModels.length
-				|| availableEfforts.length
-				|| availableApprovalPolicies.length,
-			);
-			return {
-				provider,
-				model: supportedChoice(chosen?.model, config?.model, availableModels, hasKnownCatalog),
-				availableModels,
-				modelLabels: config?.modelLabels,
-				reasoningEffort: supportedChoice(
-					chosen?.reasoningEffort,
-					config?.reasoningEffort,
-					availableEfforts,
-					hasKnownCatalog,
-				),
-				availableEfforts,
-				approvalPolicy: supportedChoice(
-					chosen?.approvalPolicy,
-					config?.approvalPolicy,
-					availableApprovalPolicies,
-					hasKnownCatalog,
-				),
-				availableApprovalPolicies,
-			};
-		});
 	}
 
 	open(): void {

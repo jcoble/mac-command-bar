@@ -1308,9 +1308,7 @@ export async function sendStructuredMessage(
         // Named on the recorded user message so a restart can find the saved
         // files again; the in-memory hold above does not survive one.
         attachmentIds: state.attachments.map((attachment) => attachment.id),
-        model: requestedModel && state.agentConfig.availableModels.includes(requestedModel)
-          ? requestedModel
-          : null,
+        model: requestedModel,
         approvalPolicy:
           requestedApprovalPolicy
           && state.agentConfig.availableApprovalPolicies.includes(requestedApprovalPolicy)
