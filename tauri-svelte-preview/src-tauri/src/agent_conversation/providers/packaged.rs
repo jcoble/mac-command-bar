@@ -37,7 +37,7 @@ pub(super) struct PackagedAdapter {
     pub files: Vec<PackagedFile>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(super) struct PackagedFile {
     pub path: String,
     pub sha256: String,

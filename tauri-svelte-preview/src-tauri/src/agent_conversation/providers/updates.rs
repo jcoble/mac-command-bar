@@ -284,9 +284,24 @@ async fn status_for(
             .find(|(provider, _, _)| provider == &adapter.provider)
             .map(|(_, version, _)| version.as_str())
             .unwrap_or(running_version);
-        let update_available = damaged || Version::parse(&adapter.version)
-            .map_err(|error| error.to_string())?
-            > Version::parse(current_version).map_err(|error| error.to_string())?;
+        let available = Version::parse(&adapter.version).map_err(|error| error.to_string())?;
+        let installed = Version::parse(current_version).map_err(|error| error.to_string())?;
+        // Assembly can correct a launcher without an upstream adapter version bump.
+        // Compare the signed payload on the blocking pool, including bundled installs.
+        let changed_payload = if available == installed {
+            let executable = current.iter().chain(running.iter())
+                .find(|(provider, _, _)| provider == &adapter.provider)
+                .map(|(_, _, path)| path.clone()).unwrap();
+            let files = adapter.files.clone();
+            tokio::task::spawn_blocking(move || {
+                let Some(directory) = executable.parent() else { return true; };
+                files.iter().any(|file| super::file_sha256(&directory.join(&file.path))
+                    .map(|hash| hash != file.sha256).unwrap_or(true))
+            }).await.map_err(|error| format!("Could not inspect provider package contents: {error}"))?
+        } else {
+            false
+        };
+        let update_available = damaged || available > installed || changed_payload;
         providers.push(ProviderUpdateVersion {
             provider: adapter.provider.clone(),
             current_version: current_version.to_string(),
@@ -621,6 +636,16 @@ mod tests {
         let after = status_for(&directory, &manifest, &[("codex".into(), "2.0.0".into(), root.join("installed/codex-acp"))]).await.unwrap();
         assert!(!after.restart_required);
         assert!(!after.update_available);
+        let mut revised: RemoteManifest = serde_json::from_str(&bytes).unwrap();
+        revised.adapters[0].files[0].sha256 = format!("{:x}", Sha256::digest(b"corrected launcher"));
+        let running = vec![("codex".into(), "2.0.0".into(), root.join("installed/codex-acp"))];
+        let correction = status_for(&directory, &revised, &running).await.unwrap();
+        assert!(correction.update_available);
+        assert!(!correction.restart_required);
+        // A bundled install without an active pointer must receive the correction too.
+        std::fs::remove_file(root.join("active.json")).unwrap();
+        assert!(status_for(&directory, &revised, &running).await.unwrap().update_available);
+        assert!(!status_for(&directory, &manifest, &running).await.unwrap().update_available);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
