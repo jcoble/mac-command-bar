@@ -15,10 +15,11 @@
     itemId?: string;
     completed?: boolean;
     blocks?: readonly SafeMarkdownBlock[] | null;
+    showImages?: boolean;
     onFileLink?(path: string): void;
   }
 
-  let { text, role, itemId = 'message', completed = true, blocks: incomingBlocks, onFileLink }: Props = $props();
+  let { text, role, itemId = 'message', completed = true, blocks: incomingBlocks, showImages = false, onFileLink }: Props = $props();
   const blocks = $derived(incomingBlocks?.length ? incomingBlocks : parseSafeMarkdown(text));
 
   /* A pasted log or a long brief is worth keeping, but not worth scrolling
@@ -105,6 +106,11 @@
   {:else if part.kind === 'strike'}<del>{#each part.parts as inner}{@render inline(inner)}{/each}</del>
   {:else if part.kind === 'code'}<code class="inline-code">{part.value}</code>
   {:else if part.kind === 'link'}<a href={part.href} onclick={(event) => { event.preventDefault(); void openUrlInBrowser({ url: part.href }); }}>{#each part.parts as inner}{@render inline(inner)}{/each}</a>
+  {:else if part.kind === 'image'}
+    <a href={part.href} onclick={(event) => { event.preventDefault(); void openUrlInBrowser({ url: part.href }); }}>
+      {#if showImages}<img class="pr-image" src={part.href} alt={part.alt} loading="lazy" decoding="async" referrerpolicy="no-referrer" />
+      {:else}{part.alt}{/if}
+    </a>
   {:else if part.kind === 'file-link'}<button class="file-link" data-testid="conversation-file-link" type="button" title={part.path} onclick={() => onFileLink?.(part.path)}><FileText size={13} strokeWidth={1.8} aria-hidden="true" />{#each part.parts as inner}{@render inline(inner)}{/each}</button>
   {:else}{part.value}{/if}
 {/snippet}
@@ -141,6 +147,7 @@
   .turn-body li::marker{color:var(--color-text-3)}
   .turn-body li.task-row{list-style:none;margin-left:-18px;padding-left:0}
   .turn-body a{color:var(--color-accent);text-decoration:underline;text-underline-offset:2px}
+  .pr-image{display:block;max-width:100%;max-height:480px;width:auto;height:auto;object-fit:contain;border-radius:6px}
   .file-link{display:inline-flex;align-items:baseline;gap:4px;border:0;background:transparent;color:var(--color-accent);padding:0;text-decoration:underline;text-underline-offset:2px;font:inherit;cursor:pointer}
   .file-link :global(svg){align-self:center;flex:none}
   .inline-code{padding:2px 6px;border-radius:5px;background:color-mix(in srgb,var(--color-surface) 78%,var(--color-bg));font:13px/1.4 var(--font-mono)}

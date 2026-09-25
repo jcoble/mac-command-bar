@@ -17,13 +17,15 @@
     relativePath,
     originalContent,
     modifiedContent,
-    onOpenLine
+    onOpenLine,
+    onReviewLine
   }: {
     root: string;
     relativePath: string;
     originalContent: string;
     modifiedContent: string;
     onOpenLine?: (line: number) => void;
+    onReviewLine?: (side: 'LEFT' | 'RIGHT', line: number) => void;
   } = $props();
 
   let host: HTMLDivElement;
@@ -31,25 +33,36 @@
   let mounted = false;
   let renderGeneration = 0;
 
-  function readOnlyExtensions(language: Extension, theme: Extension, openLine = false): Extension[] {
+  function readOnlyExtensions(language: Extension, theme: Extension, side: 'LEFT' | 'RIGHT'): Extension[] {
     return [
       basicSetup,
       theme,
       language,
       EditorState.readOnly.of(true),
       EditorView.editable.of(false),
-      ...(openLine
+      ...(side === 'RIGHT' && onOpenLine
         ? [EditorView.domEventHandlers({
             dblclick: (event, view) => {
-              if (!onOpenLine) return false;
               const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
               if (position === null) return false;
-              onOpenLine(view.state.doc.lineAt(position).number);
+              const line = view.state.doc.lineAt(position).number;
+              onOpenLine(line);
               return true;
             }
           })]
         : [])
     ];
+  }
+
+  function reviewLineClick(event: MouseEvent): void {
+    if (!onReviewLine || !mergeView || !(event.target instanceof Element)) return;
+    const side = mergeView.a.dom.contains(event.target) ? 'LEFT' : mergeView.b.dom.contains(event.target) ? 'RIGHT' : null;
+    if (!side) return;
+    const lineElement = event.target.closest('.cm-line');
+    if (!lineElement) return;
+    const view = side === 'LEFT' ? mergeView.a : mergeView.b;
+    const position = view.posAtDOM(lineElement, 0);
+    onReviewLine(side, view.state.doc.lineAt(position).number);
   }
 
   async function render(): Promise<void> {
@@ -72,8 +85,8 @@
     }
     mergeView = new MergeView({
       parent: host,
-      a: { doc: originalContent, extensions: readOnlyExtensions(language, theme) },
-      b: { doc: modifiedContent, extensions: readOnlyExtensions(language, theme, true) },
+      a: { doc: originalContent, extensions: readOnlyExtensions(language, theme, 'LEFT') },
+      b: { doc: modifiedContent, extensions: readOnlyExtensions(language, theme, 'RIGHT') },
       orientation: 'a-b',
       highlightChanges: true,
       gutter: true,
@@ -98,7 +111,9 @@
 
   onMount(() => {
     mounted = true;
+    host.addEventListener('click', reviewLineClick, true);
     void render();
+    return () => host.removeEventListener('click', reviewLineClick, true);
   });
 
   onDestroy(() => {

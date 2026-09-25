@@ -64,6 +64,7 @@
   {:else if part.kind === 'strike'}<del>{#each part.parts as inner}{@render inline(inner)}{/each}</del>
   {:else if part.kind === 'code'}<code>{part.value}</code>
   {:else if part.kind === 'link'}<a href={part.href} target="_blank" rel="noreferrer">{#each part.parts as inner}{@render inline(inner)}{/each}</a>
+  {:else if part.kind === 'image'}<a href={part.href} target="_blank" rel="noreferrer">{part.alt}</a>
   {:else if part.kind === 'file-link'}<span class="file-link" title={part.path}>{#each part.parts as inner}{@render inline(inner)}{/each}</span>
   {:else}{part.value}{/if}
 {/snippet}

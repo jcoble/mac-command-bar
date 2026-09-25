@@ -568,6 +568,7 @@
       <a href="#dotnet">Rust for .NET</a>
       <a href="#native">Native surfaces</a>
       <a href="#helper">Helper model</a>
+      <a href="#pull-requests">Pull Requests</a>
       <a href="#sources">Source map</a>
     </nav>
 
@@ -663,6 +664,8 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-09-25 · TSK-808 · “Merge PRs from the review workspace”</td><td>The Pull Requests tab gains a merge card with GitHub check/conflict status, a merge/squash/rebase choice, and an exact-target confirmation. Rust rereads the PR and rejects a stale head or base, draft, closed, or conflicting PR before one GitHub merge request; GitHub enforces repository rules.</td><td>19a</td></tr>
+            <tr><td>2026-09-25 · TSK-808 · “Add Pull Requests review workspace and CLI Helper route”</td><td>The center Dockview gains a Pull Requests tab and opens hosted file versions in the existing full-width Diff tab. Rust uses the signed-in GitHub CLI for hosted search, detail, file versions, confirmed reviews and replies, with a head-SHA guard before writes. The Helper defaults to the selected signed-in Codex or Claude CLI for titles, Inspect and editable review drafts; API transport requires an explicit Settings choice. The Codex ACP bridge starts and resumes coding sessions with workspace-write access so a new project's agent can create files.</td><td>13, 19, 19a, 20</td></tr>
 <tr><td>2026-09-25 · TSK-936 · “Cancel native Antigravity sign-in safely”</td><td>Send handles the official authentication-required response using the advertised personal OAuth method. A bounded, unpooled authentication attempt supports Stop and session close, blocks restart while pending, and releases its process on every outcome. Refused first sends recover their unsent draft in the composer and durable storage.</td><td>01, 04, 05, 06</td></tr>
 <tr><td>2026-09-25 · TSK-936 remote staging</td><td>Extract signed backend packages in the remote user cache instead of memory-backed /tmp after native installation reproduced an out-of-space failure.</td><td>Remote setup</td></tr>
 <tr><td>2026-09-25 · TSK-936 remote install timeout</td><td>Allow 15 minutes for the signed backend installation after the 423-MB package exceeded six minutes on the owner connection; show structured installation error messages.</td><td>Remote setup</td></tr>
@@ -1370,7 +1373,7 @@
         <details>
           <summary>How Codex images cross its native boundary</summary>
           <div class="details-body">
-            <p>ACP transports image bytes. Codex app-server expects image file paths. The repository’s bridge writes each base64 image to a temporary file, includes that path in the native turn request, and removes the files when the turn settles. That translation is an adapter concern; Svelte and the Rust ACP client remain provider-neutral.</p>
+            <p>ACP transports image bytes. Codex app-server expects image file paths. The repository’s bridge writes each base64 image to a temporary file, includes that path in the native turn request, and removes the files when the turn settles. The bridge starts and resumes Codex sessions with workspace-write sandbox mode so coding agents can edit their selected project. That translation and session configuration are adapter concerns; Svelte and the Rust ACP client remain provider-neutral.</p>
             <span class="source"><code>tools/codex-acp-bridge/bridge.mjs:245-290,1040-1085</code></span>
           </div>
         </details>
@@ -1749,19 +1752,19 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
       <section id="helper">
         <span class="section-label">19 · Helper model</span>
         <h2>A small model the app calls for itself.</h2>
-        <p class="intro">Everything above this section is the coding agent: a process Assembly starts, talks ACP to, and bills to whatever account that agent signs in with. The helper is the other thing — a short, cheap language model call the app makes on its own behalf, to name a session or to answer a question about one. It is bring-your-own-key: with no key stored it does not exist, and nothing in the app waits on it.</p>
+        <p class="intro">The Helper makes one-shot calls for a session title, an Inspect answer, or an editable PR review draft. It uses the selected signed-in Codex or Claude CLI by default. API transport requires an explicit choice and the person's key. Jobs do not retain a model conversation.</p>
 
         <div class="two-up">
           <article class="card">
-            <span class="badge current">Where the key lives</span>
-            <h3>The Keychain, never a settings file</h3>
-            <p>The key goes into the login Keychain under the service <code>Assembly Helper</code>, with the vendor name (<code>openai</code>, <code>anthropic</code>) as the account. It is read and written through <code>/usr/bin/security</code> for the reason §18 gives for the Claude sign-in: an unsigned development build is a new program to the Keychain after every rebuild, and an item that tool wrote already trusts that tool, so neither direction prompts. Settings never reads the key back — it only learns whether one is there. Saving an empty field removes it, which turns the helper off.</p>
-            <span class="source"><code>src-tauri/src/helper/keychain.rs</code></span>
+            <span class="badge current">CLI first</span>
+            <h3>The selected installed CLI handles every Helper job</h3>
+            <p><code>codex exec</code> runs with an ephemeral, read-only session and no custom rules; <code>claude -p</code> runs in safe mode without session persistence or tools. Input is passed on stdin from a temporary working directory, bounded to 40 KiB and labelled untrusted. Existing settings that omit <code>route</code> become CLI settings on read, preserving the chosen vendor and model. A missing CLI or failed sign-in is reported as a Helper error.</p>
+            <span class="source"><code>src-tauri/src/helper/mod.rs</code> · <code>src-tauri/src/bounded_process.rs</code></span>
           </article>
           <article class="card">
-            <span class="badge current">Two services, one shape</span>
-            <h3>One request, one answer, no memory</h3>
-            <p>OpenAI is asked through the Responses API (<code>instructions</code>, <code>input</code>, <code>max_output_tokens</code>); Anthropic through the Messages API (<code>system</code>, <code>messages</code>, <code>max_tokens</code>, and the <code>anthropic-version</code> header). Each vendor module phrases one request and reads one answer; a single transport sends it, with a twenty-second ceiling and one retry only when the call never left the machine. A timeout is not retried, and neither is a refusal. Nothing streams and nothing is remembered between calls, so a job is exactly as expensive as the text handed to it.</p>
+            <span class="badge current">Explicit API choice</span>
+            <h3>API keys stay in Keychain</h3>
+            <p>When API is selected, the key lives in the login Keychain under <code>Assembly Helper</code> and the vendor account. Settings learns whether a key exists but never reads its value. OpenAI uses the Responses API and Anthropic uses the Messages API through the existing twenty-second HTTP transport. The CLI route never reads the API key. API calls retain the existing single retry for a transport failure before a response.</p>
             <span class="source"><code>src-tauri/src/helper/mod.rs</code> · <code>openai.rs</code> · <code>anthropic.rs</code></span>
           </article>
         </div>
@@ -1770,22 +1773,32 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
           <article class="card">
             <span class="badge current">Five commands</span>
             <h3>What the frontend can ask for</h3>
-            <p><code>run_helper_job(job, input)</code> runs one job — <code>title</code> or <code>inspect</code> — and answers with the text or with the sentence explaining why not. <code>read_helper_settings</code> gives Settings the chosen vendor and model, whether a key is stored, and the model ids each vendor offers; <code>write_helper_settings</code> stores the choice in <code>sessions.db</code> under <code>app_settings['helper.settings']</code>; <code>set_helper_key</code> puts a key in the Keychain; <code>test_helper</code> makes one tiny call and answers “OK · 41 ms · 12 tokens” or the same sentence an error would give. Rust reads the same SQLite setting when a helper job runs, including when no settings window is open.</p>
+            <p><code>run_helper_job(job, input)</code> runs <code>title</code>, <code>inspect</code>, or <code>review</code> and returns editable text or an error sentence. <code>read_helper_settings</code> returns the route, vendor, model, and API-key presence; <code>write_helper_settings</code> stores the choice under <code>app_settings['helper.settings']</code>. <code>set_helper_key</code> affects only the Keychain. <code>test_helper</code> makes one small call through the selected route. Rust reads the same SQLite setting for background Helper jobs.</p>
             <span class="source"><code>src-tauri/src/helper/mod.rs</code> · <code>src/lib/tauriSource.ts</code> · <code>src/lib/shell/components/SettingsDialog.svelte</code></span>
           </article>
           <article class="card">
             <span class="badge current">The app asks too</span>
             <h3>A session names itself after its first turn</h3>
-            <p>A new session is named after the first line the person typed, which is rarely what it turns out to be about. The moment its first turn finishes, the runtime manager hands the helper that prompt and the reply to it — a thousand characters of each — and writes the short name that comes back over the provisional one, marking the row <code>title_source = helper</code> and telling the rail so the row changes where it stands. Nothing waits on the call: the send has already finished, a helper with no key stored does nothing at all, and any other failure leaves the prompt name alone. A name the person typed themselves is never touched, and neither is one the helper has already written, so this happens once per session.</p>
+            <p>A new session starts with a provisional name from the first prompt. After its first turn, the runtime manager gives the Helper bounded prompt and reply text and saves the short name with <code>title_source = helper</code>. The send has already finished; a failed Helper call leaves the provisional name alone. A manually named session is never overwritten, and a successful Helper title is written only once.</p>
             <span class="source"><code>src-tauri/src/helper/mod.rs</code> · <code>agent_conversation/manager.rs</code> · <code>src-tauri/src/main.rs</code></span>
           </article>
           <article class="card">
             <span class="badge current">Counted like everything else</span>
             <h3>Helper calls show up in Usage</h3>
-            <p>Every call that succeeds writes one row to the usage store through <code>record_helper_call</code>: the vendor as the provider, the model id, the input and output token counts, source kind <code>helper</code> and source key <code>helper/&lt;job&gt;</code>. That is the same table the indexed agent transcripts land in, so the Usage popover counts helper spend without knowing the helper exists, and no schema change was needed to carry it. A failed write is swallowed — someone asked for a title, not for bookkeeping.</p>
+            <p>Every successful call writes a <code>helper/&lt;job&gt;</code> usage row. API responses include provider token counts; CLI responses record zero because this one-shot text path does not expose stable usage totals. A failed usage write does not fail the Helper job.</p>
             <span class="source"><code>src-tauri/src/usage_history.rs:115-154</code> · <code>src-tauri/src/usage_db.rs:17-38</code></span>
           </article>
         </div>
+      </section>
+
+      <section id="pull-requests">
+        <span class="section-label">19a · Hosted pull requests</span>
+        <h2>Review hosted PRs in the center workbench.</h2>
+        <p class="intro">The Pull Requests Dockview tab searches open GitHub PRs across known local project roots. A project's origin identifies its hosted repository; local branches and diffs are not treated as PR truth. Open, Mine and Needs review filters plus project and text search run in GitHub's paged search query. There is no background poll.</p>
+        <p>The detail read brings back conversation comments, reviews, requested reviewers, checks, and the first 100 changed files. PR descriptions and comments use the conversation's safe Markdown renderer. The Files view renders GitHub patches with the existing unified diff parser. Side-by-side mode lazily loads base and head file contents into the existing CodeMirror diff editor. Open in Diff tab sends those hosted file versions to the existing center Diff viewer without changing Source Control's working-tree selection; the PR tab remains available for comments. The first-100-files limit is visible in the UI.</p>
+        <p>One click sends bounded PR title, description and patch text to the selected Helper route for an overall or selected-line draft. The draft stays editable. Posting opens an exact-text confirmation. Rust rereads the repository and PR head, rejects a closed or changed PR, and makes one <code>gh api</code> write for a review with inline comments or one reply. It does not retry an uncertain write; the UI asks for a refresh before another attempt.</p>
+        <p>The merge card reports checks and conflict status, offers merge commit, squash, and rebase methods, and confirms the exact repository, PR, head, and base before merging. Rust rereads the PR, rejects a draft, closed PR, conflict, or changed head/base, and sends one merge request through the signed-in GitHub CLI. GitHub still decides whether checks, reviews, permissions, and the chosen method allow the merge. An uncertain outcome requires refreshing before another attempt.</p>
+        <span class="source"><code>src-tauri/src/github.rs</code> · <code>src/lib/shell/components/github/PullRequestWorkspace.svelte</code> · <code>src/lib/shell/layout/centerDock.ts</code> · <code>src/lib/tauriSource.ts</code></span>
       </section>
 
       <section id="sources">

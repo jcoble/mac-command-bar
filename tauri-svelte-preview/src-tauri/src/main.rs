@@ -43,6 +43,7 @@ mod debug_log;
 mod evidence;
 mod git_diff_models;
 mod git_pr;
+mod github;
 mod git_workspace;
 mod helper;
 mod lsp;
@@ -5605,6 +5606,12 @@ fn main() {
             git_pr::generate_pull_request_details,
             git_pr::create_pull_request,
             git_pr::read_pull_request_status,
+            github::list_github_pull_requests,
+            github::read_github_pull_request,
+            github::read_github_pull_request_file,
+            github::submit_github_pull_request_review,
+            github::reply_github_pull_request_comment,
+            github::merge_github_pull_request,
             git_workspace::discard_git_paths,
             git_workspace::discard_all_git_changes,
             git_workspace::list_git_branches,

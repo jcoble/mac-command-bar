@@ -35,6 +35,13 @@ assert.equal(normalizeConversationFileHref('file:///Users/me/main.ts'), '/Users/
 assert.equal(normalizeConversationFileHref('file://host/share/main.ts'), 'host/share/main.ts');
 assert.equal(normalizeConversationFileHref('file:/Users/me/main.ts'), '/Users/me/main.ts');
 assert.equal(parseSafeMarkdown('[source](file:///Users/me/main.ts)')[0].parts[0].path, '/Users/me/main.ts');
+const prImage = parseSafeMarkdown('Before ![before screenshot](https://github.com/user-attachments/assets/example)');
+assert.deepEqual(prImage[0].parts[1], {
+  kind: 'image',
+  href: 'https://github.com/user-attachments/assets/example',
+  alt: 'before screenshot'
+});
+assert.notEqual(parseSafeMarkdown('![bad](javascript:alert(1))')[0].parts[0].kind, 'image');
 assert.deepEqual(splitConversationFileReference('src/main.ts#L42'), { path: 'src/main.ts', line: 42 });
 assert.deepEqual(splitConversationFileReference('src/main.ts#42'), { path: 'src/main.ts', line: 42 });
 assert.deepEqual(splitConversationFileReference('src/main.ts:42'), { path: 'src/main.ts', line: 42 });
