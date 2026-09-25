@@ -20,7 +20,8 @@ const SIGNING_PUBLIC_KEY: &str = "RWQZvQJuc5RPnp9xO8+V9ppE3cCiodEFHPYqJpIMMVRhAn
 static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
-const MAX_ADAPTER_FILE_BYTES: u64 = 512 * 1024 * 1024;
+// Google’s official Linux server is 919,951,920 bytes in the signed 1.2.1 release.
+const MAX_ADAPTER_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -490,6 +491,21 @@ fn release_target() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires the published GitHub provider release"]
+    async fn published_provider_manifest_verifies_with_production_key() {
+        let (_, manifest) = fetch_signed_manifest().await.unwrap();
+        assert_eq!(manifest.adapters.len(), 3);
+        // Linux ships Google’s largest payload; verify our shared download limit admits it.
+        let linux = Client::new().head(format!("{RELEASE_BASE_URL}/provider-x86_64-unknown-linux-gnu-agy_acp_server.par"))
+            .timeout(Duration::from_secs(30)).send().await.unwrap().error_for_status().unwrap();
+        let size: u64 = linux.headers().get(reqwest::header::CONTENT_LENGTH).unwrap().to_str().unwrap().parse().unwrap();
+        assert!(size > 0 && size <= MAX_ADAPTER_FILE_BYTES, "Published Linux adapter is {size} bytes");
+        for adapter in manifest.adapters {
+            println!("Published {} {}", adapter.provider, adapter.version);
+        }
+    }
 
     #[test]
     fn provider_feed_is_independent_of_app_and_backend_releases() {

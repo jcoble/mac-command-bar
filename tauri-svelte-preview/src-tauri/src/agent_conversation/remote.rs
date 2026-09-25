@@ -969,19 +969,26 @@ impl RemoteConnectionManager {
             .and_then(|client| client.requests.as_ref())
             .cloned()
             .ok_or_else(|| format!("Remote machine {profile_id} is not connected"))?;
+        // Metadata can take two 30-second reads. Installation additionally streams
+        // seven payloads, each bounded to 180 seconds, then verifies them on disk.
+        let timeout_seconds = match &command {
+            RemoteCommand::CheckProviderUpdates => 75,
+            RemoteCommand::InstallProviderUpdates => 25 * 60,
+            _ => 15,
+        };
         let (reply, answer) = oneshot::channel();
         sender
             .try_send(ClientRequest::Execute { id, command, reply })
             .map_err(|error| {
                 format!("The Remote Assembly request queue is unavailable: {error}")
             })?;
-        match tokio::time::timeout(Duration::from_secs(15), answer).await {
+        match tokio::time::timeout(Duration::from_secs(timeout_seconds), answer).await {
             Ok(answer) => answer.map_err(|_| {
                 "The Remote Assembly connection closed before answering".to_string()
             })?,
             Err(_) => {
                 let _ = sender.try_send(ClientRequest::Cancel { id });
-                Err("The remote machine did not answer within 15 seconds".to_string())
+                Err(format!("The remote machine did not answer within {timeout_seconds} seconds"))
             }
         }
     }
