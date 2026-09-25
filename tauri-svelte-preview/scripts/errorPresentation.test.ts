@@ -89,13 +89,13 @@ const mappedCases = [
   {
     name: 'authentication required',
     raw: 'acp-error: {"code":-32000,"message":"Authentication required"}',
-    summary: 'Agent login required. Run `claude /login` in a terminal, then try again.',
+    summary: 'This agent requires sign-in before it can continue.',
     detail: 'acp-error:\n{\n  "code": -32000,\n  "message": "Authentication required"\n}'
   },
   {
     name: 'authentication prompt from the adapter',
     raw: 'acp-error: Please run /login before continuing',
-    summary: 'Agent login required. Run `claude /login` in a terminal, then try again.'
+    summary: 'This agent requires sign-in before it can continue.'
   }
 ];
 

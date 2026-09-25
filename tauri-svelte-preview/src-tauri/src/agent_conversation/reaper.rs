@@ -136,6 +136,38 @@ fn instance_is_alive(identity: &InstanceIdentity) -> bool {
     process_identity(identity.pid).as_ref() == Some(identity)
 }
 
+/// Capture tools that left their sidecar's group before shutdown can orphan them.
+pub(crate) fn detached_descendant_identities(root_pid: u32) -> Vec<InstanceIdentity> {
+    let processes = all_process_snapshots();
+    let mut descendants = HashSet::from([root_pid]);
+    loop {
+        let before = descendants.len();
+        for process in &processes {
+            if descendants.contains(&process.parent_pid) {
+                descendants.insert(process.identity.pid);
+            }
+        }
+        if descendants.len() == before { break; }
+    }
+    processes.into_iter()
+        .filter(|process| process.identity.pid != root_pid
+            && descendants.contains(&process.identity.pid)
+            && process.process_group_id != root_pid)
+        .map(|process| process.identity)
+        .collect()
+}
+
+pub(crate) fn signal_process_identities(processes: &[InstanceIdentity], signal: libc::c_int) {
+    for identity in processes {
+        // The recorded parent can be gone now; the birth identity must still match.
+        if instance_is_alive(identity) {
+            if let Ok(pid) = libc::pid_t::try_from(identity.pid) {
+                unsafe { libc::kill(pid, signal); }
+            }
+        }
+    }
+}
+
 fn reap_stale_adapter_groups(
     current_instance: &InstanceIdentity,
     live_session_ids: &HashSet<String>,
@@ -560,6 +592,16 @@ mod tests {
             start_time_micros: current.start_time_micros.saturating_sub(1),
         };
         assert!(!instance_is_alive(&reused_pid_identity));
+    }
+
+    #[test]
+    fn detached_cleanup_does_not_signal_a_reused_pid() {
+        let current = current_identity();
+        let mut unrelated = TestGroup::spawn(Some(("unrelated-sidecar", &current)));
+        let mut stale = process_identity(unrelated.pid()).unwrap();
+        stale.start_time_micros = stale.start_time_micros.saturating_sub(1);
+        signal_process_identities(&[stale], libc::SIGKILL);
+        assert!(unrelated.is_alive(), "a mismatched process identity was signaled");
     }
 
     #[test]

@@ -153,6 +153,7 @@
         .find((group) => group.provider === draft.provider)
         ?.models.filter((model) => model.available)
         .map((model) => model.id) ?? [],
+    modelLabels: Object.fromEntries(modelGroups.find((group) => group.provider === draft.provider)?.models.map((model) => [model.id, model.label]) ?? []),
     reasoningEffort: draft.effort || null,
     availableEfforts: effortChoicesFor(draft.provider, providerConfigs),
     approvalPolicy: draft.access || null,

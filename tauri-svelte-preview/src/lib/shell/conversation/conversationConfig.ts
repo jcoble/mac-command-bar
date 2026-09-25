@@ -7,6 +7,7 @@ import {
 export type AgentConversationConfigState = {
   model: string | null;
   availableModels: string[];
+  modelLabels?: Record<string, string>;
   reasoningEffort: string | null;
   availableEfforts: string[];
   approvalPolicy: string | null;
@@ -39,6 +40,7 @@ export function snapshotAgentConversationConfig(
   return {
     model: state.model,
     availableModels: [...state.availableModels],
+    modelLabels: { ...state.modelLabels },
     reasoningEffort: state.reasoningEffort,
     availableEfforts: [...state.availableEfforts],
     approvalPolicy: state.approvalPolicy,

@@ -16,6 +16,7 @@ export type ThreadStartProviderConfig = {
   provider: string;
   model: string | null;
   availableModels: string[];
+  modelLabels?: Record<string, string>;
   reasoningEffort: string | null;
   availableEfforts: string[];
   approvalPolicy: string | null;
@@ -246,7 +247,7 @@ export function groupProviderModels(
         const available = !availabilityKnown || advertised.has(id);
         return {
           id,
-          label: modelLabel(id),
+          label: snapshots.find((config) => config.modelLabels?.[id])?.modelLabels?.[id] ?? modelLabel(id),
           hint: modelHint(id),
           available,
           unavailableReason: available ? null : 'Unavailable in the current session service.'

@@ -51,7 +51,7 @@ test('builds a deterministic remote backend package contract', async () => {
     assert.equal(manifest.packageType, 'assembly-remote-backend');
     assert.equal(manifest.target, 'x86_64-unknown-linux-gnu');
     assert.equal(manifest.commit, '0123456789abcdef0123456789abcdef01234567');
-    assert.equal(manifest.files.length, 9);
+    assert.equal(manifest.files.length, 10);
     for (const file of manifest.files) {
       const digest = createHash('sha256').update(await readFile(path.join(extracted, file.path))).digest('hex');
       assert.equal(digest, file.sha256);

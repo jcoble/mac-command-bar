@@ -11,6 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use super::super::protocol::AgentProviderManifest;
+use super::super::reaper::{detached_descendant_identities, signal_process_identities};
 
 const STDERR_LINE_CAP: usize = 200;
 
@@ -236,6 +237,8 @@ impl SidecarProcessHandle {
         let Some(pid) = self.child.id() else {
             return;
         };
+        let detached = detached_descendant_identities(pid);
+        signal_process_identities(&detached, libc::SIGTERM);
         let group = -(pid as i32);
         if unsafe { libc::kill(group, libc::SIGTERM) } != 0 {
             let _ = self.child.start_kill();
@@ -249,6 +252,7 @@ impl SidecarProcessHandle {
         }
         tokio::spawn(async move {
             tokio::time::sleep(STOP_GRACE).await;
+            signal_process_identities(&detached, libc::SIGKILL);
             if unsafe { libc::kill(group, 0) } == 0 {
                 let _ = unsafe { libc::kill(group, libc::SIGKILL) };
             }
@@ -276,6 +280,8 @@ fn stop_process_group(child: &mut Child) {
     let Some(pid) = child.id() else {
         return;
     };
+    let detached = detached_descendant_identities(pid);
+    signal_process_identities(&detached, libc::SIGKILL);
     let target = -(pid as i32);
     // The child is placed in a fresh group during spawn, so this target cannot
     // include the app or another managed sidecar.
@@ -405,6 +411,42 @@ mod tests {
             0,
             "sidecar descendant survived stop"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stopping_sidecar_cleans_tools_in_separate_process_groups() {
+        for graceful in [true, false] {
+            let mut manifest = fixture_manifest(
+                "detached-tool-fixture",
+                "set -m; trap '' TERM; sleep 60 & child=$!; echo $child >&2; wait".into(),
+            );
+            // Bash enables job-control groups without a tty on both supported platforms.
+            manifest.executable = PathBuf::from("/bin/bash");
+            let process = SidecarProcess::spawn(
+                &manifest, &std::env::temp_dir(), "owned-detached-tool",
+            ).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let tool = loop {
+                if let Some(pid) = process.stderr.snapshot().first()
+                    .and_then(|line| line.parse::<i32>().ok()) {
+                    break pid;
+                }
+                assert!(Instant::now() < deadline, "fixture did not report its tool");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            let (_read, _write, mut handle) = process.split();
+            assert_ne!(unsafe { libc::getpgid(tool) }, handle.process_id().unwrap() as i32);
+            if graceful { handle.stop().await; }
+            drop(handle);
+            let deadline = Instant::now() + STOP_GRACE + Duration::from_secs(2);
+            while unsafe { libc::kill(tool, 0) } == 0 && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let survived = unsafe { libc::kill(tool, 0) } == 0;
+            // A failing regression must not leave its test tool running.
+            if survived { unsafe { libc::kill(tool, libc::SIGKILL); } }
+            assert!(!survived, "tool in a separate process group survived sidecar stop");
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

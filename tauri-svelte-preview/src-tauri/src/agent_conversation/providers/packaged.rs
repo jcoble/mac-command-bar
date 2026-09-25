@@ -94,11 +94,16 @@ pub(super) fn discover_in(
             "antigravity" => ("agy-acp", AGY_ACP_VERSION),
             other => return Err(format!("Unknown packaged adapter provider {other}")),
         };
-        if adapter.id != expected.0 || (require_bundled_versions && adapter.version != expected.1) {
+        if adapter.id != expected.0 || (require_bundled_versions && semver::Version::parse(&adapter.version).map_err(|e| e.to_string())? < semver::Version::parse(expected.1).unwrap()) {
             return Err(format!(
                 "Packaged {} adapter is {}, expected {} {}",
                 adapter.provider, adapter.version, expected.0, expected.1
             ));
+        }
+        if adapter.provider == "antigravity" &&
+            semver::Version::parse(&adapter.version).map_err(|e| e.to_string())? <
+            semver::Version::parse(AGY_ACP_VERSION).unwrap() {
+            return Err("The community Antigravity adapter is no longer supported; install the official provider bundle".into());
         }
         if adapter.files.is_empty() {
             return Err(format!(
