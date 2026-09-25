@@ -15,6 +15,7 @@ import {
 } from '$lib/tauriSource';
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { get } from 'svelte/store';
 import { hasBackendCapability } from '../backendCapabilities.ts';
 import {
   revokeTrackedObjectUrl,
@@ -34,6 +35,7 @@ import {
 import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
 import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
 import { shouldClearConversationSending } from './conversationReducer.ts';
+import { sessionPresenceHistory } from './sessionPresence.ts';
 import {
   appendNewerConversationEvents,
   applyAgentConversationEvent,
@@ -1006,8 +1008,20 @@ async function handleConversationStreamEnvelope(
   if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
   const payload = envelope.chunk;
   const active = rail.activeOwnedId === payload.ownedId;
+  const terminal = shouldClearConversationSending(payload);
+  const current = getConversationSession(payload.ownedId);
+  const presence = get(sessionPresenceHistory)[payload.ownedId];
+  const activeTurnId = presence?.activeTurnId || current?.activeTurnId;
+  if (current && payload.generation < current.generation) return;
+  if (terminal && activeTurnId && (
+    (presence?.turnStartedAt !== null && presence?.turnStartedAt !== undefined && payload.timestampMs < presence.turnStartedAt)
+    || (payload.payload.kind === 'turn' && payload.payload.turnId !== activeTurnId)
+  )) return;
   if (active) applyAgentConversationEvent(payload);
-  else recordAgentConversationPresenceEvent(payload);
+  else {
+    if (terminal) setConversationSending(payload.ownedId, false);
+    recordAgentConversationPresenceEvent(payload);
+  }
   if (
     payload.payload.kind === 'userMessage'
     && typeof payload.payload.text === 'string'
@@ -1021,7 +1035,7 @@ async function handleConversationStreamEnvelope(
   if (active && getConversationSession(payload.ownedId)?.desynchronized) {
     await resyncConversation(payload.ownedId);
   }
-  if (active && shouldClearConversationSending(payload)) {
+  if (active && terminal) {
     setConversationSending(payload.ownedId, false);
   }
 }
@@ -1174,9 +1188,12 @@ export async function sendStructuredMessage(
   let state = getConversationSession(ownedId);
   if (!state) return;
   if (!text.trim() && state.attachments.length === 0) return;
-  const turnWasAlreadyActive = state.sending;
+  const presence = get(sessionPresenceHistory)[ownedId];
+  const turnWasAlreadyActive = state.sending || Boolean(
+    presence ? presence.activeTurnId : (state.activeTurnId ?? rail.owned.find((session) => session.ownedId === ownedId)?.activeTurnId)
+  );
   const preparation = { cancelled: false };
-  if (!turnWasAlreadyActive) preparingSends.set(ownedId, preparation);
+  preparingSends.set(ownedId, preparation);
   setConversationSending(ownedId, true);
   try {
     const owned = rail.owned.find((session) => session.ownedId === ownedId) ?? null;
@@ -1291,7 +1308,7 @@ export async function sendStructuredMessage(
     // and no provider echoes the image back for it to render from.
     recordSentConversationAttachments(ownedId, state.attachments.map(attachmentDisplayMetadata));
     if (preparation.cancelled) {
-      await invoke('stop_agent_conversation_turn', {
+      if (!turnWasAlreadyActive) await invoke('stop_agent_conversation_turn', {
         request: { ownedId, generation: validatedGeneration }
       });
       throw new Error('Message cancelled before sending.');
@@ -1332,11 +1349,13 @@ export async function sendStructuredMessage(
 /** Stops the active turn for the conversation's current generation. */
 export async function stopStructuredTurn(ownedId: string): Promise<void> {
   const preparation = preparingSends.get(ownedId);
+  const state = getConversationSession(ownedId);
+  const presence = get(sessionPresenceHistory)[ownedId];
+  const activeTurn = presence ? presence.activeTurnId : (state?.activeTurnId ?? rail.owned.find((session) => session.ownedId === ownedId)?.activeTurnId);
   if (preparation) {
     preparation.cancelled = true;
-    return;
+    if (!activeTurn) return;
   }
-  const state = getConversationSession(ownedId);
   if (!state || state.generation < 1) return;
   await invoke('stop_agent_conversation_turn', {
     request: { ownedId, generation: state.generation }
