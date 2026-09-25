@@ -1276,6 +1276,14 @@ fn apply_config_options(value: &Value, config: &mut AgentConversationConfigState
             .filter_map(|choice| choice.get("value").and_then(Value::as_str))
             .map(str::to_string)
             .collect::<Vec<_>>();
+        if option.get("id").and_then(Value::as_str) == Some("model") {
+            config.model_labels = option.get("options").and_then(Value::as_array)
+                .into_iter().flatten().filter_map(|choice| {
+                    let id = choice.get("value")?.as_str()?;
+                    let name = choice.get("name")?.as_str()?.trim();
+                    (!name.is_empty()).then(|| (id.to_string(), name.to_string()))
+                }).collect();
+        }
         let (chosen, available) = match option.get("id").and_then(Value::as_str) {
             Some("model") => (&mut config.model, &mut config.available_models),
             Some("effort" | "reasoning_effort") => {
@@ -1381,6 +1389,7 @@ fn parse_standard_conversation_config(
     let models = value.get("models");
     let modes = value.get("modes");
     let mut config = AgentConversationConfigState {
+        model_labels: Default::default(),
         model: models
             .and_then(|models| models.get("currentModelId"))
             .and_then(Value::as_str)
@@ -1672,6 +1681,28 @@ done"#,
         let root = std::env::temp_dir().join(format!("mcb-fake-acp-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    fn model_catalog_keeps_provider_names_and_replaces_old_labels() {
+        let mut config = AgentConversationConfigState::default();
+        apply_config_options(&json!({"configOptions":[{
+            "id":"model", "currentValue":"opus", "options":[
+                {"value":"opus","name":"Opus 5.5"},
+                {"value":"sonnet","name":"Sonnet 5"}
+            ]
+        }]}), &mut config);
+        assert_eq!(config.model.as_deref(), Some("opus"));
+        assert_eq!(config.model_labels.get("opus").map(String::as_str), Some("Opus 5.5"));
+        assert_eq!(config.available_models, ["opus", "sonnet"]);
+        let stored = serde_json::to_vec(&config).unwrap();
+        let loaded: AgentConversationConfigState = serde_json::from_slice(&stored).unwrap();
+        assert_eq!(loaded, config);
+        apply_config_options(&json!({"configOptions":[{
+            "id":"model", "currentValue":"opus", "options":[{"value":"opus","name":"New provider name"}]
+        }]}), &mut config);
+        assert_eq!(config.model_labels.len(), 1);
+        assert!(!config.model_labels.contains_key("sonnet"));
     }
 
     #[test]
@@ -2001,6 +2032,7 @@ done"#,
         assert_eq!(
             started.config,
             AgentConversationConfigState {
+                model_labels: Default::default(),
                 model: Some("default".into()),
                 available_models: vec![
                     "default".into(),

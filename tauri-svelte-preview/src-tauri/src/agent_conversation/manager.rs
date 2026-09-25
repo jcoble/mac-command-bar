@@ -6449,6 +6449,7 @@ mod tests {
     #[test]
     fn stale_codex_composite_choice_becomes_live_model_and_effort_controls() {
         let current = AgentConversationConfigState {
+            model_labels: Default::default(),
             model: Some("gpt-6-astra".into()),
             available_models: vec!["gpt-6-astra".into(), "gpt-5.6-sol".into()],
             reasoning_effort: Some("medium".into()),

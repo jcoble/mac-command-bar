@@ -51,7 +51,7 @@
         >
           <span class="check-slot">{#if model === menuState.model}<Check size={13} aria-hidden="true" />{/if}</span>
           <span class="menu-row-copy">
-            <span class="model-option-name">{modelLabel(model)}</span>
+            <span class="model-option-name">{modelLabel(model, menuState.modelLabels)}</span>
             <span class="menu-row-description">{menuProvider}</span>
           </span>
         </DropdownMenu.Item>

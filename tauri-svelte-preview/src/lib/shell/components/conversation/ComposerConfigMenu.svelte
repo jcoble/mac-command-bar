@@ -165,7 +165,7 @@
             class="composer-chip"
             type="button"
           >
-            {modelEffortLabel(configState.model, configState.reasoningEffort)}
+            {modelEffortLabel(configState.model, configState.reasoningEffort, configState.modelLabels)}
             <ChevronDown size={13} class="chip-chevron" aria-hidden="true" />
           </button>
         {/snippet}
@@ -185,7 +185,7 @@
             disabled={menuModelOptions.length === 0 || 'model' in menuPending}
           >
             Model
-            <span class="text-muted-foreground ml-auto pl-4">{modelLabel(menuState.model)}</span>
+            <span class="text-muted-foreground ml-auto pl-4">{modelLabel(menuState.model, menuState.modelLabels)}</span>
           </DropdownMenu.SubTrigger>
           <!-- A submenu hangs off its row, near the bottom of the window: its
                bottom edge is pinned to the row's so it grows upward. -->
@@ -212,7 +212,7 @@
                   {#if model === menuState.model}<Check aria-hidden="true" class="size-3.5" />{/if}
                 </span>
                 <span class="menu-row-copy">
-                  <span class="model-option-name">{modelLabel(model)}</span>
+                  <span class="model-option-name">{modelLabel(model, menuState.modelLabels)}</span>
                   <span class="menu-row-description">{menuProvider}</span>
                 </span>
               </DropdownMenu.Item>

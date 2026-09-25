@@ -80,6 +80,7 @@ export class NewSessionController {
 				provider,
 				model: supportedChoice(chosen?.model, config?.model, availableModels, hasKnownCatalog),
 				availableModels,
+				modelLabels: config?.modelLabels,
 				reasoningEffort: supportedChoice(
 					chosen?.reasoningEffort,
 					config?.reasoningEffort,
