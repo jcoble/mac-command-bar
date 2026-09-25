@@ -354,7 +354,7 @@
   }
 
   $effect(() => {
-    if (showing && !loaded && !loading) void load(true);
+    if (showing && !loaded && !loading && !error) void load(true);
   });
   $effect(() => {
     const target = selected;
