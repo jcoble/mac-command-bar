@@ -45,7 +45,7 @@ impl HelperJob {
                 "Answer the question about the text below in plain English, in three to five sentences; name one recommended next action. Use only what the text says."
             }
             Self::Review => {
-                "Draft one concise GitHub pull request review comment for the requested target. Identify a concrete issue only when supported by the supplied PR text and diff. If no issue is evident, say so instead of inventing one. Return only editable comment text; do not claim to have run tests or inspected other files."
+                "Draft one concise, postable GitHub pull request review comment using only the supplied PR text and diff. For an overall review, name a specific change and make a grounded observation about it; a neutral or positive observation is fine when no defect is evident. For an inline review, address the selected changed line. Do not invent defects, return a generic no-issue report, or claim to have run tests, inspected other files, or approved the full PR. Return only editable comment text."
             }
         }
     }

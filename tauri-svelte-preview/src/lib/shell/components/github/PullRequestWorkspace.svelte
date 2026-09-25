@@ -278,9 +278,10 @@
     if (!detail || helperDrafting || (target === 'line' && !lineTarget)) return;
     const pr = detail;
     const line = lineTarget;
+    const patchBudget = Math.floor(24_000 / Math.max(pr.files.length, 1));
     const context = target === 'line'
       ? `Target: ${line?.path}:${line?.line} (${line?.side})\n${pr.files.find((file) => file.path === line?.path)?.patch ?? 'No text patch available.'}`
-      : `Target: overall review\n${pr.files.map((file) => `File: ${file.path}\n${file.patch ?? 'No text patch available.'}`).join('\n\n')}`;
+      : `Target: overall review\n${pr.files.map((file) => `File: ${file.path}\n${file.patch?.slice(0, patchBudget) ?? 'No text patch available.'}`).join('\n\n')}`;
     const input = `Repository: ${pr.repository}\nPR #${pr.number}: ${pr.title}\nDescription: ${pr.body.slice(0, 4000)}\n\n${context.slice(0, 28_000)}`;
     helperDrafting = true;
     detailError = null;
