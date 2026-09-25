@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { createReadStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = new URL('../', import.meta.url);
@@ -38,22 +39,14 @@ async function sha256(path: URL) {
   return hash.digest('hex');
 }
 
-function launcher({ cli, displayName, environment, runtime }: { cli: string; displayName: string; environment: string; runtime: string }) {
+export function launcher({ cli, displayName, environment, runtime }: { cli: string; displayName: string; environment: string; runtime: string }) {
   const environmentLines = environment === 'PATH'
     ? 'PATH="$(dirname "$cli_path"):$PATH"\nexport PATH'
     : `${environment}="$cli_path"\nexport ${environment}`;
   return `#!/bin/sh
 set -eu
 adapter_dir=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-cache_dir="$HOME/.mac-command-bar/cli-paths"
-cache_file="$cache_dir/${cli}"
-cli_path=""
-if [ -f "$cache_file" ]; then
-  IFS= read -r cli_path < "$cache_file" || true
-fi
-if [ ! -x "$cli_path" ]; then
-  cli_path=$(command -v ${cli} 2>/dev/null || true)
-fi
+cli_path=$(command -v ${cli} 2>/dev/null || true)
 if [ ! -x "$cli_path" ] && [ -x /bin/zsh ]; then
   cli_path=$(/bin/zsh -lic 'command -v ${cli}' 2>/dev/null | tail -n 1)
 fi
@@ -61,10 +54,6 @@ if [ ! -x "$cli_path" ]; then
   echo "${displayName} CLI was not found. Install it, then restart Assembly." >&2
   exit 127
 fi
-mkdir -p "$cache_dir"
-cache_tmp="$cache_file.$$"
-printf '%s\\n' "$cli_path" > "$cache_tmp"
-mv "$cache_tmp" "$cache_file"
 ${environmentLines}
 exec "$adapter_dir/${runtime}" "$@"
 `;
@@ -197,4 +186,6 @@ exec "$adapter_dir/agy_acp_server.par" ${process.platform === 'linux' ? '--uid= 
   console.log(`Prepared ${adapters.length} release adapters in ${adapterDir.pathname}`);
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}
