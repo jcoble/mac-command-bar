@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { tick } from 'svelte';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
@@ -32,6 +31,7 @@
   interface Props {
     items: readonly ConversationDisplayItem[];
     conversationId: string;
+    showing: boolean;
     renderWindowId?: string;
     timelineRevision: number;
     anchorRequest?: ConversationSendAnchorRequest | null;
@@ -61,6 +61,7 @@
   let {
     items,
     conversationId,
+    showing,
     renderWindowId = conversationId,
     timelineRevision,
     anchorRequest = null,
@@ -96,6 +97,7 @@
   let turnWasActive = false;
   let userItemIds = $state<string[]>([]);
   let openedConversationId = $state('');
+  let wasShowing = false;
   let expandedTurns = $state<Map<string, boolean>>(new Map());
   /** Every item the conversation holds. A stored row is drawn, never offered. */
   const renderedItems = $derived(items.filter(conversationItemHasVisibleContent));
@@ -202,7 +204,12 @@
   );
 
   $effect(() => {
-    if (openedConversationId === renderWindowId) return;
+    if (!showing) {
+      wasShowing = false;
+      return;
+    }
+    if (wasShowing && openedConversationId === renderWindowId) return;
+    wasShowing = true;
     openedConversationId = renderWindowId;
     pageAnchor = null;
     anchoredUserItemId = null;
@@ -214,25 +221,20 @@
   });
 
   $effect(() => {
-    // Wait for the rows to draw, then for content-visibility to measure them.
-    // The first frame can still report a scroll height equal to the viewport;
-    // the second lands on the actual newest row without an animated trip there.
-    if (renderedItems.length === 0 || !scrollState.openingToLatest) return;
-    if (!host) return;
-    const openingId = renderWindowId;
-    void tick().then(() => {
-      if (!host || renderWindowId !== openingId || !scrollState.openingToLatest) return;
-      requestAnimationFrame(() => {
-        if (!host || renderWindowId !== openingId || !scrollState.openingToLatest) return;
-        host.scrollTop = host.scrollHeight - host.clientHeight;
-        requestAnimationFrame(() => {
-          if (!host || renderWindowId !== openingId || !scrollState.openingToLatest) return;
-          host.scrollTop = host.scrollHeight - host.clientHeight;
-          follow = true;
-          scrollState = { ...scrollState, openingToLatest: false, pinnedToBottom: true };
-        });
-      });
-    });
+    // Offscreen rows can gain their real height after the first frames. Keep
+    // the newest message in view as the list settles, until the reader scrolls.
+    if (!showing || renderedItems.length === 0 || !scrollState.openingToLatest || !host || !list) return;
+    const viewport = host;
+    const scrollLatest = () => {
+      if (showing && scrollState.openingToLatest && viewport.clientHeight > 0) {
+        viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
+      }
+    };
+    const observer = new ResizeObserver(scrollLatest);
+    observer.observe(viewport);
+    observer.observe(list);
+    scrollLatest();
+    return () => observer.disconnect();
   });
 
   $effect(() => {
@@ -523,11 +525,13 @@
   function userInputInterrupts(node: HTMLElement): { destroy(): void } {
     node.addEventListener('wheel', handleUserInput, { passive: true });
     node.addEventListener('touchstart', handleUserInput, { passive: true });
+    node.addEventListener('pointerdown', handleUserInput, { passive: true });
     window.addEventListener('keydown', handleKeydown);
     return {
       destroy(): void {
         node.removeEventListener('wheel', handleUserInput);
         node.removeEventListener('touchstart', handleUserInput);
+        node.removeEventListener('pointerdown', handleUserInput);
         window.removeEventListener('keydown', handleKeydown);
         finishAnimation();
       }

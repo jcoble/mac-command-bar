@@ -79,6 +79,7 @@
   interface Props {
     owned: OwnedSession[];
     activeOwnedId: string | null;
+    showing: boolean;
     activeOrigin?: OwnedSession['origin'];
     rootAvailable?: boolean;
     pendingFirstMessage?: string | null;
@@ -89,6 +90,7 @@
   let {
     owned,
     activeOwnedId,
+    showing,
     activeOrigin,
     rootAvailable = true,
     pendingFirstMessage = null,
@@ -657,6 +659,7 @@
         {pendingFirstMessage}
         items={visibleTimeline}
         conversationId={active.ownedId}
+        {showing}
         renderWindowId={`${active.ownedId}:${conversation.selectedChildId ?? 'root'}`}
         timelineRevision={conversation.timelineRevision}
         anchorRequest={sendAnchorRequest}
