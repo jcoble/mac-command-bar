@@ -340,14 +340,44 @@ impl Drop for PendingInstallation {
     }
 }
 
+// Keep the lock file: unlinking it could let two processes lock different inodes.
+// The OS releases ownership even if the updater is forcibly terminated.
+fn prepare_installation(root: &Path) -> Result<std::fs::File, String> {
+    std::fs::create_dir_all(root)
+        .map_err(|error| format!("Could not create provider update directory: {error}"))?;
+    let owner = std::fs::OpenOptions::new().read(true).write(true).create(true)
+        .truncate(false).open(root.join("installation.lock"))
+        .map_err(|error| format!("Could not lock provider update directory: {error}"))?;
+    owner.try_lock()
+        .map_err(|error| format!("Provider installation directory is busy: {error}"))?;
+    let active = match std::fs::read(root.join("active.json")) {
+        Ok(bytes) => Some(serde_json::from_slice::<ActiveAdapterDirectory>(&bytes)
+            .map_err(|error| format!("Active provider adapter pointer is invalid: {error}"))?.directory),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("Could not read active provider adapters: {error}")),
+    };
+    for entry in std::fs::read_dir(root)
+        .map_err(|error| format!("Could not inspect interrupted provider downloads: {error}"))? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if active.as_deref() == Some(name) { continue; }
+        let Some(suffix) = name.strip_prefix("install-") else { continue };
+        if uuid::Uuid::parse_str(suffix).is_err() || !entry.file_type()
+            .map_err(|error| error.to_string())?.is_dir() { continue; }
+        std::fs::remove_dir_all(entry.path())
+            .map_err(|error| format!("Could not remove interrupted provider download: {error}"))?;
+    }
+    Ok(owner)
+}
+
 async fn install_manifest(
     app_data_dir: &Path,
     manifest_bytes: &[u8],
     manifest: &RemoteManifest,
 ) -> Result<(), String> {
     let root = app_data_dir.join("provider-adapters");
-    std::fs::create_dir_all(&root)
-        .map_err(|error| format!("Could not create provider update directory: {error}"))?;
+    let _directory_owner = prepare_installation(&root)?;
     // Each verified install owns its directory; never reuse a damaged or
     // interrupted prior installation of the same manifest.
     let directory_name = format!("{}-{}", manifest.target, uuid::Uuid::new_v4());
@@ -682,6 +712,34 @@ mod tests {
         let result = install_at(&directory, &registry).await;
         assert!(result.unwrap_err().contains("already running"));
         assert!(!directory.exists());
+    }
+
+    #[test]
+    fn abandoned_download_cleanup_requires_exclusive_directory_ownership() {
+        let root = std::env::temp_dir().join(format!("mcb-provider-crash-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let active_name = format!("install-{}", uuid::Uuid::new_v4());
+        let active = root.join(&active_name);
+        std::fs::create_dir(&active).unwrap();
+        std::fs::write(active.join("adapter"), b"keep active").unwrap();
+        std::fs::write(root.join("active.json"), serde_json::to_vec(&ActiveAdapterDirectory {
+            directory: active_name,
+        }).unwrap()).unwrap();
+        let unrelated = root.join("install-owner-notes");
+        std::fs::create_dir(&unrelated).unwrap();
+        let owner = prepare_installation(&root).unwrap();
+        let abandoned = root.join(format!("install-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&abandoned).unwrap();
+        std::fs::write(abandoned.join("partial"), b"incomplete").unwrap();
+        assert!(prepare_installation(&root).unwrap_err().contains("busy"));
+        assert!(abandoned.exists());
+        drop(owner);
+        let recovered_owner = prepare_installation(&root).unwrap();
+        assert!(!abandoned.exists());
+        assert_eq!(std::fs::read(active.join("adapter")).unwrap(), b"keep active");
+        assert!(unrelated.exists());
+        drop(recovered_owner);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
