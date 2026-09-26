@@ -10,8 +10,11 @@
     installRemoteAssemblyFromTauri, readRemoteAssemblyEnvironmentFromTauri,
     readRemoteBackendStatusesFromTauri, removeRemoteAssemblyProfileFromTauri,
     uninstallRemoteAssemblyFromTauri,
-    type RemoteAssemblyEnvironment, type RemoteAssemblyProfile, type RemoteBackendProfileStatus
+    type RemoteAssemblyEnvironment, type RemoteAssemblyProfile, type RemoteBackendProfileStatus,
+    type RemoteInstallUpdate
   } from '$lib/tauriSource';
+
+  type Transfer = Exclude<RemoteInstallUpdate, string> & { machine: string };
 
   let { initialProfile = null, onConnected, onChange, onClose }: {
     initialProfile?: RemoteAssemblyProfile | null;
@@ -32,7 +35,17 @@
   let owner = $state<AbortController | null>(null);
   let backends = $state<Record<string, RemoteBackendProfileStatus>>({});
   let confirmingUninstallId = $state<string | null>(null);
+  let transfer = $state<Transfer | null>(null);
   let mounted = false;
+
+  const megabytes = (bytes: number) => `${Math.round(bytes / 1_000_000).toLocaleString()} MB`;
+
+  function transferDetail(current: Transfer): string {
+    const amount = `${megabytes(current.bytes)} of ${megabytes(current.total)}`;
+    if (current.bytesPerSecond === null || current.etaSeconds === null) return `${amount} · Estimating time remaining`;
+    const eta = current.etaSeconds < 60 ? `${current.etaSeconds} seconds` : `${Math.ceil(current.etaSeconds / 60)} minutes`;
+    return `${amount} · ${(current.bytesPerSecond / 1_000_000).toFixed(1)} MB/s · About ${eta} remaining`;
+  }
 
   function apply(next: RemoteAssemblyEnvironment) {
     environment = next;
@@ -80,11 +93,15 @@
     busy = true;
     operationArea = area;
     error = '';
+    transfer = null;
     status = install ? 'Preparing installation…' : 'Connecting…';
     try {
       const operation = install ? installRemoteAssemblyFromTauri : connectRemoteAssemblyFromTauri;
       const result = await operation(selected, attempt.signal, (message) => {
-        if (mounted && !attempt.signal.aborted) status = message;
+        if (!mounted || attempt.signal.aborted) return;
+        if (typeof message === 'string') { transfer = null; status = message; }
+        else if (message.bytes < message.total) transfer = { ...message, machine: selected.name };
+        else { transfer = null; status = `Download complete. Verifying and unpacking the backend on ${selected.name}…`; }
       });
       if (!mounted || attempt.signal.aborted) return;
       const replacedProfileIds = new Set([result.profile.id, result.replacedProfileId]);
@@ -109,7 +126,7 @@
         error = attempt.signal.aborted ? `${install ? 'Installation' : 'Connection'} cancelled.` : reason instanceof Error ? reason.message : typeof reason === 'object' && reason !== null && 'message' in reason ? String(reason.message) : String(reason);
       }
     } finally {
-      if (owner === attempt) { owner = null; busy = false; }
+      if (owner === attempt) { owner = null; busy = false; transfer = null; }
     }
   }
 
@@ -154,6 +171,17 @@
     finally { if (mounted) busy = false; }
   }
 </script>
+
+{#snippet operationStatus()}
+  {#if transfer}
+    <div class="transfer" role="status">
+      <span>Downloading backend on {transfer.machine}</span>
+      <progress value={transfer.bytes} max={transfer.total}></progress>
+      <small>{transferDetail(transfer)}</small>
+    </div>
+  {:else if status}<p role="status">{status}</p>{/if}
+  {#if error}<p role="alert">{error}</p>{/if}
+{/snippet}
 
 <div class="remote-connections">
   <section>
@@ -201,16 +229,14 @@
         <div class="connection-actions"><Button size="sm" disabled={busy || !editing.name.trim() || !editing.sshTarget.trim()} onclick={() => editing && void runConnection(editing)}>Save and connect</Button></div>
       </div>
     {/if}
-    {#if operationArea === 'saved' && status}<p role="status">{status}</p>{/if}
-    {#if operationArea === 'saved' && error}<p role="alert">{error}</p>{/if}
+    {#if operationArea === 'saved'}{@render operationStatus()}{/if}
   </section>
   <section class="install-section">
-    <div class="section-heading"><strong>Install a remote machine</strong><small>Uses your signed-in GitHub CLI to download the latest signed Linux x86-64 backend, installs it over SSH, verifies its loopback-only service, then connects.</small></div>
+    <div class="section-heading"><strong>Install a remote machine</strong><small>Downloads the latest signed Linux x86-64 backend directly onto the selected remote machine over public HTTPS, verifies and installs it over SSH, then connects.</small></div>
     <label>Machine name<Input disabled={busy} bind:value={profile.name} placeholder="Agent Workbox" autocomplete="off" /></label>
     <label>SSH destination<Input disabled={busy} bind:value={profile.sshTarget} placeholder="user@hostname or SSH alias" autocomplete="off" /></label>
     <div class="connection-actions"><Button size="sm" disabled={busy || !profile.name.trim() || !profile.sshTarget.trim()} onclick={() => void runConnection(profile, true, 'install')}>{busy && operationArea === 'install' ? 'Please wait…' : 'Install and connect'}</Button></div>
-    {#if operationArea === 'install' && status}<p role="status">{status}</p>{/if}
-    {#if operationArea === 'install' && error}<p role="alert">{error}</p>{/if}
+    {#if operationArea === 'install'}{@render operationStatus()}{/if}
   </section>
   <div class="connection-actions">
     {#if owner}<Button variant="ghost" size="sm" onclick={() => owner?.abort()}>Cancel current operation</Button>
@@ -236,4 +262,6 @@
   .edit-form { display: flex; flex-direction: column; gap: 10px; padding: 12px 0 4px; }
   label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--color-text-3); }
   .connection-actions { justify-content: flex-end; }
+  .transfer { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+  .transfer progress { width: 100%; height: 6px; accent-color: var(--color-accent); }
 </style>
