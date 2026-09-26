@@ -93,7 +93,7 @@
     border: 2px solid color-mix(in srgb, currentColor 22%, transparent);
     border-top-color: currentColor;
     border-radius: 50%;
-    animation: ws-spin 0.8s linear infinite;
+    animation: ws-spin 1.08s linear infinite;
   }
 
   /* orbit — one dot travelling a track it never leaves. */
@@ -104,7 +104,7 @@
   }
   .working-spinner[data-spinner='orbit'] i:nth-child(2) {
     inset: 0;
-    animation: ws-spin 1.1s linear infinite;
+    animation: ws-spin 1.49s linear infinite;
   }
   .working-spinner[data-spinner='orbit'] i:nth-child(2)::before {
     content: '';
@@ -126,8 +126,8 @@
     margin-top: calc(var(--size) * -0.11);
     border-radius: 50%;
     background: currentColor;
-    animation: ws-wave 0.9s ease-in-out infinite;
-    animation-delay: calc(var(--i) * 0.13s);
+    animation: ws-wave 1.22s ease-in-out infinite;
+    animation-delay: calc(var(--i) * 0.18s);
   }
   .working-spinner[data-spinner='wave'] i:nth-child(1) { left: 0; }
   .working-spinner[data-spinner='wave'] i:nth-child(2) {
@@ -144,8 +144,8 @@
     border-radius: calc(var(--size) * 0.1);
     background: currentColor;
     transform-origin: 50% 100%;
-    animation: ws-bars 0.78s ease-in-out infinite;
-    animation-delay: calc(var(--i) * 0.11s);
+    animation: ws-bars 1.05s ease-in-out infinite;
+    animation-delay: calc(var(--i) * 0.15s);
   }
   .working-spinner[data-spinner='bars'] i:nth-child(1) { left: 0; }
   .working-spinner[data-spinner='bars'] i:nth-child(2) {
@@ -159,8 +159,8 @@
     inset: 0;
     border: 1.5px solid currentColor;
     border-radius: 50%;
-    animation: ws-halo 1.4s ease-out infinite;
-    animation-delay: calc(var(--i) * 0.7s);
+    animation: ws-halo 1.89s ease-out infinite;
+    animation-delay: calc(var(--i) * 0.95s);
   }
 
   /* diamond — a square that turns and breathes. */
@@ -168,14 +168,14 @@
     inset: calc(var(--size) * 0.16);
     border: 2px solid currentColor;
     border-radius: 2px;
-    animation: ws-diamond 1.1s ease-in-out infinite;
+    animation: ws-diamond 1.49s ease-in-out infinite;
   }
 
   /* comet — a head and two fading followers on the same circle. */
   .working-spinner[data-spinner='comet'] i {
     inset: 0;
-    animation: ws-spin 0.95s linear infinite;
-    animation-delay: calc(var(--i) * -0.13s);
+    animation: ws-spin 1.28s linear infinite;
+    animation-delay: calc(var(--i) * -0.18s);
   }
   .working-spinner[data-spinner='comet'] i::before {
     content: '';
@@ -197,7 +197,7 @@
      element itself, which is why the perspective rides in the transform. */
   .working-spinner[data-spinner='cube'] {
     transform-style: preserve-3d;
-    animation: ws-tumble 2.6s linear infinite;
+    animation: ws-tumble 3.51s linear infinite;
     --face: calc(var(--size) * 0.34);
   }
   .working-spinner[data-spinner='cube'] i {
@@ -219,7 +219,7 @@
     border: 2px solid currentColor;
     border-radius: 50%;
     background: color-mix(in srgb, currentColor 14%, transparent);
-    animation: ws-flip 1.5s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+    animation: ws-flip 2.03s cubic-bezier(0.5, 0, 0.5, 1) infinite;
   }
 
   /* gyro — two tilted rings turning about axes at right angles. */
@@ -229,11 +229,11 @@
     border: 1.5px solid currentColor;
     border-radius: 50%;
   }
-  .working-spinner[data-spinner='gyro'] i:nth-child(1) { animation: ws-gyro-x 1.3s linear infinite; }
+  .working-spinner[data-spinner='gyro'] i:nth-child(1) { animation: ws-gyro-x 1.76s linear infinite; }
   .working-spinner[data-spinner='gyro'] i:nth-child(2) {
     inset: calc(var(--size) * 0.18);
     border-color: color-mix(in srgb, currentColor 55%, transparent);
-    animation: ws-gyro-y 1.1s linear infinite;
+    animation: ws-gyro-y 1.49s linear infinite;
   }
 
   @keyframes ws-spin { to { transform: rotate(360deg); } }

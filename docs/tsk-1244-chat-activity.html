@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TSK-1244 — Live activity moves from the composer into the chat</title>
+<style>
+  :root { --bg:#141414; --panel:#1b1b1b; --elev:#232323; --border:#2e2e2e; --text:#ececec; --text2:#a9a9a9; --text3:#7d7d7d; --accent:#e0a458; --bad:#d9534f; --ok:#4caf7a; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:32px 40px 60px; background:#0e0e0e; color:var(--text); font:14px/1.5 -apple-system, "SF Pro Text", "Segoe UI", sans-serif; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  h2 { font-size:16px; margin:36px 0 10px; color:var(--text); }
+  p.lead { color:var(--text2); margin:0 0 20px; max-width:960px; }
+  .pair { display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+  .frame { background:var(--panel); border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+  .frame-title { padding:8px 14px; font-size:12px; letter-spacing:.04em; text-transform:uppercase; color:var(--text3); border-bottom:1px solid var(--border); }
+  .frame-title.before { color:#d88; } .frame-title.after { color:#8d8; }
+  .chat { padding:18px 22px 10px; display:flex; flex-direction:column; gap:12px; min-height:300px; }
+  .bubble { align-self:flex-end; max-width:80%; background:var(--elev); border-radius:14px; padding:10px 14px; }
+  .para { color:var(--text); }
+  .toolrow { display:flex; align-items:center; gap:8px; color:var(--text2); font-size:13px; }
+  .toolrow code { color:var(--text3); font-size:12px; }
+  .working-row { display:flex; align-items:center; gap:8px; min-height:24px; color:var(--text3); font-size:13px; }
+  /* Static drawing only: this page has no real activity, so nothing loops. */
+  .spin { width:16px; height:16px; border:2px solid color-mix(in srgb, var(--accent) 22%, transparent); border-top-color:var(--accent); border-radius:50%; flex:none; }
+  .composer { margin:8px 16px 16px; border:1px solid var(--border); border-radius:18px; background:var(--elev); padding:12px 14px 10px; }
+  .composer .ph { color:var(--text3); min-height:44px; }
+  .controls { display:flex; align-items:center; gap:10px; justify-content:flex-end; color:var(--text2); font-size:13px; }
+  .controls .plus { margin-right:auto; font-size:18px; color:var(--text2); }
+  .round { width:30px; height:30px; border-radius:50%; display:grid; place-items:center; flex:none; }
+  .round.stop { background:var(--bad); } .round.stop i { width:10px; height:10px; background:#fff; border-radius:2px; display:block; }
+  .round.send { background:var(--text); color:#111; font-weight:700; }
+  .round.mic { color:var(--text3); }
+  .working-state { display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--text2); outline:1px dashed #d88; outline-offset:3px; border-radius:4px; }
+  .callout { font-size:12px; color:#d88; margin:0 16px 14px; }
+  .callout.good { color:#8d8; }
+  table { border-collapse:collapse; width:100%; max-width:1100px; font-size:13px; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--text3); font-weight:600; }
+  td code, li code, p code { background:#222; padding:1px 5px; border-radius:4px; font-size:12px; }
+  .states { display:grid; grid-template-columns:repeat(3, 1fr); gap:16px; max-width:1100px; }
+  .state { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:12px; }
+  .state h3 { font-size:13px; margin:0 0 8px; color:var(--text2); font-weight:600; }
+  ul { max-width:1000px; }
+</style>
+</head>
+<body>
+<h1>TSK-1244 — Live activity moves from the composer into the chat</h1>
+<p class="lead">Proposal only. The live label (“Thinking…”, “Writing…”, “Running a command…”) and its spinner move out of the composer's control row and into one status line directly under the newest part of the running reply. The composer keeps only the single Stop/Steer button, so its width and height no longer change while a turn runs.</p>
+
+<h2>1. Before and after — a turn waiting on a build command</h2>
+<div class="pair">
+  <div class="frame">
+    <div class="frame-title before">Before (main at cbd8705a)</div>
+    <div class="chat">
+      <div class="bubble">Please check the current test/build result now and report actual status…</div>
+      <div class="para">The branch is at the current main tip. Now waiting on the test run.</div>
+      <div class="toolrow">›_ Ran a command</div>
+      <div class="toolrow"><code>until [ -f /tmp/tsk1231-cargo.status ] … do sleep 15; done</code></div>
+    </div>
+    <div class="composer">
+      <div class="ph">Message claude</div>
+      <div class="controls"><span class="plus">+</span>
+        <span class="working-state"><span class="spin" style="width:13px;height:13px"></span>Reviewing…</span>
+        <span>Auto ▾</span><span>Opus 5.5 Medium ▾</span><span class="round mic">🎙</span><span class="round stop"><i></i></span>
+      </div>
+    </div>
+    <p class="callout">Dashed box: the label is picked by <code>timelineRevision % 8</code>, so it cycles through made-up words on every event and its width changes, pushing the controls sideways. It says nothing true about what the agent is doing.</p>
+  </div>
+  <div class="frame">
+    <div class="frame-title after">After (proposed)</div>
+    <div class="chat">
+      <div class="bubble">Please check the current test/build result now and report actual status…</div>
+      <div class="para">The branch is at the current main tip. Now waiting on the test run.</div>
+      <div class="toolrow">›_ Running a command</div>
+      <div class="toolrow"><code>until [ -f /tmp/tsk1231-cargo.status ] … do sleep 15; done</code></div>
+      <div class="working-row"><span class="spin"></span><span>Running a command…</span></div>
+    </div>
+    <div class="composer">
+      <div class="ph">Message claude</div>
+      <div class="controls"><span class="plus">+</span>
+        <span>Auto ▾</span><span>Opus 5.5 Medium ▾</span><span class="round mic">🎙</span><span class="round stop"><i></i></span>
+      </div>
+    </div>
+    <p class="callout good">The status line reuses the existing transcript working row and the turn's own spinner. The composer row holds only fixed-size controls, so nothing in it moves.</p>
+  </div>
+</div>
+
+<h2>2. The label comes from the newest item of the running turn</h2>
+<table>
+  <tr><th>Newest item in the running turn</th><th>Label</th><th>Source of truth</th></tr>
+  <tr><td>Approval request still open</td><td>Waiting for approval…</td><td><code>approval.state</code> in requested / pending</td></tr>
+  <tr><td>Input request</td><td>Waiting for your input…</td><td><code>kind: 'input'</code></td></tr>
+  <tr><td>Tool still pending or running</td><td>Running a command… / Editing… / Searching… / Reading… / Using a tool…</td><td><code>tool.state</code> + <code>tool.toolKind</code></td></tr>
+  <tr><td>Reasoning text</td><td>Thinking…</td><td><code>kind: 'reasoning'</code></td></tr>
+  <tr><td>Assistant text not yet completed</td><td>Writing…</td><td><code>assistant.completed !== true</code></td></tr>
+  <tr><td>Anything else (turn just sent, a tool just finished, nothing new yet)</td><td>Working…</td><td>turn active, no more specific signal</td></tr>
+</table>
+<p class="lead" style="margin-top:10px">No timer, no debounce, no new store: the label is derived from the transcript items that already arrive. Fast changes only swap the text inside a one-line row of fixed height; the spinner stays mounted for the whole turn, so it neither restarts nor flashes.</p>
+
+<h2>3. The Stop/Steer button is unchanged</h2>
+<div class="states">
+  <div class="state"><h3>Idle, empty draft</h3>
+    <div class="controls"><span class="plus">+</span><span class="round mic">🎙</span></div>
+    <p style="color:var(--text3);font-size:12px">No status line in the chat, no spinner mounted.</p></div>
+  <div class="state"><h3>Working, empty draft</h3>
+    <div class="controls"><span class="plus">+</span><span class="round mic">🎙</span><span class="round stop"><i></i></span></div>
+    <p style="color:var(--text3);font-size:12px">Square Stop. Status line shows in the chat.</p></div>
+  <div class="state"><h3>Working, steerable draft</h3>
+    <div class="controls"><span class="plus">+</span><span class="round mic">🎙</span><span class="round send">↑</span></div>
+    <p style="color:var(--text3);font-size:12px">Arrow = steer. Exactly one action button, as after TSK-1227.</p></div>
+</div>
+
+<h2>4. When the spinner runs</h2>
+<ul>
+  <li>Mounted only while the session's turn is active (the same <code>turnActive</code> that shows the Stop button). Completion, cancel or failure unmounts it and its animations.</li>
+  <li>Pauses when scrolled off screen or when the conversation is hidden — the existing <code>WorkingSpinner</code> visibility observer already does this.</li>
+  <li>Session switch: the row follows the selected session's own state; switching to an idle session shows nothing. Sub-agent transcripts show no parent status line.</li>
+  <li>Reduced motion: the existing static ring.</li>
+</ul>
+</body>
+</html>

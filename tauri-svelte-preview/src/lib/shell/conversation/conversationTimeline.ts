@@ -382,6 +382,37 @@ export function summarizeToolRun(items: readonly ConversationDisplayItem[]): {
   return { summary, icon };
 }
 
+/** What a running turn is doing, read from the newest row of the transcript.
+ *
+ * Only a row carrying the active turn's id can speak for it: a bounded or
+ * reselected transcript may end in an older turn's unfinished-looking text.
+ * Open requests come from the session's pending maps rather than
+ * the transcript, because an input row never records that it was answered.
+ * Anything else says "Working" rather than guess. */
+export function turnActivityLabel(
+  items: readonly ConversationDisplayItem[],
+  activeTurnId: string | null,
+  pendingApprovals: number,
+  pendingInputs: number
+): string {
+  if (pendingApprovals > 0) return 'Waiting for approval';
+  if (pendingInputs > 0) return 'Waiting for your input';
+  // The plan and task lists are pinned to the end of the transcript; they are
+  // not what the agent is doing right now.
+  const latest = items.findLast((item) => item.kind !== 'plan' && item.kind !== 'tasks');
+  if (!latest || !activeTurnId || latest.turnId !== activeTurnId) return 'Working';
+  if (latest.kind === 'reasoning' && latest.completed === false) return 'Thinking';
+  if (latest.kind === 'assistant' && latest.completed === false) return 'Writing';
+  if (latest.kind === 'tool' && (latest.state === 'pending' || latest.state === 'running')) {
+    if (latest.toolKind === 'command') return 'Running a command';
+    if (latest.toolKind === 'file-edit') return 'Editing';
+    if (latest.toolKind === 'search') return 'Searching';
+    if (latest.toolKind === 'fetch') return 'Reading';
+    return 'Using a tool';
+  }
+  return 'Working';
+}
+
 export function foldToolRuns(
   items: readonly ConversationDisplayItem[]
 ): readonly ConversationDisplayItem[] {
@@ -1145,7 +1176,9 @@ export function reuseConversationDisplayItems(
 
 function eventIdentity(event: ConversationEvent, payload: StringRecord, prefix: string): string {
   const fromEvent = 'itemId' in event ? event.itemId : undefined;
-  const turnId = 'turnId' in event ? event.turnId : undefined;
+  // A journal event's turn says which turn it belongs to, not which row it
+  // is: two id-less events of one turn must stay two rows.
+  const turnId = 'type' in event ? event.turnId : undefined;
   return fromEvent
     || stringOf(payload.itemId)
     || stringOf(payload.toolCallId)

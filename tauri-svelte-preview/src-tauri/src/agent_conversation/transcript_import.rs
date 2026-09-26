@@ -465,6 +465,7 @@ fn append_imported_record(
         generation: 0,
         sequence,
         timestamp_ms: u128::try_from(created_at_ms.max(0)).unwrap_or_default(),
+        turn_id: None,
         payload,
     };
     let payload_json = serde_json::to_string(&event)
