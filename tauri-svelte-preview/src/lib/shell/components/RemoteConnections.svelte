@@ -88,7 +88,10 @@
       });
       if (!mounted || attempt.signal.aborted) return;
       const replacedProfileIds = new Set([result.profile.id, result.replacedProfileId]);
-      hydrateOwned([...rail.owned.filter((session) => !replacedProfileIds.has(session.remoteProfileId ?? '')),
+      const incomingOwnedIds = new Set(result.sessions.map((session) => session.ownedId));
+      hydrateOwned([...rail.owned.filter((session) =>
+        !replacedProfileIds.has(session.remoteProfileId ?? '') &&
+        !(session.executionEnvironment === 'remote' && incomingOwnedIds.has(session.ownedId))),
         ...result.sessions.map(ownedSessionFromBackend)]);
       const next = await readRemoteAssemblyEnvironmentFromTauri();
       if (!mounted || attempt.signal.aborted) return;
