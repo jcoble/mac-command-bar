@@ -63,7 +63,8 @@ jobs:
           ARCHIVE=$(find remote-backend-release -type f -name '*.tar.gz' -print -quit)
           test -n "$ARCHIVE"
           pnpm exec tauri signer sign "$ARCHIVE"
-          gh release create "$GITHUB_REF_NAME" \
+          pnpm exec tauri signer sign "$ARCHIVE.download.json"
+          gh release create "$GITHUB_REF_NAME" --latest=false \
             --title "Assembly Remote Backend v$VERSION" \
             --notes "Download the signed Assembly remote backend package for Linux x86-64."
           gh release upload "$GITHUB_REF_NAME" remote-backend-release/*

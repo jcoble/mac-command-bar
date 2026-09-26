@@ -2096,10 +2096,15 @@ export async function connectRemoteAssemblyFromTauri(
   }
 }
 
+export type RemoteInstallUpdate = string | {
+  kind: 'transfer'; stage: 'download'; bytes: number; total: number;
+  bytesPerSecond: number | null; etaSeconds: number | null;
+};
+
 export async function installRemoteAssemblyFromTauri(
   profile: RemoteAssemblyProfile,
   signal: AbortSignal,
-  onStatus: (status: string) => void
+  onStatus: (status: RemoteInstallUpdate) => void
 ): Promise<{ profile: RemoteAssemblyProfile; sessions: AgentConversationSessionRecord[]; replacedProfileId: string | null }> {
   if (!isTauriRuntime()) throw new Error('Remote installation is available in the desktop app.');
   if (signal.aborted) throw new Error('Installation cancelled');
@@ -2112,7 +2117,14 @@ export async function installRemoteAssemblyFromTauri(
   const status = new Channel<string>((message) => {
     registered = true;
     if (signal.aborted) cancel();
-    else onStatus(message);
+    else {
+      try {
+        const update = JSON.parse(message) as RemoteInstallUpdate;
+        onStatus(typeof update === 'object' && update?.kind === 'transfer' ? update : message);
+      } catch {
+        onStatus(message);
+      }
+    }
   });
   signal.addEventListener('abort', cancel, { once: true });
   try {
