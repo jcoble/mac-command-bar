@@ -1014,6 +1014,8 @@ await test('sendStructuredMessage resolves the terminal from the owned session, 
     'getConversationSession',
     'setConversationSending',
     'rail',
+    'get',
+    'sessionPresenceHistory',
     'shouldReviveBeforeSend',
     'writeTerminalSessionFromTauri',
     'cleanupConversationAttachmentPreview',
@@ -1032,6 +1034,8 @@ await test('sendStructuredMessage resolves the terminal from the owned session, 
         executionOwner: 'terminal'
       }]
     },
+    get,
+    sessionPresenceHistory,
     () => false,
     async (usedTerminalId: string, text: string) => {
       terminalWrites.push({ terminalId: usedTerminalId, text });
@@ -1130,6 +1134,38 @@ assert.ok(store.getConversationSession('owned-b'));
   });
   assert.equal(store.getConversationSession(ownedId), null);
   assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, 'background-turn');
+}
+
+// A backend turn can be active without this frontend initiating Send. On
+// reselection, the bounded tail may omit the older turn.started event.
+{
+  const ownedId = 'owned-active-controls-probe';
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 2_000,
+    payload: { kind: 'turn', turnId: 'live-turn', state: 'started' }
+  });
+  assert.equal(store.getConversationSession(ownedId).sending, false);
+  store.evictConversationSession(ownedId);
+  store.recordAgentConversationPresenceEvent({
+    ownedId, provider: 'claude', generation: 1, sequence: 2, timestampMs: 2_010,
+    payload: { kind: 'tool', itemId: 'running-tool', status: 'in-progress' }
+  });
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'claude', generation: 1, state: 'connected' },
+    lastSequence: 2,
+    events: [{
+      ownedId, provider: 'claude', generation: 1, sequence: 2, timestampMs: 2_010,
+      payload: { kind: 'tool', itemId: 'running-tool', status: 'in-progress' }
+    }]
+  });
+  assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, 'live-turn');
+  assert.equal(store.getConversationSession(ownedId).activeTurnId, undefined);
+  assert.equal(store.getConversationSession(ownedId).sending, false);
+  store.recordAgentConversationPresenceEvent({
+    ownedId, provider: 'claude', generation: 1, sequence: 3, timestampMs: 2_020,
+    payload: { kind: 'turn', turnId: 'live-turn', state: 'completed' }
+  });
+  assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, null);
 }
 
 // Scrolling up loads the page of stored events just older than what is on
@@ -1396,6 +1432,8 @@ await test('Stop during revival prevents dispatch and releases the prepared runt
   const dependencies = {
     getConversationSession: () => state,
     setConversationSending: (_id: string, sending: boolean) => { state.sending = sending; },
+    get,
+    sessionPresenceHistory,
     rail: { owned: [{ ownedId: 'cancel-test', agent: 'antigravity', cwd: '/tmp', nativeSessionId: 'native-original' }] },
     shouldReviveBeforeSend: () => true,
     decideConversationActivation: () => ({ kind: 'structured', nativeSessionMode: 'resume' }),
@@ -1425,4 +1463,120 @@ await test('Stop during revival prevents dispatch and releases the prepared runt
   assert.deepEqual(calls, ['stop_agent_conversation_turn']);
   assert.equal(state.sending, false);
   assert.equal(api.preparingSends.size, 0, 'no retained send bookkeeping');
+});
+
+await test('an observed active turn routes Stop to the backend during steering', async () => {
+  const ownedId = 'observed-steering';
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('const preparingSends ='), source.indexOf('/** Answers one legacy approval'));
+  const code = stripTypeScriptTypes(block.replaceAll('export async function', 'async function'), { mode: 'strip' });
+  store.recordAgentConversationPresenceEvent({
+    ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 3_000,
+    payload: { kind: 'turn', turnId: 'observed-turn', state: 'started' }
+  });
+  let finishCapability!: () => void;
+  const capability = new Promise<boolean>((resolve) => { finishCapability = () => resolve(true); });
+  const state = {
+    sending: false, generation: 1, activeTurnId: undefined,
+    attachments: [], capabilities: null, connectionState: 'connected',
+    agentConfig: { availableApprovalPolicies: [] }
+  };
+  const calls: string[] = [];
+  const dependencies = {
+    getConversationSession: () => state,
+    setConversationSending: (_id: string, sending: boolean) => { state.sending = sending; },
+    get,
+    sessionPresenceHistory,
+    rail: { owned: [{ ownedId, agent: 'claude', state: 'live', origin: 'app', nativeSessionId: 'native-observed' }] },
+    shouldReviveBeforeSend: () => false,
+    sendSupportsImages: () => false,
+    buildConversationPrompt: (text: string) => ({ text, content: [] }),
+    hasBackendCapability: () => capability,
+    ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY: 'test',
+    sendTargetGeneration: () => 1,
+    updateOwnedSession: () => undefined,
+    recordSentConversationAttachments: () => undefined,
+    attachmentDisplayMetadata: () => undefined,
+    invoke: async (command: string) => { calls.push(command); },
+    setConversationAttachments: () => undefined
+  };
+  const api = Function(...Object.keys(dependencies), `${code}\nreturn { sendStructuredMessage, stopStructuredTurn, preparingSends };`)(...Object.values(dependencies)) as {
+    sendStructuredMessage: (id: string, text: string) => Promise<void>;
+    stopStructuredTurn: (id: string) => Promise<void>;
+    preparingSends: Map<string, unknown>;
+  };
+  const sending = api.sendStructuredMessage(ownedId, 'Correct the answer');
+  assert.equal(api.preparingSends.size, 1, 'pending steering remains cancellable');
+  await api.stopStructuredTurn(ownedId);
+  assert.deepEqual(calls, ['stop_agent_conversation_turn']);
+  const cancelled = assert.rejects(sending, /Message cancelled before sending/);
+  finishCapability();
+  await cancelled;
+  assert.deepEqual(calls, ['stop_agent_conversation_turn'], 'Stop must prevent the pending correction from dispatching');
+  assert.equal(api.preparingSends.size, 0);
+});
+
+await test('an inactive terminal event clears send state before finished rail presence', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('async function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
+  const code = stripTypeScriptTypes(block, { mode: 'strip' });
+  const calls: string[] = [];
+  const ownedId = 'inactive-finish';
+  const draft = 'Keep this draft';
+  const attachments = [{ id: 'unsent-image' }];
+  const state = { generation: 1, sending: true, draft, attachments, activeTurnId: null as string | null };
+  const dependencies = {
+    conversationEventsDisposed: false,
+    conversationEventsGeneration: 1,
+    rail: { activeOwnedId: 'another-session', owned: [] },
+    shouldClearConversationSending,
+    get,
+    sessionPresenceHistory,
+    applyAgentConversationEvent: () => { throw new Error('inactive event materialized'); },
+    setConversationSending: () => { state.sending = false; calls.push('clear'); },
+    recordAgentConversationPresenceEvent: () => { calls.push('presence'); },
+    getConversationSession: () => state
+  };
+  const handle = Function(...Object.keys(dependencies), `${code}\nreturn handleConversationStreamEnvelope;`)(...Object.values(dependencies)) as (
+    generation: number, envelope: { chunk: AgentConversationEvent }
+  ) => Promise<void>;
+  await handle(1, { chunk: {
+    ownedId, provider: 'claude', generation: 1, sequence: 3, timestampMs: 3_010,
+    payload: { kind: 'turn', turnId: 'observed-turn', state: 'completed' }
+  } });
+  assert.deepEqual(calls, ['clear', 'presence']);
+  assert.equal(state.draft, draft);
+  assert.equal(state.attachments, attachments);
+  store.recordAgentConversationPresenceEvent({
+    ownedId, provider: 'claude', generation: 2, sequence: 4, timestampMs: 3_020,
+    payload: { kind: 'turn', turnId: 'newer-turn', state: 'started' }
+  });
+  state.generation = 2;
+  state.sending = true;
+  calls.length = 0;
+  await handle(1, { chunk: {
+    ownedId, provider: 'claude', generation: 1, sequence: 3, timestampMs: 3_010,
+    payload: { kind: 'turn', turnId: 'older-turn', state: 'completed' }
+  } });
+  assert.deepEqual(calls, [], 'an older generation cannot clear the current send');
+  assert.equal(state.sending, true);
+  assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, 'newer-turn');
+  await handle(1, { chunk: {
+    ownedId, provider: 'claude', generation: 2, sequence: 5, timestampMs: 3_030,
+    payload: { kind: 'turn', turnId: 'older-turn', state: 'completed' }
+  } });
+  assert.deepEqual(calls, [], 'an older turn cannot clear a newer turn in the same generation');
+  assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, 'newer-turn');
+  sessionPresenceHistory.update((records) => {
+    const next = { ...records };
+    delete next[ownedId];
+    return next;
+  });
+  state.activeTurnId = 'newer-turn';
+  await handle(1, { chunk: {
+    ownedId, provider: 'claude', generation: 2, sequence: 5, timestampMs: 3_030,
+    payload: { kind: 'turn', turnId: 'older-turn', state: 'completed' }
+  } });
+  assert.deepEqual(calls, [], 'the active projection also rejects an older turn');
+  assert.equal(state.sending, true);
 });

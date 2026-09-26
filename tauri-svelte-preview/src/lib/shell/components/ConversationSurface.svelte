@@ -72,7 +72,7 @@
     normalizeConversationFileHref,
     splitConversationFileReference
   } from '$lib/shell/conversation/conversationMessageSafety.ts';
-  import { clearViewedSession, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
+  import { clearViewedSession, sessionPresenceHistory, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
   import type { ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
 
@@ -100,6 +100,10 @@
   }: Props = $props();
   const active = $derived(owned.find((item) => item.ownedId === activeOwnedId) ?? null);
   const conversation = $derived(activeOwnedId ? conversationSessions[activeOwnedId] ?? null : null);
+  const presence = $derived(activeOwnedId ? $sessionPresenceHistory[activeOwnedId] : null);
+  const turnActive = $derived(Boolean(
+    conversation?.sending || (presence ? presence.activeTurnId : (conversation?.activeTurnId ?? active?.activeTurnId))
+  ));
   const origin = $derived(activeOrigin ?? active?.origin ?? 'external');
   const appOwned = $derived(origin === 'app');
   function isStructuredAgent(agent: string | undefined): boolean {
@@ -426,7 +430,7 @@
     const ownedId = activeOwnedId;
     if (!ownedId || !conversation || conversation.selectedChildId) return;
     if (!conversation.draft.trim() && conversation.attachments.length === 0) return;
-    const steering = conversation.sending;
+    const steering = turnActive;
     const text = conversation.draft;
     const previousUserItemId = visibleTimeline.findLast((item) => item.kind === 'user')?.itemId ?? null;
     sendAnchorRequest = {
@@ -690,7 +694,7 @@
           provider={active.agent}
           draft={conversation.draft}
           attachments={conversation.attachments}
-          sending={conversation.sending}
+          sending={turnActive}
           supportsSteering={conversation.capabilities?.session.steering === true}
           workingPhase={conversation.timelineRevision}
           configState={conversation.agentConfig}
