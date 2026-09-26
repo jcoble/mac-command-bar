@@ -743,6 +743,7 @@
         onPlanOpen={() => composer?.expandPlan()}
       />
       {#if !conversation.selectedChildId}
+        {#key active.ownedId}
         <ConversationComposer
           bind:this={composer}
           provider={active.agent}
@@ -786,6 +787,7 @@
           onConfigChange={(optionId, value) => void changeConfig(optionId, value)}
           onHeightChange={(height) => (composerHeight = height)}
         />
+        {/key}
       {/if}
     </section>
   {:else if active && isStructuredAgent(active.agent) && conversation?.mode === 'raw'}
