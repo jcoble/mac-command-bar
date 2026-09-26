@@ -39,7 +39,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-const PROTOCOL_VERSION: u16 = 4;
+pub(super) const PROTOCOL_VERSION: u16 = 4;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -1936,7 +1936,7 @@ async fn client_loop(
                 .map_err(|error| error.to_string())?;
             match parse_server_frame(hello)? {
                 Some(ServerFrame::Ready { protocol_version }) if protocol_version == PROTOCOL_VERSION => Ok(()),
-                Some(ServerFrame::Ready { protocol_version }) => Err(format!("Remote backend protocol {protocol_version} needs an update; this Assembly requires {PROTOCOL_VERSION}")),
+                Some(ServerFrame::Ready { protocol_version }) => Err(if protocol_version > PROTOCOL_VERSION { format!("This Assembly client needs an update: backend protocol {protocol_version}, client protocol {PROTOCOL_VERSION}") } else { format!("Remote backend needs an update: protocol {protocol_version}, this Assembly requires {PROTOCOL_VERSION}") }),
                 _ => Err("Backend did not announce protocol readiness".into()),
             }
         }).await.unwrap_or_else(|_| Err("Backend readiness timed out".into()));

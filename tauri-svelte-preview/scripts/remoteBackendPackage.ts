@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -116,7 +117,16 @@ exit 1
 `;
 
 async function sha256(filePath: string): Promise<string> {
-  return createHash('sha256').update(await readFile(filePath)).digest('hex');
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+async function protocolVersion(): Promise<number> {
+  const source = await readFile(fileURLToPath(new URL('../src-tauri/src/agent_conversation/remote.rs', import.meta.url)), 'utf8');
+  const match = source.match(/const PROTOCOL_VERSION: u16 = (\d+);/g);
+  if (!match || match.length !== 1) throw new Error('Remote protocol version source is missing or ambiguous');
+  return Number(match[0].match(/\d+(?=;)/)?.[0]);
 }
 
 function validatePackageInput(input: RemoteBackendPackageInput): void {
@@ -168,6 +178,15 @@ export async function writeRemoteBackendPackage(input: RemoteBackendPackageInput
       `${files.map((file) => `${file.sha256}  ${file.path}`).join('\n')}\n`
     );
     await execFileAsync('tar', ['-czf', archivePath, '-C', staging, '.']);
+    await writeFile(`${archivePath}.download.json`, `${JSON.stringify({
+      schemaVersion: 1,
+      version: input.version,
+      protocolVersion: await protocolVersion(),
+      target: REMOTE_BACKEND_TARGET,
+      archiveFile: archiveName,
+      bytes: (await stat(archivePath)).size,
+      sha256: await sha256(archivePath)
+    })}\n`);
     return archivePath;
   } finally {
     await rm(staging, { recursive: true, force: true });
