@@ -4332,14 +4332,6 @@ fn record_payload_for_session_with_lifecycle(
     }
     let timestamp_ms = timestamp_millis();
     candidate.last_activity_ms = timestamp_ms;
-    let frontend_event = AgentConversationEvent {
-        owned_id: session.owned_id.clone(),
-        provider: session.provider,
-        generation: session.generation,
-        sequence,
-        timestamp_ms,
-        payload: payload.clone(),
-    };
     let canonical = canonical_event(
         session,
         candidate.native_session_id.clone(),
@@ -4347,6 +4339,15 @@ fn record_payload_for_session_with_lifecycle(
         timestamp_ms,
         &payload,
     )?;
+    let frontend_event = AgentConversationEvent {
+        owned_id: session.owned_id.clone(),
+        provider: session.provider,
+        generation: session.generation,
+        sequence,
+        timestamp_ms,
+        turn_id: canonical.turn_id.clone(),
+        payload: payload.clone(),
+    };
     match &payload {
         AgentConversationPayload::Tool { item_id, state, .. } => match state {
             ToolState::Started | ToolState::Updated => {
@@ -4402,11 +4403,14 @@ fn record_payload_for_session_with_lifecycle(
 /// Importing older history writes descending sequences, and a build that could
 /// not represent a negative one wrote zero into every payload it touched. Those
 /// rows are still in the database. Taking the position from the column repairs
-/// them as they are read, and keeps the two from ever disagreeing again.
+/// them as they are read, and keeps the two from ever disagreeing again. The
+/// `turn_id` column is taken the same way, so rows written before the event
+/// carried it still say which turn they belong to.
 fn stored_event(row: EventRow) -> Result<AgentConversationEvent, String> {
     let mut event: AgentConversationEvent = serde_json::from_str(&row.payload_json)
         .map_err(|error| format!("Could not decode stored conversation event: {error}"))?;
     event.sequence = row.seq;
+    event.turn_id = row.turn_id;
     if let AgentConversationPayload::AssistantMessage {
         ref text,
         ref mut blocks,
@@ -11959,6 +11963,59 @@ mod tests {
         })
         .expect("a stored row decodes");
         assert_eq!(decoded.sequence, -42);
+    }
+
+    #[test]
+    fn journal_events_carry_the_turn_they_are_filed_under() {
+        let root = temp_root();
+        let manager = AgentRuntimeManager::default();
+        let connection = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "owned-turn",
+                AgentConversationProvider::Claude,
+            ))
+            .unwrap()
+            .0;
+        let live = {
+            let mut sessions = manager.sessions.lock().unwrap();
+            let session =
+                current_session_mut(&mut sessions, "owned-turn", connection.generation).unwrap();
+            session.active_turn_id = Some("turn-live".into());
+            record_payload_for_session_and_dispatch(
+                session,
+                &manager.emitter,
+                AgentConversationPayload::AssistantDelta {
+                    item_id: "msg-1".into(),
+                    delta: "Hi".into(),
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(live.turn_id.as_deref(), Some("turn-live"));
+        let stored = manager.list_events("owned-turn", 0).unwrap();
+        assert_eq!(stored.last().unwrap().turn_id.as_deref(), Some("turn-live"));
+
+        // A row written before the event carried its turn gets it from the column.
+        let older = serde_json::json!({
+            "ownedId": "owned-turn",
+            "provider": "claude",
+            "generation": 1,
+            "sequence": 7,
+            "timestampMs": 1_000,
+            "payload": { "kind": "assistantDelta", "itemId": "msg-0", "delta": "old" }
+        });
+        let decoded = stored_event(EventRow {
+            owned_id: "owned-turn".into(),
+            seq: 7,
+            turn_id: Some("turn-old".into()),
+            kind: "content.delta".into(),
+            payload_json: older.to_string(),
+            created_at_ms: 1_000,
+        })
+        .expect("a stored row decodes");
+        assert_eq!(decoded.turn_id.as_deref(), Some("turn-old"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -37,6 +37,8 @@
     anchorRequest?: ConversationSendAnchorRequest | null;
     activeTurnId?: string | null;
     localTurnActive?: boolean;
+    /** What the running turn is doing, or null when no turn runs here. */
+    activityLabel?: string | null;
     composerHeight?: number;
     assistantLabel?: string;
     emptyText?: string;
@@ -67,6 +69,7 @@
     anchorRequest = null,
     activeTurnId = null,
     localTurnActive = false,
+    activityLabel = null,
     composerHeight = 0,
     assistantLabel = 'Assistant',
     emptyText = 'Start the conversation below.',
@@ -194,14 +197,6 @@
       setConversationTimelineDiagnostics(0, 0, 0, 0);
     };
   });
-  const anchoredUserIndex = $derived(anchoredUserItemId
-    ? renderedItems.findIndex((item) => item.itemId === anchoredUserItemId)
-    : -1);
-  const showWorking = $derived(
-    localTurnActive
-      && anchoredUserIndex >= 0
-      && renderedItems.slice(anchoredUserIndex + 1).every((item) => !conversationItemHasVisibleContent(item))
-  );
 
   $effect(() => {
     if (!showing) {
@@ -582,12 +577,6 @@
             {/if}
             {#if !workItem || expanded}
               <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} {onPlanOpen} />
-              {#if showWorking && item.itemId === anchoredUserItemId}
-                <div class="working-row" data-testid="conversation-working-indicator" role="status">
-                  <WorkingSpinner seed={group.turnId ?? item.itemId} />
-                  <span>Working…</span>
-                </div>
-              {/if}
             {/if}
           {/each}
           {#if group.completed && expanded}
@@ -597,6 +586,12 @@
           {/if}
         </div>
       {/each}
+      {#if activityLabel}
+        <div class="working-row" data-testid="conversation-working-indicator" role="status">
+          <WorkingSpinner seed={activeTurnId ?? renderWindowId} />
+          <span>{activityLabel}…</span>
+        </div>
+      {/if}
       <div class:send-anchor-space={anchoredUserItemId !== null} class="timeline-bottom-spacer" aria-hidden="true"></div>
     </div>
   </div>
@@ -622,7 +617,7 @@
   .turn-fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
   .turn-fold-chevron.open{transform:rotate(90deg)}
   .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
-  .working-row{display:flex;align-items:center;gap:8px;min-height:24px;color:var(--color-text-3);font-size:13px}
+  .working-row{flex:none;display:flex;align-items:center;gap:8px;height:24px;overflow:hidden;white-space:nowrap;color:var(--color-text-3);font-size:13px}
   /* A disc under the middle of the transcript, holding one arrow. It sits over
      the column it scrolls rather than off in the corner, and it says what it
      does by pointing, so it stays out of the reading it is offering to move. */

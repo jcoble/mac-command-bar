@@ -99,6 +99,7 @@ pub fn import_if_store_empty(store: &SessionStore, directory: &Path) -> Result<u
                 generation: canonical.generation,
                 sequence: canonical.sequence,
                 timestamp_ms: canonical.timestamp_ms,
+                turn_id: canonical.turn_id.clone(),
                 payload: super::manager::frontend_payload_from_canonical(&canonical)?,
             };
             let event_type = serde_json::to_value(canonical.event_type)

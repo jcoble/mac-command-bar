@@ -57,6 +57,7 @@
   } from '$lib/shell/conversation/conversationCommandCatalog.ts';
   import {
     latestPlan,
+    turnActivityLabel,
     turnFileChanges,
     typedConversationTimeline,
     type ConversationDisplayItem,
@@ -101,9 +102,8 @@
   const active = $derived(owned.find((item) => item.ownedId === activeOwnedId) ?? null);
   const conversation = $derived(activeOwnedId ? conversationSessions[activeOwnedId] ?? null : null);
   const presence = $derived(activeOwnedId ? $sessionPresenceHistory[activeOwnedId] : null);
-  const turnActive = $derived(Boolean(
-    conversation?.sending || (presence ? presence.activeTurnId : (conversation?.activeTurnId ?? active?.activeTurnId))
-  ));
+  const activeTurnId = $derived(presence ? presence.activeTurnId : (conversation?.activeTurnId ?? active?.activeTurnId ?? null));
+  const turnActive = $derived(Boolean(conversation?.sending || activeTurnId));
   const origin = $derived(activeOrigin ?? active?.origin ?? 'external');
   const appOwned = $derived(origin === 'app');
   function isStructuredAgent(agent: string | undefined): boolean {
@@ -161,6 +161,14 @@
   });
   const pendingApprovals = $derived(conversation ? Object.values(conversation.pendingApprovals) : []);
   const pendingInputs = $derived(conversation ? Object.values(conversation.pendingInputs) : []);
+  /* The live status line under the reply. Only the root transcript at its live
+     end can speak for the running turn; a sub-agent view or a window trimmed
+     while reading upward shows none. */
+  const activityLabel = $derived(
+    turnActive && conversation && !conversation.selectedChildId && conversation.reachedTranscriptEnd
+      ? turnActivityLabel(visibleTimeline, activeTurnId, pendingApprovals.length, pendingInputs.length)
+      : null
+  );
   const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.availableCommands ?? conversation?.capabilities?.commands ?? []).filter((command) => !appOwned || command.name !== 'terminal'));
   /* The same numbers the Context panel shows. This read only `metadata`, and a
      provider that reports its usage as it goes puts those numbers on `usage` —
@@ -669,6 +677,7 @@
         anchorRequest={sendAnchorRequest}
         activeTurnId={conversation.activeTurnId ?? null}
         {localTurnActive}
+        {activityLabel}
         {composerHeight}
         assistantLabel={selectedChild?.title ?? active.agent}
         emptyText={conversation.selectedChildId ? 'This sub-agent transcript is not available yet.' : 'Start the conversation below.'}
@@ -696,7 +705,6 @@
           attachments={conversation.attachments}
           sending={turnActive}
           supportsSteering={conversation.capabilities?.session.steering === true}
-          workingPhase={conversation.timelineRevision}
           configState={conversation.agentConfig}
           pendingConfig={conversation.pendingAgentConfig}
           configError={conversation.agentConfigError}

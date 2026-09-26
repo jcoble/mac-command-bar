@@ -2836,6 +2836,7 @@ mod tests {
             generation: 1,
             sequence: 1,
             timestamp_ms: 100,
+            turn_id: Some("turn-1".into()),
             payload: AgentConversationPayload::AssistantMessage {
                 item_id: "assistant-1".into(),
                 text: json!({

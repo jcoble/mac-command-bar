@@ -570,6 +570,10 @@ pub struct AgentConversationEvent {
     /// writes it below what is already stored, counting down through zero.
     pub sequence: i64,
     pub timestamp_ms: u128,
+    /// The turn the journal files this event under, so a row can say which
+    /// turn it belongs to when its payload does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     pub payload: AgentConversationPayload,
 }
 

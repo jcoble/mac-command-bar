@@ -101,7 +101,6 @@ assert.match(fileTreeWatch, /signal\.addEventListener\("abort", stop, \{ once: t
 assert.match(fileTreeWatch, /unwatch\?\.\(\)/);
 assert.match(fileTreeWatch, /\{ recursive: false, delayMs: 350 \}/);
 assert.doesNotMatch(fileTreeWatch, /recursive: true/);
-assert.match(composer, /data-testid="conversation-working"/);
 assert.match(composer, /aria-label=\{sending \? 'Steer current turn' : 'Send message'\}/);
 assert.match(conversationSurface, /const steering = conversation\.sending/);
 assert.doesNotMatch(

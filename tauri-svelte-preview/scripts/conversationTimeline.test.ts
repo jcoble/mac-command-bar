@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  agentItemFromEvent,
   conversationTurnGroups,
   displayItemFromAgentItem,
   displayItemsFromConversationEvents,
@@ -7,6 +8,7 @@ import {
   foldFileEdits,
   formatWorkedFor,
   latestPlan,
+  turnActivityLabel,
   turnFileChanges,
   USER_MESSAGE_FOLD_LINES,
   userMessageOverflowsFold,
@@ -241,6 +243,19 @@ const running = conversationTurnGroups([
   toolItem('running-tool', 'running-turn', 2, 'running')
 ]);
 assert.equal(running[0].completed, false, 'a turn remains incomplete while any item runs');
+
+// A steer sent during a running turn carries that turn's id. It stays in the
+// turn's group, and both prompts stay visible rather than folding as work.
+const steered = conversationTurnGroups([
+  textItem('user', 'steer-initial', 'steer-turn', 1),
+  toolItem('steer-tool', 'steer-turn', 2),
+  textItem('user', 'steer-correction', 'steer-turn', 3),
+  toolItem('steer-tool-b', 'steer-turn', 4),
+  textItem('assistant', 'steer-tail', 'steer-turn', 5)
+]);
+assert.equal(steered.length, 1, 'a steer does not split its turn');
+assert.deepEqual(steered[0].tailItemIds, ['steer-initial', 'steer-correction', 'steer-tail'], 'both prompts and the reply stay visible');
+assert.deepEqual(steered[0].workItemIds, ['steer-tool', 'steer-tool-b'], 'only the work folds');
 
 // A transcript read back out of the store carries no turn ids, because the
 // provider's own file never wrote any. Its turns are read off the prompts: one
@@ -676,3 +691,66 @@ assert.equal(
 }
 
 console.log('conversationTimeline: file-edit grouping passed');
+
+{
+  const row = (itemId: string, extra: Record<string, unknown>): ConversationDisplayItem =>
+    ({ itemId, timestampMs: 1, turnId: 't2', ...extra }) as ConversationDisplayItem;
+  const sent = row('u', { kind: 'user', text: 'go', turnId: null });
+  const label = (items: ConversationDisplayItem[], approvals = 0, inputs = 0) =>
+    turnActivityLabel(items, 't2', approvals, inputs);
+
+  // A fresh send, or nothing loaded yet, has no activity to name.
+  assert.equal(label([]), 'Working');
+  assert.equal(label([sent]), 'Working');
+  // Only unfinished rows name what the turn is doing.
+  assert.equal(label([sent, row('r', { kind: 'reasoning', text: 'hm', completed: false })]), 'Thinking');
+  assert.equal(label([sent, row('r', { kind: 'reasoning', text: 'hm', completed: true })]), 'Working');
+  assert.equal(label([sent, row('a', { kind: 'assistant', text: 'Hi', completed: false })]), 'Writing');
+  assert.equal(label([sent, row('a', { kind: 'assistant', text: 'Hi', completed: true })]), 'Working');
+  assert.equal(label([sent, row('c', { kind: 'tool', title: 'Bash', toolKind: 'command', state: 'running' })]), 'Running a command');
+  assert.equal(label([sent, row('e', { kind: 'tool', title: 'Edit', toolKind: 'file-edit', state: 'pending' })]), 'Editing');
+  assert.equal(label([sent, row('s', { kind: 'tool', title: 'Grep', toolKind: 'search', state: 'running' })]), 'Searching');
+  assert.equal(label([sent, row('f', { kind: 'tool', title: 'Read', toolKind: 'fetch', state: 'running' })]), 'Reading');
+  assert.equal(label([sent, row('x', { kind: 'tool', title: 'mcp', toolKind: 'tool', state: 'running' })]), 'Using a tool');
+  assert.equal(label([sent, row('c', { kind: 'tool', title: 'Bash', toolKind: 'command', state: 'completed' })]), 'Working');
+  assert.equal(label([sent, row('z', { kind: 'unknown', text: '?' })]), 'Working');
+  // The pinned plan list is not what the agent is doing.
+  assert.equal(label([sent, row('a', { kind: 'assistant', text: 'Hi', completed: false }), row('plan:current', { kind: 'plan', title: 'Plan', steps: [] })]), 'Writing');
+  // A row from another turn, with no turn id, or with the active id unknown
+  // never speaks for the live turn.
+  const oldWriting = row('a', { kind: 'assistant', text: 'old', completed: false, turnId: 't1' });
+  assert.equal(label([oldWriting]), 'Working');
+  assert.equal(label([sent, row('a', { kind: 'assistant', text: 'old', completed: false, turnId: null })]), 'Working');
+  assert.equal(turnActivityLabel([sent, row('r', { kind: 'reasoning', text: 'hm', completed: false })], null, 0, 0), 'Working');
+  assert.equal(turnActivityLabel([oldWriting], null, 0, 0), 'Working');
+  // Requests come from the pending maps: an answered input row left in the
+  // transcript is not waiting, an open request is.
+  const answered = row('input:q', { kind: 'input', requestId: 'q', title: 'Pick', fields: [] });
+  assert.equal(label([sent, answered]), 'Working');
+  assert.equal(label([sent, answered], 0, 1), 'Waiting for your input');
+  assert.equal(label([sent, row('a', { kind: 'assistant', text: 'Hi', completed: false })], 1, 0), 'Waiting for approval');
+}
+
+console.log('conversationTimeline: turn activity label passed');
+
+{
+  // Journal events carry their turn on the envelope. Rows take it as their
+  // turn, and id-less events of one turn keep one row each.
+  const event = (sequence: number, payload: Record<string, unknown>) =>
+    ({ ownedId: 'o', provider: 'claude', generation: 1, timestampMs: 1, sequence, turnId: 'turn-a', payload }) as never;
+  assert.equal(agentItemFromEvent(event(1, { kind: 'assistantDelta', itemId: 'msg-1', delta: 'Hi' }))?.turnId, 'turn-a');
+  assert.equal(agentItemFromEvent(event(1, { kind: 'tool', itemId: 'tool-1', name: 'Bash', state: 'started' }))?.turnId, 'turn-a');
+  for (const payload of [
+    { kind: 'agentThoughtChunk', text: 't' },
+    { kind: 'plan', items: [{ text: 'a', status: 'pending' }] },
+    { kind: 'toolCall', title: 'Bash', status: 'in_progress' },
+    { kind: 'checkoutChanged', fromCwd: 'a', toCwd: 'b' }
+  ]) {
+    const first = agentItemFromEvent(event(1, payload));
+    const second = agentItemFromEvent(event(2, payload));
+    assert.ok(first && second);
+    assert.notEqual(first.id, second.id, `${payload.kind} events of one turn stay distinct`);
+  }
+}
+
+console.log('conversationTimeline: journal turn ids passed');

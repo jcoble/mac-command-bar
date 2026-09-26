@@ -549,6 +549,8 @@ export interface AgentConversationEvent {
   generation: number;
   sequence: number;
   timestampMs: number;
+  /** The turn the journal files this event under. */
+  turnId?: string;
   payload: AgentConversationPayload | AgentConversationRichPayload;
 }
 
