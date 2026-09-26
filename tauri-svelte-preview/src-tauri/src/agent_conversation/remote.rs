@@ -39,6 +39,9 @@ use super::providers::ProviderRegistry;
 
 const PROTOCOL_VERSION: u16 = 3;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
+// Requests stay small; history pages can include one indivisible event beyond
+// their byte budget. Match the existing desktop WebSocket frame ceiling.
+const MAX_SERVER_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const ATTACHMENT_CHUNK_BYTES: usize = 128 * 1024;
 const OUTBOUND_FRAME_CAPACITY: usize = 8;
 const REPLAY_PAGE_BYTES: u32 = 1024 * 1024;
@@ -2149,18 +2152,35 @@ async fn upgrade_remote_socket(
         .into_response()
 }
 
+fn encode_server_frame(frame: &ServerFrame) -> Result<String, String> {
+    let json = serde_json::to_string(frame).map_err(|error| error.to_string())?;
+    if json.len() <= MAX_SERVER_FRAME_BYTES {
+        return Ok(json);
+    }
+    let message = format!("Remote response exceeds the {} MiB transport limit", MAX_SERVER_FRAME_BYTES / 1024 / 1024);
+    match frame {
+        ServerFrame::Response { id, .. } => serde_json::to_string(&ServerFrame::Error {
+            id: *id,
+            message,
+        }).map_err(|error| error.to_string()),
+        _ => Err(message),
+    }
+}
+
 async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
     let (mut writer, mut reader) = socket.split();
     let (outbound, mut outgoing) = mpsc::channel::<ServerFrame>(OUTBOUND_FRAME_CAPACITY);
     let restart_flushed = state.restart_flushed.clone();
     let writer_task = tokio::spawn(async move {
         while let Some(frame) = outgoing.recv().await {
-            let Ok(json) = serde_json::to_string(&frame) else {
-                continue;
+            let json = match encode_server_frame(&frame) {
+                Ok(json) => json,
+                Err(error) => {
+                    eprintln!("Remote transport closed: {error}");
+                    let _ = writer.send(AxumMessage::Close(None)).await;
+                    break;
+                }
             };
-            if json.len() > MAX_WIRE_FRAME_BYTES {
-                continue;
-            }
             let restarting = matches!(frame, ServerFrame::Response { response: RemoteResponse::Restarting, .. });
             let sent = writer.send(AxumMessage::Text(json.into())).await;
             if restarting {
@@ -2621,6 +2641,70 @@ pub(super) fn validate_ssh_target(target: &str) -> Result<(), String> {
 #[cfg(test)]
 mod connection_tests {
     use super::*;
+
+    fn large_history_event(bytes: usize) -> AgentConversationEvent {
+        AgentConversationEvent {
+            owned_id: "large-history".into(),
+            provider: AgentConversationProvider::Codex,
+            generation: 1,
+            sequence: 42,
+            timestamp_ms: 1,
+            turn_id: None,
+            payload: super::super::protocol::AgentConversationPayload::AssistantDelta {
+                item_id: "answer".into(), delta: "x".repeat(bytes),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn large_history_response_and_live_event_cross_the_socket_intact() {
+        let event = large_history_event(MAX_WIRE_FRAME_BYTES + 4096);
+        let page = ServerFrame::Response { id: 7, response: RemoteResponse::EventPage(
+            AgentConversationEventPage { events: vec![event.clone()], has_more: true },
+        ) };
+        let live = ServerFrame::Event { event: event.clone() };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            for frame in [page, live] {
+                let json = encode_server_frame(&frame).unwrap();
+                assert!(json.len() > MAX_WIRE_FRAME_BYTES);
+                socket.send(TungsteniteMessage::Text(json.into())).await.unwrap();
+            }
+        });
+        let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let request = ClientFrame::Request { id: 8, command: RemoteCommand::Workspace {
+            operation: "test".into(), args: serde_json::Value::String("x".repeat(MAX_WIRE_FRAME_BYTES)),
+        } };
+        assert!(send_client_frame(&mut client, &request).await.unwrap_err().contains("one MiB"));
+        let next = |message| parse_server_frame(message).unwrap().unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(2), client.next()).await.unwrap().unwrap().unwrap();
+        match next(response) {
+            ServerFrame::Response { id: 7, response: RemoteResponse::EventPage(page) } => {
+                assert_eq!(page.events, vec![event.clone()]);
+                assert!(page.has_more);
+            }
+            other => panic!("Unexpected response: {other:?}"),
+        }
+        let response = tokio::time::timeout(Duration::from_secs(2), client.next()).await.unwrap().unwrap().unwrap();
+        assert!(matches!(next(response), ServerFrame::Event { event: received } if received == event));
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn oversized_history_returns_a_request_error_instead_of_disappearing() {
+        let event = large_history_event(MAX_SERVER_FRAME_BYTES);
+        let response = ServerFrame::Response { id: 9, response: RemoteResponse::EventPage(
+            AgentConversationEventPage { events: vec![event.clone()], has_more: false },
+        ) };
+        let json = encode_server_frame(&response).unwrap();
+        assert!(json.len() < MAX_WIRE_FRAME_BYTES);
+        assert!(matches!(serde_json::from_str::<ServerFrame>(&json).unwrap(),
+            ServerFrame::Error { id: 9, message } if message.contains("16 MiB")));
+        assert!(encode_server_frame(&ServerFrame::Event { event }).is_err());
+    }
 
     #[test]
     fn attachment_upload_is_single_flight_and_cleans_only_its_owner() {
