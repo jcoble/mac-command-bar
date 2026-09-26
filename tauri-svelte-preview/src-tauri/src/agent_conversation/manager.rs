@@ -2642,13 +2642,18 @@ impl AgentRuntimeManager {
     }
 
     pub fn snapshot(&self, owned_id: &str) -> Result<Option<AgentConversationSnapshot>, String> {
-        self.snapshot_for_request(owned_id, None)
+        self.snapshot_for_request(owned_id, None, None)
+    }
+
+    pub fn snapshot_since(&self, owned_id: &str, after: Option<i64>) -> Result<Option<AgentConversationSnapshot>, String> {
+        self.snapshot_for_request(owned_id, None, after)
     }
 
     fn snapshot_for_request(
         &self,
         owned_id: &str,
         request_id: Option<u64>,
+        after: Option<i64>,
     ) -> Result<Option<AgentConversationSnapshot>, String> {
         let live = {
             let sessions = self
@@ -2697,10 +2702,14 @@ impl AgentRuntimeManager {
         }) {
             return Ok(None);
         }
-        let events = match request_id {
-            Some(_) => self.list_recent_events_cancellable(owned_id),
-            None => self.list_recent_events(owned_id),
-        }?;
+        let events = if let Some(after) = after {
+            self.list_events_after(owned_id, after, 512 * 1024)?.events
+        } else {
+            match request_id {
+                Some(_) => self.list_recent_events_cancellable(owned_id),
+                None => self.list_recent_events(owned_id),
+            }?
+        };
         Ok(Some(AgentConversationSnapshot {
             connection,
             suspended,
@@ -2720,7 +2729,7 @@ impl AgentRuntimeManager {
         if !self.advance_snapshot_request(request_id) {
             return Ok(None);
         }
-        let snapshot = match self.snapshot_for_request(owned_id, Some(request_id)) {
+        let snapshot = match self.snapshot_for_request(owned_id, Some(request_id), None) {
             Ok(snapshot) => snapshot,
             Err(_) if self.latest_snapshot_request.load(Ordering::Acquire) != request_id => {
                 return Ok(None);

@@ -12,6 +12,7 @@ pub mod providers;
 pub mod reaper;
 pub mod remote;
 mod remote_install;
+mod remote_history;
 mod remote_workspace;
 pub mod safe_markdown;
 pub mod terminal_projection;
@@ -776,8 +777,10 @@ pub async fn finish_agent_conversation_import(
 /// Adds one older page to an imported conversation and returns how many events it gained.
 pub async fn extend_agent_conversation_import(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
 ) -> CommandResult<transcript_import::ExtendedImport> {
+    if remote.owns(&owned_id) { return command_result(remote.extend_import(owned_id).await); }
     command_result(manager.extend_imported_session(&owned_id, IMPORT_MAX_BYTES, IMPORT_MAX_RECORDS))
 }
 
