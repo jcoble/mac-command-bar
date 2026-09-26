@@ -34,7 +34,9 @@ const allowedHits = new Set([
   // These one-shot timers are both stopped by the AbortSignal-owning surface.
   'src/lib/shell/notionOAuth.ts:new Promise:await new Promise<void>((resolve, reject) => {',
   'src/lib/shell/notionOAuth.ts:setTimeout:const timeout = window.setTimeout(finish, CLAIM_INTERVAL_MS);',
-  'src/lib/shell/panels/agents/WorkflowRuns.svelte:setTimeout:const timer = window.setTimeout(() => {'
+  'src/lib/shell/panels/agents/WorkflowRuns.svelte:setTimeout:const timer = window.setTimeout(() => {',
+  // One five-second shot per active turn; the effect clears it when the turn ends or the composer unmounts.
+  'src/lib/shell/components/conversation/ConversationComposer.svelte:setTimeout:const timer = setTimeout(() => (turnSettled = true), 5000);'
 ]);
 
 interface Hit {

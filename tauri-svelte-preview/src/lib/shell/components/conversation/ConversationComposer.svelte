@@ -169,7 +169,6 @@
     inputDraft = draft;
     activeIndex = 0;
     dismissedDraft = null;
-    resizePrompt();
   });
 
   const menu = $derived(slashMenuState(inputDraft, commandSnapshot, {
@@ -183,13 +182,25 @@
   );
   const composerLocked = $derived(Boolean(pendingApproval || pendingInputs.length));
   const hasSendableContent = $derived(Boolean(inputDraft.trim() || attachments.length));
+  /* Five seconds into a turn the empty box goes back to its capsule so the
+     reply has the room. Keyed to `sending` alone, so streamed output and
+     steering keystrokes never restart the count. */
+  let turnSettled = $state(false);
+  $effect(() => {
+    if (!sending) {
+      turnSettled = false;
+      return;
+    }
+    const timer = setTimeout(() => (turnSettled = true), 5000);
+    return () => clearTimeout(timer);
+  });
   /**
    * Empty, the composer is a single capsule line: add button, placeholder,
    * the settings chips and the mic. Once it is carrying something the box
    * relaxes into a rounded rectangle and the message takes a line of its own
    * above the control row. A turn in flight, an approval to answer and a file
    * being dragged over all need that second line too, so they open the box the
-   * same way typing does.
+   * same way typing does, until the turn has run five seconds.
    *
    * Focus deliberately does NOT open it. Focus arrives from more places than
    * anyone can hold in their head — a click landing anywhere in the capsule, a
@@ -198,7 +209,7 @@
    * signal a person can predict, so content is the only one that moves the box.
    */
   const opening = $derived(
-    Boolean(hasSendableContent || sending || composerLocked || dragging)
+    Boolean(hasSendableContent || (sending && !turnSettled) || composerLocked || dragging)
   );
   /**
    * The box holds the height its message needed while that message is being
@@ -216,6 +227,14 @@
     if (hasSendableContent) hasOpened = true;
   });
   const relaxed = $derived(opening || hasOpened);
+  /* Measured after the DOM holds the new text and shape. Measuring where the
+     draft is assigned read the old message still in the box, so a sent long
+     message left its height behind on the empty capsule. */
+  $effect(() => {
+    void inputDraft;
+    void relaxed;
+    resizePrompt();
+  });
   const bannerItems = $derived.by((): ComposerBannerItem[] => {
     const items: ComposerBannerItem[] = [];
     if (sendError) items.push({ id: 'send-error', variant: 'error', title: 'Message not sent', description: sendError, dismissLabel: 'Dismiss send failure', onDismiss: onDismissSendError });
@@ -255,7 +274,6 @@
     const nextDraft = draftAfterSlashCommand(inputDraft, command);
     inputDraft = nextDraft;
     onDraftChange?.(nextDraft);
-    resizePrompt();
     onCommandSelected?.(command);
   }
 
@@ -298,7 +316,6 @@
     activeIndex = 0;
     dismissedDraft = null;
     onDraftChange?.(value);
-    resizePrompt();
   }
 
   function imageFiles(transfer: DataTransfer | null): File[] {
