@@ -15,6 +15,7 @@ import {
 	readAgentConversationWorkspaceFromTauri,
 	writeAgentConversationWorkspaceFromTauri,
 } from '../../tauriSource';
+import { captureConversationWorkspace } from '../conversation/conversationStore.svelte';
 
 export type EditorPanelLifecycle = {
 	captureViewStates(paths: readonly string[]): Record<string, object>;
@@ -51,7 +52,10 @@ export class EditorSessionController {
 			return this.activeSnapshot;
 		}
 
-		await this.checkpointActiveWorkspace(stopSignal);
+		this.checkpointQueue = this.checkpointQueue
+			.catch(() => undefined)
+			.then(() => this.checkpointActiveWorkspace(stopSignal));
+		await this.checkpointQueue;
 		if (stopSignal.aborted) return null;
 		this.releaseActiveEditorResources();
 
@@ -90,12 +94,21 @@ export class EditorSessionController {
 		return this.activeSnapshot;
 	}
 
-	persistWorkspaceState(ownedId: string): Promise<void> {
+	persistWorkspaceState(ownedId: string, attachmentIds?: readonly string[]): Promise<void> {
 		this.checkpointQueue = this.checkpointQueue
 			.catch(() => undefined)
 			.then(async () => {
-				if (this.activeOwnedId !== ownedId) return;
-				await this.checkpointActiveWorkspace(new AbortController().signal);
+				if (this.activeOwnedId === ownedId) {
+					await this.checkpointActiveWorkspace(new AbortController().signal, attachmentIds);
+					if (this.activeOwnedId === ownedId || !attachmentIds) return;
+				}
+				if (!attachmentIds) return;
+				const latest = await readAgentConversationWorkspaceFromTauri(ownedId);
+				if (!latest?.conversation) throw new Error('Conversation workspace is no longer available');
+				await writeAgentConversationWorkspaceFromTauri(ownedId, {
+					...latest,
+					conversation: { ...latest.conversation, attachmentIds: [...attachmentIds] },
+				});
 			});
 		return this.checkpointQueue;
 	}
@@ -143,7 +156,7 @@ export class EditorSessionController {
 		this.activeSnapshot = null;
 	}
 
-	private async checkpointActiveWorkspace(stopSignal: AbortSignal): Promise<void> {
+	private async checkpointActiveWorkspace(stopSignal: AbortSignal, attachmentIds?: readonly string[]): Promise<void> {
 		const ownedId = this.activeOwnedId;
 		if (!ownedId || stopSignal.aborted) return;
 		const panel = this.panel;
@@ -155,10 +168,12 @@ export class EditorSessionController {
 			? editorState.activePath
 			: openFiles.at(-1)?.path ?? null;
 		const viewStates = panel?.captureViewStates(ownedPaths);
+		const capturedConversation = captureConversationWorkspace(ownedId) ?? this.activeSnapshot?.conversation;
+		const conversation = attachmentIds && capturedConversation ? { ...capturedConversation, attachmentIds: [...attachmentIds] } : capturedConversation;
 
 		if (stopSignal.aborted) return;
 		const latest = await readAgentConversationWorkspaceFromTauri(ownedId);
-		if (stopSignal.aborted) return;
+		if (stopSignal.aborted || this.activeOwnedId !== ownedId) return;
 		const previous = latest && this.activeSnapshot
 			? {
 					...latest,
@@ -176,6 +191,7 @@ export class EditorSessionController {
 		});
 		const snapshot: SessionWorkspaceSnapshot = {
 			...(previous ?? editorCapture),
+			conversation: conversation ?? latest?.conversation,
 			openPaths: editorCapture.openPaths,
 			activePath: editorCapture.activePath,
 		};

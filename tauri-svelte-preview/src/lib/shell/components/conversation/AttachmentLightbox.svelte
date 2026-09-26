@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
+  import { convertFileSrc, invoke, isTauri } from '@tauri-apps/api/core';
   import { onDestroy } from 'svelte';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import {
@@ -11,24 +11,37 @@
     src,
     fullPath,
     fullSrc,
+    remoteOwnedId,
+    attachmentId,
+    mimeType,
+    originalByteLength,
     name,
     variant
   }: {
     src: string;
     fullPath?: string;
     fullSrc?: string;
+    remoteOwnedId?: string;
+    attachmentId?: string;
+    mimeType?: string;
+    originalByteLength?: number;
     name: string;
     variant: 'composer' | 'timeline';
   } = $props();
 
   let open = $state(false);
   let fullObjectUrl = $state('');
+  let loadError = $state('');
   let loadGeneration = 0;
+  let activeRead: AbortController | null = null;
 
   function releaseFullObjectUrl(): void {
     loadGeneration += 1;
+    activeRead?.abort();
+    activeRead = null;
     if (fullObjectUrl) revokeTrackedObjectUrl(fullObjectUrl);
     fullObjectUrl = '';
+    loadError = '';
   }
 
   async function openChanged(next: boolean): Promise<void> {
@@ -37,11 +50,54 @@
       releaseFullObjectUrl();
       return;
     }
+    const generation = ++loadGeneration;
+    if (remoteOwnedId) {
+      if (!attachmentId || !mimeType || !originalByteLength
+        || !Number.isSafeInteger(originalByteLength) || originalByteLength > 20 * 1024 * 1024) {
+        loadError = 'Image metadata is missing or outside the 20 MB limit';
+        return;
+      }
+      const controller = new AbortController();
+      activeRead = controller;
+      let rejectCancelled: (error: Error) => void = () => {};
+      const cancelled = new Promise<never>((_, reject) => { rejectCancelled = reject; });
+      const onAbort = () => rejectCancelled(new Error('Attachment read cancelled'));
+      controller.signal.addEventListener('abort', onAbort, { once: true });
+      try {
+        const original = new Uint8Array(originalByteLength);
+        let offset = 0;
+        while (offset < original.length) {
+          const data = await Promise.race([
+            invoke<number[]>('read_agent_conversation_attachment_chunk', {
+              ownedId: remoteOwnedId, attachmentId, thumbnail: false, offset
+            }),
+            cancelled
+          ]);
+          if (controller.signal.aborted || generation !== loadGeneration) return;
+          if (!Array.isArray(data) || !data.length || data.length > 128 * 1024 || offset + data.length > original.length) {
+            throw new Error('Incomplete image chunk');
+          }
+          original.set(data, offset);
+          offset += data.length;
+        }
+        if (controller.signal.aborted || generation !== loadGeneration) return;
+        fullObjectUrl = createTrackedObjectUrl(new Blob([original.buffer as ArrayBuffer], { type: mimeType }), 'attachment');
+      } catch (error) {
+        if (generation === loadGeneration && !controller.signal.aborted) {
+          const message = error && typeof error === 'object' && 'message' in error ? String(error.message) : String(error);
+          const reason = message.match(/connection closed|not connected|did not answer within \d+ seconds|request queue is unavailable|attachment row was not found|attachment read is outside the 20 MB limit|wrong attachment bytes|incomplete image chunk/i)?.[0];
+          loadError = reason ? `Image read failed: ${reason}` : 'Image read failed';
+        }
+      } finally {
+        controller.signal.removeEventListener('abort', onAbort);
+        if (activeRead === controller) activeRead = null;
+      }
+      return;
+    }
     const source = fullPath
       ? (isTauri() ? convertFileSrc(fullPath) : fullPath)
       : fullSrc;
     if (!source) return;
-    const generation = ++loadGeneration;
     try {
       const response = await fetch(source);
       if (!response.ok || generation !== loadGeneration) return;
@@ -67,9 +123,10 @@
   </Dialog.Trigger>
   <Dialog.Content
     class="w-auto max-w-[calc(100vw-48px)] bg-transparent p-0 shadow-none ring-0 sm:max-w-[calc(100vw-48px)]"
-    showCloseButton={false}
+    showCloseButton={!fullObjectUrl}
   >
     <Dialog.Title class="sr-only">{name}</Dialog.Title>
+    {#if open && loadError}<p class="text-destructive text-[13px]" role="alert">{loadError}</p>{/if}
     <Dialog.Close class="attachment-lightbox-full-image" aria-label={`Close enlarged ${name}`}>
       {#if open && fullObjectUrl}
         <img src={fullObjectUrl} alt={name} />

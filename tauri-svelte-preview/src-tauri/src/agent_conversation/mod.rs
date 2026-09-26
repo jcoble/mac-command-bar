@@ -805,10 +805,14 @@ pub async fn stop_agent_conversation_terminal_projection(
 pub async fn save_agent_conversation_attachment(
     app: tauri::AppHandle,
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     mime_type: String,
     bytes: Vec<u8>,
 ) -> CommandResult<attachments::SavedConversationAttachment> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.save_attachment(owned_id, mime_type, bytes).await);
+    }
     command_result(attachments::save(
         &app,
         manager.store(),
@@ -823,9 +827,24 @@ pub async fn save_agent_conversation_attachment(
 pub async fn read_agent_conversation_attachments(
     app: tauri::AppHandle,
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
 ) -> CommandResult<Vec<attachments::SavedConversationAttachment>> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.read_attachments(owned_id).await);
+    }
     command_result(attachments::read(&app, manager.store(), &owned_id))
+}
+
+#[tauri::command]
+pub async fn read_agent_conversation_attachment_chunk(
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    owned_id: String,
+    attachment_id: String,
+    thumbnail: bool,
+    offset: u64,
+) -> CommandResult<Vec<u8>> {
+    command_result(remote.read_attachment_chunk(owned_id, attachment_id, thumbnail, offset).await)
 }
 
 #[tauri::command]
@@ -833,8 +852,12 @@ pub async fn read_agent_conversation_attachments(
 pub async fn delete_agent_conversation_attachment(
     app: tauri::AppHandle,
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     request: attachments::DeleteConversationAttachmentRequest,
 ) -> CommandResult<()> {
+    if remote.owns(&request.owned_id) {
+        return command_result(remote.delete_attachment(request).await);
+    }
     command_result(attachments::delete(&app, manager.store(), request))
 }
 

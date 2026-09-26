@@ -2354,6 +2354,28 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the attachment list", error))
     }
 
+    /// Fetch only requested attachment ids that belong to this session.
+    pub fn get_attachments(&self, owned_id: &str, ids: &[String]) -> Result<Vec<AttachmentRow>> {
+        let ids_json = serde_json::to_string(ids)
+            .map_err(|_| StoreError::message("could not encode attachment ids"))?;
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT attachments.id, attachments.owned_id, file_name, mime_type,
+                    byte_length, relative_path, thumbnail_mime_type,
+                    thumbnail_byte_length, thumbnail_relative_path, created_at
+                 FROM json_each(?) AS selected
+                 CROSS JOIN attachments ON attachments.id = selected.value
+                 WHERE attachments.owned_id = ?",
+            )
+            .map_err(|error| StoreError::sqlite("could not prepare the attachment lookup", error))?;
+        let rows = statement
+            .query_map(params![ids_json, owned_id], attachment_from_row)
+            .map_err(|error| StoreError::sqlite("could not find attachments", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read selected attachments", error))
+    }
+
     pub fn update_attachment_thumbnail(
         &self,
         id: &str,
