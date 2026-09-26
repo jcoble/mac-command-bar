@@ -18,6 +18,7 @@
     setConversationAgentConfigError,
     setConversationAgentConfigState,
     setConversationAttachmentError,
+    setConversationAttachmentIds,
     setConversationAttachments,
     setConversationDraft,
     setConversationSendError,
@@ -87,6 +88,7 @@
     onOpenNativeCli?(ownedId: string): void | Promise<void>;
     onForkNativeCli?(ownedId: string): void | Promise<void>;
     onReturnToStructured?(ownedId: string): void | Promise<void>;
+    onPersistAttachmentIds(ownedId: string, ids: readonly string[]): Promise<void>;
   }
   let {
     owned,
@@ -97,7 +99,8 @@
     pendingFirstMessage = null,
     onOpenNativeCli,
     onForkNativeCli,
-    onReturnToStructured
+    onReturnToStructured,
+    onPersistAttachmentIds
   }: Props = $props();
   const active = $derived(owned.find((item) => item.ownedId === activeOwnedId) ?? null);
   const conversation = $derived(activeOwnedId ? conversationSessions[activeOwnedId] ?? null : null);
@@ -388,15 +391,17 @@
 
   async function cleanupSavedAttachments(
     ownedId: string,
-    attachments: ConversationAttachment[]
+    attachments: ConversationAttachment[],
+    onDeleted: (id: string) => Promise<void>
   ): Promise<void> {
-    await Promise.all(attachments.map(async (attachment) => {
+    for (const attachment of attachments) {
       try {
         await cleanupConversationAttachment(ownedId, attachment);
+        await onDeleted(attachment.id);
       } catch (_error) {
         // A failed cleanup is already best-effort; previews are revoked by the service.
       }
-    }));
+    }
   }
 
   async function chooseApprovalOption(ownedId: string, requestId: string, optionId: string, generation: number): Promise<void> {
@@ -440,6 +445,8 @@
     if (!conversation.draft.trim() && conversation.attachments.length === 0) return;
     const steering = turnActive;
     const text = conversation.draft;
+    const deliveredIds = new Set(conversation.attachments.map((attachment) => attachment.id));
+    const retainedIds = conversation.attachmentIds.filter((id) => !deliveredIds.has(id));
     const previousUserItemId = visibleTimeline.findLast((item) => item.kind === 'user')?.itemId ?? null;
     sendAnchorRequest = {
       requestId: ++sendAnchorRequestId,
@@ -469,6 +476,12 @@
         localTurnStarted = false;
         sendAnchorRequest = null;
       }
+      return;
+    }
+    try {
+      await onPersistAttachmentIds(ownedId, retainedIds);
+    } catch (error) {
+      if (activeOwnedId === ownedId) setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -515,32 +528,64 @@
 
   async function attachImages(files: File[], rejectedMessage: string): Promise<void> {
     if (!active || !conversation || conversation.selectedChildId) return;
+    const ownedId = active.ownedId;
+    const generation = conversation.generation;
     const images = files.filter((file) => file.type.startsWith('image/'));
-    setConversationAttachmentError(active.ownedId, '');
+    setConversationAttachmentError(ownedId, '');
     if (images.length === 0) {
-      setConversationAttachmentError(active.ownedId, rejectedMessage);
+      setConversationAttachmentError(ownedId, rejectedMessage);
       return;
     }
     const saved: ConversationAttachment[] = [];
+    let pendingIds = [...conversation.attachmentIds];
+    async function checkpointSavedId(id: string, retained: boolean): Promise<void> {
+      const current = conversationSessions[ownedId];
+      const ids = current?.generation === generation ? current.attachmentIds : pendingIds;
+      pendingIds = retained ? [...new Set([...ids, id])] : ids.filter((item) => item !== id);
+      if (current?.generation === generation) setConversationAttachmentIds(ownedId, pendingIds);
+      await onPersistAttachmentIds(ownedId, pendingIds);
+    }
     try {
-      for (const file of images) saved.push(await saveConversationClipboardImage(active.ownedId, file));
-      setConversationAttachments(active.ownedId, [...conversation.attachments, ...saved]);
+      for (const file of images) {
+        saved.push(await saveConversationClipboardImage(ownedId, file, (attachment, retained) => checkpointSavedId(attachment.id, retained)));
+        if (active?.ownedId !== ownedId || conversation?.generation !== generation) {
+          await cleanupSavedAttachments(ownedId, saved, (id) => checkpointSavedId(id, false));
+          return;
+        }
+      }
+      const attachments = [...conversation.attachments, ...saved];
+      const ids = [...new Set([...conversation.attachmentIds, ...attachments.map((item) => item.id)])];
+      setConversationAttachmentIds(ownedId, ids);
+      await onPersistAttachmentIds(ownedId, ids);
+      if (active?.ownedId !== ownedId || conversation?.generation !== generation) {
+        await cleanupSavedAttachments(ownedId, saved, (id) => checkpointSavedId(id, false));
+        return;
+      }
+      setConversationAttachments(ownedId, attachments);
     } catch (error) {
-      await cleanupSavedAttachments(active.ownedId, saved);
-      setConversationAttachmentError(active.ownedId, error instanceof Error ? error.message : String(error));
+      await cleanupSavedAttachments(ownedId, saved, (id) => checkpointSavedId(id, false));
+      if (active?.ownedId === ownedId && conversation?.generation === generation) {
+        setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
+      }
       // Draft and existing attachments remain untouched after a failed paste.
     }
   }
 
   async function removeAttachment(id: string): Promise<void> {
     if (!active || !conversation) return;
+    const ownedId = active.ownedId;
+    const generation = conversation.generation;
     const found = conversation.attachments.find((item) => item.id === id);
     if (!found) return;
+    const remainingIds = conversation.attachmentIds.filter((item) => item !== id);
     try {
-      await removeConversationAttachment(active.ownedId, found);
-      setConversationAttachmentError(active.ownedId, '');
+      await removeConversationAttachment(ownedId, found);
+      await onPersistAttachmentIds(ownedId, remainingIds);
+      if (active?.ownedId === ownedId && conversation?.generation === generation) setConversationAttachmentError(ownedId, '');
     } catch (error) {
-      setConversationAttachmentError(active.ownedId, error instanceof Error ? error.message : String(error));
+      if (active?.ownedId === ownedId && conversation?.generation === generation) {
+        setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
+      }
     }
   }
 

@@ -406,6 +406,10 @@
                   <AttachmentLightbox
                     src={attachment.previewUrl}
                     fullPath={attachment.path}
+                    remoteOwnedId={attachment.remoteOwnedId}
+                    attachmentId={attachment.id}
+                    mimeType={attachment.mimeType}
+                    originalByteLength={attachment.byteLength}
                     name={attachment.name}
                     variant="composer"
                   />

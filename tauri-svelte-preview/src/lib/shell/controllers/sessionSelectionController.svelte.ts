@@ -30,6 +30,7 @@ import {
 	changeStructuredConversationCheckout,
 	flushConversationSessionDraft,
 } from '../conversation/conversationService';
+import { captureConversationWorkspace, getConversationSession, restoreConversationAttachmentIds } from '../conversation/conversationStore.svelte';
 import type { SessionWorkspaceSnapshot } from '../sessionWorkspaces';
 
 export class SessionSelectionController {
@@ -251,6 +252,14 @@ export class SessionSelectionController {
 		void this.editorSessions.persistWorkspaceState(ownedId).catch(() => undefined);
 	}
 
+	async persistConversationAttachmentIds(ownedId: string, ids: readonly string[]): Promise<void> {
+		if (this.activeOwnedId === ownedId && this.chatOwnedId === ownedId) {
+			const conversation = captureConversationWorkspace(ownedId);
+			if (conversation) this.rememberWorkspaceState({ conversation: { ...conversation, attachmentIds: [...ids] } });
+		}
+		await this.editorSessions.persistWorkspaceState(ownedId, ids);
+	}
+
 	/** One removable seam for changing every checkout-backed session surface. */
 	async useSessionCheckout(requestedRoot: string): Promise<boolean> {
 		const ownedId = this.activeOwnedId;
@@ -361,6 +370,10 @@ export class SessionSelectionController {
 		if (!this.isCurrent(owner)) return;
 
 		this.newSession.abandonDraftForSessionSwitch(session.ownedId);
+		if (displayedChatOwnedId && displayedChatOwnedId !== session.ownedId) {
+			const conversation = captureConversationWorkspace(displayedChatOwnedId);
+			if (conversation) this.editorSessions.rememberWorkspaceState({ conversation });
+		}
 		await this.sessionSelectionLayers.selectSession(session, displayedChatOwnedId, owner);
 		if (!this.isCurrent(owner)) return;
 		this.activeRootAvailable = Boolean(this.sessionSelectionLayers.treeRoot);
@@ -373,6 +386,9 @@ export class SessionSelectionController {
 		);
 		if (!this.isCurrent(owner)) return;
 		this.activeWorkspaceSnapshot = snapshot;
+		if (snapshot?.conversation?.attachmentIds && getConversationSession(session.ownedId)) {
+			restoreConversationAttachmentIds(session.ownedId, snapshot.conversation.attachmentIds);
+		}
 		if (!root) return;
 		if (needsWorkspaceState) await this.loadExpandedPaths(session.ownedId, root, owner);
 	}

@@ -5744,6 +5744,7 @@ fn main() {
             projection_streams::unregister_terminal_output_stream,
             agent_conversation::save_agent_conversation_attachment,
             agent_conversation::read_agent_conversation_attachments,
+            agent_conversation::read_agent_conversation_attachment_chunk,
             agent_conversation::delete_agent_conversation_attachment,
             agent_conversation::agent_conversation_add_session_annotation,
             agent_conversation::agent_conversation_list_session_annotations,

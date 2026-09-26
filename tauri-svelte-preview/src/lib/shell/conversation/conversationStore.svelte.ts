@@ -1509,9 +1509,24 @@ export function applyChildConversationTranscript(
 export function setConversationAttachments(ownedId: string, attachments: ConversationAttachment[]): void {
   const current = conversationSessions[ownedId];
   if (current) {
+    const previousVisible = new Set(current.attachments.map((attachment) => attachment.id));
+    const nextVisible = new Set(attachments.map((attachment) => attachment.id));
+    current.attachmentIds = [
+      ...current.attachmentIds.filter((id) => !previousVisible.has(id) && !nextVisible.has(id)),
+      ...nextVisible
+    ];
     current.attachments = attachments;
-    current.attachmentIds = attachments.map((attachment) => attachment.id);
   }
+}
+
+export function setConversationAttachmentIds(ownedId: string, ids: readonly string[]): void {
+  const current = conversationSessions[ownedId];
+  if (current) current.attachmentIds = [...ids];
+}
+
+export function restoreConversationAttachmentIds(ownedId: string, ids: readonly string[]): void {
+  const current = conversationSessions[ownedId];
+  if (current && current.attachments.length === 0) current.attachmentIds = [...ids];
 }
 
 /** Hold the screenshots a send is delivering until the user message they

@@ -22,6 +22,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TungsteniteMessage};
 
 use super::manager::AgentRuntimeManager;
+use super::attachments::{self, DeleteConversationAttachmentRequest, SavedConversationAttachment};
 use super::prompt_content::prompt_from_blocks;
 use super::protocol::{
     AgentCapabilities, AgentConfigOption, AgentConversationConfigState,
@@ -36,8 +37,9 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-const PROTOCOL_VERSION: u16 = 2;
+const PROTOCOL_VERSION: u16 = 3;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
+const ATTACHMENT_CHUNK_BYTES: usize = 128 * 1024;
 const OUTBOUND_FRAME_CAPACITY: usize = 8;
 const REPLAY_PAGE_BYTES: u32 = 1024 * 1024;
 pub const REMOTE_ASSEMBLY_PROFILE_SETTING_KEY: &str = "remote-assembly.profile.v1";
@@ -129,6 +131,11 @@ enum RemoteCommand {
     Delete {
         owned_id: String,
     },
+    AttachmentChunk { upload_id: String, owned_id: String, mime_type: String, first: bool, last: bool, bytes: Vec<u8> },
+    AbortAttachmentUpload { upload_id: String },
+    ReadAttachments { owned_id: String },
+    ReadAttachmentChunk { owned_id: String, attachment_id: String, thumbnail: bool, offset: u64 },
+    DeleteAttachment(DeleteConversationAttachmentRequest),
     Send(SendAgentConversationMessageRequest),
     RespondApproval(RespondAgentConversationApprovalRequest),
     RespondPermission(RespondAgentConversationPermissionRequest),
@@ -150,6 +157,9 @@ enum RemoteResponse {
     Config(AgentConversationConfigState),
     ConfigOptions(Vec<AgentConfigOption>),
     Session(AgentConversationSessionRecord),
+    Attachment(SavedConversationAttachment),
+    Attachments(Vec<SavedConversationAttachment>),
+    Bytes(Vec<u8>),
     OptionalString(Option<String>),
     Strings(Vec<String>),
     Bool(bool),
@@ -176,12 +186,30 @@ where D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned {
 #[derive(Clone)]
 struct ServerState {
     manager: AgentRuntimeManager,
+    data_dir: PathBuf,
     token: Arc<str>,
     maintenance: Arc<tokio::sync::RwLock<()>>,
     restarting: Arc<AtomicBool>,
     restart_requested: Arc<tokio::sync::Notify>,
     restart_flushed: Arc<tokio::sync::Notify>,
     events: broadcast::Sender<AgentConversationEvent>,
+}
+
+#[derive(Debug)]
+struct PendingAttachment {
+    upload_id: String,
+    owned_id: String,
+    mime_type: String,
+    path: PathBuf,
+    file: std::fs::File,
+    bytes: usize,
+    deadline: tokio::time::Instant,
+}
+
+impl Drop for PendingAttachment {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 type ClientReply = oneshot::Sender<Result<RemoteResponse, String>>;
@@ -1455,6 +1483,55 @@ impl RemoteConnectionManager {
             .await
     }
 
+    pub async fn save_attachment(&self, owned_id: String, mime_type: String, bytes: Vec<u8>) -> Result<SavedConversationAttachment, String> {
+        if bytes.is_empty() || bytes.len() > attachments::MAX_ATTACHMENT_BYTES {
+            return Err("Image must be between 1 byte and 20 MB".into());
+        }
+        let upload_id = uuid::Uuid::new_v4().to_string();
+        let mut saved = None;
+        for (index, chunk) in bytes.chunks(ATTACHMENT_CHUNK_BYTES).enumerate() {
+            let first = index == 0;
+            let last = (index + 1) * ATTACHMENT_CHUNK_BYTES >= bytes.len();
+            let result = self.request_for_owned(&owned_id, RemoteCommand::AttachmentChunk {
+                upload_id: upload_id.clone(), owned_id: owned_id.clone(), mime_type: mime_type.clone(), first, last, bytes: chunk.to_vec(),
+            }).await;
+            match result {
+                Ok(RemoteResponse::Attachment(attachment)) if last => saved = Some(attachment),
+                Ok(RemoteResponse::Empty) if !last => {},
+                Ok(_) => {
+                    let _ = self.empty_for_owned(&owned_id, RemoteCommand::AbortAttachmentUpload { upload_id }).await;
+                    return Err("Remote Assembly returned the wrong attachment response".into());
+                }
+                Err(error) => {
+                    let _ = self.empty_for_owned(&owned_id, RemoteCommand::AbortAttachmentUpload { upload_id }).await;
+                    return Err(error);
+                }
+            }
+        }
+        saved.ok_or_else(|| "Remote attachment was not saved".into())
+    }
+
+    pub async fn read_attachments(&self, owned_id: String) -> Result<Vec<SavedConversationAttachment>, String> {
+        let RemoteResponse::Attachments(rows) = self.request_for_owned(&owned_id, RemoteCommand::ReadAttachments { owned_id: owned_id.clone() }).await? else {
+            return Err("Remote Assembly returned the wrong attachment list".into());
+        };
+        Ok(rows)
+    }
+
+    pub async fn read_attachment_chunk(&self, owned_id: String, attachment_id: String, thumbnail: bool, offset: u64) -> Result<Vec<u8>, String> {
+        let RemoteResponse::Bytes(bytes) = self.request_for_owned(&owned_id, RemoteCommand::ReadAttachmentChunk {
+            owned_id: owned_id.clone(), attachment_id, thumbnail, offset,
+        }).await? else {
+            return Err("Remote Assembly returned the wrong attachment bytes".into());
+        };
+        Ok(bytes)
+    }
+
+    pub async fn delete_attachment(&self, request: DeleteConversationAttachmentRequest) -> Result<(), String> {
+        let owned_id = request.owned_id.clone();
+        self.empty_for_owned(&owned_id, RemoteCommand::DeleteAttachment(request)).await
+    }
+
     pub async fn respond_approval(
         &self,
         request: RespondAgentConversationApprovalRequest,
@@ -1988,6 +2065,15 @@ pub fn run_server_from_environment() -> Result<(), String> {
         .map(PathBuf::from)
         .ok_or_else(|| "ASSEMBLY_SERVER_DATA_DIR is required".to_string())?;
     std::fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+    for entry in std::fs::read_dir(&data_dir).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        if entry.file_type().map_err(|error| error.to_string())?.is_file()
+            && name.to_string_lossy().strip_prefix(".attachment-upload-")
+                .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok()) {
+            std::fs::remove_file(entry.path()).map_err(|error| error.to_string())?;
+        }
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -2004,6 +2090,7 @@ pub fn run_server_from_environment() -> Result<(), String> {
         }));
         let state = ServerState {
             manager,
+            data_dir: data_dir.clone(),
             token: Arc::from(token),
             maintenance: Arc::new(tokio::sync::RwLock::new(())),
             restarting: Arc::new(AtomicBool::new(false)),
@@ -2089,9 +2176,17 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
         .await;
     let mut live_events = state.events.subscribe();
     let (completed, mut completions) = mpsc::channel::<(u64, Result<RemoteResponse, String>)>(32);
+    let upload = Arc::new(Mutex::new(None::<PendingAttachment>));
     let mut request_tasks = HashMap::new();
     loop {
+        let upload_deadline = upload.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref().map(|pending| pending.deadline);
         let message = tokio::select! {
+            _ = tokio::time::sleep_until(upload_deadline.unwrap_or_else(tokio::time::Instant::now)), if upload_deadline.is_some() => {
+                let mut pending = upload.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if pending.as_ref().is_some_and(|item| item.deadline <= tokio::time::Instant::now()) { *pending = None; }
+                None
+            }
             message = reader.next() => {
                 let Some(Ok(message)) = message else { break; };
                 Some(message)
@@ -2132,9 +2227,10 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
         match frame {
             ClientFrame::Request { id, command } => {
                 let request_state = state.clone();
+                let request_upload = upload.clone();
                 let completion_sink = completed.clone();
                 let task = tokio::spawn(async move {
-                    let response = execute_server_command(&request_state, command).await;
+                    let response = execute_server_command(&request_state, &request_upload, command).await;
                     let _ = completion_sink.send((id, response)).await;
                 });
                 if let Some(previous) = request_tasks.insert(id, task.abort_handle()) {
@@ -2181,7 +2277,85 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
     let _ = writer_task.await;
 }
 
-async fn execute_server_command(state: &ServerState, command: RemoteCommand) -> Result<RemoteResponse, String> {
+fn abort_attachment_upload(upload: &Mutex<Option<PendingAttachment>>, upload_id: &str) {
+    let mut pending = upload.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pending.as_ref().is_some_and(|current| current.upload_id == upload_id) { *pending = None; }
+}
+
+fn write_attachment_chunk(
+    data_dir: &std::path::Path,
+    upload: &Mutex<Option<PendingAttachment>>,
+    upload_id: String,
+    owned_id: String,
+    mime_type: String,
+    first: bool,
+    last: bool,
+    bytes: Vec<u8>,
+) -> Result<Option<PendingAttachment>, String> {
+    uuid::Uuid::parse_str(&upload_id).map_err(|_| "Attachment upload id is invalid")?;
+    let mut pending = upload.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pending.as_ref().is_some_and(|current| current.upload_id != upload_id) {
+        return Err("Another attachment transfer is active".into());
+    }
+    if bytes.is_empty() || bytes.len() > ATTACHMENT_CHUNK_BYTES {
+        if pending.as_ref().is_some_and(|current| current.upload_id == upload_id) { *pending = None; }
+        return Err("Attachment chunk is outside the transfer limit".into());
+    }
+    if first {
+        if pending.is_some() { return Err("Attachment transfer already started".into()); }
+        let path = data_dir.join(format!(".attachment-upload-{upload_id}"));
+        let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)
+            .map_err(|error| format!("Could not start attachment transfer: {error}"))?;
+        *pending = Some(PendingAttachment { upload_id: upload_id.clone(), owned_id: owned_id.clone(), mime_type: mime_type.clone(), path, file, bytes: 0, deadline: tokio::time::Instant::now() + Duration::from_secs(30) });
+    }
+    let Some(current) = pending.as_mut() else { return Err("Attachment transfer has not started".into()); };
+    if current.owned_id != owned_id || current.mime_type != mime_type || current.bytes + bytes.len() > attachments::MAX_ATTACHMENT_BYTES {
+        *pending = None;
+        return Err("Attachment transfer is invalid or exceeds 20 MB".into());
+    }
+    use std::io::Write;
+    if let Err(error) = current.file.write_all(&bytes) {
+        *pending = None;
+        return Err(format!("Could not write attachment transfer: {error}"));
+    }
+    current.bytes += bytes.len();
+    current.deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    Ok(if last { pending.take() } else { None })
+}
+
+async fn execute_server_command(state: &ServerState, upload: &Mutex<Option<PendingAttachment>>, command: RemoteCommand) -> Result<RemoteResponse, String> {
+    let vault = state.data_dir.join("conversation-attachments");
+    let command = match command {
+        RemoteCommand::AttachmentChunk { upload_id, owned_id, mime_type, first, last, bytes } => {
+            let complete = write_attachment_chunk(&state.data_dir, upload, upload_id, owned_id, mime_type, first, last, bytes)?;
+            return match complete {
+                Some(complete) => {
+                    use std::io::Read;
+                    let file = std::fs::File::open(&complete.path).map_err(|error| error.to_string())?;
+                    let mut bytes = Vec::new();
+                    file.take(attachments::MAX_ATTACHMENT_BYTES as u64 + 1).read_to_end(&mut bytes)
+                        .map_err(|error| error.to_string())?;
+                    if bytes.len() > attachments::MAX_ATTACHMENT_BYTES { return Err("Attachment exceeds 20 MB".into()); }
+                    attachments::save_at(&vault, state.manager.store(), &complete.owned_id, &complete.mime_type, &bytes).map(RemoteResponse::Attachment)
+                }
+                None => Ok(RemoteResponse::Empty),
+            };
+        }
+        RemoteCommand::AbortAttachmentUpload { upload_id } => {
+            abort_attachment_upload(upload, &upload_id);
+            return Ok(RemoteResponse::Empty);
+        }
+        RemoteCommand::ReadAttachments { owned_id } => {
+            return attachments::read_at(&vault, state.manager.store(), &owned_id).map(RemoteResponse::Attachments);
+        }
+        RemoteCommand::ReadAttachmentChunk { owned_id, attachment_id, thumbnail, offset } => {
+            return attachments::read_chunk_at(&vault, state.manager.store(), &owned_id, &attachment_id, thumbnail, offset, ATTACHMENT_CHUNK_BYTES).map(RemoteResponse::Bytes);
+        }
+        RemoteCommand::DeleteAttachment(request) => {
+            return attachments::delete_at(&vault, state.manager.store(), request).map(|_| RemoteResponse::Empty);
+        }
+        other => other,
+    };
     if matches!(command, RemoteCommand::RestartForProviderUpdates) {
         let _exclusive = state.maintenance.write().await;
         if state.manager.has_pending_provider_work() {
@@ -2197,11 +2371,12 @@ async fn execute_server_command(state: &ServerState, command: RemoteCommand) -> 
     if state.restarting.load(Ordering::Acquire) {
         return Err("The remote server is restarting; reconnect before continuing".into());
     }
-    execute_remote_command(&state.manager, command).await
+    execute_remote_command(&state.manager, &vault, command).await
 }
 
 async fn execute_remote_command(
     manager: &AgentRuntimeManager,
+    vault: &std::path::Path,
     command: RemoteCommand,
 ) -> Result<RemoteResponse, String> {
     match command {
@@ -2343,11 +2518,40 @@ async fn execute_remote_command(
         RemoteCommand::Delete { owned_id } => {
             manager.delete(&owned_id).await.map(RemoteResponse::Bool)
         }
+        RemoteCommand::AttachmentChunk { .. } | RemoteCommand::AbortAttachmentUpload { .. }
+        | RemoteCommand::ReadAttachments { .. } | RemoteCommand::ReadAttachmentChunk { .. }
+        | RemoteCommand::DeleteAttachment(_) => Err("Attachment command needs socket ownership".into()),
         RemoteCommand::Send(request) => {
-            if !request.attachment_ids.is_empty() {
-                return Err("Remote attachments are not available in this milestone".to_string());
+            if request.content.iter().any(|block| matches!(block, super::prompt_content::AgentPromptContentBlock::Image { .. })) {
+                return Err("Remote images must use saved attachment ids".into());
             }
-            let prompt = prompt_from_blocks(request.text.trim(), request.content)?;
+            let mut prompt = if request.text.trim().is_empty() {
+                super::providers::AgentPrompt { text: String::new(), images: Vec::new(), attachment_ids: Vec::new() }
+            } else {
+                prompt_from_blocks(request.text.trim(), request.content)?
+            };
+            if request.attachment_ids.is_empty() && prompt.text.is_empty() {
+                return Err("Message cannot be empty".into());
+            }
+            let mut total_image_bytes = 0usize;
+            if !request.attachment_ids.is_empty() {
+                let rows = manager.store().get_attachments(&request.owned_id, &request.attachment_ids)
+                    .map_err(|error| error.to_string())?;
+                for id in &request.attachment_ids {
+                    let row = rows.iter().find(|row| &row.id == id)
+                        .ok_or_else(|| "Attachment does not belong to this session".to_string())?;
+                    let bytes = attachments::read_original_at(vault, row)?;
+                    total_image_bytes += bytes.len();
+                    if total_image_bytes > attachments::MAX_ATTACHMENT_BYTES {
+                        return Err("Remote prompt images exceed 20 MB".into());
+                    }
+                    let image = prompt_from_blocks("", vec![super::prompt_content::AgentPromptContentBlock::Image {
+                        mime_type: row.mime_type.clone(), data: bytes, name: Some(row.file_name.clone()),
+                    }])?.images.remove(0);
+                    prompt.images.push(image);
+                }
+            }
+            prompt.attachment_ids = request.attachment_ids;
             manager
                 .send_message(
                     &request.owned_id,
@@ -2417,6 +2621,51 @@ pub(super) fn validate_ssh_target(target: &str) -> Result<(), String> {
 #[cfg(test)]
 mod connection_tests {
     use super::*;
+
+    #[test]
+    fn attachment_upload_is_single_flight_and_cleans_only_its_owner() {
+        let directory = std::env::temp_dir().join(format!("assembly-attachment-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let upload = Mutex::new(None);
+        let first = uuid::Uuid::new_v4().to_string();
+        let second = uuid::Uuid::new_v4().to_string();
+        let chunk = |id: &str, start, end, data: Vec<u8>| {
+            write_attachment_chunk(&directory, &upload, id.into(), "owned-a".into(), "image/png".into(), start, end, data)
+        };
+        assert!(chunk(&first, true, false, vec![1]).unwrap().is_none());
+        let path = directory.join(format!(".attachment-upload-{first}"));
+        assert!(chunk(&second, true, true, vec![2]).unwrap_err().contains("Another attachment"));
+        abort_attachment_upload(&upload, &second);
+        assert!(path.exists());
+        let finished = chunk(&first, false, true, vec![3]).unwrap().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), vec![1, 3]);
+        drop(finished);
+        assert!(!path.exists());
+
+        assert!(chunk(&first, true, false, vec![4]).unwrap().is_none());
+        assert!(chunk(&first, false, false, Vec::new()).is_err());
+        assert!(!path.exists());
+
+        assert!(chunk(&first, true, false, vec![5]).unwrap().is_none());
+        assert!(path.exists());
+        let partial = upload.lock().unwrap().take().unwrap();
+        drop(partial);
+        assert!(!path.exists());
+
+        assert!(chunk(&first, true, false, vec![6]).unwrap().is_none());
+        let wrong_owner = write_attachment_chunk(&directory, &upload, first.clone(),
+            "owned-b".into(), "image/png".into(), false, true, vec![7]).unwrap_err();
+        assert!(wrong_owner.contains("invalid"));
+        assert!(!path.exists());
+        assert!(upload.lock().unwrap().is_none());
+        assert!(chunk(&second, true, false, vec![8]).unwrap().is_none());
+        let second_path = directory.join(format!(".attachment-upload-{second}"));
+        let finished = chunk(&second, false, true, vec![9]).unwrap().unwrap();
+        assert_eq!(std::fs::read(&second_path).unwrap(), vec![8, 9]);
+        drop(finished);
+        assert!(!second_path.exists());
+        std::fs::remove_dir(&directory).unwrap();
+    }
 
     fn store() -> Arc<SessionStore> {
         Arc::new(SessionStore::open_in_memory().unwrap())

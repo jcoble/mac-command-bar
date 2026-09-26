@@ -105,7 +105,7 @@ export class SessionSelectionLayers {
 
     ensureConversationSession(session.ownedId, provider);
     setConversationMode(session.ownedId, 'structured');
-    await loadConversationForRead(session.ownedId, false, owner.signal);
+    await loadConversationForRead(session.ownedId, true, owner.signal);
     if (!this.isCurrent(owner)) {
       releaseConversationForRead(session.ownedId);
       return;
