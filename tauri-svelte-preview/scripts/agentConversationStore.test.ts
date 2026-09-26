@@ -1419,6 +1419,69 @@ assert.ok(store.getConversationSession('owned-b'));
   assert.equal(session.newestLoadedSequence, windowEvents + 1, 'the newest event is retained');
 }
 
+await test('journal payloads stay plain across live events, snapshots, paging and transcript imports', () => {
+  const ownedId = 'owned-plain-journal';
+  const event = (sequence: number): AgentConversationEvent => ({
+    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
+    payload: { kind: 'assistantMessage', itemId: `plain-${sequence}`, text: `Message ${sequence}`, completed: true }
+  });
+  const live = event(1);
+  store.applyAgentConversationEvent(live);
+  assert.equal(store.getConversationSession(ownedId).loadedEvents[0], live);
+  const tail = event(3);
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
+    lastSequence: 3, events: [tail]
+  });
+  const older = event(2);
+  store.prependOlderConversationEvents(ownedId, { events: [older], hasMore: false });
+  const newer = event(4);
+  store.appendNewerConversationEvents(ownedId, { events: [newer], hasMore: false });
+  const state = store.getConversationSession(ownedId);
+  [older, tail, newer].forEach((original, index) => {
+    assert.equal(state.loadedEvents[index], original, 'paging must not retain reactive event wrappers');
+    assert.equal(state.loadedEvents[index].payload, original.payload);
+  });
+  assert.deepEqual(state.timeline.map((entry: { text: string }) => entry.text), ['Message 2', 'Message 3', 'Message 4']);
+  store.applyConversationTranscript(ownedId, 'codex', { messages: [], metadata: state.metadata, children: [] });
+  assert.equal(store.getConversationSession(ownedId).loadedEvents[0], older);
+  store.evictConversationSession(ownedId);
+});
+
+await test('release builds enforce the UTF-8 history byte limit in both paging directions and live output', () => {
+  // compileForTest disables DEV, matching the shipped frontend.
+  const ownedId = 'owned-release-byte-limit';
+  const event = (sequence: number): AgentConversationEvent => ({
+    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
+    payload: { kind: 'assistantMessage', itemId: `large-${sequence}`, text: '界'.repeat(800_000), completed: true }
+  });
+  const first = event(1);
+  const second = event(2);
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
+    lastSequence: 2, events: [first, second]
+  });
+  const assertWindow = (sequence: number) => {
+    const state = store.getConversationSession(ownedId);
+    assert.equal(state.loadedEvents.length, 1);
+    assert.equal(state.loadedEvents[0].sequence, sequence);
+    assert.ok(state.loadedEventsBytes > 2_400_000, 'count UTF-8 bytes, not characters or DEV diagnostics');
+    assert.ok(state.loadedEventsBytes <= store.ACTIVE_EVENT_WINDOW_BYTES);
+    assert.equal(state.oldestLoadedSequence, sequence);
+    assert.equal(state.newestLoadedSequence, sequence);
+  };
+  assertWindow(2);
+  store.prependOlderConversationEvents(ownedId, { events: [first], hasMore: false });
+  assertWindow(1);
+  assert.equal(store.getConversationSession(ownedId).reachedTranscriptEnd, false);
+  store.appendNewerConversationEvents(ownedId, { events: [second], hasMore: false });
+  assertWindow(2);
+  assert.equal(store.getConversationSession(ownedId).reachedTranscriptStart, false);
+  store.applyAgentConversationEvent(event(3));
+  assertWindow(3);
+  store.evictConversationSession(ownedId);
+});
+
 console.log('agent conversation store tests passed');
 
 await test('Stop during revival prevents dispatch and releases the prepared runtime', async () => {
