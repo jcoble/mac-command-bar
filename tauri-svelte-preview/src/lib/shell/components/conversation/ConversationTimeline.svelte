@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
@@ -31,7 +32,6 @@
   interface Props {
     items: readonly ConversationDisplayItem[];
     conversationId: string;
-    showing: boolean;
     renderWindowId?: string;
     timelineRevision: number;
     anchorRequest?: ConversationSendAnchorRequest | null;
@@ -63,7 +63,6 @@
   let {
     items,
     conversationId,
-    showing,
     renderWindowId = conversationId,
     timelineRevision,
     anchorRequest = null,
@@ -100,7 +99,6 @@
   let turnWasActive = false;
   let userItemIds = $state<string[]>([]);
   let openedConversationId = $state('');
-  let wasShowing = false;
   let expandedTurns = $state<Map<string, boolean>>(new Map());
   /** Every item the conversation holds. A stored row is drawn, never offered. */
   const renderedItems = $derived(items.filter(conversationItemHasVisibleContent));
@@ -199,12 +197,7 @@
   });
 
   $effect(() => {
-    if (!showing) {
-      wasShowing = false;
-      return;
-    }
-    if (wasShowing && openedConversationId === renderWindowId) return;
-    wasShowing = true;
+    if (openedConversationId === renderWindowId) return;
     openedConversationId = renderWindowId;
     pageAnchor = null;
     anchoredUserItemId = null;
@@ -216,20 +209,25 @@
   });
 
   $effect(() => {
-    // Offscreen rows can gain their real height after the first frames. Keep
-    // the newest message in view as the list settles, until the reader scrolls.
-    if (!showing || renderedItems.length === 0 || !scrollState.openingToLatest || !host || !list) return;
-    const viewport = host;
-    const scrollLatest = () => {
-      if (showing && scrollState.openingToLatest && viewport.clientHeight > 0) {
-        viewport.scrollTop = viewport.scrollHeight - viewport.clientHeight;
-      }
-    };
-    const observer = new ResizeObserver(scrollLatest);
-    observer.observe(viewport);
-    observer.observe(list);
-    scrollLatest();
-    return () => observer.disconnect();
+    // Wait for the rows to draw, then for content-visibility to measure them.
+    // The first frame can still report a scroll height equal to the viewport;
+    // the second lands on the actual newest row without an animated trip there.
+    if (renderedItems.length === 0 || !scrollState.openingToLatest) return;
+    if (!host) return;
+    const openingId = renderWindowId;
+    void tick().then(() => {
+      if (!host || renderWindowId !== openingId || !scrollState.openingToLatest) return;
+      requestAnimationFrame(() => {
+        if (!host || renderWindowId !== openingId || !scrollState.openingToLatest) return;
+        host.scrollTop = host.scrollHeight - host.clientHeight;
+        requestAnimationFrame(() => {
+          if (!host || renderWindowId !== openingId || !scrollState.openingToLatest) return;
+          host.scrollTop = host.scrollHeight - host.clientHeight;
+          follow = true;
+          scrollState = { ...scrollState, openingToLatest: false, pinnedToBottom: true };
+        });
+      });
+    });
   });
 
   $effect(() => {
@@ -520,13 +518,11 @@
   function userInputInterrupts(node: HTMLElement): { destroy(): void } {
     node.addEventListener('wheel', handleUserInput, { passive: true });
     node.addEventListener('touchstart', handleUserInput, { passive: true });
-    node.addEventListener('pointerdown', handleUserInput, { passive: true });
     window.addEventListener('keydown', handleKeydown);
     return {
       destroy(): void {
         node.removeEventListener('wheel', handleUserInput);
         node.removeEventListener('touchstart', handleUserInput);
-        node.removeEventListener('pointerdown', handleUserInput);
         window.removeEventListener('keydown', handleKeydown);
         finishAnimation();
       }
@@ -605,9 +601,7 @@
   @keyframes older-spin{to{transform:rotate(360deg)}}
   @media (prefers-reduced-motion: reduce){.older-spinner{animation:none;border-top-color:color-mix(in srgb,var(--color-text-3) 45%,transparent)}}
   .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:none;padding:var(--center-head-height, 0px) 28px 0;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
-  /* Keep the observed list at its content height. Shrinking it to the viewport
-     hides delayed row-height changes from the opening ResizeObserver. */
-  .timeline-list{position:relative;flex:none;display:flex;flex-direction:column;gap:18px;width:min(820px,100%);min-height:1px;margin:0 auto}
+  .timeline-list{position:relative;display:flex;flex-direction:column;gap:18px;width:min(820px,100%);min-height:1px;margin:0 auto}
   .timeline-bottom-spacer{flex:none;height:calc(max(var(--composer-height, 0px), 120px) + 60px);pointer-events:none}
   .timeline-bottom-spacer.send-anchor-space{height:max(calc(max(var(--composer-height, 0px), 120px) + 60px),100vh)}
   .turn-row{position:relative;display:flex;flex-direction:column;gap:12px;width:100%;content-visibility:auto;contain-intrinsic-size:auto 120px}

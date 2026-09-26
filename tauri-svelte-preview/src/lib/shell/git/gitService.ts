@@ -32,6 +32,7 @@ import {
 } from './gitBackendExtra.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import { setGitSurfaceDiagnostics } from '../resourceDiagnostics.svelte.ts';
+import { parseRemoteWorkspacePath } from '../../workspacePaths.ts';
 import {
   amendGitCommitFromTauri,
   commitGitRepositoryFromTauri,
@@ -46,6 +47,7 @@ import {
   switchGitBranchFromTauri,
   pullGitRepositoryFromTauri,
   pushGitRepositoryFromTauri,
+  publishGitRepositoryFromTauri,
   readGitCommitHistoryFromTauri,
   readProjectGitStatusFromTauri,
   readSourceGitDiffFromTauri,
@@ -110,6 +112,7 @@ export interface GitBackend {
   fetch(root: string): Promise<GitActionResult | null>;
   pull(root: string): Promise<GitActionResult | null>;
   push(root: string): Promise<GitActionResult | null>;
+  publish(root: string, expectedBranch: string, remote: string): Promise<GitActionResult | null>;
 }
 
 /**
@@ -189,6 +192,10 @@ export function tauriGitBackend(count: (command: string) => void = countInvoke):
     push(root) {
       count('push_git_repository');
       return pushGitRepositoryFromTauri(root);
+    },
+    publish(root, expectedBranch, remote) {
+      count('publish_git_repository');
+      return publishGitRepositoryFromTauri(root, expectedBranch, remote);
     }
   };
 }
@@ -291,6 +298,7 @@ export interface GitService {
   popStash(index: number | null): Promise<void>;
   listStashes(): Promise<GitStashEntry[] | null>;
   runRemoteAction(action: 'fetch' | 'pull' | 'push'): Promise<void>;
+  publishBranch(expectedRoot: string, expectedBranch: string, remote: string): Promise<void>;
 }
 
 export interface GitServiceOptions {
@@ -717,7 +725,12 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     async listBranches(): Promise<GitBranchList | null> {
       const root = state.root;
       if (!root) return null;
-      return backend.listBranches(root);
+      const list = await backend.listBranches(root);
+      if (state.root !== root) return null;
+      if (list && parseRemoteWorkspacePath(root) && list.remotes === undefined) {
+        throw new Error('The remote backend is older than this Assembly app. Update the backend in Settings > Connections, then retry Publish.');
+      }
+      return list;
     },
 
     async createBranch(name: string, checkout: boolean): Promise<void> {
@@ -763,6 +776,19 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
             ? (root: string) => backend.pull(root)
             : (root: string) => backend.push(root);
       await runAction(action, run, { reloadHistory: action !== 'fetch' });
+    },
+
+    async publishBranch(expectedRoot: string, expectedBranch: string, remote: string): Promise<void> {
+      if (state.root !== expectedRoot) return;
+      if (state.status?.branch !== expectedBranch || state.status?.hasUpstream) {
+        state.actionError = 'The branch changed. Refresh Source Control and try again.';
+        return;
+      }
+      if (!remote) {
+        state.actionError = 'This repository has no configured remote. Add one before publishing.';
+        return;
+      }
+      await runAction('publish', (root) => backend.publish(root, expectedBranch, remote), { reloadHistory: true });
     }
   };
 }

@@ -77,6 +77,26 @@ export function sourceControlRemoteActions(
   });
 }
 
+/** Publish is available only before this checkout's current branch has an upstream. */
+export function sourceControlPublishAction(
+  status: ProjectGitStatus | null,
+  root: string,
+  context: SourceControlRemoteContext
+): Omit<SourceControlRemoteAction, 'id'> {
+  const disabledReason = root.trim() === ''
+    ? NO_REPOSITORY
+    : !context.canWrite
+      ? context.readOnlyReason
+      : context.busy
+        ? STILL_RUNNING
+        : !status?.branch || status.branch === 'HEAD'
+          ? 'Choose a branch before publishing.'
+          : status.hasUpstream
+            ? 'This branch already has an upstream. Use Push.'
+            : null;
+  return { label: 'Publish branch…', enabled: disabledReason === null, disabledReason };
+}
+
 export interface SourceControlScopeOption {
   /** The folder this option reads. */
   path: string;

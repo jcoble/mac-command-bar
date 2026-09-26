@@ -213,6 +213,10 @@ function makeBackend(overrides = {}) {
       calls.push(['readHistory', root, cursor, relativePath]);
       return { commits: [], nextCursor: null, complete: true };
     },
+    async listBranches(root) {
+      calls.push(['listBranches', root]);
+      return { current: 'main', branches: [], remotes: ['origin'] };
+    },
     async stage(root, paths) {
       calls.push(['stage', root, paths]);
       return { message: `Staged ${paths.length} files`, status: status() };
@@ -236,6 +240,10 @@ function makeBackend(overrides = {}) {
     async push(root) {
       calls.push(['push', root]);
       return { message: 'Pushed current branch', status: status() };
+    },
+    async publish(root, expectedBranch, remote) {
+      calls.push(['publish', root, expectedBranch, remote]);
+      return { message: 'Published branch', status: { ...status(), branch: expectedBranch } };
     }
   };
   return Object.assign(backend, overrides);
@@ -452,6 +460,63 @@ function makeBackend(overrides = {}) {
   assert.equal(state.status.branch, 'main', 'the status already on screen survives');
 }
 
+// ── publishing keeps the selected repository, branch and remote ──────────────
+{
+  const noUpstream = { branch: 'tsk-1233-test', ahead: 0, behind: 0, hasUpstream: false, files: [] };
+  const backend = makeBackend({
+    async readStatus() { return noUpstream; },
+    async listBranches() { return { current: noUpstream.branch, branches: [], remotes: ['origin', 'backup'] }; }
+  });
+  const state = createGitPanelState();
+  const git = createGitService({ backend, state });
+  git.activate('/repo');
+  await git.refreshStatus();
+
+  const choices = await git.listBranches();
+  assert.deepEqual(choices.remotes, ['origin', 'backup']);
+  assert.equal(backend.calls.some(([name]) => name === 'publish'), false, 'listing remotes does not choose one');
+  await git.publishBranch('/repo', noUpstream.branch, '');
+  assert.match(state.actionError, /no configured remote/i);
+  await git.publishBranch('/other-session-repo', noUpstream.branch, 'origin');
+  assert.equal(backend.calls.some(([name]) => name === 'publish'), false, 'a different repository cannot publish');
+  await git.publishBranch('/repo', 'another-branch', 'origin');
+  assert.match(state.actionError, /branch changed/i);
+  assert.equal(backend.calls.some(([name]) => name === 'publish'), false, 'a different branch cannot publish');
+
+  let attempts = 0;
+  backend.publish = async (root, branch, remote) => {
+    backend.calls.push(['publish', root, branch, remote]);
+    if (++attempts === 1) throw new Error('rejected: non-fast-forward');
+    return { message: 'Published branch', status: { ...noUpstream, hasUpstream: true } };
+  };
+  await git.publishBranch('/repo', noUpstream.branch, 'backup');
+  assert.equal(state.actionError, 'rejected: non-fast-forward');
+  assert.equal(state.actionBusy, '');
+  assert.equal(state.status.hasUpstream, false);
+  await git.publishBranch('/repo', noUpstream.branch, 'backup');
+  assert.equal(state.actionError, '');
+  assert.equal(state.status.hasUpstream, true);
+  assert.deepEqual(backend.calls.filter(([name]) => name === 'publish'), [
+    ['publish', '/repo', noUpstream.branch, 'backup'],
+    ['publish', '/repo', noUpstream.branch, 'backup']
+  ]);
+  await git.runRemoteAction('push');
+  assert.ok(backend.calls.some(([name, root]) => name === 'push' && root === '/repo'), 'later pushes use normal Push');
+}
+
+{
+  let resolveBranches;
+  const backend = makeBackend({
+    async listBranches() { return new Promise((resolve) => { resolveBranches = resolve; }); }
+  });
+  const git = createGitService({ backend, state: createGitPanelState() });
+  git.activate('/first');
+  const pending = git.listBranches();
+  git.activate('/second');
+  resolveBranches({ current: 'first', branches: [], remotes: ['origin'] });
+  assert.equal(await pending, null, 'a remote list from the previous session root is discarded');
+}
+
 // ── selecting a file loads its diff, including deleted tracked files ─────────
 {
   const backend = makeBackend();
@@ -552,7 +617,8 @@ function makeBackend(overrides = {}) {
     backend.commit('/repo', 'message'),
     backend.fetch('/repo'),
     backend.pull('/repo'),
-    backend.push('/repo')
+    backend.push('/repo'),
+    backend.publish('/repo', 'tsk-1233-test', 'origin')
   ]);
 
   assert.deepEqual(counted, [
@@ -564,11 +630,12 @@ function makeBackend(overrides = {}) {
     'commit_git_repository',
     'fetch_git_repository',
     'pull_git_repository',
-    'push_git_repository'
+    'push_git_repository',
+    'publish_git_repository'
   ]);
   assert.deepEqual(
     results,
-    Array(9).fill(null),
+    Array(10).fill(null),
     'outside the desktop app every command answers "nothing here"'
   );
 }
@@ -698,6 +765,11 @@ function makeBackend(overrides = {}) {
       `${action.id} says the branch has no upstream`
     );
   }
+  const publish = panelActions.sourceControlPublishAction(noUpstream, '/repo', remoteContext());
+  assert.equal(publish.enabled, true, 'a named branch without upstream can publish');
+  assert.equal(panelActions.sourceControlPublishAction(withUpstream, '/repo', remoteContext()).enabled, false);
+  assert.equal(panelActions.sourceControlPublishAction(null, '/repo', remoteContext()).enabled, false);
+  assert.equal(panelActions.sourceControlPublishAction(noUpstream, '/repo', remoteContext({ canWrite: false })).enabled, false);
 
   const rootless = panelActions.sourceControlRemoteActions(withUpstream, '  ', remoteContext());
   assert.ok(
