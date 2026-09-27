@@ -111,6 +111,12 @@
     const owner = { active: true };
     let laidOutWidth = -1;
     let laidOutHeight = -1;
+    const reportRegionWidths = (): void => {
+      const sessionsWidth = frame?.regionWidth('sessions');
+      if (sessionsWidth !== null && sessionsWidth !== undefined) onSessionsWidthChange?.(sessionsWidth);
+      const toolsWidth = frame?.regionWidth('tools');
+      onToolsWidthChange?.(toolsWidth ?? 0);
+    };
     const layoutFrame = () => {
       const width = gridHost.clientWidth;
       const height = gridHost.clientHeight;
@@ -118,6 +124,7 @@
       laidOutWidth = width;
       laidOutHeight = height;
       frame?.layout(width, height);
+      reportRegionWidths();
     };
     const scheduleFrameLayout = () => {
       layoutFrame();
@@ -143,12 +150,6 @@
         // still at 0×0 leaves always-rendered panels with stale overlay bounds
         // until the next activation.
         layoutFrame();
-        const reportRegionWidths = (): void => {
-          const sessionsWidth = frame?.regionWidth('sessions');
-          if (sessionsWidth !== null && sessionsWidth !== undefined) onSessionsWidthChange?.(sessionsWidth);
-          const toolsWidth = frame?.regionWidth('tools');
-          onToolsWidthChange?.(toolsWidth ?? 0);
-        };
         frameLayoutListener = frame.api.onDidLayoutChange(reportRegionWidths);
         reportRegionWidths();
         centerDock = createCenterDock(centerSlot, {
