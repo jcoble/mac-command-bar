@@ -358,14 +358,17 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
   if (existing && event.provider !== existing.provider) return false;
   const current = ensureConversationSession(event.ownedId, event.provider);
   appendRecentEvent(current, event);
-  // A live event cannot be joined across a trimmed middle. Ask the service for
-  // the newest bounded snapshot instead; it will replace this older window.
+  // A live event cannot be joined across a trimmed middle. Leave the older
+  // page in place; scrolling forward or Jump to latest reads the stored tail.
   if (current.loadedEvents.length > 0 && !current.reachedTranscriptEnd) {
-    current.desynchronized = true;
-    return true;
+    recordConversationPresenceEvent(displayEventFrom(event));
+    return false;
   }
   const applied = applyLegacyEventInPlace(current, event);
   if (!applied) return false;
+  // A missing journal event can change the meaning or position of everything
+  // after it. Keep the current view intact until a snapshot repairs the gap.
+  if (current.desynchronized) return true;
   const displayEvent = displayEventFrom(event);
   const typedItem = agentItemFromEvent(displayEvent);
   if (typedItem) {
@@ -455,7 +458,7 @@ function applyLegacyEventInPlace(current: ConversationWorkspaceState, event: Age
   current.lastSequence = event.sequence;
   current.desynchronized = newGeneration ? hasGap : current.desynchronized || hasGap;
   current.writerLease.generation = event.generation;
-  if (hasGap) return true;
+  if (current.desynchronized) return true;
 
   const { payload } = event;
   let displayChanged = false;
@@ -1018,6 +1021,18 @@ export function applyAgentConversationSnapshot(
     const displayEvent = displayEventFrom(event);
     const typedItem = agentItemFromEvent(displayEvent);
     if (typedItem) {
+      // A bounded replay may start at a tool's update after its opening event
+      // was trimmed. Keep its original position while this view is live.
+      const previousIndex = generation === current.generation
+        ? agentItemIndex(current).get(typedItem.id)
+        : undefined;
+      const previousStart = previousIndex === undefined
+        ? undefined
+        : current.agentItems[previousIndex]?.providerMetadata?.startedAtMs;
+      const replayStart = typedItem.providerMetadata?.startedAtMs;
+      if (typeof previousStart === 'number' && (typeof replayStart !== 'number' || previousStart < replayStart)) {
+        typedItem.providerMetadata = { ...typedItem.providerMetadata, startedAtMs: previousStart };
+      }
       mergeAgentItemInPlace(restored, typedItem, conversationEventAppendsItemContent(displayEvent));
     }
     applyTypedEventPayload(restored, displayEvent);

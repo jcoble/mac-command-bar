@@ -37,6 +37,7 @@ export class SessionSelectionLayers {
   chatOwnedId = $state<string | null>(null);
   hasChatProjection = $state(false);
   private selectionGeneration = 0;
+  private requestedChatOwnedId: string | null = null;
 
   async selectSession(
     session: OwnedSession,
@@ -44,6 +45,7 @@ export class SessionSelectionLayers {
     owner: SessionSelectionOwner
   ): Promise<void> {
     this.selectionGeneration = owner.generation;
+    this.requestedChatOwnedId = session.ownedId;
     await Promise.all([
       this.fillTreeView(session, owner),
       this.fillChatHistory(session, displayedChatOwnedId, owner)
@@ -107,12 +109,12 @@ export class SessionSelectionLayers {
     setConversationMode(session.ownedId, 'structured');
     await loadConversationForRead(session.ownedId, true, owner.signal);
     if (!this.isCurrent(owner)) {
-      releaseConversationForRead(session.ownedId);
+      if (this.requestedChatOwnedId !== session.ownedId) releaseConversationForRead(session.ownedId);
       return;
     }
     await loadConversationSessionDraft(session.ownedId);
     if (!this.isCurrent(owner)) {
-      releaseConversationForRead(session.ownedId);
+      if (this.requestedChatOwnedId !== session.ownedId) releaseConversationForRead(session.ownedId);
       return;
     }
     this.hasChatProjection = true;
@@ -143,6 +145,7 @@ export class SessionSelectionLayers {
 
   clearChatHistory(): void {
     this.selectionGeneration += 1;
+    this.requestedChatOwnedId = null;
     if (this.chatOwnedId) releaseConversationForRead(this.chatOwnedId);
     this.hasChatProjection = false;
     this.chatOwnedId = null;
