@@ -160,7 +160,7 @@
           // here at all — it is a panel of the right column — but the changes it
           // shows are, because a diff wants the width of the middle.
           panels: [
-            { id: 'session', title: 'Session', element: sessionSlot, renderer: 'onlyWhenVisible' },
+            { id: 'session', title: 'Session', element: sessionSlot, renderer: 'always' },
             {
               id: 'editor',
               title: 'Editor',
