@@ -358,11 +358,11 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
   if (existing && event.provider !== existing.provider) return false;
   const current = ensureConversationSession(event.ownedId, event.provider);
   appendRecentEvent(current, event);
-  // A live event cannot be joined across a trimmed middle. Ask the service for
-  // the newest bounded snapshot instead; it will replace this older window.
+  // A live event cannot be joined across a trimmed middle. Leave the older
+  // page in place; scrolling forward or Jump to latest reads the stored tail.
   if (current.loadedEvents.length > 0 && !current.reachedTranscriptEnd) {
-    current.desynchronized = true;
-    return true;
+    recordConversationPresenceEvent(displayEventFrom(event));
+    return false;
   }
   const applied = applyLegacyEventInPlace(current, event);
   if (!applied) return false;
