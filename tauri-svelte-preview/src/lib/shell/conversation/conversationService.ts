@@ -1109,7 +1109,8 @@ async function refreshRemoteSessionActivity(streamGeneration: number): Promise<v
         runtimeState: record.suspended ? 'suspended' : record.state,
         activeTurnId: record.activeTurnId,
         pendingPermission: record.pendingPermission,
-        pendingInput: record.pendingInput
+        pendingInput: record.pendingInput,
+        backgroundTaskIds: record.backgroundTaskIds ?? []
       });
       synchronizeSessionPresenceWork(record.ownedId, record.activeTurnId, false, null);
       const current = getConversationSession(record.ownedId);
@@ -1147,6 +1148,15 @@ async function handleConversationStreamEnvelope(
     || (payload.payload.kind === 'turn' && payload.payload.turnId !== activeTurnId)
   )) return;
   railActivityEvents.set(payload.ownedId, { generation: payload.generation, sequence: payload.sequence });
+  if (payload.payload.kind === 'tool' && payload.payload.itemId.startsWith('background-task:')) {
+    const owned = rail.owned.find((session) => session.ownedId === payload.ownedId);
+    if (owned) {
+      const ids = new Set(owned.backgroundTaskIds ?? []);
+      if (payload.payload.state === 'started' || payload.payload.state === 'updated') ids.add(payload.payload.itemId);
+      else ids.delete(payload.payload.itemId);
+      updateOwnedSession(payload.ownedId, { backgroundTaskIds: [...ids] });
+    }
+  }
   const transition = sessionPresenceEventFromConversation(displayEvent);
   if (transition?.kind === 'turn-started' || terminal) {
     const working = transition?.kind === 'turn-started';

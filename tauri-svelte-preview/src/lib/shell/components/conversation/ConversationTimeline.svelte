@@ -172,7 +172,7 @@
 
   function rowKey(group: ConversationTurnGroup | undefined, index: number): string {
     const groupId = group?.turnId ?? group?.items[0]?.itemId ?? `row:${index}`;
-    return `${renderWindowId}:${groupId}`;
+    return `${renderWindowId}:${groupId}:${group?.items[0]?.itemId ?? index}`;
   }
 
 

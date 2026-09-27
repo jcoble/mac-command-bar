@@ -772,6 +772,8 @@ pub struct AgentConversationSessionRecord {
     pub active_turn_id: Option<String>,
     pub pending_permission: bool,
     pub pending_input: bool,
+    #[serde(default)]
+    pub background_task_ids: Vec<String>,
     pub native_session_id: Option<String>,
     #[serde(flatten)]
     pub meta: AgentConversationSessionMeta,
