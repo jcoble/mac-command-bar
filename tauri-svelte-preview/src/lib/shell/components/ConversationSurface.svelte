@@ -405,9 +405,15 @@
   async function chooseApprovalOption(ownedId: string, requestId: string, optionId: string, generation: number): Promise<void> {
     try {
       await sendPermissionResponse(ownedId, requestId, optionId);
+      if (conversationSessions[ownedId]?.generation === generation) {
+        setConversationProviderNotice(ownedId, '');
+      }
     } catch (error) {
       if (conversationSessions[ownedId]?.generation === generation) {
-        setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        setConversationProviderNotice(ownedId, message.startsWith('Stale approval request:')
+          ? 'That approval expired when its session stopped. Reconnect and send the request again.'
+          : `Approval failed: ${message}`);
       }
     }
   }

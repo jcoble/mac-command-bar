@@ -1547,6 +1547,13 @@ export async function sendPermissionResponse(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith('Stale approval request:')) {
+      if (getConversationSession(ownedId)?.generation === state.generation) {
+        delete state.pendingApprovals[requestId];
+      }
+      try { await resyncConversation(ownedId); } catch { /* Reconnect can replay the recorded expiry. */ }
+      throw error;
+    }
     if (!/not found|unknown command|not part of the pending request/i.test(message)) throw error;
     const decision = /reject|deny|decline|cancel/i.test(optionId) ? 'decline' : 'accept';
     await respondToStructuredApproval(ownedId, requestId, decision);
