@@ -1569,10 +1569,15 @@ await test('release builds enforce the UTF-8 history byte limit in both paging d
   store.prependOlderConversationEvents(ownedId, { events: [first], hasMore: false });
   assertWindow(1);
   assert.equal(store.getConversationSession(ownedId).reachedTranscriptEnd, false);
+  const live = event(3);
+  assert.equal(store.applyAgentConversationEvent(live), false);
+  assertWindow(1);
+  assert.equal(store.getConversationSession(ownedId).desynchronized, false);
+  assert.equal(store.getConversationSession(ownedId).lastSequence, 2);
   store.appendNewerConversationEvents(ownedId, { events: [second], hasMore: false });
   assertWindow(2);
   assert.equal(store.getConversationSession(ownedId).reachedTranscriptStart, false);
-  store.applyAgentConversationEvent(event(3));
+  store.applyAgentConversationEvent(live);
   assertWindow(3);
   store.evictConversationSession(ownedId);
 });
