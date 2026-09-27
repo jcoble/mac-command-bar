@@ -351,6 +351,8 @@ export function createBrowserTab(
   const input = typeof first === 'string' ? { url: first } : parsed.input;
   const workspace = context.workspace;
   const tabId = input.tabId?.trim() || idFor(context, 'tab');
+  // Restored tab identities reserve their sequence before a new tab is generated.
+  idSequence = Math.max(idSequence, Number(tabId.match(/^browser-tab-(\d+)$/)?.[1] ?? 0));
   const existing = workspace.tabs[tabId];
   if (existing) {
     workspace.activeTabId = existing.id;
