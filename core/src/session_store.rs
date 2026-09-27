@@ -9,7 +9,7 @@ use rusqlite::{
     TransactionBehavior,
 };
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 static SESSION_STORE_ACTIVE_READS: AtomicUsize = AtomicUsize::new(0);
@@ -405,6 +405,44 @@ impl SessionStore {
         let connection = Connection::open(path)
             .map_err(|error| StoreError::sqlite("could not open the session database", error))?;
         Self::from_connection(connection)
+    }
+
+    /// Writes a bounded remote page and its coverage metadata atomically.
+    /// Replayed events replace the same primary key, never duplicate history.
+    pub fn cache_remote_events(&self, profile_id: &str, session: &SessionRow, events: &[EventRow]) -> Result<()> {
+        let mut connection = self.lock_write()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| StoreError::sqlite("could not begin remote history write", error))?;
+        let local_collision: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE owned_id = ?1
+                AND cached_remote_profile_id IS NOT ?2)",
+            params![session.owned_id, profile_id], |row| row.get(0),
+        ).map_err(|error| StoreError::sqlite("could not check remote history ownership", error))?;
+        if local_collision { return Err(StoreError::message("remote cache cannot overwrite a local session")); }
+        upsert_session_on(&transaction, session)?;
+        transaction.execute("UPDATE sessions SET cached_remote_profile_id = ? WHERE owned_id = ?",
+            params![profile_id, session.owned_id])
+            .map_err(|error| StoreError::sqlite("could not mark remote history ownership", error))?;
+        for event in events {
+            transaction.execute(
+                "INSERT INTO events (owned_id, seq, turn_id, kind, payload, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(owned_id, seq) DO UPDATE SET turn_id=excluded.turn_id,
+                   kind=excluded.kind, payload=excluded.payload, created_at=excluded.created_at",
+                params![session.owned_id, event.seq, event.turn_id, event.kind,
+                    event.payload_json, event.created_at_ms],
+            ).map_err(|error| StoreError::sqlite("could not cache remote event", error))?;
+        }
+        transaction.commit()
+            .map_err(|error| StoreError::sqlite("could not finish remote history write", error))
+    }
+
+    pub fn purge_remote_history(&self, profile_id: &str) -> Result<()> {
+        self.lock_write()?.execute(
+            "DELETE FROM sessions WHERE cached_remote_profile_id = ?",
+            [profile_id],
+        ).map_err(|error| StoreError::sqlite("could not purge remote history", error))?;
+        Ok(())
     }
 
     pub fn open_in_memory() -> Result<Self> {
@@ -846,6 +884,14 @@ impl SessionStore {
                     StoreError::sqlite("could not finish the evidence disk usage upgrade", error)
                 })?;
             }
+            13 => {
+                let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| StoreError::sqlite("could not begin remote history upgrade", error))?;
+                add_remote_history_column(&transaction)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| StoreError::sqlite("could not record remote history upgrade", error))?;
+                transaction.commit().map_err(|error| StoreError::sqlite("could not finish remote history upgrade", error))?;
+            }
             SCHEMA_VERSION => {}
             _ => {
                 return Err(StoreError::message(
@@ -860,6 +906,7 @@ impl SessionStore {
             })?;
         add_evidence_artifact_schema(&connection)?;
         add_notion_task_projection_schema(&connection)?;
+        add_remote_history_column(&connection)?;
 
         let interrupt_handle = connection.get_interrupt_handle();
         SESSION_STORE_OPEN_HANDLES.fetch_add(1, Ordering::Relaxed);
@@ -983,6 +1030,7 @@ impl SessionStore {
                         branch, title, project, state, suspended, created_at, last_activity_at,
                         extra, title_source
                  FROM sessions
+                 WHERE cached_remote_profile_id IS NULL
                  ORDER BY last_activity_at DESC, owned_id ASC",
             )
             .map_err(|error| StoreError::sqlite("could not prepare the session list", error))?;
@@ -996,7 +1044,7 @@ impl SessionStore {
     pub fn count_sessions(&self) -> Result<usize> {
         let connection = self.lock()?;
         let count: i64 = connection
-            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM sessions WHERE cached_remote_profile_id IS NULL", [], |row| row.get(0))
             .map_err(|error| StoreError::sqlite("could not count sessions", error))?;
         usize::try_from(count)
             .map_err(|_| StoreError::message("the session count could not be represented"))
@@ -2696,13 +2744,22 @@ fn upsert_session_on(connection: &Connection, row: &SessionRow) -> Result<()> {
     Ok(())
 }
 
+/// Marks remote cache rows in the ordinary session journal. NULL is local.
+fn add_remote_history_column(connection: &Connection) -> Result<()> {
+    let exists: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'cached_remote_profile_id')",
+        [], |row| row.get(0),
+    ).map_err(|error| StoreError::sqlite("could not inspect remote history marker", error))?;
+    if !exists {
+        connection.execute_batch("ALTER TABLE sessions ADD COLUMN cached_remote_profile_id TEXT;")
+            .map_err(|error| StoreError::sqlite("could not add remote history marker", error))?;
+    }
+    connection.execute_batch("CREATE INDEX IF NOT EXISTS sessions_cached_remote_idx ON sessions(cached_remote_profile_id);")
+        .map_err(|error| StoreError::sqlite("could not index remote history marker", error))
+}
+
 /// Adds the column that records where a session's name came from, unless the
-/// database already has it.
-///
-/// Version one and two databases go straight to the current version rather than
-/// climbing one step at a time, so each of them adds this column as well. A
-/// database whose version has been set back by hand already has the column, and
-/// adding it twice is an error, so the column list is read first.
+/// database already has it. Older schemas upgrade directly to the current one.
 fn add_title_source_column(connection: &Connection) -> Result<()> {
     let present: i64 = connection
         .query_row(
@@ -2972,6 +3029,62 @@ mod tests {
         }
     }
 
+    #[test]
+    fn remote_cache_is_excluded_from_local_startup_and_purged_by_source() {
+        let (_directory, path, store) = open_temp_store();
+        store.upsert_session(&fixture_session("local", 1)).unwrap();
+        store.set_draft("local", "keep my draft").unwrap();
+        for (profile, key) in [("workbox", "cache-a"), ("other", "cache-b")] {
+            let row = fixture_session(key, 2);
+            let events = [fixture_event(key, -1), fixture_event(key, 1)];
+            store.cache_remote_events(profile, &row, &events).unwrap();
+            store.cache_remote_events(profile, &row, &events).unwrap();
+            assert_eq!(store.list_events_before(key, 2, 1024).unwrap().events.len(), 2);
+        }
+        assert_eq!(store.count_sessions().unwrap(), 1);
+        assert_eq!(store.list_sessions().unwrap()[0].owned_id, "local");
+        drop(store);
+        let store = SessionStore::open(&path).unwrap();
+        store.purge_remote_history("workbox").unwrap();
+        assert!(store.get_session("cache-a").unwrap().is_none());
+        assert!(store.list_events("cache-a", -10, 100).unwrap().is_empty());
+        assert!(store.get_session("cache-b").unwrap().is_some());
+        assert_eq!(store.get_draft("local").unwrap().as_deref(), Some("keep my draft"));
+        assert_eq!(store.count_sessions().unwrap(), 1);
+    }
+
+    #[test]
+    fn remote_cache_cannot_replace_a_local_session_or_another_source() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let local = fixture_session("collision", 1);
+        store.upsert_session(&local).unwrap();
+        assert!(store.cache_remote_events("workbox", &local, &[]).is_err());
+        let remote = fixture_session("remote", 2);
+        store.cache_remote_events("workbox", &remote, &[]).unwrap();
+        assert!(store.cache_remote_events("other", &remote, &[]).is_err());
+        store.purge_remote_history("workbox").unwrap();
+        assert!(store.get_session("collision").unwrap().is_some());
+    }
+
+    #[test]
+    fn remote_cache_marker_upgrade_preserves_version_thirteen_history() {
+        let (_directory, path, store) = open_temp_store();
+        store.upsert_session(&fixture_session("local", 1)).unwrap();
+        store.set_draft("local", "existing").unwrap();
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("DROP INDEX sessions_cached_remote_idx;
+            ALTER TABLE sessions DROP COLUMN cached_remote_profile_id;
+            PRAGMA user_version = 13;").unwrap();
+        drop(connection);
+        let store = SessionStore::open(&path).unwrap();
+        assert_eq!(store.count_sessions().unwrap(), 1);
+        assert_eq!(store.get_draft("local").unwrap().as_deref(), Some("existing"));
+        store.cache_remote_events("workbox", &fixture_session("remote", 2), &[]).unwrap();
+        store.purge_remote_history("workbox").unwrap();
+        assert_eq!(store.count_sessions().unwrap(), 1);
+    }
+
     fn fixture_evidence_artifact(id: &str, captured_at_ms: i64) -> EvidenceArtifact {
         EvidenceArtifact {
             id: id.to_owned(),
@@ -3152,6 +3265,7 @@ mod tests {
         let directory = TempDir::new().expect("create temporary directory");
         let path = directory.path().join("sessions.db");
         let connection = Connection::open(&path).expect("create version five database");
+        connection.execute_batch("CREATE TABLE sessions (owned_id TEXT PRIMARY KEY);").unwrap();
         connection
             .execute_batch(
                 "CREATE TABLE events (
@@ -3359,6 +3473,7 @@ mod tests {
         let directory = TempDir::new().expect("create temporary directory");
         let path = directory.path().join("sessions.db");
         let connection = Connection::open(&path).expect("create version twelve database");
+        connection.execute_batch("CREATE TABLE sessions (owned_id TEXT PRIMARY KEY);").unwrap();
         connection
             .execute_batch(super::EVIDENCE_ARTIFACT_SCHEMA)
             .expect("create current evidence schema");
@@ -3403,6 +3518,7 @@ mod tests {
         let directory = TempDir::new().expect("create temporary directory");
         let path = directory.path().join("sessions.db");
         let connection = Connection::open(&path).expect("create version eleven database");
+        connection.execute_batch("CREATE TABLE sessions (owned_id TEXT PRIMARY KEY);").unwrap();
         connection
             .execute_batch(super::EVIDENCE_ARTIFACT_SCHEMA)
             .expect("create evidence artifact schema");

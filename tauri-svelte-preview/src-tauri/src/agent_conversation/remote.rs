@@ -22,6 +22,8 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TungsteniteMessage};
 
 use super::manager::AgentRuntimeManager;
+use super::remote_history::RemoteHistory;
+type RemoteEventSink = Arc<dyn Fn(AgentConversationEvent) -> Result<(), String> + Send + Sync>;
 use super::attachments::{self, DeleteConversationAttachmentRequest, SavedConversationAttachment};
 use super::prompt_content::prompt_from_blocks;
 use super::protocol::{
@@ -37,8 +39,11 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 3;
+pub(super) const PROTOCOL_VERSION: u16 = 4;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
+// Requests stay small; history pages can include one indivisible event beyond
+// their byte budget. Match the existing desktop WebSocket frame ceiling.
+const MAX_SERVER_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const ATTACHMENT_CHUNK_BYTES: usize = 128 * 1024;
 const OUTBOUND_FRAME_CAPACITY: usize = 8;
 const REPLAY_PAGE_BYTES: u32 = 1024 * 1024;
@@ -70,7 +75,9 @@ enum RemoteCommand {
     Snapshot {
         owned_id: String,
         request_id: u64,
+        after_sequence: Option<i64>,
     },
+    ExtendImport { owned_id: String },
     EventsBefore {
         owned_id: String,
         before_sequence: i64,
@@ -163,6 +170,7 @@ enum RemoteResponse {
     OptionalString(Option<String>),
     Strings(Vec<String>),
     Bool(bool),
+    ImportProgress { added: usize, reached_start: bool },
     Empty,
 }
 
@@ -233,6 +241,7 @@ pub struct RemoteConnectionManager {
     remote_sessions: Arc<Mutex<HashMap<String, String>>>,
     cached_sessions: Arc<Mutex<Vec<AgentConversationSessionRecord>>>,
     store: Arc<SessionStore>,
+    history: Arc<Mutex<RemoteHistory>>,
     next_request_id: Arc<AtomicU64>,
     event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
     status_sink: Arc<dyn Fn(RemoteConnectionStatus) + Send + Sync>,
@@ -428,6 +437,7 @@ impl RemoteConnectionManager {
             tunnel_processes: Arc::new(Mutex::new(HashMap::new())),
             remote_sessions: Arc::new(Mutex::new(remote_sessions)),
             cached_sessions: Arc::new(Mutex::new(cached_sessions)),
+            history: Arc::new(Mutex::new(RemoteHistory::new(store.clone()))),
             store,
             next_request_id: Arc::new(AtomicU64::new(1)),
             event_sink,
@@ -450,7 +460,7 @@ impl RemoteConnectionManager {
             return Err("ASSEMBLY_REMOTE_DEFAULT_CWD must be an absolute path".to_string());
         }
         let (request_tx, mut request_rx) = mpsc::channel(32);
-        let event_sink = manager.event_sink.clone();
+        let event_sink = manager.history_event_sink("environment");
         let ready = Arc::new(AtomicBool::new(false));
         let actor_ready = ready.clone();
         manager
@@ -479,7 +489,7 @@ impl RemoteConnectionManager {
     }
 
     /// The compact local rail projection. Conversation events and transcripts
-    /// remain exclusively in the remote backend's database.
+    /// are cached in source-marked rows in the ordinary local session database.
     pub fn cached_sessions(&self) -> Vec<AgentConversationSessionRecord> {
         self.cached_sessions
             .lock()
@@ -731,7 +741,7 @@ impl RemoteConnectionManager {
             let task = tokio::spawn(async move {
                 let _owner = manager.connection_lock.lock().await;
                 let (profile, _, _) = manager.resolve_profile_identity(profile).await?;
-                manager.disconnect_profile(&profile.id);
+                manager.stop_profile(&profile.id);
                 let receipt = super::remote_install::install_latest(&profile.ssh_target, progress.clone()).await?;
                 let _ = progress.send(format!("Installed backend {} from {}. Connecting…",
                     receipt.version, &receipt.commit[..12]));
@@ -762,8 +772,9 @@ impl RemoteConnectionManager {
         validate_profile(&profile)?;
         let _owner = self.connection_lock.lock().await;
         let (profile, _, replaced_profile_id) = self.resolve_profile_identity(profile).await?;
-        self.disconnect_profile(&profile.id);
+        self.stop_profile(&profile.id);
         super::remote_install::uninstall(&profile.ssh_target, delete_data).await?;
+        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(&profile.id)?;
         if delete_data {
             self.replace_cached_profile_sessions(&profile.id, &[])?;
         }
@@ -825,7 +836,7 @@ impl RemoteConnectionManager {
             let reported_id = profile.id.clone();
             let report: Arc<dyn Fn() + Send + Sync> =
                 Arc::new(move || manager.publish_status(&reported_id));
-            let task = tokio::spawn(profile_client_loop(profile.clone(), receiver, self.event_sink.clone(),
+            let task = tokio::spawn(profile_client_loop(profile.clone(), receiver, self.history_event_sink(&profile.id),
                 self.tunnel_processes.clone(), ready.clone(), Some(ready_tx), report));
             // Dropping a failed/cancelled candidate aborts only its own actor and tunnel.
             let candidate = RemoteClient { requests: Some(requests), profile: Some(profile.clone()),
@@ -882,7 +893,7 @@ impl RemoteConnectionManager {
         Ok((profile, target_key, replaced_profile_id))
     }
 
-    pub fn disconnect_profile(&self, profile_id: &str) {
+    fn stop_profile(&self, profile_id: &str) {
         {
             let mut state = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(client) = state.clients.get_mut(profile_id) {
@@ -895,7 +906,24 @@ impl RemoteConnectionManager {
         self.publish_status(profile_id);
     }
 
-    pub fn remove_profile(&self, profile_id: &str) {
+    pub fn disconnect_profile(&self, profile_id: &str) -> Result<(), String> {
+        self.stop_profile(profile_id);
+        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(profile_id)
+    }
+
+    fn history_event_sink(&self, profile_id: &str) -> RemoteEventSink {
+        let history = self.history.clone();
+        let profile = profile_id.to_string();
+        let epoch = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).epoch(&profile);
+        let sink = self.event_sink.clone();
+        Arc::new(move |event| {
+            history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live(&profile, epoch, &event)?;
+            sink(event);
+            Ok(())
+        })
+    }
+
+    pub fn remove_profile(&self, profile_id: &str) -> Result<(), String> {
         // Dropping the attempt token first makes removal authoritative: the
         // state derived below is disconnected even mid-attempt, and the running
         // attempt can no longer install a client for this profile. A later
@@ -912,6 +940,7 @@ impl RemoteConnectionManager {
             .clients
             .remove(profile_id);
         self.publish_status(profile_id);
+        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(profile_id)
     }
 
     /// Installs a freshly connected client only while this attempt still owns
@@ -1119,24 +1148,34 @@ impl RemoteConnectionManager {
     }
 
     pub async fn snapshot(
-        &self,
-        owned_id: String,
-        request_id: u64,
+        &self, owned_id: String, request_id: u64,
     ) -> Result<Option<AgentConversationSnapshot>, String> {
-        let RemoteResponse::Snapshot(snapshot) = self
-            .request_with_id(
-                &self.profile_for_owned_id(&owned_id)?,
-                request_id,
-                RemoteCommand::Snapshot {
-                    owned_id,
-                    request_id,
-                },
-            )
-            .await?
-        else {
-            return Err("Remote Assembly returned the wrong snapshot response".to_string());
+        let profile = self.profile_for_owned_id(&owned_id)?;
+        let (epoch, mut after) = {
+            let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            (history.epoch(&profile), history.through(&profile, &owned_id)?)
         };
-        Ok(snapshot)
+        loop {
+            let RemoteResponse::Snapshot(snapshot) = self.request_with_id(&profile, request_id,
+                RemoteCommand::Snapshot { owned_id: owned_id.clone(), request_id, after_sequence: after }).await?
+            else { return Err("Remote Assembly returned the wrong snapshot response".into()); };
+            let Some(snapshot) = snapshot else { return Ok(None); };
+            let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            history.check(&profile, epoch)?;
+            if after.is_some_and(|after| after > snapshot.last_sequence) {
+                // An authoritative journal was replaced/truncated, rather than
+                // appended. Its previous cache is no longer the same history.
+                history.forget(&profile, &owned_id)?;
+                after = None;
+                continue;
+            }
+            let end = history.snapshot(&profile, epoch, after, &snapshot)?;
+            if end >= snapshot.last_sequence {
+                return history.read_snapshot(&profile, epoch, &owned_id).map(Some);
+            }
+            if after == Some(end) { return Err("Remote history catch-up made no progress".into()); }
+            after = Some(end);
+        }
     }
 
     pub async fn cancel_request(&self, request_id: u64) {
@@ -1153,52 +1192,44 @@ impl RemoteConnectionManager {
         }
     }
 
-    pub async fn events_before(
-        &self,
-        owned_id: String,
-        before_sequence: i64,
-        max_bytes: u32,
-        request_id: u64,
-    ) -> Result<AgentConversationEventPage, String> {
-        let RemoteResponse::EventPage(page) = self
-            .request_with_id(
-                &self.profile_for_owned_id(&owned_id)?,
-                request_id,
-                RemoteCommand::EventsBefore {
-                    owned_id,
-                    before_sequence,
-                    max_bytes,
-                },
-            )
-            .await?
-        else {
-            return Err("Remote Assembly returned the wrong event-page response".to_string());
+    pub async fn events_before(&self, owned_id: String, before_sequence: i64, max_bytes: u32, request_id: u64)
+        -> Result<AgentConversationEventPage, String> {
+        self.history_page(owned_id, before_sequence, max_bytes, request_id, true).await
+    }
+
+    pub async fn events_after(&self, owned_id: String, after_sequence: i64, max_bytes: u32, request_id: u64)
+        -> Result<AgentConversationEventPage, String> {
+        self.history_page(owned_id, after_sequence, max_bytes, request_id, false).await
+    }
+
+    async fn history_page(&self, owned_id: String, cursor: i64, max_bytes: u32, request_id: u64, before: bool)
+        -> Result<AgentConversationEventPage, String> {
+        let profile = self.profile_for_owned_id(&owned_id)?;
+        let epoch = {
+            let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(page) = history.read_page(&profile, &owned_id, cursor, max_bytes, before)? { return Ok(page); }
+            history.epoch(&profile)
         };
+        let command = if before {
+            RemoteCommand::EventsBefore { owned_id: owned_id.clone(), before_sequence: cursor, max_bytes }
+        } else {
+            RemoteCommand::EventsAfter { owned_id: owned_id.clone(), after_sequence: cursor, max_bytes }
+        };
+        let RemoteResponse::EventPage(page) = self.request_with_id(&profile, request_id, command).await?
+        else { return Err("Remote Assembly returned the wrong event-page response".into()); };
+        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .page(&profile, epoch, &owned_id, cursor, before, &page)?;
         Ok(page)
     }
 
-    pub async fn events_after(
-        &self,
-        owned_id: String,
-        after_sequence: i64,
-        max_bytes: u32,
-        request_id: u64,
-    ) -> Result<AgentConversationEventPage, String> {
-        let RemoteResponse::EventPage(page) = self
-            .request_with_id(
-                &self.profile_for_owned_id(&owned_id)?,
-                request_id,
-                RemoteCommand::EventsAfter {
-                    owned_id,
-                    after_sequence,
-                    max_bytes,
-                },
-            )
-            .await?
-        else {
-            return Err("Remote Assembly returned the wrong event-page response".to_string());
-        };
-        Ok(page)
+    pub async fn extend_import(&self, owned_id: String) -> Result<super::transcript_import::ExtendedImport, String> {
+        let profile = self.profile_for_owned_id(&owned_id)?;
+        let epoch = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).epoch(&profile);
+        let RemoteResponse::ImportProgress { added, reached_start } = self.request_for_profile(&profile,
+            RemoteCommand::ExtendImport { owned_id: owned_id.clone() }).await?
+        else { return Err("Remote Assembly returned the wrong import response".into()); };
+        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).imported_older(&profile, epoch, &owned_id)?;
+        Ok(super::transcript_import::ExtendedImport { added, reached_start })
     }
 
     pub async fn capabilities(
@@ -1461,6 +1492,8 @@ impl RemoteConnectionManager {
             return Err("Remote Assembly returned the wrong delete response".to_string());
         };
         if deleted {
+            let profile = self.profile_for_owned_id(&owned_id)?;
+            self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).forget(&profile, &owned_id)?;
             self.forget_cached_session(&owned_id)?;
             self.remote_sessions
                 .lock()
@@ -1653,9 +1686,9 @@ pub fn cancel_remote_connection(remote: tauri::State<'_, RemoteConnectionManager
 #[tauri::command]
 pub fn disconnect_remote_assembly(
     remote: tauri::State<'_, RemoteConnectionManager>, profile_id: String,
-) -> RemoteAssemblyEnvironment {
-    remote.disconnect_profile(&profile_id);
-    remote.environment()
+) -> Result<RemoteAssemblyEnvironment, super::protocol::CommandError> {
+    remote.disconnect_profile(&profile_id).map_err(super::protocol::CommandError::from)?;
+    Ok(remote.environment())
 }
 
 #[tauri::command]
@@ -1664,7 +1697,7 @@ pub fn remove_remote_assembly_profile(
     remote: tauri::State<'_, RemoteConnectionManager>,
     profile_id: String,
 ) -> Result<RemoteAssemblyEnvironment, super::protocol::CommandError> {
-    remote.remove_profile(&profile_id);
+    remote.remove_profile(&profile_id).map_err(super::protocol::CommandError::from)?;
     let environment = remote.environment();
     let profiles_json = serde_json::to_string(&environment.profiles)
         .map_err(|error| super::protocol::CommandError::from(error.to_string()))?;
@@ -1695,7 +1728,7 @@ fn validate_profile(profile: &RemoteAssemblyProfile) -> Result<(), String> {
 async fn profile_client_loop(
     profile: RemoteAssemblyProfile,
     mut requests: mpsc::Receiver<ClientRequest>,
-    event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
+    event_sink: RemoteEventSink,
     tunnel_processes: Arc<Mutex<HashMap<u32, Child>>>,
     ready: Arc<AtomicBool>,
     mut initial_ready: Option<oneshot::Sender<Result<Vec<AgentConversationSessionRecord>, String>>>,
@@ -1853,7 +1886,7 @@ async fn client_loop(
     url: String,
     token: String,
     requests: &mut mpsc::Receiver<ClientRequest>,
-    event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
+    event_sink: RemoteEventSink,
     reconnect_tunnel_after_failures: Option<u8>,
     ready: Arc<AtomicBool>,
     initial_ready: &mut Option<oneshot::Sender<Result<Vec<AgentConversationSessionRecord>, String>>>,
@@ -1994,10 +2027,12 @@ async fn client_loop(
                             let should_apply = {
                                 let mut values = cursors.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                                 let cursor = values.entry(event.owned_id.clone()).or_insert(i64::MIN);
-                                if event.sequence <= *cursor { false } else { *cursor = event.sequence; true }
+                                event.sequence > *cursor
                             };
                             if should_apply {
-                                event_sink(event.clone());
+                                if event_sink(event.clone()).is_err() { break; }
+                                cursors.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .insert(event.owned_id.clone(), event.sequence);
                                 let _ = send_client_frame(&mut socket, &ClientFrame::Ack {
                                     owned_id: event.owned_id,
                                     sequence: event.sequence,
@@ -2149,18 +2184,35 @@ async fn upgrade_remote_socket(
         .into_response()
 }
 
+fn encode_server_frame(frame: &ServerFrame) -> Result<String, String> {
+    let json = serde_json::to_string(frame).map_err(|error| error.to_string())?;
+    if json.len() <= MAX_SERVER_FRAME_BYTES {
+        return Ok(json);
+    }
+    let message = format!("Remote response exceeds the {} MiB transport limit", MAX_SERVER_FRAME_BYTES / 1024 / 1024);
+    match frame {
+        ServerFrame::Response { id, .. } => serde_json::to_string(&ServerFrame::Error {
+            id: *id,
+            message,
+        }).map_err(|error| error.to_string()),
+        _ => Err(message),
+    }
+}
+
 async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
     let (mut writer, mut reader) = socket.split();
     let (outbound, mut outgoing) = mpsc::channel::<ServerFrame>(OUTBOUND_FRAME_CAPACITY);
     let restart_flushed = state.restart_flushed.clone();
     let writer_task = tokio::spawn(async move {
         while let Some(frame) = outgoing.recv().await {
-            let Ok(json) = serde_json::to_string(&frame) else {
-                continue;
+            let json = match encode_server_frame(&frame) {
+                Ok(json) => json,
+                Err(error) => {
+                    eprintln!("Remote transport closed: {error}");
+                    let _ = writer.send(AxumMessage::Close(None)).await;
+                    break;
+                }
             };
-            if json.len() > MAX_WIRE_FRAME_BYTES {
-                continue;
-            }
             let restarting = matches!(frame, ServerFrame::Response { response: RemoteResponse::Restarting, .. });
             let sent = writer.send(AxumMessage::Text(json.into())).await;
             if restarting {
@@ -2417,9 +2469,14 @@ async fn execute_remote_command(
         RemoteCommand::Snapshot {
             owned_id,
             request_id: _,
+            after_sequence,
         } => manager
-            .snapshot(&owned_id)
+            .snapshot_since(&owned_id, after_sequence)
             .map(RemoteResponse::Snapshot),
+        RemoteCommand::ExtendImport { owned_id } => {
+            let progress = manager.extend_imported_session(&owned_id, super::IMPORT_MAX_BYTES, super::IMPORT_MAX_RECORDS)?;
+            Ok(RemoteResponse::ImportProgress { added: progress.added, reached_start: progress.reached_start })
+        }
         RemoteCommand::EventsBefore {
             owned_id,
             before_sequence,
@@ -2622,6 +2679,110 @@ pub(super) fn validate_ssh_target(target: &str) -> Result<(), String> {
 mod connection_tests {
     use super::*;
 
+    #[tokio::test]
+    async fn remote_history_reuses_cached_pages_and_fetches_only_snapshot_changes() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+        let (sender, mut requests) = mpsc::channel(8);
+        manager.client.lock().unwrap().clients.insert("cache-test".into(), RemoteClient {
+            requests: Some(sender), profile: Some(profile("cache-test")), target_key: None,
+            task: None, ready: Arc::new(AtomicBool::new(true)),
+        });
+        manager.remember("large-history", "cache-test");
+        let server = tokio::spawn(async move {
+            for expected_after in [None, Some(42), Some(43)] {
+                let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected snapshot"); };
+                assert!(matches!(command, RemoteCommand::Snapshot { after_sequence, .. } if after_sequence == expected_after));
+                let mut event = large_history_event(32);
+                if expected_after.is_some() { event.sequence = 43; }
+                let events = if expected_after == Some(43) { vec![] } else { vec![event.clone()] };
+                reply.send(Ok(RemoteResponse::Snapshot(Some(AgentConversationSnapshot {
+                    connection: AgentConversationConnection {
+                        owned_id: event.owned_id.clone(), provider: event.provider, generation: 1,
+                        native_session_id: None, state: super::super::protocol::ConversationConnectionState::Disconnected,
+                        config: Default::default(),
+                    }, suspended: true, last_sequence: event.sequence, events,
+                })))).unwrap();
+            }
+            requests
+        });
+        assert_eq!(manager.snapshot("large-history".into(), 1).await.unwrap().unwrap().events.len(), 1);
+        for id in 2..5 {
+            assert_eq!(manager.events_before("large-history".into(), 43, 1024, id).await.unwrap().events.len(), 1);
+        }
+        assert_eq!(manager.snapshot("large-history".into(), 5).await.unwrap().unwrap().events.len(), 2);
+        assert_eq!(manager.snapshot("large-history".into(), 6).await.unwrap().unwrap().events.len(), 2);
+        let mut requests = server.await.unwrap();
+        assert!(requests.try_recv().is_err(), "scrolling must not request cached pages");
+        let late_sink = manager.history_event_sink("cache-test");
+        manager.disconnect_profile("cache-test").unwrap();
+        assert!(late_sink(large_history_event(32)).is_err());
+        assert!(manager.history.lock().unwrap().through("cache-test", "large-history").unwrap().is_none());
+    }
+
+    fn large_history_event(bytes: usize) -> AgentConversationEvent {
+        AgentConversationEvent {
+            owned_id: "large-history".into(),
+            provider: AgentConversationProvider::Codex,
+            generation: 1,
+            sequence: 42,
+            timestamp_ms: 1,
+            turn_id: None,
+            payload: super::super::protocol::AgentConversationPayload::AssistantDelta {
+                item_id: "answer".into(), delta: "x".repeat(bytes),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn large_history_response_and_live_event_cross_the_socket_intact() {
+        let event = large_history_event(MAX_WIRE_FRAME_BYTES + 4096);
+        let page = ServerFrame::Response { id: 7, response: RemoteResponse::EventPage(
+            AgentConversationEventPage { events: vec![event.clone()], has_more: true },
+        ) };
+        let live = ServerFrame::Event { event: event.clone() };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            for frame in [page, live] {
+                let json = encode_server_frame(&frame).unwrap();
+                assert!(json.len() > MAX_WIRE_FRAME_BYTES);
+                socket.send(TungsteniteMessage::Text(json.into())).await.unwrap();
+            }
+        });
+        let (mut client, _) = tokio_tungstenite::connect_async(format!("ws://{address}")).await.unwrap();
+        let request = ClientFrame::Request { id: 8, command: RemoteCommand::Workspace {
+            operation: "test".into(), args: serde_json::Value::String("x".repeat(MAX_WIRE_FRAME_BYTES)),
+        } };
+        assert!(send_client_frame(&mut client, &request).await.unwrap_err().contains("one MiB"));
+        let next = |message| parse_server_frame(message).unwrap().unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(2), client.next()).await.unwrap().unwrap().unwrap();
+        match next(response) {
+            ServerFrame::Response { id: 7, response: RemoteResponse::EventPage(page) } => {
+                assert_eq!(page.events, vec![event.clone()]);
+                assert!(page.has_more);
+            }
+            other => panic!("Unexpected response: {other:?}"),
+        }
+        let response = tokio::time::timeout(Duration::from_secs(2), client.next()).await.unwrap().unwrap().unwrap();
+        assert!(matches!(next(response), ServerFrame::Event { event: received } if received == event));
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn oversized_history_returns_a_request_error_instead_of_disappearing() {
+        let event = large_history_event(MAX_SERVER_FRAME_BYTES);
+        let response = ServerFrame::Response { id: 9, response: RemoteResponse::EventPage(
+            AgentConversationEventPage { events: vec![event.clone()], has_more: false },
+        ) };
+        let json = encode_server_frame(&response).unwrap();
+        assert!(json.len() < MAX_WIRE_FRAME_BYTES);
+        assert!(matches!(serde_json::from_str::<ServerFrame>(&json).unwrap(),
+            ServerFrame::Error { id: 9, message } if message.contains("16 MiB")));
+        assert!(encode_server_frame(&ServerFrame::Event { event }).is_err());
+    }
+
     #[test]
     fn attachment_upload_is_single_flight_and_cleans_only_its_owner() {
         let directory = std::env::temp_dir().join(format!("assembly-attachment-test-{}", uuid::Uuid::new_v4()));
@@ -2809,7 +2970,7 @@ mod connection_tests {
             client.ready.store(true, Ordering::Release);
         }
         assert_eq!(manager.environment().ready_profile_ids, vec!["saved"]);
-        manager.disconnect_profile("saved");
+        manager.disconnect_profile("saved").unwrap();
         assert!(task.await.unwrap_err().is_cancelled());
         assert_eq!(manager.environment().profiles, vec![profile("saved")]);
         assert!(manager.environment().ready_profile_ids.is_empty());
@@ -2920,7 +3081,7 @@ mod connection_tests {
         manager.client.lock().unwrap().clients["saved"].ready.store(true, Ordering::Release);
         assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Connected);
 
-        manager.disconnect_profile("saved");
+        manager.disconnect_profile("saved").unwrap();
         assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Disconnected);
         {
             let attempt = ConnectingAttempt::start(&manager, "saved");
@@ -2954,7 +3115,7 @@ mod connection_tests {
         assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Reconnecting);
 
         // Removal during the attempt answers disconnected immediately.
-        manager.remove_profile("saved");
+        manager.remove_profile("saved").unwrap();
         assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Disconnected);
 
         // The pre-removal attempt finishes late: its client is refused, its own
@@ -3031,7 +3192,7 @@ mod connection_tests {
             let (reply, mut result) = oneshot::channel();
             let ready = Arc::new(AtomicBool::new(false));
             let actor_ready = ready.clone();
-            let actor = tokio::spawn(async move { client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver, Arc::new(|_| {}), Some(1), actor_ready, &mut Some(reply), Arc::new(|| {})).await });
+            let actor = tokio::spawn(async move { client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver, Arc::new(|_| Ok(())), Some(1), actor_ready, &mut Some(reply), Arc::new(|| {})).await });
             if version == PROTOCOL_VERSION {
                 probe_rx.await.unwrap();
                 assert!(!ready.load(Ordering::Acquire));

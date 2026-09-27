@@ -76,10 +76,11 @@ export const CONVERSATION_RECENT_EVENT_CAP = 200;
 export const ACTIVE_EVENT_WINDOW_EVENTS = 20_000;
 export const ACTIVE_EVENT_WINDOW_TRIM_EVENTS = 15_000;
 export const ACTIVE_EVENT_WINDOW_BYTES = 4 * 1024 * 1024; // 4 MiB bounded memory window
+const eventEncoder = new TextEncoder();
 
 function serializedEventBytes(event: AgentConversationEvent): number {
   return typeof event.payload === 'object' && event.payload !== null
-    ? textBytes(JSON.stringify(event.payload))
+    ? eventEncoder.encode(JSON.stringify(event.payload)).byteLength
     : 0;
 }
 
@@ -253,6 +254,7 @@ function freshState(
   ownedId: string,
   provider: AgentConversationProvider
 ): ConversationWorkspaceState {
+  const loadedEvents: AgentConversationEvent[] = [];
   return {
     ...createConversationState(ownedId, provider),
     draft: '',
@@ -291,7 +293,8 @@ function freshState(
     pendingConfig: {},
     configErrors: {},
     recentEvents: [],
-    loadedEvents: [],
+    // The journal feeds the reducers; only their display projection is reactive.
+    get loadedEvents() { return loadedEvents; },
     loadedEventsBytes: 0,
     oldestLoadedSequence: 0,
     newestLoadedSequence: 0,
@@ -991,7 +994,8 @@ export function applyAgentConversationSnapshot(
     pendingAgentConfig: current.pendingAgentConfig,
     agentConfigError: current.agentConfigError,
     recentEvents: [],
-    loadedEvents: events,
+    // Avoid a reactive proxy for every field of every retained journal event.
+    get loadedEvents() { return events; },
     loadedEventsBytes: serializedEventsBytes(events),
     // A snapshot is the newest window of a longer journal. Scrolling up asks
     // for what came before its first event.
@@ -1461,8 +1465,10 @@ export function applyConversationTranscript(
   snapshot: ConversationTranscriptSnapshot
 ): void {
   const current = ensureConversationSession(ownedId, provider);
+  const loadedEvents = current.loadedEvents;
   conversationSessions[ownedId] = {
     ...current,
+    get loadedEvents() { return loadedEvents; },
     connectionState: 'connected',
     desynchronized: false,
     metadata: snapshot.metadata,
