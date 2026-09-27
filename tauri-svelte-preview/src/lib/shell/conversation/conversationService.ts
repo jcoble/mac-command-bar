@@ -64,6 +64,7 @@ import {
   setConversationCapabilityError,
   setConversationConnection,
   setConversationDraft,
+  setConversationProviderNotice,
   setConversationSending,
   setConversationWriterLeaseTransition
 } from './conversationStore.svelte.ts';
@@ -1496,7 +1497,21 @@ export async function sendStructuredMessage(
       }
     });
     setConversationAttachments(ownedId, []);
-    if (!liveConversationEvents) await resyncConversation(ownedId);
+    if (remoteSend && rail.activeOwnedId === ownedId) {
+      try {
+        // A read started before the send can be stale even after it finishes.
+        await resyncing.get(ownedId)?.work.catch(() => undefined);
+        if (rail.activeOwnedId === ownedId) await resyncConversation(ownedId);
+      } catch (_error) {
+        // The backend already accepted the prompt. Do not restore it as a
+        // failed send and invite an accidental duplicate.
+        if (rail.activeOwnedId === ownedId) {
+          setConversationProviderNotice(ownedId, 'Message sent, but the conversation could not refresh. Switch conversations to reload it.');
+        }
+      }
+    } else if (!remoteSend && !liveConversationEvents) {
+      await resyncConversation(ownedId);
+    }
   } catch (error) {
     // A send that never went out leaves its screenshots in the composer, so
     // nothing is left waiting to be hung on a later message.

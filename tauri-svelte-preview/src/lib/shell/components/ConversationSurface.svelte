@@ -234,6 +234,8 @@
   let localTurnStarted = $state(false);
   let composerHeight = $state(0);
   let composer = $state<{ focus(): void; expandPlan(): void } | null>(null);
+  const pendingAttachmentUploads = new Map<string, Promise<void>>();
+  const sendsWaitingForUpload = new Set<string>();
 
   /** Put the caret in the prompt box. The page calls this when a panel hands
    * the composer something — an attachment, a line of text — so the reader ends
@@ -463,6 +465,21 @@
   async function send(): Promise<void> {
     const ownedId = activeOwnedId;
     if (!ownedId || !conversation || conversation.selectedChildId) return;
+    if (pendingAttachmentUploads.has(ownedId)) {
+      if (sendsWaitingForUpload.has(ownedId)) return;
+      sendsWaitingForUpload.add(ownedId);
+      try {
+        let upload = pendingAttachmentUploads.get(ownedId);
+        while (upload) {
+          await upload;
+          const next = pendingAttachmentUploads.get(ownedId);
+          upload = next === upload ? undefined : next;
+        }
+      } finally {
+        sendsWaitingForUpload.delete(ownedId);
+      }
+      if (activeOwnedId !== ownedId || !conversation || conversation.attachmentError) return;
+    }
     if (!conversation.draft.trim() && conversation.attachments.length === 0) return;
     const steering = turnActive;
     const text = conversation.draft;
@@ -548,6 +565,22 @@
   }
 
   async function attachImages(files: File[], rejectedMessage: string): Promise<void> {
+    const ownedId = active?.ownedId;
+    if (!ownedId) return;
+    const previous = pendingAttachmentUploads.get(ownedId);
+    const upload = (async () => {
+      await previous;
+      if (active?.ownedId === ownedId) await saveImages(files, rejectedMessage);
+    })();
+    pendingAttachmentUploads.set(ownedId, upload);
+    try {
+      await upload;
+    } finally {
+      if (pendingAttachmentUploads.get(ownedId) === upload) pendingAttachmentUploads.delete(ownedId);
+    }
+  }
+
+  async function saveImages(files: File[], rejectedMessage: string): Promise<void> {
     if (!active || !conversation || conversation.selectedChildId) return;
     const ownedId = active.ownedId;
     const generation = conversation.generation;
@@ -574,7 +607,8 @@
           return;
         }
       }
-      const attachments = [...conversation.attachments, ...saved];
+      const savedIds = new Set(saved.map((item) => item.id));
+      const attachments = [...conversation.attachments.filter((item) => !savedIds.has(item.id)), ...saved];
       const ids = [...new Set([...conversation.attachmentIds, ...attachments.map((item) => item.id)])];
       setConversationAttachmentIds(ownedId, ids);
       await onPersistAttachmentIds(ownedId, ids);
