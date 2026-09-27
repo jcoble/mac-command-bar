@@ -74,7 +74,7 @@
     if (target === null) return;
     event.preventDefault();
     onChange(items[target].id);
-    segments[target]?.focus();
+    segments[target]?.focus({ preventScroll: true });
   }
 
   /** A mouse wheel has no horizontal axis. Use its vertical movement on this
@@ -83,10 +83,14 @@
     if (!strip || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
     const limit = strip.scrollWidth - strip.clientWidth;
     if (limit <= 0) return;
-    const next = Math.max(0, Math.min(limit, strip.scrollLeft + event.deltaY));
+    const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
+      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? strip.clientWidth : 1;
+    const next = Math.max(0, Math.min(limit, strip.scrollLeft + event.deltaY * unit));
     if (next === strip.scrollLeft) return;
     event.preventDefault();
-    strip.scrollLeft = next;
+    // Each gesture delta must apply immediately, not restart a smooth scroll
+    // from its partially animated position and lose the remaining movement.
+    strip.scrollTo({ left: next, behavior: 'instant' });
   }
 </script>
 

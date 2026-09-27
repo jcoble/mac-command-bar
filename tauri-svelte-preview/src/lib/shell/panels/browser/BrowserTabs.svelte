@@ -32,7 +32,7 @@
     if (!host || !activeTabId) return;
     void tick().then(() => {
       const active = host.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
-      active?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      active?.closest('.tab-shell')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     });
   });
 
@@ -51,7 +51,7 @@
     if (!tab) return;
     onSelect(tab.id);
     void tick().then(() => {
-      track?.querySelector<HTMLElement>(`[data-browser-tab-id="${CSS.escape(tab.id)}"]`)?.focus();
+      track?.querySelector<HTMLElement>(`[data-browser-tab-id="${CSS.escape(tab.id)}"]`)?.focus({ preventScroll: true });
     });
   }
 
@@ -61,10 +61,14 @@
     if (!track || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
     const limit = track.scrollWidth - track.clientWidth;
     if (limit <= 0) return;
-    const next = Math.max(0, Math.min(limit, track.scrollLeft + event.deltaY));
+    const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
+      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? track.clientWidth : 1;
+    const next = Math.max(0, Math.min(limit, track.scrollLeft + event.deltaY * unit));
     if (next === track.scrollLeft) return;
     event.preventDefault();
-    track.scrollLeft = next;
+    // Each gesture delta must apply immediately, not restart a smooth scroll
+    // from its partially animated position and lose the remaining movement.
+    track.scrollTo({ left: next, behavior: 'instant' });
   }
 </script>
 
