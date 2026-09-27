@@ -82,12 +82,6 @@
 		selection.setEditorPanel(editorPanel);
 	});
 
-	$effect(() => {
-		if (typeof document === "undefined") return;
-		document.documentElement.style.setProperty("--sessions-rail-width", `${sessionsRailWidth}px`);
-		return () => document.documentElement.style.removeProperty("--sessions-rail-width");
-	});
-
 	onMount(() => {
 		const historyStop = new AbortController();
 		const releaseSessionRowJump = registerSessionRowJumpTarget({
@@ -389,7 +383,8 @@
 
 <main
 	class="next-shell"
-	style={`--sessions-rail-width:${sessionsRailWidth}px;--tools-rail-width:${toolsRailWidth}px`}
+	style:--sessions-rail-width={`${sessionsRailWidth}px`}
+	style:--tools-rail-width={`${toolsRailWidth}px`}
 	oncontextmenu={(event) => {
 		const target = event.target instanceof Element ? event.target : null;
 		if (target?.closest('input, textarea, [contenteditable="true"]')) return;
@@ -403,7 +398,12 @@
 		</div>
 		<div class="window-right-tabs" class:open={workbench.rightPanelOpen} data-tauri-drag-region>
 			{#if workbench.rightPanelOpen}
-				<RightPanelTabs activeId={workbench.rightTab} onSelect={selectRightTab} />
+				<RightPanelTabs
+					activeId={workbench.rightTab}
+					onSelect={selectRightTab}
+					expanded={workbench.rightExpanded}
+					onToggleExpand={() => workbench.toggleRightExpanded()}
+				/>
 			{/if}
 		</div>
 	</div>

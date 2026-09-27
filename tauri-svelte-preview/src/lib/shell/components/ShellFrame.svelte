@@ -66,6 +66,8 @@
       setDockPresent: (present: boolean) => void;
       /** Put the right tools region in the grid or remove it completely. */
       setToolsPresent: (present: boolean) => void;
+      /** Widen the right region over the center, or put it back. See `setToolsExpanded` in `frame.ts`. */
+      setToolsExpanded: (expanded: boolean) => void;
       /** Say what a region may be dragged to without moving it. See
        * `setRegionLimits` in `frame.ts`. */
       setRegionLimits: (id: ShellRegionId, limits: RegionWidthLimits) => void;
@@ -197,6 +199,7 @@
           setRegionHeight: (id, height, limits) => frame?.setRegionHeight(id, height, limits),
           setDockPresent: (present) => frame?.setDockPresent(present),
           setToolsPresent: (present) => frame?.setToolsPresent(present),
+          setToolsExpanded: (expanded) => frame?.setToolsExpanded(expanded),
           setRegionLimits: (id, limits) => frame?.setRegionLimits(id, limits),
           regionWidth: (id) => frame?.regionWidth(id) ?? null
         });
