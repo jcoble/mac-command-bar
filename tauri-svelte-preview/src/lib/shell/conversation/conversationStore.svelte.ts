@@ -1018,6 +1018,18 @@ export function applyAgentConversationSnapshot(
     const displayEvent = displayEventFrom(event);
     const typedItem = agentItemFromEvent(displayEvent);
     if (typedItem) {
+      // A bounded replay may start at a tool's update after its opening event
+      // was trimmed. Keep its original position while this view is live.
+      const previousIndex = generation === current.generation
+        ? agentItemIndex(current).get(typedItem.id)
+        : undefined;
+      const previousStart = previousIndex === undefined
+        ? undefined
+        : current.agentItems[previousIndex]?.providerMetadata?.startedAtMs;
+      const replayStart = typedItem.providerMetadata?.startedAtMs;
+      if (typeof previousStart === 'number' && (typeof replayStart !== 'number' || previousStart < replayStart)) {
+        typedItem.providerMetadata = { ...typedItem.providerMetadata, startedAtMs: previousStart };
+      }
       mergeAgentItemInPlace(restored, typedItem, conversationEventAppendsItemContent(displayEvent));
     }
     applyTypedEventPayload(restored, displayEvent);

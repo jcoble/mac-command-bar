@@ -7,8 +7,8 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { compileModule } from 'svelte/compiler';
 import { get } from 'svelte/store';
-import { shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
-import { mergeAgentItem } from '../src/lib/shell/conversation/conversationTimeline.ts';
+import { applyConversationEvent, createConversationState, shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
+import { mergeAgentItem, typedConversationTimeline } from '../src/lib/shell/conversation/conversationTimeline.ts';
 import { sessionPresenceHistory, sessionPresenceEventFromConversation, synchronizeSessionPresenceWork, deriveSessionPresence, EMPTY_SESSION_PRESENCE_HISTORY } from '../src/lib/shell/conversation/sessionPresence.ts';
 import { onWorkspaceFileChange } from '../src/lib/shell/workspaceFileChangeBus.ts';
 
@@ -1166,6 +1166,54 @@ assert.ok(store.getConversationSession('owned-b'));
     payload: { kind: 'turn', turnId: 'live-turn', state: 'completed' }
   });
   assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, null);
+}
+
+// A bounded replacement can lose a tool's opening event while retaining its
+// completion. The row must keep its position among the already visible items.
+{
+  const ownedId = 'owned-trimmed-tool-order';
+  const event = (sequence: number, timestampMs: number, payload: Record<string, unknown>) => ({
+    ownedId, provider: 'codex' as const, generation: 1, sequence, timestampMs, payload
+  });
+  const opening = event(1, 100, { kind: 'tool', itemId: 'tool-a', name: 'Run tests', state: 'started' });
+  const middle = event(2, 200, { kind: 'assistantMessage', itemId: 'message-a', text: 'Checking.', completed: true });
+  const completion = event(3, 300, { kind: 'tool', itemId: 'tool-a', name: 'Run tests', state: 'completed' });
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
+    lastSequence: 2,
+    events: [opening, middle]
+  });
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
+    lastSequence: 3,
+    events: [middle, completion]
+  });
+  const current = store.getConversationSession(ownedId);
+  assert.deepEqual(
+    typedConversationTimeline(current.agentItems, current.timeline).map((item) => item.itemId),
+    ['tool-a', 'message-a'],
+    'the tool does not jump past a later message when its opening event leaves the window'
+  );
+  assert.equal(current.agentItems.find((item: { id: string }) => item.id === 'tool-a')?.providerMetadata?.startedAtMs, 100);
+
+  const replayed = [opening, middle, completion].reduce(applyConversationEvent, createConversationState(ownedId, 'codex'));
+  assert.equal(replayed.timeline.find((item) => item.itemId === 'tool-a')?.timestampMs, 100);
+
+  const pagedOwnedId = 'owned-tool-start-in-older-page';
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId: pagedOwnedId, provider: 'codex', generation: 1, state: 'connected' },
+    lastSequence: 3,
+    events: [{ ...completion, ownedId: pagedOwnedId }]
+  });
+  store.prependOlderConversationEvents(pagedOwnedId, {
+    events: [{ ...opening, ownedId: pagedOwnedId }],
+    hasMore: false
+  });
+  assert.equal(
+    store.getConversationSession(pagedOwnedId).agentItems.find((item: { id: string }) => item.id === 'tool-a')?.providerMetadata?.startedAtMs,
+    100,
+    'loading the actual opening event moves the tool back to its true earlier position'
+  );
 }
 
 // Scrolling up loads the page of stored events just older than what is on
