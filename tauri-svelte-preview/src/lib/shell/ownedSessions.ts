@@ -42,6 +42,7 @@ export interface OwnedAgentRuntimeFields {
   activeTurnId: string | null;
   pendingPermission?: boolean;
   pendingInput?: boolean;
+  backgroundTaskIds: string[];
   capabilityRevision: number;
   lastRuntimeError: string | null;
 }
@@ -307,6 +308,7 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
     activeTurnId: record.activeTurnId,
     pendingPermission: record.pendingPermission,
     pendingInput: record.pendingInput,
+    backgroundTaskIds: record.backgroundTaskIds ?? [],
     capabilityRevision: 0,
     lastRuntimeError: null,
     completedAt: record.completedAt,

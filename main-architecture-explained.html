@@ -1181,6 +1181,7 @@
 
         <div class="plain-answer">
           <p><strong>Normal case:</strong> the prompt result is persisted, the active turn is cleared, Rust calls <code>suspend_if_quiescent</code>, the ACP session is detached, the sidecar process is gracefully stopped, and the SQLite row becomes suspended/disconnected. The now-idle <code>ManagedAgentSession</code> overlay is removed as well. The provider-native session is not deleted. The next prompt hydrates one overlay from SQLite, launches a sidecar, and resumes that same native ID.</p>
+          <p><strong>Background commands:</strong> Assembly advertises the Claude adapter's structured async-task updates. A spawned task keeps its ACP runtime alive after the prompt ends; progress and terminal updates share one transcript tool row. The session record carries active task IDs so the rail and chat status remain accurate after reconnect. Completion, failure, cancellation, or adapter loss settles the task; quiescent teardown then releases the runtime.</p>
         </div>
 
         <h3>Suspension is allowed only when all of these are true</h3>

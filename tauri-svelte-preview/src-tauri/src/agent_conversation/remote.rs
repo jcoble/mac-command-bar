@@ -2852,6 +2852,7 @@ mod connection_tests {
             active_turn_id: None,
             pending_permission: false,
             pending_input: false,
+            background_task_ids: Vec::new(),
             native_session_id: Some(format!("native-{owned_id}")),
             meta: super::super::protocol::AgentConversationSessionMeta {
                 title: Some(format!("Session {owned_id}")),

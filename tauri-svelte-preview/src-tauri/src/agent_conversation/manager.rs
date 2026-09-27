@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -2831,6 +2832,7 @@ impl AgentRuntimeManager {
                     active_turn_id,
                     pending_permission,
                     pending_input,
+                    background_task_ids,
                     native_session_id,
                     mut meta,
                 ) = if let Some(session) = live {
@@ -2840,6 +2842,10 @@ impl AgentRuntimeManager {
                         session.active_turn_id.clone(),
                         !session.permission_requests.is_empty(),
                         !session.user_input_requests.is_empty(),
+                        session.background_work.iter()
+                            .filter(|id| id.starts_with("background-task:"))
+                            .cloned()
+                            .collect(),
                         session.native_session_id.clone(),
                         session.rail_meta.clone(),
                     )
@@ -2851,6 +2857,7 @@ impl AgentRuntimeManager {
                         None,
                         false,
                         false,
+                        Vec::new(),
                         row.native_session_id.clone(),
                         stored.rail_meta,
                     )
@@ -2874,6 +2881,7 @@ impl AgentRuntimeManager {
                     active_turn_id,
                     pending_permission,
                     pending_input,
+                    background_task_ids,
                     native_session_id,
                     meta,
                 })
@@ -4703,6 +4711,14 @@ async fn pump_inbound(
                         }
                         break 'update reached_quiescence;
                     }
+                    if let Some(payload) = background_task_payload(&params) {
+                        if session.writer_lease.owner == AgentWriterLeaseOwner::Structured {
+                            if let Err(error) = record_payload_for_session_and_dispatch(session, &emitter, payload) {
+                                crate::debug_log::stderr_log!("Could not record background task update: {error}");
+                            }
+                        }
+                        break 'update reached_quiescence || session_is_quiescent(session);
+                    }
                     let replay = is_replay_session_update(&params);
                     if replay
                         && session.native_session_mode == AgentNativeSessionMode::Resume
@@ -4915,6 +4931,23 @@ async fn settle_closed_transport(
                     },
                 );
             }
+            for item_id in session.background_work.drain().collect::<Vec<_>>() {
+                if item_id.starts_with("background-task:") {
+                    let _ = record_payload_for_session_and_dispatch(
+                        session,
+                        &emitter,
+                        AgentConversationPayload::Tool {
+                            item_id,
+                            name: String::new(),
+                            state: ToolState::Failed,
+                            summary: Some("Background command stopped when the adapter disconnected".into()),
+                            output: None,
+                            path: None,
+                            diff: None,
+                        },
+                    );
+                }
+            }
             if let Some(turn_id) = session.active_turn_id.take() {
                 let _ = record_payload_for_session_and_dispatch(
                     session,
@@ -5025,7 +5058,9 @@ fn update_raw_liveness(session: &mut ManagedAgentSession, params: &Value) -> boo
         "completed" | "failed" | "cancelled" | "canceled" | "stopped" | "done"
     );
     let identifier = update
-        .get("toolCallId")
+        .get("asyncTaskId")
+        .or_else(|| update.get("async_task_id"))
+        .or_else(|| update.get("toolCallId"))
         .or_else(|| update.get("tool_call_id"))
         .or_else(|| update.get("taskId"))
         .or_else(|| update.get("task_id"))
@@ -5036,6 +5071,11 @@ fn update_raw_liveness(session: &mut ManagedAgentSession, params: &Value) -> boo
         .map(str::to_string);
     let Some(identifier) = identifier else {
         return false;
+    };
+    let identifier = if kind.starts_with("async_task_") {
+        format!("background-task:{identifier}")
+    } else {
+        identifier
     };
     let target = if kind.contains("tool") {
         &mut session.live_tool_calls
@@ -5056,7 +5096,70 @@ fn update_raw_liveness(session: &mut ManagedAgentSession, params: &Value) -> boo
     terminal && session_is_quiescent(session)
 }
 
+fn background_task_payload(params: &Value) -> Option<AgentConversationPayload> {
+    let update = params.get("update").unwrap_or(params);
+    let kind = session_update_kind(params)?;
+    let exit_code = if update.get("state").and_then(Value::as_str) == Some("stopped") {
+        update.get("outputFilePath").and_then(Value::as_str).and_then(background_command_exit_code)
+    } else {
+        None
+    };
+    let state = match kind {
+        "async_task_spawned" => ToolState::Started,
+        "async_task_progress" => ToolState::Updated,
+        "async_task_state_update" => match update.get("state")?.as_str()? {
+            "completed" => ToolState::Completed,
+            "failed" | "cancelled" | "canceled" => ToolState::Failed,
+            "stopped" if exit_code == Some(0) => ToolState::Completed,
+            "stopped" => ToolState::Failed,
+            "running" | "paused" => ToolState::Updated,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let task_id = update.get("asyncTaskId")?.as_str()?;
+    let summary = update.get("summary")
+        .or_else(|| update.get("description"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| match update.get("state").and_then(Value::as_str) {
+            Some("completed") => Some("Completed".into()),
+            Some("failed") => Some("Failed".into()),
+            Some("stopped") => Some(match exit_code {
+                Some(0) => "Completed".into(),
+                Some(code) => format!("Exited with code {code}"),
+                None => "Stopped".into(),
+            }),
+            Some("cancelled" | "canceled") => Some("Cancelled".into()),
+            _ => None,
+        });
+    Some(AgentConversationPayload::Tool {
+        item_id: format!("background-task:{task_id}"),
+        name: update.get("name").and_then(Value::as_str)
+            .unwrap_or(if kind == "async_task_spawned" { "Background command" } else { "" })
+            .to_string(),
+        state,
+        summary,
+        output: None,
+        path: None,
+        diff: None,
+    })
+}
+
+fn background_command_exit_code(path: &str) -> Option<i32> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let start = file.metadata().ok()?.len().saturating_sub(128);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail).ok()?;
+    String::from_utf8_lossy(&tail).lines().last()?.trim().strip_prefix("[exited with code ")?
+        .strip_suffix(']')?.parse().ok()
+}
+
 fn raw_update_failed(params: &Value) -> bool {
+    if session_update_kind(params).is_some_and(|kind| kind.starts_with("async_task_")) {
+        return false;
+    }
     let update = params.get("update").unwrap_or(params);
     update
         .get("status")
@@ -9322,6 +9425,59 @@ mod tests {
             .close(&fixture.owned_id, fixture.generation)
             .await
             .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn background_task_keeps_runtime_until_terminal_update() {
+        let fixture = fixture_manager_with_acp_session("suspend_background_task_liveness").await;
+        let spawned = serde_json::json!({"update": {
+            "sessionUpdate": "async_task_spawned", "asyncTaskId": "task-1",
+            "name": "Background command"
+        }});
+        let finished = serde_json::json!({"update": {
+            "sessionUpdate": "async_task_state_update", "asyncTaskId": "task-1",
+            "state": "completed"
+        }});
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            assert!(!update_raw_liveness(session, &spawned));
+            assert_eq!(session.background_work.len(), 1);
+        }
+        assert!(!fixture.manager.suspend_if_quiescent(&fixture.owned_id, fixture.generation).await.unwrap());
+        assert!(matches!(background_task_payload(&finished), Some(AgentConversationPayload::Tool {
+            state: ToolState::Completed, ..
+        })));
+        for state in ["failed", "stopped", "cancelled"] {
+            let update = serde_json::json!({"update": {
+                "sessionUpdate": "async_task_state_update", "asyncTaskId": "task-1", "state": state
+            }});
+            assert!(matches!(background_task_payload(&update), Some(AgentConversationPayload::Tool {
+                state: ToolState::Failed, ..
+            })));
+            assert!(!raw_update_failed(&update));
+        }
+        let output = fixture.root.join("background.output");
+        for (code, expected) in [(0, ToolState::Completed), (7, ToolState::Failed)] {
+            fs::write(&output, format!("command output\n\n[exited with code {code}]\n")).unwrap();
+            let stopped = serde_json::json!({"update": {
+                "sessionUpdate": "async_task_state_update", "asyncTaskId": "task-1",
+                "state": "stopped", "outputFilePath": output
+            }});
+            assert!(matches!(background_task_payload(&stopped), Some(AgentConversationPayload::Tool {
+                state, ..
+            }) if state == expected));
+        }
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            assert!(update_raw_liveness(session, &finished));
+            assert!(session.background_work.is_empty());
+        }
+        assert!(fixture.manager.suspend_if_quiescent(&fixture.owned_id, fixture.generation).await.unwrap());
+        assert!(fixture.manager.resource_roots().is_empty());
+        fixture.manager.close(&fixture.owned_id, fixture.generation).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
