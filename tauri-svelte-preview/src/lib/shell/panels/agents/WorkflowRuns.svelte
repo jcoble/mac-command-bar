@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import Check from '@lucide/svelte/icons/check';
   import CircleStop from '@lucide/svelte/icons/circle-stop';
   import Pause from '@lucide/svelte/icons/pause';
@@ -107,11 +108,11 @@
     if (!visible) return;
     const controller = new AbortController();
     const generation = ++loadGeneration;
-    const stop = subscribeWorkflowSnapshots((snapshot) => {
+    const stop = untrack(() => subscribeWorkflowSnapshots((snapshot) => {
       if (controller.signal.aborted || generation !== loadGeneration) return;
       if (Array.isArray(snapshot)) applyWorkflowSnapshots(snapshot);
       else upsertWorkflowSnapshot(snapshot);
-    });
+    }));
     void refresh(controller.signal, generation);
     return () => {
       controller.abort();
