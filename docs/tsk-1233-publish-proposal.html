@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TSK-1233 — Publish branch from Source Control (UI proposal)</title>
+<style>
+  :root {
+    --bg: #0e0e10; --panel: #151517; --raised: #1d1d20; --border: #2a2a2e;
+    --fg: #e8e8ea; --muted: #8b8b90; --faint: #5c5c62; --accent: #5b6cf0;
+    --bad: #e5645a; --hover: #26262b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 32px 40px 64px; background: var(--bg); color: var(--fg);
+         font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 40px 0 6px; }
+  p.lead, .note { color: var(--muted); max-width: 820px; }
+  code { font: 12px ui-monospace, "SF Mono", Menlo, monospace; color: #c9c9ff; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 28px; margin-top: 16px; }
+  figure { margin: 0; }
+  figcaption { color: var(--muted); margin-top: 8px; font-size: 12px; }
+  figcaption b { color: var(--fg); font-weight: 600; }
+
+  /* Source Control panel, as it looks in the right column today */
+  .sc { position: relative; width: 360px; height: 330px; background: var(--panel);
+        border: 1px solid var(--border); border-radius: 10px; overflow: visible; }
+  .hdr { display: flex; align-items: center; gap: 6px; height: 36px; padding: 0 8px 0 12px;
+         border-bottom: 1px solid var(--border); }
+  .hdr .t { font-weight: 600; }
+  .hdr .count { background: var(--raised); color: var(--muted); border-radius: 999px; padding: 0 6px; font-size: 11px; }
+  .hdr .branch { color: var(--muted); margin-left: 6px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .icon-btn { width: 24px; height: 24px; border-radius: 6px; display: grid; place-items: center; color: var(--muted); }
+  .icon-btn.open { background: var(--hover); color: var(--fg); }
+  .body { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+  .ta { height: 58px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; color: var(--faint); background: #18181b; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .sw { color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  .sw i { width: 22px; height: 12px; border-radius: 99px; background: var(--raised); border: 1px solid var(--border); display: inline-block; }
+  .btn { flex: 1; height: 26px; border-radius: 7px; display: grid; place-items: center; font-weight: 500; }
+  .btn.sec { background: var(--raised); color: var(--muted); }
+  .btn.pri { background: var(--accent); color: white; opacity: .5; }
+  .msg { font-size: 13px; color: var(--muted); }
+  .msg.bad { color: var(--bad); }
+  .sect { color: var(--muted); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; padding: 2px 6px; }
+
+  /* Existing DropdownMenu look */
+  .menu { position: absolute; top: 32px; right: 8px; min-width: 196px; background: var(--raised);
+          border: 1px solid var(--border); border-radius: 9px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.45); z-index: 2; }
+  .menu.sub { top: auto; right: auto; left: calc(100% - 6px); min-width: 150px; }
+  .mi { position: relative; display: flex; align-items: center; justify-content: space-between;
+        height: 26px; padding: 0 8px; border-radius: 6px; }
+  .mi.dis { color: var(--faint); }
+  .mi.hl { background: var(--hover); }
+  .mi.new { box-shadow: inset 2px 0 0 var(--accent); }
+  .mi .chev { color: var(--muted); }
+  .sep { height: 1px; background: var(--border); margin: 4px 2px; }
+  .tip { position: absolute; left: 12px; right: 12px; bottom: 10px; background: #000; color: var(--fg);
+         border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12px; z-index: 3; }
+  .tag { display: inline-block; font-size: 11px; color: var(--accent); margin-left: 6px; }
+
+  table { border-collapse: collapse; margin-top: 12px; max-width: 900px; }
+  td, th { text-align: left; vertical-align: top; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+</style>
+</head>
+<body>
+
+<h1>TSK-1233 — Publish a branch that has no upstream</h1>
+<p class="lead">
+  One new item in the existing <b>More source-control actions</b> (…) menu, shown only while the
+  current branch has no upstream. One remote: the item publishes straight to it. Several remotes: the
+  item opens a submenu and the user picks one — nothing is guessed. Progress, success and failure reuse
+  the panel's existing status/error line; retry is simply choosing the item again. No dialog, no new
+  branch manager, no layout change. Accent bar on the left of an item marks what is new.
+</p>
+
+<div class="grid">
+
+  <!-- 0: today -->
+  <figure>
+    <div class="sc">
+      <div class="hdr"><span class="t">Source control</span><span class="count">0</span>
+        <span class="branch">tsk-1230-session-connect-error ▾</span><span class="icon-btn open">⋯</span></div>
+      <div class="body">
+        <div class="ta">Message. Press Command-Enter to commit.</div>
+        <div class="row"><span class="sw"><i></i>Amend</span><span class="btn sec">Stage All</span><span class="btn pri">Commit</span></div>
+        <div class="sect">› Staged changes</div>
+      </div>
+      <div class="menu">
+        <div class="mi">Refresh</div>
+        <div class="mi dis">Discard all…</div>
+        <div class="sep"></div>
+        <div class="mi">Fetch</div>
+        <div class="mi dis">Pull</div>
+        <div class="mi dis hl">Push</div>
+      </div>
+      <div class="tip">This branch has no upstream branch, so there is no matching remote branch to pull from or push to.</div>
+    </div>
+    <figcaption><b>Today.</b> After the first commit on a new task branch, Pull and Push are disabled and nothing in the menu can publish it.</figcaption>
+  </figure>
+
+  <!-- 1: sole remote -->
+  <figure>
+    <div class="sc">
+      <div class="hdr"><span class="t">Source control</span><span class="count">0</span>
+        <span class="branch">tsk-1230-session-connect-error ▾</span><span class="icon-btn open">⋯</span></div>
+      <div class="body">
+        <div class="ta">Message. Press Command-Enter to commit.</div>
+        <div class="row"><span class="sw"><i></i>Amend</span><span class="btn sec">Stage All</span><span class="btn pri">Commit</span></div>
+        <div class="sect">› Staged changes</div>
+      </div>
+      <div class="menu">
+        <div class="mi">Refresh</div>
+        <div class="mi dis">Discard all…</div>
+        <div class="sep"></div>
+        <div class="mi">Fetch</div>
+        <div class="mi dis">Pull</div>
+        <div class="mi dis">Push</div>
+        <div class="mi hl new">Publish to origin</div>
+      </div>
+    </div>
+    <figcaption><b>One remote.</b> “Publish to origin” runs immediately (no ellipsis, no dialog). The remote name is in the label, so the target is never hidden.</figcaption>
+  </figure>
+
+  <!-- 2: multiple remotes -->
+  <figure>
+    <div class="sc">
+      <div class="hdr"><span class="t">Source control</span><span class="count">0</span>
+        <span class="branch">tsk-1230-session-connect-error ▾</span><span class="icon-btn open">⋯</span></div>
+      <div class="body">
+        <div class="ta">Message. Press Command-Enter to commit.</div>
+        <div class="row"><span class="sw"><i></i>Amend</span><span class="btn sec">Stage All</span><span class="btn pri">Commit</span></div>
+        <div class="sect">› Staged changes</div>
+      </div>
+      <div class="menu">
+        <div class="mi">Refresh</div>
+        <div class="mi dis">Discard all…</div>
+        <div class="sep"></div>
+        <div class="mi">Fetch</div>
+        <div class="mi dis">Pull</div>
+        <div class="mi dis">Push</div>
+        <div class="mi hl new">Publish to<span class="chev">›</span>
+          <div class="menu sub" style="top:-4px">
+            <div class="mi hl">origin</div>
+            <div class="mi">upstream</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <figcaption><b>Several remotes.</b> “Publish to ›” opens the existing submenu (same <code>DropdownMenu.Sub</code> the composer config menu uses). No remote is preselected; the user picks one.</figcaption>
+  </figure>
+
+  <!-- 3: publishing / success -->
+  <figure>
+    <div class="sc">
+      <div class="hdr"><span class="t">Source control</span><span class="count">0</span>
+        <span class="branch">tsk-1230-session-connect-error ▾</span><span class="icon-btn open">⋯</span></div>
+      <div class="body">
+        <div class="ta">Message. Press Command-Enter to commit.</div>
+        <div class="row"><span class="sw"><i></i>Amend</span><span class="btn sec">Stage All</span><span class="btn pri">Commit</span></div>
+        <div class="msg">Branch 'tsk-1230-session-connect-error' set up to track 'origin/tsk-1230-session-connect-error'.</div>
+        <div class="sect">› Staged changes</div>
+      </div>
+      <div class="menu" style="top:32px">
+        <div class="mi">Refresh</div>
+        <div class="mi dis">Discard all…</div>
+        <div class="sep"></div>
+        <div class="mi">Fetch</div>
+        <div class="mi">Pull</div>
+        <div class="mi hl">Push</div>
+      </div>
+    </div>
+    <figcaption><b>After success.</b> Existing muted status line shows git's message. Status refresh sets the upstream, so Pull/Push enable and the Publish item disappears — the next push is a normal Push.</figcaption>
+  </figure>
+
+  <!-- 4: failure / retry -->
+  <figure>
+    <div class="sc">
+      <div class="hdr"><span class="t">Source control</span><span class="count">0</span>
+        <span class="branch">tsk-1230-session-connect-error ▾</span><span class="icon-btn open">⋯</span></div>
+      <div class="body">
+        <div class="ta">Message. Press Command-Enter to commit.</div>
+        <div class="row"><span class="sw"><i></i>Amend</span><span class="btn sec">Stage All</span><span class="btn pri">Commit</span></div>
+        <div class="msg bad">git push failed: Permission denied (publickey). fatal: Could not read from remote repository.</div>
+        <div class="sect">› Staged changes</div>
+      </div>
+      <div class="menu" style="top:32px">
+        <div class="mi">Refresh</div>
+        <div class="mi dis">Discard all…</div>
+        <div class="sep"></div>
+        <div class="mi">Fetch</div>
+        <div class="mi dis">Pull</div>
+        <div class="mi dis">Push</div>
+        <div class="mi hl new">Publish to origin</div>
+      </div>
+    </div>
+    <figcaption><b>Failure and retry.</b> The error lands on the existing red <code>actionError</code> line. The branch still has no upstream, so the same item is still there; choosing it again is the retry.</figcaption>
+  </figure>
+
+  <!-- 5: disabled cases -->
+  <figure>
+    <div class="sc">
+      <div class="hdr"><span class="t">Source control</span><span class="count">0</span>
+        <span class="branch">tsk-1230-session-connect-error ▾</span><span class="icon-btn open">⋯</span></div>
+      <div class="body">
+        <div class="ta">Message. Press Command-Enter to commit.</div>
+        <div class="row"><span class="sw"><i></i>Amend</span><span class="btn sec">Stage All</span><span class="btn pri">Commit</span></div>
+        <div class="sect">› Staged changes</div>
+      </div>
+      <div class="menu">
+        <div class="mi">Refresh</div>
+        <div class="mi dis">Discard all…</div>
+        <div class="sep"></div>
+        <div class="mi">Fetch</div>
+        <div class="mi dis">Pull</div>
+        <div class="mi dis">Push</div>
+        <div class="mi dis hl new">Publish branch</div>
+      </div>
+      <div class="tip">This repository has no configured remote. Add one before publishing.</div>
+    </div>
+    <figcaption><b>Can't publish.</b> Same disabled-with-tooltip rule as Pull/Push. Reasons come from the existing helper: read-only folder, action running, detached HEAD, or no remote.</figcaption>
+  </figure>
+</div>
+
+<h2>Behaviour rules</h2>
+<table>
+  <tr><th>Case</th><th>What the menu shows</th></tr>
+  <tr><td>Branch has an upstream</td><td>No publish item. Push/Pull as today.</td></tr>
+  <tr><td>No upstream, one remote</td><td>“Publish to &lt;remote&gt;” — runs immediately.</td></tr>
+  <tr><td>No upstream, 2+ remotes</td><td>“Publish to ›” submenu listing every remote; user picks.</td></tr>
+  <tr><td>No upstream, 0 remotes / read-only / busy / detached</td><td>“Publish branch”, disabled, tooltip gives the reason.</td></tr>
+  <tr><td>Remotes not loaded yet (menu just opened)</td><td>“Publish branch”, disabled, until the one <code>listBranches()</code> reply arrives.</td></tr>
+  <tr><td>Running / success / failure</td><td>Existing <code>actionStatus</code> / <code>actionError</code> line under the commit row. Retry = choose it again.</td></tr>
+</table>
+
+<h2>Implementation shape (for review, not built)</h2>
+<p class="note">
+  <b>File:</b> <code>SourceControlPanel.svelte</code> only, roughly 40–60 lines, inside the existing
+  <code>DropdownMenu.Content</code> after the remote-actions loop (<code>SourceControlPanel.svelte:554-561</code>).
+  <br><b>Remotes:</b> on the More menu's <code>onOpenChange(true)</code>, when the branch has no upstream, call
+  <code>service.listBranches()</code> once and keep <code>remotes</code> in local state. Event-driven, one call per
+  open, nothing retained, no timer. <code>listBranches</code> already drops a reply whose root changed.
+  <br><b>Run:</b> <code>service.publishBranch(folder, panel.status.branch, remote)</code> — the branch and folder are
+  captured at click time, so another session's branch can't be published by a late click (the service already
+  rejects a mismatched root/branch).
+  <br><b>Enablement:</b> <code>sourceControlPublishAction(panel.status, folder, context)</code> for the disabled reason;
+  the panel adds the “no remote” reason when <code>remotes.length === 0</code>.
+</p>
+
+</body>
+</html>
