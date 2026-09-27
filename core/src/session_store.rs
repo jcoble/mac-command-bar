@@ -1956,6 +1956,31 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the event list", error))
     }
 
+    /// Return the summary only when this request's latest approval event is still pending.
+    pub fn pending_approval_summary(
+        &self,
+        owned_id: &str,
+        generation: u64,
+        request_id: &str,
+    ) -> Result<Option<String>> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT CASE WHEN json_extract(payload, '$.payload.state') = 'requested'
+                        THEN json_extract(payload, '$.payload.summary') END
+                 FROM events
+                 WHERE owned_id = ?1 AND kind = 'approval.requested'
+                   AND json_extract(payload, '$.generation') = ?2
+                   AND json_extract(payload, '$.payload.requestId') = ?3
+                 ORDER BY seq DESC LIMIT 1",
+                params![owned_id, generation, request_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(Option::flatten)
+            .map_err(|error| StoreError::sqlite("could not read the pending approval", error))
+    }
+
     /// The final completed assistant message for one turn, selected in SQLite
     /// so workflow handoff does not materialize or scan the conversation.
     pub fn latest_completed_assistant_payload(

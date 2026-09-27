@@ -163,7 +163,6 @@ pub struct ManagedAgentSession {
     pub writer_lease: AgentWriterLease,
     pub writer_lease_transition: Option<AgentWriterLeaseTransition>,
     permission_requests: HashMap<String, PendingPermission>,
-    next_permission_id: u64,
     user_input_requests: HashMap<String, PendingUserInput>,
     next_user_input_id: u64,
     ordered_events: Option<UnboundedSender<OrderedSessionEvent>>,
@@ -1333,7 +1332,6 @@ impl AgentRuntimeManager {
                 },
                 writer_lease_transition: None,
                 permission_requests: HashMap::new(),
-                next_permission_id: 0,
                 user_input_requests: HashMap::new(),
                 next_user_input_id: 0,
                 ordered_events: None,
@@ -2136,28 +2134,25 @@ impl AgentRuntimeManager {
         request_id: String,
         selection: PermissionSelection,
     ) -> Result<(), String> {
-        let _runtime_scope_is_live = {
+        let runtime_scope_is_live = {
             let sessions = self
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let session = current_session(&sessions, owned_id, generation).map_err(|_| {
-                "Stale approval request: the original runtime scope is closed".to_string()
-            })?;
-            if session.runtime.is_none()
-                || matches!(
-                    session.state,
-                    AgentRuntimeState::Suspended
-                        | AgentRuntimeState::Failed
-                        | AgentRuntimeState::Closed
-                )
-            {
-                return Err(
-                    "Stale approval request: the original runtime scope is closed".to_string(),
-                );
-            }
-            true
+            current_session(&sessions, owned_id, generation).is_ok_and(|session| {
+                session.runtime.is_some()
+                    && !matches!(
+                        session.state,
+                        AgentRuntimeState::Suspended
+                            | AgentRuntimeState::Failed
+                            | AgentRuntimeState::Closed
+                    )
+            })
         };
+        if !runtime_scope_is_live {
+            self.expire_stale_approval(owned_id, generation, &request_id)?;
+            return Err("Stale approval request: the original runtime scope is closed".to_string());
+        }
         let runtime = self.runtime(&owned_id, generation)?;
         let transport = {
             let runtime = runtime.lock().await;
@@ -2218,6 +2213,49 @@ impl AgentRuntimeManager {
                 summary: pending.summary,
             })
             .map_err(|_| "Structured event pump is no longer running".to_string())?;
+        Ok(())
+    }
+
+    fn expire_stale_approval(
+        &self,
+        owned_id: &str,
+        generation: u64,
+        request_id: &str,
+    ) -> Result<(), String> {
+        if !self.hydrate_overlay_from_store(owned_id)? {
+            return Ok(());
+        }
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Ok(session) = current_session_mut(&mut sessions, owned_id, generation) else {
+            return Ok(());
+        };
+        if session.runtime.is_some()
+            && !matches!(
+                session.state,
+                AgentRuntimeState::Suspended | AgentRuntimeState::Failed | AgentRuntimeState::Closed
+            )
+        {
+            return Ok(());
+        }
+        if let Some(summary) = session
+            .store
+            .pending_approval_summary(owned_id, generation, request_id)
+            .map_err(|error| error.to_string())?
+        {
+            record_payload_for_session_and_dispatch(
+                session,
+                &self.emitter,
+                AgentConversationPayload::Approval {
+                    request_id: request_id.to_string(),
+                    state: ApprovalState::Expired,
+                    summary,
+                },
+            )?;
+            session.permission_requests.remove(request_id);
+        }
         Ok(())
     }
 
@@ -4115,7 +4153,6 @@ fn recovered_session_from_row(
         },
         writer_lease_transition: None,
         permission_requests: HashMap::new(),
-        next_permission_id: 0,
         user_input_requests: HashMap::new(),
         next_user_input_id: 0,
         ordered_events: None,
@@ -4795,8 +4832,7 @@ async fn pump_inbound(
                 if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
                     continue;
                 }
-                session.next_permission_id = session.next_permission_id.saturating_add(1);
-                let request_id = format!("perm-{}", session.next_permission_id);
+                let request_id = format!("perm-{}", uuid::Uuid::new_v4());
                 session.permission_requests.insert(
                     request_id.clone(),
                     PendingPermission {
@@ -9537,6 +9573,27 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn late_approval_gets_stale_result() {
         let fixture = fixture_manager_with_acp_session("late_approval").await;
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = current_session_mut(&mut sessions, &fixture.owned_id, fixture.generation)
+                .unwrap();
+            for (state, summary) in [
+                (ApprovalState::Requested, "Earlier approval"),
+                (ApprovalState::Accepted, "Earlier approval"),
+                (ApprovalState::Requested, "Read git diff"),
+            ] {
+                record_payload_for_session_and_dispatch(
+                    session,
+                    &fixture.manager.emitter,
+                    AgentConversationPayload::Approval {
+                        request_id: "expired-request".into(),
+                        state,
+                        summary: summary.into(),
+                    },
+                )
+                .unwrap();
+            }
+        }
         fixture
             .manager
             .close(&fixture.owned_id, fixture.generation)
@@ -9557,6 +9614,39 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.starts_with("Stale approval request:"));
+        let snapshot = fixture.manager.snapshot(&fixture.owned_id).unwrap().unwrap();
+        assert!(snapshot.events.iter().any(|event| matches!(
+            &event.payload,
+            AgentConversationPayload::Approval {
+                request_id,
+                state: ApprovalState::Expired,
+                summary,
+            } if request_id == "expired-request" && summary == "Read git diff"
+        )));
+        let second_error = fixture
+            .manager
+            .respond_permission(PermissionResponse {
+                identity: AgentRequestIdentity {
+                    owned_id: fixture.owned_id.clone(),
+                    generation: fixture.generation,
+                    request_id: "expired-request".into(),
+                    turn_id: None,
+                    item_id: None,
+                },
+                decision: AgentApprovalDecision::Accept,
+            })
+            .await
+            .unwrap_err();
+        assert!(second_error.starts_with("Stale approval request:"));
+        let snapshot = fixture.manager.snapshot(&fixture.owned_id).unwrap().unwrap();
+        assert_eq!(snapshot.events.iter().filter(|event| matches!(
+            &event.payload,
+            AgentConversationPayload::Approval {
+                request_id,
+                state: ApprovalState::Expired,
+                ..
+            } if request_id == "expired-request"
+        )).count(), 1);
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
