@@ -317,6 +317,32 @@ assert.deepEqual(
 );
 assert.equal(store.getConversationSession('owned-a').desynchronized, false);
 
+// A missing live event must not briefly paint later tool updates out of order.
+{
+  const ownedId = 'owned-gapped-live';
+  const connection = { ownedId, provider: 'codex' as const, generation: 1, state: 'connected' as const };
+  const event = (sequence: number, payload: Record<string, unknown>) => ({
+    ownedId, provider: 'codex' as const, generation: 1, sequence,
+    timestampMs: sequence * 10, payload
+  });
+  const first = event(1, { kind: 'assistantMessage', itemId: 'prior', text: 'Earlier answer', completed: true });
+  const missing = event(2, { kind: 'userMessage', itemId: 'question', text: 'New question', completed: true });
+  const toolStart = event(3, { kind: 'tool', itemId: 'tool', name: 'Bash', state: 'started' });
+  const toolUpdate = event(4, { kind: 'tool', itemId: 'tool', name: 'Bash', state: 'completed', output: 'done' });
+  store.applyAgentConversationSnapshot({ connection, lastSequence: 1, events: [first] });
+  store.applyAgentConversationEvent(toolStart);
+  store.applyAgentConversationEvent(toolUpdate);
+  const beforeRepair = store.getConversationSession(ownedId);
+  assert.equal(beforeRepair.desynchronized, true);
+  assert.deepEqual(beforeRepair.timeline.map((item: { itemId: string }) => item.itemId), ['prior']);
+  assert.deepEqual(beforeRepair.agentItems.map((item: { id: string }) => item.id), ['prior']);
+  store.applyAgentConversationSnapshot({ connection, lastSequence: 4, events: [first, missing, toolStart, toolUpdate] });
+  const repaired = store.getConversationSession(ownedId);
+  assert.equal(repaired.desynchronized, false);
+  assert.deepEqual(repaired.timeline.map((item: { itemId: string }) => item.itemId), ['prior', 'question', 'tool']);
+  assert.equal(repaired.timeline.find((item: { itemId: string }) => item.itemId === 'tool')?.output, 'done');
+}
+
 // A session picked up from a past Claude or Codex transcript stores every event
 // wrapped in a terminal projection, with the real event one level further down.
 // The live path unwraps that wrapper before it types the item; snapshot restore

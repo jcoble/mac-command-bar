@@ -664,6 +664,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-09-27 · TSK-1138 · “Hold gapped live events until history repair”</td><td>When a live conversation event skips a journal sequence, the selected transcript keeps its existing rows instead of showing later tool updates before the missing event. The bounded snapshot then rebuilds the visible rows in order.</td><td>13</td></tr>
             <tr><td>2026-09-27 · TSK-1138 · “Keep tool rows in order across bounded history replay”</td><td>A replay retains the first observed start time of a tool already on screen when its opening event falls outside the bounded window. The reducer also keeps a tool's first timestamp as updates arrive, so completion does not move the row.</td><td>13</td></tr>
             <tr><td>2026-09-27 · TSK-1138 · “Trim live conversation history below byte limit”</td><td>After live output crosses the four-MiB retained-event limit, the selected conversation trims to three MiB. The spare room prevents another full timeline replay on each following event in a long turn.</td><td>13</td></tr>
             <tr><td>2026-09-25 · TSK-1226 · “Count Linux processes once in Resource Manager”</td><td>The Linux resource sampler excludes thread entries from its process inventory, so WebKit renderer RSS is counted once per process instead of once per thread. macOS process attribution is unchanged.</td><td>01, 18</td></tr>
@@ -1165,8 +1166,8 @@
         </div>
 
         <div class="callout conditional">
-          <p><strong>Sequence gaps fail visibly.</strong> The reducer rejects stale or duplicate events. If it observes a gap, it marks the session desynchronized instead of inventing missing content, then the service reloads a bounded snapshot from Rust.</p>
-          <span class="source"><code>conversationReducer.ts:108-130</code> · <code>conversationService.ts:439-567</code></span>
+          <p><strong>Sequence gaps wait for repair.</strong> The reducer rejects stale or duplicate events. If it observes a gap, the selected transcript keeps its existing rows and does not project later live updates. The service reloads a bounded snapshot from Rust, then publishes the repaired rows together.</p>
+          <span class="source"><code>conversationStore.svelte.ts:353-373</code> · <code>conversationStore.svelte.ts:451-466</code> · <code>conversationService.ts:1188-1190</code></span>
         </div>
 
         <details>
