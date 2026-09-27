@@ -209,7 +209,7 @@ export function applyConversationEvent(
           path: payload.path || (current?.kind === 'tool' ? current.path : undefined),
           diff: payload.diff || (current?.kind === 'tool' ? current.diff : undefined),
           output: payload.output || (current?.kind === 'tool' ? current.output : undefined),
-          timestampMs: event.timestampMs
+          timestampMs: current?.timestampMs ?? event.timestampMs
         }))
       };
 
