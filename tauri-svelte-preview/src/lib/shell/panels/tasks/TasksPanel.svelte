@@ -7,7 +7,7 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
   import Settings2 from '@lucide/svelte/icons/settings-2';
-  import { onDestroy, onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { buttonVariants } from '$lib/components/ui/button/index.js';
@@ -29,27 +29,13 @@
     type NotionTaskSettings
   } from '$lib/shell/notionTasks.ts';
   import { connectNotion } from '$lib/shell/notionOAuth.ts';
-  import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
+  import { matchNotionProject } from '$lib/shell/notionProjectMatch.ts';
   import { cn } from '$lib/utils.js';
   import NotionTaskViewer from './NotionTaskViewer.svelte';
 
   const PAGE_SIZE = 25;
   const TASK_ROW_HEIGHT = 84;
   const TASK_ROW_OVERSCAN = 5;
-
-  let { session }: { session: OwnedSession | null } = $props();
-
-  function matchingProject(choices: string[], current: OwnedSession | null): string {
-    const path = (current?.projectPath || current?.cwd || '').trim();
-    if (!path) return '';
-    const parts = path.split('/').filter(Boolean);
-    const worktrees = parts.lastIndexOf('worktrees');
-    const folder = worktrees >= 0 && parts[worktrees + 2] ? parts[worktrees + 1] : parts.at(-1);
-    const key = (folder || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (!key) return '';
-    const matches = choices.filter((choice) => choice.toLowerCase().replace(/[^a-z0-9]/g, '') === key);
-    return matches.length === 1 ? matches[0] : '';
-  }
 
   function taskStatusIconClass(status: string): string {
     switch (status.trim().toLowerCase()) {
@@ -72,6 +58,9 @@
     }
   }
 
+  /** The active session's folder; the list follows the Notion project it maps to. */
+  let { root = '' }: { root?: string } = $props();
+
   let settings = $state<NotionTaskSettings | null>(null);
   let tasks = $state<NotionTaskRow[]>([]);
   let projects = $state<string[]>([]);
@@ -80,10 +69,8 @@
   let search = $state('');
   let statusFilter = $state('');
   let projectFilter = $state('');
-  let manualProjectSelection = $state(false);
-  let currentSessionId: string | null | undefined;
   let sortBy = $state('taskNumber');
-  let sortDirection = $state('asc');
+  let sortDirection = $state('desc');
   let searchOpen = $state(false);
   let searchInput = $state<HTMLInputElement | null>(null);
   let loading = $state(true);
@@ -113,6 +100,7 @@
     )
   );
   const visibleTasks = $derived(tasks.slice(firstTaskIndex, lastTaskIndex));
+  const sessionProject = $derived(matchNotionProject(root, projects));
 
   async function loadCached(owner: number, append = false): Promise<void> {
     const readOwner = append ? readGeneration : ++readGeneration;
@@ -127,17 +115,9 @@
       sortDirection
     );
     if (owner !== generation || readOwner !== readGeneration) return;
+    tasks = append ? [...tasks, ...page.tasks] : page.tasks;
     projects = page.projects;
     statuses = page.statuses;
-    if (!append && !manualProjectSelection) {
-      const match = matchingProject(page.projects, session);
-      if (match !== projectFilter) {
-        projectFilter = match;
-        await loadCached(owner);
-        return;
-      }
-    }
-    tasks = append ? [...tasks, ...page.tasks] : page.tasks;
     hasMore = page.hasMore;
   }
 
@@ -288,16 +268,12 @@
     void initialize(owner);
   });
   $effect(() => {
-    const id = session?.ownedId ?? null;
-    if (currentSessionId === undefined) {
-      currentSessionId = id;
-      return;
-    }
-    if (currentSessionId === id) return;
-    currentSessionId = id;
-    manualProjectSelection = false;
-    projectFilter = matchingProject(projects, session);
-    void reloadCached();
+    const next = sessionProject;
+    untrack(() => {
+      if (next === projectFilter) return;
+      projectFilter = next;
+      void reloadCached();
+    });
   });
   $effect(() => {
     const viewport = taskViewport;
@@ -419,7 +395,6 @@
                 type="single"
                 value={projectFilter || 'all'}
                 onValueChange={(value) => {
-                  manualProjectSelection = true;
                   projectFilter = value === 'all' ? '' : value;
                   void reloadCached();
                 }}
@@ -467,10 +442,10 @@
         </IconButton>
       </div>
     {/snippet}
-    Latest successful Notion snapshot
+    {projectFilter || 'All projects'} · Latest successful Notion snapshot
   </PanelHeader>
 
-  {#if !manualProjectSelection && projects.length > 0 && (session?.projectPath || session?.cwd) && !matchingProject(projects, session)}
+  {#if projects.length > 0 && root && !sessionProject && !projectFilter}
     <p class="mx-3 mb-2 text-xs text-muted-foreground">No Notion project matches this session. Showing all projects.</p>
   {/if}
 

@@ -57,7 +57,7 @@ export async function listNotionTasks(
   project = '',
   status = '',
   sortBy = 'taskNumber',
-  sortDirection = 'asc'
+  sortDirection = 'desc'
 ): Promise<NotionTaskPage> {
   return await invokeDesktop('list_notion_tasks', {
     offset,

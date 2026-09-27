@@ -89,7 +89,7 @@
         <h2 class="mt-(--space-2) text-2xl leading-snug font-semibold text-foreground [overflow-wrap:anywhere]">{task.title}</h2>
         <div class="mt-(--space-4) flex flex-wrap gap-(--space-2) text-(length:--text-quiet) text-muted-foreground">
           <Select.Root type="single" value={status} onValueChange={(value) => void changeStatus(value)} disabled={savingStatus}>
-            <Select.Trigger size="sm" class="rounded-full bg-[var(--color-elevated)] px-2.5 font-medium text-[var(--color-text)]" aria-label="Change task status">
+            <Select.Trigger size="sm" class="rounded-full px-2.5 font-medium text-foreground" aria-label="Change task status">
               {savingStatus ? 'Saving…' : status}
             </Select.Trigger>
             <Select.Content>

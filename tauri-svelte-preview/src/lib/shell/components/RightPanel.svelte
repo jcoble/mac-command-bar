@@ -163,7 +163,7 @@
         />
       </div>
     {:else if visible && activeId === 'tasks'}
-      <div class="panel-body carded showing"><TasksPanel {session} /></div>
+      <div class="panel-body carded showing"><TasksPanel {root} /></div>
     {/if}
   </div>
 </div>
