@@ -39,6 +39,16 @@ test('builds a deterministic remote backend package contract', async () => {
       version: '1.2.3',
       commit: '0123456789abcdef0123456789abcdef01234567'
     });
+    const archiveBytes = await readFile(archive);
+    const record = JSON.parse(await readFile(`${archive}.download.json`, 'utf8')) as {
+      schemaVersion: number; version: string; protocolVersion: number; target: string;
+      archiveFile: string; bytes: number; sha256: string;
+    };
+    assert.deepEqual(record, {
+      schemaVersion: 1, version: '1.2.3', protocolVersion: 3,
+      target: 'x86_64-unknown-linux-gnu', archiveFile: path.basename(archive),
+      bytes: archiveBytes.length, sha256: createHash('sha256').update(archiveBytes).digest('hex')
+    });
     await execFileAsync('tar', ['-xzf', archive, '-C', extracted]);
     const manifest = JSON.parse(await readFile(path.join(extracted, 'manifest.json'), 'utf8')) as {
       schemaVersion: number;
@@ -86,4 +96,48 @@ test('rejects invalid release identity before writing', async () => {
     }),
     /Invalid backend version/
   );
+});
+
+test('remote download verifier rejects changed, truncated, and unexpected archives', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'assembly-remote-download-test-'));
+  try {
+    const input = path.join(root, 'input');
+    const output = path.join(root, 'output');
+    await mkdir(input);
+    await writeFile(path.join(input, 'server'), 'server-bytes');
+    await writeAdapterFixture(path.join(input, 'adapters'));
+    const archive = await writeRemoteBackendPackage({
+      binaryPath: path.join(input, 'server'), adapterDirectory: path.join(input, 'adapters'),
+      outputDirectory: output, version: '1.2.3', commit: '0123456789abcdef0123456789abcdef01234567'
+    });
+    const rust = await readFile(new URL('../src-tauri/src/agent_conversation/remote_install.rs', import.meta.url), 'utf8');
+    const script = rust.match(/const REMOTE_DOWNLOAD: &str = r#"([\s\S]*?)"#;/)?.[1];
+    assert.ok(script, 'remote verifier script exists');
+    const run = async (source: string, bytes: number, digest: string) => {
+      const destination = path.join(root, `stage-${crypto.randomUUID()}`);
+      await mkdir(destination);
+      const wrapper = `import os, urllib.request\nclass Source:\n def __init__(self, path):\n  self.file=open(path,'rb'); self.headers={'Content-Length':str(os.path.getsize(path))}\n def __enter__(self): return self\n def __exit__(self,*args): self.file.close()\n def geturl(self): return 'https://github.com/jcoble/mac-command-bar/releases/download/test/package.tar.gz'\n def read(self,n): return self.file.read(n)\nurllib.request.urlopen=lambda request,timeout:Source(${JSON.stringify(source)})\n`;
+      try {
+        const { stdout } = await execFileAsync('python3', ['-c', wrapper + script, 'https://github.com/jcoble/mac-command-bar/releases/download/test/package.tar.gz', path.join(destination, 'package.tar.gz'), String(bytes), digest, '1.2.3']);
+        return stdout;
+      } finally {
+        await rm(destination, { recursive: true, force: true });
+      }
+    };
+    const archiveBytes = await readFile(archive);
+    const digest = createHash('sha256').update(archiveBytes).digest('hex');
+    assert.match(await run(archive, archiveBytes.length, digest), /V\t1\.2\.3\t/);
+    await assert.rejects(run(archive, archiveBytes.length, '0'.repeat(64)), /signed digest/);
+    await assert.rejects(run(archive, archiveBytes.length + 1, digest), /signed record/);
+    const unpacked = path.join(root, 'unpacked');
+    await mkdir(unpacked);
+    await execFileAsync('tar', ['-xzf', archive, '-C', unpacked]);
+    await writeFile(path.join(unpacked, 'unexpected'), 'extra');
+    const unexpected = path.join(root, 'unexpected.tar.gz');
+    await execFileAsync('tar', ['-czf', unexpected, '-C', unpacked, '.']);
+    const unexpectedBytes = await readFile(unexpected);
+    await assert.rejects(run(unexpected, unexpectedBytes.length, createHash('sha256').update(unexpectedBytes).digest('hex')), /Unexpected backend archive entry/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

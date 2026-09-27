@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick } from 'svelte';
+  import { revealTab, scrollTabStrip } from '$lib/shell/components/tabScrolling';
   import Globe2 from '@lucide/svelte/icons/globe-2';
   import Plus from '@lucide/svelte/icons/plus';
   import X from '@lucide/svelte/icons/x';
@@ -32,7 +33,7 @@
     if (!host || !activeTabId) return;
     void tick().then(() => {
       const active = host.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
-      active?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      revealTab(host, active?.closest('.tab-shell') ?? null);
     });
   });
 
@@ -51,20 +52,8 @@
     if (!tab) return;
     onSelect(tab.id);
     void tick().then(() => {
-      track?.querySelector<HTMLElement>(`[data-browser-tab-id="${CSS.escape(tab.id)}"]`)?.focus();
+      track?.querySelector<HTMLElement>(`[data-browser-tab-id="${CSS.escape(tab.id)}"]`)?.focus({ preventScroll: true });
     });
-  }
-
-  /** A mouse wheel has no horizontal axis. Use its vertical movement on this
-   *  one-axis strip; trackpad sideways gestures keep their native behavior. */
-  function scrollTabs(event: WheelEvent): void {
-    if (!track || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
-    const limit = track.scrollWidth - track.clientWidth;
-    if (limit <= 0) return;
-    const next = Math.max(0, Math.min(limit, track.scrollLeft + event.deltaY));
-    if (next === track.scrollLeft) return;
-    event.preventDefault();
-    track.scrollLeft = next;
   }
 </script>
 
@@ -74,7 +63,7 @@
     bind:this={track}
     role="tablist"
     aria-label="Open browser pages"
-    onwheel={scrollTabs}
+    use:scrollTabStrip
   >
     {#each tabs as tab (tab.id)}
       <div class="tab-shell" class:active={tab.id === activeTabId}>
@@ -86,7 +75,10 @@
           tabindex={tab.id === activeTabId ? 0 : -1}
           data-browser-tab-id={tab.id}
           title={tab.title || tab.url || 'New browser tab'}
-          onclick={() => onSelect(tab.id)}
+          onclick={(event) => {
+            onSelect(tab.id);
+            revealTab(track, event.currentTarget.closest('.tab-shell'));
+          }}
           onkeydown={(event) => chooseByKeyboard(event, tab.id)}
         >
           <Globe2 aria-hidden="true" />
@@ -137,6 +129,7 @@
     overflow-y: hidden;
     scroll-behavior: smooth;
     scrollbar-width: none;
+    user-select: none;
   }
 
   .tab-track::-webkit-scrollbar {

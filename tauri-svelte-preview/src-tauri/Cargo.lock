@@ -2801,6 +2801,7 @@ dependencies = [
  "comrak",
  "flate2",
  "futures-util",
+ "gtk",
  "httpdate",
  "image",
  "libc",

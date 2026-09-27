@@ -13,8 +13,11 @@ import {
   createGridview,
   GridviewPanel,
   Orientation,
+  type GridPanelViewState,
   type GridviewApi,
-  type IFrameworkPart
+  type IFrameworkPart,
+  type SerializedGridObject,
+  type SerializedGridviewComponent
 } from 'dockview-core';
 
 import { gridPanelIds } from './layoutStorage';
@@ -54,8 +57,8 @@ export const TOOLS_WIDTH = 320;
 /**
  * How narrow and how wide the tool column may be dragged. It stops short of
  * the window's edge because the center pane keeps `CENTER_MIN_WIDTH` whatever
- * else happens. A browser page that wants more than this fills the window
- * from inside its own panel rather than by dragging the seam.
+ * else happens. Wider than this is the whole right region widened over the
+ * center (`setToolsExpanded`), not a dragged seam.
  */
 export const TOOLS_MIN_WIDTH = 240;
 export const TOOLS_MAX_WIDTH = 960;
@@ -138,6 +141,13 @@ export interface ShellFrame {
   /** Put the right tools region in the grid or remove it completely. */
   setToolsPresent(present: boolean): void;
   /**
+   * Widen the right region over the center, or give it back its own width.
+   * The center is locked at no width rather than removed, so its surfaces stay
+   * mounted. Saves made while widened record the collapsed layout, so a
+   * restart always opens collapsed at the normal width.
+   */
+  setToolsExpanded(expanded: boolean): void;
+  /**
    * Say what a region may be dragged to, without touching the width it has.
    *
    * A stored layout carries each region's limits as well as its width, so a
@@ -180,6 +190,9 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
   let layoutVersion = 0;
   let rememberedToolsWidth = TOOLS_WIDTH;
   let toolsTransitionVersion = 0;
+  /** True only once a widening has actually been applied to the grid. */
+  let toolsExpanded = false;
+  let collapsedToolsWidth = TOOLS_WIDTH;
 
   const adopt = (id: string, host: HTMLElement): void => {
     const region = options.regions[id as ShellRegionId];
@@ -354,13 +367,42 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
     }
   }
 
+  /**
+   * The layout a save records while the right region is widened: the right
+   * column back at its own width and limits, the center column taking back the
+   * difference with its own limits. Everything else is the live snapshot's.
+   * Columns are the root's children, sized by width; the center may sit in a
+   * column branch with the dock under it.
+   */
+  const collapsedLayout = (layout: SerializedGridviewComponent): SerializedGridviewComponent => {
+    type GridNode = SerializedGridObject<GridPanelViewState>;
+    const leaf = (node: GridNode, id: string): GridNode | undefined =>
+      node.type === 'leaf'
+        ? (node.data as GridPanelViewState).id === id ? node : undefined
+        : (node.data as GridNode[]).map((child) => leaf(child, id)).find(Boolean);
+    const columns = layout.grid.root.data as GridNode[];
+    const toolsColumn = columns.find((column) => leaf(column, 'tools'));
+    const centerColumn = columns.find((column) => leaf(column, 'center'));
+    const centerLeaf = centerColumn && leaf(centerColumn, 'center');
+    if (!toolsColumn || !centerColumn || !centerLeaf) return layout;
+    centerColumn.size = (centerColumn.size ?? 0) + (toolsColumn.size ?? 0) - collapsedToolsWidth;
+    toolsColumn.size = collapsedToolsWidth;
+    toolsColumn.data = { ...(toolsColumn.data as GridPanelViewState), maximumWidth: TOOLS_MAX_WIDTH };
+    centerLeaf.data = {
+      ...(centerLeaf.data as GridPanelViewState),
+      minimumWidth: CENTER_MIN_WIDTH,
+      maximumWidth: undefined
+    };
+    return layout;
+  };
+
   const persistSoon = (): void => {
     if (synchronizingDepth > 0 || disposed) return;
     // Never store a grid measured at zero: every region in it sits at its
     // minimum, and the next launch scales those wrong sizes up to the window.
     if (api.width <= 0 || api.height <= 0) return;
     try {
-      void persistLayout(api.toJSON());
+      void persistLayout(toolsExpanded ? collapsedLayout(api.toJSON()) : api.toJSON());
     } catch {
       options.onLayoutPersisted?.(false);
     }
@@ -444,6 +486,7 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
           options.regions.center.style.visibility = '';
           return;
         }
+        if (!present) applyToolsExpanded(false);
         const sessions = regionWidth('sessions');
         if (panel) rememberedToolsWidth = panel.api.width;
         runSynchronized(() => {
@@ -468,6 +511,43 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
     });
   };
 
+  /** Lock the center at no width and give the right column the rest, or put
+   * both back. The sessions column keeps its width either way. */
+  const applyToolsExpanded = (expanded: boolean): void => {
+    const tools = regionWidth('tools');
+    const center = regionWidth('center');
+    if (expanded === toolsExpanded || tools === null || center === null) return;
+    const sessions = regionWidth('sessions');
+    runSynchronized(() => {
+      if (expanded) {
+        collapsedToolsWidth = tools;
+        setRegionLimits('center', { minimumWidth: 0, maximumWidth: 0 });
+        setRegionWidth('tools', tools + center, { maximumWidth: Number.MAX_SAFE_INTEGER });
+      } else {
+        setRegionLimits('center', { minimumWidth: CENTER_MIN_WIDTH, maximumWidth: Number.MAX_SAFE_INTEGER });
+        setRegionWidth('tools', collapsedToolsWidth, { maximumWidth: TOOLS_MAX_WIDTH });
+      }
+      if (sessions !== null) setRegionWidth('sessions', sessions);
+    });
+    toolsExpanded = expanded;
+  };
+
+  /** Same one-frame WebKit invalidation as `setToolsPresent`: hide the center,
+   * change the grid a frame later, reveal it a frame after that. */
+  const setToolsExpanded = (expanded: boolean): void => {
+    const transitionVersion = ++toolsTransitionVersion;
+    options.regions.center.style.visibility = 'hidden';
+    requestAnimationFrame(() => {
+      if (disposed || transitionVersion !== toolsTransitionVersion) return;
+      applyToolsExpanded(expanded);
+      requestAnimationFrame(() => {
+        if (!disposed && transitionVersion === toolsTransitionVersion) {
+          options.regions.center.style.visibility = '';
+        }
+      });
+    });
+  };
+
   return {
     api,
     ready,
@@ -475,9 +555,11 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
     setRegionHeight,
     setDockPresent,
     setToolsPresent,
+    setToolsExpanded,
     setRegionLimits,
     regionWidth,
     resetLayout(): void {
+      toolsExpanded = false;
       void persistLayout(null);
       runSynchronized(() => {
         api.clear();

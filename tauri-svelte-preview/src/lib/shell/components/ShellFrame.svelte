@@ -66,6 +66,8 @@
       setDockPresent: (present: boolean) => void;
       /** Put the right tools region in the grid or remove it completely. */
       setToolsPresent: (present: boolean) => void;
+      /** Widen the right region over the center, or put it back. See `setToolsExpanded` in `frame.ts`. */
+      setToolsExpanded: (expanded: boolean) => void;
       /** Say what a region may be dragged to without moving it. See
        * `setRegionLimits` in `frame.ts`. */
       setRegionLimits: (id: ShellRegionId, limits: RegionWidthLimits) => void;
@@ -109,6 +111,12 @@
     const owner = { active: true };
     let laidOutWidth = -1;
     let laidOutHeight = -1;
+    const reportRegionWidths = (): void => {
+      const sessionsWidth = frame?.regionWidth('sessions');
+      if (sessionsWidth !== null && sessionsWidth !== undefined) onSessionsWidthChange?.(sessionsWidth);
+      const toolsWidth = frame?.regionWidth('tools');
+      onToolsWidthChange?.(toolsWidth ?? 0);
+    };
     const layoutFrame = () => {
       const width = gridHost.clientWidth;
       const height = gridHost.clientHeight;
@@ -116,6 +124,7 @@
       laidOutWidth = width;
       laidOutHeight = height;
       frame?.layout(width, height);
+      reportRegionWidths();
     };
     const scheduleFrameLayout = () => {
       layoutFrame();
@@ -141,12 +150,6 @@
         // still at 0×0 leaves always-rendered panels with stale overlay bounds
         // until the next activation.
         layoutFrame();
-        const reportRegionWidths = (): void => {
-          const sessionsWidth = frame?.regionWidth('sessions');
-          if (sessionsWidth !== null && sessionsWidth !== undefined) onSessionsWidthChange?.(sessionsWidth);
-          const toolsWidth = frame?.regionWidth('tools');
-          onToolsWidthChange?.(toolsWidth ?? 0);
-        };
         frameLayoutListener = frame.api.onDidLayoutChange(reportRegionWidths);
         reportRegionWidths();
         centerDock = createCenterDock(centerSlot, {
@@ -197,6 +200,7 @@
           setRegionHeight: (id, height, limits) => frame?.setRegionHeight(id, height, limits),
           setDockPresent: (present) => frame?.setDockPresent(present),
           setToolsPresent: (present) => frame?.setToolsPresent(present),
+          setToolsExpanded: (expanded) => frame?.setToolsExpanded(expanded),
           setRegionLimits: (id, limits) => frame?.setRegionLimits(id, limits),
           regionWidth: (id) => frame?.regionWidth(id) ?? null
         });

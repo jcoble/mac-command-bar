@@ -116,7 +116,6 @@ export function deriveSessionPresence(
 
   const needsAttention = history.lastAttentionAt !== null
     && history.lastAttentionAt > (history.lastAckedAt ?? -1);
-  if (needsAttention) return { state: 'needs-attention', elapsedMs: null };
 
   const disconnected = signals.connectionState === 'disconnected'
     && signals.runtimeState !== 'starting';
@@ -128,7 +127,7 @@ export function deriveSessionPresence(
     || signals.sending === true
     || signals.runtimeState === 'working'
   );
-  if (!working) return { state: 'idle', elapsedMs: null };
+  if (!working) return { state: needsAttention ? 'needs-attention' : 'idle', elapsedMs: null };
 
   const startedAt = history.turnStartedAt ?? nowMs;
   return { state: 'working', elapsedMs: Math.max(0, timestamp(nowMs) - startedAt) };
@@ -186,19 +185,19 @@ export function synchronizeSessionPresenceWork(
   ownedId: string,
   activeTurnId: string | null | undefined,
   sending: boolean,
-  at = Date.now()
+  at: number | null = Date.now()
 ): void {
   sessionPresenceHistory.update((records) => {
     const current = records[ownedId] ?? EMPTY_SESSION_PRESENCE_HISTORY;
     if (!activeTurnId && !sending) {
-      if (current.activeTurnId === null && current.turnStartedAt === null) return records;
+      if (current.activeTurnId === null && current.turnStartedAt === null && records[ownedId]) return records;
       return { ...records, [ownedId]: { ...current, activeTurnId: null, turnStartedAt: null } };
     }
     const turnId = activeTurnId ?? current.activeTurnId ?? 'sending';
     if (current.activeTurnId === turnId && current.turnStartedAt !== null) return records;
     return {
       ...records,
-      [ownedId]: { ...current, activeTurnId: turnId, turnStartedAt: timestamp(at) }
+      [ownedId]: { ...current, activeTurnId: turnId, turnStartedAt: at === null ? null : timestamp(at) }
     };
   });
 }

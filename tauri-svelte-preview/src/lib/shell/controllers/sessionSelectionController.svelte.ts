@@ -217,7 +217,7 @@ export class SessionSelectionController {
 				this.sessionSelectionLayers.clearChatHistory();
 				this.activeRootAvailable = false;
 				shellPanels.sessionPicked(false);
-				const detail = error instanceof Error ? error.message : String(error);
+				const detail = error instanceof Error ? error.message : typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error);
 				this.selectionError = session.executionEnvironment === 'remote' && detail.toLowerCase().includes('not connected')
 					? 'This remote machine is not connected.'
 					: `Conversation could not be loaded. ${detail}`;
