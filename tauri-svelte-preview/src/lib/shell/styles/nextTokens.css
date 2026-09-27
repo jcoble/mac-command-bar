@@ -94,6 +94,24 @@
   --row-selected: color-mix(in srgb, var(--color-accent) 7%, transparent);
 
   /* ------------------------------------------------------------------
+   * Panel fade — the light each card carries down from its top edge.
+   * A dark, desaturated purple that dissolves into the surface within the
+   * first few hundred pixels, with a handful of faint specks in it so the
+   * wash reads as a lit surface rather than a flat tint. Deliberately at
+   * the edge of notice. Static paint only: nothing here animates.
+   * The specks are separate layers above the wash; the wash is last so the
+   * panel's own surface colour can be added beneath it.
+   * ------------------------------------------------------------------ */
+  --panel-fade:
+    radial-gradient(circle at 14% 38px, rgba(255, 255, 255, 0.05) 0 0.6px, transparent 1.4px),
+    radial-gradient(circle at 63% 22px, rgba(214, 196, 255, 0.05) 0 0.7px, transparent 1.5px),
+    radial-gradient(circle at 86% 94px, rgba(255, 255, 255, 0.04) 0 0.6px, transparent 1.4px),
+    radial-gradient(circle at 37% 148px, rgba(214, 196, 255, 0.04) 0 0.6px, transparent 1.4px),
+    radial-gradient(circle at 74% 196px, rgba(255, 255, 255, 0.03) 0 0.5px, transparent 1.3px),
+    radial-gradient(120% 200px at 50% 0, rgba(64, 52, 88, 0.05), transparent 70%),
+    linear-gradient(180deg, rgba(38, 31, 50, 0.22) 0, rgba(32, 27, 42, 0.09) 100px, rgba(32, 27, 42, 0) 220px);
+
+  /* ------------------------------------------------------------------
    * Status tones — live is blue and good is green so running and done
    * never collapse into the same signal. Idle is opaque so its computed
    * contrast remains stable on every interaction surface.
@@ -159,7 +177,7 @@
      line of metadata beside that. The old 11 and 12px sizes stay for
      small-caps group labels only. */
   --text-heading: 16px;
-  --text-heading-weight: 600;
+  --text-heading-weight: 700;
   --text-body: 14px;
   --text-quiet: 13px;
 

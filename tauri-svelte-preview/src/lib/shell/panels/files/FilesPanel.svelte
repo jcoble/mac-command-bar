@@ -5,7 +5,7 @@
 	import { EmptyState } from "$lib/components/ui/empty-state/index.js";
 	import { IconButton } from "$lib/components/ui/icon-button/index.js";
 	import { Input } from "$lib/components/ui/input/index.js";
-	import { PanelHeader } from "$lib/components/ui/panel-header/index.js";
+	import { Chip } from "$lib/components/ui/chip/index.js";
 	import * as Select from "$lib/components/ui/select/index.js";
 	import FileIcon from "$lib/shell/components/explorer/FileIcon.svelte";
 	import FileHistoryPane from "./FileHistoryPane.svelte";
@@ -50,9 +50,14 @@
 		isNativeTauriRuntime,
 		listRepositoryCheckoutsFromTauri,
 		moveToTrashFromTauri,
+		readAssemblySettingFromTauri,
 		searchSourceTreeFromTauri,
 		validateProjectRootFromTauri,
+		writeAssemblySettingFromTauri,
 	} from "$lib/tauriSource";
+	import { AGENT_ICONS, agentDisplayName } from "$lib/shell/agentIcons";
+	import { resolveOwnedSessionProject, type OwnedSession } from "$lib/shell/ownedSessions";
+	import GitBranch from "@lucide/svelte/icons/git-branch";
 	import ChevronDown from "@lucide/svelte/icons/chevron-down";
 	import ChevronRight from "@lucide/svelte/icons/chevron-right";
 	import ArrowDownAZ from "@lucide/svelte/icons/arrow-down-a-z";
@@ -78,6 +83,8 @@
 		onInspectionRootChange?(root: string | null): void;
 		checkoutDiscoveryRoots?: readonly string[];
 		onUseSessionCheckout?(root: string): void | Promise<void>;
+		/** The active session's rail record, shown in the header card. */
+		session?: OwnedSession | null;
 	}
 
 	type PendingEntry = {
@@ -113,7 +120,30 @@
 		onInspectionRootChange,
 		checkoutDiscoveryRoots = [],
 		onUseSessionCheckout,
+		session = null,
 	}: Props = $props();
+
+	const sessionProject = $derived(session ? resolveOwnedSessionProject(session) : null);
+	const SessionAgentIcon = $derived(session ? AGENT_ICONS[session.agent] : null);
+
+	/** Whether the header card is unfolded. Starts open; the last choice is kept
+	 *  in the app's settings store like the rail's view options. */
+	const CARD_OPEN_SETTING_KEY = "files.session-card-open";
+	let cardOpen = $state(true);
+	let cardOpenTouched = false;
+	void readAssemblySettingFromTauri(CARD_OPEN_SETTING_KEY)
+		.then((stored) => {
+			if (!cardOpenTouched && typeof stored === "boolean") cardOpen = stored;
+		})
+		.catch(() => {
+			// Stays open when local settings are unavailable.
+		});
+
+	function toggleCard(): void {
+		cardOpenTouched = true;
+		cardOpen = !cardOpen;
+		void writeAssemblySettingFromTauri(CARD_OPEN_SETTING_KEY, cardOpen).catch(() => {});
+	}
 	let inspectedRoot = $state("");
 	let checkouts = $state<RepositoryCheckout[]>([]);
 	let expanded = $state.raw<Set<string>>(new Set());
@@ -1015,8 +1045,47 @@
 </script>
 
 <div class="files-panel flex h-full min-h-0 w-full flex-col text-foreground">
-	<PanelHeader title="Files" count={explorer.activated ? listedCount : null}>
-		{#snippet actions()}
+	<!-- The panel's header is a card: who this session is, then the tree's own
+	     controls. It folds to its title row and remembers that choice. -->
+	<section class="files-card" aria-label={session ? "About this session" : "Files"}>
+		<div class="files-card-title">
+			{#if session && sessionProject && SessionAgentIcon}
+				<span class="session-mark" data-agent={session.agent} aria-hidden="true"><SessionAgentIcon class="size-5" /></span>
+				<div class="session-names">
+					<strong title={session.title}>{session.title}</strong>
+					<span title={sessionProject.path}>
+						{agentDisplayName(session.agent, session.viaCmux)} · {rootLabel}{#if readOnlyInspection} · read-only{/if}
+					</span>
+				</div>
+			{:else}
+				<div class="session-names">
+					<strong>Files</strong>
+					{#if rootLabel}<span>{rootLabel}{#if readOnlyInspection} · read-only{/if}</span>{/if}
+				</div>
+			{/if}
+			<IconButton
+							class="p-0"
+				label={cardOpen ? "Collapse session card" : "Expand session card"}
+				size="sm"
+				onclick={toggleCard}
+			>
+				<ChevronDown class={cardOpen ? "card-chevron size-[16px]" : "card-chevron folded size-[16px]"} />
+			</IconButton>
+		</div>
+		{#if cardOpen}
+			{#if session && (session.branch || session.model || session.taskId || session.messageCount)}
+				<ul class="session-facts">
+					{#if session.branch}
+						<li title={`Branch ${session.branch}`}><GitBranch class="size-3" aria-hidden="true" />{session.branch}</li>
+					{/if}
+					{#if session.model}<li>{session.model}</li>{/if}
+					{#if session.taskId}<li>{session.taskId}</li>{/if}
+					{#if session.messageCount}
+						<li>{session.messageCount} {session.messageCount === 1 ? "message" : "messages"}</li>
+					{/if}
+				</ul>
+			{/if}
+			<div class="files-card-controls">
 			{#if scopeOptions.length > 1}
 				<Select.Root
 					type="single"
@@ -1024,7 +1093,7 @@
 					value={scopeValue}
 					onValueChange={selectInspectionRoot}
 				>
-					<Select.Trigger size="sm" class="w-44 min-w-0" aria-label="Folder this panel reads">
+					<Select.Trigger size="sm" class="w-full min-w-0" aria-label="Folder this panel reads">
 						<span class="min-w-0 truncate">
 							{scopeOptions.find((option) => canonicalPath(option.path) === canonicalPath(scopeValue))?.label ??
 								"Session folder"}
@@ -1048,52 +1117,58 @@
 					{checkoutBusy ? "Changing…" : "Use as session folder"}
 				</Button>
 			{/if}
-			{#if explorer.activated && explorer.unavailable === null}
-				<Input
-					type="search"
-					class="h-7 w-32"
-					placeholder="Search files"
-					aria-label="Search project files"
-					autocomplete="off"
-					autocapitalize="none"
-					spellcheck={false}
-					value={searchText}
-					oninput={onFilterInput}
-				/>
-					{#if dev}
-						<Button
-							size="sm"
-							variant="ghost"
-							aria-label="Compare virtualized and all file-tree rows"
-							onclick={() => (virtualized = !virtualized)}
+				{#if explorer.activated && explorer.unavailable === null}
+					<Input
+						type="search"
+						class="h-8 w-full rounded-full"
+						placeholder="Search files"
+						aria-label="Search project files"
+						autocomplete="off"
+						autocapitalize="none"
+						spellcheck={false}
+						value={searchText}
+						oninput={onFilterInput}
+					/>
+					<div class="files-card-actions">
+						<Chip tone="count">{listedCount}</Chip>
+						<span class="flex-1"></span>
+						{#if dev}
+							<Button
+								size="sm"
+								variant="ghost"
+								class="rounded-full"
+								aria-label="Compare virtualized and all file-tree rows"
+								onclick={() => (virtualized = !virtualized)}
+							>
+								{virtualized ? "Virtualized" : "All rows"}
+							</Button>
+						{/if}
+						<IconButton
+							class="p-0"
+							label={sortDirection === "ascending" ? "Sort Z to A" : "Sort A to Z"}
+							onclick={() => (sortDirection = sortDirection === "ascending" ? "descending" : "ascending")}
 						>
-							{virtualized ? "Virtualized" : "All rows"}
-						</Button>
-					{/if}
-					<IconButton
-					label={sortDirection === "ascending" ? "Sort Z to A" : "Sort A to Z"}
-					onclick={() => (sortDirection = sortDirection === "ascending" ? "descending" : "ascending")}
-				>
-					{#if sortDirection === "ascending"}<ArrowDownAZ />{:else}<ArrowUpZA />{/if}
-				</IconButton>
-				<IconButton
-					label={explorer.includeExcluded ? "Hide excluded files" : "Show excluded files"}
-					onclick={() => void toggleExcludedFiles()}
-				>
-					{#if explorer.includeExcluded}<EyeOff />{:else}<Eye />{/if}
-				</IconButton>
-				{#if explorer.scanning}
-					<IconButton label="Stop listing files" onclick={() => stopScan()}><Square /></IconButton>
-				{:else}
-					<IconButton label="List this project's files again" disabled={!explorer.root} onclick={refreshFiles}>
-						<RefreshCw />
-					</IconButton>
+							{#if sortDirection === "ascending"}<ArrowDownAZ class="size-[16px]" />{:else}<ArrowUpZA class="size-[16px]" />{/if}
+						</IconButton>
+						<IconButton
+							class="p-0"
+							label={explorer.includeExcluded ? "Hide excluded files" : "Show excluded files"}
+							onclick={() => void toggleExcludedFiles()}
+						>
+							{#if explorer.includeExcluded}<EyeOff class="size-[16px]" />{:else}<Eye class="size-[16px]" />{/if}
+						</IconButton>
+						{#if explorer.scanning}
+							<IconButton class="p-0" label="Stop listing files" onclick={() => stopScan()}><Square class="size-[16px]" /></IconButton>
+						{:else}
+							<IconButton class="p-0" label="List this project's files again" disabled={!explorer.root} onclick={refreshFiles}>
+								<RefreshCw class="size-[16px]" />
+							</IconButton>
+						{/if}
+					</div>
 				{/if}
-			{/if}
-		{/snippet}
-		{rootLabel}{#if readOnlyInspection}
-			· read-only{/if}
-	</PanelHeader>
+			</div>
+		{/if}
+	</section>
 
 	{#if !explorer.activated}
 		{#if sessionRoot}
@@ -1288,6 +1363,102 @@
 </div>
 
 <style>
+	/* A Spotify-style card: its own lighter fill, no outline. */
+	.files-card {
+		display: flex;
+		flex: none;
+		flex-direction: column;
+		gap: var(--space-3);
+		margin: var(--space-3) var(--space-3) var(--space-2);
+		padding: var(--space-3);
+		border-radius: var(--radius-sm);
+		background: var(--color-elevated);
+	}
+	.files-card-title {
+		display: flex;
+		min-width: 0;
+		align-items: center;
+		gap: var(--space-3);
+	}
+	.session-mark {
+		display: grid;
+		width: 40px;
+		height: 40px;
+		flex: none;
+		place-items: center;
+		border-radius: 6px;
+		background: color-mix(in srgb, var(--color-text) 7%, var(--color-surface));
+		box-shadow: var(--shadow-sm);
+	}
+	.session-mark[data-agent="claude"] {
+		color: var(--agent-mark-claude);
+	}
+	.session-mark[data-agent="codex"] {
+		color: var(--agent-mark-codex);
+	}
+	.session-names {
+		display: flex;
+		min-width: 0;
+		flex: 1;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.session-names strong,
+	.session-names span {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.session-names strong {
+		color: var(--color-text);
+		font-size: var(--text-heading);
+		font-weight: 700;
+	}
+	.session-names span {
+		color: var(--color-text-2);
+		font-size: var(--text-quiet);
+	}
+	:global(.card-chevron) {
+		transition: transform 0.15s ease;
+	}
+	:global(.card-chevron.folded) {
+		transform: rotate(-90deg);
+	}
+	.session-facts {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+	/* Outline pills, like Spotify's "Following" chip. */
+	.session-facts li {
+		display: inline-flex;
+		max-width: 100%;
+		align-items: center;
+		gap: 4px;
+		overflow: hidden;
+		padding: 3px 10px;
+		border: 1px solid color-mix(in srgb, var(--color-text) 22%, transparent);
+		border-radius: var(--radius-pill);
+		color: var(--color-text-2);
+		font-size: 12px;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.files-card-controls {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+	.files-card-actions {
+		display: flex;
+		min-width: 0;
+		align-items: center;
+		gap: var(--space-1);
+	}
 	.tree-host {
 		--tree-node-indent-per-level: 12px;
 		display: flex;

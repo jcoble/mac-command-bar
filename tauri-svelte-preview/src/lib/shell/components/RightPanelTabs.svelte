@@ -85,7 +85,23 @@
     gap: 4px;
     /* Transparent, and no rule beneath it: the card's gradient runs behind the
        tabs, and a hairline here cut the strip off as its own band again. */
-    padding: 0 6px;
+    padding: 0 4px;
     background: transparent;
+  }
+
+  /* Nine tabs share the column, so each gives up the kit's 40px floor and
+     takes an equal share instead: every icon stays inside the window down to
+     the column's narrowest width rather than scrolling out of sight. The
+     browser's default button padding is dropped so a narrow tab shrinks its
+     empty space, not its icon. */
+  .right-panel-tabs :global(.segment) {
+    min-width: 0;
+    padding: 0;
+  }
+
+  /* Leaves a little air between icons once the tabs get narrow; at the
+     default width the icon keeps its full 22px. */
+  .right-panel-tabs :global(.segment svg) {
+    max-width: 72%;
   }
 </style>

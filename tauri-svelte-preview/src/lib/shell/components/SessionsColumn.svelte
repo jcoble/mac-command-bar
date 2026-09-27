@@ -14,6 +14,7 @@
   import Plus from '@lucide/svelte/icons/plus';
   import Search from '@lucide/svelte/icons/search';
   import List from '@lucide/svelte/icons/list';
+  import X from '@lucide/svelte/icons/x';
   import { onMount } from 'svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
@@ -148,10 +149,19 @@
   let filterText = $state('');
   let filterInput = $state<HTMLInputElement | null>(null);
 
+  /** Spotify-style agent chips over the list. Filters what is already loaded. */
+  const AGENT_CHIPS = [
+    { value: 'claude', label: 'Claude' },
+    { value: 'codex', label: 'Codex' }
+  ] as const;
+  let agentFilter = $state<'all' | 'claude' | 'codex'>('all');
+
   const filtered = $derived.by(() => {
     const needle = filterText.trim().toLowerCase();
-    if (!needle) return owned;
-    return owned.filter((session) => {
+    const byAgent =
+      agentFilter === 'all' ? owned : owned.filter((session) => session.agent === agentFilter);
+    if (!needle) return byAgent;
+    return byAgent.filter((session) => {
       const title = sessionLabel(session).toLowerCase();
       const project = resolveOwnedSessionProject(session).label.toLowerCase();
       return title.includes(needle) || project.includes(needle);
@@ -355,6 +365,33 @@
       </header>
       </Tooltip.Provider>
 
+      <div class="agent-chips" role="group" aria-label="Show sessions by agent">
+        {#if agentFilter !== 'all'}
+          <button
+            type="button"
+            class="chip-clear"
+            aria-label="Clear agent filter"
+            onclick={() => (agentFilter = 'all')}
+          ><X class="size-3.5" aria-hidden="true" /></button>
+        {/if}
+        <button
+          type="button"
+          class="agent-chip"
+          class:selected={agentFilter === 'all'}
+          aria-pressed={agentFilter === 'all'}
+          onclick={() => (agentFilter = 'all')}
+        >All</button>
+        {#each AGENT_CHIPS as chip (chip.value)}
+          <button
+            type="button"
+            class="agent-chip"
+            class:selected={agentFilter === chip.value}
+            aria-pressed={agentFilter === chip.value}
+            onclick={() => (agentFilter = agentFilter === chip.value ? 'all' : chip.value)}
+          >{chip.label}</button>
+        {/each}
+      </div>
+
       {#if filterOpen}
         <div class="filter-strip">
           <Input
@@ -442,6 +479,58 @@
     padding: 3px;
     border-radius: var(--radius-pill);
     background: var(--color-elevated);
+  }
+
+  .agent-chips {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 0 9px 8px 13px;
+  }
+
+  /* Spotify's filter pills: dark at rest, a filled white pill when chosen. */
+  .agent-chip,
+  .chip-clear {
+    display: inline-flex;
+    height: 30px;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: var(--radius-pill);
+    background: var(--color-elevated);
+    color: var(--color-text);
+    cursor: pointer;
+    font-size: var(--text-quiet);
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+
+  .agent-chip {
+    padding: 0 12px;
+  }
+
+  .chip-clear {
+    width: 30px;
+    color: var(--color-text-2);
+  }
+
+  .agent-chip:hover,
+  .chip-clear:hover {
+    background: color-mix(in srgb, var(--color-text) 10%, var(--color-elevated));
+    color: var(--color-text);
+  }
+
+  .agent-chip.selected,
+  .agent-chip.selected:hover {
+    background: var(--color-text);
+    color: var(--color-bg);
+  }
+
+  .agent-chip:focus-visible,
+  .chip-clear:focus-visible {
+    outline: 2px solid var(--color-focus-solid);
+    outline-offset: 2px;
   }
 
   .filter-strip {

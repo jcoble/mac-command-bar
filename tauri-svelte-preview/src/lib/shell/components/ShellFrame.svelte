@@ -118,8 +118,14 @@
       onToolsWidthChange?.(toolsWidth ?? 0);
     };
     const layoutFrame = () => {
-      const width = gridHost.clientWidth;
-      const height = gridHost.clientHeight;
+      // The grid fills the content box: `clientWidth` includes the frame's
+      // padding, and laying out at that size pushed the right and bottom
+      // panels past the gutter to the window edge.
+      const style = getComputedStyle(gridHost);
+      const width =
+        gridHost.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const height =
+        gridHost.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
       if (width === laidOutWidth && height === laidOutHeight) return;
       laidOutWidth = width;
       laidOutHeight = height;
@@ -368,20 +374,12 @@
     margin: 3px;
     border-radius: var(--radius-sm);
     overflow: hidden;
-    /* A card is a lit surface, not a flat fill: each one carries a little more
-       light along its top edge, falling off within the first couple of hundred
-       pixels. Without it the panels read as holes cut in the backdrop. */
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.016), rgba(255, 255, 255, 0) 140px),
-      var(--color-surface);
-  }
-
-  /* The middle is where the eye lands, so it gets the stronger lift and the
-     side columns stay quieter. */
-  .shell-frame :global(.shell-region-host-center) {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0) 200px),
-      var(--color-surface);
+    /* A card is a lit surface, not a flat fill: each one carries a faint
+       purple light down from its top edge (`--panel-fade`), gone within the
+       first few hundred pixels. Without it the panels read as holes cut in the
+       backdrop. */
+    background: var(--panel-fade), var(--color-surface);
+    background-repeat: no-repeat;
   }
 
   /* seam flattening */

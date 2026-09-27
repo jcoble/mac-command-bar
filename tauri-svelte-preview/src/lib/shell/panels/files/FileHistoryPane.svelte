@@ -173,8 +173,11 @@
 		display: flex;
 		min-height: 0;
 		flex-direction: column;
-		border-top: 1px solid var(--color-border);
-		background: var(--color-panel);
+		/* A card of its own under the tree, like Spotify's "Credits". */
+		margin: 0 var(--space-3) var(--space-3);
+		overflow: hidden;
+		border-radius: var(--radius-sm);
+		background: var(--color-elevated);
 	}
 
 	.file-history-heading {
@@ -189,13 +192,14 @@
 		flex: 1;
 		align-items: center;
 		gap: 6px;
-		padding: 5px 8px;
+		padding: 10px 12px;
 		color: var(--color-text);
 		text-align: left;
+		transition: background-color 0.15s ease;
 	}
 
 	:global(.file-history-trigger:hover) {
-		background: var(--color-elevated);
+		background: color-mix(in srgb, var(--color-text) 5%, transparent);
 	}
 
 	:global(.file-history-trigger svg) {
@@ -214,10 +218,10 @@
 	}
 
 	:global(.file-history-trigger strong) {
-		font-size: 12px;
-		font-weight: 650;
-		letter-spacing: 0.02em;
-		text-transform: uppercase;
+		flex: none;
+		white-space: nowrap;
+		font-size: var(--text-body);
+		font-weight: 700;
 	}
 
 	:global(.file-history-trigger span) {
