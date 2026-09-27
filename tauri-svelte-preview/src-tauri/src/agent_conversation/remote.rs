@@ -1981,7 +1981,9 @@ async fn client_loop(
                             }
                         }
                         ClientRequest::Cancel { id } => {
-                            pending.remove(&id);
+                            if let Some(reply) = pending.remove(&id) {
+                                let _ = reply.send(Err("Remote Assembly request was canceled".into()));
+                            }
                             if send_client_frame(&mut socket, &ClientFrame::Cancel { id }).await.is_err() {
                                 break;
                             }
