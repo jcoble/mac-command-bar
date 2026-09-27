@@ -3,9 +3,9 @@
    * BrowserToolbar.svelte — one row: where you are, and what the pointer does.
    *
    * Everything is on the address line. The three marking tools sit to the right
-   * of the address box as icons alone, and Widen sits at the end of the same
-   * row, because all of them change the same thing the address does — what you
-   * are looking at and how much of it you can see. A second row of labelled
+   * of the address box as icons alone, because they change the same thing the
+   * address does — what you are looking at. Widening is the whole right
+   * region's, on its tab strip, not the browser's. A second row of labelled
    * buttons cost the page a strip of height on every screen, including the ones
    * where nobody is marking anything.
    *
@@ -16,8 +16,6 @@
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ArrowRight from '@lucide/svelte/icons/arrow-right';
   import Highlighter from '@lucide/svelte/icons/highlighter';
-  import Maximize2 from '@lucide/svelte/icons/maximize-2';
-  import Minimize2 from '@lucide/svelte/icons/minimize-2';
   import MousePointer2 from '@lucide/svelte/icons/mouse-pointer-2';
   import RotateCw from '@lucide/svelte/icons/rotate-cw';
   import SquareDashed from '@lucide/svelte/icons/square-dashed';
@@ -33,14 +31,12 @@
     tool: BrowserPanelTool;
     canGoBack: boolean;
     canGoForward: boolean;
-    expanded: boolean;
     onAddressInput(value: string): void;
     onNavigate(): void;
     onBack(): void;
     onForward(): void;
     onReload(): void;
     onToolChange(tool: BrowserPanelTool): void;
-    onToggleExpand(): void;
   }
 
   let {
@@ -48,14 +44,12 @@
     tool,
     canGoBack,
     canGoForward,
-    expanded,
     onAddressInput,
     onNavigate,
     onBack,
     onForward,
     onReload,
-    onToolChange,
-    onToggleExpand
+    onToolChange
   }: Props = $props();
 
   /**
@@ -138,22 +132,6 @@
     onclick={() => choose('drawing')}
   >
     <Highlighter aria-hidden="true" />
-  </IconButton>
-
-  <span class="divide" aria-hidden="true"></span>
-
-  <IconButton
-    label={expanded ? 'Put the browser back in its column' : 'Fill the window with the browser'}
-    size="xs"
-    tooltip={false}
-    data-testid="browser-expand"
-    onclick={onToggleExpand}
-  >
-    {#if expanded}
-      <Minimize2 aria-hidden="true" />
-    {:else}
-      <Maximize2 aria-hidden="true" />
-    {/if}
   </IconButton>
 </div>
 

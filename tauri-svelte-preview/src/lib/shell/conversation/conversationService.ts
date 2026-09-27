@@ -2,6 +2,7 @@ import {
   changeAgentConversationCheckoutFromTauri,
   extendAgentConversationImportFromTauri,
   listAgentConversationEventsAfterFromTauri,
+  listRemoteAgentConversationSessionsFromTauri,
   listAgentConversationEventsBeforeFromTauri,
   readAgentConversationCapabilitiesFromTauri,
   readAgentConversationSnapshotFromTauri,
@@ -36,11 +37,12 @@ import {
 import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
 import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
 import { shouldClearConversationSending } from './conversationReducer.ts';
-import { sessionPresenceHistory } from './sessionPresence.ts';
+import { sessionPresenceHistory, sessionPresenceEventFromConversation, synchronizeSessionPresenceWork } from './sessionPresence.ts';
 import {
   appendNewerConversationEvents,
   applyAgentConversationEvent,
   applyAgentConversationSnapshot,
+  displayEventFrom,
   applyChildConversationTranscript,
   beginConversationConfigChange,
   beginLoadingNewerConversationEvents,
@@ -94,6 +96,8 @@ let unlistenRemoteConnections: (() => void) | null = null;
 let conversationEventsSetup: Promise<void> | null = null;
 let conversationEventsDisposed = false;
 let conversationEventsGeneration = 0;
+let remoteActivityRead = 0;
+const railActivityEvents = new Map<string, { generation: number; sequence: number }>();
 type ConversationSnapshotRead = {
   abortController: AbortController;
   invalidated: boolean;
@@ -1057,6 +1061,7 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
     }>('remote-connection-changed', ({ payload }) => {
       remoteConnectionEventsSeen.add(payload.profileId);
       setRemoteConnection(payload.profileId, payload.state);
+      if (payload.state === 'connected') void refreshRemoteSessionActivity(streamGeneration);
     });
     stopRemoteConnections = trackTauriListener(stopRemoteConnectionEvents);
     const remoteEnvironment = await readRemoteAssemblyEnvironmentFromTauri();
@@ -1065,6 +1070,7 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
       if (remoteConnectionEventsSeen.has(profile.id)) continue;
       setRemoteConnection(profile.id, readyRemoteProfiles.has(profile.id) ? 'connected' : 'disconnected');
     }
+    await refreshRemoteSessionActivity(streamGeneration);
     if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !registration) {
       await registration?.unregister();
       stopTitles();
@@ -1086,14 +1092,53 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
   }
 }
 
+/** Reconcile compact runtime records after reconnect, without loading transcripts. */
+async function refreshRemoteSessionActivity(streamGeneration: number): Promise<void> {
+  const read = ++remoteActivityRead;
+  const observed = new Map(railActivityEvents);
+  try {
+    const records = await listRemoteAgentConversationSessionsFromTauri();
+    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || read !== remoteActivityRead) return;
+    for (const record of records ?? []) {
+      // A live event received during the read is newer than its inventory reply.
+      if (observed.get(record.ownedId) !== railActivityEvents.get(record.ownedId)) continue;
+      if (rail.remoteConnections[record.remoteProfileId ?? ''] !== 'connected') continue;
+      if (preparingSends.has(record.ownedId)) continue;
+      updateOwnedSession(record.ownedId, {
+        state: record.activeTurnId ? 'live' : 'background',
+        runtimeState: record.suspended ? 'suspended' : record.state,
+        activeTurnId: record.activeTurnId,
+        pendingPermission: record.pendingPermission,
+        pendingInput: record.pendingInput,
+        backgroundTaskIds: record.backgroundTaskIds ?? []
+      });
+      synchronizeSessionPresenceWork(record.ownedId, record.activeTurnId, false, null);
+      const current = getConversationSession(record.ownedId);
+      if (current) {
+        current.activeTurnId = record.activeTurnId ?? undefined;
+        current.suspended = record.suspended;
+        if (!record.activeTurnId) setConversationSending(record.ownedId, false);
+      }
+    }
+  } catch (error) {
+    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
+    if (read !== remoteActivityRead) return;
+    rail.error = `Could not refresh remote turn activity: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
 async function handleConversationStreamEnvelope(
   streamGeneration: number,
   envelope: StreamEnvelope<AgentConversationEvent>
 ): Promise<void> {
   if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
   const payload = envelope.chunk;
+  const previous = railActivityEvents.get(payload.ownedId);
+  if (previous && (payload.generation < previous.generation
+    || (payload.generation === previous.generation && payload.sequence <= previous.sequence))) return;
   const active = rail.activeOwnedId === payload.ownedId;
-  const terminal = shouldClearConversationSending(payload);
+  const displayEvent = displayEventFrom(payload);
+  const terminal = shouldClearConversationSending(displayEvent);
   const current = getConversationSession(payload.ownedId);
   const presence = get(sessionPresenceHistory)[payload.ownedId];
   const activeTurnId = presence?.activeTurnId || current?.activeTurnId;
@@ -1102,6 +1147,29 @@ async function handleConversationStreamEnvelope(
     (presence?.turnStartedAt !== null && presence?.turnStartedAt !== undefined && payload.timestampMs < presence.turnStartedAt)
     || (payload.payload.kind === 'turn' && payload.payload.turnId !== activeTurnId)
   )) return;
+  railActivityEvents.set(payload.ownedId, { generation: payload.generation, sequence: payload.sequence });
+  if (payload.payload.kind === 'tool' && payload.payload.itemId.startsWith('background-task:')) {
+    const owned = rail.owned.find((session) => session.ownedId === payload.ownedId);
+    if (owned) {
+      const ids = new Set(owned.backgroundTaskIds ?? []);
+      if (payload.payload.state === 'started' || payload.payload.state === 'updated') ids.add(payload.payload.itemId);
+      else ids.delete(payload.payload.itemId);
+      updateOwnedSession(payload.ownedId, { backgroundTaskIds: [...ids] });
+    }
+  }
+  const transition = sessionPresenceEventFromConversation(displayEvent);
+  if (transition?.kind === 'turn-started' || terminal) {
+    const working = transition?.kind === 'turn-started';
+    updateOwnedSession(payload.ownedId, {
+      state: working ? 'live' : 'background',
+      runtimeState: working ? 'working' : transition?.kind === 'turn-finished' ? 'ready' : 'failed',
+      activeTurnId: working ? transition?.turnId ?? null : null,
+      pendingPermission: false,
+      pendingInput: false,
+      ...(working ? { lastError: null } : {})
+    });
+  }
+  if (terminal && !transition) synchronizeSessionPresenceWork(payload.ownedId, null, false);
   if (active) applyAgentConversationEvent(payload);
   else {
     if (terminal) setConversationSending(payload.ownedId, false);
@@ -1129,6 +1197,7 @@ async function handleConversationStreamResync(streamGeneration: number): Promise
   if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
   const activeOwnedId = rail.activeOwnedId;
   if (activeOwnedId) await resyncConversation(activeOwnedId);
+  await refreshRemoteSessionActivity(streamGeneration);
 }
 
 export function stopConversationEvents(): void {
@@ -1138,6 +1207,7 @@ export function stopConversationEvents(): void {
   // Nothing can read a session's snapshot once the stream is gone, so the
   // per-session read counters have nothing left to invalidate.
   readVersions.clear();
+  railActivityEvents.clear();
   void conversationStream?.unregister();
   conversationStream = null;
   unlistenTitles?.();
@@ -1487,6 +1557,13 @@ export async function sendPermissionResponse(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith('Stale approval request:')) {
+      if (getConversationSession(ownedId)?.generation === state.generation) {
+        delete state.pendingApprovals[requestId];
+      }
+      try { await resyncConversation(ownedId); } catch { /* Reconnect can replay the recorded expiry. */ }
+      throw error;
+    }
     if (!/not found|unknown command|not part of the pending request/i.test(message)) throw error;
     const decision = /reject|deny|decline|cancel/i.test(optionId) ? 'decline' : 'accept';
     await respondToStructuredApproval(ownedId, requestId, decision);

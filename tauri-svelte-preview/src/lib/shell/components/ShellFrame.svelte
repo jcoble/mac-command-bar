@@ -66,6 +66,8 @@
       setDockPresent: (present: boolean) => void;
       /** Put the right tools region in the grid or remove it completely. */
       setToolsPresent: (present: boolean) => void;
+      /** Widen the right region over the center, or put it back. See `setToolsExpanded` in `frame.ts`. */
+      setToolsExpanded: (expanded: boolean) => void;
       /** Say what a region may be dragged to without moving it. See
        * `setRegionLimits` in `frame.ts`. */
       setRegionLimits: (id: ShellRegionId, limits: RegionWidthLimits) => void;
@@ -109,13 +111,26 @@
     const owner = { active: true };
     let laidOutWidth = -1;
     let laidOutHeight = -1;
+    const reportRegionWidths = (): void => {
+      const sessionsWidth = frame?.regionWidth('sessions');
+      if (sessionsWidth !== null && sessionsWidth !== undefined) onSessionsWidthChange?.(sessionsWidth);
+      const toolsWidth = frame?.regionWidth('tools');
+      onToolsWidthChange?.(toolsWidth ?? 0);
+    };
     const layoutFrame = () => {
-      const width = gridHost.clientWidth;
-      const height = gridHost.clientHeight;
+      // The grid fills the content box: `clientWidth` includes the frame's
+      // padding, and laying out at that size pushed the right and bottom
+      // panels past the gutter to the window edge.
+      const style = getComputedStyle(gridHost);
+      const width =
+        gridHost.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const height =
+        gridHost.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
       if (width === laidOutWidth && height === laidOutHeight) return;
       laidOutWidth = width;
       laidOutHeight = height;
       frame?.layout(width, height);
+      reportRegionWidths();
     };
     const scheduleFrameLayout = () => {
       layoutFrame();
@@ -141,12 +156,6 @@
         // still at 0×0 leaves always-rendered panels with stale overlay bounds
         // until the next activation.
         layoutFrame();
-        const reportRegionWidths = (): void => {
-          const sessionsWidth = frame?.regionWidth('sessions');
-          if (sessionsWidth !== null && sessionsWidth !== undefined) onSessionsWidthChange?.(sessionsWidth);
-          const toolsWidth = frame?.regionWidth('tools');
-          onToolsWidthChange?.(toolsWidth ?? 0);
-        };
         frameLayoutListener = frame.api.onDidLayoutChange(reportRegionWidths);
         reportRegionWidths();
         centerDock = createCenterDock(centerSlot, {
@@ -157,7 +166,7 @@
           // here at all — it is a panel of the right column — but the changes it
           // shows are, because a diff wants the width of the middle.
           panels: [
-            { id: 'session', title: 'Session', element: sessionSlot, renderer: 'onlyWhenVisible' },
+            { id: 'session', title: 'Session', element: sessionSlot, renderer: 'always' },
             {
               id: 'editor',
               title: 'Editor',
@@ -197,6 +206,7 @@
           setRegionHeight: (id, height, limits) => frame?.setRegionHeight(id, height, limits),
           setDockPresent: (present) => frame?.setDockPresent(present),
           setToolsPresent: (present) => frame?.setToolsPresent(present),
+          setToolsExpanded: (expanded) => frame?.setToolsExpanded(expanded),
           setRegionLimits: (id, limits) => frame?.setRegionLimits(id, limits),
           regionWidth: (id) => frame?.regionWidth(id) ?? null
         });
@@ -364,20 +374,12 @@
     margin: 3px;
     border-radius: var(--radius-sm);
     overflow: hidden;
-    /* A card is a lit surface, not a flat fill: each one carries a little more
-       light along its top edge, falling off within the first couple of hundred
-       pixels. Without it the panels read as holes cut in the backdrop. */
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.016), rgba(255, 255, 255, 0) 140px),
-      var(--color-surface);
-  }
-
-  /* The middle is where the eye lands, so it gets the stronger lift and the
-     side columns stay quieter. */
-  .shell-frame :global(.shell-region-host-center) {
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0) 200px),
-      var(--color-surface);
+    /* A card is a lit surface, not a flat fill: each one carries a faint
+       purple light down from its top edge (`--panel-fade`), gone within the
+       first few hundred pixels. Without it the panels read as holes cut in the
+       backdrop. */
+    background: var(--panel-fade), var(--color-surface);
+    background-repeat: no-repeat;
   }
 
   /* seam flattening */

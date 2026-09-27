@@ -33,6 +33,7 @@
   import SourceControlPanel from '$lib/shell/panels/sourceControl/SourceControlPanel.svelte';
   import WorktreesPanel from '$lib/shell/panels/worktrees/WorktreesPanel.svelte';
   import TasksPanel from '$lib/shell/panels/tasks/TasksPanel.svelte';
+  import type { OwnedSession } from '$lib/shell/ownedSessions';
 
   interface Props {
     /** False while the whole right grid region is closed. */
@@ -47,6 +48,8 @@
     checkoutScope?: CheckoutScope;
     /** The active session's ownedId, or null. */
     ownedId: string | null;
+    /** The active session's rail record, shown in the Files header card. */
+    session?: OwnedSession | null;
     /** Optional tree-only projection while rail selection is rebuilt in layers. */
     filesRoot?: string;
     filesOwnedId?: string | null;
@@ -72,6 +75,7 @@
     rootAvailable = true,
     checkoutScope,
     ownedId,
+    session = null,
     filesRoot,
     filesOwnedId,
     onRootUnavailable,
@@ -109,6 +113,7 @@
         onInspectionRootChange={onFilesInspectionRootChange}
         {checkoutDiscoveryRoots}
         {onUseSessionCheckout}
+        {session}
       />
     </div>
     <div
@@ -125,7 +130,7 @@
       />
     </div>
     {#if visible && activeId === 'source-control'}
-      <div class="panel-body showing">
+      <div class="panel-body carded showing">
         <SourceControlPanel
           visible={true}
           {root}
@@ -140,15 +145,15 @@
         />
       </div>
     {:else if visible && activeId === 'worktrees'}
-      <div class="panel-body showing"><WorktreesPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body carded showing"><WorktreesPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'run'}
-      <div class="panel-body showing"><RunPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body carded showing"><RunPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'context'}
-      <div class="panel-body showing"><SessionContextPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body carded showing"><SessionContextPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'agents'}
-      <div class="panel-body showing"><AgentsPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body carded showing"><AgentsPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'history'}
-      <div class="panel-body showing">
+      <div class="panel-body carded showing">
         <HistoryPanel
           visible={true}
           {root}
@@ -158,7 +163,7 @@
         />
       </div>
     {:else if visible && activeId === 'tasks'}
-      <div class="panel-body showing"><TasksPanel /></div>
+      <div class="panel-body carded showing"><TasksPanel /></div>
     {/if}
   </div>
 </div>
@@ -198,5 +203,14 @@
 
   .panel-body.showing {
     display: block;
+  }
+
+  /* Every panel but Files and Browser sits in the same rounded card surface as
+     the Files header, header row included. Files carries its own header card
+     over the tree; Browser hosts a native view that follows its own box. */
+  .panel-body.carded {
+    inset: var(--space-3);
+    border-radius: var(--radius-sm);
+    background: var(--color-elevated);
   }
 </style>

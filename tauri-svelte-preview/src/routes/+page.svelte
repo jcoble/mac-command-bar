@@ -82,12 +82,6 @@
 		selection.setEditorPanel(editorPanel);
 	});
 
-	$effect(() => {
-		if (typeof document === "undefined") return;
-		document.documentElement.style.setProperty("--sessions-rail-width", `${sessionsRailWidth}px`);
-		return () => document.documentElement.style.removeProperty("--sessions-rail-width");
-	});
-
 	onMount(() => {
 		const historyStop = new AbortController();
 		const releaseSessionRowJump = registerSessionRowJumpTarget({
@@ -260,6 +254,7 @@
 		root={selection.durableSessionRoot}
 		rootAvailable={selection.activeRootAvailable}
 		ownedId={selection.activeOwnedId}
+		session={selection.railOwned.find((s) => s.ownedId === selection.activeOwnedId) ?? null}
 		filesRoot={selection.filesProjectionRoot || selection.durableSessionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
@@ -389,7 +384,8 @@
 
 <main
 	class="next-shell"
-	style={`--sessions-rail-width:${sessionsRailWidth}px;--tools-rail-width:${toolsRailWidth}px`}
+	style:--sessions-rail-width={`${sessionsRailWidth}px`}
+	style:--tools-rail-width={`${toolsRailWidth}px`}
 	oncontextmenu={(event) => {
 		const target = event.target instanceof Element ? event.target : null;
 		if (target?.closest('input, textarea, [contenteditable="true"]')) return;
@@ -403,7 +399,12 @@
 		</div>
 		<div class="window-right-tabs" class:open={workbench.rightPanelOpen} data-tauri-drag-region>
 			{#if workbench.rightPanelOpen}
-				<RightPanelTabs activeId={workbench.rightTab} onSelect={selectRightTab} />
+				<RightPanelTabs
+					activeId={workbench.rightTab}
+					onSelect={selectRightTab}
+					expanded={workbench.rightExpanded}
+					onToggleExpand={() => workbench.toggleRightExpanded()}
+				/>
 			{/if}
 		</div>
 	</div>
@@ -479,6 +480,7 @@
 
 	.window-center-tabs {
 		min-width: 0;
+		max-width: 100%;
 		justify-self: center;
 	}
 
@@ -542,7 +544,9 @@
 		inset: 0;
 		position: absolute;
 		z-index: 1;
-		background: var(--color-bg);
+		/* Covers the card it sits in, so it repaints the card's own face. */
+		background: var(--panel-fade), var(--color-surface);
+		background-repeat: no-repeat;
 	}
 
 	.conversation-data-isolation.pending-first-send { align-items: flex-start; justify-content: flex-end; }

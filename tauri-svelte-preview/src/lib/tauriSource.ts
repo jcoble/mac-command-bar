@@ -507,6 +507,7 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   activeTurnId: string | null;
   pendingPermission: boolean;
   pendingInput: boolean;
+  backgroundTaskIds?: string[];
   nativeSessionId: string | null;
 };
 

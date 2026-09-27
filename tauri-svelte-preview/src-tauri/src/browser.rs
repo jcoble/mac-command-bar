@@ -1396,7 +1396,10 @@ impl BrowserRegistryInner {
 }
 
 #[tauri::command]
-pub async fn create_browser_tab(
+// Native view creation must run in the UI-thread IPC handler. Dispatching it
+// to the async pool holds the registry lock while add_child waits for the UI
+// thread, which can itself be waiting for that lock in a page-load callback.
+pub fn create_browser_tab(
     app: tauri::AppHandle,
     registry: tauri::State<'_, BrowserRegistry>,
     input: BrowserTabInput,
@@ -1564,54 +1567,6 @@ impl BrowserProfile {
     }
 }
 
-/// How far the window's content area sits below and right of its own
-/// top-left corner, in logical pixels — the title bar, on a window that has
-/// one.
-///
-/// A child webview is positioned against the window, and on macOS the window
-/// begins at the top of its title bar; the panel measures the rectangle it
-/// wants filled in the document, which begins below that bar. Handing the
-/// measured rectangle over unchanged draws the page a title bar too high,
-/// over the panel's own address and tool rows — and nothing in the document
-/// can be drawn back over a native view. Tauri's inner and outer position and
-/// size report identical values for this window, so the window itself is
-/// asked. A window that cannot be asked gets no correction, which is the old
-/// behaviour rather than a wrong guess.
-#[cfg(target_os = "macos")]
-fn content_inset(window: &tauri::Window) -> (f64, f64) {
-    use objc2::msg_send;
-    use objc2::runtime::AnyObject;
-    use objc2_foundation::NSRect;
-    let Ok(ptr) = window.ns_window() else {
-        return (0.0, 0.0);
-    };
-    if ptr.is_null() {
-        return (0.0, 0.0);
-    }
-    let ns = ptr.cast::<AnyObject>();
-    // SAFETY: the pointer is this window's NSWindow and outlives the borrow;
-    // both calls are struct-returning getters. AppKit rectangles are in
-    // logical points with a bottom-left origin, so the title bar is the space
-    // between the top of the frame and the top of the content layout area.
-    let frame: NSRect = unsafe { msg_send![&*ns, frame] };
-    let content: NSRect = unsafe { msg_send![&*ns, contentLayoutRect] };
-    let top = frame.size.height - (content.origin.y + content.size.height);
-    let left = content.origin.x;
-    let keep = |inset: f64| {
-        if inset.is_finite() && inset > 0.0 {
-            inset
-        } else {
-            0.0
-        }
-    };
-    (keep(left), keep(top))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn content_inset(_window: &tauri::Window) -> (f64, f64) {
-    (0.0, 0.0)
-}
-
 /// Asks a WKWebView to draw the page it is showing. The answer arrives later
 /// on the main thread, so the completion handler encodes it and sends the
 /// result down the channel the caller is waiting on.
@@ -1710,16 +1665,6 @@ unsafe fn encode_snapshot_png(
     }
 }
 
-/// The same rectangle, moved from the document's space into the window's.
-fn into_window_space(bounds: BrowserBounds, inset: (f64, f64)) -> BrowserBounds {
-    BrowserBounds {
-        x: bounds.x + inset.0,
-        y: bounds.y + inset.1,
-        width: bounds.width,
-        height: bounds.height,
-    }
-}
-
 struct TauriBrowserView {
     webview: tauri::Webview,
     navigation_generation: Arc<AtomicU64>,
@@ -1735,17 +1680,33 @@ struct TauriBrowserView {
 
 impl BrowserView for TauriBrowserView {
     fn set_bounds(&self, bounds: BrowserBounds) -> Result<(), BrowserCommandError> {
-        let inset = content_inset(&self.webview.window());
-        let bounds = into_window_space(bounds, inset);
+        // The child view is placed in the window's content view, which under
+        // the overlay title bar starts at the window top like the document
+        // does, so the measured rectangle needs no title-bar correction.
         stderr_log!(
-            "browser: view placed x={} y={} w={} h={} inset=({}, {})",
+            "browser: view placed x={} y={} w={} h={}",
             bounds.x.round(),
             bounds.y.round(),
             bounds.width.round(),
-            bounds.height.round(),
-            inset.0.round(),
-            inset.1.round()
+            bounds.height.round()
         );
+        #[cfg(target_os = "linux")]
+        self.webview
+            .with_webview(move |platform| {
+                use gtk::prelude::*;
+                let view = platform.inner();
+                view.set_margin_start(bounds.x.round() as i32);
+                view.set_margin_top(bounds.y.round() as i32);
+                let parent = view.parent().expect("browser view has its overlay parent");
+                view.set_margin_end(
+                    (parent.allocated_width() - (bounds.x + bounds.width).round() as i32).max(0),
+                );
+                view.set_margin_bottom(
+                    (parent.allocated_height() - (bounds.y + bounds.height).round() as i32).max(0),
+                );
+            })
+            .map_err(native_error)?;
+        #[cfg(not(target_os = "linux"))]
         self.webview
             .set_bounds(tauri::Rect {
                 position: tauri::Position::Logical(tauri::LogicalPosition::new(bounds.x, bounds.y)),
@@ -2015,6 +1976,42 @@ impl BrowserViewFactory for TauriBrowserViewFactory {
             .map_err(native_error)?;
         // Off screen until the panel says where it goes: see `placed`.
         webview.hide().map_err(native_error)?;
+        #[cfg(target_os = "linux")]
+        webview
+            .with_webview(move |platform| {
+                use gtk::prelude::*;
+                let child = platform.inner();
+                let vbox = child
+                    .parent()
+                    .expect("new browser view has its Tauri parent")
+                    .downcast::<gtk::Box>()
+                    .expect("Tauri packs new browser views into a GTK box");
+                vbox.remove(&child);
+                // Tauri packs Linux child views beside the shell in its vertical
+                // box. An overlay keeps the shell full-size and lets browser
+                // bounds position the native page over its measured host.
+                let overlay = vbox
+                    .children()
+                    .into_iter()
+                    .find_map(|widget| widget.downcast::<gtk::Overlay>().ok())
+                    .unwrap_or_else(|| {
+                        let overlay = gtk::Overlay::new();
+                        let shell = vbox
+                            .children()
+                            .into_iter()
+                            .find(|widget| widget.type_().name() == "WebKitWebView")
+                            .expect("the main window contains its shell webview");
+                        vbox.remove(&shell);
+                        overlay.add(&shell);
+                        vbox.pack_start(&overlay, true, true, 0);
+                        overlay.show();
+                        overlay
+                    });
+                child.set_halign(gtk::Align::Fill);
+                child.set_valign(gtk::Align::Fill);
+                overlay.add_overlay(&child);
+            })
+            .map_err(native_error)?;
         let view = Arc::new(TauriBrowserView {
             webview,
             navigation_generation,
@@ -2916,23 +2913,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(view.set_bounds_calls.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn document_bounds_move_into_the_window_by_the_content_inset() {
-        let measured = BrowserBounds {
-            x: 960.0,
-            y: 123.0,
-            width: 640.0,
-            height: 818.0,
-        };
-        let placed = into_window_space(measured, (0.0, 31.0));
-        assert_eq!(placed.x, 960.0);
-        assert_eq!(placed.y, 154.0);
-        assert_eq!(placed.width, 640.0);
-        assert_eq!(placed.height, 818.0);
-        // A window with no chrome above its document leaves the rectangle alone.
-        assert_eq!(into_window_space(measured, (0.0, 0.0)), measured);
     }
 
     #[test]

@@ -178,6 +178,10 @@ export interface BrowserWorkspaceState {
   markupCaptures?: Record<string, BrowserMarkupCapture>;
   profileSummary: BrowserProfileSummary | null;
   activeGeneration: number;
+  /** The highest generation this workspace has sent. The native registry
+   * keeps the same watermark and refuses a new tab that does not pass it,
+   * even after the tab that set it was selected away from, closed or released. */
+  lastGeneration: number;
   activated: boolean;
   error: string | null;
 }
@@ -318,6 +322,7 @@ export function createBrowserWorkspace(input: {
     markupCaptures: {},
     profileSummary: input.profileSummary ? { ...input.profileSummary } : null,
     activeGeneration: 0,
+    lastGeneration: 0,
     activated: false,
     error: null
   };

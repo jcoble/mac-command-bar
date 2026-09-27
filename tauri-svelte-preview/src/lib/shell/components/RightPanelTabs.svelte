@@ -7,6 +7,8 @@
    * panel is narrow, so each tab is its glyph and says its name on hover.
    * PRESENTATIONAL ONLY: no state, no IO, and no knowledge of what any panel
    * contains. The selected tab is handed in and every click is handed back out.
+   * The one expand button at the end widens the whole right region, whichever
+   * tab is showing.
    */
   import Activity from '@lucide/svelte/icons/activity';
   import Bot from '@lucide/svelte/icons/bot';
@@ -17,7 +19,10 @@
   import Layers from '@lucide/svelte/icons/layers';
   import Play from '@lucide/svelte/icons/play';
   import ListTodo from '@lucide/svelte/icons/list-todo';
+  import Maximize2 from '@lucide/svelte/icons/maximize-2';
+  import Minimize2 from '@lucide/svelte/icons/minimize-2';
 
+  import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import type { RightTabId } from '$lib/shell/workbenchNavigation';
   import SegmentedTabs from './SegmentedTabs.svelte';
   import type { SegmentedTabItem } from './segmentedTabs';
@@ -25,8 +30,10 @@
   interface Props {
     activeId: RightTabId;
     onSelect(id: RightTabId): void;
+    expanded: boolean;
+    onToggleExpand(): void;
   }
-  let { activeId, onSelect }: Props = $props();
+  let { activeId, onSelect, expanded, onToggleExpand }: Props = $props();
 
   /** Order, ids, labels and glyphs, settled in one place so the strip and the
    * panel host cannot drift apart. Each tab keeps the test id it carried while
@@ -53,6 +60,19 @@
     value={activeId}
     onChange={(id) => onSelect(id as RightTabId)}
   />
+  <IconButton
+    label={expanded ? 'Put the right panel back in its column' : 'Widen the right panel over the center'}
+    size="xs"
+    tooltip={false}
+    data-testid="right-panel-expand"
+    onclick={onToggleExpand}
+  >
+    {#if expanded}
+      <Minimize2 aria-hidden="true" />
+    {:else}
+      <Maximize2 aria-hidden="true" />
+    {/if}
+  </IconButton>
 </div>
 
 <style>
@@ -62,9 +82,26 @@
     min-width: 0;
     height: 44px;
     align-items: center;
+    gap: 4px;
     /* Transparent, and no rule beneath it: the card's gradient runs behind the
        tabs, and a hairline here cut the strip off as its own band again. */
-    padding: 0 6px;
+    padding: 0 4px;
     background: transparent;
+  }
+
+  /* Nine tabs share the column, so each gives up the kit's 40px floor and
+     takes an equal share instead: every icon stays inside the window down to
+     the column's narrowest width rather than scrolling out of sight. The
+     browser's default button padding is dropped so a narrow tab shrinks its
+     empty space, not its icon. */
+  .right-panel-tabs :global(.segment) {
+    min-width: 0;
+    padding: 0;
+  }
+
+  /* Leaves a little air between icons once the tabs get narrow; at the
+     default width the icon keeps its full 22px. */
+  .right-panel-tabs :global(.segment svg) {
+    max-width: 72%;
   }
 </style>

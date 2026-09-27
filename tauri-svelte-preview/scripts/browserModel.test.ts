@@ -77,4 +77,37 @@ assert.throws(() => model.createBrowserTab({ url: 'javascript:alert(1)' }), /htt
 model.deactivateBrowserWorkspace();
 assert.equal(model.workspace.activated, false);
 
+// The native registry refuses a new tab unless it advances the workspace's
+// highest generation, so selecting or closing an older tab must not lower it.
+const tabsModel = createBrowserModel({ workspace: createBrowserWorkspace({ workspaceId: 'workspace-2' }) });
+tabsModel.activateBrowserWorkspace();
+const tabA = tabsModel.createBrowserTab({ url: 'https://example.com/' });
+const tabB = tabsModel.createBrowserTab({ url: 'https://www.google.com/' });
+tabsModel.selectBrowserTab(tabA.id);
+const tabC = tabsModel.createBrowserTab({ url: 'https://example.org/' });
+assert.ok(tabC.generation > tabB.generation, 'a tab opened after selecting an older tab advances the workspace generation');
+tabsModel.closeBrowserTab(tabC.id);
+const tabD = tabsModel.createBrowserTab({ url: 'https://example.net/' });
+assert.ok(tabD.generation > tabC.generation, 'a tab opened after closing the newest tab still advances the workspace generation');
+
+// Restoring saved IDs must not make the next plus click select an old tab.
+const restoredModel = createBrowserModel({ workspace: createBrowserWorkspace({ workspaceId: 'restored' }) });
+const seedTab = restoredModel.createBrowserTab();
+const seedSequence = Number(seedTab.id.split('-').at(-1));
+restoredModel.closeBrowserTab(seedTab.id);
+const restoredIds = [1, 2, 3].map(offset => `browser-tab-${seedSequence + offset}`);
+for (const tabId of restoredIds) restoredModel.createBrowserTab({ tabId, url: 'https://example.com/' });
+restoredModel.selectBrowserTab(restoredIds[0]);
+const fresh = restoredModel.createBrowserTab();
+assert.deepEqual(restoredModel.workspace.tabOrder, [...restoredIds, fresh.id]);
+assert.equal(fresh.url, '');
+assert.ok(!restoredIds.includes(fresh.id));
+restoredModel.closeBrowserTab(fresh.id);
+const replacement = restoredModel.createBrowserTab();
+assert.notEqual(replacement.id, fresh.id);
+assert.deepEqual(restoredModel.workspace.tabOrder, [...restoredIds, replacement.id]);
+const switchedModel = createBrowserModel({ workspace: createBrowserWorkspace({ workspaceId: 'switched' }) });
+switchedModel.createBrowserTab({ tabId: 'browser-tab-200', url: 'https://example.org/' });
+assert.notEqual(switchedModel.createBrowserTab().id, 'browser-tab-200');
+
 console.log('browserModel: all tests passed');

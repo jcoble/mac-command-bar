@@ -67,6 +67,10 @@
 	const runtimeState = $derived(session.runtimeState);
 	const activeTurnId = $derived(session.activeTurnId ?? presenceHistory.activeTurnId);
 	const suspended = $derived(session.runtimeState === "suspended");
+	const backgroundActive = $derived(
+		(session.backgroundTaskIds?.length ?? 0) > 0
+			&& (session.executionEnvironment !== "remote" || rail.remoteConnections[session.remoteProfileId ?? ""] === "connected"),
+	);
 	const presenceSignals = $derived(
 		deriveSessionPresence(
 			{
@@ -83,7 +87,9 @@
 	);
 
 	const presence = $derived<RowPresence>(
-		shelf === "done"
+		backgroundActive
+			? "working"
+			: shelf === "done"
 			? "done"
 			: session.lastError || runtimeState === "failed"
 				? "failed"
@@ -97,7 +103,7 @@
 	);
 	const finishedUnread = $derived(!needsYou && presenceSignals === "needs-attention");
 	const presenceLabel = $derived(
-		{
+		backgroundActive ? "Background command running" : {
 			working: "Working",
 			attention: "Waiting on you",
 			idle: "Idle",

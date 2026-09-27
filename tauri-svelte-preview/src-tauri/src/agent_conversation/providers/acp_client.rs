@@ -505,7 +505,13 @@ impl AcpClient {
         &mut self,
         provider: AgentConversationProvider,
     ) -> Result<AgentCapabilities, AgentRuntimeError> {
-        let request = acp::InitializeRequest::new(ProtocolVersion::V1);
+        let mut request = acp::InitializeRequest::new(ProtocolVersion::V1);
+        if provider == AgentConversationProvider::Claude {
+            request.client_capabilities.meta = Some(serde_json::Map::from_iter([(
+                "jetbrains".to_string(),
+                json!({"air": {"version": 1, "capabilities": ["asyncTasks"]}}),
+            )]));
+        }
         let result = self.request("initialize", &request).await?;
         self.personal_authentication = result.get("authMethods").and_then(Value::as_array)
             .is_some_and(|methods| methods.iter().any(|method| method.get("id").and_then(Value::as_str) == Some("oauth-personal")));
@@ -2145,6 +2151,9 @@ done"#,
         );
         client.close().await.unwrap();
         let frames = std::fs::read_to_string(&log).unwrap();
+        let initialize = frames.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|frame| frame["method"] == "initialize").unwrap();
+        assert_eq!(initialize["params"]["clientCapabilities"]["_meta"]["jetbrains"]["air"]["capabilities"], json!(["asyncTasks"]));
         assert!(frames.contains(r#""method":"session/set_model""#));
         assert!(frames.contains(r#""modelId":"claude-fable-5""#));
         assert!(frames.contains(r#""method":"session/set_mode""#));

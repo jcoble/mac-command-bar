@@ -22,6 +22,13 @@ export function isMarkdownFile(fileName: string | null | undefined): boolean {
   return MARKDOWN_EXTENSIONS.has(name.slice(dot + 1));
 }
 
+/** An HTML page reads the same two ways: its source, or the page rendered in a
+ *  sandboxed frame. It always opens on source. */
+export function isHtmlFile(fileName: string | null | undefined): boolean {
+  const name = (fileName ?? '').trim().toLocaleLowerCase();
+  return name.endsWith('.html') || name.endsWith('.htm');
+}
+
 export function markdownPreviewDefault(
   fileName: string | null | undefined,
   origin: MarkdownOpenOrigin

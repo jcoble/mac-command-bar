@@ -45,6 +45,7 @@ export interface FrameControls {
 	setRegionHeight(id: ShellRegionId, height: number, limits?: RegionHeightLimits): void;
 	setDockPresent(present: boolean): void;
 	setToolsPresent(present: boolean): void;
+	setToolsExpanded(expanded: boolean): void;
 	setRegionLimits(id: ShellRegionId, limits: RegionWidthLimits): void;
 	regionWidth(id: ShellRegionId): number | null;
 }
@@ -55,6 +56,9 @@ export class WorkbenchController {
 	diffMode = $state<DiffMode>(DEFAULT_DIFF_MODE);
 	sessionsCollapsed = $state(false);
 	rightPanelOpen = $state(true);
+	/** The right region widened over the center. One state for every right tab;
+	 * kept across session switches, never saved, cleared when the panel closes. */
+	rightExpanded = $state(false);
 
 	private frameControls: FrameControls | null = null;
 	private restoringTabs = false;
@@ -103,8 +107,15 @@ export class WorkbenchController {
 		this.setRightPanelOpen(!this.rightPanelOpen);
 	}
 
+	toggleRightExpanded(): void {
+		this.rightExpanded = !this.rightExpanded;
+		this.frameControls?.setToolsExpanded(this.rightExpanded);
+	}
+
 	private setRightPanelOpen(open: boolean): void {
 		this.rightPanelOpen = open;
+		// Closing the panel collapses the frame inside the same transition.
+		if (!open) this.rightExpanded = false;
 		this.frameControls?.setToolsPresent(open);
 		this.syncRightPanelVisibility();
 		this.syncGitSurfaceVisibility();
@@ -151,9 +162,9 @@ export class WorkbenchController {
 		try {
 			this.diffMode = snapshot?.diffMode ?? DEFAULT_DIFF_MODE;
 			restoreBrowserState(snapshot?.browser);
-			if (snapshot?.center) this.frameControls?.restoreCenterLayout(snapshot.center);
 			const center = snapshot?.center?.activePanelId;
-			this.selectCenterTab(this.isCenterTabId(center ?? '') ? center as CenterTabId : DEFAULT_CENTER_TAB);
+			const selected = this.isCenterTabId(center ?? '') ? center as CenterTabId : DEFAULT_CENTER_TAB;
+			if (selected !== this.centerTab) this.selectCenterTab(selected);
 			this.adoptRightTab(snapshot?.rightTab ?? DEFAULT_RIGHT_TAB);
 		} finally {
 			this.restoringTabs = false;
@@ -163,6 +174,7 @@ export class WorkbenchController {
 
 	resetLayout(): void {
 		this.rightPanelOpen = true;
+		this.rightExpanded = false;
 		this.frameControls?.resetLayout();
 		this.applyProblemsLocation(settings.panels.problemsLocation);
 		this.syncRightPanelVisibility();

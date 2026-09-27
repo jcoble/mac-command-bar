@@ -12,15 +12,9 @@
    *
    * The page has no width of its own. It is the right column's content, so the
    * column's width IS the page's width: dragging the seam between the center
-   * and this column resizes the page. Filling the workspace is the one
-   * exception: marking up wants the biggest picture the window can give, so
-   * the whole panel — its rows and its page — moves out of the column and lies
-   * over everything right of the sessions rail until it is put back. The rail
-   * keeps its place, because it is how the reader gets to another session
-   * without first putting the page away. It moves out of the document
-   * position it had, not just out of the column: the column paints its panels
-   * inside its own box (`contain: paint`), so a panel that only positioned
-   * itself over the shell would still be clipped to the column.
+   * and this column resizes the page. Expanding the right region gives the
+   * column the center's width too; the panel stays in that same column, and
+   * every right-side tab shares the expanded width.
    *
    * Marking up works on a still of the page rather than the live view, for the
    * same reason: nothing in the document can be drawn over a native view. The
@@ -132,7 +126,6 @@
   /** The panel's own rows above the page — measured, never assumed. */
   let chromeHost = $state<HTMLDivElement | null>(null);
   let tool = $state<BrowserPanelTool>('browse');
-  let expanded = $state(false);
   let address = $state('');
   let addressEdited = $state(false);
   let description = $state('');
@@ -195,9 +188,6 @@
    * and typed off the screen.
    */
   const showsStill = $derived(backdrop !== null);
-  /** Lying over the workspace. Only while this tab is the one in front: a
-   * panel that is not showing must not be found lying over everything else. */
-  const fillsWindow = $derived(expanded && visible);
   const markupBounds = $derived.by(() => {
     layoutTick;
     const placement = wantedPlacement(true);
@@ -235,35 +225,6 @@
     return { destroy: () => node.remove() };
   }
 
-  /**
-   * Move the panel out to the document body while it fills the window, and
-   * back to the place in the column it came from when it stops. The column
-   * clips what it contains, so lying over the shell means leaving the column.
-   */
-  function fillWindow(
-    node: HTMLElement,
-    fills: boolean
-  ): { update(fills: boolean): void; destroy(): void } {
-    const home = node.parentElement;
-    let measureFrame = 0;
-    const place = (out: boolean): void => {
-      if (out) {
-        if (node.parentElement !== document.body) document.body.appendChild(node);
-      } else if (home && node.parentElement !== home) {
-        home.appendChild(node);
-      }
-      cancelAnimationFrame(measureFrame);
-      measureFrame = requestAnimationFrame(() => {
-        layoutTick += 1;
-      });
-    };
-    place(fills);
-    return {
-      update: place,
-      destroy: () => cancelAnimationFrame(measureFrame)
-    };
-  }
-
   // ── Where the native view goes ─────────────────────────────────────────────
 
   function hostRect(): { x: number; y: number; width: number; height: number } | null {
@@ -271,8 +232,6 @@
     const rect = pageHost.getBoundingClientRect();
     if (rect.width < 1 || rect.height < 1) return null;
     const measured = { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
-    if (fillsWindow) return measured;
-
     const toolsHost = pageHost.closest<HTMLElement>('.shell-region-host-tools');
     const centerHost = document.querySelector<HTMLElement>('.shell-region-host-center');
     if (!toolsHost || !centerHost) return null;
@@ -302,9 +261,11 @@
    * moved is worth a call.
    */
   let placed: HostPlacement | null = null;
+  let placedTabId: string | null = null;
 
   function sendPlacement(next: HostPlacement): void {
-    if (placed && samePlacement(next, placed)) return;
+    const tabId = browser.workspace.activeTabId;
+    if (placed && placedTabId === tabId && samePlacement(next, placed)) return;
     try {
       if (next.kind === 'hidden') {
         // Nothing has been put on screen, so there is no view to take away —
@@ -333,6 +294,7 @@
         }
       }
       placed = next;
+      placedTabId = tabId;
     } catch (error) {
       say(error);
     }
@@ -743,8 +705,8 @@
       layoutTick += 1;
     });
     observer.observe(pageHost);
-    // The rows above move the page host and set the floor the expanded view is
-    // held to, so a row appearing has to be a re-measure in its own right.
+    // The rows above move the page host, so a row appearing has to be a
+    // re-measure in its own right.
     if (chromeHost) observer.observe(chromeHost);
     return () => observer.disconnect();
   });
@@ -808,7 +770,6 @@
     root;
     untrack(() => {
       discard();
-      expanded = false;
       address = '';
       addressEdited = false;
     });
@@ -833,12 +794,7 @@
   });
 </script>
 
-<div
-  class="browser-panel"
-  class:fills-window={fillsWindow}
-  use:fillWindow={fillsWindow}
-  data-testid="browser-panel"
->
+<div class="browser-panel" data-testid="browser-panel">
   <div class="chrome" bind:this={chromeHost} data-testid="browser-panel-chrome">
     <BrowserTabs
       tabs={browserTabs}
@@ -851,7 +807,6 @@
     <BrowserToolbar
       address={addressValue}
       {tool}
-      {expanded}
       canGoBack={activeTab?.canGoBack ?? false}
       canGoForward={activeTab?.canGoForward ?? false}
       onAddressInput={(value) => {
@@ -863,7 +818,6 @@
       onForward={() => step('forward')}
       onReload={reloadBrowserFrame}
       onToolChange={(next) => void chooseTool(next)}
-      onToggleExpand={() => (expanded = !expanded)}
     />
     {#if showsStill}
       <div class="annotation-header" data-testid="browser-annotation-header">
@@ -954,23 +908,9 @@
     display: grid;
     height: 100%;
     width: 100%;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr) auto;
     background: var(--color-surface);
-  }
-
-  /* Over the workspace right of the sessions rail — the rail stays readable.
-     The route keeps the shared rail-width property current as its divider is
-     dragged. The utility strip remains visible below, just as it does for the
-     ordinary three-column shell. */
-  .browser-panel.fills-window {
-    position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 28px;
-    left: var(--sessions-rail-width, 360px);
-    height: auto;
-    width: auto;
-    z-index: 1;
   }
 
   .annotation-header {

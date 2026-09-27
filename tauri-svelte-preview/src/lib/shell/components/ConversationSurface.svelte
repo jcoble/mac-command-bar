@@ -2,6 +2,7 @@
   import { remoteWorkspacePath } from '$lib/workspacePaths';
   import { untrack } from 'svelte';
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
+  import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import type {
     AgentConfigValue,
     AgentConversationProvider,
@@ -168,7 +169,11 @@
   const activityLabel = $derived(
     turnActive && conversation && !conversation.selectedChildId && conversation.reachedTranscriptEnd
       ? turnActivityLabel(visibleTimeline, activeTurnId, pendingApprovals.length, pendingInputs.length)
-      : null
+      : active && conversation && !conversation.selectedChildId && conversation.reachedTranscriptEnd
+        && (active.backgroundTaskIds?.length ?? 0) > 0
+        && (active.executionEnvironment !== 'remote' || rail.remoteConnections[active.remoteProfileId ?? ''] === 'connected')
+        ? 'Background command running'
+        : null
   );
   const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.availableCommands ?? conversation?.capabilities?.commands ?? []).filter((command) => !appOwned || command.name !== 'terminal'));
   /* The same numbers the Context panel shows. This read only `metadata`, and a
@@ -405,9 +410,15 @@
   async function chooseApprovalOption(ownedId: string, requestId: string, optionId: string, generation: number): Promise<void> {
     try {
       await sendPermissionResponse(ownedId, requestId, optionId);
+      if (conversationSessions[ownedId]?.generation === generation) {
+        setConversationProviderNotice(ownedId, '');
+      }
     } catch (error) {
       if (conversationSessions[ownedId]?.generation === generation) {
-        setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        setConversationProviderNotice(ownedId, message.startsWith('Stale approval request:')
+          ? 'That approval expired when its session stopped. Reconnect and send the request again.'
+          : `Approval failed: ${message}`);
       }
     }
   }

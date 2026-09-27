@@ -40,6 +40,7 @@
   import FileIcon from './explorer/FileIcon.svelte';
   import { canonicalPath } from '$lib/shell/explorer/explorerStore.svelte';
   import {
+    isHtmlFile,
     isMarkdownFile,
     markdownPreviewDefault,
     type MarkdownView
@@ -280,8 +281,11 @@
   let markdownViewByPath = $state<Record<string, MarkdownView>>({});
   let imagePreview = $state<{ path: string; url: string } | null>(null);
   const activeFileIsMarkdown = $derived(isMarkdownFile(activeFile?.fileName));
+  const activeFileIsHtml = $derived(isHtmlFile(activeFile?.fileName));
   const markdownView = $derived(
-    activeFile && activeFileIsMarkdown ? (markdownViewByPath[activeFile.path] ?? 'raw') : 'raw'
+    activeFile && (activeFileIsMarkdown || activeFileIsHtml)
+      ? (markdownViewByPath[activeFile.path] ?? 'raw')
+      : 'raw'
   );
   const MARKDOWN_VIEW_ITEMS = [
     { value: 'raw', label: 'Source' },
@@ -1095,7 +1099,11 @@
     // A rendered Markdown document has no source-line coordinates. An explicit
     // jump (diff hunk, problem, definition) therefore has to reveal the source,
     // even when this tab was previously left on Preview.
-    if (typeof request.line === 'number' && request.line > 0 && isMarkdownFile(record.fileName)) {
+    if (
+      typeof request.line === 'number' &&
+      request.line > 0 &&
+      (isMarkdownFile(record.fileName) || isHtmlFile(record.fileName))
+    ) {
       markdownViewByPath = { ...markdownViewByPath, [record.path]: 'raw' };
     }
     // Only once the file is in the strip. The read runs after this and may still
@@ -1613,15 +1621,15 @@
         <IconButton label="Close all open editors" size="sm" side="bottom" onclick={closeAllOpenEditors}>
           <X class="size-3.5" aria-hidden="true" />
         </IconButton>
-        <!-- Markdown reads two ways, so the file says which one it is on. Source
-             is the ordinary editor; Preview is the same document rendered. -->
-        {#if activeFileIsMarkdown}
+        <!-- Markdown and HTML read two ways, so the file says which one it is on.
+             Source is the ordinary editor; Preview is the same document rendered. -->
+        {#if activeFileIsMarkdown || activeFileIsHtml}
           <span data-testid="markdown-view-toggle" class="shrink-0">
             <SegmentedControl
               size="sm"
               items={MARKDOWN_VIEW_ITEMS}
               value={markdownView}
-              aria-label="Markdown view"
+              aria-label={activeFileIsHtml ? 'HTML view' : 'Markdown view'}
               onValueChange={(value) => setMarkdownView(value as MarkdownView)}
             />
           </span>
@@ -1675,6 +1683,16 @@
           relativePath={activeFile.relativePath}
           dirty={activeFile.dirty ?? false}
         />
+      {:else if showing && activeFile?.preview && activeFileIsHtml && markdownView === 'rendered'}
+        <!-- Scripts run so script-drawn pages render, but the frame keeps an
+             opaque origin: never pair allow-scripts with allow-same-origin, or
+             the page could reach this app. It shows the unsaved draft too. -->
+        <iframe
+          class="html-preview"
+          title={`Preview of ${activeFile.fileName}`}
+          sandbox="allow-scripts"
+          srcdoc={activeFile.draftContent ?? activeFile.preview.content}
+        ></iframe>
       {:else if activeFile && activePreview}
         {#if CodeEditor}
           <CodeEditor
@@ -1969,6 +1987,15 @@
       linear-gradient(-45deg, transparent 75%, rgb(255 255 255 / 3%) 75%);
     background-position: 0 0, 0 8px, 8px -8px, -8px 0;
     background-size: 16px 16px;
+  }
+
+  .html-preview {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    /* The page paints its own background; an unstyled one reads as white. */
+    background: #ffffff;
   }
 
   .image-preview img {
