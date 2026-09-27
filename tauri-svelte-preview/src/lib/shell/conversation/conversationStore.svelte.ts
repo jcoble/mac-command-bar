@@ -366,6 +366,9 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
   }
   const applied = applyLegacyEventInPlace(current, event);
   if (!applied) return false;
+  // A missing journal event can change the meaning or position of everything
+  // after it. Keep the current view intact until a snapshot repairs the gap.
+  if (current.desynchronized) return true;
   const displayEvent = displayEventFrom(event);
   const typedItem = agentItemFromEvent(displayEvent);
   if (typedItem) {
@@ -455,7 +458,7 @@ function applyLegacyEventInPlace(current: ConversationWorkspaceState, event: Age
   current.lastSequence = event.sequence;
   current.desynchronized = newGeneration ? hasGap : current.desynchronized || hasGap;
   current.writerLease.generation = event.generation;
-  if (hasGap) return true;
+  if (current.desynchronized) return true;
 
   const { payload } = event;
   let displayChanged = false;
