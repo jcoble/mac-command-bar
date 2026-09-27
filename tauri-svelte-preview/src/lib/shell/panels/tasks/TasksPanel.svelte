@@ -29,12 +29,27 @@
     type NotionTaskSettings
   } from '$lib/shell/notionTasks.ts';
   import { connectNotion } from '$lib/shell/notionOAuth.ts';
+  import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
   import { cn } from '$lib/utils.js';
   import NotionTaskViewer from './NotionTaskViewer.svelte';
 
   const PAGE_SIZE = 25;
   const TASK_ROW_HEIGHT = 84;
   const TASK_ROW_OVERSCAN = 5;
+
+  let { session }: { session: OwnedSession | null } = $props();
+
+  function matchingProject(choices: string[], current: OwnedSession | null): string {
+    const path = (current?.projectPath || current?.cwd || '').trim();
+    if (!path) return '';
+    const parts = path.split('/').filter(Boolean);
+    const worktrees = parts.lastIndexOf('worktrees');
+    const folder = worktrees >= 0 && parts[worktrees + 2] ? parts[worktrees + 1] : parts.at(-1);
+    const key = (folder || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!key) return '';
+    const matches = choices.filter((choice) => choice.toLowerCase().replace(/[^a-z0-9]/g, '') === key);
+    return matches.length === 1 ? matches[0] : '';
+  }
 
   function taskStatusIconClass(status: string): string {
     switch (status.trim().toLowerCase()) {
@@ -65,6 +80,8 @@
   let search = $state('');
   let statusFilter = $state('');
   let projectFilter = $state('');
+  let manualProjectSelection = $state(false);
+  let currentSessionId: string | null | undefined;
   let sortBy = $state('taskNumber');
   let sortDirection = $state('asc');
   let searchOpen = $state(false);
@@ -110,9 +127,17 @@
       sortDirection
     );
     if (owner !== generation || readOwner !== readGeneration) return;
-    tasks = append ? [...tasks, ...page.tasks] : page.tasks;
     projects = page.projects;
     statuses = page.statuses;
+    if (!append && !manualProjectSelection) {
+      const match = matchingProject(page.projects, session);
+      if (match !== projectFilter) {
+        projectFilter = match;
+        await loadCached(owner);
+        return;
+      }
+    }
+    tasks = append ? [...tasks, ...page.tasks] : page.tasks;
     hasMore = page.hasMore;
   }
 
@@ -263,6 +288,18 @@
     void initialize(owner);
   });
   $effect(() => {
+    const id = session?.ownedId ?? null;
+    if (currentSessionId === undefined) {
+      currentSessionId = id;
+      return;
+    }
+    if (currentSessionId === id) return;
+    currentSessionId = id;
+    manualProjectSelection = false;
+    projectFilter = matchingProject(projects, session);
+    void reloadCached();
+  });
+  $effect(() => {
     const viewport = taskViewport;
     if (!viewport) return;
     const onScroll = (): void => {
@@ -382,6 +419,7 @@
                 type="single"
                 value={projectFilter || 'all'}
                 onValueChange={(value) => {
+                  manualProjectSelection = true;
                   projectFilter = value === 'all' ? '' : value;
                   void reloadCached();
                 }}
@@ -431,6 +469,10 @@
     {/snippet}
     Latest successful Notion snapshot
   </PanelHeader>
+
+  {#if !manualProjectSelection && projects.length > 0 && (session?.projectPath || session?.cwd) && !matchingProject(projects, session)}
+    <p class="mx-3 mb-2 text-xs text-muted-foreground">No Notion project matches this session. Showing all projects.</p>
+  {/if}
 
   {#if showSetup}
     <div class="mx-3 mb-3 grid gap-2 rounded-lg border border-border bg-card p-3">
@@ -512,7 +554,7 @@
             </div>
             <div class="min-w-0">
               <p class="truncate text-(length:--text-heading) leading-snug font-(--text-heading-weight) text-foreground">{task.title}</p>
-              <p class="mt-(--space-1) truncate text-(length:--text-body) text-muted-foreground">{[task.project, task.status, task.priority].filter(Boolean).join(' · ')}</p>
+              <p class="mt-(--space-1) truncate text-(length:--text-body) text-muted-foreground">{[task.project || 'Unspecified project', task.status || 'Unspecified', task.priority].filter(Boolean).join(' · ')}</p>
             </div>
             <ChevronRight class="size-5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
           </button>

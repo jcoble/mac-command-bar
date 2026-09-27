@@ -350,6 +350,9 @@
                           : 'text-[var(--color-text-3)]'
                       )}
                       aria-pressed={pressed}
+                      style={pressed
+                        ? 'background-color: var(--color-accent); color: var(--color-on-accent)'
+                        : 'color: var(--color-text)'}
                       onclick={() => toggleStatus(control.value)}
                     >
                       <StatusIcon class="size-3" aria-hidden="true" />
