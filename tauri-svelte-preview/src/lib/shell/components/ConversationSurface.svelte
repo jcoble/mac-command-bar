@@ -1,5 +1,6 @@
 <script lang="ts">
   import { remoteWorkspacePath } from '$lib/workspacePaths';
+  import { readRemoteAssemblyEnvironmentFromTauri, type RemoteAssemblyProfile } from '$lib/tauriSource';
   import { untrack } from 'svelte';
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
@@ -102,6 +103,17 @@
     onPersistAttachmentIds
   }: Props = $props();
   const active = $derived(owned.find((item) => item.ownedId === activeOwnedId) ?? null);
+  let remoteMachine = $state<RemoteAssemblyProfile | null>(null);
+  $effect(() => {
+    const profileId = active?.executionEnvironment === 'remote' ? active.remoteProfileId : null;
+    remoteMachine = null;
+    if (!profileId) return;
+    let cancelled = false;
+    void readRemoteAssemblyEnvironmentFromTauri().then((environment) => {
+      if (!cancelled) remoteMachine = environment.profiles.find((profile) => profile.id === profileId) ?? null;
+    }).catch(() => { if (!cancelled) remoteMachine = null; });
+    return () => { cancelled = true; };
+  });
   const conversation = $derived(activeOwnedId ? conversationSessions[activeOwnedId] ?? null : null);
   const presence = $derived(activeOwnedId ? $sessionPresenceHistory[activeOwnedId] : null);
   const activeTurnId = $derived(presence ? presence.activeTurnId : (conversation?.activeTurnId ?? active?.activeTurnId ?? null));
@@ -702,9 +714,14 @@
   }
 </script>
 
-<div class="conversation-shell" data-testid="conversation-shell">
+<div class="conversation-shell" data-testid="conversation-shell" role="presentation" onpointerdown={() => window.getSelection()?.removeAllRanges()}>
   {#if structured && active && conversation}
     <section class="structured" data-testid="structured-conversation" aria-label={`${active.agent} conversation`}>
+      {#if active.executionEnvironment === 'remote'}
+        <div class="remote-location" title={remoteMachine?.sshTarget ?? undefined}>
+          Remote: {remoteMachine?.name ?? 'Saved machine'}{#if remoteMachine} ({remoteMachine.sshTarget}){/if} · {active.cwd}
+        </div>
+      {/if}
       {#if !appOwned}
         <div class="handoff-actions" aria-label="Conversation handoff actions">
           <button type="button" data-testid="open-native-cli" disabled={!rootAvailable} onclick={() => void onOpenNativeCli?.(active.ownedId)}>
@@ -807,4 +824,4 @@
   {/if}
 </div>
 
-<style>.conversation-shell,.structured{position:relative;width:100%;height:100%;min-height:0}.structured{position:absolute;inset:0;display:flex;flex-direction:column;background:transparent;color:var(--color-text);font:13px ui-sans-serif,system-ui}.handoff-actions{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--color-border)}.handoff-actions button,.structured-toggle{border:0;border-radius:7px;background:var(--color-elevated);color:inherit;padding:6px 9px}.handoff-actions button:hover,.structured-toggle:hover{background:var(--color-hover)}.raw-actions{position:absolute;right:12px;top:12px;z-index:2}</style>
+<style>.conversation-shell,.structured{position:relative;width:100%;height:100%;min-height:0}.structured{position:absolute;inset:0;display:flex;flex-direction:column;background:transparent;color:var(--color-text);font:13px ui-sans-serif,system-ui}.remote-location{padding:5px 12px;border-bottom:1px solid var(--color-border);color:var(--color-text-2);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.handoff-actions{display:flex;gap:6px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--color-border)}.handoff-actions button,.structured-toggle{border:0;border-radius:7px;background:var(--color-elevated);color:inherit;padding:6px 9px}.handoff-actions button:hover,.structured-toggle:hover{background:var(--color-hover)}.raw-actions{position:absolute;right:12px;top:12px;z-index:2}</style>
