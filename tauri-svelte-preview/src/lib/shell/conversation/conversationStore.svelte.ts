@@ -76,6 +76,7 @@ export const CONVERSATION_RECENT_EVENT_CAP = 200;
 export const ACTIVE_EVENT_WINDOW_EVENTS = 20_000;
 export const ACTIVE_EVENT_WINDOW_TRIM_EVENTS = 15_000;
 export const ACTIVE_EVENT_WINDOW_BYTES = 4 * 1024 * 1024; // 4 MiB bounded memory window
+const ACTIVE_EVENT_WINDOW_TRIM_BYTES = 3 * 1024 * 1024;
 const eventEncoder = new TextEncoder();
 
 function serializedEventBytes(event: AgentConversationEvent): number {
@@ -392,11 +393,15 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
     for (const removedEvent of removed) bytes -= serializedEventBytes(removedEvent);
     trimmed = true;
   }
-  while (bytes > ACTIVE_EVENT_WINDOW_BYTES && current.loadedEvents.length > 0) {
-    const removed = current.loadedEvents.shift();
-    if (removed) {
-      bytes -= serializedEventBytes(removed);
-      trimmed = true;
+  if (bytes > ACTIVE_EVENT_WINDOW_BYTES) {
+    // Leave room for later live events so a long turn does not rebuild its
+    // entire visible timeline on every new event after reaching 4 MiB.
+    while (bytes > ACTIVE_EVENT_WINDOW_TRIM_BYTES && current.loadedEvents.length > 0) {
+      const removed = current.loadedEvents.shift();
+      if (removed) {
+        bytes -= serializedEventBytes(removed);
+        trimmed = true;
+      }
     }
   }
   current.loadedEventsBytes = Math.max(0, bytes);
