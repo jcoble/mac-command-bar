@@ -39,7 +39,8 @@ export type GitActionKind =
   | 'stash'
   | 'fetch'
   | 'pull'
-  | 'push';
+  | 'push'
+  | 'publish';
 
 export type GitSurfaceOwner = 'compact' | 'large';
 

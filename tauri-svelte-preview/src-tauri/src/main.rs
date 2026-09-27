@@ -2536,6 +2536,31 @@ pub(crate) fn push_git_repository_sync(root: PathBuf) -> Result<GitActionResult,
     })
 }
 
+pub(crate) fn publish_git_repository_sync(
+    root: PathBuf,
+    expected_branch: String,
+    remote: String,
+) -> Result<GitActionResult, String> {
+    validate_git_root(&root)?;
+    let status = project_git_status_sync(root.clone())?;
+    if status.branch.as_deref() != Some(expected_branch.as_str()) || status.has_upstream {
+        return Err("The branch changed or already has an upstream. Refresh Source Control and try again.".to_string());
+    }
+    if expected_branch.is_empty() || expected_branch == "HEAD" {
+        return Err("Select a branch before publishing.".to_string());
+    }
+    let remotes = run_git_text(&root, &["remote"])?;
+    if !remotes.lines().any(|name| name == remote) {
+        return Err("The selected remote is no longer configured for this repository.".to_string());
+    }
+    let destination = format!("HEAD:refs/heads/{expected_branch}");
+    run_git_text(&root, &["push", "--set-upstream", "--", &remote, &destination])?;
+    Ok(GitActionResult {
+        message: format!("Published {expected_branch} to {remote}"),
+        status: project_git_status_sync(root)?,
+    })
+}
+
 fn git_history_cursor_offset(cursor: Option<String>) -> Result<usize, String> {
     let Some(cursor) = cursor else {
         return Ok(0);
@@ -5598,6 +5623,7 @@ fn main() {
             fetch_git_repository,
             pull_git_repository,
             push_git_repository,
+            publish_git_repository,
             read_git_commit_history,
             read_git_commit_files,
             read_git_commit_file_diff,
@@ -7529,6 +7555,75 @@ mod tests {
         assert_eq!(remote_subject.trim(), "local update");
 
         std::fs::remove_dir_all(remote).unwrap();
+        std::fs::remove_dir_all(local).unwrap();
+        std::fs::remove_dir_all(peer).unwrap();
+    }
+
+    #[test]
+    fn git_publish_checks_branch_remote_and_preserves_normal_push() {
+        let origin = unique_temp_root();
+        let backup = unique_temp_root();
+        let local = unique_temp_root();
+        for path in [&origin, &backup, &local] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        run_git_for_test(&origin, &["init", "--bare"]);
+        run_git_for_test(&backup, &["init", "--bare"]);
+        run_git_for_test(&local, &["init"]);
+        run_git_for_test(&local, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&local, &["config", "user.email", "test@example.invalid"]);
+        std::fs::write(local.join("file.txt"), "first\n").unwrap();
+        run_git_for_test(&local, &["add", "file.txt"]);
+        run_git_for_test(&local, &["commit", "-m", "first"]);
+        run_git_for_test(&local, &["branch", "-M", "tsk-1233-test"]);
+        let branch = "tsk-1233-test".to_string();
+
+        let no_remote = publish_git_repository_sync(local.clone(), branch.clone(), String::new()).unwrap_err();
+        assert!(no_remote.contains("selected remote"));
+        run_git_for_test(&local, &["remote", "add", "origin", &origin.display().to_string()]);
+        run_git_for_test(&local, &["remote", "add", "backup", &backup.display().to_string()]);
+        assert!(publish_git_repository_sync(local.clone(), "another-branch".to_string(), "origin".to_string()).unwrap_err().contains("branch changed"));
+        assert!(publish_git_repository_sync(local.clone(), branch.clone(), "missing".to_string()).unwrap_err().contains("selected remote"));
+        let published = publish_git_repository_sync(local.clone(), branch.clone(), "backup".to_string()).unwrap();
+        assert!(published.status.has_upstream);
+        assert_eq!(run_git_text(&backup, &["rev-parse", branch.as_str()]).unwrap().trim(), run_git_text(&local, &["rev-parse", "HEAD"]).unwrap().trim());
+        assert!(run_git_text(&origin, &["rev-parse", "--verify", branch.as_str()]).is_err());
+        assert!(publish_git_repository_sync(local.clone(), branch.clone(), "origin".to_string()).unwrap_err().contains("already has an upstream"));
+
+        std::fs::write(local.join("file.txt"), "second\n").unwrap();
+        run_git_for_test(&local, &["commit", "-am", "second"]);
+        push_git_repository_sync(local.clone()).unwrap();
+        assert_eq!(run_git_text(&backup, &["rev-parse", branch.as_str()]).unwrap().trim(), run_git_text(&local, &["rev-parse", "HEAD"]).unwrap().trim());
+        assert!(run_git_text(&origin, &["rev-parse", "--verify", branch.as_str()]).is_err());
+
+        // A real non-fast-forward rejection leaves the branch unpublished; after
+        // incorporating the remote commit, the same normal publish can retry.
+        let retry_branch = "tsk-1233-retry";
+        let peer = unique_temp_root();
+        std::fs::create_dir_all(&peer).unwrap();
+        run_git_for_test(&local, &["switch", "-c", retry_branch]);
+        run_git_for_test(&local, &["push", "origin", &format!("HEAD:refs/heads/{retry_branch}")]);
+        run_git_for_test(&peer, &["clone", "--branch", retry_branch, &origin.display().to_string(), "."]);
+        run_git_for_test(&peer, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&peer, &["config", "user.email", "test@example.invalid"]);
+        std::fs::write(peer.join("remote.txt"), "remote\n").unwrap();
+        run_git_for_test(&peer, &["add", "remote.txt"]);
+        run_git_for_test(&peer, &["commit", "-m", "remote update"]);
+        run_git_for_test(&peer, &["push"]);
+        std::fs::write(local.join("local.txt"), "local\n").unwrap();
+        run_git_for_test(&local, &["add", "local.txt"]);
+        run_git_for_test(&local, &["commit", "-m", "local update"]);
+        let rejected = publish_git_repository_sync(local.clone(), retry_branch.to_string(), "origin".to_string()).unwrap_err();
+        assert!(rejected.contains("[rejected]"), "{rejected}");
+        assert!(!project_git_status_sync(local.clone()).unwrap().has_upstream);
+        run_git_for_test(&local, &["fetch", "origin", retry_branch]);
+        run_git_for_test(&local, &["rebase", "FETCH_HEAD"]);
+        let retried = publish_git_repository_sync(local.clone(), retry_branch.to_string(), "origin".to_string()).unwrap();
+        assert!(retried.status.has_upstream);
+        assert_eq!(run_git_text(&origin, &["rev-parse", retry_branch]).unwrap().trim(), run_git_text(&local, &["rev-parse", "HEAD"]).unwrap().trim());
+
+        std::fs::remove_dir_all(origin).unwrap();
+        std::fs::remove_dir_all(backup).unwrap();
         std::fs::remove_dir_all(local).unwrap();
         std::fs::remove_dir_all(peer).unwrap();
     }

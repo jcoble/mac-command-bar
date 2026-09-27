@@ -7,7 +7,7 @@ use crate::{
     archive_project_worktree_sync, commit_git_repository_sync, fetch_git_repository_sync,
     init_project_repository_sync, list_git_repository_summaries_sync, list_project_git_refs_sync,
     list_project_worktrees_sync, project_git_status_sync, pull_git_repository_sync,
-    push_git_repository_sync, read_git_commit_file_diff_sync, read_git_commit_files_sync,
+    push_git_repository_sync, publish_git_repository_sync, read_git_commit_file_diff_sync, read_git_commit_files_sync,
     read_git_commit_history_page_sync, read_source_git_diff_sync, remove_project_worktree_sync,
     stage_git_paths_sync, unstage_git_paths_sync, GitActionResult, GitCommitFileChange,
     GitHistoryPage, GitRepositorySummary, ProjectGitRef, ProjectGitStatus, ProjectWorktree,
@@ -85,6 +85,13 @@ pub(crate) async fn push_git_repository(root: String) -> Result<GitActionResult,
     tauri::async_runtime::spawn_blocking(move || push_git_repository_sync(PathBuf::from(root)))
         .await
         .map_err(|error| format!("Git push task failed: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn publish_git_repository(root: String, expected_branch: String, remote: String) -> Result<GitActionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || publish_git_repository_sync(PathBuf::from(root), expected_branch, remote))
+        .await
+        .map_err(|error| format!("Git publish task failed: {error}"))?
 }
 
 #[tauri::command]

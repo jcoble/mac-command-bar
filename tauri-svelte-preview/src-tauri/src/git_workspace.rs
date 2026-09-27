@@ -43,6 +43,7 @@ pub struct GitBranchSummary {
 pub struct GitBranchList {
     pub current: String,
     pub branches: Vec<GitBranchSummary>,
+    pub remotes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -242,7 +243,7 @@ pub fn parse_branch_list(output: &str) -> GitBranchList {
             subject,
         });
     }
-    GitBranchList { current, branches }
+    GitBranchList { current, branches, remotes: Vec::new() }
 }
 
 /// `git stash list` writes `stash@{0}: WIP on main: abc123 subject`. The index
@@ -518,7 +519,12 @@ fn list_git_branches_sync(root: PathBuf) -> Result<GitBranchList, String> {
             "--format=%(HEAD)\u{1f}%(refname:short)\u{1f}%(upstream:short)\u{1f}%(contents:subject)",
         ],
     )?;
-    Ok(parse_branch_list(&output))
+    let mut list = parse_branch_list(&output);
+    list.remotes = run_git_text(&root, &["remote"])?
+        .lines()
+        .map(str::to_string)
+        .collect();
+    Ok(list)
 }
 
 fn create_git_branch_sync(
