@@ -323,6 +323,7 @@ export type GitBranchSummary = {
 export type GitBranchList = {
   current: string;
   branches: GitBranchSummary[];
+  remotes: string[];
 };
 
 export type GitStashEntry = {
@@ -1573,6 +1574,16 @@ export async function pushGitRepositoryFromTauri(
 
   const { invoke } = await import('./workspaceInvoke');
   return invoke<GitActionResult>('push_git_repository', { root });
+}
+
+export async function publishGitRepositoryFromTauri(
+  root: string,
+  expectedBranch: string,
+  remote: string
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<GitActionResult>('publish_git_repository', { root, expectedBranch, remote });
 }
 
 export async function discardGitPathsFromTauri(

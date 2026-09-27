@@ -276,7 +276,8 @@ export function bridgeGitBackend(): GitBackend {
     listStashes: async () => null,
     fetch: refuse,
     pull: refuse,
-    push: refuse
+    push: refuse,
+    publish: refuse
   };
 }
 

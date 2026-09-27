@@ -4,8 +4,8 @@
    *
    * What the working copy looks like, and the changes this version can make to
    * it: stage or unstage one file or all of them, throw one file's changes away,
-   * commit what is staged, and fetch, pull or push from the header's more-actions
-   * menu. Rebasing and pull requests are still absent.
+   * commit what is staged, and fetch, pull, push or publish from the header's
+   * more-actions menu. Rebasing and pull requests are still absent.
    *
    * The picker at the top says which folder is being read. It defaults to the
    * session's own and can be pointed at any other checkout of the repository,
@@ -87,6 +87,7 @@
   import {
     describeSourceControlScope,
     isSourceControlScopeReadOnly,
+    sourceControlPublishAction,
     sourceControlRemoteActions,
     sourceControlScopeOptions,
     type SourceControlRemoteActionId
@@ -354,6 +355,62 @@
     void service.runRemoteAction(id);
   }
 
+  /** The folder, branch and remotes a Publish targets, captured when the more-actions
+   * menu opens on a branch with no upstream. Null otherwise, which hides Publish.
+   * Raw so a late remote-list reply can check it still belongs to the same opening. */
+  let publishTarget = $state.raw<{
+    root: string;
+    branch: string;
+    remotes: string[] | null;
+    error: string;
+  } | null>(null);
+
+  function moreMenuOpenChange(open: boolean): void {
+    const branch = panel.status?.branch;
+    if (!open || !branch || panel.status?.hasUpstream) {
+      publishTarget = null;
+      return;
+    }
+    const target = { root: folder, branch, remotes: null, error: '' };
+    publishTarget = target;
+    service.listBranches().then(
+      (list) => {
+        if (publishTarget === target) publishTarget = { ...target, remotes: list?.remotes ?? [] };
+      },
+      (error: unknown) => {
+        if (publishTarget !== target) return;
+        publishTarget = { ...target, remotes: [], error: error instanceof Error ? error.message : String(error) };
+      }
+    );
+  }
+
+  const publishAction = $derived(
+    sourceControlPublishAction(panel.status, folder, {
+      canWrite: canChange,
+      readOnlyReason: cannotChangeReason,
+      busy
+    })
+  );
+  const publishReason = $derived.by(() => {
+    if (!publishTarget) return null;
+    if (folder !== publishTarget.root || panel.status?.branch !== publishTarget.branch) {
+      return 'The branch changed. Reopen this menu to publish it.';
+    }
+    if (!publishAction.enabled) return publishAction.disabledReason;
+    if (publishTarget.error) return publishTarget.error;
+    if (publishTarget.remotes === null) return 'Reading this repository’s remotes…';
+    if (publishTarget.remotes.length === 0) {
+      return 'This repository has no configured remote. Add one before publishing.';
+    }
+    return null;
+  });
+
+  function publish(remote: string): void {
+    const target = publishTarget;
+    if (!target || publishReason !== null || !target.remotes?.includes(remote)) return;
+    void service.publishBranch(target.root, target.branch, remote);
+  }
+
   async function useSessionCheckout(): Promise<void> {
     if (!canUseSessionCheckout || !onUseSessionCheckout) return;
     checkoutBusy = true;
@@ -521,7 +578,7 @@
       <!-- Refresh, discard all, fetch, pull and push. Each item that cannot run
            carries the sentence saying why — usually a read-only folder or a
            branch with no upstream. -->
-      <DropdownMenu.Root>
+      <DropdownMenu.Root onOpenChange={moreMenuOpenChange}>
         <DropdownMenu.Trigger
           class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }))}
           aria-label="More source-control actions"
@@ -559,6 +616,30 @@
               onSelect={() => runRemote(item.id)}>{item.label}</DropdownMenu.Item
             >
           {/each}
+          <!-- Only while the branch has no upstream. One remote publishes straight
+               to it; several open a submenu so the remote is always chosen. -->
+          {#if publishTarget}
+            {@const remotes = publishTarget.remotes ?? []}
+            {#if publishReason === null && remotes.length > 1}
+              <DropdownMenu.Sub>
+                <DropdownMenu.SubTrigger data-testid="source-control-publish">Publish to</DropdownMenu.SubTrigger>
+                <DropdownMenu.SubContent side="left">
+                  {#each remotes as remote (remote)}
+                    <DropdownMenu.Item onSelect={() => publish(remote)}>{remote}</DropdownMenu.Item>
+                  {/each}
+                </DropdownMenu.SubContent>
+              </DropdownMenu.Sub>
+            {:else}
+              <DropdownMenu.Item
+                data-testid="source-control-publish"
+                disabled={publishReason !== null}
+                title={publishReason ?? undefined}
+                onSelect={() => publish(remotes[0])}
+              >
+                {publishReason === null ? `Publish to ${remotes[0]}` : 'Publish branch'}
+              </DropdownMenu.Item>
+            {/if}
+          {/if}
         </DropdownMenu.Content>
       </DropdownMenu.Root>
     {/snippet}
