@@ -60,6 +60,9 @@ objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKNavigation", "WKWebView"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 [features]
 default = []
 

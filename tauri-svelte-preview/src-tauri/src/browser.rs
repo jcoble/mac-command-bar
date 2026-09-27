@@ -1690,6 +1690,23 @@ impl BrowserView for TauriBrowserView {
             bounds.width.round(),
             bounds.height.round()
         );
+        #[cfg(target_os = "linux")]
+        self.webview
+            .with_webview(move |platform| {
+                use gtk::prelude::*;
+                let view = platform.inner();
+                view.set_margin_start(bounds.x.round() as i32);
+                view.set_margin_top(bounds.y.round() as i32);
+                let parent = view.parent().expect("browser view has its overlay parent");
+                view.set_margin_end(
+                    (parent.allocated_width() - (bounds.x + bounds.width).round() as i32).max(0),
+                );
+                view.set_margin_bottom(
+                    (parent.allocated_height() - (bounds.y + bounds.height).round() as i32).max(0),
+                );
+            })
+            .map_err(native_error)?;
+        #[cfg(not(target_os = "linux"))]
         self.webview
             .set_bounds(tauri::Rect {
                 position: tauri::Position::Logical(tauri::LogicalPosition::new(bounds.x, bounds.y)),
@@ -1959,6 +1976,42 @@ impl BrowserViewFactory for TauriBrowserViewFactory {
             .map_err(native_error)?;
         // Off screen until the panel says where it goes: see `placed`.
         webview.hide().map_err(native_error)?;
+        #[cfg(target_os = "linux")]
+        webview
+            .with_webview(move |platform| {
+                use gtk::prelude::*;
+                let child = platform.inner();
+                let vbox = child
+                    .parent()
+                    .expect("new browser view has its Tauri parent")
+                    .downcast::<gtk::Box>()
+                    .expect("Tauri packs new browser views into a GTK box");
+                vbox.remove(&child);
+                // Tauri packs Linux child views beside the shell in its vertical
+                // box. An overlay keeps the shell full-size and lets browser
+                // bounds position the native page over its measured host.
+                let overlay = vbox
+                    .children()
+                    .into_iter()
+                    .find_map(|widget| widget.downcast::<gtk::Overlay>().ok())
+                    .unwrap_or_else(|| {
+                        let overlay = gtk::Overlay::new();
+                        let shell = vbox
+                            .children()
+                            .into_iter()
+                            .find(|widget| widget.type_().name() == "WebKitWebView")
+                            .expect("the main window contains its shell webview");
+                        vbox.remove(&shell);
+                        overlay.add(&shell);
+                        vbox.pack_start(&overlay, true, true, 0);
+                        overlay.show();
+                        overlay
+                    });
+                child.set_halign(gtk::Align::Fill);
+                child.set_valign(gtk::Align::Fill);
+                overlay.add_overlay(&child);
+            })
+            .map_err(native_error)?;
         let view = Arc::new(TauriBrowserView {
             webview,
             navigation_generation,

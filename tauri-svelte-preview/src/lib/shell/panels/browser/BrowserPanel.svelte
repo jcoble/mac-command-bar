@@ -12,15 +12,9 @@
    *
    * The page has no width of its own. It is the right column's content, so the
    * column's width IS the page's width: dragging the seam between the center
-   * and this column resizes the page. Filling the workspace is the one
-   * exception: marking up wants the biggest picture the window can give, so
-   * the whole panel — its rows and its page — moves out of the column and lies
-   * over everything right of the sessions rail until it is put back. The rail
-   * keeps its place, because it is how the reader gets to another session
-   * without first putting the page away. It moves out of the document
-   * position it had, not just out of the column: the column paints its panels
-   * inside its own box (`contain: paint`), so a panel that only positioned
-   * itself over the shell would still be clipped to the column.
+   * and this column resizes the page. Expanding the right region gives the
+   * column the center's width too; the panel stays in that same column, and
+   * every right-side tab shares the expanded width.
    *
    * Marking up works on a still of the page rather than the live view, for the
    * same reason: nothing in the document can be drawn over a native view. The

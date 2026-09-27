@@ -383,7 +383,8 @@
 
 <main
 	class="next-shell"
-	style={`--sessions-rail-width:${sessionsRailWidth}px;--tools-rail-width:${toolsRailWidth}px`}
+	style:--sessions-rail-width={`${sessionsRailWidth}px`}
+	style:--tools-rail-width={`${toolsRailWidth}px`}
 	oncontextmenu={(event) => {
 		const target = event.target instanceof Element ? event.target : null;
 		if (target?.closest('input, textarea, [contenteditable="true"]')) return;
