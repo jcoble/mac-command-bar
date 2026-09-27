@@ -29,7 +29,7 @@
   let error = $state('');
   let status = $state('');
   let savingStatus = $state(false);
-  const statusOptions = $derived([...new Set([task.status, ...statuses].filter(Boolean))]);
+  const statusOptions = $derived([...new Set([task.status || 'Unspecified', ...statuses].filter(Boolean))]);
   const controller = new AbortController();
 
   async function load(): Promise<void> {
@@ -63,7 +63,7 @@
   }
 
   onMount(() => {
-    status = task.status;
+    status = task.status || 'Unspecified';
     void load();
   });
   onDestroy(() => {
@@ -89,14 +89,14 @@
         <h2 class="mt-(--space-2) text-2xl leading-snug font-semibold text-foreground [overflow-wrap:anywhere]">{task.title}</h2>
         <div class="mt-(--space-4) flex flex-wrap gap-(--space-2) text-(length:--text-quiet) text-muted-foreground">
           <Select.Root type="single" value={status} onValueChange={(value) => void changeStatus(value)} disabled={savingStatus}>
-            <Select.Trigger size="sm" class="rounded-full bg-primary px-2.5 font-medium text-primary-foreground" aria-label="Change task status">
+            <Select.Trigger size="sm" class="rounded-full bg-[var(--color-elevated)] px-2.5 font-medium text-[var(--color-text)]" aria-label="Change task status">
               {savingStatus ? 'Saving…' : status}
             </Select.Trigger>
             <Select.Content>
               {#each statusOptions as option}<Select.Item value={option} label={option} />{/each}
             </Select.Content>
           </Select.Root>
-          {#if task.project}<span class="rounded-full border border-border px-2.5 py-1">{task.project}</span>{/if}
+          <span class="rounded-full border border-border px-2.5 py-1">{task.project || 'Unspecified project'}</span>
           {#if task.priority}<span class="rounded-full border border-border px-2.5 py-1">{task.priority}</span>{/if}
           {#if task.dueDate}<span class="rounded-full border border-border px-2.5 py-1">Due {task.dueDate}</span>{/if}
         </div>

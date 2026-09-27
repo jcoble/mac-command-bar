@@ -1738,7 +1738,7 @@ impl SessionStore {
                         instr(lower(COALESCE(assignee, '')), lower(?1)) > 0)
                    AND (?2 = '' OR project = ?2)
                    AND (?3 <> '' OR lower(status) <> 'future')
-                   AND (?3 = '' OR status = ?3)
+                   AND (?3 = '' OR COALESCE(NULLIF(status, ''), 'Unspecified') = ?3)
                  ORDER BY CASE WHEN ?4 = 'taskNumber' AND ?5 = 'asc' THEN
                               CASE
                                 WHEN upper(title) GLOB '[[]TSK-[0-9]*[]]*' THEN
@@ -1843,10 +1843,9 @@ impl SessionStore {
 
         let mut status_statement = connection
             .prepare(
-                "SELECT DISTINCT status
+                "SELECT DISTINCT COALESCE(NULLIF(status, ''), 'Unspecified')
                  FROM notion_task_projections
-                 WHERE status <> ''
-                 ORDER BY status COLLATE NOCASE ASC",
+                 ORDER BY 1 COLLATE NOCASE ASC",
             )
             .map_err(|error| {
                 StoreError::sqlite("could not prepare Notion task status filters", error)
@@ -3789,6 +3788,21 @@ mod tests {
         assert_eq!(page.tasks, tasks[..1]);
         assert_eq!(page.projects, ["Assembly", "Rental Command"]);
         assert_eq!(page.statuses, ["Doing", "Todo"]);
+    }
+
+    #[test]
+    fn notion_task_projection_keeps_missing_status_explicit() {
+        let (_directory, _path, store) = open_temp_store();
+        let task = fixture_notion_task("task-1", "Assembly", "", "Missing status", None);
+        store
+            .replace_notion_task_projections(&[task.clone()])
+            .expect("write Notion task snapshot");
+
+        let page = store
+            .query_notion_task_projections(0, 10, "", "", "Unspecified", "", "")
+            .expect("filter missing status");
+        assert_eq!(page.tasks, [task]);
+        assert_eq!(page.statuses, ["Unspecified"]);
     }
 
     #[test]
