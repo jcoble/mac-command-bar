@@ -255,7 +255,7 @@
 		rootAvailable={selection.activeRootAvailable}
 		ownedId={selection.activeOwnedId}
 		session={selection.railOwned.find((s) => s.ownedId === selection.activeOwnedId) ?? null}
-		filesRoot={selection.filesProjectionRoot || selection.durableSessionRoot}
+		filesRoot={selection.filesProjectionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
 		onExpandedPathsChange={(root, paths) => selection.rememberExpandedPaths(root, paths)}
@@ -274,7 +274,7 @@
 		onBrowserWorkspaceChange={(ownedId, browser) => {
 			selection.persistWorkspaceState(ownedId, { browser });
 		}}
-		checkoutDiscoveryRoots={selection.durableSessionRoot ? [selection.durableSessionRoot] : []}
+		checkoutDiscoveryRoots={selection.filesProjectionRoot ? [selection.filesProjectionRoot] : []}
 		onUseSessionCheckout={selection.controlledSession?.agent === "codex" && selection.controlledSession.origin === "app"
 			? async (root) => {
 					await selection.useSessionCheckout(root);
