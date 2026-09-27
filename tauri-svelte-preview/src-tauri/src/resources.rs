@@ -788,6 +788,7 @@ fn observe_processes(system: &mut System, app_pid: u32) -> Vec<ObservedProcess> 
     system
         .processes()
         .values()
+        .filter(|process| process.thread_kind().is_none())
         .map(|process| {
             let pid = process.pid().as_u32();
             let name = process.name().to_string_lossy().into_owned();
