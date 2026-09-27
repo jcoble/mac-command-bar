@@ -1419,6 +1419,27 @@ assert.ok(store.getConversationSession('owned-b'));
   assert.equal(session.newestLoadedSequence, windowEvents + 1, 'the newest event is retained');
 }
 
+// Crossing the byte cap should leave room for subsequent live events. Rebuilding
+// the entire conversation on every event made long remote turns flash and stall.
+{
+  const ownedId = 'owned-live-byte-window';
+  const event = (sequence: number): AgentConversationEvent => ({
+    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
+    payload: { kind: 'assistantMessage', itemId: `message-${sequence}`, text: 'x'.repeat(128_000), completed: true }
+  });
+  let sequence = 0;
+  do {
+    store.applyAgentConversationEvent(event(++sequence));
+  } while (store.getConversationSession(ownedId).oldestLoadedSequence === 1 && sequence < 40);
+  const afterTrim = store.getConversationSession(ownedId);
+  assert.ok(afterTrim.oldestLoadedSequence > 1, 'the byte ceiling was reached');
+  assert.ok(afterTrim.loadedEventsBytes < store.ACTIVE_EVENT_WINDOW_BYTES);
+  for (let next = 0; next < 4; next += 1) store.applyAgentConversationEvent(event(++sequence));
+  assert.equal(store.getConversationSession(ownedId), afterTrim, 'later events should not rebuild the timeline');
+  assert.equal(afterTrim.lastSequence, sequence);
+  store.evictConversationSession(ownedId);
+}
+
 await test('journal payloads stay plain across live events, snapshots, paging and transcript imports', () => {
   const ownedId = 'owned-plain-journal';
   const event = (sequence: number): AgentConversationEvent => ({
