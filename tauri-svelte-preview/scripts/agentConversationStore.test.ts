@@ -1014,6 +1014,37 @@ assert.equal(
   'a released hold cannot be claimed by a later message'
 );
 
+test('attachment previews are revoked when replaced, but not while shown in a sent message', () => {
+  const revoked: string[] = [];
+  const originalRevoke = URL.revokeObjectURL;
+  URL.revokeObjectURL = (url) => { revoked.push(url); };
+  try {
+    const ownedId = 'owned-preview-lifetime';
+    store.ensureConversationSession(ownedId, 'claude');
+    const attachment = (id: string, previewUrl: string) => ({
+      id, name: `${id}.png`, mimeType: 'image/png', path: `/managed/${id}.png`, previewUrl
+    });
+    store.setConversationAttachments(ownedId, [attachment('draft', 'blob:draft')]);
+    store.setConversationAttachments(ownedId, [attachment('replacement', 'blob:replacement')]);
+    assert.deepEqual(revoked, ['blob:draft']);
+
+    store.recordSentConversationAttachments(ownedId, [attachment('replacement', 'blob:replacement')]);
+    store.setConversationAttachments(ownedId, []);
+    assert.deepEqual(revoked, ['blob:draft']);
+    store.applyAgentConversationEvent({
+      ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 1,
+      payload: { kind: 'userMessage', itemId: 'sent', text: 'See image', completed: true }
+    });
+    store.restoreSentConversationAttachments(ownedId, {
+      sent: [attachment('duplicate', 'blob:duplicate')]
+    }, 1);
+    assert.deepEqual(revoked, ['blob:draft', 'blob:duplicate']);
+    assert.equal(store.getConversationSession(ownedId).sentAttachments.sent[0].previewUrl, 'blob:replacement');
+  } finally {
+    URL.revokeObjectURL = originalRevoke;
+  }
+});
+
 await test('sendStructuredMessage resolves the terminal from the owned session, not a passed argument', async () => {
   const ownedId = 'owned-terminal-route';
   const terminalId = 'terminal-from-owned-session';

@@ -1535,6 +1535,7 @@ export function applyChildConversationTranscript(
 export function setConversationAttachments(ownedId: string, attachments: ConversationAttachment[]): void {
   const current = conversationSessions[ownedId];
   if (current) {
+    const previous = current.attachments;
     const previousVisible = new Set(current.attachments.map((attachment) => attachment.id));
     const nextVisible = new Set(attachments.map((attachment) => attachment.id));
     current.attachmentIds = [
@@ -1542,6 +1543,11 @@ export function setConversationAttachments(ownedId: string, attachments: Convers
       ...nextVisible
     ];
     current.attachments = attachments;
+    revokeUnretainedPreviewUrls(previous, [
+      ...attachments,
+      ...current.unclaimedSentAttachments,
+      ...Object.values(current.sentAttachments).flat()
+    ]);
   }
 }
 
@@ -1586,6 +1592,7 @@ export function restoreSentConversationAttachments(
   for (const [itemId, attachments] of Object.entries(byItemId)) {
     if (!ids.has(itemId)) discarded.push(...attachments);
     else if (!current.sentAttachments[itemId]?.length) current.sentAttachments[itemId] = attachments;
+    else discarded.push(...attachments);
   }
   revokeUnretainedPreviewUrls(discarded, Object.values(current.sentAttachments).flat());
   publishConversationProjectionDiagnostics();
