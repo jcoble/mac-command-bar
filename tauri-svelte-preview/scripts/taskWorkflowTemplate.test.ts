@@ -35,5 +35,6 @@ assert.ok(
 );
 assert.equal(definition.budgets.maximumActiveAgents, 1);
 assert.equal(definition.budgets.maximumWorktrees, 0);
+assert.deepEqual(definition.nodes.find((node) => node.id === 'review')?.condition, { redoNodeId: 'implement' });
 
 console.log('task workflow template tests passed');
