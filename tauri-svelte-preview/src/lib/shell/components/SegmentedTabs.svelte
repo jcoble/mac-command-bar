@@ -13,6 +13,7 @@
   handed back out.
 -->
 <script lang="ts">
+  import { revealTab, scrollTabStrip } from './tabScrolling';
   import { indicatorFrame, type SegmentedTabItem } from './segmentedTabs';
 
   interface Props {
@@ -61,7 +62,7 @@
     value;
     const target = segments[selected];
     if (!target || !placed) return;
-    target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    revealTab(strip, target);
   });
 
   /** Left and right walk the strip and choose as they go, wrapping at the ends. */
@@ -76,22 +77,6 @@
     onChange(items[target].id);
     segments[target]?.focus({ preventScroll: true });
   }
-
-  /** A mouse wheel has no horizontal axis. Use its vertical movement on this
-   *  one-axis strip; trackpad sideways gestures keep their native behavior. */
-  function onWheel(event: WheelEvent): void {
-    if (!strip || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
-    const limit = strip.scrollWidth - strip.clientWidth;
-    if (limit <= 0) return;
-    const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
-      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? strip.clientWidth : 1;
-    const next = Math.max(0, Math.min(limit, strip.scrollLeft + event.deltaY * unit));
-    if (next === strip.scrollLeft) return;
-    event.preventDefault();
-    // Each gesture delta must apply immediately, not restart a smooth scroll
-    // from its partially animated position and lose the remaining movement.
-    strip.scrollTo({ left: next, behavior: 'instant' });
-  }
 </script>
 
 <div
@@ -103,7 +88,7 @@
   style:--indicator-left={`${frame.left}px`}
   style:--indicator-width={`${frame.width}px`}
   onkeydown={onKeyDown}
-  onwheel={onWheel}
+  use:scrollTabStrip
   tabindex={-1}
 >
   <span class="indicator" aria-hidden="true"></span>
@@ -120,7 +105,10 @@
       title={item.label}
       tabindex={chosen ? 0 : -1}
       data-testid={item.testId}
-      onclick={() => onChange(item.id)}
+      onclick={(event) => {
+        onChange(item.id);
+        revealTab(strip, event.currentTarget);
+      }}
     >
       {#if Icon}
         <Icon class="size-[22px]" strokeWidth={chosen ? 1.9 : 1.6} aria-hidden="true" />
