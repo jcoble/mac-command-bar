@@ -31,6 +31,14 @@ new feature slices.
 
 ## Build
 
+### Current Assembly dev app
+
+From the main checkout, run `pnpm app:update` to fast-forward main from GitHub,
+install the locked frontend dependencies, build, and launch the Tauri dev app.
+Local edits are preserved and included; conflicting updates stop without stashing
+or discarding work. It uses the normal session database. Keep the terminal open
+while using the dev app; Ctrl+C stops the dev run.
+
 ```bash
 scripts/build-app.sh
 open dist/MacCommandBar.app
