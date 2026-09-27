@@ -279,6 +279,7 @@
    * logically hidden behind the strip.
    */
   let markdownViewByPath = $state<Record<string, MarkdownView>>({});
+  const markdownScrollByPath = new Map<string, number>();
   let imagePreview = $state<{ path: string; url: string } | null>(null);
   const activeFileIsMarkdown = $derived(isMarkdownFile(activeFile?.fileName));
   const activeFileIsHtml = $derived(isHtmlFile(activeFile?.fileName));
@@ -1066,6 +1067,7 @@
     const entry = openEditorFile(record, { preview: previewTab, pin: pinTab });
     if (replacedPreviewPath) {
       releaseMarkdownView(replacedPreviewPath);
+      markdownScrollByPath.delete(replacedPreviewPath);
       codeEditor?.disposeTabModel(replacedPreviewPath);
       sourceIntelligence.releasePreview(replacedPreviewPath);
       const { [replacedPreviewPath]: _closed, ...rest } = diagnosticsByPath;
@@ -1150,6 +1152,7 @@
   function closeFileNow(path: string, discard = false): void {
     const disposePath = discard ? path : modelPathToDisposeOnClose(editorFileFor(path));
     closeEditorFile(path);
+    markdownScrollByPath.delete(path);
     releaseMarkdownView(path);
     releaseImagePreview(path);
     if (disposePath) codeEditor?.disposeTabModel(disposePath);
@@ -1202,6 +1205,7 @@
       for (const path of paths) sourceIntelligence.releasePreview(path);
       codeEditor?.disposeAllTabModels();
       resetEditorState();
+      markdownScrollByPath.clear();
       releaseImagePreview();
       markdownViewByPath = {};
       diagnosticsByPath = {};
@@ -1677,12 +1681,16 @@
           <p class="canvas-message">Reading {activeFile.fileName}…</p>
         {/if}
       {:else if showing && activeFile?.preview && activeFileIsMarkdown && markdownView === 'rendered'}
-        <SourceMarkdownPreview
-          content={activeFile.draftContent ?? activeFile.preview.content}
-          fileName={activeFile.fileName}
-          relativePath={activeFile.relativePath}
-          dirty={activeFile.dirty ?? false}
-        />
+        {#key activeFile.path}
+          <SourceMarkdownPreview
+            content={activeFile.draftContent ?? activeFile.preview.content}
+            fileName={activeFile.fileName}
+            relativePath={activeFile.relativePath}
+            dirty={activeFile.dirty ?? false}
+            scrollTop={markdownScrollByPath.get(activeFile.path) ?? 0}
+            onScroll={(top) => { if (showing) markdownScrollByPath.set(activeFile.path, top); }}
+          />
+        {/key}
       {:else if showing && activeFile?.preview && activeFileIsHtml && markdownView === 'rendered'}
         <!-- Scripts run so script-drawn pages render, but the frame keeps an
              opaque origin: never pair allow-scripts with allow-same-origin, or
