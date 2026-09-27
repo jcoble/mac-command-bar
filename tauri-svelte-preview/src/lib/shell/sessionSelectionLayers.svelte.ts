@@ -88,7 +88,6 @@ export class SessionSelectionLayers {
     owner: SessionSelectionOwner
   ): Promise<void> {
     if (!this.isCurrent(owner)) return;
-    if (this.chatOwnedId === session.ownedId && this.hasChatProjection) return;
     const departingOwnedId = this.chatOwnedId ?? displayedChatOwnedId;
 
     const provider = this.providerFor(session);
