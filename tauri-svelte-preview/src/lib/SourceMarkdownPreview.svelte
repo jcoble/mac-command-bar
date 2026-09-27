@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { parseSafeMarkdown, type SafeInlinePart, type SafeListItem, type SafeMarkdownBlock } from './shell/conversation/conversationMessageSafety';
   import { fenceLanguage, highlightCode, plainHighlightedLines } from './shell/components/conversation/codeHighlight';
   import { sourceMarkdownPreviewTextSummary } from './sourceMarkdownPreview';
@@ -8,9 +9,13 @@
     fileName: string;
     relativePath: string;
     dirty?: boolean;
+    scrollTop?: number;
+    onScroll?: (scrollTop: number) => void;
   };
 
-  let { content, fileName, relativePath, dirty = false }: Props = $props();
+  let { content, fileName, relativePath, dirty = false, scrollTop = 0, onScroll }: Props = $props();
+  let documentElement: HTMLElement;
+  onMount(() => { documentElement.scrollTop = scrollTop; });
   let blocks = $derived(parseSafeMarkdown(content));
   let summary = $derived(sourceMarkdownPreviewTextSummary(content) || 'Empty Markdown file');
   const highlightReady = true;
@@ -25,7 +30,7 @@
     <strong>{fileName}</strong>
     <span>{summary}</span>
   </div>
-  <article class="source-markdown-preview-document">
+  <article class="source-markdown-preview-document selectable" bind:this={documentElement} onscroll={() => onScroll?.(documentElement.scrollTop)}>
     {#each blocks as block}{@render node(block)}{/each}
   </article>
 </section>

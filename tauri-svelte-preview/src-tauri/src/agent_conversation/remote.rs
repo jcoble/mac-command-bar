@@ -270,7 +270,10 @@ struct RemoteClient {
 
 impl Drop for RemoteClient {
     fn drop(&mut self) {
-        if let Some(task) = &self.task { task.abort(); }
+        if let Some(task) = &self.task {
+            eprintln!("Remote client for {:?} was dropped", self.profile.as_ref().map(|profile| &profile.id));
+            task.abort();
+        }
     }
 }
 
@@ -897,7 +900,10 @@ impl RemoteConnectionManager {
         {
             let mut state = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(client) = state.clients.get_mut(profile_id) {
-                if let Some(task) = client.task.take() { task.abort(); }
+                if let Some(task) = client.task.take() {
+                    eprintln!("Remote client for {profile_id} was stopped");
+                    task.abort();
+                }
                 client.requests = None;
                 client.target_key = None;
                 client.ready.store(false, Ordering::Release);
@@ -1043,6 +1049,7 @@ impl RemoteConnectionManager {
             })?;
         match tokio::time::timeout(Duration::from_secs(timeout_seconds), answer).await {
             Ok(answer) => answer.map_err(|_| {
+                eprintln!("Remote request {id} for {profile_id} had its reply channel closed before a response");
                 "The Remote Assembly connection closed before answering".to_string()
             })?,
             Err(_) => {
@@ -1974,7 +1981,9 @@ async fn client_loop(
                             }
                         }
                         ClientRequest::Cancel { id } => {
-                            pending.remove(&id);
+                            if let Some(reply) = pending.remove(&id) {
+                                let _ = reply.send(Err("Remote Assembly request was canceled".into()));
+                            }
                             if send_client_frame(&mut socket, &ClientFrame::Cancel { id }).await.is_err() {
                                 break;
                             }
@@ -1982,7 +1991,21 @@ async fn client_loop(
                     }
                 }
                 message = socket.next() => {
-                    let Some(Ok(message)) = message else { break; };
+                    let message = match message {
+                        Some(Ok(TungsteniteMessage::Close(frame))) => {
+                            eprintln!("Remote socket closed with {} pending requests: {frame:?}", pending.len());
+                            break;
+                        }
+                        Some(Ok(message)) => message,
+                        Some(Err(error)) => {
+                            eprintln!("Remote socket failed with {} pending requests: {error}", pending.len());
+                            break;
+                        }
+                        None => {
+                            eprintln!("Remote socket ended with {} pending requests", pending.len());
+                            break;
+                        }
+                    };
                     let frame = match parse_server_frame(message) {
                         Ok(Some(frame)) => frame,
                         Ok(None) => continue,

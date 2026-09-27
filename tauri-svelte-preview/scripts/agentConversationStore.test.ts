@@ -7,8 +7,8 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { compileModule } from 'svelte/compiler';
 import { get } from 'svelte/store';
-import { shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
-import { mergeAgentItem } from '../src/lib/shell/conversation/conversationTimeline.ts';
+import { applyConversationEvent, createConversationState, shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
+import { mergeAgentItem, typedConversationTimeline } from '../src/lib/shell/conversation/conversationTimeline.ts';
 import { sessionPresenceHistory, sessionPresenceEventFromConversation, synchronizeSessionPresenceWork, deriveSessionPresence, EMPTY_SESSION_PRESENCE_HISTORY } from '../src/lib/shell/conversation/sessionPresence.ts';
 import { onWorkspaceFileChange } from '../src/lib/shell/workspaceFileChangeBus.ts';
 
@@ -316,6 +316,32 @@ assert.deepEqual(
   ['Visible question', 'Visible answer']
 );
 assert.equal(store.getConversationSession('owned-a').desynchronized, false);
+
+// A missing live event must not briefly paint later tool updates out of order.
+{
+  const ownedId = 'owned-gapped-live';
+  const connection = { ownedId, provider: 'codex' as const, generation: 1, state: 'connected' as const };
+  const event = (sequence: number, payload: Record<string, unknown>) => ({
+    ownedId, provider: 'codex' as const, generation: 1, sequence,
+    timestampMs: sequence * 10, payload
+  });
+  const first = event(1, { kind: 'assistantMessage', itemId: 'prior', text: 'Earlier answer', completed: true });
+  const missing = event(2, { kind: 'userMessage', itemId: 'question', text: 'New question', completed: true });
+  const toolStart = event(3, { kind: 'tool', itemId: 'tool', name: 'Bash', state: 'started' });
+  const toolUpdate = event(4, { kind: 'tool', itemId: 'tool', name: 'Bash', state: 'completed', output: 'done' });
+  store.applyAgentConversationSnapshot({ connection, lastSequence: 1, events: [first] });
+  store.applyAgentConversationEvent(toolStart);
+  store.applyAgentConversationEvent(toolUpdate);
+  const beforeRepair = store.getConversationSession(ownedId);
+  assert.equal(beforeRepair.desynchronized, true);
+  assert.deepEqual(beforeRepair.timeline.map((item: { itemId: string }) => item.itemId), ['prior']);
+  assert.deepEqual(beforeRepair.agentItems.map((item: { id: string }) => item.id), ['prior']);
+  store.applyAgentConversationSnapshot({ connection, lastSequence: 4, events: [first, missing, toolStart, toolUpdate] });
+  const repaired = store.getConversationSession(ownedId);
+  assert.equal(repaired.desynchronized, false);
+  assert.deepEqual(repaired.timeline.map((item: { itemId: string }) => item.itemId), ['prior', 'question', 'tool']);
+  assert.equal(repaired.timeline.find((item: { itemId: string }) => item.itemId === 'tool')?.output, 'done');
+}
 
 // A session picked up from a past Claude or Codex transcript stores every event
 // wrapped in a terminal projection, with the real event one level further down.
@@ -988,6 +1014,37 @@ assert.equal(
   'a released hold cannot be claimed by a later message'
 );
 
+test('attachment previews are revoked when replaced, but not while shown in a sent message', () => {
+  const revoked: string[] = [];
+  const originalRevoke = URL.revokeObjectURL;
+  URL.revokeObjectURL = (url) => { revoked.push(url); };
+  try {
+    const ownedId = 'owned-preview-lifetime';
+    store.ensureConversationSession(ownedId, 'claude');
+    const attachment = (id: string, previewUrl: string) => ({
+      id, name: `${id}.png`, mimeType: 'image/png', path: `/managed/${id}.png`, previewUrl
+    });
+    store.setConversationAttachments(ownedId, [attachment('draft', 'blob:draft')]);
+    store.setConversationAttachments(ownedId, [attachment('replacement', 'blob:replacement')]);
+    assert.deepEqual(revoked, ['blob:draft']);
+
+    store.recordSentConversationAttachments(ownedId, [attachment('replacement', 'blob:replacement')]);
+    store.setConversationAttachments(ownedId, []);
+    assert.deepEqual(revoked, ['blob:draft']);
+    store.applyAgentConversationEvent({
+      ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 1,
+      payload: { kind: 'userMessage', itemId: 'sent', text: 'See image', completed: true }
+    });
+    store.restoreSentConversationAttachments(ownedId, {
+      sent: [attachment('duplicate', 'blob:duplicate')]
+    }, 1);
+    assert.deepEqual(revoked, ['blob:draft', 'blob:duplicate']);
+    assert.equal(store.getConversationSession(ownedId).sentAttachments.sent[0].previewUrl, 'blob:replacement');
+  } finally {
+    URL.revokeObjectURL = originalRevoke;
+  }
+});
+
 await test('sendStructuredMessage resolves the terminal from the owned session, not a passed argument', async () => {
   const ownedId = 'owned-terminal-route';
   const terminalId = 'terminal-from-owned-session';
@@ -1166,6 +1223,54 @@ assert.ok(store.getConversationSession('owned-b'));
     payload: { kind: 'turn', turnId: 'live-turn', state: 'completed' }
   });
   assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, null);
+}
+
+// A bounded replacement can lose a tool's opening event while retaining its
+// completion. The row must keep its position among the already visible items.
+{
+  const ownedId = 'owned-trimmed-tool-order';
+  const event = (sequence: number, timestampMs: number, payload: Record<string, unknown>) => ({
+    ownedId, provider: 'codex' as const, generation: 1, sequence, timestampMs, payload
+  });
+  const opening = event(1, 100, { kind: 'tool', itemId: 'tool-a', name: 'Run tests', state: 'started' });
+  const middle = event(2, 200, { kind: 'assistantMessage', itemId: 'message-a', text: 'Checking.', completed: true });
+  const completion = event(3, 300, { kind: 'tool', itemId: 'tool-a', name: 'Run tests', state: 'completed' });
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
+    lastSequence: 2,
+    events: [opening, middle]
+  });
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
+    lastSequence: 3,
+    events: [middle, completion]
+  });
+  const current = store.getConversationSession(ownedId);
+  assert.deepEqual(
+    typedConversationTimeline(current.agentItems, current.timeline).map((item) => item.itemId),
+    ['tool-a', 'message-a'],
+    'the tool does not jump past a later message when its opening event leaves the window'
+  );
+  assert.equal(current.agentItems.find((item: { id: string }) => item.id === 'tool-a')?.providerMetadata?.startedAtMs, 100);
+
+  const replayed = [opening, middle, completion].reduce(applyConversationEvent, createConversationState(ownedId, 'codex'));
+  assert.equal(replayed.timeline.find((item) => item.itemId === 'tool-a')?.timestampMs, 100);
+
+  const pagedOwnedId = 'owned-tool-start-in-older-page';
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId: pagedOwnedId, provider: 'codex', generation: 1, state: 'connected' },
+    lastSequence: 3,
+    events: [{ ...completion, ownedId: pagedOwnedId }]
+  });
+  store.prependOlderConversationEvents(pagedOwnedId, {
+    events: [{ ...opening, ownedId: pagedOwnedId }],
+    hasMore: false
+  });
+  assert.equal(
+    store.getConversationSession(pagedOwnedId).agentItems.find((item: { id: string }) => item.id === 'tool-a')?.providerMetadata?.startedAtMs,
+    100,
+    'loading the actual opening event moves the tool back to its true earlier position'
+  );
 }
 
 // Scrolling up loads the page of stored events just older than what is on
@@ -1419,6 +1524,27 @@ assert.ok(store.getConversationSession('owned-b'));
   assert.equal(session.newestLoadedSequence, windowEvents + 1, 'the newest event is retained');
 }
 
+// Crossing the byte cap should leave room for subsequent live events. Rebuilding
+// the entire conversation on every event made long remote turns flash and stall.
+{
+  const ownedId = 'owned-live-byte-window';
+  const event = (sequence: number): AgentConversationEvent => ({
+    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
+    payload: { kind: 'assistantMessage', itemId: `message-${sequence}`, text: 'x'.repeat(128_000), completed: true }
+  });
+  let sequence = 0;
+  do {
+    store.applyAgentConversationEvent(event(++sequence));
+  } while (store.getConversationSession(ownedId).oldestLoadedSequence === 1 && sequence < 40);
+  const afterTrim = store.getConversationSession(ownedId);
+  assert.ok(afterTrim.oldestLoadedSequence > 1, 'the byte ceiling was reached');
+  assert.ok(afterTrim.loadedEventsBytes < store.ACTIVE_EVENT_WINDOW_BYTES);
+  for (let next = 0; next < 4; next += 1) store.applyAgentConversationEvent(event(++sequence));
+  assert.equal(store.getConversationSession(ownedId), afterTrim, 'later events should not rebuild the timeline');
+  assert.equal(afterTrim.lastSequence, sequence);
+  store.evictConversationSession(ownedId);
+}
+
 await test('journal payloads stay plain across live events, snapshots, paging and transcript imports', () => {
   const ownedId = 'owned-plain-journal';
   const event = (sequence: number): AgentConversationEvent => ({
@@ -1474,10 +1600,15 @@ await test('release builds enforce the UTF-8 history byte limit in both paging d
   store.prependOlderConversationEvents(ownedId, { events: [first], hasMore: false });
   assertWindow(1);
   assert.equal(store.getConversationSession(ownedId).reachedTranscriptEnd, false);
+  const live = event(3);
+  assert.equal(store.applyAgentConversationEvent(live), false);
+  assertWindow(1);
+  assert.equal(store.getConversationSession(ownedId).desynchronized, false);
+  assert.equal(store.getConversationSession(ownedId).lastSequence, 2);
   store.appendNewerConversationEvents(ownedId, { events: [second], hasMore: false });
   assertWindow(2);
   assert.equal(store.getConversationSession(ownedId).reachedTranscriptStart, false);
-  store.applyAgentConversationEvent(event(3));
+  store.applyAgentConversationEvent(live);
   assertWindow(3);
   store.evictConversationSession(ownedId);
 });

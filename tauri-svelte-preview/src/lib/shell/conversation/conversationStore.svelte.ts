@@ -76,6 +76,7 @@ export const CONVERSATION_RECENT_EVENT_CAP = 200;
 export const ACTIVE_EVENT_WINDOW_EVENTS = 20_000;
 export const ACTIVE_EVENT_WINDOW_TRIM_EVENTS = 15_000;
 export const ACTIVE_EVENT_WINDOW_BYTES = 4 * 1024 * 1024; // 4 MiB bounded memory window
+const ACTIVE_EVENT_WINDOW_TRIM_BYTES = 3 * 1024 * 1024;
 const eventEncoder = new TextEncoder();
 
 function serializedEventBytes(event: AgentConversationEvent): number {
@@ -357,14 +358,17 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
   if (existing && event.provider !== existing.provider) return false;
   const current = ensureConversationSession(event.ownedId, event.provider);
   appendRecentEvent(current, event);
-  // A live event cannot be joined across a trimmed middle. Ask the service for
-  // the newest bounded snapshot instead; it will replace this older window.
+  // A live event cannot be joined across a trimmed middle. Leave the older
+  // page in place; scrolling forward or Jump to latest reads the stored tail.
   if (current.loadedEvents.length > 0 && !current.reachedTranscriptEnd) {
-    current.desynchronized = true;
-    return true;
+    recordConversationPresenceEvent(displayEventFrom(event));
+    return false;
   }
   const applied = applyLegacyEventInPlace(current, event);
   if (!applied) return false;
+  // A missing journal event can change the meaning or position of everything
+  // after it. Keep the current view intact until a snapshot repairs the gap.
+  if (current.desynchronized) return true;
   const displayEvent = displayEventFrom(event);
   const typedItem = agentItemFromEvent(displayEvent);
   if (typedItem) {
@@ -392,11 +396,15 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
     for (const removedEvent of removed) bytes -= serializedEventBytes(removedEvent);
     trimmed = true;
   }
-  while (bytes > ACTIVE_EVENT_WINDOW_BYTES && current.loadedEvents.length > 0) {
-    const removed = current.loadedEvents.shift();
-    if (removed) {
-      bytes -= serializedEventBytes(removed);
-      trimmed = true;
+  if (bytes > ACTIVE_EVENT_WINDOW_BYTES) {
+    // Leave room for later live events so a long turn does not rebuild its
+    // entire visible timeline on every new event after reaching 4 MiB.
+    while (bytes > ACTIVE_EVENT_WINDOW_TRIM_BYTES && current.loadedEvents.length > 0) {
+      const removed = current.loadedEvents.shift();
+      if (removed) {
+        bytes -= serializedEventBytes(removed);
+        trimmed = true;
+      }
     }
   }
   current.loadedEventsBytes = Math.max(0, bytes);
@@ -450,7 +458,7 @@ function applyLegacyEventInPlace(current: ConversationWorkspaceState, event: Age
   current.lastSequence = event.sequence;
   current.desynchronized = newGeneration ? hasGap : current.desynchronized || hasGap;
   current.writerLease.generation = event.generation;
-  if (hasGap) return true;
+  if (current.desynchronized) return true;
 
   const { payload } = event;
   let displayChanged = false;
@@ -1013,6 +1021,18 @@ export function applyAgentConversationSnapshot(
     const displayEvent = displayEventFrom(event);
     const typedItem = agentItemFromEvent(displayEvent);
     if (typedItem) {
+      // A bounded replay may start at a tool's update after its opening event
+      // was trimmed. Keep its original position while this view is live.
+      const previousIndex = generation === current.generation
+        ? agentItemIndex(current).get(typedItem.id)
+        : undefined;
+      const previousStart = previousIndex === undefined
+        ? undefined
+        : current.agentItems[previousIndex]?.providerMetadata?.startedAtMs;
+      const replayStart = typedItem.providerMetadata?.startedAtMs;
+      if (typeof previousStart === 'number' && (typeof replayStart !== 'number' || previousStart < replayStart)) {
+        typedItem.providerMetadata = { ...typedItem.providerMetadata, startedAtMs: previousStart };
+      }
       mergeAgentItemInPlace(restored, typedItem, conversationEventAppendsItemContent(displayEvent));
     }
     applyTypedEventPayload(restored, displayEvent);
@@ -1515,6 +1535,7 @@ export function applyChildConversationTranscript(
 export function setConversationAttachments(ownedId: string, attachments: ConversationAttachment[]): void {
   const current = conversationSessions[ownedId];
   if (current) {
+    const previous = current.attachments;
     const previousVisible = new Set(current.attachments.map((attachment) => attachment.id));
     const nextVisible = new Set(attachments.map((attachment) => attachment.id));
     current.attachmentIds = [
@@ -1522,6 +1543,11 @@ export function setConversationAttachments(ownedId: string, attachments: Convers
       ...nextVisible
     ];
     current.attachments = attachments;
+    revokeUnretainedPreviewUrls(previous, [
+      ...attachments,
+      ...current.unclaimedSentAttachments,
+      ...Object.values(current.sentAttachments).flat()
+    ]);
   }
 }
 
@@ -1566,6 +1592,7 @@ export function restoreSentConversationAttachments(
   for (const [itemId, attachments] of Object.entries(byItemId)) {
     if (!ids.has(itemId)) discarded.push(...attachments);
     else if (!current.sentAttachments[itemId]?.length) current.sentAttachments[itemId] = attachments;
+    else discarded.push(...attachments);
   }
   revokeUnretainedPreviewUrls(discarded, Object.values(current.sentAttachments).flat());
   publishConversationProjectionDiagnostics();
