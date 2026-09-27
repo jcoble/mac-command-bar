@@ -107,7 +107,7 @@ export function taskWorkflowDefinition(
         title: 'Review',
         roleId: 'reviewer',
         dependsOn: ['implement'],
-        condition: null,
+        condition: { redoNodeId: 'implement' },
         fanOut: null,
         approvalGate: null,
         timeoutSeconds: 3600,

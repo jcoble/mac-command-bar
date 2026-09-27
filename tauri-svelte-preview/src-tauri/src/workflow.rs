@@ -829,6 +829,11 @@ impl WorkflowScheduler {
 }
 
 pub(crate) struct WorkflowPolicy;
+
+fn review_redo_target(node: &WorkflowNodeDefinition) -> Option<&str> {
+    node.condition.as_ref()?.get("redoNodeId")?.as_str()
+}
+
 impl WorkflowPolicy {
     pub fn validate_definition(definition: &WorkflowDefinitionV1) -> Result<(), WorkflowError> {
         if definition.version != WORKFLOW_DEFINITION_VERSION {
@@ -887,6 +892,17 @@ impl WorkflowPolicy {
                     "Node {} depends on itself",
                     node.id
                 )));
+            }
+            if let Some(redo_node_id) = review_redo_target(node) {
+                let role = definition.roles.iter().find(|role| role.id == node.role_id).unwrap();
+                if role.output_contract != WorkflowOutputContract::ReviewReceipt
+                    || !node.depends_on.iter().any(|dependency| dependency == redo_node_id)
+                {
+                    return Err(WorkflowError::InvalidDefinition(format!(
+                        "Review node {} must redo one of its dependencies",
+                        node.id
+                    )));
+                }
             }
         }
         for edge in &definition.edges {
@@ -1626,8 +1642,71 @@ impl WorkflowEngine {
             .or_else(|| result.get("evidenceArtifacts"))
             .cloned()
             .unwrap_or_else(|| json!([]));
+        let blocking_review = run.nodes[index].output_contract == WorkflowOutputContract::ReviewReceipt
+            && result.get("blocking").and_then(Value::as_bool) == Some(true);
         run.nodes[index].artifacts = serde_json::from_value(artifacts).unwrap_or_default();
         run.nodes[index].structured_output = Some(result);
+        if blocking_review {
+            let redo_index = run
+                .definition
+                .nodes
+                .iter()
+                .find(|node| node.id == node_id)
+                .and_then(review_redo_target)
+                .and_then(|target| run.nodes.iter().position(|node| node.node_id == target));
+            if let Some(redo_index) = redo_index {
+                let can_retry = [redo_index, index].iter().all(|&candidate| {
+                    let node = &run.nodes[candidate];
+                    let definition = run.definition.nodes.iter().find(|item| item.id == node.node_id).unwrap();
+                    let role = run.definition.roles.iter().find(|item| item.id == node.role_id).unwrap();
+                    let limit = definition.max_attempts
+                        .min(run.definition.budgets.maximum_attempts_per_node)
+                        .min(role.retry_policy.max_attempts)
+                        .max(1);
+                    node.attempt < limit
+                });
+                if can_retry {
+                    for candidate in [redo_index, index] {
+                        if let Some(lease_id) = run.nodes[candidate].lease_id.take() {
+                            self.leases.release(&lease_id)?;
+                        }
+                        let node = &mut run.nodes[candidate];
+                        node.attempt += 1;
+                        node.id = format!("{}:{}:{}", run.id, node.node_id, node.attempt);
+                        node.owned_id = self.ids.next_id("workflow-agent");
+                        node.provider_instance_id = None;
+                        node.state = WorkflowNodeState::Blocked;
+                        node.started_at_ms = None;
+                        node.finished_at_ms = None;
+                        node.gate = None;
+                        node.failure = None;
+                        if candidate == redo_index {
+                            node.structured_output = None;
+                            node.artifacts.clear();
+                        }
+                    }
+                    refresh_ready_and_phase(&mut run);
+                    self.append(&mut run, "workflow.node.review-redo", idempotency_key, Some(node_id))?;
+                    return self.dispatch_ready(run_id).await;
+                }
+            }
+            if let Some(lease_id) = run.nodes[index].lease_id.take() {
+                self.leases.release(&lease_id)?;
+            }
+            run.nodes[index].state = WorkflowNodeState::Failed;
+            run.nodes[index].finished_at_ms = Some(self.clock.now_ms());
+            run.nodes[index].failure = Some(WorkflowFailure {
+                code: "review-blocking".into(),
+                message: "Reviewer reported a blocking finding".into(),
+                budget: None,
+            });
+            if run.definition.completion.cancel_descendants_on_failure {
+                cancel_descendants(&mut run, node_id);
+            }
+            refresh_ready_and_phase(&mut run);
+            self.append(&mut run, "workflow.node.review-blocked", idempotency_key, Some(node_id))?;
+            return Ok(run);
+        }
         if let Some(gate_definition) = run
             .definition
             .nodes
@@ -1853,6 +1932,15 @@ impl WorkflowEngine {
                     .filter(|edge| edge.to == node_id)
                     .map(|edge| edge.from.clone()),
             );
+            if run.nodes[index].attempt > 1 {
+                dependency_ids.extend(
+                    run.definition
+                        .nodes
+                        .iter()
+                        .filter(|node| review_redo_target(node) == Some(node_id.as_str()))
+                        .map(|node| node.id.clone()),
+                );
+            }
             dependency_ids.sort();
             dependency_ids.dedup();
             let prior_results: BTreeMap<_, _> = run
@@ -2776,6 +2864,56 @@ mod tests {
             .iter()
             .any(|event| event.get("ownedId").is_some_and(|value| !value.is_null())));
         assert_eq!(engine.list_runs().unwrap()[0].id, created.id);
+    }
+
+    #[test]
+    fn workflow_review_redo_carries_feedback_and_stops_at_attempt_limit() {
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = WorkflowEngine::new(
+            runtime.clone(),
+            Arc::new(InMemoryWorktreeLeasePort::default()),
+            Arc::new(FakeClock(AtomicU64::new(100))),
+            Arc::new(FakeIds(AtomicU64::new(1))),
+            Arc::new(SessionStore::open_in_memory().unwrap()),
+        );
+        let mut workflow = definition();
+        workflow.nodes.iter_mut().find(|node| node.id == "b").unwrap().condition =
+            Some(json!({"redoNodeId":"a"}));
+        let implementation = json!({
+            "changedFiles":["src/app.ts"], "summary":"done", "tests":[],
+            "knownRisks":[], "artifacts":[]
+        });
+        let review = |blocking: bool| json!({
+            "severity": if blocking { "high" } else { "none" },
+            "file":"src/app.ts", "line":1, "evidence":"Fix the broken case",
+            "recommendation":"Correct the case", "confidence":1.0, "blocking":blocking
+        });
+
+        let created = engine.create_run(workflow.clone(), json!({"cwd":"/repo"}), "create-pass".into()).unwrap();
+        tauri::async_runtime::block_on(engine.start(&created.id, "start-pass")).unwrap();
+        tauri::async_runtime::block_on(engine.submit_result(&created.id, "a", implementation.clone(), "implement-1")).unwrap();
+        let redo = tauri::async_runtime::block_on(engine.submit_result(&created.id, "b", review(true), "review-1")).unwrap();
+        let implementer = redo.nodes.iter().find(|node| node.node_id == "a").unwrap();
+        let reviewer = redo.nodes.iter().find(|node| node.node_id == "b").unwrap();
+        assert_eq!((implementer.state, implementer.attempt), (WorkflowNodeState::Running, 2));
+        assert_eq!((reviewer.state, reviewer.attempt), (WorkflowNodeState::Blocked, 2));
+        let dispatches = runtime.dispatched.lock().unwrap();
+        let correction_prompt: Value = serde_json::from_str(&dispatches[2].prompt).unwrap();
+        assert_eq!(correction_prompt["priorStageReceipts"]["b"]["evidence"], "Fix the broken case");
+        drop(dispatches);
+        let rereview = tauri::async_runtime::block_on(engine.submit_result(&created.id, "a", implementation.clone(), "implement-2")).unwrap();
+        assert_eq!(rereview.nodes.iter().find(|node| node.node_id == "b").unwrap().state, WorkflowNodeState::Running);
+        let passed = tauri::async_runtime::block_on(engine.submit_result(&created.id, "b", review(false), "review-2")).unwrap();
+        assert_eq!(passed.state, WorkflowRunState::Completed);
+
+        let created = engine.create_run(workflow, json!({"cwd":"/repo"}), "create-fail".into()).unwrap();
+        tauri::async_runtime::block_on(engine.start(&created.id, "start-fail")).unwrap();
+        tauri::async_runtime::block_on(engine.submit_result(&created.id, "a", implementation.clone(), "implement-3")).unwrap();
+        tauri::async_runtime::block_on(engine.submit_result(&created.id, "b", review(true), "review-3")).unwrap();
+        tauri::async_runtime::block_on(engine.submit_result(&created.id, "a", implementation, "implement-4")).unwrap();
+        let failed = tauri::async_runtime::block_on(engine.submit_result(&created.id, "b", review(true), "review-4")).unwrap();
+        assert_eq!(failed.state, WorkflowRunState::Failed);
+        assert_eq!(failed.nodes.iter().find(|node| node.node_id == "b").unwrap().failure.as_ref().unwrap().code, "review-blocking");
     }
 
     #[test]
