@@ -55,7 +55,14 @@ pub(super) async fn execute(operation: String, mut args: Value) -> Result<Value,
         "list_project_worktrees" => return json(git::list_project_worktrees(arg(&args, "root")?).await?),
         "list_repository_checkouts" => return json(git::list_repository_checkouts(arg(&args, "roots")?).await?),
         "list_project_git_refs" => return json(git::list_project_git_refs(arg(&args, "root")?).await?),
-        "init_project_repository" => return json(git::init_project_repository(arg(&args, "root")?).await?),
+        "init_project_repository" => {
+            let root = path(&args, "root")?;
+            git::init_project_repository(root.to_string_lossy().into_owned()).await?;
+            if !root.join(".git").exists() {
+                return Err("The new folder is inside an existing Git repository; choose another parent folder.".into());
+            }
+            return json(());
+        }
         "remove_project_worktree" => return json(git::remove_project_worktree(arg(&args, "root")?, arg(&args, "path")?, arg(&args, "force")?).await?),
         "archive_project_worktree" => return json(git::archive_project_worktree(arg(&args, "root")?, arg(&args, "path")?).await?),
         // Hosted PR commands run gh here, with the same stale-head guards as the Mac.
@@ -140,6 +147,23 @@ mod tests {
     async fn unsupported_and_relative_workspace_requests_are_rejected() {
         assert!(execute("run_terminal_command".into(), serde_json::json!({"root": "/tmp"})).await.unwrap_err().contains("not available"));
         assert!(execute("workspace_write_text".into(), serde_json::json!({"path": "relative", "content": "no"})).await.unwrap_err().contains("absolute"));
+    }
+    #[tokio::test]
+    async fn remote_project_init_reports_inherited_repository_instead_of_success() {
+        let root = std::env::temp_dir().join(format!("assembly-workspace-{}", uuid::Uuid::new_v4()));
+        let nested = root.join("nested-project");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        let error = execute("init_project_repository".into(), serde_json::json!({"root": nested}))
+            .await
+            .unwrap_err();
+        assert!(error.contains("inside an existing Git repository"));
+        assert!(!nested.join(".git").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test]
     async fn github_requests_reach_the_hosted_pr_validation() {
