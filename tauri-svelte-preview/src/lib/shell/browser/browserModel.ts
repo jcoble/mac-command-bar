@@ -363,7 +363,7 @@ export function createBrowserTab(
     typeof viewportInput === 'object' && viewportInput !== null && 'preset' in viewportInput
       ? resolveBrowserViewport(viewportInput as { preset?: string; width?: number | null; height?: number | null })
       : resolveBrowserViewport((viewportInput as BrowserViewportPreset | undefined) ?? 'responsive');
-  const generation = Math.max(workspace.activeGeneration + 1, input.generation ?? 1);
+  const generation = Math.max(workspace.lastGeneration + 1, input.generation ?? 1);
   const tab: BrowserTabState = {
     id: tabId,
     workspaceId: workspace.workspaceId,
@@ -382,6 +382,7 @@ export function createBrowserTab(
   workspace.tabOrder = [...workspace.tabOrder, tabId];
   workspace.activeTabId = tabId;
   workspace.activeGeneration = generation;
+  workspace.lastGeneration = generation;
   workspace.activated = true;
   workspace.error = null;
   const target = backendTarget(tab);
@@ -465,6 +466,7 @@ export function navigateActiveBrowserTab(
   tab.canGoBack = true;
   tab.canGoForward = false;
   context.workspace.activeGeneration = generation;
+  context.workspace.lastGeneration = Math.max(context.workspace.lastGeneration, generation);
   context.workspace.error = null;
   const target = backendTarget(tab);
   callBackend(context, () => context.backend!.navigate_browser_tab({ ...target, url: normalized }), (error) => {

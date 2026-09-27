@@ -77,4 +77,17 @@ assert.throws(() => model.createBrowserTab({ url: 'javascript:alert(1)' }), /htt
 model.deactivateBrowserWorkspace();
 assert.equal(model.workspace.activated, false);
 
+// The native registry refuses a new tab unless it advances the workspace's
+// highest generation, so selecting or closing an older tab must not lower it.
+const tabsModel = createBrowserModel({ workspace: createBrowserWorkspace({ workspaceId: 'workspace-2' }) });
+tabsModel.activateBrowserWorkspace();
+const tabA = tabsModel.createBrowserTab({ url: 'https://example.com/' });
+const tabB = tabsModel.createBrowserTab({ url: 'https://www.google.com/' });
+tabsModel.selectBrowserTab(tabA.id);
+const tabC = tabsModel.createBrowserTab({ url: 'https://example.org/' });
+assert.ok(tabC.generation > tabB.generation, 'a tab opened after selecting an older tab advances the workspace generation');
+tabsModel.closeBrowserTab(tabC.id);
+const tabD = tabsModel.createBrowserTab({ url: 'https://example.net/' });
+assert.ok(tabD.generation > tabC.generation, 'a tab opened after closing the newest tab still advances the workspace generation');
+
 console.log('browserModel: all tests passed');
