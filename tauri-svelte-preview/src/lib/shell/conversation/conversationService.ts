@@ -787,12 +787,14 @@ export async function loadConversationForRead(
       await existing.work;
     } catch (error) {
       if (!getConversationSession(ownedId)) return;
-      if (readVersions.get(ownedId) === existing.readVersion) throw error;
+      if (readVersions.get(ownedId) === existing.readVersion
+        && !existing.invalidated && !existing.abortController.signal.aborted) throw error;
       await loadConversationForRead(ownedId, includeAttachments, signal);
       return;
     }
     if (!getConversationSession(ownedId)) return;
-    if (readVersions.get(ownedId) === existing.readVersion) return;
+    if (readVersions.get(ownedId) === existing.readVersion
+      && !existing.invalidated && !existing.abortController.signal.aborted) return;
     await loadConversationForRead(ownedId, includeAttachments, signal);
     return;
   }
