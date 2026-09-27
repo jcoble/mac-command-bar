@@ -11,6 +11,8 @@
    * PRESENTATIONAL ONLY: no state beyond that hold, no IO. The selected tab is
    * handed in and every click is handed back out.
    */
+  import { tick } from 'svelte';
+  import { revealTab, scrollTabStrip } from './tabScrolling';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
   import GitCompareArrows from '@lucide/svelte/icons/git-compare-arrows';
   import GitBranch from '@lucide/svelte/icons/git-branch';
@@ -38,12 +40,20 @@
     { id: 'pull-requests', label: 'Pull Requests', icon: GitPullRequest }
   ];
 
+  let strip = $state<HTMLElement | null>(null);
+
+  $effect(() => {
+    activeId;
+    void tick().then(() => revealTab(strip, strip?.querySelector('[aria-current="page"]') ?? null));
+  });
+
   function choose(id: CenterTabId): void {
     onSelect(id);
+    revealTab(strip, strip?.querySelector(`[data-testid="center-tab-${id}"]`)?.closest('.tab') ?? null);
   }
 </script>
 
-<nav class="center-pills" aria-label="Center surfaces" data-tauri-drag-region>
+<nav class="center-pills" aria-label="Center surfaces" bind:this={strip} use:scrollTabStrip>
   {#each TABS as tab (tab.id)}
     {@const Icon = tab.icon}
     <!-- Icon only. The word lives on `label`, which `IconButton` makes both the
@@ -88,6 +98,11 @@
   .center-pills {
     display: flex;
     flex: 0 0 auto;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    scroll-behavior: smooth;
     align-items: center;
     /* Tight, because the capsule's own edge is what separates the group from
        the pane now; the controls inside it only need to stay apart. */
@@ -99,6 +114,12 @@
     background: var(--pill-surface);
     box-shadow: none;
     user-select: none;
+  }
+
+  .center-pills::-webkit-scrollbar { display: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .center-pills { scroll-behavior: auto; }
   }
 
   .tab {

@@ -479,6 +479,7 @@
 
 	.window-center-tabs {
 		min-width: 0;
+		max-width: 100%;
 		justify-self: center;
 	}
 
