@@ -1049,7 +1049,7 @@ impl RemoteConnectionManager {
             })?;
         match tokio::time::timeout(Duration::from_secs(timeout_seconds), answer).await {
             Ok(answer) => answer.map_err(|_| {
-                eprintln!("Remote request {id} for {profile_id} lost its client actor before a reply");
+                eprintln!("Remote request {id} for {profile_id} had its reply channel closed before a response");
                 "The Remote Assembly connection closed before answering".to_string()
             })?,
             Err(_) => {
