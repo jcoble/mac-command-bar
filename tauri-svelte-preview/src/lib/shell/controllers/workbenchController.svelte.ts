@@ -162,9 +162,9 @@ export class WorkbenchController {
 		try {
 			this.diffMode = snapshot?.diffMode ?? DEFAULT_DIFF_MODE;
 			restoreBrowserState(snapshot?.browser);
-			if (snapshot?.center) this.frameControls?.restoreCenterLayout(snapshot.center);
 			const center = snapshot?.center?.activePanelId;
-			this.selectCenterTab(this.isCenterTabId(center ?? '') ? center as CenterTabId : DEFAULT_CENTER_TAB);
+			const selected = this.isCenterTabId(center ?? '') ? center as CenterTabId : DEFAULT_CENTER_TAB;
+			if (selected !== this.centerTab) this.selectCenterTab(selected);
 			this.adoptRightTab(snapshot?.rightTab ?? DEFAULT_RIGHT_TAB);
 		} finally {
 			this.restoringTabs = false;
