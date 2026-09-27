@@ -9,7 +9,7 @@ import { compileModule } from 'svelte/compiler';
 import { get } from 'svelte/store';
 import { shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
 import { mergeAgentItem } from '../src/lib/shell/conversation/conversationTimeline.ts';
-import { sessionPresenceHistory } from '../src/lib/shell/conversation/sessionPresence.ts';
+import { sessionPresenceHistory, sessionPresenceEventFromConversation, synchronizeSessionPresenceWork, deriveSessionPresence, EMPTY_SESSION_PRESENCE_HISTORY } from '../src/lib/shell/conversation/sessionPresence.ts';
 import { onWorkspaceFileChange } from '../src/lib/shell/workspaceFileChangeBus.ts';
 
 type ProviderName = 'codex' | 'claude';
@@ -1591,6 +1591,11 @@ await test('an inactive terminal event clears send state before finished rail pr
   const dependencies = {
     conversationEventsDisposed: false,
     conversationEventsGeneration: 1,
+    railActivityEvents: new Map(),
+    sessionPresenceEventFromConversation,
+    synchronizeSessionPresenceWork,
+    displayEventFrom: store.displayEventFrom,
+    updateOwnedSession: () => undefined,
     rail: { activeOwnedId: 'another-session', owned: [] },
     shouldClearConversationSending,
     get,
@@ -1642,4 +1647,117 @@ await test('an inactive terminal event clears send state before finished rail pr
   } });
   assert.deepEqual(calls, [], 'the active projection also rejects an older turn');
   assert.equal(state.sending, true);
+});
+
+await test('remote rail activity reconciles without opening background conversations', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('async function refreshRemoteSessionActivity('), source.indexOf('async function handleConversationStreamResync('));
+  const code = stripTypeScriptTypes(block, { mode: 'strip' });
+  const ownedId = 'remote-background-activity';
+  const row = {
+    ownedId, state: 'background', runtimeState: 'suspended', activeTurnId: null as string | null,
+    pendingPermission: false, pendingInput: false, lastError: null
+  };
+  const state = { activeTurnId: undefined as string | undefined, suspended: true, sending: false, generation: 1 };
+  let opened = false;
+  let finishRead: (records: unknown[]) => void = () => {};
+  const dependencies = {
+    rail: { activeOwnedId: 'another-session', owned: [row], remoteConnections: { workbox: 'connected' }, error: null },
+    listRemoteAgentConversationSessionsFromTauri: () => new Promise<unknown[]>((resolve) => { finishRead = resolve; }),
+    updateOwnedSession: (_id: string, patch: Partial<typeof row>) => Object.assign(row, patch),
+    getConversationSession: () => opened ? state : null,
+    preparingSends: new Map(),
+    get, sessionPresenceHistory, sessionPresenceEventFromConversation, synchronizeSessionPresenceWork,
+    displayEventFrom: store.displayEventFrom,
+    shouldClearConversationSending,
+    setConversationSending: (_id: string, sending: boolean) => { state.sending = sending; },
+    recordAgentConversationPresenceEvent: store.recordAgentConversationPresenceEvent,
+    applyAgentConversationEvent: () => { throw new Error('background transcript must stay unloaded'); }
+  };
+  const api = Function(...Object.keys(dependencies), `
+    let conversationEventsDisposed = false;
+    let conversationEventsGeneration = 1;
+    let remoteActivityRead = 0;
+    const railActivityEvents = new Map();
+    ${code}
+    return { refresh: () => refreshRemoteSessionActivity(1),
+      event: chunk => handleConversationStreamEnvelope(1, {chunk}),
+      dispose: () => { conversationEventsDisposed = true; } };
+  `)(...Object.values(dependencies)) as {
+    refresh(): Promise<void>; event(chunk: AgentConversationEvent): Promise<void>; dispose(): void;
+  };
+  const record = (activeTurnId: string | null) => ({
+    ownedId, remoteProfileId: 'workbox', activeTurnId,
+    state: activeTurnId ? 'working' : 'suspended', suspended: !activeTurnId,
+    pendingPermission: false, pendingInput: false
+  });
+  const presence = () => deriveSessionPresence({
+    terminalState: row.state as 'live' | 'background',
+    suspended: row.runtimeState === 'suspended',
+    runtimeState: row.runtimeState as 'working' | 'ready' | 'suspended',
+    activeTurnId: row.activeTurnId
+  }, get(sessionPresenceHistory)[ownedId] ?? EMPTY_SESSION_PRESENCE_HISTORY, 100).state;
+  const event = (sequence: number, turnId: string, turnState: string) => ({
+    ownedId, provider: 'codex' as const, generation: 1, sequence, timestampMs: sequence * 10,
+    payload: { kind: 'turn', state: turnState, turnId }
+  });
+
+  const reconnect = api.refresh();
+  finishRead([record('remote-turn')]);
+  await reconnect;
+  assert.equal(presence(), 'working', 'reconnect reveals an already-running background turn');
+  assert.equal(get(sessionPresenceHistory)[ownedId].turnStartedAt, null, 'inventory must not fabricate a turn start time');
+  await api.event(event(1, 'remote-turn', 'completed'));
+  assert.equal(row.activeTurnId, null, 'completion clears the inventory active-turn flag');
+  assert.notEqual(presence(), 'working');
+
+  row.runtimeState = 'suspended';
+  await api.event(event(2, 'next-turn', 'started'));
+  assert.equal(presence(), 'working', 'a live start overrides both cached suspension and old unread completion');
+  assert.equal(opened, false, 'the user never needed to open this session');
+
+  const racingRead = api.refresh();
+  await api.event(event(3, 'next-turn', 'completed'));
+  finishRead([record('next-turn')]);
+  await racingRead;
+  assert.equal(row.activeTurnId, null, 'an older inventory reply cannot revive a completed turn');
+  await api.event(event(2, 'next-turn', 'started'));
+  assert.equal(row.activeTurnId, null, 'duplicate replay cannot revive a completed turn');
+
+  await api.event(event(4, 'failed-turn', 'started'));
+  await api.event({ ownedId, provider: 'codex', generation: 1, sequence: 5, timestampMs: 50,
+    payload: { kind: 'error', code: 'test', message: 'Runtime ended', recoverable: false } });
+  assert.equal(row.activeTurnId, null, 'runtime errors clear the rail turn as well as chat controls');
+  assert.equal(row.runtimeState, 'failed');
+  assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, null);
+
+  const firstRead = api.refresh();
+  const resolveFirst = finishRead;
+  const secondRead = api.refresh();
+  finishRead([record(null)]);
+  await secondRead;
+  resolveFirst([record('obsolete-turn')]);
+  await firstRead;
+  assert.equal(row.activeTurnId, null, 'a superseded reconnect reply cannot restore old work');
+
+  opened = true;
+  state.activeTurnId = 'stale-turn';
+  state.sending = true;
+  const stale = api.refresh();
+  finishRead([record(null)]);
+  await stale;
+  assert.equal(state.activeTurnId, undefined, 'live inventory clears stale chat Stop state');
+  assert.equal(state.sending, false);
+
+  const disconnected = api.refresh();
+  dependencies.rail.remoteConnections.workbox = 'disconnected';
+  finishRead([record('unknown-turn')]);
+  await disconnected;
+  assert.equal(row.activeTurnId, null, 'a reply after disconnect is not current runtime truth');
+  dependencies.rail.remoteConnections.workbox = 'connected';
+  const disposed = api.refresh();
+  api.dispose();
+  finishRead([record('late-turn')]);
+  await disposed;
+  assert.equal(row.activeTurnId, null, 'shutdown invalidates pending activity reads');
 });

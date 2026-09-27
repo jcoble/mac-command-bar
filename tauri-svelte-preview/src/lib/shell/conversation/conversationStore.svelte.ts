@@ -334,7 +334,7 @@ export function ensureConversationSession(
  * stored event. An event that is not a projection is returned untouched, which
  * is every event a session of this app's own produces.
  */
-function displayEventFrom(event: AgentConversationEvent): AgentConversationEvent | AgentEvent {
+export function displayEventFrom(event: AgentConversationEvent): AgentConversationEvent | AgentEvent {
   if (event.payload.kind !== 'terminalProjection') return event;
   return {
     type: event.payload.eventType,
