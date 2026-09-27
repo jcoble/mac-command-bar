@@ -19,9 +19,10 @@ assert.deepEqual(
 assert.deepEqual(
   definition.nodes.map((node) => [node.id, node.dependsOn, node.approvalGate !== null]),
   [
-    ['plan', [], true],
-    ['implement', ['plan'], true],
-    ['review', ['implement'], false]
+    ['plan', [], false],
+    ['plan-review', ['plan'], true],
+    ['implement', ['plan', 'plan-review'], true],
+    ['review', ['plan', 'implement'], false]
   ]
 );
 assert.equal(definition.concurrency.global, 1);
@@ -35,6 +36,8 @@ assert.ok(
 );
 assert.equal(definition.budgets.maximumActiveAgents, 1);
 assert.equal(definition.budgets.maximumWorktrees, 0);
+assert.equal(definition.nodes.find((node) => node.id === 'plan-review')?.roleId, 'reviewer');
+assert.deepEqual(definition.nodes.find((node) => node.id === 'plan-review')?.condition, { redoNodeId: 'plan' });
 assert.deepEqual(definition.nodes.find((node) => node.id === 'review')?.condition, { redoNodeId: 'implement' });
 
 console.log('task workflow template tests passed');

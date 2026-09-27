@@ -46,8 +46,8 @@ export function taskWorkflowDefinition(
   return {
     version: 1,
     id: 'task-plan-implement-review',
-    name: 'Plan, implement, review',
-    description: 'A visible three-stage task loop with approval at each handoff.',
+    name: 'Plan, review, implement, review',
+    description: 'A visible task loop with approval after plan review and implementation.',
     trigger: { kind: 'manual' },
     inputs: [{ id: 'task', required: true }],
     roles: [
@@ -70,7 +70,7 @@ export function taskWorkflowDefinition(
       role(
         'reviewer',
         'Reviewer',
-        'Review the implementation against the task and its approved plan. Report one blocking finding, or a non-blocking no-finding receipt.',
+        'Review the plan or implementation against the task. Report one blocking finding, or a non-blocking no-finding receipt.',
         providers.review,
         'ReviewReceipt',
         { kind: 'read-only-current' }
@@ -84,7 +84,18 @@ export function taskWorkflowDefinition(
         dependsOn: [],
         condition: null,
         fanOut: null,
-        approvalGate: { id: 'approve-plan', prompt: 'Approve the plan before implementation.' },
+        approvalGate: null,
+        timeoutSeconds: 3600,
+        maxAttempts: 2
+      },
+      {
+        id: 'plan-review',
+        title: 'Plan review',
+        roleId: 'reviewer',
+        dependsOn: ['plan'],
+        condition: { redoNodeId: 'plan' },
+        fanOut: null,
+        approvalGate: { id: 'approve-plan', prompt: 'Approve the reviewed plan before implementation.' },
         timeoutSeconds: 3600,
         maxAttempts: 2
       },
@@ -92,7 +103,7 @@ export function taskWorkflowDefinition(
         id: 'implement',
         title: 'Implement',
         roleId: 'implementer',
-        dependsOn: ['plan'],
+        dependsOn: ['plan', 'plan-review'],
         condition: null,
         fanOut: null,
         approvalGate: {
@@ -106,7 +117,7 @@ export function taskWorkflowDefinition(
         id: 'review',
         title: 'Review',
         roleId: 'reviewer',
-        dependsOn: ['implement'],
+        dependsOn: ['plan', 'implement'],
         condition: { redoNodeId: 'implement' },
         fanOut: null,
         approvalGate: null,
