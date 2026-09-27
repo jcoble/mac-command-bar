@@ -542,6 +542,7 @@
     data-testid="conversation-timeline-scroll"
     bind:this={host}
     onscroll={handleScroll}
+    onwheel={(event) => { if (event.deltaY < 0) requestOlderHistory(); }}
     use:userInputInterrupts
   >
     {#if renderedItems.length === 0}
