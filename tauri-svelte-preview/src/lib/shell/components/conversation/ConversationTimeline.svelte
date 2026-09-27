@@ -172,7 +172,7 @@
 
   function rowKey(group: ConversationTurnGroup | undefined, index: number): string {
     const groupId = group?.turnId ?? group?.items[0]?.itemId ?? `row:${index}`;
-    return `${renderWindowId}:${groupId}:${group?.items[0]?.itemId ?? index}`;
+    return `${renderWindowId}:${groupId}`;
   }
 
 
@@ -498,8 +498,8 @@
   }
 
   function turnExpanded(group: ConversationTurnGroup): boolean {
-    if (!group.turnId || !group.completed || group.workItemIds.length === 0) return true;
-    return expandedTurns.get(group.turnId) ?? false;
+    if (!group.turnId || group.workItemIds.length === 0) return true;
+    return expandedTurns.get(group.turnId) ?? group.turnId === effectiveActiveTurnId;
   }
 
   function toggleTurn(group: ConversationTurnGroup): void {
@@ -566,7 +566,7 @@
         >
           {#each foldedItems as item (item.itemId)}
             {@const workItem = item.kind === 'toolRun' || item.kind === 'fileEdits' || group.workItemIds.includes(item.itemId)}
-            {#if group.completed && item.itemId === firstWorkItemId}
+            {#if group.turnId !== effectiveActiveTurnId && item.itemId === firstWorkItemId}
               <button class="turn-fold" data-testid="conversation-turn-fold" type="button" aria-expanded={expanded} onclick={() => toggleTurn(group)}>
                 <span>{group.elapsedMs === null ? 'Worked' : `Worked for ${formatWorkedFor(group.elapsedMs)}`}</span>
                 <span class="turn-fold-chevron" class:open={expanded} aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
@@ -605,7 +605,7 @@
   .timeline-list{position:relative;display:flex;flex-direction:column;gap:18px;width:min(820px,100%);min-height:1px;margin:0 auto}
   .timeline-bottom-spacer{flex:none;height:calc(max(var(--composer-height, 0px), 120px) + 60px);pointer-events:none}
   .timeline-bottom-spacer.send-anchor-space{height:max(calc(max(var(--composer-height, 0px), 120px) + 60px),100vh)}
-  .turn-row{position:relative;display:flex;flex-direction:column;gap:12px;width:100%;content-visibility:auto;contain-intrinsic-size:auto 120px}
+  .turn-row{position:relative;display:flex;flex-direction:column;gap:12px;width:100%}
   .turn-fold{display:flex;width:100%;align-items:center;gap:5px;min-height:28px;padding:0 0 7px;border:0;border-bottom:1px solid var(--color-border);background:transparent;color:var(--color-text-2);font:inherit;font-size:13px;text-align:left;cursor:pointer}
   .turn-fold:hover{color:var(--color-text)}
   .turn-fold:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
