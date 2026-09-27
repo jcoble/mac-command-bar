@@ -4676,7 +4676,15 @@ async fn pump_inbound(
                     else {
                         return;
                     };
-                    let reached_quiescence = update_raw_liveness(session, &params);
+                    let mut reached_quiescence = update_raw_liveness(session, &params);
+                    if let Some(payload) = stopped_background_task_payload(&mut session.background_work, &params) {
+                        reached_quiescence |= session_is_quiescent(session);
+                        if session.writer_lease.owner == AgentWriterLeaseOwner::Structured {
+                            if let Err(error) = record_payload_for_session_and_dispatch(session, &emitter, payload) {
+                                crate::debug_log::stderr_log!("Could not record stopped background task: {error}");
+                            }
+                        }
+                    }
                     if let Err(error) = persist_session(session) {
                         crate::debug_log::stderr_log!(
                             "Could not persist adapter liveness state: {error}"
@@ -5094,6 +5102,39 @@ fn update_raw_liveness(session: &mut ManagedAgentSession, params: &Value) -> boo
         target.insert(identifier);
     }
     terminal && session_is_quiescent(session)
+}
+
+fn stopped_background_task_payload(
+    background_work: &mut HashSet<String>,
+    params: &Value,
+) -> Option<AgentConversationPayload> {
+    let update = params.get("update").unwrap_or(params);
+    if session_update_kind(params) != Some("tool_call_update")
+        || update.get("status").and_then(Value::as_str) != Some("completed")
+        || update.pointer("/_meta/claudeCode/toolName").and_then(Value::as_str) != Some("TaskStop")
+    {
+        return None;
+    }
+    let result = update.get("rawOutput").and_then(text_from_value)?;
+    let result: Value = serde_json::from_str(&result).ok()?;
+    let task_id = result.get("task_id")?.as_str()?;
+    let success = format!("Successfully stopped task: {task_id}");
+    if !result.get("message")?.as_str()?.starts_with(&success) {
+        return None;
+    }
+    let item_id = format!("background-task:{task_id}");
+    if !background_work.remove(&item_id) {
+        return None;
+    }
+    Some(AgentConversationPayload::Tool {
+        item_id,
+        name: "Background command".into(),
+        state: ToolState::Failed,
+        summary: Some("Stopped".into()),
+        output: None,
+        path: None,
+        diff: None,
+    })
 }
 
 fn background_task_payload(params: &Value) -> Option<AgentConversationPayload> {
@@ -9426,6 +9467,32 @@ mod tests {
             .await
             .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn successful_claude_task_stop_clears_background_work() {
+        let task_id = "bxjxskfnq";
+        let item_id = format!("background-task:{task_id}");
+        let mut background_work = HashSet::from([item_id.clone()]);
+        let failed = serde_json::json!({"update": {
+            "sessionUpdate": "tool_call_update", "status": "failed",
+            "_meta": {"claudeCode": {"toolName": "TaskStop"}},
+            "rawOutput": r#"{"message":"Successfully stopped task: bxjxskfnq (sleep 90)","task_id":"bxjxskfnq"}"#
+        }});
+        assert!(stopped_background_task_payload(&mut background_work, &failed).is_none());
+        assert!(background_work.contains(&item_id));
+
+        let stopped = serde_json::json!({"update": {
+            "sessionUpdate": "tool_call_update", "status": "completed",
+            "_meta": {"claudeCode": {"toolName": "TaskStop"}},
+            "rawOutput": r#"{"message":"Successfully stopped task: bxjxskfnq (sleep 90)","task_id":"bxjxskfnq"}"#
+        }});
+        assert!(matches!(
+            stopped_background_task_payload(&mut background_work, &stopped),
+            Some(AgentConversationPayload::Tool { item_id: id, state: ToolState::Failed, .. }) if id == item_id
+        ));
+        assert!(background_work.is_empty());
+        assert!(stopped_background_task_payload(&mut background_work, &stopped).is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
