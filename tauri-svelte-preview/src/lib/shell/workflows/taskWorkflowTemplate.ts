@@ -54,7 +54,7 @@ export function taskWorkflowDefinition(
       role(
         'planner',
         'Controller',
-        'Turn the task into a concise implementation plan grounded in the current workspace. Limit orderedSteps to implementation work; the workflow handles verification, PR opening, PR review, and merge in later stages. Set ownerMerge true when the task requests an owner merge or the plan requires the owner to merge; otherwise set it false.',
+        'Turn the task into a concise implementation plan grounded in the current workspace. Limit orderedSteps to implementation work; the workflow handles verification, PR opening, PR review, and merge in later stages. Set ownerMerge true only when the task explicitly asks the owner to perform the merge personally; otherwise set it false.',
         providers.plan,
         'PlanReceipt',
         { kind: 'read-only-current' }
@@ -86,7 +86,7 @@ export function taskWorkflowDefinition(
       role(
         'pr-author',
         'PR author',
-        'Commit any verified uncommitted changes, push the branch, then open or update its pull request with before and after UI screenshots as artifacts when relevant. For Notion tasks use a tsk-<id> branch. End every commit message body with Committed-by: <actual committer>; never add a co-author trailer. Return the PR URL and branch for final review.',
+        'Commit any verified uncommitted changes, push the branch, then open or update its pull request with before and after UI screenshots as artifacts when relevant. For Notion tasks use a tsk-<id> branch. End every commit message body with Committed-by: <actual committer>; never add a co-author trailer. Do not merge in this stage; the PR reviewer and PR merger run later. Return the PR URL and branch for final review.',
         providers.implement,
         'PullRequestReceipt',
         { kind: 'shared-current', fileAllowList: [] }

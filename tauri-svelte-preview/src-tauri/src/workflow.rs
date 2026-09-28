@@ -454,7 +454,7 @@ pub(crate) struct SpecComplianceReceipt {
 pub(crate) struct VerificationReceipt {
     pub command: String,
     pub exit: i32,
-    pub duration: u64,
+    pub duration: f64,
     pub evidence_artifacts: Vec<WorkflowArtifactRef>,
     pub cleanup_receipt: Value,
 }
@@ -3103,6 +3103,8 @@ mod tests {
         ));
         let mut passed = receipt;
         passed["exit"] = json!(0);
+        assert!(WorkflowPolicy::validate_output(WorkflowOutputContract::VerificationReceipt, &passed).is_ok());
+        passed["duration"] = json!(0.1);
         assert!(WorkflowPolicy::validate_output(WorkflowOutputContract::VerificationReceipt, &passed).is_ok());
     }
     #[test]
