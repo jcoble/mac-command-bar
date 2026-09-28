@@ -1656,7 +1656,7 @@ impl WorkflowEngine {
             .iter_mut()
             .find(|node| node.node_id == node_id)
             .ok_or_else(|| WorkflowError::NotFound(node_id.into()))?;
-        if node.state != WorkflowNodeState::Running {
+        if !matches!(node.state, WorkflowNodeState::Starting | WorkflowNodeState::Running) {
             return Ok(run);
         }
         if let Some(lease_id) = node.lease_id.take() {
@@ -2198,6 +2198,25 @@ impl WorkflowEngine {
         WorkflowReducer::reduce(
             read_workflow_event_values(&self.store).map_err(WorkflowError::Ledger)?,
         )
+    }
+
+    /// A new app process cannot receive completion events from the previous
+    /// process's agent turns. Leave their work visible and offer an explicit retry.
+    pub fn fail_interrupted_stages(&self) -> Result<(), WorkflowError> {
+        for run in self.list_runs()? {
+            for node in run.nodes.iter().filter(|node| {
+                matches!(node.state, WorkflowNodeState::Starting | WorkflowNodeState::Running)
+            }) {
+                self.fail_agent_node(
+                    &run.id,
+                    &node.node_id,
+                    "runtime",
+                    "Assembly closed during this stage. Review its file changes before retrying.",
+                    &format!("startup-interrupted:{}", node.id),
+                )?;
+            }
+        }
+        Ok(())
     }
 
     fn require_run(&self, run_id: &str) -> Result<WorkflowRunRecord, WorkflowError> {
@@ -3211,6 +3230,40 @@ mod tests {
         run.nodes[0].state = WorkflowNodeState::Skipped;
         run.state = WorkflowRunState::Cancelled;
         assert_eq!(derive_phase(&run), WorkflowLoopPhase::Cancelled);
+    }
+
+    #[test]
+    fn restart_marks_an_inflight_stage_failed_and_retriable() {
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
+        let engine = WorkflowEngine::new(
+            Arc::new(FakeRuntime::default()),
+            Arc::new(InMemoryWorktreeLeasePort::default()),
+            Arc::new(FakeClock(AtomicU64::new(100))),
+            Arc::new(FakeIds(AtomicU64::new(1))),
+            store.clone(),
+        );
+        let created = engine.create_run(definition(), json!({"cwd":"/repo"}), "create".into()).unwrap();
+        let active = tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
+        assert_eq!(active.nodes[0].state, WorkflowNodeState::Running);
+        drop(engine);
+
+        let restarted = WorkflowEngine::new(
+            Arc::new(FakeRuntime::default()),
+            Arc::new(InMemoryWorktreeLeasePort::default()),
+            Arc::new(FakeClock(AtomicU64::new(200))),
+            Arc::new(FakeIds(AtomicU64::new(20))),
+            store,
+        );
+        restarted.fail_interrupted_stages().unwrap();
+        let failed = restarted.require_run(&created.id).unwrap();
+        assert_eq!(failed.state, WorkflowRunState::Failed);
+        assert_eq!(failed.nodes[0].failure.as_ref().unwrap().code, "runtime");
+        let sequence = failed.last_sequence;
+        restarted.fail_interrupted_stages().unwrap();
+        assert_eq!(restarted.require_run(&created.id).unwrap().last_sequence, sequence);
+        let retried = tauri::async_runtime::block_on(restarted.retry_node(&created.id, "a", "retry")).unwrap();
+        assert_eq!(retried.nodes[0].state, WorkflowNodeState::Running);
+        assert_eq!(retried.nodes[0].attempt, 2);
     }
 
     #[test]

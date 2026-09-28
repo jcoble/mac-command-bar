@@ -5464,6 +5464,7 @@ fn main() {
             let workflow_store = agent_runtime.store_handle();
             let remote_session_store = Arc::clone(&workflow_store);
             let workflow_engine = WorkflowEngine::managed(agent_runtime.clone(), workflow_store);
+            workflow_engine.fail_interrupted_stages().map_err(|error| error.to_string())?;
             let live_session_ids = agent_runtime
                 .resource_roots()
                 .into_iter()
