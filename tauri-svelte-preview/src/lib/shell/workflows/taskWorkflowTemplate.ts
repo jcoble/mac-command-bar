@@ -268,8 +268,18 @@ export function savedWorkflowDefinition(template: SavedWorkflowTemplate): Workfl
         throw new Error(`Choose an earlier plan or implementation stage for ${stage.title}.`);
       }
     }
+    if (lastPullRequest >= 0 && !['PullRequestReceipt', 'ReviewReceipt', 'PullRequestMergeReceipt'].includes(stage.outputContract)) {
+      throw new Error('After Open PR, only PR review and optional Merge stages may follow.');
+    }
     if (stage.outputContract === 'PullRequestReceipt') {
       if (lastPullRequest >= 0) throw new Error('Use one Open PR stage; a correction reruns it.');
+      const earlier = template.stages.slice(0, index);
+      const implementation = earlier.findLastIndex((item) => item.outputContract === 'ImplementationReceipt');
+      const review = earlier.findLastIndex((item) => item.outputContract === 'ReviewReceipt');
+      const verification = earlier.findLastIndex((item) => item.outputContract === 'VerificationReceipt');
+      if (implementation < 0 || review <= implementation || verification <= review) {
+        throw new Error('Open PR follows implementation, review, and verification in that order.');
+      }
       lastPullRequest = index;
     }
     if (stage.outputContract === 'ReviewReceipt' && lastPullRequest >= 0 && index > lastPullRequest) {
@@ -283,6 +293,9 @@ export function savedWorkflowDefinition(template: SavedWorkflowTemplate): Workfl
       throw new Error('Merge must be the last stage.');
     }
     seen.add(stage.id);
+  }
+  if (lastPullRequest >= 0 && lastPullRequestReview <= lastPullRequest) {
+    throw new Error('Review the opened PR before this workflow can finish.');
   }
 
   const roles = template.stages.map((stage) => role(
