@@ -179,6 +179,22 @@ mod tests {
     }
 
     #[test]
+    fn live_skips_events_already_covered() {
+        let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
+        for sequence in 1..=3 {
+            history.live("a", 0, &event(sequence)).unwrap();
+        }
+        history.snapshot("a", 0, Some(3), &snapshot(4, 3)).unwrap();
+        // A reconnect replays from the last acknowledgement; the cache already has it.
+        let mut replayed = event(2);
+        replayed.timestamp_ms = 999;
+        history.live("a", 0, &replayed).unwrap();
+        let cached = history.read_snapshot("a", 0, "same-session-id").unwrap();
+        assert_eq!(cached.events[1].sequence, 2);
+        assert_eq!(cached.events[1].timestamp_ms, 123);
+    }
+
+    #[test]
     fn remote_history_caches_live_messages_before_a_snapshot_and_bounds_reads() {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
         for sequence in 1..=10 {
@@ -322,6 +338,11 @@ impl RemoteHistory {
     ) -> Result<(), String> {
         self.check(profile, epoch)?;
         let mut coverage = self.coverage(profile, &event.owned_id)?;
+        // A reconnect replays from the last acknowledgement. Rows already
+        // covered are not rewritten.
+        if coverage.through.is_some_and(|through| event.sequence <= through) {
+            return Ok(());
+        }
         if coverage.oldest.is_none() {
             coverage.oldest = Some(event.sequence);
         }

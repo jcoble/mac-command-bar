@@ -852,9 +852,9 @@ async function loadConversationSnapshot(
   }
 }
 
-/** Stored event bytes read per history page. Keep this within the active
- * transcript's 4 MiB limit so paging does not immediately discard the page. */
-const EVENT_PAGE_BYTES = 4 * 1024 * 1024;
+/** Stored event bytes read per history page, leaving room in the transcript
+ * window for the rest of the loaded conversation. */
+const EVENT_PAGE_BYTES = 512 * 1024;
 
 /**
  * Reads the page of stored events just older than the transcript and puts it in

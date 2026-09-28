@@ -57,7 +57,16 @@ export function addOwnedSession(session: OwnedSession): void {
   rail.owned = [...rail.owned, session];
 }
 
+const sameValue = (left: unknown, right: unknown): boolean =>
+  Object.is(left, right)
+  || (Array.isArray(left) && Array.isArray(right)
+    && left.length === right.length && left.every((value, index) => Object.is(value, right[index])));
+
 export function updateOwnedSession(ownedId: string, patch: Partial<OwnedSession>): void {
+  const existing = rail.owned.find((session) => session.ownedId === ownedId);
+  // Replacing the list re-renders every row; skip it when nothing changed.
+  if (existing && Object.entries(patch).every(([key, value]) =>
+    sameValue(existing[key as keyof OwnedSession], value))) return;
   rail.owned = rail.owned.map((session) =>
     session.ownedId === ownedId ? { ...session, ...patch, ownedId: session.ownedId } : session
   );
