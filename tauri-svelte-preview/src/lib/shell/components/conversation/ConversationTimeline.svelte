@@ -90,6 +90,8 @@
   let host = $state<HTMLDivElement | null>(null);
   let list = $state<HTMLDivElement | null>(null);
   let follow = $state(true);
+  // A scroll correction after older paging is not a request for newer history.
+  let newerPagingAllowed = true;
   let scrollState = $state<ConversationScrollAnchorState>(initialConversationScrollAnchorState);
   let seenAnchorRequest = '';
   let anchoredUserItemId = $state<string | null>(null);
@@ -205,6 +207,7 @@
     // Every open starts at the newest message; the reader controls scrolling
     // after that, including while new writing arrives.
     follow = true;
+    newerPagingAllowed = true;
     scrollState = decideConversationScroll(scrollState, { type: 'opened' }).state;
   });
 
@@ -343,12 +346,15 @@
   function requestOlderHistory(): void {
     if (!host || !hasOlder || loadingOlder || !onLoadOlder || scrollState.openingToLatest) return;
     if (host.scrollTop > 80) return;
+    follow = false;
+    newerPagingAllowed = false;
     captureViewportAnchor();
     onLoadOlder();
   }
 
   function requestNewerHistory(force = false): void {
     if (!host || !hasNewer || loadingNewer || !onLoadNewer || scrollState.openingToLatest) return;
+    if (!force && !newerPagingAllowed) return;
     if (!force && distanceBelowReader() > 80) return;
     captureViewportAnchor();
     onLoadNewer();
@@ -509,6 +515,9 @@
 
   function handleKeydown(event: KeyboardEvent): void {
     if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) {
+      if (!(event.target instanceof Element && event.target.closest('input, textarea, [contenteditable]'))) {
+        newerPagingAllowed = ['ArrowDown', 'PageDown', 'End', ' '].includes(event.key);
+      }
       handleUserInput();
       if ((event.target as HTMLElement | null)?.closest('input, textarea, [contenteditable]')) return;
       const older = ['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey);
@@ -534,14 +543,25 @@
   }
 
   function userInputInterrupts(node: HTMLElement): { destroy(): void } {
-    node.addEventListener('wheel', handleUserInput, { passive: true });
+    const onWheel = (event: WheelEvent): void => {
+      newerPagingAllowed = event.deltaY > 0;
+      handleUserInput();
+    };
+    const onPointerDown = (event: PointerEvent): void => {
+      if (event.target === node && event.clientX >= node.getBoundingClientRect().right - 18) {
+        newerPagingAllowed = true;
+      }
+    };
+    node.addEventListener('wheel', onWheel, { passive: true });
+    node.addEventListener('pointerdown', onPointerDown);
     node.addEventListener('touchstart', handleUserInput, { passive: true });
     node.addEventListener('pointerdown', handlePointerDown);
     node.addEventListener('pointerup', handlePointerUp);
     window.addEventListener('keydown', handleKeydown);
     return {
       destroy(): void {
-        node.removeEventListener('wheel', handleUserInput);
+        node.removeEventListener('wheel', onWheel);
+        node.removeEventListener('pointerdown', onPointerDown);
         node.removeEventListener('touchstart', handleUserInput);
         node.removeEventListener('pointerdown', handlePointerDown);
         node.removeEventListener('pointerup', handlePointerUp);
