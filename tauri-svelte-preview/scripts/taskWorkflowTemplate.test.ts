@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 
-import { taskWorkflowDefinition } from '../src/lib/shell/workflows/taskWorkflowTemplate.ts';
+import {
+  savedWorkflowDefinition,
+  taskWorkflowDefinition,
+  type SavedWorkflowStage
+} from '../src/lib/shell/workflows/taskWorkflowTemplate.ts';
 
 const definition = taskWorkflowDefinition({
   plan: 'claude',
@@ -53,5 +57,71 @@ assert.equal(definition.roles.find((role) => role.id === 'verifier')?.outputCont
 assert.equal(definition.roles.find((role) => role.id === 'pr-author')?.outputContract, 'PullRequestReceipt');
 assert.equal(definition.roles.find((role) => role.id === 'pr-reviewer')?.outputContract, 'ReviewReceipt');
 assert.equal(definition.roles.find((role) => role.id === 'pr-merger')?.outputContract, 'PullRequestMergeReceipt');
+
+const stage = (
+  id: string,
+  outputContract: SavedWorkflowStage['outputContract'],
+  redoStageId: string | null = null
+): SavedWorkflowStage => ({
+  id,
+  title: id,
+  instructions: `Complete ${id} for the approved plan.`,
+  provider: outputContract === 'ImplementationReceipt' || outputContract === 'PullRequestReceipt' ? 'codex' : 'claude',
+  outputContract,
+  redoStageId,
+  approvalPrompt: null
+});
+
+const approved = {
+  id: 'approved-plan',
+  name: 'Approved plan to PR',
+  stages: [
+    stage('implement', 'ImplementationReceipt'),
+    stage('review', 'ReviewReceipt', 'implement'),
+    stage('verify', 'VerificationReceipt'),
+    stage('open-pr', 'PullRequestReceipt'),
+    stage('pr-review', 'ReviewReceipt', 'implement'),
+    stage('merge', 'PullRequestMergeReceipt')
+  ]
+};
+const saved = savedWorkflowDefinition(approved);
+assert.equal(saved.name, approved.name);
+assert.throws(() => savedWorkflowDefinition({ ...approved, id: definition.id }), /reserved/);
+assert.deepEqual(saved.nodes.map((node) => node.id), approved.stages.map((item) => item.id));
+assert.equal(saved.nodes.some((node) => node.id === 'plan'), false);
+assert.deepEqual(saved.nodes.find((node) => node.id === 'review')?.dependsOn, ['implement']);
+assert.deepEqual(saved.nodes.find((node) => node.id === 'open-pr')?.dependsOn, ['verify', 'implement']);
+assert.deepEqual(saved.nodes.find((node) => node.id === 'pr-review')?.dependsOn, ['open-pr', 'implement']);
+assert.deepEqual(saved.nodes.find((node) => node.id === 'merge')?.dependsOn, ['pr-review', 'open-pr']);
+assert.equal(saved.roles.find((item) => item.id === 'implement')?.workspacePolicy.kind, 'shared-current');
+assert.equal(saved.roles.find((item) => item.id === 'merge')?.workspacePolicy.kind, 'read-only-current');
+const approvedWithGate = savedWorkflowDefinition({
+  ...approved,
+  stages: [{ ...approved.stages[0], approvalPrompt: 'Approve implementation before review.' }, ...approved.stages.slice(1)]
+});
+assert.equal(approvedWithGate.nodes[0].approvalGate?.prompt, 'Approve implementation before review.');
+assert.equal(savedWorkflowDefinition({ ...approved, stages: approved.stages.slice(0, -1) }).nodes.some(
+  (node) => node.id === 'merge'
+), false);
+assert.throws(() => savedWorkflowDefinition({
+  ...approved,
+  stages: [...approved.stages.slice(0, -1), stage('update-pr', 'PullRequestReceipt')]
+}), /one Open PR stage/);
+assert.throws(() => savedWorkflowDefinition({
+  ...approved,
+  stages: [stage('implement', 'ImplementationReceipt'), stage('open-pr', 'PullRequestReceipt'), stage('merge', 'PullRequestMergeReceipt')]
+}), /Review the opened PR/);
+assert.throws(() => savedWorkflowDefinition({
+  ...approved,
+  stages: [...approved.stages, stage('after-merge', 'VerificationReceipt')]
+}), /Merge must be the last stage/);
+assert.throws(() => savedWorkflowDefinition({
+  ...approved,
+  stages: [stage('review', 'ReviewReceipt', 'implement'), stage('implement', 'ImplementationReceipt')]
+}), /earlier plan or implementation/);
+assert.throws(() => savedWorkflowDefinition({
+  ...approved,
+  stages: [stage('implement', 'ImplementationReceipt'), stage('implement', 'ImplementationReceipt')]
+}), /unique id/);
 
 console.log('task workflow template tests passed');
