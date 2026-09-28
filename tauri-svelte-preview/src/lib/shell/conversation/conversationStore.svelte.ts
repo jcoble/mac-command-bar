@@ -75,8 +75,8 @@ export interface ConversationRecentEvent {
 export const CONVERSATION_RECENT_EVENT_CAP = 200;
 export const ACTIVE_EVENT_WINDOW_EVENTS = 20_000;
 export const ACTIVE_EVENT_WINDOW_TRIM_EVENTS = 15_000;
-export const ACTIVE_EVENT_WINDOW_BYTES = 2 * 1024 * 1024; // 2 MiB bounded memory window
-const ACTIVE_EVENT_WINDOW_TRIM_BYTES = 3 * 512 * 1024;
+export const ACTIVE_EVENT_WINDOW_BYTES = 4 * 1024 * 1024; // 4 MiB bounded memory window
+const ACTIVE_EVENT_WINDOW_TRIM_BYTES = 3 * 1024 * 1024;
 const eventEncoder = new TextEncoder();
 
 function serializedEventBytes(event: AgentConversationEvent): number {

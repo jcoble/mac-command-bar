@@ -1649,7 +1649,7 @@ await test('release builds enforce the UTF-8 history byte limit in both paging d
   const ownedId = 'owned-release-byte-limit';
   const event = (sequence: number): AgentConversationEvent => ({
     ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
-    payload: { kind: 'assistantMessage', itemId: `large-${sequence}`, text: '界'.repeat(400_000), completed: true }
+    payload: { kind: 'assistantMessage', itemId: `large-${sequence}`, text: '界'.repeat(800_000), completed: true }
   });
   const first = event(1);
   const second = event(2);
@@ -1661,7 +1661,7 @@ await test('release builds enforce the UTF-8 history byte limit in both paging d
     const state = store.getConversationSession(ownedId);
     assert.equal(state.loadedEvents.length, 1);
     assert.equal(state.loadedEvents[0].sequence, sequence);
-    assert.ok(state.loadedEventsBytes > 1_200_000, 'count UTF-8 bytes, not characters or DEV diagnostics');
+    assert.ok(state.loadedEventsBytes > 2_400_000, 'count UTF-8 bytes, not characters or DEV diagnostics');
     assert.ok(state.loadedEventsBytes <= store.ACTIVE_EVENT_WINDOW_BYTES);
     assert.equal(state.oldestLoadedSequence, sequence);
     assert.equal(state.newestLoadedSequence, sequence);
@@ -1984,8 +1984,7 @@ await test('an unchanged sidebar row update leaves the row list untouched', asyn
 });
 
 await test('prepending an older page trims newest only down to the trim target', () => {
-  // Memory comes first: the transcript window stays at or under 2 MiB.
-  assert.ok(store.ACTIVE_EVENT_WINDOW_BYTES <= 2 * 1024 * 1024);
+  assert.equal(store.ACTIVE_EVENT_WINDOW_BYTES, 4 * 1024 * 1024);
   const ownedId = 'owned-prepend-trim-target';
   const event = (sequence: number): AgentConversationEvent => ({
     ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,

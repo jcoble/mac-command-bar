@@ -852,8 +852,8 @@ async function loadConversationSnapshot(
   }
 }
 
-/** Stored event bytes read per history page: a quarter of the transcript
- * window, so one page never pushes the rest of the window out. */
+/** Stored event bytes read per history page, leaving room in the transcript
+ * window for the rest of the loaded conversation. */
 const EVENT_PAGE_BYTES = 512 * 1024;
 
 /**
