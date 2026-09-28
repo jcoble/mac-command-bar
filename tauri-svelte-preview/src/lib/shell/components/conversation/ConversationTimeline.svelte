@@ -394,8 +394,6 @@
     if (follow) pageAnchor = null;
     else captureViewportAnchor();
     onScroll?.(host.scrollTop);
-    requestOlderHistory();
-    requestNewerHistory();
   }
 
   let jumpingToLatest = false;
@@ -512,17 +510,41 @@
   function handleKeydown(event: KeyboardEvent): void {
     if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) {
       handleUserInput();
+      if ((event.target as HTMLElement | null)?.closest('input, textarea, [contenteditable]')) return;
+      const older = ['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey);
+      const windowId = renderWindowId;
+      requestAnimationFrame(() => {
+        if (renderWindowId !== windowId) return;
+        if (older) requestOlderHistory();
+        else requestNewerHistory();
+      });
     }
+  }
+
+  let pointerScrollTop: number | null = null;
+  function handlePointerDown(): void {
+    pointerScrollTop = host?.scrollTop ?? null;
+  }
+  function handlePointerUp(): void {
+    if (!host || pointerScrollTop === null) return;
+    const moved = host.scrollTop - pointerScrollTop;
+    pointerScrollTop = null;
+    if (moved < 0) requestOlderHistory();
+    else if (moved > 0) requestNewerHistory();
   }
 
   function userInputInterrupts(node: HTMLElement): { destroy(): void } {
     node.addEventListener('wheel', handleUserInput, { passive: true });
     node.addEventListener('touchstart', handleUserInput, { passive: true });
+    node.addEventListener('pointerdown', handlePointerDown);
+    node.addEventListener('pointerup', handlePointerUp);
     window.addEventListener('keydown', handleKeydown);
     return {
       destroy(): void {
         node.removeEventListener('wheel', handleUserInput);
         node.removeEventListener('touchstart', handleUserInput);
+        node.removeEventListener('pointerdown', handlePointerDown);
+        node.removeEventListener('pointerup', handlePointerUp);
         window.removeEventListener('keydown', handleKeydown);
         finishAnimation();
       }
@@ -542,7 +564,7 @@
     data-testid="conversation-timeline-scroll"
     bind:this={host}
     onscroll={handleScroll}
-    onwheel={(event) => { if (event.deltaY < 0) requestOlderHistory(); }}
+    onwheel={(event) => { if (event.deltaY < 0) requestOlderHistory(); else if (event.deltaY > 0) requestNewerHistory(); }}
     use:userInputInterrupts
   >
     {#if renderedItems.length === 0}
