@@ -799,7 +799,6 @@ export async function loadConversationForRead(
     await loadConversationForRead(ownedId, includeAttachments, signal);
     return;
   }
-  const generation = getConversationSession(ownedId)?.generation ?? 0;
   const readVersion = (readVersions.get(ownedId) ?? 0) + 1;
   readVersions.set(ownedId, readVersion);
   const token = {};
@@ -808,7 +807,6 @@ export async function loadConversationForRead(
   signal?.addEventListener('abort', abortFromOwner, { once: true });
   const work = loadConversationSnapshot(
     ownedId,
-    generation,
     readVersion,
     token,
     includeAttachments,
@@ -826,7 +824,6 @@ export async function loadConversationForRead(
 
 async function loadConversationSnapshot(
   ownedId: string,
-  generation: number,
   readVersion: number,
   token: object,
   includeAttachments: boolean,
@@ -834,21 +831,18 @@ async function loadConversationSnapshot(
   ownerSignal?: AbortSignal
 ): Promise<void> {
   try {
-    const snapshot = await readAgentConversationSnapshotFromTauri(ownedId, signal);
-    const current = getConversationSession(ownedId);
-    if (signal?.aborted) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const snapshot = await readAgentConversationSnapshotFromTauri(ownedId, signal);
+      const current = getConversationSession(ownedId);
+      if (signal?.aborted || !snapshot || readVersions.get(ownedId) !== readVersion || !current) return;
+      applyAgentConversationSnapshot(snapshot);
+      // Live events may advance the generation or head while this read is in
+      // flight. Fetch the new head instead of showing only those live events.
+      if (snapshot.connection.generation < current.generation || snapshot.lastSequence < current.lastSequence) continue;
+      if (includeAttachments) {
+        void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events, ownerSignal ?? signal);
+      }
       return;
-    }
-    if (
-      !snapshot
-      || readVersions.get(ownedId) !== readVersion
-      || current?.generation !== generation
-    ) {
-      return;
-    }
-    applyAgentConversationSnapshot(snapshot);
-    if (includeAttachments) {
-      void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events, ownerSignal ?? signal);
     }
   } finally {
     if (resyncing.get(ownedId)?.token === token) {
