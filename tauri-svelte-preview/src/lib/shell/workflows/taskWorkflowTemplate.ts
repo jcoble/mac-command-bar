@@ -86,7 +86,7 @@ export function taskWorkflowDefinition(
       role(
         'pr-author',
         'PR author',
-        'Commit any verified uncommitted changes, push the branch, then open a pull request with before and after UI screenshots as artifacts when relevant. For Notion tasks use a tsk-<id> branch. End every commit message body with Committed-by: <actual committer>; never add a co-author trailer. Return the PR URL and branch for final review.',
+        'Commit any verified uncommitted changes, push the branch, then open or update its pull request with before and after UI screenshots as artifacts when relevant. For Notion tasks use a tsk-<id> branch. End every commit message body with Committed-by: <actual committer>; never add a co-author trailer. Return the PR URL and branch for final review.',
         providers.implement,
         'PullRequestReceipt',
         { kind: 'shared-current', fileAllowList: [] }
@@ -174,8 +174,8 @@ export function taskWorkflowDefinition(
         id: 'pr-review',
         title: 'PR review',
         roleId: 'pr-reviewer',
-        dependsOn: ['open-pr'],
-        condition: null,
+        dependsOn: ['implement', 'open-pr'],
+        condition: { redoNodeId: 'implement' },
         fanOut: null,
         approvalGate: null,
         timeoutSeconds: 3600,

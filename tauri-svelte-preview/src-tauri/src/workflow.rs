@@ -1682,7 +1682,48 @@ impl WorkflowEngine {
                 .and_then(review_redo_target)
                 .and_then(|target| run.nodes.iter().position(|node| node.node_id == target));
             if let Some(redo_index) = redo_index {
-                let can_retry = [redo_index, index].iter().all(|&candidate| {
+                // A late review must repeat every completed stage that relied
+                // on the corrected work, including verification and PR update.
+                let mut redo_ids = BTreeSet::from([run.nodes[redo_index].node_id.clone()]);
+                loop {
+                    let next: Vec<_> = run
+                        .definition
+                        .nodes
+                        .iter()
+                        .filter(|definition| {
+                            !redo_ids.contains(&definition.id)
+                                && (definition
+                                    .depends_on
+                                    .iter()
+                                    .any(|dependency| redo_ids.contains(dependency))
+                                    || run.definition.edges.iter().any(|edge| {
+                                        edge.to == definition.id && redo_ids.contains(&edge.from)
+                                    }))
+                        })
+                        .map(|definition| definition.id.clone())
+                        .collect();
+                    if next.is_empty() {
+                        break;
+                    }
+                    redo_ids.extend(next);
+                }
+                let rerun_indices: Vec<_> = run
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(candidate, node)| {
+                        (redo_ids.contains(&node.node_id)
+                            && !matches!(
+                                node.state,
+                                WorkflowNodeState::Blocked
+                                    | WorkflowNodeState::Ready
+                                    | WorkflowNodeState::Queued
+                                    | WorkflowNodeState::Skipped
+                            ))
+                        .then_some(candidate)
+                    })
+                    .collect();
+                let can_retry = rerun_indices.iter().all(|&candidate| {
                     let node = &run.nodes[candidate];
                     let definition = run.definition.nodes.iter().find(|item| item.id == node.node_id).unwrap();
                     let role = run.definition.roles.iter().find(|item| item.id == node.role_id).unwrap();
@@ -1693,7 +1734,7 @@ impl WorkflowEngine {
                     node.attempt < limit
                 });
                 if can_retry {
-                    for candidate in [redo_index, index] {
+                    for candidate in rerun_indices {
                         if let Some(lease_id) = run.nodes[candidate].lease_id.take() {
                             self.leases.release(&lease_id)?;
                         }
@@ -1707,7 +1748,7 @@ impl WorkflowEngine {
                         node.finished_at_ms = None;
                         node.gate = None;
                         node.failure = None;
-                        if candidate == redo_index {
+                        if candidate != index {
                             node.structured_output = None;
                             node.artifacts.clear();
                         }
@@ -2971,6 +3012,71 @@ mod tests {
         let failed = tauri::async_runtime::block_on(engine.submit_result(&created.id, "b", review(true), "review-4")).unwrap();
         assert_eq!(failed.state, WorkflowRunState::Failed);
         assert_eq!(failed.nodes.iter().find(|node| node.node_id == "b").unwrap().failure.as_ref().unwrap().code, "review-blocking");
+    }
+
+    #[test]
+    fn final_review_redo_repeats_code_review_verification_and_pr() {
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = WorkflowEngine::new(
+            runtime.clone(),
+            Arc::new(InMemoryWorktreeLeasePort::default()),
+            Arc::new(FakeClock(AtomicU64::new(100))),
+            Arc::new(FakeIds(AtomicU64::new(1))),
+            Arc::new(SessionStore::open_in_memory().unwrap()),
+        );
+        let mut workflow = definition();
+        workflow.roles.extend([
+            role("verifier", WorkflowOutputContract::VerificationReceipt),
+            role("pr-author", WorkflowOutputContract::PullRequestReceipt),
+        ]);
+        let mut code_review = node("b", "reviewer", &["a"]);
+        code_review.condition = Some(json!({"redoNodeId":"a"}));
+        let mut final_review = node("e", "reviewer", &["a", "d"]);
+        final_review.condition = Some(json!({"redoNodeId":"a"}));
+        workflow.nodes = vec![
+            node("a", "implementer", &[]),
+            code_review,
+            node("c", "verifier", &["b"]),
+            node("d", "pr-author", &["a", "c"]),
+            final_review,
+        ];
+        let implementation = json!({"changedFiles":["src/app.ts"],"summary":"done","tests":[],"knownRisks":[],"artifacts":[]});
+        let review = |blocking: bool| json!({
+            "severity": if blocking { "high" } else { "none" },
+            "file":"src/app.ts","line":1,"evidence":"Check the correction",
+            "recommendation":"Correct the case","confidence":1.0,"blocking":blocking
+        });
+        let verification = json!({"command":"true","exit":0,"duration":1,"evidenceArtifacts":[],"cleanupReceipt":{}});
+        let pr = json!({"url":"https://github.com/owner/repo/pull/1","branch":"tsk-1169-workflow-handoff","artifacts":[]});
+
+        let created = engine.create_run(workflow, json!({"cwd":"/repo"}), "create".into()).unwrap();
+        tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
+        for (id, receipt) in [("a", implementation.clone()), ("b", review(false)),
+            ("c", verification.clone()), ("d", pr.clone())] {
+            let key = format!("first-{id}");
+            tauri::async_runtime::block_on(engine.submit_result(&created.id, id, receipt, &key)).unwrap();
+        }
+        let redo = tauri::async_runtime::block_on(
+            engine.submit_result(&created.id, "e", review(true), "final-block".into())
+        ).unwrap();
+        for id in ["a", "b", "c", "d", "e"] {
+            let node = redo.nodes.iter().find(|node| node.node_id == id).unwrap();
+            assert_eq!(node.attempt, 2, "{id} must rerun after the final finding");
+            if id != "e" { assert!(node.structured_output.is_none(), "{id} has a stale receipt"); }
+        }
+        assert!(redo.nodes.iter().find(|node| node.node_id == "e").unwrap().structured_output.is_some());
+        let dispatches = runtime.dispatched.lock().unwrap();
+        let correction_prompt: Value = serde_json::from_str(&dispatches.last().unwrap().prompt).unwrap();
+        assert_eq!(correction_prompt["priorStageReceipts"]["e"]["blocking"], true);
+        drop(dispatches);
+        for (id, receipt) in [("a", implementation), ("b", review(false)),
+            ("c", verification), ("d", pr), ("e", review(false))] {
+            let key = format!("second-{id}");
+            let run = tauri::async_runtime::block_on(
+                engine.submit_result(&created.id, id, receipt, &key)
+            ).unwrap();
+            if id == "e" { assert_eq!(run.state, WorkflowRunState::Completed); }
+        }
     }
 
     #[test]
