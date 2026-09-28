@@ -664,6 +664,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-09-28 · TSK-1242 · “Move evidence storage into a private module”</td><td>The nine evidence SQL methods and their row decoder moved under <code>session_store/evidence.rs</code>. The existing SessionStore still owns the connection, types, schema, and transaction behavior.</td><td>10</td></tr>
             <tr><td>2026-09-28 · TSK-1169 · “Show provider usage in workflow stages”</td><td>Workflow snapshots read each child session’s latest provider usage event from SQLite and show reported context and token figures in the Workflows view, including after restart. A new usage event refreshes the matching run without advancing its stage. Missing usage and cost remain explicitly unreported.</td><td>18</td></tr>
             <tr><td>2026-09-28 · TSK-1169 · “Review the spec before planning”</td><td>The built-in task workflow asks a spec author to write a scoped design file, sends its typed receipt to a separate reviewer, and waits for owner approval before planning. A blocking spec finding returns to the spec author within the existing two-attempt limit. Later step plans and reviews receive the approved spec receipt.</td><td>18</td></tr>
             <tr><td>2026-09-28 · TSK-1169 · “Fail interrupted workflow stages on restart”</td><td>Startup marks a stage that was starting or running in the previous app process as failed with a retryable runtime error. Its saved agent conversation and file changes remain available for review before retry.</td><td>18</td></tr>
@@ -1311,6 +1312,8 @@
             <span class="badge current">Table</span>
             <h3><code>evidence_artifacts</code></h3>
             <p>Stable proof metadata links a run, task, agent/provider, scenario, commit, branch and worktree to managed original and thumbnail references, byte size, capture time, pin state and expiry. The binaries remain managed files rather than SQLite blobs; bounded newest-first pages do not retain a gallery in memory.</p>
+            <p>The private <code>session_store/evidence.rs</code> module holds the nine evidence SQL methods and row decoder. <code>SessionStore</code> still owns the connection, public types, and schema.</p>
+            <span class="source"><code>core/src/session_store/evidence.rs</code> · <code>core/src/session_store.rs</code></span>
           </article>
           <article class="card">
             <span class="badge current">Table</span>
