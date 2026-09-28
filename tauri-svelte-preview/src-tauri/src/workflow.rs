@@ -1158,22 +1158,22 @@ impl WorkflowEngine {
                 )
                 .map(Some);
         }
-        let payload = self
+        let text = self
             .store
-            .latest_completed_assistant_payload(&event.owned_id, turn_id)
+            .latest_assistant_text_for_turn(&event.owned_id, turn_id)
             .map_err(|error| WorkflowError::Ledger(error.to_string()))?;
-        let Some(payload) = payload else {
+        let Some(text) = text else {
             return self
                 .fail_agent_node(
                     &run_id,
                     &node_id,
                     "output-contract",
-                    "The provider completed without a final assistant message",
+                    "The provider completed without assistant text",
                     &idempotency_key,
                 )
                 .map(Some);
         };
-        let receipt = decode_agent_receipt(&payload).and_then(|value| {
+        let receipt = decode_agent_receipt(&text).and_then(|value| {
             let run = self.require_run(&run_id)?;
             let node = run
                 .nodes
@@ -1493,6 +1493,37 @@ impl WorkflowEngine {
         node.failure = None;
         node.structured_output = None;
         node.finished_at_ms = None;
+        let mut descendants = BTreeSet::from([node_id.to_string()]);
+        loop {
+            let next: Vec<_> = run
+                .definition
+                .nodes
+                .iter()
+                .filter(|definition| {
+                    !descendants.contains(&definition.id)
+                        && (definition
+                            .depends_on
+                            .iter()
+                            .any(|dependency| descendants.contains(dependency))
+                            || run.definition.edges.iter().any(|edge| {
+                                edge.to == definition.id && descendants.contains(&edge.from)
+                            }))
+                })
+                .map(|definition| definition.id.clone())
+                .collect();
+            if next.is_empty() {
+                break;
+            }
+            descendants.extend(next);
+        }
+        for descendant in &mut run.nodes {
+            if descendant.state == WorkflowNodeState::Cancelled
+                && descendants.contains(&descendant.node_id)
+            {
+                descendant.state = WorkflowNodeState::Blocked;
+                descendant.finished_at_ms = None;
+            }
+        }
         run.state = WorkflowRunState::Running;
         refresh_ready_and_phase(&mut run);
         self.append(
@@ -2296,17 +2327,7 @@ impl WorkflowEngine {
     }
 }
 
-fn decode_agent_receipt(payload_json: &str) -> Result<Value, WorkflowError> {
-    let event: AgentConversationEvent = serde_json::from_str(payload_json).map_err(|error| {
-        WorkflowError::OutputContract(format!(
-            "The completed assistant message could not be decoded: {error}"
-        ))
-    })?;
-    let AgentConversationPayload::AssistantMessage { text, .. } = event.payload else {
-        return Err(WorkflowError::OutputContract(
-            "The completed event was not an assistant message".into(),
-        ));
-    };
+fn decode_agent_receipt(text: &str) -> Result<Value, WorkflowError> {
     let trimmed = text.trim();
     if let Ok(value) = serde_json::from_str(trimmed) {
         return Ok(value);
@@ -3082,20 +3103,9 @@ mod tests {
     }
     #[test]
     fn workflow_receipt_decoder_accepts_plain_and_fenced_json() {
-        let receipt = json!({
-            "payload": {
-                "kind": "assistantMessage",
-                "itemId": "assistant-1",
-                "text": "```json\n{\"orderedSteps\":[],\"dependencies\":[],\"risk\":{},\"estimatedParallelLanes\":1}\n```",
-                "completed": true
-            },
-            "ownedId": "workflow-agent",
-            "provider": "codex",
-            "generation": 1,
-            "sequence": 1,
-            "timestampMs": 1
-        });
-        let decoded = decode_agent_receipt(&receipt.to_string()).unwrap();
+        let receipt = r#"{"orderedSteps":[],"dependencies":[],"risk":{},"estimatedParallelLanes":1}"#;
+        assert_eq!(decode_agent_receipt(receipt).unwrap()["estimatedParallelLanes"], 1);
+        let decoded = decode_agent_receipt(&format!("```json\n{receipt}\n```")).unwrap();
         assert_eq!(decoded["estimatedParallelLanes"], 1);
     }
     #[test]
@@ -3195,6 +3205,35 @@ mod tests {
         run.nodes[0].state = WorkflowNodeState::Skipped;
         run.state = WorkflowRunState::Cancelled;
         assert_eq!(derive_phase(&run), WorkflowLoopPhase::Cancelled);
+    }
+
+    #[test]
+    fn retry_reopens_descendants_cancelled_by_the_failed_node() {
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = WorkflowEngine::new(
+            runtime.clone(),
+            Arc::new(InMemoryWorktreeLeasePort::default()),
+            Arc::new(FakeClock(AtomicU64::new(100))),
+            Arc::new(FakeIds(AtomicU64::new(1))),
+            Arc::new(SessionStore::open_in_memory().unwrap()),
+        );
+        let mut workflow = definition();
+        workflow.completion.cancel_descendants_on_failure = true;
+        let created = engine.create_run(workflow, json!({"cwd":"/repo"}), "create".into()).unwrap();
+        tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
+        let failed = engine.fail_agent_node(&created.id, "a", "runtime", "failed", "fail").unwrap();
+        assert_eq!(failed.nodes.iter().find(|node| node.node_id == "b").unwrap().state, WorkflowNodeState::Cancelled);
+
+        let retried = tauri::async_runtime::block_on(engine.retry_node(&created.id, "a", "retry")).unwrap();
+        assert_eq!(retried.nodes.iter().find(|node| node.node_id == "b").unwrap().state, WorkflowNodeState::Blocked);
+        let advanced = tauri::async_runtime::block_on(engine.submit_result(
+            &created.id,
+            "a",
+            json!({"changedFiles":[],"summary":"done","tests":[],"knownRisks":[],"artifacts":[]}),
+            "result",
+        )).unwrap();
+        assert_eq!(advanced.nodes.iter().find(|node| node.node_id == "b").unwrap().state, WorkflowNodeState::Running);
+        assert_eq!(runtime.dispatched.lock().unwrap().len(), 3);
     }
     #[test]
     fn approved_gate_releases_its_workspace_lease() {
