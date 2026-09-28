@@ -1169,7 +1169,10 @@ async function handleConversationStreamEnvelope(
   if (terminal && !transition) synchronizeSessionPresenceWork(payload.ownedId, null, false);
   if (active) applyAgentConversationEvent(payload);
   else {
-    if (terminal) setConversationSending(payload.ownedId, false);
+    if (terminal) {
+      setConversationSending(payload.ownedId, false);
+      if (current) releaseConversationForRead(payload.ownedId);
+    }
     recordAgentConversationPresenceEvent(payload);
   }
   if (
@@ -1424,6 +1427,7 @@ export async function sendStructuredMessage(
       setConversationSending(ownedId, false);
       state.attachments.forEach(cleanupConversationAttachmentPreview);
       setConversationAttachments(ownedId, []);
+      if (rail.activeOwnedId !== ownedId) releaseConversationForRead(ownedId);
       return;
     }
     if (state.generation < 1) throw new Error('The structured conversation is not connected');
@@ -1506,6 +1510,7 @@ export async function sendStructuredMessage(
     } else if (!remoteSend && !liveConversationEvents) {
       await resyncConversation(ownedId);
     }
+    if (rail.activeOwnedId !== ownedId) releaseConversationForRead(ownedId);
   } catch (error) {
     // A send that never went out leaves its screenshots in the composer, so
     // nothing is left waiting to be hung on a later message.

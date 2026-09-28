@@ -1067,6 +1067,7 @@ await test('sendStructuredMessage resolves the terminal from the owned session, 
     writerLease: { ownedId, generation: 0, owner: 'terminal' }
   };
   const terminalWrites: Array<{ terminalId: string; text: string }> = [];
+  const evicted: string[] = [];
   const sendStructuredMessage = Function(
     'getConversationSession',
     'setConversationSending',
@@ -1078,11 +1079,13 @@ await test('sendStructuredMessage resolves the terminal from the owned session, 
     'cleanupConversationAttachmentPreview',
     'setConversationAttachments',
     'recordSentConversationAttachments',
+    'releaseConversationForRead',
     `const preparingSends = new Map();\n${serviceJavaScript}\nreturn sendStructuredMessage;`
   )(
     () => state,
     () => undefined,
     {
+      activeOwnedId: 'another-session',
       owned: [{
         ownedId,
         ptySessionId: terminalId,
@@ -1100,11 +1103,49 @@ await test('sendStructuredMessage resolves the terminal from the owned session, 
     },
     () => undefined,
     () => undefined,
-    () => undefined
+    () => undefined,
+    (id: string) => evicted.push(id)
   ) as (messageOwnedId: string, text: string) => Promise<void>;
 
   await sendStructuredMessage(ownedId, 'Route this message');
   assert.deepEqual(terminalWrites.map((write) => write.terminalId), [terminalId, terminalId]);
+  assert.deepEqual(evicted, [ownedId], 'a completed send releases the inactive transcript');
+});
+
+await test('a remote send releases its transcript when the reader switched away during dispatch', async () => {
+  const ownedId = 'remote-send-switch';
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const block = source.match(/export async function sendStructuredMessage\([\s\S]*?\n\}\n\n\/\*\* Stops the active turn/);
+  assert.ok(block);
+  const code = stripTypeScriptTypes(block[0].replace(/\n\n\/\*\* Stops the active turn$/, '').replace('export async function', 'async function'), { mode: 'strip' });
+  const state = { sending: false, generation: 1, attachments: [], capabilities: null, connectionState: 'connected', agentConfig: { availableApprovalPolicies: [] } };
+  const rail = { activeOwnedId: ownedId, owned: [{ ownedId, agent: 'codex', state: 'live', origin: 'app', executionEnvironment: 'remote' }] };
+  const evicted: string[] = [];
+  let finishSend!: () => void;
+  const dispatched = new Promise<void>((resolve) => { finishSend = resolve; });
+  const dependencies = {
+    getConversationSession: () => state,
+    setConversationSending: (_id: string, sending: boolean) => { state.sending = sending; },
+    rail, get, sessionPresenceHistory,
+    shouldReviveBeforeSend: () => false,
+    sendSupportsImages: () => false,
+    hasBackendCapability: async () => true,
+    ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY: 'test',
+    sendTargetGeneration: () => 1,
+    updateOwnedSession: () => undefined,
+    recordSentConversationAttachments: () => undefined,
+    attachmentDisplayMetadata: () => undefined,
+    invoke: async () => dispatched,
+    setConversationAttachments: () => undefined,
+    releaseConversationForRead: (id: string) => evicted.push(id)
+  };
+  const send = Function(...Object.keys(dependencies), `const preparingSends = new Map();\n${code}\nreturn sendStructuredMessage;`)(...Object.values(dependencies)) as (id: string, text: string) => Promise<void>;
+  const pending = send(ownedId, 'Continue');
+  await new Promise((resolve) => setImmediate(resolve));
+  rail.activeOwnedId = 'another-session';
+  finishSend();
+  await pending;
+  assert.deepEqual(evicted, [ownedId]);
 });
 
 // A permission request without provider options must answer through the
@@ -1763,6 +1804,7 @@ await test('an inactive terminal event clears send state before finished rail pr
     applyAgentConversationEvent: () => { throw new Error('inactive event materialized'); },
     setConversationSending: () => { state.sending = false; calls.push('clear'); },
     recordAgentConversationPresenceEvent: () => { calls.push('presence'); },
+    releaseConversationForRead: () => { calls.push('release'); },
     getConversationSession: () => state
   };
   const handle = Function(...Object.keys(dependencies), `${code}\nreturn handleConversationStreamEnvelope;`)(...Object.values(dependencies)) as (
@@ -1772,7 +1814,7 @@ await test('an inactive terminal event clears send state before finished rail pr
     ownedId, provider: 'claude', generation: 1, sequence: 3, timestampMs: 3_010,
     payload: { kind: 'turn', turnId: 'observed-turn', state: 'completed' }
   } });
-  assert.deepEqual(calls, ['clear', 'presence']);
+  assert.deepEqual(calls, ['clear', 'release', 'presence']);
   assert.equal(state.draft, draft);
   assert.equal(state.attachments, attachments);
   store.recordAgentConversationPresenceEvent({
