@@ -5512,13 +5512,31 @@ fn main() {
                         ..
                     }
                 );
+                let is_usage = matches!(
+                    &event.payload,
+                    agent_conversation::protocol::AgentConversationPayload::Usage { .. }
+                );
                 projection_streams.publish_agent_event(event.clone());
-                if !is_terminal_turn {
+                if !is_terminal_turn && !is_usage {
                     return;
                 }
                 let workflow_events = workflow_events.clone();
                 let workflow_handle = workflow_handle.clone();
                 tauri::async_runtime::spawn(async move {
+                    if is_usage {
+                        match workflow_events.list_runs() {
+                            Ok(runs) => {
+                                if let Some(run) = runs.into_iter().find(|run| run.nodes.iter()
+                                    .any(|node| node.owned_id == event.owned_id)) {
+                                    emit_workflow_run_updated(&workflow_handle, &run);
+                                }
+                            }
+                            Err(error) => debug_log::stderr_log!(
+                                "Could not show workflow usage: {error}"
+                            ),
+                        }
+                        return;
+                    }
                     match workflow_events.accept_agent_event(&event).await {
                         Ok(Some(run)) => emit_workflow_run_updated(&workflow_handle, &run),
                         Ok(None) => {}

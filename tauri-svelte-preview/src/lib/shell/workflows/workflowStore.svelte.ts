@@ -51,7 +51,11 @@ export function beginWorkflowLoad(): void {
 }
 
 export function applyWorkflowSnapshots(runs: WorkflowRunRecord[] | null): void {
-  workflowState.runs = runs ? [...runs] : [];
+  const current = new Map(workflowState.runs.map((run) => [run.id, run]));
+  workflowState.runs = runs?.map((run) => {
+    const newer = current.get(run.id);
+    return newer && newer.lastSequence > run.lastSequence ? newer : run;
+  }) ?? [];
   workflowState.loading = false;
   workflowState.error = null;
   workflowState.unavailableReason = runs === null ? 'Workflow runs are available in the desktop app.' : null;
@@ -75,7 +79,7 @@ export function failWorkflowLoad(message: string): void {
 export function upsertWorkflowSnapshot(run: WorkflowRunRecord): void {
   const index = workflowState.runs.findIndex((candidate) => candidate.id === run.id);
   if (index < 0) workflowState.runs = [...workflowState.runs, run];
-  else workflowState.runs[index] = run;
+  else if (run.lastSequence >= workflowState.runs[index].lastSequence) workflowState.runs[index] = run;
   workflowState.loading = false;
   workflowState.error = null;
   workflowState.unavailableReason = null;

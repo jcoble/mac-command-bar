@@ -17,6 +17,7 @@
   import { Chip } from '$lib/components/ui/chip/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
+  import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
   import {
     listAgentConversationSessionsFromTauri,
     readAssemblySettingFromTauri,
@@ -239,6 +240,37 @@
     const minutes = Math.floor(seconds / 60);
     if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
     return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
+  }
+
+  const compactTokens = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
+
+  function usageCompact(node: WorkflowNodeRunRecord): string {
+    if (!node.usage) return 'Usage not reported';
+    const usage = sessionContextUsage(null, node.usage);
+    if (usage.usedTokens !== null && usage.contextWindow !== null) {
+      return `Ctx ${compactTokens.format(usage.usedTokens)}/${compactTokens.format(usage.contextWindow)}`;
+    }
+    if (usage.totalTokens !== null) return `Total ${compactTokens.format(usage.totalTokens)} tokens`;
+    if (usage.usedTokens !== null) return `Ctx ${compactTokens.format(usage.usedTokens)} tokens`;
+    return 'Usage not reported';
+  }
+
+  function usageSummary(node: WorkflowNodeRunRecord): string {
+    if (!node.usage) return 'Usage and cost not reported';
+    const usage = sessionContextUsage(null, node.usage);
+    const parts: string[] = [];
+    if (usage.usedTokens !== null) {
+      const used = usage.usedTokens.toLocaleString();
+      parts.push(usage.contextWindow === null
+        ? `Context ${used} tokens`
+        : `Context ${used} / ${usage.contextWindow.toLocaleString()}`);
+    }
+    if (usage.totalTokens !== null) parts.push(`Total ${usage.totalTokens.toLocaleString()} tokens`);
+    if (usage.inputTokens !== null && usage.outputTokens !== null) {
+      parts.push(`Reported ${usage.inputTokens.toLocaleString()} in, ${usage.outputTokens.toLocaleString()} out`);
+    }
+    parts.push('Cost not reported');
+    return parts.join(' · ');
   }
 
   function key(action: string): string {
@@ -609,6 +641,9 @@
                         <span class="truncate">{node.provider} · {node.roleId}</span>
                         {#if elapsed(node)}<span class="shrink-0 tabular-nums">· {elapsed(node)}</span>{/if}
                       </span>
+                      {#if node.startedAtMs}
+                        <span class="block truncate text-xs text-muted-foreground" title={usageSummary(node)}>{usageCompact(node)}</span>
+                      {/if}
                     </span>
                     <Chip tone={stateTone[node.state]}>{node.state}</Chip>
                   </button>
