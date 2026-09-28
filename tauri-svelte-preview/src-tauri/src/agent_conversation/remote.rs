@@ -1235,7 +1235,9 @@ impl RemoteConnectionManager {
         let RemoteResponse::ImportProgress { added, reached_start } = self.request_for_profile(&profile,
             RemoteCommand::ExtendImport { owned_id: owned_id.clone() }).await?
         else { return Err("Remote Assembly returned the wrong import response".into()); };
-        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).imported_older(&profile, epoch, &owned_id)?;
+        let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        history.check(&profile, epoch)?;
+        if added > 0 || !reached_start { history.imported_older(&profile, epoch, &owned_id)?; }
         Ok(super::transcript_import::ExtendedImport { added, reached_start })
     }
 
@@ -2740,6 +2742,46 @@ mod connection_tests {
         manager.disconnect_profile("cache-test").unwrap();
         assert!(late_sink(large_history_event(32)).is_err());
         assert!(manager.history.lock().unwrap().through("cache-test", "large-history").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn empty_import_at_confirmed_start_keeps_history_local() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+        let (sender, mut requests) = mpsc::channel(8);
+        manager.client.lock().unwrap().clients.insert("cache-test".into(), RemoteClient {
+            requests: Some(sender), profile: Some(profile("cache-test")), target_key: None,
+            task: None, ready: Arc::new(AtomicBool::new(true)),
+        });
+        manager.remember("large-history", "cache-test");
+        let event = large_history_event(32);
+        {
+            let history = manager.history.lock().unwrap();
+            let epoch = history.epoch("cache-test");
+            history.snapshot("cache-test", epoch, None, &AgentConversationSnapshot {
+                connection: AgentConversationConnection {
+                    owned_id: event.owned_id.clone(), provider: event.provider, generation: 1,
+                    native_session_id: None, state: super::super::protocol::ConversationConnectionState::Disconnected,
+                    config: Default::default(),
+                },
+                suspended: true, last_sequence: event.sequence, events: vec![event.clone()],
+            }).unwrap();
+            history.page("cache-test", epoch, &event.owned_id, event.sequence, true,
+                &AgentConversationEventPage { events: vec![], has_more: false }).unwrap();
+        }
+        let server = tokio::spawn(async move {
+            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected import request"); };
+            assert!(matches!(command, RemoteCommand::ExtendImport { .. }));
+            reply.send(Ok(RemoteResponse::ImportProgress { added: 0, reached_start: true })).unwrap();
+            requests
+        });
+        let progress = manager.extend_import(event.owned_id.clone()).await.unwrap();
+        assert_eq!(progress.added, 0);
+        assert!(progress.reached_start);
+        let mut requests = server.await.unwrap();
+        let page = manager.events_before(event.owned_id, event.sequence, 1024, 1).await.unwrap();
+        assert!(page.events.is_empty());
+        assert!(!page.has_more);
+        assert!(requests.try_recv().is_err(), "confirmed start must not request the workbox again");
     }
 
     fn large_history_event(bytes: usize) -> AgentConversationEvent {
