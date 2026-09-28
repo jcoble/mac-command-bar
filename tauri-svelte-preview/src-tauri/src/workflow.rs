@@ -1580,6 +1580,7 @@ impl WorkflowEngine {
             cancel_descendants(&mut run, node_id);
         }
         if approved {
+            materialize_plan_steps(&mut run, node_id, self.ids.as_ref())?;
             run.state = WorkflowRunState::Running;
         }
         refresh_ready_and_phase(&mut run);
@@ -2068,6 +2069,7 @@ impl WorkflowEngine {
                     "purpose": role.purpose,
                 },
                 "input": run.input_snapshot,
+                "assignedStep": node_definition.fan_out,
                 "priorStageReceipts": prior_results,
                 "responseRequirements": {
                     "format": "Return only one JSON object. Do not wrap it in commentary.",
@@ -2402,6 +2404,130 @@ fn budget_failure(budget: &str, message: &str) -> WorkflowFailure {
         message: message.into(),
         budget: Some(budget.into()),
     }
+}
+
+fn materialize_plan_steps(
+    run: &mut WorkflowRunRecord,
+    node_id: &str,
+    ids: &dyn IdGenerator,
+) -> Result<(), WorkflowError> {
+    if run.workflow_id != "task-plan-implement-review" || node_id != "plan-review" {
+        return Ok(());
+    }
+    let steps = run
+        .nodes
+        .iter()
+        .find(|node| node.node_id == "plan")
+        .and_then(|node| node.structured_output.as_ref())
+        .and_then(|output| output.get("orderedSteps"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| WorkflowError::OutputContract("Plan has no orderedSteps".into()))?;
+    if steps.is_empty() {
+        return Err(WorkflowError::OutputContract(
+            "Plan needs at least one ordered step".into(),
+        ));
+    }
+    let template = |id: &str| {
+        run.definition
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .cloned()
+            .ok_or_else(|| WorkflowError::InvalidDefinition(format!("Missing {id} stage")))
+    };
+    let plan = template("plan")?;
+    let plan_review = template("plan-review")?;
+    let implement = template("implement")?;
+    let review = template("review")?;
+    let mut generated = Vec::new();
+    let mut previous_review = "plan-review".to_string();
+    let mut first_plan = String::new();
+    let mut last_implement = String::new();
+    for (index, step) in steps.iter().enumerate() {
+        let prefix = format!("step-{:02}", index + 1);
+        let plan_id = format!("{prefix}-plan");
+        let plan_review_id = format!("{prefix}-plan-review");
+        let implement_id = format!("{prefix}-implement");
+        let review_id = format!("{prefix}-review");
+        if index == 0 {
+            first_plan = plan_id.clone();
+        }
+        let mut step_plan = plan.clone();
+        step_plan.id = plan_id.clone();
+        step_plan.title = format!("Step {} plan", index + 1);
+        step_plan.depends_on = vec![previous_review.clone()];
+        step_plan.fan_out = Some(step.clone());
+        generated.push(step_plan);
+
+        let mut step_plan_review = plan_review.clone();
+        step_plan_review.id = plan_review_id.clone();
+        step_plan_review.title = format!("Step {} plan review", index + 1);
+        step_plan_review.depends_on = vec![plan_id.clone()];
+        step_plan_review.condition = Some(json!({"redoNodeId": plan_id}));
+        step_plan_review.fan_out = Some(step.clone());
+        step_plan_review.approval_gate = None;
+        generated.push(step_plan_review);
+
+        let mut step_implement = implement.clone();
+        step_implement.id = implement_id.clone();
+        step_implement.title = format!("Step {} implement", index + 1);
+        step_implement.depends_on = vec![plan_id.clone(), plan_review_id];
+        step_implement.fan_out = Some(step.clone());
+        step_implement.approval_gate = None;
+        generated.push(step_implement);
+
+        let mut step_review = review.clone();
+        step_review.id = review_id.clone();
+        step_review.title = format!("Step {} code and spec review", index + 1);
+        step_review.depends_on = vec![plan_id.clone(), implement_id.clone()];
+        step_review.condition = Some(json!({"redoNodeId": plan_id}));
+        step_review.fan_out = Some(step.clone());
+        generated.push(step_review);
+        previous_review = review_id;
+        last_implement = implement_id;
+    }
+
+    let mut definition = run.definition.clone();
+    definition.nodes.retain(|node| node.id != "implement" && node.id != "review");
+    for node in &mut definition.nodes {
+        match node.id.as_str() {
+            "verify" => node.depends_on = vec![previous_review.clone()],
+            "open-pr" => node.depends_on = vec![last_implement.clone(), "verify".into()],
+            "pr-review" => {
+                node.depends_on = vec![first_plan.clone(), last_implement.clone(), "open-pr".into()];
+                node.condition = Some(json!({"redoNodeId": first_plan}));
+            }
+            _ => {}
+        }
+    }
+    definition.nodes.extend(generated.iter().cloned());
+    WorkflowPolicy::validate_definition(&definition)?;
+    run.definition = definition;
+    run.nodes.retain(|node| node.node_id != "implement" && node.node_id != "review");
+    for node in generated {
+        let role = run.definition.roles.iter().find(|role| role.id == node.role_id).unwrap();
+        run.nodes.push(WorkflowNodeRunRecord {
+            id: format!("{}:{}:1", run.id, node.id),
+            node_id: node.id,
+            role_id: node.role_id,
+            state: WorkflowNodeState::Blocked,
+            attempt: 1,
+            depth: 0,
+            owned_id: ids.next_id("workflow-agent"),
+            provider: role.provider_policy.provider.to_ascii_lowercase(),
+            provider_instance_id: None,
+            started_at_ms: None,
+            finished_at_ms: None,
+            output_contract: role.output_contract,
+            structured_output: None,
+            artifacts: Vec::new(),
+            gate: None,
+            lease_id: None,
+            failure: None,
+        });
+    }
+    run.nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    Ok(())
 }
 
 fn refresh_ready_and_phase(run: &mut WorkflowRunRecord) {
@@ -2742,6 +2868,72 @@ mod tests {
             last_sequence: 0,
         };
         assert_eq!(WorkflowScheduler::ready_nodes(&run), vec!["a"]);
+    }
+    #[test]
+    fn approved_plan_creates_durable_reviewed_steps() {
+        let mut run = sample_run();
+        run.definition.roles = vec![
+            role("planner", WorkflowOutputContract::PlanReceipt),
+            role("implementer", WorkflowOutputContract::ImplementationReceipt),
+            role("reviewer", WorkflowOutputContract::ReviewReceipt),
+            role("verifier", WorkflowOutputContract::VerificationReceipt),
+            role("pr-author", WorkflowOutputContract::PullRequestReceipt),
+            role("pr-reviewer", WorkflowOutputContract::ReviewReceipt),
+            role("pr-merger", WorkflowOutputContract::PullRequestMergeReceipt),
+        ];
+        let mut nodes = vec![
+            node("plan", "planner", &[]),
+            node("plan-review", "reviewer", &["plan"]),
+            node("implement", "implementer", &["plan", "plan-review"]),
+            node("review", "reviewer", &["plan", "implement"]),
+            node("verify", "verifier", &["review"]),
+            node("open-pr", "pr-author", &["implement", "verify"]),
+            node("pr-review", "pr-reviewer", &["implement", "open-pr"]),
+            node("merge-pr", "pr-merger", &["plan", "open-pr", "pr-review"]),
+        ];
+        run.workflow_id = "task-plan-implement-review".into();
+        nodes[1].condition = Some(json!({"redoNodeId":"plan"}));
+        nodes[3].condition = Some(json!({"redoNodeId":"implement"}));
+        nodes[6].condition = Some(json!({"redoNodeId":"implement"}));
+        nodes[7].condition = Some(json!({"ownerMergeNodeId":"plan"}));
+        run.definition.nodes = nodes;
+        run.nodes = run.definition.nodes.iter().map(|definition| {
+            let role = run.definition.roles.iter().find(|role| role.id == definition.role_id).unwrap();
+            WorkflowNodeRunRecord {
+                id: format!("r:{}:1", definition.id),
+                node_id: definition.id.clone(),
+                role_id: definition.role_id.clone(),
+                state: WorkflowNodeState::Blocked,
+                attempt: 1,
+                depth: 0,
+                owned_id: "old".into(),
+                provider: "codex".into(),
+                provider_instance_id: None,
+                started_at_ms: None,
+                finished_at_ms: None,
+                output_contract: role.output_contract,
+                structured_output: None,
+                artifacts: vec![],
+                gate: None,
+                lease_id: None,
+                failure: None,
+            }
+        }).collect();
+        run.nodes.iter_mut().find(|node| node.node_id == "plan").unwrap().structured_output =
+            Some(json!({"orderedSteps":[{"task":"first"},{"task":"second"}]}));
+        materialize_plan_steps(&mut run, "plan-review", &FakeIds(AtomicU64::new(1))).unwrap();
+        WorkflowPolicy::validate_definition(&run.definition).unwrap();
+        assert_eq!(run.nodes.len(), 14);
+        assert_eq!(run.definition.nodes.iter().find(|node| node.id == "step-02-plan").unwrap().depends_on, ["step-01-review"]);
+        assert_eq!(run.definition.nodes.iter().find(|node| node.id == "verify").unwrap().depends_on, ["step-02-review"]);
+        assert_eq!(run.definition.nodes.iter().find(|node| node.id == "pr-review").unwrap().condition, Some(json!({"redoNodeId":"step-01-plan"})));
+        assert_eq!(run.definition.nodes.iter().find(|node| node.id == "step-01-implement").unwrap().fan_out, Some(json!({"task":"first"})));
+        for id in ["plan", "plan-review"] {
+            run.nodes.iter_mut().find(|node| node.node_id == id).unwrap().state = WorkflowNodeState::Completed;
+        }
+        assert_eq!(WorkflowScheduler::ready_nodes(&run), ["step-01-plan"]);
+        let restored: WorkflowRunRecord = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
+        assert_eq!(restored.definition, run.definition);
     }
     #[test]
     fn workflow_structured_output_refuses_hostile_prose() {
