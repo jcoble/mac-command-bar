@@ -15,7 +15,8 @@ assert.deepEqual(
     ['implementer', 'codex'],
     ['reviewer', 'antigravity'],
     ['verifier', 'antigravity'],
-    ['pr-author', 'codex']
+    ['pr-author', 'codex'],
+    ['pr-reviewer', 'antigravity']
   ]
 );
 assert.deepEqual(
@@ -26,7 +27,8 @@ assert.deepEqual(
     ['implement', ['plan', 'plan-review'], true],
     ['review', ['plan', 'implement'], false],
     ['verify', ['review'], false],
-    ['open-pr', ['implement', 'verify'], false]
+    ['open-pr', ['implement', 'verify'], false],
+    ['pr-review', ['open-pr'], false]
   ]
 );
 assert.equal(definition.concurrency.global, 1);
@@ -45,5 +47,6 @@ assert.deepEqual(definition.nodes.find((node) => node.id === 'plan-review')?.con
 assert.deepEqual(definition.nodes.find((node) => node.id === 'review')?.condition, { redoNodeId: 'implement' });
 assert.equal(definition.roles.find((role) => role.id === 'verifier')?.outputContract, 'VerificationReceipt');
 assert.equal(definition.roles.find((role) => role.id === 'pr-author')?.outputContract, 'PullRequestReceipt');
+assert.equal(definition.roles.find((role) => role.id === 'pr-reviewer')?.outputContract, 'ReviewReceipt');
 
 console.log('task workflow template tests passed');

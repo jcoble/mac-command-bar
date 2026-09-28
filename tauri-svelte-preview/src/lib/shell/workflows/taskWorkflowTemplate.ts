@@ -46,8 +46,8 @@ export function taskWorkflowDefinition(
   return {
     version: 1,
     id: 'task-plan-implement-review',
-    name: 'Plan, review, implement, review, verify, open PR',
-    description: 'A visible task loop from reviewed plan through verified implementation and pull request creation.',
+    name: 'Plan, review, implement, review, verify, open PR, review PR',
+    description: 'A visible task loop from reviewed plan through independent pull request review.',
     trigger: { kind: 'manual' },
     inputs: [{ id: 'task', required: true }],
     roles: [
@@ -90,6 +90,14 @@ export function taskWorkflowDefinition(
         providers.implement,
         'PullRequestReceipt',
         { kind: 'shared-current', fileAllowList: [] }
+      ),
+      role(
+        'pr-reviewer',
+        'PR reviewer',
+        'Independently review the opened pull request diff, check results, and before and after UI evidence against the task. Return one blocking finding if the PR is not ready to merge, or a non-blocking no-finding receipt.',
+        providers.review,
+        'ReviewReceipt',
+        { kind: 'read-only-current' }
       )
     ],
     nodes: [
@@ -156,6 +164,17 @@ export function taskWorkflowDefinition(
         title: 'Open PR',
         roleId: 'pr-author',
         dependsOn: ['implement', 'verify'],
+        condition: null,
+        fanOut: null,
+        approvalGate: null,
+        timeoutSeconds: 3600,
+        maxAttempts: 2
+      },
+      {
+        id: 'pr-review',
+        title: 'PR review',
+        roleId: 'pr-reviewer',
+        dependsOn: ['open-pr'],
         condition: null,
         fanOut: null,
         approvalGate: null,
