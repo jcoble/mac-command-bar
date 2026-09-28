@@ -109,8 +109,23 @@ assert.throws(() => savedWorkflowDefinition({
 }), /one Open PR stage/);
 assert.throws(() => savedWorkflowDefinition({
   ...approved,
-  stages: [stage('implement', 'ImplementationReceipt'), stage('open-pr', 'PullRequestReceipt'), stage('merge', 'PullRequestMergeReceipt')]
+  stages: [stage('implement', 'ImplementationReceipt'), stage('review', 'ReviewReceipt', 'implement'),
+    stage('open-pr', 'PullRequestReceipt')]
+}), /Open PR follows implementation, review, and verification/);
+assert.throws(() => savedWorkflowDefinition({
+  ...approved,
+  stages: [stage('implement', 'ImplementationReceipt'), stage('verify', 'VerificationReceipt'),
+    stage('review', 'ReviewReceipt', 'implement'), stage('open-pr', 'PullRequestReceipt')]
+}), /Open PR follows implementation, review, and verification/);
+assert.throws(() => savedWorkflowDefinition({
+  ...approved,
+  stages: approved.stages.slice(0, 4)
 }), /Review the opened PR/);
+assert.throws(() => savedWorkflowDefinition({
+  ...approved,
+  stages: [...approved.stages.slice(0, 4), stage('late-implement', 'ImplementationReceipt'),
+    ...approved.stages.slice(4)]
+}), /After Open PR/);
 assert.throws(() => savedWorkflowDefinition({
   ...approved,
   stages: [...approved.stages, stage('after-merge', 'VerificationReceipt')]
