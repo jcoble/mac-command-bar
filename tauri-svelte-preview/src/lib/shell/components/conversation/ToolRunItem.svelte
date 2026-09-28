@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import BookOpen from '@lucide/svelte/icons/book-open';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import Copy from '@lucide/svelte/icons/copy';
@@ -24,8 +25,9 @@
 
   let { item, onFileLink }: Props = $props();
 
-  // Keep new tool runs closed until the reader opens them.
-  let runOpen = $state(false);
+  // Start live work open, then leave disclosure control with the reader.
+  // A gap between tool calls is not the end of the turn.
+  let runOpen = $state(untrack(() => !item.completed));
   let expandedCommands = $state<Record<string, boolean>>({});
   let expandedDiffs = $state<Record<string, boolean>>({});
   let copiedCommandId = $state<string | null>(null);
