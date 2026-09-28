@@ -633,6 +633,9 @@ impl AgentRuntimePort for AgentRuntimeManager {
             let Some(snapshot) = self.snapshot(owned_id).map_err(WorkflowError::Runtime)? else {
                 return Ok(());
             };
+            if snapshot.suspended {
+                return Ok(());
+            }
             self.cancel_turn(owned_id, snapshot.connection.generation)
                 .await
                 .map_err(WorkflowError::Runtime)
