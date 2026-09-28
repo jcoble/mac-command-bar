@@ -259,6 +259,7 @@ pub(crate) struct WorkflowCompletionPolicy {
 pub(crate) enum WorkflowOutputContract {
     ImplementationReceipt,
     PullRequestReceipt,
+    PullRequestMergeReceipt,
     ReviewReceipt,
     SpecComplianceReceipt,
     VerificationReceipt,
@@ -270,6 +271,7 @@ impl WorkflowOutputContract {
         match self {
             Self::ImplementationReceipt => "ImplementationReceipt",
             Self::PullRequestReceipt => "PullRequestReceipt",
+            Self::PullRequestMergeReceipt => "PullRequestMergeReceipt",
             Self::ReviewReceipt => "ReviewReceipt",
             Self::SpecComplianceReceipt => "SpecComplianceReceipt",
             Self::VerificationReceipt => "VerificationReceipt",
@@ -419,6 +421,13 @@ pub(crate) struct PullRequestReceipt {
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct PullRequestMergeReceipt {
+    pub url: String,
+    pub merge_commit_sha: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ReviewReceipt {
     pub severity: String,
     pub file: String,
@@ -456,6 +465,8 @@ pub(crate) struct PlanReceipt {
     pub dependencies: Vec<Value>,
     pub risk: Value,
     pub estimated_parallel_lanes: u32,
+    #[serde(default)]
+    pub owner_merge: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -914,6 +925,21 @@ impl WorkflowPolicy {
                     )));
                 }
             }
+            if let Some(plan_id) = node.condition.as_ref()
+                .and_then(|condition| condition.get("ownerMergeNodeId"))
+                .and_then(Value::as_str)
+            {
+                let plan = definition.nodes.iter().find(|candidate| candidate.id == plan_id);
+                let plan_role = plan.and_then(|candidate| definition.roles.iter().find(|role| role.id == candidate.role_id));
+                if !node.depends_on.iter().any(|dependency| dependency == plan_id)
+                    || plan_role.is_none_or(|role| role.output_contract != WorkflowOutputContract::PlanReceipt)
+                {
+                    return Err(WorkflowError::InvalidDefinition(format!(
+                        "Node {} must depend on a PlanReceipt for owner merge",
+                        node.id
+                    )));
+                }
+            }
         }
         for edge in &definition.edges {
             if !nodes.contains(edge.from.as_str()) || !nodes.contains(edge.to.as_str()) {
@@ -983,6 +1009,9 @@ impl WorkflowPolicy {
             WorkflowOutputContract::PullRequestReceipt => {
                 serde_json::from_value::<PullRequestReceipt>(value.clone()).map(|_| ())
             }
+            WorkflowOutputContract::PullRequestMergeReceipt => {
+                serde_json::from_value::<PullRequestMergeReceipt>(value.clone()).map(|_| ())
+            }
             WorkflowOutputContract::ReviewReceipt => {
                 serde_json::from_value::<ReviewReceipt>(value.clone()).map(|_| ())
             }
@@ -1013,6 +1042,14 @@ impl WorkflowPolicy {
         {
             return Err(WorkflowError::OutputContract(
                 "PullRequestReceipt requires a PR URL and branch".into(),
+            ));
+        }
+        if contract == WorkflowOutputContract::PullRequestMergeReceipt
+            && (value["url"].as_str().is_none_or(|url| url.trim().is_empty())
+                || value["mergeCommitSha"].as_str().is_none_or(|sha| sha.trim().is_empty()))
+        {
+            return Err(WorkflowError::OutputContract(
+                "PullRequestMergeReceipt requires a PR URL and merge commit SHA".into(),
             ));
         }
         Ok(())
@@ -2279,6 +2316,9 @@ fn output_contract_shape(contract: WorkflowOutputContract) -> &'static str {
         WorkflowOutputContract::PullRequestReceipt => {
             r#"{"url":"","branch":"","artifacts":[]}"#
         }
+        WorkflowOutputContract::PullRequestMergeReceipt => {
+            r#"{"url":"","mergeCommitSha":""}"#
+        }
         WorkflowOutputContract::ReviewReceipt => {
             r#"{"severity":"none","file":"","line":0,"evidence":"","recommendation":"","confidence":1,"blocking":false}"#
         }
@@ -2289,7 +2329,7 @@ fn output_contract_shape(contract: WorkflowOutputContract) -> &'static str {
             r#"{"command":"","exit":0,"duration":0,"evidenceArtifacts":[],"cleanupReceipt":{}}"#
         }
         WorkflowOutputContract::PlanReceipt => {
-            r#"{"orderedSteps":[],"dependencies":[],"risk":{},"estimatedParallelLanes":1}"#
+            r#"{"orderedSteps":[],"dependencies":[],"risk":{},"estimatedParallelLanes":1,"ownerMerge":false}"#
         }
     }
 }
@@ -2366,8 +2406,26 @@ fn budget_failure(budget: &str, message: &str) -> WorkflowFailure {
 
 fn refresh_ready_and_phase(run: &mut WorkflowRunRecord) {
     for node_id in WorkflowScheduler::ready_nodes(run) {
+        let owner_merge_plan = run
+            .definition
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .and_then(|node| node.condition.as_ref())
+            .and_then(|condition| condition.get("ownerMergeNodeId"))
+            .and_then(Value::as_str);
+        let owner_merges = owner_merge_plan
+            .and_then(|plan_id| run.nodes.iter().find(|node| node.node_id == plan_id))
+            .and_then(|node| node.structured_output.as_ref())
+            .and_then(|receipt| receipt.get("ownerMerge"))
+            .and_then(Value::as_bool)
+            == Some(true);
         if let Some(node) = run.nodes.iter_mut().find(|node| node.node_id == node_id) {
-            node.state = WorkflowNodeState::Ready;
+            node.state = if owner_merges {
+                WorkflowNodeState::Skipped
+            } else {
+                WorkflowNodeState::Ready
+            };
         }
     }
     if run.nodes.iter().all(|node| {
@@ -3077,6 +3135,55 @@ mod tests {
             ).unwrap();
             if id == "e" { assert_eq!(run.state, WorkflowRunState::Completed); }
         }
+    }
+
+    #[test]
+    fn owner_merge_decision_skips_merge_and_default_merges() {
+        let engine = WorkflowEngine::new(
+            Arc::new(FakeRuntime::default()),
+            Arc::new(InMemoryWorktreeLeasePort::default()),
+            Arc::new(FakeClock(AtomicU64::new(100))),
+            Arc::new(FakeIds(AtomicU64::new(1))),
+            Arc::new(SessionStore::open_in_memory().unwrap()),
+        );
+        let mut workflow = definition();
+        workflow.roles = vec![
+            role("controller", WorkflowOutputContract::PlanReceipt),
+            role("merger", WorkflowOutputContract::PullRequestMergeReceipt),
+        ];
+        let mut merge = node("merge", "merger", &["plan"]);
+        merge.condition = Some(json!({"ownerMergeNodeId":"plan"}));
+        workflow.nodes = vec![node("plan", "controller", &[]), merge];
+        let plan = |owner_merge: bool| json!({
+            "orderedSteps":[],"dependencies":[],"risk":{},
+            "estimatedParallelLanes":1,"ownerMerge":owner_merge
+        });
+
+        let owner_run = engine.create_run(workflow.clone(), json!({"cwd":"/repo"}), "owner-create".into()).unwrap();
+        tauri::async_runtime::block_on(engine.start(&owner_run.id, "owner-start")).unwrap();
+        let handed_off = tauri::async_runtime::block_on(
+            engine.submit_result(&owner_run.id, "plan", plan(true), "owner-plan")
+        ).unwrap();
+        assert_eq!(handed_off.state, WorkflowRunState::Completed);
+        assert_eq!(handed_off.nodes.iter().find(|node| node.node_id == "merge").unwrap().state, WorkflowNodeState::Skipped);
+
+        let merge_run = engine.create_run(workflow, json!({"cwd":"/repo"}), "merge-create".into()).unwrap();
+        tauri::async_runtime::block_on(engine.start(&merge_run.id, "merge-start")).unwrap();
+        let ready = tauri::async_runtime::block_on(
+            engine.submit_result(&merge_run.id, "plan", plan(false), "merge-plan")
+        ).unwrap();
+        assert_eq!(ready.nodes.iter().find(|node| node.node_id == "merge").unwrap().state, WorkflowNodeState::Running);
+        let merged = tauri::async_runtime::block_on(engine.submit_result(
+            &merge_run.id,
+            "merge",
+            json!({"url":"https://github.com/owner/repo/pull/1","mergeCommitSha":"abc123"}),
+            "merge-result",
+        )).unwrap();
+        assert_eq!(merged.state, WorkflowRunState::Completed);
+        assert!(WorkflowPolicy::validate_output(
+            WorkflowOutputContract::PullRequestMergeReceipt,
+            &json!({"url":"https://github.com/owner/repo/pull/1","mergeCommitSha":""})
+        ).is_err());
     }
 
     #[test]

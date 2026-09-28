@@ -46,15 +46,15 @@ export function taskWorkflowDefinition(
   return {
     version: 1,
     id: 'task-plan-implement-review',
-    name: 'Plan, review, implement, review, verify, open PR, review PR',
-    description: 'A visible task loop from reviewed plan through independent pull request review.',
+    name: 'Plan, review, implement, review, verify, open PR, review PR, merge',
+    description: 'A visible task loop from reviewed plan through pull request merge or owner handoff.',
     trigger: { kind: 'manual' },
     inputs: [{ id: 'task', required: true }],
     roles: [
       role(
         'planner',
-        'Planner',
-        'Turn the task into a concise implementation plan grounded in the current workspace.',
+        'Controller',
+        'Turn the task into a concise implementation plan grounded in the current workspace. Set ownerMerge true when the task requests an owner merge or the plan requires the owner to merge; otherwise set it false.',
         providers.plan,
         'PlanReceipt',
         { kind: 'read-only-current' }
@@ -97,6 +97,14 @@ export function taskWorkflowDefinition(
         'Independently review the opened pull request diff, check results, and before and after UI evidence against the task. Return one blocking finding if the PR is not ready to merge, or a non-blocking no-finding receipt.',
         providers.review,
         'ReviewReceipt',
+        { kind: 'read-only-current' }
+      ),
+      role(
+        'pr-merger',
+        'PR merger',
+        'After a passing final PR review, merge the PR from the Open PR receipt, verify its merged state and merge commit SHA on GitHub, and return both. If the merge fails, report the failure instead of a success receipt.',
+        providers.implement,
+        'PullRequestMergeReceipt',
         { kind: 'read-only-current' }
       )
     ],
@@ -176,6 +184,17 @@ export function taskWorkflowDefinition(
         roleId: 'pr-reviewer',
         dependsOn: ['implement', 'open-pr'],
         condition: { redoNodeId: 'implement' },
+        fanOut: null,
+        approvalGate: null,
+        timeoutSeconds: 3600,
+        maxAttempts: 2
+      },
+      {
+        id: 'merge-pr',
+        title: 'Merge PR or hand off',
+        roleId: 'pr-merger',
+        dependsOn: ['plan', 'open-pr', 'pr-review'],
+        condition: { ownerMergeNodeId: 'plan' },
         fanOut: null,
         approvalGate: null,
         timeoutSeconds: 3600,

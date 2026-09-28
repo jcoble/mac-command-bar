@@ -32,12 +32,8 @@ import type {
   SourceWorkspaceSymbol
 } from './sourceData.ts';
 import type {
-  ImplementationReceipt,
-  PlanReceipt,
-  ReviewReceipt,
-  SpecComplianceReceipt,
-  VerificationReceipt,
   WorkflowDefinitionV1,
+  WorkflowResultReceipt,
   WorkflowRunRecord
 } from './shell/workflows/workflowTypes.ts';
 import {
@@ -2603,7 +2599,7 @@ export async function approveWorkflowGateFromTauri(
 export async function submitWorkflowResultFromTauri(
   runId: string,
   nodeId: string,
-  result: ImplementationReceipt | ReviewReceipt | SpecComplianceReceipt | VerificationReceipt | PlanReceipt,
+  result: WorkflowResultReceipt,
   idempotencyKey: string
 ): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
