@@ -1386,6 +1386,27 @@ assert.ok(store.getConversationSession('owned-b'));
   assert.equal(deduped.reachedTranscriptStart, true, 'the start stops any further request');
 }
 
+// A stored turn start is history when the runtime has been suspended.
+{
+  const ownedId = 'owned-suspended-turn';
+  const connection = { ownedId, provider: 'codex' as const, generation: 1, state: 'connected' as const };
+  const started: AgentConversationEvent = {
+    ownedId, provider: 'codex', generation: 1, sequence: 1, timestampMs: 1,
+    payload: { kind: 'turn', turnId: 'old-turn', state: 'started' }
+  };
+  store.applyAgentConversationSnapshot({ connection, lastSequence: 1, events: [started] });
+  store.setConversationSending(ownedId, true);
+  assert.equal(store.getConversationSession(ownedId).activeTurnId, 'old-turn');
+  store.applyAgentConversationSnapshot({ connection, suspended: true, lastSequence: 1, events: [started] });
+  assert.equal(store.getConversationSession(ownedId).activeTurnId, undefined, 'a suspended runtime cannot have a live turn');
+  assert.equal(store.getConversationSession(ownedId).sending, false, 'a suspended runtime cannot keep the Stop button');
+  store.getConversationSession(ownedId).activeTurnId = 'old-turn';
+  store.setConversationSending(ownedId, true);
+  store.applyAgentConversationSnapshot({ connection, suspended: true, lastSequence: 1, events: [started] });
+  assert.equal(store.getConversationSession(ownedId).activeTurnId, undefined, 'an unchanged suspended snapshot still repairs stale turn state');
+  store.evictConversationSession(ownedId);
+}
+
 // An older page can end before the turn-completed event at the live head.
 // Replaying that page must not turn the composer back into a Stop button.
 {
