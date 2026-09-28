@@ -75,8 +75,8 @@ export interface ConversationRecentEvent {
 export const CONVERSATION_RECENT_EVENT_CAP = 200;
 export const ACTIVE_EVENT_WINDOW_EVENTS = 20_000;
 export const ACTIVE_EVENT_WINDOW_TRIM_EVENTS = 15_000;
-export const ACTIVE_EVENT_WINDOW_BYTES = 4 * 1024 * 1024; // 4 MiB bounded memory window
-const ACTIVE_EVENT_WINDOW_TRIM_BYTES = 3 * 1024 * 1024;
+export const ACTIVE_EVENT_WINDOW_BYTES = 2 * 1024 * 1024; // 2 MiB bounded memory window
+const ACTIVE_EVENT_WINDOW_TRIM_BYTES = 3 * 512 * 1024;
 const eventEncoder = new TextEncoder();
 
 function serializedEventBytes(event: AgentConversationEvent): number {
@@ -398,7 +398,7 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
   }
   if (bytes > ACTIVE_EVENT_WINDOW_BYTES) {
     // Leave room for later live events so a long turn does not rebuild its
-    // entire visible timeline on every new event after reaching 4 MiB.
+    // entire visible timeline on every new event after reaching the cap.
     while (bytes > ACTIVE_EVENT_WINDOW_TRIM_BYTES && current.loadedEvents.length > 0) {
       const removed = current.loadedEvents.shift();
       if (removed) {
@@ -1073,11 +1073,14 @@ export function prependOlderConversationEvents(
     trimmedNewest = true;
   }
   let bytes = serializedEventsBytes(events);
-  while (bytes > ACTIVE_EVENT_WINDOW_BYTES && events.length > 0) {
-    const removed = events.pop();
-    if (removed) {
-      bytes -= serializedEventBytes(removed);
-      trimmedNewest = true;
+  // Over the cap, trim to the low mark so the next page does not trim again.
+  if (bytes > ACTIVE_EVENT_WINDOW_BYTES) {
+    while (bytes > ACTIVE_EVENT_WINDOW_TRIM_BYTES && events.length > 0) {
+      const removed = events.pop();
+      if (removed) {
+        bytes -= serializedEventBytes(removed);
+        trimmedNewest = true;
+      }
     }
   }
   applyAgentConversationSnapshot(projectionSnapshot(current), {
@@ -1107,11 +1110,13 @@ export function appendNewerConversationEvents(
     trimmedOldest = true;
   }
   let bytes = serializedEventsBytes(events);
-  while (bytes > ACTIVE_EVENT_WINDOW_BYTES && events.length > 0) {
-    const removed = events.shift();
-    if (removed) {
-      bytes -= serializedEventBytes(removed);
-      trimmedOldest = true;
+  if (bytes > ACTIVE_EVENT_WINDOW_BYTES) {
+    while (bytes > ACTIVE_EVENT_WINDOW_TRIM_BYTES && events.length > 0) {
+      const removed = events.shift();
+      if (removed) {
+        bytes -= serializedEventBytes(removed);
+        trimmedOldest = true;
+      }
     }
   }
   applyAgentConversationSnapshot(projectionSnapshot(current), {

@@ -1649,7 +1649,7 @@ await test('release builds enforce the UTF-8 history byte limit in both paging d
   const ownedId = 'owned-release-byte-limit';
   const event = (sequence: number): AgentConversationEvent => ({
     ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
-    payload: { kind: 'assistantMessage', itemId: `large-${sequence}`, text: '界'.repeat(800_000), completed: true }
+    payload: { kind: 'assistantMessage', itemId: `large-${sequence}`, text: '界'.repeat(400_000), completed: true }
   });
   const first = event(1);
   const second = event(2);
@@ -1661,7 +1661,7 @@ await test('release builds enforce the UTF-8 history byte limit in both paging d
     const state = store.getConversationSession(ownedId);
     assert.equal(state.loadedEvents.length, 1);
     assert.equal(state.loadedEvents[0].sequence, sequence);
-    assert.ok(state.loadedEventsBytes > 2_400_000, 'count UTF-8 bytes, not characters or DEV diagnostics');
+    assert.ok(state.loadedEventsBytes > 1_200_000, 'count UTF-8 bytes, not characters or DEV diagnostics');
     assert.ok(state.loadedEventsBytes <= store.ACTIVE_EVENT_WINDOW_BYTES);
     assert.equal(state.oldestLoadedSequence, sequence);
     assert.equal(state.newestLoadedSequence, sequence);
@@ -1981,4 +1981,33 @@ await test('an unchanged sidebar row update leaves the row list untouched', asyn
   railStore.updateOwnedSession('row-a', { state: 'live' });
   assert.notEqual(railStore.rail.owned, before);
   assert.equal(railStore.rail.owned[0].state, 'live');
+});
+
+await test('prepending an older page trims newest only down to the trim target', () => {
+  // Memory comes first: the transcript window stays at or under 2 MiB.
+  assert.ok(store.ACTIVE_EVENT_WINDOW_BYTES <= 2 * 1024 * 1024);
+  const ownedId = 'owned-prepend-trim-target';
+  const event = (sequence: number): AgentConversationEvent => ({
+    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
+    payload: { kind: 'assistantMessage', itemId: `message-${sequence}`, text: 'x'.repeat(100_000), completed: true }
+  });
+  const perEvent = JSON.stringify(event(1000)).length;
+  const fullWindow = Math.floor(store.ACTIVE_EVENT_WINDOW_BYTES / perEvent);
+  const first = 1000;
+  const loaded = Array.from({ length: fullWindow }, (_, index) => event(first + index));
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
+    lastSequence: first + fullWindow - 1,
+    events: loaded
+  });
+  const newest = first + fullWindow - 1;
+  store.prependOlderConversationEvents(ownedId, { events: [event(first - 1)], hasMore: true });
+  const session = store.getConversationSession(ownedId);
+  assert.equal(session.oldestLoadedSequence, first - 1, 'the older page is kept');
+  assert.ok(
+    session.loadedEventsBytes <= store.ACTIVE_EVENT_WINDOW_BYTES * 0.75 + perEvent,
+    'one page trims down to the trim target so the next page does not trim again'
+  );
+  assert.ok(session.newestLoadedSequence < newest, 'the far end was trimmed');
+  store.evictConversationSession(ownedId);
 });
