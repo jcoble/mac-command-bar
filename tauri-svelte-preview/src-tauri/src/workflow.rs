@@ -988,7 +988,13 @@ impl WorkflowPolicy {
                 "{} is invalid structured data: {error}",
                 contract.name()
             ))
-        })
+        })?;
+        if contract == WorkflowOutputContract::VerificationReceipt && value["exit"] != 0 {
+            return Err(WorkflowError::OutputContract(
+                "VerificationReceipt reports a failed command".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn provider_for(role: &AgentRoleDefinition) -> Result<String, WorkflowError> {
@@ -2633,6 +2639,20 @@ mod tests {
             &json!({"changedFiles":"all files","summary":"ok","tests":[],"knownRisks":[],"artifacts":[]})
         )
         .is_err());
+    }
+    #[test]
+    fn workflow_verification_requires_a_successful_command() {
+        let receipt = json!({
+            "command":"cargo test", "exit":1, "duration":5,
+            "evidenceArtifacts":[], "cleanupReceipt":{}
+        });
+        assert!(matches!(
+            WorkflowPolicy::validate_output(WorkflowOutputContract::VerificationReceipt, &receipt),
+            Err(WorkflowError::OutputContract(_))
+        ));
+        let mut passed = receipt;
+        passed["exit"] = json!(0);
+        assert!(WorkflowPolicy::validate_output(WorkflowOutputContract::VerificationReceipt, &passed).is_ok());
     }
     #[test]
     fn workflow_receipt_decoder_accepts_plain_and_fenced_json() {
