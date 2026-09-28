@@ -1963,3 +1963,50 @@ await test('remote rail activity reconciles without opening background conversat
   await disposed;
   assert.equal(row.activeTurnId, null, 'shutdown invalidates pending activity reads');
 });
+
+await test('an unchanged sidebar row update leaves the row list untouched', async () => {
+  const railPath = fileURLToPath(new URL('../src/lib/shell/stores/sessionRailStore.svelte.ts', import.meta.url));
+  const railOutput = fileURLToPath(new URL('./.sessionRailStore.test.mjs', import.meta.url));
+  writeFileSync(railOutput, compileForTest(railPath, 'sessionRailStore.svelte.js'));
+  let railStore;
+  try {
+    railStore = await import(`${railOutput}?test=${Date.now()}`);
+  } finally {
+    rmSync(railOutput, { force: true });
+  }
+  railStore.hydrateOwned([{ ownedId: 'row-a', title: 'A', state: 'background', backgroundTaskIds: ['t1'] }]);
+  const before = railStore.rail.owned;
+  railStore.updateOwnedSession('row-a', { state: 'background', backgroundTaskIds: ['t1'] });
+  assert.equal(railStore.rail.owned, before, 'a reconnect refresh with the same values must not re-render the rail');
+  railStore.updateOwnedSession('row-a', { state: 'live' });
+  assert.notEqual(railStore.rail.owned, before);
+  assert.equal(railStore.rail.owned[0].state, 'live');
+});
+
+await test('prepending an older page trims newest only down to the trim target', () => {
+  assert.equal(store.ACTIVE_EVENT_WINDOW_BYTES, 4 * 1024 * 1024);
+  const ownedId = 'owned-prepend-trim-target';
+  const event = (sequence: number): AgentConversationEvent => ({
+    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
+    payload: { kind: 'assistantMessage', itemId: `message-${sequence}`, text: 'x'.repeat(100_000), completed: true }
+  });
+  const perEvent = JSON.stringify(event(1000)).length;
+  const fullWindow = Math.floor(store.ACTIVE_EVENT_WINDOW_BYTES / perEvent);
+  const first = 1000;
+  const loaded = Array.from({ length: fullWindow }, (_, index) => event(first + index));
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
+    lastSequence: first + fullWindow - 1,
+    events: loaded
+  });
+  const newest = first + fullWindow - 1;
+  store.prependOlderConversationEvents(ownedId, { events: [event(first - 1)], hasMore: true });
+  const session = store.getConversationSession(ownedId);
+  assert.equal(session.oldestLoadedSequence, first - 1, 'the older page is kept');
+  assert.ok(
+    session.loadedEventsBytes <= store.ACTIVE_EVENT_WINDOW_BYTES * 0.75 + perEvent,
+    'one page trims down to the trim target so the next page does not trim again'
+  );
+  assert.ok(session.newestLoadedSequence < newest, 'the far end was trimmed');
+  store.evictConversationSession(ownedId);
+});
