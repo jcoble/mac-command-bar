@@ -12,6 +12,9 @@
   import { Chip } from '$lib/components/ui/chip/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
+  import { listAgentConversationSessionsFromTauri } from '$lib/tauriSource';
+  import { ownedSessionFromBackend } from '$lib/shell/ownedSessions.ts';
+  import { addOwnedSession, rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import {
     approveWorkflowGate,
     cancelWorkflowRun,
@@ -229,6 +232,20 @@
   function setProvider(stage: keyof TaskWorkflowProviders, value: string): void {
     providers[stage] = value as WorkflowProvider;
   }
+
+  async function openStage(ownedId: string | null): Promise<void> {
+    if (!ownedId) return;
+    try {
+      if (!rail.owned.some((session) => session.ownedId === ownedId)) {
+        const record = (await listAgentConversationSessionsFromTauri())?.find((session) => session.ownedId === ownedId);
+        if (!record) throw new Error('Agent conversation is not available yet.');
+        if (!rail.owned.some((session) => session.ownedId === ownedId)) addOwnedSession(ownedSessionFromBackend(record));
+      }
+      await sessionRowJump(ownedId, 'session');
+    } catch (error) {
+      workflowState.error = `Could not open agent: ${message(error)}`;
+    }
+  }
 </script>
 
 <div class="flex h-full min-h-0 flex-col">
@@ -324,7 +341,7 @@
                   <button
                     type="button"
                     class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-muted"
-                    onclick={() => void sessionRowJump(node.ownedId, 'session')}
+                    onclick={() => void openStage(node.ownedId)}
                   >
                     <span class="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold">{index + 1}</span>
                     <span class="min-w-0 flex-1">
