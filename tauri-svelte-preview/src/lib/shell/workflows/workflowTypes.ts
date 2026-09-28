@@ -45,6 +45,7 @@ export type WorkflowLoopPhase =
 
 export type WorkflowOutputContract =
   | 'ImplementationReceipt'
+  | 'PullRequestReceipt'
   | 'ReviewReceipt'
   | 'SpecComplianceReceipt'
   | 'VerificationReceipt'

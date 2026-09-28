@@ -46,8 +46,8 @@ export function taskWorkflowDefinition(
   return {
     version: 1,
     id: 'task-plan-implement-review',
-    name: 'Plan, review, implement, review, verify',
-    description: 'A visible task loop with approval after plan review and implementation, followed by verification.',
+    name: 'Plan, review, implement, review, verify, open PR',
+    description: 'A visible task loop from reviewed plan through verified implementation and pull request creation.',
     trigger: { kind: 'manual' },
     inputs: [{ id: 'task', required: true }],
     roles: [
@@ -78,10 +78,18 @@ export function taskWorkflowDefinition(
       role(
         'verifier',
         'Verifier',
-        'Run the relevant regression, integration, and UI checks. Report the actual command, exit status, evidence, and cleanup.',
+        'Run relevant regression, integration, and UI checks. Browser checks must be headless at 1710x990 with the viewport verified after launch; save before and after screenshots to ~/Workbox/screenshots/ and stop the browser process tree. For native Assembly checks, use workbox-native-ui. Report commands, exits, evidence, and cleanup.',
         providers.review,
         'VerificationReceipt',
         { kind: 'read-only-current' }
+      ),
+      role(
+        'pr-author',
+        'PR author',
+        'Commit any verified uncommitted changes, push the branch, then open a pull request with before and after UI screenshots as artifacts when relevant. For Notion tasks use a tsk-<id> branch. End every commit message body with Committed-by: <actual committer>; never add a co-author trailer. Return the PR URL and branch for final review.',
+        providers.implement,
+        'PullRequestReceipt',
+        { kind: 'shared-current', fileAllowList: [] }
       )
     ],
     nodes: [
@@ -137,6 +145,17 @@ export function taskWorkflowDefinition(
         title: 'Verify',
         roleId: 'verifier',
         dependsOn: ['review'],
+        condition: null,
+        fanOut: null,
+        approvalGate: null,
+        timeoutSeconds: 3600,
+        maxAttempts: 2
+      },
+      {
+        id: 'open-pr',
+        title: 'Open PR',
+        roleId: 'pr-author',
+        dependsOn: ['implement', 'verify'],
         condition: null,
         fanOut: null,
         approvalGate: null,

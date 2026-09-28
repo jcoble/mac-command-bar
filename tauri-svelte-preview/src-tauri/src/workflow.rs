@@ -258,6 +258,7 @@ pub(crate) struct WorkflowCompletionPolicy {
 #[serde(rename_all = "PascalCase")]
 pub(crate) enum WorkflowOutputContract {
     ImplementationReceipt,
+    PullRequestReceipt,
     ReviewReceipt,
     SpecComplianceReceipt,
     VerificationReceipt,
@@ -268,6 +269,7 @@ impl WorkflowOutputContract {
     fn name(self) -> &'static str {
         match self {
             Self::ImplementationReceipt => "ImplementationReceipt",
+            Self::PullRequestReceipt => "PullRequestReceipt",
             Self::ReviewReceipt => "ReviewReceipt",
             Self::SpecComplianceReceipt => "SpecComplianceReceipt",
             Self::VerificationReceipt => "VerificationReceipt",
@@ -404,6 +406,14 @@ pub(crate) struct ImplementationReceipt {
     pub branch: Option<String>,
     #[serde(default)]
     pub worktree: Option<String>,
+    pub artifacts: Vec<WorkflowArtifactRef>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PullRequestReceipt {
+    pub url: String,
+    pub branch: String,
     pub artifacts: Vec<WorkflowArtifactRef>,
 }
 
@@ -970,6 +980,9 @@ impl WorkflowPolicy {
             WorkflowOutputContract::ImplementationReceipt => {
                 serde_json::from_value::<ImplementationReceipt>(value.clone()).map(|_| ())
             }
+            WorkflowOutputContract::PullRequestReceipt => {
+                serde_json::from_value::<PullRequestReceipt>(value.clone()).map(|_| ())
+            }
             WorkflowOutputContract::ReviewReceipt => {
                 serde_json::from_value::<ReviewReceipt>(value.clone()).map(|_| ())
             }
@@ -992,6 +1005,14 @@ impl WorkflowPolicy {
         if contract == WorkflowOutputContract::VerificationReceipt && value["exit"] != 0 {
             return Err(WorkflowError::OutputContract(
                 "VerificationReceipt reports a failed command".into(),
+            ));
+        }
+        if contract == WorkflowOutputContract::PullRequestReceipt
+            && (value["url"].as_str().is_none_or(|url| url.trim().is_empty())
+                || value["branch"].as_str().is_none_or(|branch| branch.trim().is_empty()))
+        {
+            return Err(WorkflowError::OutputContract(
+                "PullRequestReceipt requires a PR URL and branch".into(),
             ));
         }
         Ok(())
@@ -2214,6 +2235,9 @@ fn output_contract_shape(contract: WorkflowOutputContract) -> &'static str {
         WorkflowOutputContract::ImplementationReceipt => {
             r#"{"changedFiles":[],"summary":"","tests":[],"knownRisks":[],"commit":null,"branch":null,"worktree":null,"artifacts":[]}"#
         }
+        WorkflowOutputContract::PullRequestReceipt => {
+            r#"{"url":"","branch":"","artifacts":[]}"#
+        }
         WorkflowOutputContract::ReviewReceipt => {
             r#"{"severity":"none","file":"","line":0,"evidence":"","recommendation":"","confidence":1,"blocking":false}"#
         }
@@ -2639,6 +2663,19 @@ mod tests {
             &json!({"changedFiles":"all files","summary":"ok","tests":[],"knownRisks":[],"artifacts":[]})
         )
         .is_err());
+    }
+    #[test]
+    fn workflow_pull_request_requires_url_and_branch() {
+        let receipt = json!({"url":"https://github.com/owner/repo/pull/12","branch":"tsk-1169-workflow-handoff","artifacts":[]});
+        assert!(WorkflowPolicy::validate_output(WorkflowOutputContract::PullRequestReceipt, &receipt).is_ok());
+        assert!(WorkflowPolicy::validate_output(
+            WorkflowOutputContract::PullRequestReceipt,
+            &json!({"url":"","branch":"tsk-1169-workflow-handoff","artifacts":[]})
+        ).is_err());
+        assert!(WorkflowPolicy::validate_output(
+            WorkflowOutputContract::PullRequestReceipt,
+            &json!({"url":"https://github.com/owner/repo/pull/12","branch":"","artifacts":[]})
+        ).is_err());
     }
     #[test]
     fn workflow_verification_requires_a_successful_command() {
