@@ -961,6 +961,9 @@ export function applyAgentConversationSnapshot(
   const restored: ConversationWorkspaceState = {
     ...rebuilt,
     lastSequence: window ? current.lastSequence : snapshot.lastSequence,
+    // Paging can trim the newest turn event. Its old start must not revive a
+    // turn the live head has already completed (or hide one still running).
+    activeTurnId: window ? current.activeTurnId : rebuilt.activeTurnId,
     generation,
     suspended: snapshot.suspended === true,
     timelineRevision: current.timelineRevision + 1,
