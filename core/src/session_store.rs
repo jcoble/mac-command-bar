@@ -2035,6 +2035,7 @@ impl SessionStore {
     /// ceiling is far above any real page; it exists only so the walk is a page
     /// of work rather than a session of it.
     const WINDOW_ROW_CEILING: u32 = 2_000;
+    const HISTORY_PAGE_ROW_CEILING: u32 = 8_000;
 
     /// The newest window of a conversation, bounded by bytes.
     ///
@@ -2152,7 +2153,7 @@ impl SessionStore {
                 params![
                     owned_id,
                     before_seq,
-                    i64::from(Self::WINDOW_ROW_CEILING),
+                    i64::from(Self::HISTORY_PAGE_ROW_CEILING),
                     i64::from(max_bytes)
                 ],
                 event_from_row,
@@ -2208,7 +2209,7 @@ impl SessionStore {
                 params![
                     owned_id,
                     after_seq,
-                    i64::from(Self::WINDOW_ROW_CEILING),
+                    i64::from(Self::HISTORY_PAGE_ROW_CEILING),
                     i64::from(max_bytes)
                 ],
                 event_from_row,
@@ -4628,6 +4629,24 @@ mod tests {
             .expect("list the page before the first event");
         assert!(start.events.is_empty());
         assert!(!start.has_more);
+    }
+
+    #[test]
+    fn history_page_can_exceed_the_recent_snapshot_row_limit() {
+        let (_directory, _path, store) = open_temp_store();
+        let session = fixture_session("owned-long-history", 2_000);
+        store.upsert_session(&session).expect("insert session");
+        for seq in 1..=2_100 {
+            store
+                .append_event(&fixture_event(&session.owned_id, seq))
+                .expect("append event");
+        }
+
+        let page = store
+            .list_events_before(&session.owned_id, 2_101, 4 * 1024 * 1024)
+            .expect("read the larger history page");
+        assert_eq!(page.events.len(), 2_100);
+        assert!(!page.has_more);
     }
 
     #[test]
