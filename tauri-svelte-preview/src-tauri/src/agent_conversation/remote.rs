@@ -1278,7 +1278,8 @@ impl RemoteConnectionManager {
                 request_id,
                 RemoteCommand::Config { owned_id },
             )
-            .await?
+            .await
+            .map_err(|error| format!("Remote session settings request failed: {error}"))?
         else {
             return Err("Remote Assembly returned the wrong config response".to_string());
         };
