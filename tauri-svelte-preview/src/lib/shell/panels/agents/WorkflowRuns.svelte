@@ -40,7 +40,7 @@
     type TaskWorkflowProviders,
     type WorkflowProvider
   } from '$lib/shell/workflows/taskWorkflowTemplate.ts';
-  import type { WorkflowNodeState, WorkflowRunRecord } from '$lib/shell/workflows/workflowTypes.ts';
+  import type { WorkflowNodeRunRecord, WorkflowNodeState, WorkflowRunRecord } from '$lib/shell/workflows/workflowTypes.ts';
 
   interface Props {
     visible: boolean;
@@ -68,6 +68,7 @@
 
   const runs = $derived(filteredWorkflowRuns());
   const selected = $derived(selectedWorkflowRun());
+  const orderedNodes = $derived(selected ? orderNodes(selected) : []);
   const waitingNode = $derived(selected?.nodes.find((node) => node.state === 'waiting-approval') ?? null);
   const failedNode = $derived(selected?.nodes.find((node) => node.state === 'failed') ?? null);
   const runningNode = $derived(selected?.nodes.find((node) => node.state === 'running') ?? null);
@@ -89,6 +90,22 @@
   const completedCount = $derived(
     selected?.nodes.filter((node) => ['completed', 'skipped'].includes(node.state)).length ?? 0
   );
+
+  function orderNodes(run: WorkflowRunRecord): WorkflowNodeRunRecord[] {
+    const byId = new Map(run.nodes.map((node) => [node.nodeId, node]));
+    const ordered: WorkflowNodeRunRecord[] = [];
+    const visited = new Set<string>();
+    function visit(id: string): void {
+      if (visited.has(id)) return;
+      visited.add(id);
+      const node = byId.get(id);
+      if (!node) return;
+      run.definition.nodes.find((item) => item.id === id)?.dependsOn.forEach(visit);
+      ordered.push(node);
+    }
+    run.definition.nodes.forEach((node) => visit(node.id));
+    return ordered;
+  }
 
   const stateTone: Record<WorkflowNodeState, 'neutral' | 'live' | 'good' | 'bad' | 'attention'> = {
     blocked: 'neutral',
@@ -302,7 +319,7 @@
             </div>
 
             <ol class="flex flex-col gap-1.5">
-              {#each selected.nodes as node, index (node.id)}
+              {#each orderedNodes as node, index (node.id)}
                 <li>
                   <button
                     type="button"

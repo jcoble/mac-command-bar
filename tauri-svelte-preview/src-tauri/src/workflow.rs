@@ -315,6 +315,7 @@ pub(crate) enum WorkflowNodeState {
 pub(crate) enum WorkflowLoopPhase {
     Draft,
     Scheduling,
+    Planning,
     Implementing,
     Reviewing,
     Verifying,
@@ -807,6 +808,7 @@ impl WorkflowReducer {
         let mut runs = BTreeMap::new();
         for (sequence, run_id, mut run) in ordered {
             run.last_sequence = sequence;
+            run.phase = derive_phase(&run);
             runs.insert(run_id, run);
         }
         Ok(runs.into_values().collect())
@@ -1576,6 +1578,9 @@ impl WorkflowEngine {
             WorkflowNodeState::Failed
         };
         node.finished_at_ms = Some(self.clock.now_ms());
+        if let Some(lease_id) = node.lease_id.take() {
+            self.leases.release(&lease_id)?;
+        }
         if !approved && run.definition.completion.cancel_descendants_on_failure {
             cancel_descendants(&mut run, node_id);
         }
@@ -1666,6 +1671,14 @@ impl WorkflowEngine {
         }
         enforce_node_timeout(&run, index, self.clock.now_ms())?;
         WorkflowPolicy::validate_output(run.nodes[index].output_contract, &result)?;
+        if run.workflow_id == "task-plan-implement-review"
+            && node_id == "plan"
+            && result["orderedSteps"].as_array().is_none_or(Vec::is_empty)
+        {
+            return Err(WorkflowError::OutputContract(
+                "The overall plan needs at least one ordered step".into(),
+            ));
+        }
         run.tokens_used = run.tokens_used.saturating_add(
             result
                 .get("tokensUsed")
@@ -2649,7 +2662,9 @@ fn derive_phase(run: &WorkflowRunRecord) -> WorkflowLoopPhase {
                 })
                 .map(|node| node.role_id.to_ascii_lowercase())
                 .collect();
-            if active_roles.iter().any(|role| role.contains("review")) {
+            if active_roles.iter().any(|role| role.contains("plan")) {
+                WorkflowLoopPhase::Planning
+            } else if active_roles.iter().any(|role| role.contains("review")) {
                 WorkflowLoopPhase::Reviewing
             } else if active_roles
                 .iter()
@@ -3003,6 +3018,9 @@ mod tests {
     #[test]
     fn workflow_phase_is_derived_from_node_state_and_role_not_prose() {
         let mut run = sample_run();
+        run.nodes[0].role_id = "planner".into();
+        run.nodes[0].state = WorkflowNodeState::Running;
+        assert_eq!(derive_phase(&run), WorkflowLoopPhase::Planning);
         run.nodes[0].role_id = "reviewer".into();
         run.nodes[0].state = WorkflowNodeState::Running;
         run.input_snapshot = json!({"message":"implementation complete APPROVED"});
@@ -3063,7 +3081,11 @@ mod tests {
     }
     #[test]
     fn workflow_reducer_restart_replay_equivalence_and_audit_order() {
-        let run = sample_run();
+        let mut run = sample_run();
+        run.state = WorkflowRunState::Running;
+        run.nodes[0].state = WorkflowNodeState::Running;
+        run.nodes[0].role_id = "planner".into();
+        run.phase = WorkflowLoopPhase::Implementing;
         let events = vec![
             json!({"runId":"r","sequence":2,"workflowPayload":{"run":run.clone()}}),
             json!({"runId":"r","sequence":1,"workflowPayload":{"run":run}}),
@@ -3072,6 +3094,7 @@ mod tests {
         let second = WorkflowReducer::reduce(events).unwrap();
         assert_eq!(first, second);
         assert_eq!(first[0].last_sequence, 2);
+        assert_eq!(first[0].phase, WorkflowLoopPhase::Planning);
     }
     #[test]
     fn workflow_retry_cancel_skip_and_gate_transitions_are_state_based() {
@@ -3089,6 +3112,60 @@ mod tests {
         run.nodes[0].state = WorkflowNodeState::Skipped;
         run.state = WorkflowRunState::Cancelled;
         assert_eq!(derive_phase(&run), WorkflowLoopPhase::Cancelled);
+    }
+    #[test]
+    fn approved_gate_releases_its_workspace_lease() {
+        let leases = Arc::new(InMemoryWorktreeLeasePort::default());
+        let engine = WorkflowEngine::new(
+            Arc::new(FakeRuntime::default()),
+            leases.clone(),
+            Arc::new(FakeClock(AtomicU64::new(100))),
+            Arc::new(FakeIds(AtomicU64::new(1))),
+            Arc::new(SessionStore::open_in_memory().unwrap()),
+        );
+        let mut workflow = definition();
+        workflow.nodes = vec![node("a", "implementer", &[])];
+        workflow.nodes[0].approval_gate = Some(WorkflowApprovalGate {
+            id: "approve".into(),
+            prompt: String::new(),
+        });
+        let created = engine.create_run(workflow, json!({"cwd":"/repo"}), "create".into()).unwrap();
+        tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
+        let waiting = tauri::async_runtime::block_on(engine.submit_result(
+            &created.id, "a",
+            json!({"changedFiles":[],"summary":"done","tests":[],"knownRisks":[],"artifacts":[]}),
+            "result",
+        )).unwrap();
+        assert_eq!(waiting.nodes[0].state, WorkflowNodeState::WaitingApproval);
+        assert_eq!(leases.leases.lock().unwrap().len(), 1);
+        let approved = tauri::async_runtime::block_on(engine.approve_gate(
+            &created.id, "a", json!({"approved":true}), "approve",
+        )).unwrap();
+        assert_eq!(approved.state, WorkflowRunState::Completed);
+        assert!(approved.nodes[0].lease_id.is_none());
+        assert!(leases.leases.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn task_workflow_rejects_an_empty_overall_plan_before_approval() {
+        let engine = WorkflowEngine::new(
+            Arc::new(FakeRuntime::default()),
+            Arc::new(InMemoryWorktreeLeasePort::default()),
+            Arc::new(FakeClock(AtomicU64::new(100))),
+            Arc::new(FakeIds(AtomicU64::new(1))),
+            Arc::new(SessionStore::open_in_memory().unwrap()),
+        );
+        let mut workflow = definition();
+        workflow.id = "task-plan-implement-review".into();
+        workflow.roles = vec![role("planner", WorkflowOutputContract::PlanReceipt)];
+        workflow.nodes = vec![node("plan", "planner", &[])];
+        let created = engine.create_run(workflow, json!({"cwd":"/repo"}), "create".into()).unwrap();
+        tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
+        let result = tauri::async_runtime::block_on(engine.submit_result(
+            &created.id, "plan",
+            json!({"orderedSteps":[],"dependencies":[],"risk":{},"estimatedParallelLanes":1}),
+            "result",
+        ));
+        assert!(matches!(result, Err(WorkflowError::OutputContract(message)) if message.contains("at least one")));
     }
 
     #[test]

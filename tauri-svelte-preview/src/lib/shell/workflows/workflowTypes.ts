@@ -35,6 +35,7 @@ export type WorkflowNodeState =
 export type WorkflowLoopPhase =
   | 'draft'
   | 'scheduling'
+  | 'planning'
   | 'implementing'
   | 'reviewing'
   | 'verifying'
