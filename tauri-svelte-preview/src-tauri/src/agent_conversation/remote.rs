@@ -1973,6 +1973,7 @@ async fn client_loop(
         }
         if send_client_frame(&mut socket, &ClientFrame::Request { id: READINESS_REQUEST_ID, command: RemoteCommand::ListSessions }).await.is_err() { return; }
         let mut pending = HashMap::<u64, ClientReply>::new();
+        let mut interruption = "The Remote Assembly connection was interrupted".to_string();
         loop {
             tokio::select! {
                 request = requests.recv() => {
@@ -2003,15 +2004,24 @@ async fn client_loop(
                 message = socket.next() => {
                     let message = match message {
                         Some(Ok(TungsteniteMessage::Close(frame))) => {
+                            interruption = match frame.as_ref() {
+                                Some(frame) if !frame.reason.is_empty() => format!(
+                                    "The Remote Assembly connection closed ({:?}): {}", frame.code, frame.reason
+                                ),
+                                Some(frame) => format!("The Remote Assembly connection closed ({:?})", frame.code),
+                                None => "The Remote Assembly connection closed without a reason".into(),
+                            };
                             eprintln!("Remote socket closed with {} pending requests: {frame:?}", pending.len());
                             break;
                         }
                         Some(Ok(message)) => message,
                         Some(Err(error)) => {
+                            interruption = format!("The Remote Assembly connection failed: {error}");
                             eprintln!("Remote socket failed with {} pending requests: {error}", pending.len());
                             break;
                         }
                         None => {
+                            interruption = "The Remote Assembly connection ended without a close frame".into();
                             eprintln!("Remote socket ended with {} pending requests", pending.len());
                             break;
                         }
@@ -2082,9 +2092,7 @@ async fn client_loop(
             return;
         }
         for (_, reply) in pending.drain() {
-            let _ = reply.send(Err(
-                "The Remote Assembly connection was interrupted".to_string()
-            ));
+            let _ = reply.send(Err(interruption.clone()));
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -3300,7 +3308,7 @@ mod connection_tests {
                 assert!(result.await.unwrap().unwrap().is_empty());
                 assert!(ready.load(Ordering::Acquire));
             } else {
-                assert!(result.await.unwrap().unwrap_err().contains("Unsupported remote protocol"));
+                assert!(result.await.unwrap().unwrap_err().contains("Assembly client needs an update"));
                 assert!(!ready.load(Ordering::Acquire));
             }
             drop(requests);
@@ -3308,6 +3316,51 @@ mod connection_tests {
             let _ = actor.await;
             server.await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn pending_remote_request_reports_socket_close_reason() {
+        use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, CloseFrame};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket.send(TungsteniteMessage::Text(serde_json::to_string(
+                &ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }
+            ).unwrap().into())).await.unwrap();
+            let _resume = socket.next().await.unwrap().unwrap();
+            let _readiness = socket.next().await.unwrap().unwrap();
+            socket.send(TungsteniteMessage::Text(serde_json::to_string(
+                &ServerFrame::Response { id: READINESS_REQUEST_ID, response: RemoteResponse::Sessions(vec![]) }
+            ).unwrap().into())).await.unwrap();
+            let request = socket.next().await.unwrap().unwrap();
+            let frame: ClientFrame = serde_json::from_str(request.to_text().unwrap()).unwrap();
+            assert!(matches!(frame, ClientFrame::Request { command: RemoteCommand::Config { .. }, .. }));
+            socket.send(TungsteniteMessage::Close(Some(CloseFrame {
+                code: CloseCode::Error,
+                reason: "test backend closed during config".into(),
+            }))).await.unwrap();
+        });
+        let (requests, mut receiver) = mpsc::channel(2);
+        let (ready_reply, ready_answer) = oneshot::channel();
+        let actor = tokio::spawn(async move {
+            client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver,
+                Arc::new(|_| Ok(())), Some(1), Arc::new(AtomicBool::new(false)),
+                &mut Some(ready_reply), Arc::new(|| {})).await;
+        });
+        ready_answer.await.unwrap().unwrap();
+        let (reply, answer) = oneshot::channel();
+        requests.send(ClientRequest::Execute {
+            id: 1, command: RemoteCommand::Config { owned_id: "proof".into() }, reply,
+        }).await.unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(5), answer)
+            .await.unwrap().unwrap().unwrap_err();
+        assert!(error.contains("test backend closed during config"), "{error}");
+        drop(requests);
+        server.await.unwrap();
+        actor.await.unwrap();
     }
 
     #[tokio::test]
