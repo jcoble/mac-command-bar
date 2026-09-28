@@ -46,15 +46,15 @@ export function taskWorkflowDefinition(
   return {
     version: 1,
     id: 'task-plan-implement-review',
-    name: 'Plan, review, implement, review, verify',
-    description: 'A visible task loop with approval after plan review and implementation, followed by verification.',
+    name: 'Plan, review, implement, review, verify, open PR, review PR, merge',
+    description: 'A visible task loop from reviewed plan through pull request merge or owner handoff.',
     trigger: { kind: 'manual' },
     inputs: [{ id: 'task', required: true }],
     roles: [
       role(
         'planner',
-        'Planner',
-        'Turn the task into a concise implementation plan grounded in the current workspace.',
+        'Controller',
+        'Turn the task into a concise implementation plan grounded in the current workspace. Limit orderedSteps to implementation work; the workflow handles verification, PR opening, PR review, and merge in later stages. Set ownerMerge true only when the task explicitly asks the owner to perform the merge personally; otherwise set it false.',
         providers.plan,
         'PlanReceipt',
         { kind: 'read-only-current' }
@@ -70,7 +70,7 @@ export function taskWorkflowDefinition(
       role(
         'reviewer',
         'Reviewer',
-        'Review the plan or implementation against the task. Report one blocking finding, or a non-blocking no-finding receipt.',
+        'Review the plan or implementation against the task. For plan review, block any orderedSteps that include verification, PR opening, PR review, or merge, since the workflow handles those stages. Report one blocking finding, or a non-blocking no-finding receipt.',
         providers.review,
         'ReviewReceipt',
         { kind: 'read-only-current' }
@@ -78,9 +78,33 @@ export function taskWorkflowDefinition(
       role(
         'verifier',
         'Verifier',
-        'Run the relevant regression, integration, and UI checks. Report the actual command, exit status, evidence, and cleanup.',
+        'Run relevant regression, integration, and UI checks. Browser checks must be headless at 1710x990 with the viewport verified after launch; save before and after screenshots to ~/Workbox/screenshots/ and stop the browser process tree. For native Assembly checks, use workbox-native-ui. Report commands, exits, evidence, and cleanup. Set evidenceArtifacts to [] when there is no saved artifact; otherwise each entry must contain id, kind, path, url, and digest.',
         providers.review,
         'VerificationReceipt',
+        { kind: 'read-only-current' }
+      ),
+      role(
+        'pr-author',
+        'PR author',
+        'Commit any verified uncommitted changes, push the branch, then open or update its pull request with before and after UI screenshots as artifacts when relevant. For Notion tasks use a tsk-<id> branch. End every commit message body with Committed-by: <actual committer>; never add a co-author trailer. Do not merge in this stage; the PR reviewer and PR merger run later. Return the PR URL and branch for final review.',
+        providers.implement,
+        'PullRequestReceipt',
+        { kind: 'shared-current', fileAllowList: [] }
+      ),
+      role(
+        'pr-reviewer',
+        'PR reviewer',
+        'Independently review the opened pull request diff, check results, and before and after UI evidence against the task. Return one blocking finding if the PR is not ready to merge, or a non-blocking no-finding receipt.',
+        providers.review,
+        'ReviewReceipt',
+        { kind: 'read-only-current' }
+      ),
+      role(
+        'pr-merger',
+        'PR merger',
+        'After a passing final PR review, merge the PR from the Open PR receipt, verify its merged state and merge commit SHA on GitHub, and return both. If the merge fails, report the failure instead of a success receipt.',
+        providers.implement,
+        'PullRequestMergeReceipt',
         { kind: 'read-only-current' }
       )
     ],
@@ -138,6 +162,39 @@ export function taskWorkflowDefinition(
         roleId: 'verifier',
         dependsOn: ['review'],
         condition: null,
+        fanOut: null,
+        approvalGate: null,
+        timeoutSeconds: 3600,
+        maxAttempts: 2
+      },
+      {
+        id: 'open-pr',
+        title: 'Open PR',
+        roleId: 'pr-author',
+        dependsOn: ['implement', 'verify'],
+        condition: null,
+        fanOut: null,
+        approvalGate: null,
+        timeoutSeconds: 3600,
+        maxAttempts: 2
+      },
+      {
+        id: 'pr-review',
+        title: 'PR review',
+        roleId: 'pr-reviewer',
+        dependsOn: ['implement', 'verify', 'open-pr'],
+        condition: { redoNodeId: 'implement' },
+        fanOut: null,
+        approvalGate: null,
+        timeoutSeconds: 3600,
+        maxAttempts: 2
+      },
+      {
+        id: 'merge-pr',
+        title: 'Merge PR or hand off',
+        roleId: 'pr-merger',
+        dependsOn: ['plan', 'open-pr', 'pr-review'],
+        condition: { ownerMergeNodeId: 'plan' },
         fanOut: null,
         approvalGate: null,
         timeoutSeconds: 3600,

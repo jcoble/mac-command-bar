@@ -1980,9 +1980,9 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the pending approval", error))
     }
 
-    /// The final completed assistant message for one turn, selected in SQLite
-    /// so workflow handoff does not materialize or scan the conversation.
-    pub fn latest_completed_assistant_payload(
+    /// The final assistant text for one turn. Claude can finish with streamed
+    /// deltas and no completed assistant-message event.
+    pub fn latest_assistant_text_for_turn(
         &self,
         owned_id: &str,
         turn_id: &str,
@@ -1990,21 +1990,36 @@ impl SessionStore {
         let connection = self.lock()?;
         connection
             .query_row(
-                "SELECT payload
-                 FROM events
-                 WHERE owned_id = ?1
-                   AND turn_id = ?2
-                   AND json_extract(payload, '$.payload.kind') = 'assistantMessage'
-                   AND json_extract(payload, '$.payload.completed') = 1
-                 ORDER BY seq DESC
-                 LIMIT 1",
+                "WITH last_delta AS (
+                     SELECT json_extract(payload, '$.payload.itemId') AS item_id
+                     FROM events
+                     WHERE owned_id = ?1 AND turn_id = ?2
+                       AND kind = 'content.delta'
+                       AND json_extract(payload, '$.payload.kind') = 'assistantDelta'
+                     ORDER BY seq DESC LIMIT 1
+                 ), deltas AS (
+                     SELECT e.seq, json_extract(e.payload, '$.payload.delta') AS delta
+                     FROM events e, last_delta
+                     WHERE e.owned_id = ?1 AND e.turn_id = ?2
+                       AND e.kind = 'content.delta'
+                       AND json_extract(e.payload, '$.payload.kind') = 'assistantDelta'
+                       AND json_extract(e.payload, '$.payload.itemId') = last_delta.item_id
+                 )
+                 SELECT COALESCE(
+                     (SELECT json_extract(payload, '$.payload.text')
+                      FROM events
+                      WHERE owned_id = ?1 AND turn_id = ?2
+                        AND json_extract(payload, '$.payload.kind') = 'assistantMessage'
+                        AND json_extract(payload, '$.payload.completed') = 1
+                      ORDER BY seq DESC LIMIT 1),
+                     (SELECT group_concat(delta, '') OVER (
+                         ORDER BY seq ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                      ) FROM deltas LIMIT 1)
+                 )",
                 params![owned_id, turn_id],
-                |row| row.get(0),
+                |row| row.get::<_, Option<String>>(0),
             )
-            .optional()
-            .map_err(|error| {
-                StoreError::sqlite("could not read the completed assistant message", error)
-            })
+            .map_err(|error| StoreError::sqlite("could not read the assistant text", error))
     }
 
     pub fn first_user_message_payload(&self, owned_id: &str) -> Result<Option<String>> {
@@ -4553,7 +4568,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_assistant_receipt_is_selected_by_turn_in_sql() {
+    fn completed_assistant_text_is_selected_by_turn_in_sql() {
         let store = SessionStore::open_in_memory().expect("open store");
         store
             .upsert_session(&fixture_session("workflow-agent", 1_000))
@@ -4579,12 +4594,45 @@ mod tests {
 
         assert_eq!(
             store
-                .latest_completed_assistant_payload("workflow-agent", "turn-b")
+                .latest_assistant_text_for_turn("workflow-agent", "turn-b")
                 .expect("read receipt")
                 .as_deref(),
-            Some(
-                r#"{"payload":{"kind":"assistantMessage","itemId":"a","text":"receipt","completed":true}}"#
-            )
+            Some("receipt")
+        );
+    }
+
+    #[test]
+    fn streamed_assistant_text_is_assembled_by_turn_and_item_in_sql() {
+        let store = SessionStore::open_in_memory().expect("open store");
+        store
+            .upsert_session(&fixture_session("workflow-agent", 1_000))
+            .expect("insert session");
+        for (seq, turn_id, item_id, delta) in [
+            (1, "turn-a", "old", "ignore"),
+            (2, "turn-b", "first", "ignore"),
+            (3, "turn-b", "last", "{\"ordered"),
+            (4, "turn-b", "last", "Steps\":[]}"),
+        ] {
+            store
+                .append_event(&EventRow {
+                    owned_id: "workflow-agent".into(),
+                    seq,
+                    turn_id: Some(turn_id.into()),
+                    kind: "content.delta".into(),
+                    payload_json: serde_json::json!({
+                        "payload": {"kind": "assistantDelta", "itemId": item_id, "delta": delta}
+                    })
+                    .to_string(),
+                    created_at_ms: 1_000 + seq,
+                })
+                .expect("append event");
+        }
+        assert_eq!(
+            store
+                .latest_assistant_text_for_turn("workflow-agent", "turn-b")
+                .expect("read streamed receipt")
+                .as_deref(),
+            Some("{\"orderedSteps\":[]}")
         );
     }
 

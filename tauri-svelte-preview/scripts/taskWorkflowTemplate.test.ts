@@ -14,7 +14,10 @@ assert.deepEqual(
     ['planner', 'claude'],
     ['implementer', 'codex'],
     ['reviewer', 'antigravity'],
-    ['verifier', 'antigravity']
+    ['verifier', 'antigravity'],
+    ['pr-author', 'codex'],
+    ['pr-reviewer', 'antigravity'],
+    ['pr-merger', 'codex']
   ]
 );
 assert.deepEqual(
@@ -24,7 +27,10 @@ assert.deepEqual(
     ['plan-review', ['plan'], true],
     ['implement', ['plan', 'plan-review'], true],
     ['review', ['plan', 'implement'], false],
-    ['verify', ['review'], false]
+    ['verify', ['review'], false],
+    ['open-pr', ['implement', 'verify'], false],
+    ['pr-review', ['implement', 'verify', 'open-pr'], false],
+    ['merge-pr', ['plan', 'open-pr', 'pr-review'], false]
   ]
 );
 assert.equal(definition.concurrency.global, 1);
@@ -41,6 +47,11 @@ assert.equal(definition.budgets.maximumWorktrees, 0);
 assert.equal(definition.nodes.find((node) => node.id === 'plan-review')?.roleId, 'reviewer');
 assert.deepEqual(definition.nodes.find((node) => node.id === 'plan-review')?.condition, { redoNodeId: 'plan' });
 assert.deepEqual(definition.nodes.find((node) => node.id === 'review')?.condition, { redoNodeId: 'implement' });
+assert.deepEqual(definition.nodes.find((node) => node.id === 'pr-review')?.condition, { redoNodeId: 'implement' });
+assert.deepEqual(definition.nodes.find((node) => node.id === 'merge-pr')?.condition, { ownerMergeNodeId: 'plan' });
 assert.equal(definition.roles.find((role) => role.id === 'verifier')?.outputContract, 'VerificationReceipt');
+assert.equal(definition.roles.find((role) => role.id === 'pr-author')?.outputContract, 'PullRequestReceipt');
+assert.equal(definition.roles.find((role) => role.id === 'pr-reviewer')?.outputContract, 'ReviewReceipt');
+assert.equal(definition.roles.find((role) => role.id === 'pr-merger')?.outputContract, 'PullRequestMergeReceipt');
 
 console.log('task workflow template tests passed');

@@ -35,6 +35,7 @@ export type WorkflowNodeState =
 export type WorkflowLoopPhase =
   | 'draft'
   | 'scheduling'
+  | 'planning'
   | 'implementing'
   | 'reviewing'
   | 'verifying'
@@ -45,6 +46,8 @@ export type WorkflowLoopPhase =
 
 export type WorkflowOutputContract =
   | 'ImplementationReceipt'
+  | 'PullRequestReceipt'
+  | 'PullRequestMergeReceipt'
   | 'ReviewReceipt'
   | 'SpecComplianceReceipt'
   | 'VerificationReceipt'
@@ -260,10 +263,24 @@ export interface PlanReceipt {
   dependencies: unknown[];
   risk: unknown;
   estimatedParallelLanes: number;
+  ownerMerge?: boolean;
+}
+
+export interface PullRequestReceipt {
+  url: string;
+  branch: string;
+  artifacts: WorkflowArtifactRef[];
+}
+
+export interface PullRequestMergeReceipt {
+  url: string;
+  mergeCommitSha: string;
 }
 
 export type WorkflowResultReceipt =
   | ImplementationReceipt
+  | PullRequestReceipt
+  | PullRequestMergeReceipt
   | ReviewReceipt
   | SpecComplianceReceipt
   | VerificationReceipt
