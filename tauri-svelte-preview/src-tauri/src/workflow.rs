@@ -369,6 +369,8 @@ pub(crate) struct WorkflowNodeRunRecord {
     pub gate: Option<WorkflowGateRecord>,
     pub lease_id: Option<String>,
     pub failure: Option<WorkflowFailure>,
+    #[serde(default)]
+    pub usage: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -1265,6 +1267,7 @@ impl WorkflowEngine {
                     gate: None,
                     lease_id: None,
                     failure: None,
+                    usage: None,
                 }
             })
             .collect();
@@ -2216,9 +2219,23 @@ impl WorkflowEngine {
     }
 
     pub fn list_runs(&self) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
-        WorkflowReducer::reduce(
+        let mut runs = WorkflowReducer::reduce(
             read_workflow_event_values(&self.store).map_err(WorkflowError::Ledger)?,
-        )
+        )?;
+        let owned_ids = runs.iter().flat_map(|run| run.nodes.iter())
+            .map(|node| node.owned_id.clone()).collect::<Vec<_>>();
+        let usage = self.store.latest_usage_events(&owned_ids)
+            .map_err(|error| WorkflowError::Ledger(error.to_string()))?
+            .into_iter()
+            .filter_map(|row| {
+                let payload: Value = serde_json::from_str(&row.payload_json).ok()?;
+                Some((row.owned_id, payload.get("payload")?.clone()))
+            })
+            .collect::<HashMap<_, _>>();
+        for node in runs.iter_mut().flat_map(|run| run.nodes.iter_mut()) {
+            node.usage = usage.get(&node.owned_id).cloned();
+        }
+        Ok(runs)
     }
 
     /// A new app process cannot receive completion events from the previous
@@ -2629,6 +2646,7 @@ fn materialize_plan_steps(
             gate: None,
             lease_id: None,
             failure: None,
+            usage: None,
         });
     }
     run.nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
@@ -2948,6 +2966,7 @@ mod tests {
                     gate: None,
                     lease_id: None,
                     failure: None,
+                    usage: None,
                 },
                 WorkflowNodeRunRecord {
                     id: "a".into(),
@@ -2967,6 +2986,7 @@ mod tests {
                     gate: None,
                     lease_id: None,
                     failure: None,
+                    usage: None,
                 },
             ],
             tokens_used: 0,
@@ -3032,6 +3052,7 @@ mod tests {
                 gate: None,
                 lease_id: None,
                 failure: None,
+                usage: None,
             }
         }).collect();
         run.nodes.iter_mut().find(|node| node.node_id == "plan").unwrap().structured_output =
@@ -3841,8 +3862,27 @@ mod tests {
                 created_at_ms: 100,
             })
             .unwrap();
-        let terminal = AgentConversationEvent {
+        let usage = AgentConversationEvent {
             sequence: 2,
+            payload: AgentConversationPayload::Usage {
+                input_tokens: Some(16_000),
+                output_tokens: Some(140),
+                used_tokens: Some(142_300),
+                context_window: Some(258_400),
+                total_tokens: None,
+            },
+            ..assistant.clone()
+        };
+        store.append_event(&EventRow {
+            owned_id: first.owned_id.clone(),
+            seq: 2,
+            turn_id: Some("turn-1".into()),
+            kind: "usage.updated".into(),
+            payload_json: serde_json::to_string(&usage).unwrap(),
+            created_at_ms: 100,
+        }).unwrap();
+        let terminal = AgentConversationEvent {
+            sequence: 3,
             payload: AgentConversationPayload::Turn {
                 turn_id: "turn-1".into(),
                 state: TurnState::Completed,
@@ -3866,6 +3906,11 @@ mod tests {
         assert_eq!(dispatches[1].provider, "claude");
         let handoff: Value = serde_json::from_str(&dispatches[1].prompt).unwrap();
         assert_eq!(handoff["priorStageReceipts"]["a"]["summary"], "implemented");
+        let restored = engine.list_runs().unwrap();
+        let first = restored[0].nodes.iter().find(|node| node.node_id == "a").unwrap();
+        assert_eq!(first.usage.as_ref().unwrap()["usedTokens"], 142_300);
+        assert_eq!(first.usage.as_ref().unwrap()["contextWindow"], 258_400);
+        assert!(restored[0].nodes.iter().find(|node| node.node_id == "b").unwrap().usage.is_none());
     }
     fn sample_run() -> WorkflowRunRecord {
         let definition = definition();
@@ -3897,6 +3942,7 @@ mod tests {
                 gate: None,
                 lease_id: None,
                 failure: None,
+                usage: None,
             }],
             tokens_used: 0,
             tool_terminals_used: 0,

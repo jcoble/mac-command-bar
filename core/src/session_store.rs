@@ -1955,6 +1955,33 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the event list", error))
     }
 
+    /// Latest provider usage for selected sessions, without loading their transcripts.
+    pub fn latest_usage_events(&self, owned_ids: &[String]) -> Result<Vec<EventRow>> {
+        if owned_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids_json = serde_json::to_string(owned_ids)
+            .map_err(|_| StoreError::message("could not encode session ids"))?;
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT e.owned_id, e.seq, e.turn_id, e.kind, e.payload, e.created_at
+                 FROM json_each(?1) AS selected
+                 JOIN events e ON e.rowid = (
+                     SELECT rowid FROM events
+                     WHERE owned_id = selected.value AND kind = 'usage.updated'
+                       AND item_id IS NULL
+                     ORDER BY seq DESC LIMIT 1
+                 )",
+            )
+            .map_err(|error| StoreError::sqlite("could not prepare latest usage", error))?;
+        let rows = statement
+            .query_map([ids_json], event_from_row)
+            .map_err(|error| StoreError::sqlite("could not list latest usage", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read latest usage", error))
+    }
+
     /// Return the summary only when this request's latest approval event is still pending.
     pub fn pending_approval_summary(
         &self,
@@ -4160,6 +4187,29 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["recent", "pinned"]
         );
+    }
+
+    #[test]
+    fn latest_usage_query_returns_one_event_per_requested_session() {
+        let (_directory, _path, store) = open_temp_store();
+        for owned_id in ["session-a", "session-b"] {
+            store.upsert_session(&fixture_session(owned_id, 10_000)).unwrap();
+        }
+        for (owned_id, seq, kind) in [
+            ("session-a", 1, "usage.updated"),
+            ("session-a", 2, "usage.updated"),
+            ("session-a", 3, "content.delta"),
+            ("session-b", 1, "usage.updated"),
+        ] {
+            store.append_event(&fixture_event_of_kind(owned_id, seq, kind)).unwrap();
+        }
+        let mut rows = store.latest_usage_events(&[
+            "session-b".into(), "missing".into(), "session-a".into(),
+        ]).unwrap();
+        rows.sort_by(|left, right| left.owned_id.cmp(&right.owned_id));
+        assert_eq!(rows.iter().map(|row| (row.owned_id.as_str(), row.seq)).collect::<Vec<_>>(),
+            [("session-a", 2), ("session-b", 1)]);
+        assert!(store.latest_usage_events(&[]).unwrap().is_empty());
     }
 
     #[test]
