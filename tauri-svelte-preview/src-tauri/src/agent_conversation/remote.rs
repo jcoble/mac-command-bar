@@ -923,7 +923,15 @@ impl RemoteConnectionManager {
         let epoch = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).epoch(&profile);
         let sink = self.event_sink.clone();
         Arc::new(move |event| {
-            history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).live(&profile, epoch, &event)?;
+            {
+                let history = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                // A replaced connection must stop; a failed cache write must not.
+                // Snapshot catch-up refills any row the cache missed.
+                history.check(&profile, epoch)?;
+                if let Err(error) = history.live(&profile, epoch, &event) {
+                    eprintln!("Remote history cache write failed for {} at {}: {error}", event.owned_id, event.sequence);
+                }
+            }
             sink(event);
             Ok(())
         })
@@ -2703,6 +2711,31 @@ pub(super) fn validate_ssh_target(target: &str) -> Result<(), String> {
 #[cfg(test)]
 mod connection_tests {
     use super::*;
+
+    #[test]
+    fn history_event_sink_delivers_the_event_when_the_cache_write_fails() {
+        let store = store();
+        // A local session under the cache key makes the remote cache write fail.
+        store.upsert_session(&mcb_core::session_store::SessionRow {
+            owned_id: serde_json::to_string(&("cache-test", "large-history")).unwrap(),
+            native_session_id: None, provider: "local".into(), model: None, effort: None,
+            cwd: String::new(), worktree: None, branch: None, title: None, title_source: None,
+            project: None, state: "idle".into(), suspended: false, created_at_ms: 0,
+            last_activity_at_ms: 0, extra_json: "{}".into(),
+        }).unwrap();
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let captured = delivered.clone();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(move |event| captured.lock().unwrap().push(event)),
+            Arc::new(|_| {}),
+            store,
+        ).unwrap();
+        let sink = manager.history_event_sink("cache-test");
+        let event = large_history_event(32);
+
+        assert!(sink(event.clone()).is_ok(), "a cache write failure must not drop the connection");
+        assert_eq!(*delivered.lock().unwrap(), vec![event]);
+    }
 
     #[tokio::test]
     async fn remote_history_reuses_cached_pages_and_fetches_only_snapshot_changes() {
