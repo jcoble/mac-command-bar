@@ -15,6 +15,7 @@ const definition = taskWorkflowDefinition({
 assert.deepEqual(
   definition.roles.map((role) => [role.id, role.providerPolicy.provider]),
   [
+    ['specifier', 'claude'],
     ['planner', 'claude'],
     ['implementer', 'codex'],
     ['reviewer', 'antigravity'],
@@ -27,7 +28,9 @@ assert.deepEqual(
 assert.deepEqual(
   definition.nodes.map((node) => [node.id, node.dependsOn, node.approvalGate !== null]),
   [
-    ['plan', [], false],
+    ['spec', [], false],
+    ['spec-review', ['spec'], true],
+    ['plan', ['spec', 'spec-review'], false],
     ['plan-review', ['plan'], true],
     ['implement', ['plan', 'plan-review'], true],
     ['review', ['plan', 'implement'], false],
@@ -48,6 +51,8 @@ assert.ok(
 );
 assert.equal(definition.budgets.maximumActiveAgents, 1);
 assert.equal(definition.budgets.maximumWorktrees, 0);
+assert.equal(definition.roles.find((role) => role.id === 'specifier')?.outputContract, 'SpecReceipt');
+assert.deepEqual(definition.nodes.find((node) => node.id === 'spec-review')?.condition, { redoNodeId: 'spec' });
 assert.equal(definition.nodes.find((node) => node.id === 'plan-review')?.roleId, 'reviewer');
 assert.deepEqual(definition.nodes.find((node) => node.id === 'plan-review')?.condition, { redoNodeId: 'plan' });
 assert.deepEqual(definition.nodes.find((node) => node.id === 'review')?.condition, { redoNodeId: 'implement' });

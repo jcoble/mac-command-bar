@@ -49,6 +49,7 @@ export type WorkflowOutputContract =
   | 'PullRequestReceipt'
   | 'PullRequestMergeReceipt'
   | 'ReviewReceipt'
+  | 'SpecReceipt'
   | 'SpecComplianceReceipt'
   | 'VerificationReceipt'
   | 'PlanReceipt';
