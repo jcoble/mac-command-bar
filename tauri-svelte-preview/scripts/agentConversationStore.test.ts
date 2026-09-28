@@ -1963,3 +1963,22 @@ await test('remote rail activity reconciles without opening background conversat
   await disposed;
   assert.equal(row.activeTurnId, null, 'shutdown invalidates pending activity reads');
 });
+
+await test('an unchanged sidebar row update leaves the row list untouched', async () => {
+  const railPath = fileURLToPath(new URL('../src/lib/shell/stores/sessionRailStore.svelte.ts', import.meta.url));
+  const railOutput = fileURLToPath(new URL('./.sessionRailStore.test.mjs', import.meta.url));
+  writeFileSync(railOutput, compileForTest(railPath, 'sessionRailStore.svelte.js'));
+  let railStore;
+  try {
+    railStore = await import(`${railOutput}?test=${Date.now()}`);
+  } finally {
+    rmSync(railOutput, { force: true });
+  }
+  railStore.hydrateOwned([{ ownedId: 'row-a', title: 'A', state: 'background', backgroundTaskIds: ['t1'] }]);
+  const before = railStore.rail.owned;
+  railStore.updateOwnedSession('row-a', { state: 'background', backgroundTaskIds: ['t1'] });
+  assert.equal(railStore.rail.owned, before, 'a reconnect refresh with the same values must not re-render the rail');
+  railStore.updateOwnedSession('row-a', { state: 'live' });
+  assert.notEqual(railStore.rail.owned, before);
+  assert.equal(railStore.rail.owned[0].state, 'live');
+});
