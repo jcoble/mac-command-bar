@@ -165,13 +165,19 @@
     return previousVisibleTimeline;
   });
   const activePlan = $derived(latestPlan(visibleTimeline));
-  /* What the turn on screen has changed on disk, for the footer chip. A turn
-     is what has happened since the last thing the reader asked
-     for, so the count starts at the last user message. The line counts are
-     read off the diffs the rows already carry; a row with no diff still
-     counts as a file changed. */
-  const planFileChanges = $derived.by(() => {
-    return turnFileChanges(visibleTimeline);
+  /* Keep the footer's latest-turn count while older transcript pages replace
+     the displayed window. Those pages can belong to different turns. */
+  let fileChangesViewKey = '';
+  let planFileChanges = $state<ReturnType<typeof turnFileChanges>>(null);
+  $effect(() => {
+    const viewKey = `${activeOwnedId ?? ''}:${conversation?.selectedChildId ?? 'root'}`;
+    if (viewKey !== fileChangesViewKey) {
+      fileChangesViewKey = viewKey;
+      planFileChanges = null;
+    }
+    if (conversation?.reachedTranscriptEnd && visibleTimeline.length) {
+      planFileChanges = turnFileChanges(visibleTimeline);
+    }
   });
   const pendingApprovals = $derived(conversation ? Object.values(conversation.pendingApprovals) : []);
   const pendingInputs = $derived(conversation ? Object.values(conversation.pendingInputs) : []);
