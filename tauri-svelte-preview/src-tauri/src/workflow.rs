@@ -2510,7 +2510,7 @@ fn materialize_plan_steps(
             "verify" => node.depends_on = vec![previous_review.clone()],
             "open-pr" => node.depends_on = vec![last_implement.clone(), "verify".into()],
             "pr-review" => {
-                node.depends_on = vec![first_plan.clone(), last_implement.clone(), "open-pr".into()];
+                node.depends_on = vec![first_plan.clone(), last_implement.clone(), "verify".into(), "open-pr".into()];
                 node.condition = Some(json!({"redoNodeId": first_plan}));
             }
             _ => {}
@@ -2945,6 +2945,7 @@ mod tests {
         assert_eq!(run.definition.nodes.iter().find(|node| node.id == "step-02-plan").unwrap().depends_on, ["step-01-review"]);
         assert_eq!(run.definition.nodes.iter().find(|node| node.id == "verify").unwrap().depends_on, ["step-02-review"]);
         assert_eq!(run.definition.nodes.iter().find(|node| node.id == "pr-review").unwrap().condition, Some(json!({"redoNodeId":"step-01-plan"})));
+        assert!(run.definition.nodes.iter().find(|node| node.id == "pr-review").unwrap().depends_on.contains(&"verify".into()));
         assert_eq!(run.definition.nodes.iter().find(|node| node.id == "step-01-implement").unwrap().fan_out, Some(json!({"task":"first"})));
         for id in ["plan", "plan-review"] {
             run.nodes.iter_mut().find(|node| node.node_id == id).unwrap().state = WorkflowNodeState::Completed;
@@ -3023,6 +3024,10 @@ mod tests {
         submit("step-01-review", review(false), "step-review-2");
         submit("verify", verification, "verify");
         submit("open-pr", pull_request, "open-pr");
+        let dispatched = runtime.dispatched.lock().unwrap();
+        let reviewer_prompt: Value = serde_json::from_str(&dispatched.last().unwrap().prompt).unwrap();
+        assert_eq!(reviewer_prompt["priorStageReceipts"]["verify"]["command"], "cargo test");
+        drop(dispatched);
         let reviewed = submit("pr-review", review(false), "pr-review");
         assert_eq!(reviewed.nodes.iter().find(|node| node.node_id == "merge-pr").unwrap().state, WorkflowNodeState::Running);
         let merged = submit("merge-pr", json!({"url":"https://github.com/owner/repo/pull/1","mergeCommitSha":"abc123"}), "merge");

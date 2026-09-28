@@ -29,7 +29,7 @@ assert.deepEqual(
     ['review', ['plan', 'implement'], false],
     ['verify', ['review'], false],
     ['open-pr', ['implement', 'verify'], false],
-    ['pr-review', ['implement', 'open-pr'], false],
+    ['pr-review', ['implement', 'verify', 'open-pr'], false],
     ['merge-pr', ['plan', 'open-pr', 'pr-review'], false]
   ]
 );

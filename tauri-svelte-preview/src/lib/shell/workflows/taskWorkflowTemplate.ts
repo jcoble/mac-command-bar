@@ -182,7 +182,7 @@ export function taskWorkflowDefinition(
         id: 'pr-review',
         title: 'PR review',
         roleId: 'pr-reviewer',
-        dependsOn: ['implement', 'open-pr'],
+        dependsOn: ['implement', 'verify', 'open-pr'],
         condition: { redoNodeId: 'implement' },
         fanOut: null,
         approvalGate: null,
