@@ -921,6 +921,7 @@ export function applyAgentConversationSnapshot(
     && !current.desynchronized
     && current.suspended === snapshot.suspended
     && current.connectionState === snapshot.connection.state
+    && (!snapshot.suspended || (!current.activeTurnId && !current.sending))
   ) return;
   let rebuilt = createConversationState(
     snapshot.connection.ownedId,
@@ -963,7 +964,7 @@ export function applyAgentConversationSnapshot(
     lastSequence: window ? current.lastSequence : snapshot.lastSequence,
     // Paging can trim the newest turn event. Its old start must not revive a
     // turn the live head has already completed (or hide one still running).
-    activeTurnId: window ? current.activeTurnId : rebuilt.activeTurnId,
+    activeTurnId: snapshot.suspended ? undefined : window ? current.activeTurnId : rebuilt.activeTurnId,
     generation,
     suspended: snapshot.suspended === true,
     timelineRevision: current.timelineRevision + 1,
@@ -972,7 +973,7 @@ export function applyAgentConversationSnapshot(
     attachmentError: current.attachmentError,
     providerNotice: current.providerNotice,
     mode: current.mode,
-    sending: current.sending,
+    sending: snapshot.suspended ? false : current.sending,
     attachments: current.attachments,
     metadata: current.metadata,
     children: current.children,
