@@ -1345,6 +1345,35 @@ assert.ok(store.getConversationSession('owned-b'));
   assert.equal(deduped.reachedTranscriptStart, true, 'the start stops any further request');
 }
 
+// An older page can end before the turn-completed event at the live head.
+// Replaying that page must not turn the composer back into a Stop button.
+{
+  const ownedId = 'owned-paged-turn-state';
+  const connection = { ownedId, provider: 'codex' as const, generation: 1, state: 'connected' as const };
+  const turn = (sequence: number, turnId: string, state: 'started' | 'completed'): AgentConversationEvent => ({
+    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
+    payload: { kind: 'turn', turnId, state }
+  });
+  const olderStart = turn(1, 'old-turn', 'started');
+  const olderWindow = {
+    events: [olderStart], reachedStart: true, reachedEnd: false,
+    oldestSequence: 1, newestSequence: 1
+  };
+  store.applyAgentConversationSnapshot({
+    connection, lastSequence: 3,
+    events: [turn(2, 'head-turn', 'started'), turn(3, 'head-turn', 'completed')]
+  });
+  assert.equal(store.getConversationSession(ownedId).activeTurnId, undefined);
+  store.applyAgentConversationSnapshot({ connection, lastSequence: 3, events: [] }, olderWindow);
+  assert.equal(store.getConversationSession(ownedId).activeTurnId, undefined, 'older starts cannot revive a completed turn');
+
+  store.applyAgentConversationSnapshot({ connection, lastSequence: 4, events: [turn(4, 'live-turn', 'started')] });
+  assert.equal(store.getConversationSession(ownedId).activeTurnId, 'live-turn');
+  store.applyAgentConversationSnapshot({ connection, lastSequence: 4, events: [] }, olderWindow);
+  assert.equal(store.getConversationSession(ownedId).activeTurnId, 'live-turn', 'older pages cannot hide a live turn');
+  store.evictConversationSession(ownedId);
+}
+
 // Reading further back into a provider's own transcript writes those older
 // events BELOW the ones already stored, so their sequences count down through
 // zero and into negatives. A reducer that treats "not greater than the last
