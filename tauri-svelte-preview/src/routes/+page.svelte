@@ -251,7 +251,7 @@
 	<RightPanel
 		visible={workbench.rightPanelOpen}
 		activeId={workbench.rightTab}
-		root={selection.durableSessionRoot}
+		root={selection.newSession.draftOpen ? "" : selection.durableSessionRoot}
 		rootAvailable={selection.activeRootAvailable}
 		ownedId={selection.activeOwnedId}
 		session={selection.railOwned.find((s) => s.ownedId === selection.activeOwnedId) ?? null}
