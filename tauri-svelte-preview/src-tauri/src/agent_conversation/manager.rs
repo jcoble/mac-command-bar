@@ -3060,6 +3060,25 @@ impl AgentRuntimeManager {
             .ok_or_else(|| "Conversation session was not found after metadata update".to_string())
     }
 
+    pub fn set_workflow_session_title(&self, owned_id: &str, title: &str) -> Result<(), String> {
+        let set_title = |session: &mut ManagedAgentSession| {
+            if !session_title_is_empty(session.rail_meta.title.as_deref()) {
+                return Ok(());
+            }
+            session.rail_meta.title = Some(title.to_string());
+            session.title_source = Some(TITLE_SOURCE_USER.to_string());
+            persist_session(session)
+        };
+        let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(session) = sessions.get_mut(owned_id) {
+            return set_title(session);
+        }
+        drop(sessions);
+        let row = self.store.get_session(owned_id).map_err(|error| error.to_string())?
+            .ok_or_else(|| "Workflow agent session was not found".to_string())?;
+        set_title(&mut recovered_session_from_row(&self.store, row)?)
+    }
+
     /// Replaces the provisional name of a session with one the helper model
     /// writes from the first exchange, in the background.
     ///

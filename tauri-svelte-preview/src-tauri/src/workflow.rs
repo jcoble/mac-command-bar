@@ -501,6 +501,7 @@ pub(crate) struct AgentDispatchRequest {
     pub owned_id: String,
     pub provider: String,
     pub cwd: String,
+    pub title: String,
     pub prompt: String,
     pub role_id: String,
     pub model: Option<String>,
@@ -555,6 +556,8 @@ impl AgentRuntimePort for AgentRuntimeManager {
                     reasoning_effort: spawn_reasoning_effort,
                 })
                 .await
+                .map_err(WorkflowError::Runtime)?;
+            self.set_workflow_session_title(&connection.owned_id, &request.title)
                 .map_err(WorkflowError::Runtime)?;
             if self.providers().manifest(provider).is_err() {
                 return Err(WorkflowError::Runtime(format!(
@@ -2131,6 +2134,7 @@ impl WorkflowEngine {
                     owned_id: run.nodes[index].owned_id.clone(),
                     provider,
                     cwd: lease.cwd,
+                    title: format!("{} · {}", node_definition.title, role.name),
                     prompt,
                     role_id: role.id,
                     model: role.model_policy.value,
