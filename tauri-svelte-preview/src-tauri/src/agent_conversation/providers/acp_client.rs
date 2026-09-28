@@ -1726,12 +1726,14 @@ done"#,
         apply_config_options(&json!({"configOptions":[{
             "id":"model", "currentValue":"opus", "options":[
                 {"value":"opus","name":"Opus 5.5"},
-                {"value":"sonnet","name":"Sonnet 5"}
+                {"value":"claude-fable-5-1","name":"Fable 5.1"},
+                {"value":"sonnet","name":"Sonnet 5.5"}
             ]
         }]}), &mut config);
         assert_eq!(config.model.as_deref(), Some("opus"));
         assert_eq!(config.model_labels.get("opus").map(String::as_str), Some("Opus 5.5"));
-        assert_eq!(config.available_models, ["opus", "sonnet"]);
+        assert_eq!(config.model_labels.get("sonnet").map(String::as_str), Some("Sonnet 5.5"));
+        assert_eq!(config.available_models, ["opus", "claude-fable-5-1", "sonnet"]);
         let stored = serde_json::to_vec(&config).unwrap();
         let loaded: AgentConversationConfigState = serde_json::from_slice(&stored).unwrap();
         assert_eq!(loaded, config);

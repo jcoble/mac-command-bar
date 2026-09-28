@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TSK-1283 · Claude ACP test matrix</title>
+  <style>
+    :root { color-scheme: dark; font: 16px/1.5 system-ui, sans-serif; background: #111827; color: #edf2f7; }
+    body { max-width: 1180px; margin: 0 auto; padding: 28px; }
+    h1, h2 { line-height: 1.2; }
+    h1 { margin-bottom: 0; }
+    .lede { color: #b9c6d6; margin-top: 6px; }
+    .summary { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0; }
+    .summary div { background: #1f2937; border: 1px solid #344256; border-radius: 10px; padding: 12px 16px; }
+    .summary strong { display: block; font-size: 22px; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0 30px; }
+    th, td { border-bottom: 1px solid #344256; padding: 10px 12px; text-align: left; vertical-align: top; }
+    th { background: #1f2937; }
+    tr:hover { background: #182234; }
+    code { color: #b9dcff; overflow-wrap: anywhere; }
+    .pass { color: #86efac; font-weight: 700; }
+    .pending { color: #fcd34d; font-weight: 700; }
+    .bug { color: #fca5a5; font-weight: 700; }
+    a { color: #93c5fd; }
+    @media (max-width: 740px) { body { padding: 16px; } table { display: block; overflow-x: auto; } }
+  </style>
+</head>
+<body>
+  <h1>Claude ACP test matrix</h1>
+  <p class="lede">TSK-1283 · 28 September 2026 · Branch <code>tsk-1283-claude-models</code></p>
+  <p>The pinned Claude adapter now offers the current models to desktop and remote backend packages. Live ACP behavior and focused application checks passed. Published signed updates and installation on connected machines remain to be verified.</p>
+
+  <div class="summary">
+    <div><strong>0.84.0</strong>pinned Claude ACP</div>
+    <div><strong>3</strong>new model IDs accepted</div>
+    <div><strong>2</strong>live prompts completed</div>
+    <div><strong>3</strong>integration checks pending</div>
+  </div>
+
+  <h2>Model and session behavior</h2>
+  <table>
+    <thead><tr><th>Case</th><th>Expected behavior</th><th>Result and evidence</th></tr></thead>
+    <tbody>
+      <tr><td>Older adapter</td><td>Establish the failure before changing the pin.</td><td><span class="bug">Confirmed:</span> ACP 0.81.2 rejected <code>claude-sonnet-5-5</code> as an invalid model option in a live session.</td></tr>
+      <tr><td>Current catalog</td><td>Offer Opus 5.5, Fable 5.1 and Sonnet 5.5 with the adapter's own IDs and names.</td><td><span class="pass">Passed:</span> ACP 0.84.0 <code>session/new</code> returned <code>opus</code>, <code>claude-fable-5-1</code> and <code>sonnet</code> with those display names; Rust parser tests passed (23 tests).</td></tr>
+      <tr><td>Explicit model selection</td><td>Accept each canonical model ID and report the resolved selection.</td><td><span class="pass">Passed:</span> live <code>session/set_config_option</code> accepted <code>claude-opus-5-5</code>, <code>claude-fable-5-1</code> and <code>claude-sonnet-5-5</code>. Opus and Sonnet resolved to adapter aliases <code>opus</code> and <code>sonnet</code>.</td></tr>
+      <tr><td>Actual prompt</td><td>Complete a small turn with the new Sonnet model.</td><td><span class="pass">Passed:</span> the live Sonnet 5.5 ACP prompt ended with <code>end_turn</code> and assistant text <code>OK</code>.</td></tr>
+      <tr><td>Compiled Linux runtime</td><td>Bundle the 0.84.0 adapter as the remote package does, supply the CLI path through the launcher environment, and repeat the model and prompt checks.</td><td><span class="pass">Passed:</span> Bun compiled the executable; it accepted all three model IDs and completed the same Sonnet 5.5 prompt. Running the executable without the launcher's <code>CLAUDE_CODE_EXECUTABLE</code> fails during session creation, as expected for this package layout.</td></tr>
+      <tr><td>Adapter lifetime</td><td>Leave no probe or Claude adapter process running after the turn.</td><td><span class="pass">Passed:</span> process inspection found no probe or adapter process afterward.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Application and package paths</h2>
+  <table>
+    <thead><tr><th>Surface</th><th>Happy path and edge case</th><th>Result and evidence</th></tr></thead>
+    <tbody>
+      <tr><td>Desktop bundle</td><td>Pin the package and compiled fallback version consistently; keep a frozen install valid.</td><td><span class="pass">Passed:</span> <code>pnpm install --frozen-lockfile</code>, <code>pnpm test:tauri-config</code>, <code>pnpm check:svelte</code>, and <code>pnpm build</code>.</td></tr>
+      <tr><td>Remote backend package</td><td>Package the same pinned dependency and preserve its protocol contract.</td><td><span class="pass">Passed:</span> <code>pnpm test:remote-backend-package</code> (3 tests). The package manifest and shared provider probe use the pinned adapter.</td></tr>
+      <tr><td>Model config persistence</td><td>Keep adapter IDs and names paired across serialization and config updates.</td><td><span class="pass">Passed:</span> <code>cargo test agent_conversation::providers::acp_client::tests</code> (23 tests) and <code>cargo test provider_probe</code> (3 tests).</td></tr>
+      <tr><td>Local update display</td><td>Report the available Claude version and recover from update-check failure.</td><td><span class="pass">Passed:</span> <code>scripts/providerUpdateService.test.ts</code> covers the 0.84.0 message and offline error path.</td></tr>
+      <tr><td>Usage costs</td><td>Price all three new model IDs without client-side SQL aggregation or charging unknown IDs.</td><td><span class="pass">Passed:</span> <code>scripts/usageCostModel.test.ts</code> and Rust <code>provider_costs_are_aggregated_in_sql</code>.</td></tr>
+      <tr><td>Native desktop picker</td><td>See all three names in the real Tauri app and switch models during a turn.</td><td><span class="pending">Pending:</span> this matrix has protocol-level proof; no native desktop screenshot yet.</td></tr>
+      <tr><td>Signed provider feed</td><td>Publish Claude 0.84.0 for macOS arm64/x64 and Linux x64.</td><td><span class="pending">Pending:</span> published manifests still name Claude 0.83.0. The same feed already names Codex 2.0.0; its signed payload hashes will be compared after publishing.</td></tr>
+      <tr><td>Connected installations</td><td>Install from the signed feed locally and on the remote backend, then verify reported versions.</td><td><span class="pending">Pending:</span> requires the signed feed and access to those app instances.</td></tr>
+    </tbody>
+  </table>
+
+  <p><a href="https://app.notion.com/p/3e9394b0689d81cab3c0e8a777bdb6ed?pvs=204">TSK-1283</a> covers this Claude adapter change. TSK-1138 owns the separate whole-app QA pass. This matrix records test evidence for the adapter change.</p>
+</body>
+</html>

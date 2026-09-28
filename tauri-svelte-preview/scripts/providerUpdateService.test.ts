@@ -7,7 +7,7 @@ globalThis.window = {} as Window & typeof globalThis;
 const { checkForProviderUpdates, installProviderUpdates, providerUpdateState } = await import('../src/lib/shell/providerUpdateService.svelte.ts');
 const status = {
   target: 'aarch64-apple-darwin', updateAvailable: true, restartRequired: false,
-  providers: [{ provider: 'claude', currentVersion: '0.76.0', availableVersion: '0.81.2', updateAvailable: true }]
+  providers: [{ provider: 'claude', currentVersion: '0.81.2', availableVersion: '0.84.0', updateAvailable: true }]
 };
 let calls = 0;
 let complete: (value: typeof status) => void = () => { throw new Error('No pending request'); };
@@ -28,7 +28,7 @@ const next = checkForProviderUpdates(new AbortController().signal);
 complete(status);
 await next;
 assert.equal(providerUpdateState.phase, 'available');
-assert.equal(providerUpdateState.message, 'Claude 0.81.2');
+assert.equal(providerUpdateState.message, 'Claude 0.84.0');
 mockIPC(() => { throw new Error('offline'); });
 await checkForProviderUpdates(new AbortController().signal);
 assert.equal(providerUpdateState.phase, 'error');
