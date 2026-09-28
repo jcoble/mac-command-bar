@@ -54,7 +54,7 @@ export function taskWorkflowDefinition(
       role(
         'planner',
         'Controller',
-        'Turn the task into a concise implementation plan grounded in the current workspace. Set ownerMerge true when the task requests an owner merge or the plan requires the owner to merge; otherwise set it false.',
+        'Turn the task into a concise implementation plan grounded in the current workspace. Limit orderedSteps to implementation work; the workflow handles verification, PR opening, PR review, and merge in later stages. Set ownerMerge true when the task requests an owner merge or the plan requires the owner to merge; otherwise set it false.',
         providers.plan,
         'PlanReceipt',
         { kind: 'read-only-current' }
@@ -70,7 +70,7 @@ export function taskWorkflowDefinition(
       role(
         'reviewer',
         'Reviewer',
-        'Review the plan or implementation against the task. Report one blocking finding, or a non-blocking no-finding receipt.',
+        'Review the plan or implementation against the task. For plan review, block any orderedSteps that include verification, PR opening, PR review, or merge, since the workflow handles those stages. Report one blocking finding, or a non-blocking no-finding receipt.',
         providers.review,
         'ReviewReceipt',
         { kind: 'read-only-current' }
@@ -78,7 +78,7 @@ export function taskWorkflowDefinition(
       role(
         'verifier',
         'Verifier',
-        'Run relevant regression, integration, and UI checks. Browser checks must be headless at 1710x990 with the viewport verified after launch; save before and after screenshots to ~/Workbox/screenshots/ and stop the browser process tree. For native Assembly checks, use workbox-native-ui. Report commands, exits, evidence, and cleanup.',
+        'Run relevant regression, integration, and UI checks. Browser checks must be headless at 1710x990 with the viewport verified after launch; save before and after screenshots to ~/Workbox/screenshots/ and stop the browser process tree. For native Assembly checks, use workbox-native-ui. Report commands, exits, evidence, and cleanup. Set evidenceArtifacts to [] when there is no saved artifact; otherwise each entry must contain id, kind, path, url, and digest.',
         providers.review,
         'VerificationReceipt',
         { kind: 'read-only-current' }
