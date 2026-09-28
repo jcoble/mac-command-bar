@@ -1,6 +1,5 @@
-//! Working-copy git actions the source-control panel needs beyond staging and
-//! committing: throwing changes away, moving between branches, the stash, an
-//! amended commit, and the list of open pull requests.
+//! Working-copy git actions for the source-control panel: staging, committing,
+//! remotes, discarding changes, branches, stashes, and pull requests.
 //!
 //! Every command builds an argument array and hands it to `git` (or `gh`)
 //! directly — nothing goes through a shell, so a branch name or a path can
@@ -22,12 +21,154 @@ use serde_json::Value;
 use crate::bounded_process;
 use crate::git_pr::{format_gh_spawn_error, format_process_failure, summarize_checks};
 use crate::{
-    project_git_status_sync, run_git_text, validate_git_relative_paths, validate_git_root,
-    GitActionResult,
+    project_git_status_sync, run_git_text, run_git_with_paths, validate_git_relative_paths,
+    validate_git_root, GitActionResult,
 };
 
 /// The most open pull requests one panel read will ask GitHub for.
 const PULL_REQUEST_LIST_LIMIT: usize = 30;
+
+pub(crate) fn stage_git_paths_sync(
+    root: PathBuf,
+    paths: Vec<String>,
+) -> Result<GitActionResult, String> {
+    validate_git_root(&root)?;
+    let validated_paths = validate_git_relative_paths(&paths)?;
+    run_git_with_paths(&root, &["add"], &validated_paths)?;
+    Ok(GitActionResult {
+        message: format_git_path_action_message("Staged", validated_paths.len()),
+        status: project_git_status_sync(root)?,
+    })
+}
+
+pub(crate) fn unstage_git_paths_sync(
+    root: PathBuf,
+    paths: Vec<String>,
+) -> Result<GitActionResult, String> {
+    validate_git_root(&root)?;
+    let validated_paths = validate_git_relative_paths(&paths)?;
+    run_git_with_paths(&root, &["restore", "--staged"], &validated_paths)?;
+    Ok(GitActionResult {
+        message: format_git_path_action_message("Unstaged", validated_paths.len()),
+        status: project_git_status_sync(root)?,
+    })
+}
+
+pub(crate) fn commit_git_repository_sync(
+    root: PathBuf,
+    message: String,
+) -> Result<GitActionResult, String> {
+    validate_git_root(&root)?;
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("Commit message is required".to_string());
+    }
+    if message.contains('\0') {
+        return Err("Commit message cannot contain null bytes".to_string());
+    }
+    if !git_has_staged_changes(&root)? {
+        return Err("No staged changes to commit".to_string());
+    }
+
+    run_git_text(&root, &["commit", "-m", message])?;
+    Ok(GitActionResult {
+        message: "Committed staged changes".to_string(),
+        status: project_git_status_sync(root)?,
+    })
+}
+
+pub(crate) fn fetch_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
+    validate_git_root(&root)?;
+    run_git_text(&root, &["fetch", "--prune"])?;
+    Ok(GitActionResult {
+        message: "Fetched repository remotes".to_string(),
+        status: project_git_status_sync(root)?,
+    })
+}
+
+pub(crate) fn pull_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
+    validate_git_root(&root)?;
+    run_git_text(&root, &["pull", "--ff-only"])?;
+    Ok(GitActionResult {
+        message: "Pulled fast-forward updates".to_string(),
+        status: project_git_status_sync(root)?,
+    })
+}
+
+pub(crate) fn push_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
+    validate_git_root(&root)?;
+    run_git_text(&root, &["push"])?;
+    Ok(GitActionResult {
+        message: "Pushed current branch".to_string(),
+        status: project_git_status_sync(root)?,
+    })
+}
+
+pub(crate) fn publish_git_repository_sync(
+    root: PathBuf,
+    expected_branch: String,
+    remote: String,
+) -> Result<GitActionResult, String> {
+    validate_git_root(&root)?;
+    let status = project_git_status_sync(root.clone())?;
+    if status.branch.as_deref() != Some(expected_branch.as_str()) || status.has_upstream {
+        return Err(
+            "The branch changed or already has an upstream. Refresh Source Control and try again."
+                .to_string(),
+        );
+    }
+    if expected_branch.is_empty() || expected_branch == "HEAD" {
+        return Err("Select a branch before publishing.".to_string());
+    }
+    let remotes = run_git_text(&root, &["remote"])?;
+    if !remotes.lines().any(|name| name == remote) {
+        return Err("The selected remote is no longer configured for this repository.".to_string());
+    }
+    let destination = format!("HEAD:refs/heads/{expected_branch}");
+    run_git_text(
+        &root,
+        &["push", "--set-upstream", "--", &remote, &destination],
+    )?;
+    Ok(GitActionResult {
+        message: format!("Published {expected_branch} to {remote}"),
+        status: project_git_status_sync(root)?,
+    })
+}
+
+fn git_has_staged_changes(root: &Path) -> Result<bool, String> {
+    let root_arg = root.display().to_string();
+    let output = bounded_process::output(
+        Command::new("git").arg("-C").arg(root_arg).args([
+            "diff",
+            "--cached",
+            "--quiet",
+            "--exit-code",
+        ]),
+        "git diff --cached",
+        bounded_process::LOCAL_COMMAND_TIMEOUT,
+    )
+    .map_err(|error| format!("Could not run git diff --cached: {error}"))?;
+
+    if output.status.success() {
+        return Ok(false);
+    }
+
+    if output.status.code() == Some(1) {
+        return Ok(true);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if stderr.is_empty() {
+        format!("git diff --cached exited with {}", output.status)
+    } else {
+        stderr
+    })
+}
+
+fn format_git_path_action_message(action: &str, count: usize) -> String {
+    let noun = if count == 1 { "path" } else { "paths" };
+    format!("{action} {count} {noun}")
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
