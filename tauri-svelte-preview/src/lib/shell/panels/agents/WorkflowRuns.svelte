@@ -217,6 +217,30 @@
     };
   });
 
+  const LIVE_STATES: WorkflowNodeState[] = ['starting', 'running'];
+  const ticking = $derived(
+    orderedNodes.some((node) => node.startedAtMs && !node.finishedAtMs && LIVE_STATES.includes(node.state))
+  );
+
+  // One clock for every running stage's elapsed time; stops when hidden or nothing is running.
+  $effect(() => {
+    if (!visible || !ticking) return;
+    now = Date.now();
+    const timer = window.setInterval(() => (now = Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  });
+
+  function elapsed(node: WorkflowNodeRunRecord): string {
+    if (!node.startedAtMs) return '';
+    const end = node.finishedAtMs ?? (LIVE_STATES.includes(node.state) ? now : null);
+    if (end === null) return '';
+    const seconds = Math.max(0, Math.floor((end - node.startedAtMs) / 1000));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
+    return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
+  }
+
   function key(action: string): string {
     return `agents:${action}:${crypto.randomUUID()}`;
   }
@@ -581,7 +605,10 @@
                     <span class="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold">{index + 1}</span>
                     <span class="min-w-0 flex-1">
                       <span class="block truncate text-sm font-medium">{selected.definition.nodes.find((item) => item.id === node.nodeId)?.title ?? node.nodeId}</span>
-                      <span class="block truncate text-xs text-muted-foreground">{node.provider} · {node.roleId}</span>
+                      <span class="flex min-w-0 gap-1 text-xs text-muted-foreground">
+                        <span class="truncate">{node.provider} · {node.roleId}</span>
+                        {#if elapsed(node)}<span class="shrink-0 tabular-nums">· {elapsed(node)}</span>{/if}
+                      </span>
                     </span>
                     <Chip tone={stateTone[node.state]}>{node.state}</Chip>
                   </button>
