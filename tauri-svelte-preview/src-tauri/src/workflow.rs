@@ -2954,6 +2954,81 @@ mod tests {
         assert_eq!(restored.definition, run.definition);
     }
     #[test]
+    fn task_workflow_runs_a_reviewed_step_through_correction_and_merge() {
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = WorkflowEngine::new(
+            runtime.clone(),
+            Arc::new(InMemoryWorktreeLeasePort::default()),
+            Arc::new(FakeClock(AtomicU64::new(100))),
+            Arc::new(FakeIds(AtomicU64::new(1))),
+            Arc::new(SessionStore::open_in_memory().unwrap()),
+        );
+        let mut workflow = definition();
+        workflow.id = "task-plan-implement-review".into();
+        workflow.roles = vec![
+            role("planner", WorkflowOutputContract::PlanReceipt),
+            role("reviewer", WorkflowOutputContract::ReviewReceipt),
+            role("implementer", WorkflowOutputContract::ImplementationReceipt),
+            role("verifier", WorkflowOutputContract::VerificationReceipt),
+            role("pr-author", WorkflowOutputContract::PullRequestReceipt),
+            role("pr-reviewer", WorkflowOutputContract::ReviewReceipt),
+            role("pr-merger", WorkflowOutputContract::PullRequestMergeReceipt),
+        ];
+        let mut plan_review = node("plan-review", "reviewer", &["plan"]);
+        plan_review.condition = Some(json!({"redoNodeId":"plan"}));
+        plan_review.approval_gate = Some(WorkflowApprovalGate { id: "approve-plan".into(), prompt: String::new() });
+        let mut review = node("review", "reviewer", &["plan", "implement"]);
+        review.condition = Some(json!({"redoNodeId":"implement"}));
+        let mut pr_review = node("pr-review", "pr-reviewer", &["implement", "open-pr"]);
+        pr_review.condition = Some(json!({"redoNodeId":"implement"}));
+        let mut merge = node("merge-pr", "pr-merger", &["plan", "open-pr", "pr-review"]);
+        merge.condition = Some(json!({"ownerMergeNodeId":"plan"}));
+        workflow.nodes = vec![
+            node("plan", "planner", &[]), plan_review,
+            node("implement", "implementer", &["plan", "plan-review"]), review,
+            node("verify", "verifier", &["review"]),
+            node("open-pr", "pr-author", &["implement", "verify"]), pr_review, merge,
+        ];
+        let plan = json!({"orderedSteps":[{"task":"one bounded change"}],"dependencies":[],"risk":{},"estimatedParallelLanes":1,"ownerMerge":false});
+        let step_plan = json!({"orderedSteps":[{"task":"edit one file"}],"dependencies":[],"risk":{},"estimatedParallelLanes":1});
+        let review = |blocking: bool| json!({"severity":"high","file":"src/app.ts","line":1,"evidence":"correct this","recommendation":"revise the plan","confidence":1.0,"blocking":blocking});
+        let implementation = json!({"changedFiles":["src/app.ts"],"summary":"done","tests":[],"knownRisks":[],"artifacts":[]});
+        let verification = json!({"command":"cargo test","exit":0,"duration":1,"evidenceArtifacts":[],"cleanupReceipt":{}});
+        let pull_request = json!({"url":"https://github.com/owner/repo/pull/1","branch":"tsk-1169-workflow-handoff","artifacts":[]});
+        let created = engine.create_run(workflow, json!({"cwd":"/repo"}), "create".into()).unwrap();
+        tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
+        let submit = |id: &str, receipt: Value, key: &str| {
+            tauri::async_runtime::block_on(engine.submit_result(&created.id, id, receipt, key)).unwrap()
+        };
+        submit("plan", plan, "overall-plan");
+        let waiting = submit("plan-review", review(false), "overall-review");
+        assert_eq!(waiting.state, WorkflowRunState::WaitingApproval);
+        let approved = tauri::async_runtime::block_on(engine.approve_gate(
+            &created.id, "plan-review", json!({"approved":true}), "approve",
+        )).unwrap();
+        assert_eq!(approved.nodes.iter().find(|node| node.node_id == "step-01-plan").unwrap().state, WorkflowNodeState::Running);
+        submit("step-01-plan", step_plan.clone(), "step-plan-1");
+        submit("step-01-plan-review", review(false), "step-plan-review-1");
+        submit("step-01-implement", implementation.clone(), "step-implement-1");
+        let redo = submit("step-01-review", review(true), "step-review-1");
+        assert_eq!(redo.nodes.iter().find(|node| node.node_id == "step-01-plan").unwrap().state, WorkflowNodeState::Running);
+        let dispatched = runtime.dispatched.lock().unwrap();
+        let correction: Value = serde_json::from_str(&dispatched.last().unwrap().prompt).unwrap();
+        assert_eq!(correction["assignedStep"]["task"], "one bounded change");
+        assert_eq!(correction["priorStageReceipts"]["step-01-review"]["blocking"], true);
+        drop(dispatched);
+        submit("step-01-plan", step_plan, "step-plan-2");
+        submit("step-01-plan-review", review(false), "step-plan-review-2");
+        submit("step-01-implement", implementation, "step-implement-2");
+        submit("step-01-review", review(false), "step-review-2");
+        submit("verify", verification, "verify");
+        submit("open-pr", pull_request, "open-pr");
+        let reviewed = submit("pr-review", review(false), "pr-review");
+        assert_eq!(reviewed.nodes.iter().find(|node| node.node_id == "merge-pr").unwrap().state, WorkflowNodeState::Running);
+        let merged = submit("merge-pr", json!({"url":"https://github.com/owner/repo/pull/1","mergeCommitSha":"abc123"}), "merge");
+        assert_eq!(merged.state, WorkflowRunState::Completed);
+    }
+    #[test]
     fn workflow_structured_output_refuses_hostile_prose() {
         assert!(matches!(
             WorkflowPolicy::validate_output(
