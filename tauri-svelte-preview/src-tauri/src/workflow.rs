@@ -261,6 +261,7 @@ pub(crate) enum WorkflowOutputContract {
     PullRequestReceipt,
     PullRequestMergeReceipt,
     ReviewReceipt,
+    SpecReceipt,
     SpecComplianceReceipt,
     VerificationReceipt,
     PlanReceipt,
@@ -273,6 +274,7 @@ impl WorkflowOutputContract {
             Self::PullRequestReceipt => "PullRequestReceipt",
             Self::PullRequestMergeReceipt => "PullRequestMergeReceipt",
             Self::ReviewReceipt => "ReviewReceipt",
+            Self::SpecReceipt => "SpecReceipt",
             Self::SpecComplianceReceipt => "SpecComplianceReceipt",
             Self::VerificationReceipt => "VerificationReceipt",
             Self::PlanReceipt => "PlanReceipt",
@@ -437,6 +439,14 @@ pub(crate) struct ReviewReceipt {
     pub recommendation: String,
     pub confidence: f64,
     pub blocking: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SpecReceipt {
+    pub path: String,
+    pub summary: String,
+    pub requirements: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -1023,6 +1033,9 @@ impl WorkflowPolicy {
             WorkflowOutputContract::ReviewReceipt => {
                 serde_json::from_value::<ReviewReceipt>(value.clone()).map(|_| ())
             }
+            WorkflowOutputContract::SpecReceipt => {
+                serde_json::from_value::<SpecReceipt>(value.clone()).map(|_| ())
+            }
             WorkflowOutputContract::SpecComplianceReceipt => {
                 serde_json::from_value::<SpecComplianceReceipt>(value.clone()).map(|_| ())
             }
@@ -1039,6 +1052,14 @@ impl WorkflowPolicy {
                 contract.name()
             ))
         })?;
+        if contract == WorkflowOutputContract::SpecReceipt
+            && (value["path"].as_str().is_none_or(|path| path.trim().is_empty())
+                || value["requirements"].as_array().is_none_or(Vec::is_empty))
+        {
+            return Err(WorkflowError::OutputContract(
+                "SpecReceipt requires a path and requirements".into(),
+            ));
+        }
         if contract == WorkflowOutputContract::VerificationReceipt && value["exit"] != 0 {
             return Err(WorkflowError::OutputContract(
                 "VerificationReceipt reports a failed command".into(),
@@ -2384,6 +2405,9 @@ fn output_contract_shape(contract: WorkflowOutputContract) -> &'static str {
         WorkflowOutputContract::ReviewReceipt => {
             r#"{"severity":"none","file":"","line":0,"evidence":"","recommendation":"","confidence":1,"blocking":false}"#
         }
+        WorkflowOutputContract::SpecReceipt => {
+            r#"{"path":"docs/superpowers/specs/YYYY-MM-DD-topic-design.md","summary":"","requirements":[]}"#
+        }
         WorkflowOutputContract::SpecComplianceReceipt => {
             r#"{"requirementId":"","status":"","evidence":{},"gap":null,"recommendedAction":null}"#
         }
@@ -2499,6 +2523,7 @@ fn materialize_plan_steps(
     let plan_review = template("plan-review")?;
     let implement = template("implement")?;
     let review = template("review")?;
+    let has_spec = run.definition.nodes.iter().any(|node| node.id == "spec");
     let mut generated = Vec::new();
     let mut previous_review = "plan-review".to_string();
     let mut first_plan = String::new();
@@ -2516,6 +2541,9 @@ fn materialize_plan_steps(
         step_plan.id = plan_id.clone();
         step_plan.title = format!("Step {} plan", index + 1);
         step_plan.depends_on = vec![previous_review.clone()];
+        if has_spec {
+            step_plan.depends_on.push("spec".into());
+        }
         step_plan.fan_out = Some(step.clone());
         generated.push(step_plan);
 
@@ -2523,6 +2551,9 @@ fn materialize_plan_steps(
         step_plan_review.id = plan_review_id.clone();
         step_plan_review.title = format!("Step {} plan review", index + 1);
         step_plan_review.depends_on = vec![plan_id.clone()];
+        if has_spec {
+            step_plan_review.depends_on.push("spec".into());
+        }
         step_plan_review.condition = Some(json!({"redoNodeId": plan_id}));
         step_plan_review.fan_out = Some(step.clone());
         step_plan_review.approval_gate = None;
@@ -2532,6 +2563,9 @@ fn materialize_plan_steps(
         step_implement.id = implement_id.clone();
         step_implement.title = format!("Step {} implement", index + 1);
         step_implement.depends_on = vec![plan_id.clone(), plan_review_id];
+        if has_spec {
+            step_implement.depends_on.push("spec".into());
+        }
         step_implement.fan_out = Some(step.clone());
         step_implement.approval_gate = None;
         generated.push(step_implement);
@@ -2540,6 +2574,9 @@ fn materialize_plan_steps(
         step_review.id = review_id.clone();
         step_review.title = format!("Step {} code and spec review", index + 1);
         step_review.depends_on = vec![plan_id.clone(), implement_id.clone()];
+        if has_spec {
+            step_review.depends_on.push("spec".into());
+        }
         step_review.condition = Some(json!({"redoNodeId": plan_id}));
         step_review.fan_out = Some(step.clone());
         generated.push(step_review);
@@ -2551,10 +2588,18 @@ fn materialize_plan_steps(
     definition.nodes.retain(|node| node.id != "implement" && node.id != "review");
     for node in &mut definition.nodes {
         match node.id.as_str() {
-            "verify" => node.depends_on = vec![previous_review.clone()],
+            "verify" => {
+                node.depends_on = vec![previous_review.clone()];
+                if has_spec {
+                    node.depends_on.push("spec".into());
+                }
+            }
             "open-pr" => node.depends_on = vec![last_implement.clone(), "verify".into()],
             "pr-review" => {
                 node.depends_on = vec![first_plan.clone(), last_implement.clone(), "verify".into(), "open-pr".into()];
+                if has_spec {
+                    node.depends_on.push("spec".into());
+                }
                 node.condition = Some(json!({"redoNodeId": first_plan}));
             }
             _ => {}
@@ -2709,7 +2754,7 @@ fn derive_phase(run: &WorkflowRunRecord) -> WorkflowLoopPhase {
                 })
                 .map(|node| node.role_id.to_ascii_lowercase())
                 .collect();
-            if active_roles.iter().any(|role| role.contains("plan")) {
+            if active_roles.iter().any(|role| role.contains("plan") || role.contains("spec")) {
                 WorkflowLoopPhase::Planning
             } else if active_roles.iter().any(|role| role.contains("review")) {
                 WorkflowLoopPhase::Reviewing
@@ -2935,6 +2980,7 @@ mod tests {
     fn approved_plan_creates_durable_reviewed_steps() {
         let mut run = sample_run();
         run.definition.roles = vec![
+            role("specifier", WorkflowOutputContract::SpecReceipt),
             role("planner", WorkflowOutputContract::PlanReceipt),
             role("implementer", WorkflowOutputContract::ImplementationReceipt),
             role("reviewer", WorkflowOutputContract::ReviewReceipt),
@@ -2944,7 +2990,9 @@ mod tests {
             role("pr-merger", WorkflowOutputContract::PullRequestMergeReceipt),
         ];
         let mut nodes = vec![
-            node("plan", "planner", &[]),
+            node("spec", "specifier", &[]),
+            node("spec-review", "reviewer", &["spec"]),
+            node("plan", "planner", &["spec", "spec-review"]),
             node("plan-review", "reviewer", &["plan"]),
             node("implement", "implementer", &["plan", "plan-review"]),
             node("review", "reviewer", &["plan", "implement"]),
@@ -2954,10 +3002,15 @@ mod tests {
             node("merge-pr", "pr-merger", &["plan", "open-pr", "pr-review"]),
         ];
         run.workflow_id = "task-plan-implement-review".into();
-        nodes[1].condition = Some(json!({"redoNodeId":"plan"}));
-        nodes[3].condition = Some(json!({"redoNodeId":"implement"}));
-        nodes[6].condition = Some(json!({"redoNodeId":"implement"}));
-        nodes[7].condition = Some(json!({"ownerMergeNodeId":"plan"}));
+        for (id, condition) in [
+            ("spec-review", json!({"redoNodeId":"spec"})),
+            ("plan-review", json!({"redoNodeId":"plan"})),
+            ("review", json!({"redoNodeId":"implement"})),
+            ("pr-review", json!({"redoNodeId":"implement"})),
+            ("merge-pr", json!({"ownerMergeNodeId":"plan"})),
+        ] {
+            nodes.iter_mut().find(|node| node.id == id).unwrap().condition = Some(condition);
+        }
         run.definition.nodes = nodes;
         run.nodes = run.definition.nodes.iter().map(|definition| {
             let role = run.definition.roles.iter().find(|role| role.id == definition.role_id).unwrap();
@@ -2983,21 +3036,87 @@ mod tests {
         }).collect();
         run.nodes.iter_mut().find(|node| node.node_id == "plan").unwrap().structured_output =
             Some(json!({"orderedSteps":[{"task":"first"},{"task":"second"}]}));
+        run.nodes.iter_mut().find(|node| node.node_id == "spec").unwrap().structured_output =
+            Some(json!({"path":"docs/superpowers/specs/design.md","summary":"reviewed","requirements":["one"]}));
         materialize_plan_steps(&mut run, "plan-review", &FakeIds(AtomicU64::new(1))).unwrap();
         WorkflowPolicy::validate_definition(&run.definition).unwrap();
-        assert_eq!(run.nodes.len(), 14);
-        assert_eq!(run.definition.nodes.iter().find(|node| node.id == "step-02-plan").unwrap().depends_on, ["step-01-review"]);
-        assert_eq!(run.definition.nodes.iter().find(|node| node.id == "verify").unwrap().depends_on, ["step-02-review"]);
+        assert_eq!(run.nodes.len(), 16);
+        assert_eq!(run.definition.nodes.iter().find(|node| node.id == "step-02-plan").unwrap().depends_on, ["step-01-review", "spec"]);
+        assert_eq!(run.definition.nodes.iter().find(|node| node.id == "step-01-review").unwrap().depends_on, ["step-01-plan", "step-01-implement", "spec"]);
+        assert_eq!(run.definition.nodes.iter().find(|node| node.id == "verify").unwrap().depends_on, ["step-02-review", "spec"]);
         assert_eq!(run.definition.nodes.iter().find(|node| node.id == "pr-review").unwrap().condition, Some(json!({"redoNodeId":"step-01-plan"})));
         assert!(run.definition.nodes.iter().find(|node| node.id == "pr-review").unwrap().depends_on.contains(&"verify".into()));
         assert_eq!(run.definition.nodes.iter().find(|node| node.id == "step-01-implement").unwrap().fan_out, Some(json!({"task":"first"})));
-        for id in ["plan", "plan-review"] {
+        for id in ["spec", "spec-review", "plan", "plan-review"] {
             run.nodes.iter_mut().find(|node| node.node_id == id).unwrap().state = WorkflowNodeState::Completed;
         }
         assert_eq!(WorkflowScheduler::ready_nodes(&run), ["step-01-plan"]);
         let restored: WorkflowRunRecord = serde_json::from_value(serde_json::to_value(&run).unwrap()).unwrap();
         assert_eq!(restored.definition, run.definition);
     }
+    #[test]
+    fn reviewed_spec_reworks_once_then_reaches_owner_approval_and_plan() {
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = WorkflowEngine::new(
+            runtime.clone(),
+            Arc::new(InMemoryWorktreeLeasePort::default()),
+            Arc::new(FakeClock(AtomicU64::new(100))),
+            Arc::new(FakeIds(AtomicU64::new(1))),
+            Arc::new(SessionStore::open_in_memory().unwrap()),
+        );
+        let mut workflow = definition();
+        workflow.roles = vec![
+            role("specifier", WorkflowOutputContract::SpecReceipt),
+            role("reviewer", WorkflowOutputContract::ReviewReceipt),
+            role("planner", WorkflowOutputContract::PlanReceipt),
+        ];
+        let mut review = node("spec-review", "reviewer", &["spec"]);
+        review.condition = Some(json!({"redoNodeId":"spec"}));
+        review.approval_gate = Some(WorkflowApprovalGate {
+            id: "approve-spec".into(), prompt: String::new(),
+        });
+        workflow.nodes = vec![
+            node("spec", "specifier", &[]),
+            review,
+            node("plan", "planner", &["spec", "spec-review"]),
+        ];
+        let spec = json!({
+            "path":"docs/superpowers/specs/design.md",
+            "summary":"One bounded change",
+            "requirements":["Keep the result visible"]
+        });
+        let finding = |blocking| json!({
+            "severity":"high", "file":"docs/superpowers/specs/design.md", "line":1,
+            "evidence":"Check the requirement", "recommendation":"Revise the spec",
+            "confidence":1.0, "blocking":blocking
+        });
+        assert!(WorkflowPolicy::validate_output(
+            WorkflowOutputContract::SpecReceipt,
+            &json!({"path":"", "summary":"empty", "requirements":[]})
+        ).is_err());
+        let created = engine.create_run(workflow, json!({"cwd":"/repo"}), "create".into()).unwrap();
+        let started = tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
+        assert_eq!(started.phase, WorkflowLoopPhase::Planning);
+        tauri::async_runtime::block_on(engine.submit_result(&created.id, "spec", spec.clone(), "spec-1")).unwrap();
+        let redo = tauri::async_runtime::block_on(engine.submit_result(
+            &created.id, "spec-review", finding(true), "review-1"
+        )).unwrap();
+        assert_eq!(redo.nodes.iter().find(|node| node.node_id == "spec").unwrap().attempt, 2);
+        let correction: Value = serde_json::from_str(&runtime.dispatched.lock().unwrap().last().unwrap().prompt).unwrap();
+        assert_eq!(correction["priorStageReceipts"]["spec-review"]["blocking"], true);
+        tauri::async_runtime::block_on(engine.submit_result(&created.id, "spec", spec.clone(), "spec-2")).unwrap();
+        let waiting = tauri::async_runtime::block_on(engine.submit_result(
+            &created.id, "spec-review", finding(false), "review-2"
+        )).unwrap();
+        assert_eq!(waiting.state, WorkflowRunState::WaitingApproval);
+        let approved = tauri::async_runtime::block_on(engine.approve_gate(
+            &created.id, "spec-review", json!({"approved":true}), "approve-spec"
+        )).unwrap();
+        assert_eq!(approved.nodes.iter().find(|node| node.node_id == "plan").unwrap().state, WorkflowNodeState::Running);
+        let plan_prompt: Value = serde_json::from_str(&runtime.dispatched.lock().unwrap().last().unwrap().prompt).unwrap();
+        assert_eq!(plan_prompt["priorStageReceipts"]["spec"]["requirements"], spec["requirements"]);
+    }
+
     #[test]
     fn task_workflow_runs_a_reviewed_step_through_correction_and_merge() {
         let runtime = Arc::new(FakeRuntime::default());

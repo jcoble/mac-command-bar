@@ -62,15 +62,23 @@ export function taskWorkflowDefinition(
   return {
     version: 1,
     id: 'task-plan-implement-review',
-    name: 'Plan, review, implement, review, verify, open PR, review PR, merge',
-    description: 'A visible task loop from reviewed plan through pull request merge or owner handoff.',
+    name: 'Spec, review, plan, review, implement, review, verify, open PR, review PR, merge',
+    description: 'A visible task loop from reviewed spec and plan through pull request merge or owner handoff.',
     trigger: { kind: 'manual' },
     inputs: [{ id: 'task', required: true }],
     roles: [
       role(
+        'specifier',
+        'Spec author',
+        'Write a scoped design spec in docs/superpowers/specs/ using the task and current workspace. State concrete requirements and acceptance criteria. Make no implementation changes. Return the spec path, summary, and requirement list.',
+        providers.plan,
+        'SpecReceipt',
+        { kind: 'shared-current', fileAllowList: [] }
+      ),
+      role(
         'planner',
         'Controller',
-        'Turn the task into a concise implementation plan grounded in the current workspace. Limit orderedSteps to implementation work; the workflow handles verification, PR opening, PR review, and merge in later stages. Set ownerMerge true only when the task explicitly asks the owner to perform the merge personally; otherwise set it false.',
+        'Read the approved spec and turn it into a concise implementation plan grounded in the current workspace. Limit orderedSteps to implementation work; the workflow handles verification, PR opening, PR review, and merge in later stages. Set ownerMerge true only when the task explicitly asks the owner to perform the merge personally; otherwise set it false.',
         providers.plan,
         'PlanReceipt',
         { kind: 'read-only-current' }
@@ -86,7 +94,7 @@ export function taskWorkflowDefinition(
       role(
         'reviewer',
         'Reviewer',
-        'Review the plan or implementation against the task. For plan review, block any orderedSteps that include verification, PR opening, PR review, or merge, since the workflow handles those stages. Report one blocking finding, or a non-blocking no-finding receipt.',
+        'Independently review the spec, plan, or implementation against the task. For plan review, block any orderedSteps that include verification, PR opening, PR review, or merge, since the workflow handles those stages. For implementation review, check both code and spec requirements. Report one blocking finding, or a non-blocking no-finding receipt.',
         providers.review,
         'ReviewReceipt',
         { kind: 'read-only-current' }
@@ -126,10 +134,32 @@ export function taskWorkflowDefinition(
     ],
     nodes: [
       {
+        id: 'spec',
+        title: 'Spec',
+        roleId: 'specifier',
+        dependsOn: [],
+        condition: null,
+        fanOut: null,
+        approvalGate: null,
+        timeoutSeconds: 3600,
+        maxAttempts: 2
+      },
+      {
+        id: 'spec-review',
+        title: 'Spec review',
+        roleId: 'reviewer',
+        dependsOn: ['spec'],
+        condition: { redoNodeId: 'spec' },
+        fanOut: null,
+        approvalGate: { id: 'approve-spec', prompt: 'Approve the reviewed spec before planning.' },
+        timeoutSeconds: 3600,
+        maxAttempts: 2
+      },
+      {
         id: 'plan',
         title: 'Plan',
         roleId: 'planner',
-        dependsOn: [],
+        dependsOn: ['spec', 'spec-review'],
         condition: null,
         fanOut: null,
         approvalGate: null,

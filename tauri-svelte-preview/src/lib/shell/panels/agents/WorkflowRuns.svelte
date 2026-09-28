@@ -398,7 +398,7 @@
 <div class="flex h-full min-h-0 flex-col">
   <div class="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
     <p class="min-w-0 text-sm text-muted-foreground">
-      Scripted agent stages. New task pauses for approval after plan and build; saved workflows run straight through.
+      Scripted agent stages. New task pauses for approval after spec, plan, and build; saved workflows run straight through.
     </p>
     <Button size="sm" variant={composing ? 'secondary' : 'default'} onclick={() => (composing = !composing)}>
       <Plus />
@@ -422,7 +422,7 @@
             onchange={(event) => chooseWorkflow(event.currentTarget.value)}
             class="h-8 min-w-0 rounded-lg border border-input bg-background px-2 text-sm text-foreground outline-none focus-visible:border-ring"
           >
-            <option value="built-in">New task (plans first)</option>
+            <option value="built-in">New task (spec and plan first)</option>
             {#each templates as template (template.id)}
               <option value={template.id}>{template.name}</option>
             {/each}
