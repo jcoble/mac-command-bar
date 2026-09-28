@@ -2046,7 +2046,9 @@ async fn client_loop(
                         ServerFrame::Ready { .. } => {}
                         ServerFrame::Response { id: READINESS_REQUEST_ID, response } => {
                             let RemoteResponse::Sessions(sessions) = response else {
-                                if let Some(reply) = initial_ready.take() { let _ = reply.send(Err("Backend returned an invalid readiness response".into())); }
+                                let error = "Backend returned an invalid readiness response";
+                                if let Some(reply) = initial_ready.take() { let _ = reply.send(Err(error.into())); }
+                                for (_, reply) in pending.drain() { let _ = reply.send(Err(error.into())); }
                                 return;
                             };
                             ready.store(true, Ordering::Release);
@@ -2059,7 +2061,8 @@ async fn client_loop(
                             }
                         }
                         ServerFrame::Error { id: READINESS_REQUEST_ID, message } => {
-                            if let Some(reply) = initial_ready.take() { let _ = reply.send(Err(message)); }
+                            if let Some(reply) = initial_ready.take() { let _ = reply.send(Err(message.clone())); }
+                            for (_, reply) in pending.drain() { let _ = reply.send(Err(message.clone())); }
                             return;
                         }
                         ServerFrame::Error { id, message } => {
@@ -3317,6 +3320,47 @@ mod connection_tests {
             let _ = actor.await;
             server.await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn pending_remote_request_receives_readiness_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket.send(TungsteniteMessage::Text(serde_json::to_string(
+                &ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }
+            ).unwrap().into())).await.unwrap();
+            let _resume = socket.next().await.unwrap().unwrap();
+            let _readiness = socket.next().await.unwrap().unwrap();
+            let request = socket.next().await.unwrap().unwrap();
+            let frame: ClientFrame = serde_json::from_str(request.to_text().unwrap()).unwrap();
+            assert!(matches!(frame, ClientFrame::Request { command: RemoteCommand::Config { .. }, .. }));
+            socket.send(TungsteniteMessage::Text(serde_json::to_string(
+                &ServerFrame::Error { id: READINESS_REQUEST_ID, message: "backend rejected readiness".into() }
+            ).unwrap().into())).await.unwrap();
+        });
+        let (requests, mut receiver) = mpsc::channel(2);
+        let (ready_reply, ready_answer) = oneshot::channel();
+        let actor = tokio::spawn(async move {
+            client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver,
+                Arc::new(|_| Ok(())), Some(1), Arc::new(AtomicBool::new(false)),
+                &mut Some(ready_reply), Arc::new(|| {})).await;
+        });
+        let (reply, answer) = oneshot::channel();
+        requests.send(ClientRequest::Execute {
+            id: 1, command: RemoteCommand::Config { owned_id: "proof".into() }, reply,
+        }).await.unwrap();
+        let ready_error = tokio::time::timeout(Duration::from_secs(5), ready_answer)
+            .await.unwrap().unwrap().unwrap_err();
+        let request_error = tokio::time::timeout(Duration::from_secs(5), answer)
+            .await.unwrap().unwrap().unwrap_err();
+        assert_eq!(ready_error, "backend rejected readiness");
+        assert_eq!(request_error, ready_error);
+        drop(requests);
+        server.await.unwrap();
+        actor.await.unwrap();
     }
 
     #[tokio::test]
