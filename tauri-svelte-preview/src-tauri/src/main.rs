@@ -2460,107 +2460,6 @@ pub(crate) fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus,
     parse_project_git_status(&String::from_utf8_lossy(&output.stdout))
 }
 
-pub(crate) fn stage_git_paths_sync(
-    root: PathBuf,
-    paths: Vec<String>,
-) -> Result<GitActionResult, String> {
-    validate_git_root(&root)?;
-    let validated_paths = validate_git_relative_paths(&paths)?;
-    run_git_with_paths(&root, &["add"], &validated_paths)?;
-    Ok(GitActionResult {
-        message: format_git_path_action_message("Staged", validated_paths.len()),
-        status: project_git_status_sync(root)?,
-    })
-}
-
-pub(crate) fn unstage_git_paths_sync(
-    root: PathBuf,
-    paths: Vec<String>,
-) -> Result<GitActionResult, String> {
-    validate_git_root(&root)?;
-    let validated_paths = validate_git_relative_paths(&paths)?;
-    run_git_with_paths(&root, &["restore", "--staged"], &validated_paths)?;
-    Ok(GitActionResult {
-        message: format_git_path_action_message("Unstaged", validated_paths.len()),
-        status: project_git_status_sync(root)?,
-    })
-}
-
-pub(crate) fn commit_git_repository_sync(
-    root: PathBuf,
-    message: String,
-) -> Result<GitActionResult, String> {
-    validate_git_root(&root)?;
-    let message = message.trim();
-    if message.is_empty() {
-        return Err("Commit message is required".to_string());
-    }
-    if message.contains('\0') {
-        return Err("Commit message cannot contain null bytes".to_string());
-    }
-    if !git_has_staged_changes(&root)? {
-        return Err("No staged changes to commit".to_string());
-    }
-
-    run_git_text(&root, &["commit", "-m", message])?;
-    Ok(GitActionResult {
-        message: "Committed staged changes".to_string(),
-        status: project_git_status_sync(root)?,
-    })
-}
-
-pub(crate) fn fetch_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
-    validate_git_root(&root)?;
-    run_git_text(&root, &["fetch", "--prune"])?;
-    Ok(GitActionResult {
-        message: "Fetched repository remotes".to_string(),
-        status: project_git_status_sync(root)?,
-    })
-}
-
-pub(crate) fn pull_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
-    validate_git_root(&root)?;
-    run_git_text(&root, &["pull", "--ff-only"])?;
-    Ok(GitActionResult {
-        message: "Pulled fast-forward updates".to_string(),
-        status: project_git_status_sync(root)?,
-    })
-}
-
-pub(crate) fn push_git_repository_sync(root: PathBuf) -> Result<GitActionResult, String> {
-    validate_git_root(&root)?;
-    run_git_text(&root, &["push"])?;
-    Ok(GitActionResult {
-        message: "Pushed current branch".to_string(),
-        status: project_git_status_sync(root)?,
-    })
-}
-
-pub(crate) fn publish_git_repository_sync(
-    root: PathBuf,
-    expected_branch: String,
-    remote: String,
-) -> Result<GitActionResult, String> {
-    validate_git_root(&root)?;
-    let status = project_git_status_sync(root.clone())?;
-    if status.branch.as_deref() != Some(expected_branch.as_str()) || status.has_upstream {
-        return Err("The branch changed or already has an upstream. Refresh Source Control and try again.".to_string());
-    }
-    if expected_branch.is_empty() || expected_branch == "HEAD" {
-        return Err("Select a branch before publishing.".to_string());
-    }
-    let remotes = run_git_text(&root, &["remote"])?;
-    if !remotes.lines().any(|name| name == remote) {
-        return Err("The selected remote is no longer configured for this repository.".to_string());
-    }
-    let destination = format!("HEAD:refs/heads/{expected_branch}");
-    run_git_text(&root, &["push", "--set-upstream", "--", &remote, &destination])?;
-    Ok(GitActionResult {
-        message: format!("Published {expected_branch} to {remote}"),
-        status: project_git_status_sync(root)?,
-    })
-}
-
 fn git_history_cursor_offset(cursor: Option<String>) -> Result<usize, String> {
     let Some(cursor) = cursor else {
         return Ok(0);
@@ -2804,41 +2703,6 @@ fn run_git_with_paths(root: &Path, args: &[&str], paths: &[String]) -> Result<St
     }
 
     run_git_text(root, &git_args)
-}
-
-fn git_has_staged_changes(root: &Path) -> Result<bool, String> {
-    let root_arg = root.display().to_string();
-    let output = bounded_process::output(
-        Command::new("git").arg("-C").arg(root_arg).args([
-            "diff",
-            "--cached",
-            "--quiet",
-            "--exit-code",
-        ]),
-        "git diff --cached",
-        bounded_process::LOCAL_COMMAND_TIMEOUT,
-    )
-    .map_err(|error| format!("Could not run git diff --cached: {error}"))?;
-
-    if output.status.success() {
-        return Ok(false);
-    }
-
-    if output.status.code() == Some(1) {
-        return Ok(true);
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Err(if stderr.is_empty() {
-        format!("git diff --cached exited with {}", output.status)
-    } else {
-        stderr
-    })
-}
-
-fn format_git_path_action_message(action: &str, count: usize) -> String {
-    let noun = if count == 1 { "path" } else { "paths" };
-    format!("{action} {count} {noun}")
 }
 
 pub(crate) fn read_source_git_diff_sync(
@@ -5464,6 +5328,7 @@ fn main() {
             let workflow_store = agent_runtime.store_handle();
             let remote_session_store = Arc::clone(&workflow_store);
             let workflow_engine = WorkflowEngine::managed(agent_runtime.clone(), workflow_store);
+            workflow_engine.fail_interrupted_stages().map_err(|error| error.to_string())?;
             let live_session_ids = agent_runtime
                 .resource_roots()
                 .into_iter()
@@ -5511,13 +5376,31 @@ fn main() {
                         ..
                     }
                 );
+                let is_usage = matches!(
+                    &event.payload,
+                    agent_conversation::protocol::AgentConversationPayload::Usage { .. }
+                );
                 projection_streams.publish_agent_event(event.clone());
-                if !is_terminal_turn {
+                if !is_terminal_turn && !is_usage {
                     return;
                 }
                 let workflow_events = workflow_events.clone();
                 let workflow_handle = workflow_handle.clone();
                 tauri::async_runtime::spawn(async move {
+                    if is_usage {
+                        match workflow_events.list_runs() {
+                            Ok(runs) => {
+                                if let Some(run) = runs.into_iter().find(|run| run.nodes.iter()
+                                    .any(|node| node.owned_id == event.owned_id)) {
+                                    emit_workflow_run_updated(&workflow_handle, &run);
+                                }
+                            }
+                            Err(error) => debug_log::stderr_log!(
+                                "Could not show workflow usage: {error}"
+                            ),
+                        }
+                        return;
+                    }
                     match workflow_events.accept_agent_event(&event).await {
                         Ok(Some(run)) => emit_workflow_run_updated(&workflow_handle, &run),
                         Ok(None) => {}
@@ -5841,6 +5724,11 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git_workspace::{
+        commit_git_repository_sync, fetch_git_repository_sync, publish_git_repository_sync,
+        pull_git_repository_sync, push_git_repository_sync, stage_git_paths_sync,
+        unstage_git_paths_sync,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]

@@ -7,6 +7,8 @@
  * state/phase with a client-side guess.
  */
 
+import type { ConversationUsage } from '../conversation/conversationTypes.ts';
+
 export type WorkflowRunState =
   | 'draft'
   | 'queued'
@@ -49,6 +51,7 @@ export type WorkflowOutputContract =
   | 'PullRequestReceipt'
   | 'PullRequestMergeReceipt'
   | 'ReviewReceipt'
+  | 'SpecReceipt'
   | 'SpecComplianceReceipt'
   | 'VerificationReceipt'
   | 'PlanReceipt';
@@ -200,6 +203,7 @@ export interface WorkflowNodeRunRecord {
   gate: WorkflowGateRecord | null;
   leaseId: string | null;
   failure: WorkflowFailure | null;
+  usage: ConversationUsage | null;
 }
 
 /** Exact serialized `WorkflowRunRecord`; this is what Tauri returns. */

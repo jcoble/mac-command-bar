@@ -1,18 +1,28 @@
 <script lang="ts">
   import { untrack } from 'svelte';
+  import ArrowDown from '@lucide/svelte/icons/arrow-down';
+  import ArrowUp from '@lucide/svelte/icons/arrow-up';
   import Check from '@lucide/svelte/icons/check';
   import CircleStop from '@lucide/svelte/icons/circle-stop';
+  import Copy from '@lucide/svelte/icons/copy';
   import Pause from '@lucide/svelte/icons/pause';
   import Play from '@lucide/svelte/icons/play';
   import Plus from '@lucide/svelte/icons/plus';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+  import Save from '@lucide/svelte/icons/save';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+  import X from '@lucide/svelte/icons/x';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
-  import { listAgentConversationSessionsFromTauri } from '$lib/tauriSource';
+  import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
+  import {
+    listAgentConversationSessionsFromTauri,
+    readAssemblySettingFromTauri,
+    writeAssemblySettingFromTauri
+  } from '$lib/tauriSource';
   import { ownedSessionFromBackend } from '$lib/shell/ownedSessions.ts';
   import { addOwnedSession, rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import {
@@ -39,11 +49,19 @@
     workflowState
   } from '$lib/shell/workflows/workflowStore.svelte.ts';
   import {
+    savedWorkflowDefinition,
     taskWorkflowDefinition,
+    type SavedWorkflowStage,
+    type SavedWorkflowTemplate,
     type TaskWorkflowProviders,
     type WorkflowProvider
   } from '$lib/shell/workflows/taskWorkflowTemplate.ts';
-  import type { WorkflowNodeRunRecord, WorkflowNodeState, WorkflowRunRecord } from '$lib/shell/workflows/workflowTypes.ts';
+  import type {
+    WorkflowNodeRunRecord,
+    WorkflowNodeState,
+    WorkflowOutputContract,
+    WorkflowRunRecord
+  } from '$lib/shell/workflows/workflowTypes.ts';
 
   interface Props {
     visible: boolean;
@@ -68,6 +86,39 @@
     ['implement', 'Build'],
     ['review', 'Review']
   ] as const;
+
+  const TEMPLATES_SETTING_KEY = 'agents.workflow-templates';
+  // Stages a saved workflow can add. No Plan stage: saved workflows start from an approved plan.
+  const STAGE_PRESETS: { label: string; contract: WorkflowOutputContract; provider: WorkflowProvider; instructions: string }[] = [
+    { label: 'Implement', contract: 'ImplementationReceipt', provider: 'codex', instructions: 'Implement the approved plan, keep the diff scoped, and verify the changed behavior.' },
+    { label: 'Review', contract: 'ReviewReceipt', provider: 'claude', instructions: 'Review the implementation against the approved plan. Report one blocking finding, or a non-blocking no-finding receipt.' },
+    { label: 'Spec check', contract: 'ReviewReceipt', provider: 'claude', instructions: 'Independently check the implementation against each requirement in the approved plan. Return one blocking finding for any requirement that is missing or wrong, or a non-blocking no-finding receipt.' },
+    { label: 'Verify', contract: 'VerificationReceipt', provider: 'claude', instructions: 'Run relevant regression, integration, and UI checks. Browser checks must be headless at 1710x990 with the viewport verified after launch; save before and after screenshots to ~/Workbox/screenshots/ and stop the browser process tree. For native Assembly checks, use workbox-native-ui. Report commands, exits, evidence, and cleanup. Set evidenceArtifacts to [] when there is no saved artifact; otherwise each entry must contain id, kind, path, url, and digest.' },
+    { label: 'Open PR', contract: 'PullRequestReceipt', provider: 'codex', instructions: 'Commit any verified uncommitted changes, push the branch, then open or update its pull request with before and after UI screenshots when relevant. For Notion tasks use a tsk-<id> branch. End every commit message body with Committed-by: <actual committer>; never add a co-author trailer. Do not merge. Return the PR URL and branch.' },
+    { label: 'PR review', contract: 'ReviewReceipt', provider: 'claude', instructions: 'Independently review the opened pull request diff, check results, and before and after UI evidence against the approved plan. Return one blocking finding if the PR is not ready to merge, or a non-blocking no-finding receipt.' },
+    { label: 'Merge PR', contract: 'PullRequestMergeReceipt', provider: 'codex', instructions: 'After a passing PR review, merge the PR from the Open PR receipt, verify its merged state and merge commit SHA on GitHub, and return both. If the merge fails, report the failure instead of a success receipt.' }
+  ];
+  const RECEIPTS: [WorkflowOutputContract, string][] = [
+    ['ImplementationReceipt', 'Implementation'],
+    ['ReviewReceipt', 'Review'],
+    ['SpecComplianceReceipt', 'Spec report (never blocks)'],
+    ['VerificationReceipt', 'Verification'],
+    ['PullRequestReceipt', 'Pull request'],
+    ['PullRequestMergeReceipt', 'Merge']
+  ];
+
+  let templates = $state<SavedWorkflowTemplate[]>([]);
+  // null runs the built-in planning workflow; otherwise the saved workflow being edited.
+  let draft = $state<SavedWorkflowTemplate | null>(null);
+  const draftError = $derived.by(() => {
+    if (!draft) return null;
+    try {
+      savedWorkflowDefinition(draft);
+      return null;
+    } catch (error) {
+      return message(error);
+    }
+  });
 
   const runs = $derived(filteredWorkflowRuns());
   const selected = $derived(selectedWorkflowRun());
@@ -134,6 +185,13 @@
       else upsertWorkflowSnapshot(snapshot);
     }));
     void refresh(controller.signal, generation);
+    readAssemblySettingFromTauri(TEMPLATES_SETTING_KEY)
+      .then((value) => {
+        if (!controller.signal.aborted && Array.isArray(value)) templates = value as SavedWorkflowTemplate[];
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) workflowState.error = `Could not load saved workflows: ${message(error)}`;
+      });
     return () => {
       controller.abort();
       actionController?.abort();
@@ -159,6 +217,61 @@
       window.clearTimeout(timer);
     };
   });
+
+  const LIVE_STATES: WorkflowNodeState[] = ['starting', 'running'];
+  const ticking = $derived(
+    orderedNodes.some((node) => node.startedAtMs && !node.finishedAtMs && LIVE_STATES.includes(node.state))
+  );
+
+  // One clock for every running stage's elapsed time; stops when hidden or nothing is running.
+  $effect(() => {
+    if (!visible || !ticking) return;
+    now = Date.now();
+    const timer = window.setInterval(() => (now = Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  });
+
+  function elapsed(node: WorkflowNodeRunRecord): string {
+    if (!node.startedAtMs) return '';
+    const end = node.finishedAtMs ?? (LIVE_STATES.includes(node.state) ? now : null);
+    if (end === null) return '';
+    const seconds = Math.max(0, Math.floor((end - node.startedAtMs) / 1000));
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
+    return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
+  }
+
+  const compactTokens = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
+
+  function usageCompact(node: WorkflowNodeRunRecord): string {
+    if (!node.usage) return 'Usage not reported';
+    const usage = sessionContextUsage(null, node.usage);
+    if (usage.usedTokens !== null && usage.contextWindow !== null) {
+      return `Ctx ${compactTokens.format(usage.usedTokens)}/${compactTokens.format(usage.contextWindow)}`;
+    }
+    if (usage.totalTokens !== null) return `Total ${compactTokens.format(usage.totalTokens)} tokens`;
+    if (usage.usedTokens !== null) return `Ctx ${compactTokens.format(usage.usedTokens)} tokens`;
+    return 'Usage not reported';
+  }
+
+  function usageSummary(node: WorkflowNodeRunRecord): string {
+    if (!node.usage) return 'Usage and cost not reported';
+    const usage = sessionContextUsage(null, node.usage);
+    const parts: string[] = [];
+    if (usage.usedTokens !== null) {
+      const used = usage.usedTokens.toLocaleString();
+      parts.push(usage.contextWindow === null
+        ? `Context ${used} tokens`
+        : `Context ${used} / ${usage.contextWindow.toLocaleString()}`);
+    }
+    if (usage.totalTokens !== null) parts.push(`Total ${usage.totalTokens.toLocaleString()} tokens`);
+    if (usage.inputTokens !== null && usage.outputTokens !== null) {
+      parts.push(`Reported ${usage.inputTokens.toLocaleString()} in, ${usage.outputTokens.toLocaleString()} out`);
+    }
+    parts.push('Cost not reported');
+    return parts.join(' · ');
+  }
 
   function key(action: string): string {
     return `agents:${action}:${crypto.randomUUID()}`;
@@ -212,10 +325,11 @@
 
   async function createAndStart(): Promise<void> {
     const trimmed = task.trim();
-    if (!trimmed || !root) return;
+    if (!trimmed || !root || draftError) return;
+    if (draft && !(await saveTemplate())) return;
     await control('Starting workflow', async () => {
       const created = await createWorkflowRun({
-        definition: taskWorkflowDefinition(providers),
+        definition: draft ? savedWorkflowDefinition(draft) : taskWorkflowDefinition(providers),
         input: { task: trimmed, cwd: root },
         idempotencyKey: key('create')
       });
@@ -231,6 +345,71 @@
 
   function setProvider(stage: keyof TaskWorkflowProviders, value: string): void {
     providers[stage] = value as WorkflowProvider;
+  }
+
+  function newId(prefix: string): string {
+    return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
+  }
+
+  function stageFrom(label: string, earlier: SavedWorkflowStage[]): SavedWorkflowStage {
+    const preset = STAGE_PRESETS.find((item) => item.label === label) ?? STAGE_PRESETS[0];
+    return {
+      id: newId('stage'),
+      title: preset.label,
+      instructions: preset.instructions,
+      provider: preset.provider,
+      outputContract: preset.contract,
+      redoStageId: preset.contract === 'ReviewReceipt'
+        ? earlier.findLast((item) => item.outputContract === 'ImplementationReceipt')?.id ?? null
+        : null,
+      approvalPrompt: null
+    };
+  }
+
+  function chooseWorkflow(id: string): void {
+    if (id === 'built-in') {
+      draft = null;
+    } else if (id === 'new') {
+      const stages: SavedWorkflowStage[] = [];
+      for (const label of ['Implement', 'Review', 'Verify', 'Open PR', 'PR review']) {
+        stages.push(stageFrom(label, stages));
+      }
+      draft = { id: newId('saved'), name: '', stages };
+    } else {
+      const template = templates.find((item) => item.id === id);
+      if (template) draft = $state.snapshot(template);
+    }
+  }
+
+  function duplicateTemplate(): void {
+    if (!draft) return;
+    draft = { ...$state.snapshot(draft), id: newId('saved'), name: `${draft.name} copy` };
+  }
+
+  function addStage(label: string): void {
+    if (draft) draft.stages.push(stageFrom(label, draft.stages));
+  }
+
+  function moveStage(index: number, offset: number): void {
+    if (!draft) return;
+    const [stage] = draft.stages.splice(index, 1);
+    draft.stages.splice(index + offset, 0, stage);
+  }
+
+  async function saveTemplate(): Promise<boolean> {
+    if (!draft || draftError) return false;
+    const saved = $state.snapshot(draft);
+    const next = templates.some((item) => item.id === saved.id)
+      ? templates.map((item) => (item.id === saved.id ? saved : item))
+      : [...templates, saved];
+    try {
+      await writeAssemblySettingFromTauri(TEMPLATES_SETTING_KEY, next);
+      templates = next;
+      return true;
+    } catch (error) {
+      workflowState.error = `Could not save workflow: ${message(error)}`;
+      return false;
+    }
   }
 
   async function openStage(ownedId: string | null): Promise<void> {
@@ -251,7 +430,7 @@
 <div class="flex h-full min-h-0 flex-col">
   <div class="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
     <p class="min-w-0 text-sm text-muted-foreground">
-      Scripted stages with an approval at each handoff.
+      Scripted agent stages. New task pauses for approval after spec, plan, and build; saved workflows run straight through.
     </p>
     <Button size="sm" variant={composing ? 'secondary' : 'default'} onclick={() => (composing = !composing)}>
       <Plus />
@@ -266,16 +445,127 @@
   {/if}
 
   {#if composing}
-    <form class="flex flex-col gap-3 border-b border-border bg-card p-3" onsubmit={(event) => { event.preventDefault(); void createAndStart(); }}>
+    <form class="flex max-h-[60%] flex-col gap-3 overflow-y-auto border-b border-border bg-card p-3" onsubmit={(event) => { event.preventDefault(); void createAndStart(); }}>
+      <div class="flex items-end gap-2">
+        <label class="flex min-w-0 flex-1 flex-col gap-1 text-xs text-muted-foreground">
+          Workflow
+          <select
+            value={draft?.id ?? 'built-in'}
+            onchange={(event) => chooseWorkflow(event.currentTarget.value)}
+            class="h-8 min-w-0 rounded-lg border border-input bg-background px-2 text-sm text-foreground outline-none focus-visible:border-ring"
+          >
+            <option value="built-in">New task (spec and plan first)</option>
+            {#each templates as template (template.id)}
+              <option value={template.id}>{template.name}</option>
+            {/each}
+            {#if draft && !templates.some((item) => item.id === draft?.id)}
+              <option value={draft.id}>{draft.name.trim() || 'Unsaved workflow'}</option>
+            {/if}
+            <option value="new">New saved workflow…</option>
+          </select>
+        </label>
+        {#if draft}
+          <Button size="sm" variant="outline" type="button" disabled={draftError !== null} onclick={() => void saveTemplate()}><Save />Save</Button>
+          <Button size="sm" variant="outline" type="button" onclick={duplicateTemplate}><Copy />Duplicate</Button>
+        {/if}
+      </div>
       <label class="flex flex-col gap-1.5 text-sm font-medium">
-        Task
+        {draft ? 'Approved plan' : 'Task'}
         <textarea
           bind:value={task}
           rows="4"
-          placeholder="Describe the outcome for the agents…"
+          placeholder={draft ? 'Paste the reviewed plan and its ordered steps…' : 'Describe the outcome for the agents…'}
           class="min-h-24 resize-y rounded-xl border border-input bg-background px-3 py-2 text-sm font-normal outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
         ></textarea>
       </label>
+      {#if draft}
+        <input
+          bind:value={draft.name}
+          placeholder="Workflow name"
+          aria-label="Workflow name"
+          class="h-8 rounded-lg border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring"
+        />
+        <ol class="flex flex-col gap-2">
+          {#each draft.stages as stage, index (stage.id)}
+            <li class="flex flex-col gap-1.5 rounded-lg border border-border bg-background p-2">
+              <div class="flex items-center gap-1">
+                <span class="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold">{index + 1}</span>
+                <input
+                  bind:value={stage.title}
+                  aria-label="Stage title"
+                  class="h-7 min-w-0 flex-1 rounded-md bg-transparent px-1.5 text-sm font-medium outline-none focus-visible:bg-muted"
+                />
+                <Button size="icon-xs" variant="ghost" type="button" aria-label="Move up" disabled={index === 0} onclick={() => moveStage(index, -1)}><ArrowUp /></Button>
+                <Button size="icon-xs" variant="ghost" type="button" aria-label="Move down" disabled={index === draft.stages.length - 1} onclick={() => moveStage(index, 1)}><ArrowDown /></Button>
+                <Button size="icon-xs" variant="ghost" type="button" aria-label="Remove stage" onclick={() => draft?.stages.splice(index, 1)}><X /></Button>
+              </div>
+              <textarea
+                bind:value={stage.instructions}
+                rows="2"
+                aria-label="Stage instructions"
+                class="resize-y rounded-md border border-input bg-background px-2 py-1 text-xs outline-none focus-visible:border-ring"
+              ></textarea>
+              <div class="grid grid-cols-3 gap-2">
+                <label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
+                  Agent
+                  <select bind:value={stage.provider} class="h-7 min-w-0 rounded-md border border-input bg-background px-1.5 text-xs text-foreground outline-none focus-visible:border-ring">
+                    <option value="codex">Codex</option>
+                    <option value="claude">Claude</option>
+                    <option value="antigravity">Agy</option>
+                  </select>
+                </label>
+                <label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
+                  Receipt
+                  <select
+                    value={stage.outputContract}
+                    onchange={(event) => {
+                      stage.outputContract = event.currentTarget.value as WorkflowOutputContract;
+                      if (stage.outputContract !== 'ReviewReceipt') stage.redoStageId = null;
+                    }}
+                    class="h-7 min-w-0 rounded-md border border-input bg-background px-1.5 text-xs text-foreground outline-none focus-visible:border-ring">
+                    {#each RECEIPTS as [contract, label]}
+                      <option value={contract}>{label}</option>
+                    {/each}
+                  </select>
+                </label>
+                <label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
+                  On finding, redo
+                  <select
+                    bind:value={stage.redoStageId}
+                    disabled={stage.outputContract !== 'ReviewReceipt'}
+                    class="h-7 min-w-0 rounded-md border border-input bg-background px-1.5 text-xs text-foreground outline-none focus-visible:border-ring disabled:opacity-50"
+                  >
+                    <option value={null}>None</option>
+                    {#each draft.stages.slice(0, index).filter((item) => item.outputContract === 'ImplementationReceipt') as target (target.id)}
+                      <option value={target.id}>{target.title}</option>
+                    {/each}
+                  </select>
+                </label>
+              </div>
+            </li>
+          {/each}
+        </ol>
+        <select
+          value=""
+          aria-label="Add stage"
+          onchange={(event) => { addStage(event.currentTarget.value); event.currentTarget.value = ''; }}
+          class="h-8 rounded-lg border border-dashed border-input bg-background px-2 text-sm text-muted-foreground outline-none focus-visible:border-ring"
+        >
+          <option value="" disabled>Add stage…</option>
+          {#each STAGE_PRESETS as preset (preset.label)}
+            <option value={preset.label}>{preset.label}</option>
+          {/each}
+        </select>
+        {#if draft.stages.some((stage, index, all) => stage.outputContract === 'ReviewReceipt' && all.slice(0, index).some((item) => item.outputContract === 'PullRequestReceipt')) && !draft.stages.some((stage) => stage.outputContract === 'PullRequestMergeReceipt')}
+          <p class="text-xs text-muted-foreground">Without a Merge PR stage, the run ends after PR review for owner handoff.</p>
+        {/if}
+        {#if draftError}
+          <p class="flex items-start gap-2 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
+            <TriangleAlert class="mt-0.5 size-3.5 shrink-0" />
+            {draftError}
+          </p>
+        {/if}
+      {:else}
       <div class="grid grid-cols-3 gap-2">
         {#each STAGES as [stage, label]}
           <label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
@@ -292,7 +582,8 @@
           </label>
         {/each}
       </div>
-      <Button type="submit" disabled={!task.trim() || !root || busy !== null}>
+      {/if}
+      <Button type="submit" disabled={!task.trim() || !root || busy !== null || draftError !== null}>
         <Play />
         Start workflow
       </Button>
@@ -346,7 +637,13 @@
                     <span class="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold">{index + 1}</span>
                     <span class="min-w-0 flex-1">
                       <span class="block truncate text-sm font-medium">{selected.definition.nodes.find((item) => item.id === node.nodeId)?.title ?? node.nodeId}</span>
-                      <span class="block truncate text-xs text-muted-foreground">{node.provider} · {node.roleId}</span>
+                      <span class="flex min-w-0 gap-1 text-xs text-muted-foreground">
+                        <span class="truncate">{node.provider} · {node.roleId}</span>
+                        {#if elapsed(node)}<span class="shrink-0 tabular-nums">· {elapsed(node)}</span>{/if}
+                      </span>
+                      {#if node.startedAtMs}
+                        <span class="block truncate text-xs text-muted-foreground" title={usageSummary(node)}>{usageCompact(node)}</span>
+                      {/if}
                     </span>
                     <Chip tone={stateTone[node.state]}>{node.state}</Chip>
                   </button>
