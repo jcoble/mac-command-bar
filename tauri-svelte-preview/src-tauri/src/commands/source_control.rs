@@ -3,16 +3,20 @@ use std::path::PathBuf;
 
 use mcb_core::scanners::worktrees::{repository_checkouts, RepositoryCheckout};
 
+use crate::git_workspace::{
+    commit_git_repository_sync, fetch_git_repository_sync, publish_git_repository_sync,
+    pull_git_repository_sync, push_git_repository_sync, stage_git_paths_sync,
+    unstage_git_paths_sync,
+};
+
 use crate::{
-    archive_project_worktree_sync, commit_git_repository_sync, fetch_git_repository_sync,
-    init_project_repository_sync, list_git_repository_summaries_sync, list_project_git_refs_sync,
-    list_project_worktrees_sync, project_git_status_sync, pull_git_repository_sync,
-    push_git_repository_sync, publish_git_repository_sync, read_git_commit_file_diff_sync, read_git_commit_files_sync,
+    archive_project_worktree_sync, init_project_repository_sync,
+    list_git_repository_summaries_sync, list_project_git_refs_sync, list_project_worktrees_sync,
+    project_git_status_sync, read_git_commit_file_diff_sync, read_git_commit_files_sync,
     read_git_commit_history_page_sync, read_source_git_diff_sync, remove_project_worktree_sync,
-    stage_git_paths_sync, unstage_git_paths_sync, GitActionResult, GitCommitFileChange,
-    GitHistoryPage, GitRepositorySummary, ProjectGitRef, ProjectGitStatus, ProjectWorktree,
-    ProjectWorktreeActionResult, ProjectWorktreeArchiveResult, RuntimeContextProject,
-    SourceGitDiff,
+    GitActionResult, GitCommitFileChange, GitHistoryPage, GitRepositorySummary, ProjectGitRef,
+    ProjectGitStatus, ProjectWorktree, ProjectWorktreeActionResult, ProjectWorktreeArchiveResult,
+    RuntimeContextProject, SourceGitDiff,
 };
 
 #[tauri::command]
