@@ -46,8 +46,8 @@ export function taskWorkflowDefinition(
   return {
     version: 1,
     id: 'task-plan-implement-review',
-    name: 'Plan, review, implement, review',
-    description: 'A visible task loop with approval after plan review and implementation.',
+    name: 'Plan, review, implement, review, verify',
+    description: 'A visible task loop with approval after plan review and implementation, followed by verification.',
     trigger: { kind: 'manual' },
     inputs: [{ id: 'task', required: true }],
     roles: [
@@ -73,6 +73,14 @@ export function taskWorkflowDefinition(
         'Review the plan or implementation against the task. Report one blocking finding, or a non-blocking no-finding receipt.',
         providers.review,
         'ReviewReceipt',
+        { kind: 'read-only-current' }
+      ),
+      role(
+        'verifier',
+        'Verifier',
+        'Run the relevant regression, integration, and UI checks. Report the actual command, exit status, evidence, and cleanup.',
+        providers.review,
+        'VerificationReceipt',
         { kind: 'read-only-current' }
       )
     ],
@@ -119,6 +127,17 @@ export function taskWorkflowDefinition(
         roleId: 'reviewer',
         dependsOn: ['plan', 'implement'],
         condition: { redoNodeId: 'implement' },
+        fanOut: null,
+        approvalGate: null,
+        timeoutSeconds: 3600,
+        maxAttempts: 2
+      },
+      {
+        id: 'verify',
+        title: 'Verify',
+        roleId: 'verifier',
+        dependsOn: ['review'],
+        condition: null,
         fanOut: null,
         approvalGate: null,
         timeoutSeconds: 3600,
