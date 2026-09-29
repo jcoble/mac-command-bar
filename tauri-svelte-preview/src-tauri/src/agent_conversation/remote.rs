@@ -39,7 +39,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 5;
+pub(super) const PROTOCOL_VERSION: u16 = 6;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -180,6 +180,7 @@ enum ServerFrame {
     Ready { protocol_version: u16 },
     Response { id: u64, response: RemoteResponse },
     Error { id: u64, message: String },
+    ProviderDownloadProgress { id: u64, progress: super::providers::updates::ProviderDownloadProgress },
     Event { #[serde(deserialize_with = "deserialize_wire_payload")] event: AgentConversationEvent },
 }
 
@@ -227,6 +228,7 @@ enum ClientRequest {
         id: u64,
         command: RemoteCommand,
         reply: ClientReply,
+        progress: Option<mpsc::UnboundedSender<super::providers::updates::ProviderDownloadProgress>>,
     },
     Cancel {
         id: u64,
@@ -827,7 +829,7 @@ impl RemoteConnectionManager {
                 && client.requests.as_ref().is_some_and(|sender| !sender.is_closed()));
         let (mut sessions, candidate) = if reusable {
             let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-            let RemoteResponse::Sessions(sessions) = self.request_with_id(&profile.id, id, RemoteCommand::ListSessions).await?
+            let RemoteResponse::Sessions(sessions) = self.request_with_id(&profile.id, id, RemoteCommand::ListSessions, None).await?
                 else { return Err("Backend returned an invalid session list".into()); };
             (sessions, None)
         } else {
@@ -1024,7 +1026,7 @@ impl RemoteConnectionManager {
         command: RemoteCommand,
     ) -> Result<RemoteResponse, String> {
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        self.request_with_id(profile_id, id, command).await
+        self.request_with_id(profile_id, id, command, None).await
     }
 
     async fn request_with_id(
@@ -1032,6 +1034,7 @@ impl RemoteConnectionManager {
         profile_id: &str,
         id: u64,
         command: RemoteCommand,
+        progress: Option<mpsc::UnboundedSender<super::providers::updates::ProviderDownloadProgress>>,
     ) -> Result<RemoteResponse, String> {
         let sender = self
             .client
@@ -1051,7 +1054,7 @@ impl RemoteConnectionManager {
         };
         let (reply, answer) = oneshot::channel();
         sender
-            .try_send(ClientRequest::Execute { id, command, reply })
+            .try_send(ClientRequest::Execute { id, command, reply, progress })
             .map_err(|error| {
                 format!("The Remote Assembly request queue is unavailable: {error}")
             })?;
@@ -1082,7 +1085,7 @@ impl RemoteConnectionManager {
             .collect::<Vec<_>>();
         let responses = join_all(profile_ids.into_iter().map(|profile_id| async move {
             let response = self
-                .request_with_id(&profile_id, request_id, RemoteCommand::ListSessions)
+                .request_with_id(&profile_id, request_id, RemoteCommand::ListSessions, None)
                 .await;
             (profile_id, response)
         }))
@@ -1172,7 +1175,7 @@ impl RemoteConnectionManager {
         };
         loop {
             let RemoteResponse::Snapshot(snapshot) = self.request_with_id(&profile, request_id,
-                RemoteCommand::Snapshot { owned_id: owned_id.clone(), request_id, after_sequence: after }).await?
+                RemoteCommand::Snapshot { owned_id: owned_id.clone(), request_id, after_sequence: after }, None).await?
             else { return Err("Remote Assembly returned the wrong snapshot response".into()); };
             let Some(snapshot) = snapshot else { return Ok(None); };
             let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1230,7 +1233,7 @@ impl RemoteConnectionManager {
         } else {
             RemoteCommand::EventsAfter { owned_id: owned_id.clone(), after_sequence: cursor, max_bytes }
         };
-        let RemoteResponse::EventPage(page) = self.request_with_id(&profile, request_id, command).await?
+        let RemoteResponse::EventPage(page) = self.request_with_id(&profile, request_id, command, None).await?
         else { return Err("Remote Assembly returned the wrong event-page response".into()); };
         self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .page(&profile, epoch, &owned_id, cursor, before, &page)?;
@@ -1259,6 +1262,7 @@ impl RemoteConnectionManager {
                 &self.profile_for_owned_id(&owned_id)?,
                 request_id,
                 RemoteCommand::Capabilities { owned_id },
+                None,
             )
             .await?
         else {
@@ -1277,6 +1281,7 @@ impl RemoteConnectionManager {
                 &self.profile_for_owned_id(&owned_id)?,
                 request_id,
                 RemoteCommand::Config { owned_id },
+                None,
             )
             .await
             .map_err(|error| format!("Remote session settings request failed: {error}"))?
@@ -1297,6 +1302,7 @@ impl RemoteConnectionManager {
             profile_id,
             request_id,
             RemoteCommand::ProbeProviderConfig { provider, cwd },
+            None,
         ).await? {
             RemoteResponse::Config(config) => Ok(config),
             _ => Err("Remote Assembly returned the wrong provider catalog response".into()),
@@ -1413,6 +1419,7 @@ impl RemoteConnectionManager {
                 &self.profile_for_owned_id(&owned_id)?,
                 request_id,
                 RemoteCommand::ReadExpandedPaths { owned_id, root },
+                None,
             )
             .await?
         else {
@@ -1974,6 +1981,7 @@ async fn client_loop(
         }
         if send_client_frame(&mut socket, &ClientFrame::Request { id: READINESS_REQUEST_ID, command: RemoteCommand::ListSessions }).await.is_err() { return; }
         let mut pending = HashMap::<u64, ClientReply>::new();
+        let mut pending_progress = HashMap::<u64, mpsc::UnboundedSender<super::providers::updates::ProviderDownloadProgress>>::new();
         let mut interruption = "The Remote Assembly connection was interrupted".to_string();
         loop {
             tokio::select! {
@@ -1982,10 +1990,12 @@ async fn client_loop(
                         return;
                     };
                     match request {
-                        ClientRequest::Execute { id, command, reply } => {
+                        ClientRequest::Execute { id, command, reply, progress } => {
                             let frame = ClientFrame::Request { id, command };
                             pending.insert(id, reply);
+                            if let Some(progress) = progress { pending_progress.insert(id, progress); }
                             if let Err(error) = send_client_frame(&mut socket, &frame).await {
+                                pending_progress.remove(&id);
                                 if let Some(reply) = pending.remove(&id) {
                                     let _ = reply.send(Err(error));
                                 }
@@ -1993,6 +2003,7 @@ async fn client_loop(
                             }
                         }
                         ClientRequest::Cancel { id } => {
+                            pending_progress.remove(&id);
                             if let Some(reply) = pending.remove(&id) {
                                 let _ = reply.send(Err("Remote Assembly request was canceled".into()));
                             }
@@ -2056,6 +2067,7 @@ async fn client_loop(
                             if let Some(reply) = initial_ready.take() { let _ = reply.send(Ok(sessions)); }
                         }
                         ServerFrame::Response { id, response } => {
+                            pending_progress.remove(&id);
                             if let Some(reply) = pending.remove(&id) {
                                 let _ = reply.send(Ok(response));
                             }
@@ -2066,6 +2078,7 @@ async fn client_loop(
                             return;
                         }
                         ServerFrame::Error { id, message } => {
+                            pending_progress.remove(&id);
                             if let Some(reply) = pending.remove(&id) {
                                 let _ = reply.send(Err(message));
                             }
@@ -2085,6 +2098,9 @@ async fn client_loop(
                                     sequence: event.sequence,
                                 }).await;
                             }
+                        }
+                        ServerFrame::ProviderDownloadProgress { id, progress } => {
+                            if let Some(sender) = pending_progress.get(&id) { let _ = sender.send(progress); }
                         }
                     }
                 }
@@ -2326,8 +2342,12 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
                 let request_state = state.clone();
                 let request_upload = upload.clone();
                 let completion_sink = completed.clone();
+                let progress_outbound = outbound.clone();
                 let task = tokio::spawn(async move {
-                    let response = execute_server_command(&request_state, &request_upload, command).await;
+                    let progress: super::providers::updates::ProgressSink = Arc::new(move |progress| {
+                        let _ = progress_outbound.try_send(ServerFrame::ProviderDownloadProgress { id, progress });
+                    });
+                    let response = execute_server_command(&request_state, &request_upload, command, progress).await;
                     let _ = completion_sink.send((id, response)).await;
                 });
                 if let Some(previous) = request_tasks.insert(id, task.abort_handle()) {
@@ -2420,7 +2440,7 @@ fn write_attachment_chunk(
     Ok(if last { pending.take() } else { None })
 }
 
-async fn execute_server_command(state: &ServerState, upload: &Mutex<Option<PendingAttachment>>, command: RemoteCommand) -> Result<RemoteResponse, String> {
+async fn execute_server_command(state: &ServerState, upload: &Mutex<Option<PendingAttachment>>, command: RemoteCommand, progress: super::providers::updates::ProgressSink) -> Result<RemoteResponse, String> {
     let vault = state.data_dir.join("conversation-attachments");
     let command = match command {
         RemoteCommand::AttachmentChunk { upload_id, owned_id, mime_type, first, last, bytes } => {
@@ -2468,13 +2488,14 @@ async fn execute_server_command(state: &ServerState, upload: &Mutex<Option<Pendi
     if state.restarting.load(Ordering::Acquire) {
         return Err("The remote server is restarting; reconnect before continuing".into());
     }
-    execute_remote_command(&state.manager, &vault, command).await
+    execute_remote_command(&state.manager, &vault, command, progress).await
 }
 
 async fn execute_remote_command(
     manager: &AgentRuntimeManager,
     vault: &std::path::Path,
     command: RemoteCommand,
+    progress: super::providers::updates::ProgressSink,
 ) -> Result<RemoteResponse, String> {
     match command {
         RemoteCommand::RestartForProviderUpdates => Err("Remote restart requires exclusive request ownership".into()),
@@ -2490,7 +2511,7 @@ async fn execute_remote_command(
                 if manager.has_pending_provider_work() {
                     return Err("Finish or stop remote conversations before updating their adapters".into());
                 }
-                super::providers::updates::install_at(&data_dir, manager.providers(), &provider).await?
+                super::providers::updates::install_at(&data_dir, manager.providers(), &provider, progress).await?
             } else {
                 super::providers::updates::check_at(&data_dir, manager.providers()).await?
             };
@@ -3350,7 +3371,7 @@ mod connection_tests {
         });
         let (reply, answer) = oneshot::channel();
         requests.send(ClientRequest::Execute {
-            id: 1, command: RemoteCommand::Config { owned_id: "proof".into() }, reply,
+            id: 1, command: RemoteCommand::Config { owned_id: "proof".into() }, reply, progress: None,
         }).await.unwrap();
         let ready_error = tokio::time::timeout(Duration::from_secs(5), ready_answer)
             .await.unwrap().unwrap().unwrap_err();
@@ -3398,7 +3419,7 @@ mod connection_tests {
         ready_answer.await.unwrap().unwrap();
         let (reply, answer) = oneshot::channel();
         requests.send(ClientRequest::Execute {
-            id: 1, command: RemoteCommand::Config { owned_id: "proof".into() }, reply,
+            id: 1, command: RemoteCommand::Config { owned_id: "proof".into() }, reply, progress: None,
         }).await.unwrap();
         let error = tokio::time::timeout(Duration::from_secs(5), answer)
             .await.unwrap().unwrap().unwrap_err();
@@ -3458,11 +3479,26 @@ pub async fn check_remote_provider_updates(
 
 #[tauri::command]
 pub async fn install_remote_provider_updates(
+    app: tauri::AppHandle,
     remote: tauri::State<'_, RemoteConnectionManager>,
     profile_id: String,
     provider: String,
 ) -> Result<super::providers::updates::ProviderUpdateStatus, String> {
-    match remote.request_for_profile(&profile_id, RemoteCommand::InstallProviderUpdates { provider }).await? {
+    use tauri::Emitter;
+    let (sender, mut progress) = mpsc::unbounded_channel();
+    let id = remote.next_request_id.fetch_add(1, Ordering::Relaxed);
+    let request = remote.request_with_id(&profile_id, id, RemoteCommand::InstallProviderUpdates { provider }, Some(sender));
+    tokio::pin!(request);
+    let response = loop {
+        tokio::select! {
+            result = &mut request => break result?,
+            Some(mut update) = progress.recv() => {
+                update.profile_id = Some(profile_id.clone());
+                let _ = app.emit("provider-download-progress", update);
+            }
+        }
+    };
+    match response {
         RemoteResponse::ProviderUpdates(status) => Ok(status),
         _ => Err("The remote backend does not support provider updates; update its backend first".into()),
     }

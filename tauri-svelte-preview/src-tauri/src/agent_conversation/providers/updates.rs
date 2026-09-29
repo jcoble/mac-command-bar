@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
@@ -8,7 +9,7 @@ use reqwest::Client;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::io::AsyncWriteExt;
 
 use super::packaged::{self, AdapterPairs, PackagedAdapter};
@@ -54,6 +55,19 @@ pub struct ProviderUpdateStatus {
     providers: Vec<ProviderUpdateVersion>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderDownloadProgress {
+    pub provider: String,
+    pub file_index: usize,
+    pub file_count: usize,
+    pub downloaded: u64,
+    pub total: Option<u64>,
+    pub profile_id: Option<String>,
+}
+
+pub(crate) type ProgressSink = Arc<dyn Fn(ProviderDownloadProgress) + Send + Sync>;
+
 pub(super) fn discover_active(app_data_dir: &Path) -> Result<AdapterPairs, String> {
     let root = app_data_dir.join("provider-adapters");
     let pointer_path = root.join("active.json");
@@ -93,7 +107,10 @@ pub async fn install_provider_updates(
         .path()
         .app_data_dir()
         .map_err(|error| format!("Application data directory is unavailable: {error}"))?;
-    install_at(&app_data_dir, manager.providers(), &provider).await
+    let progress_app = app.clone();
+    install_at(&app_data_dir, manager.providers(), &provider, Arc::new(move |progress| {
+        let _ = progress_app.emit("provider-download-progress", progress);
+    })).await
 }
 
 pub(crate) async fn check_at(
@@ -108,6 +125,7 @@ pub(crate) async fn install_at(
     app_data_dir: &Path,
     providers: &ProviderRegistry,
     provider: &str,
+    progress: ProgressSink,
 ) -> Result<ProviderUpdateStatus, String> {
     // Native commands and remote clients share the same installation owner.
     // Reject overlap instead of queueing an obsolete second activation.
@@ -122,7 +140,7 @@ pub(crate) async fn install_at(
         return Ok(before);
     }
     ensure_no_downgrade(selected)?;
-    install_manifest(app_data_dir, &manifest, provider).await?;
+    install_manifest(app_data_dir, &manifest, provider, &progress).await?;
     status_for(app_data_dir, &manifest, &running).await
 }
 
@@ -401,6 +419,7 @@ async fn install_manifest(
     app_data_dir: &Path,
     manifest: &RemoteManifest,
     provider: &str,
+    progress: &ProgressSink,
 ) -> Result<(), String> {
     let root = app_data_dir.join("provider-adapters");
     let _directory_owner = prepare_installation(&root)?;
@@ -443,7 +462,7 @@ async fn install_manifest(
             installed.push(adapter);
         }
     }
-    download_adapter_files(&temporary, &manifest.target, selected).await?;
+    download_adapter_files(&temporary, &manifest.target, selected, progress).await?;
     installed.push(selected.clone());
     std::fs::write(temporary.join("manifest.json"), serde_json::to_vec(&packaged::PackagedManifest {
         schema_version: 1,
@@ -486,20 +505,23 @@ async fn install_manifest(
     Ok(())
 }
 
-async fn download_adapter_files(directory: &Path, target: &str, adapter: &PackagedAdapter) -> Result<(), String> {
+async fn download_adapter_files(directory: &Path, target: &str, adapter: &PackagedAdapter, progress: &ProgressSink) -> Result<(), String> {
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(180))
         .user_agent("Assembly provider updater")
         .build()
         .map_err(|error| format!("Could not create provider download client: {error}"))?;
-    for file in &adapter.files {
+    for (index, file) in adapter.files.iter().enumerate() {
         let asset_name = format!("provider-{target}-{}", file.path);
         download_file(
             &client,
             &format!("{RELEASE_BASE_URL}/{asset_name}"),
             &directory.join(&file.path),
             &file.sha256,
+            adapter,
+            index,
+            progress,
         )
         .await?;
     }
@@ -511,6 +533,9 @@ async fn download_file(
     url: &str,
     destination: &Path,
     expected_hash: &str,
+    adapter: &PackagedAdapter,
+    index: usize,
+    progress: &ProgressSink,
 ) -> Result<(), String> {
     let mut response = client
         .get(url)
@@ -519,11 +544,22 @@ async fn download_file(
         .map_err(|error| format!("Could not download provider adapter: {error}"))?
         .error_for_status()
         .map_err(|error| format!("Provider adapter is unavailable: {error}"))?;
+    let total = response.content_length();
+    let report = |downloaded| progress(ProviderDownloadProgress {
+        provider: adapter.provider.clone(),
+        file_index: index + 1,
+        file_count: adapter.files.len(),
+        downloaded,
+        total,
+        profile_id: None,
+    });
+    report(0);
     let mut file = tokio::fs::File::create(destination)
         .await
         .map_err(|error| format!("Could not stage provider adapter: {error}"))?;
     let mut hasher = Sha256::new();
     let mut written = 0_u64;
+    let mut last_report = std::time::Instant::now();
     while let Some(chunk) = response
         .chunk()
         .await
@@ -537,10 +573,15 @@ async fn download_file(
         file.write_all(&chunk)
             .await
             .map_err(|error| format!("Could not write provider adapter: {error}"))?;
+        if last_report.elapsed() >= Duration::from_millis(200) {
+            report(written);
+            last_report = std::time::Instant::now();
+        }
     }
     file.flush()
         .await
         .map_err(|error| format!("Could not finish provider adapter: {error}"))?;
+    report(written);
     if format!("{:x}", hasher.finalize()) != expected_hash.to_ascii_lowercase() {
         return Err("Provider adapter failed SHA-256 verification".to_string());
     }
@@ -853,7 +894,7 @@ mod tests {
         let _owner = INSTALL_LOCK.lock().await;
         let directory = std::env::temp_dir().join(format!("mcb-provider-overlap-{}", uuid::Uuid::new_v4()));
         let registry = ProviderRegistry::new([]).unwrap();
-        let result = install_at(&directory, &registry, "codex").await;
+        let result = install_at(&directory, &registry, "codex", Arc::new(|_| {})).await;
         assert!(result.unwrap_err().contains("already running"));
         assert!(!directory.exists());
     }
@@ -920,6 +961,15 @@ mod tests {
         let payload = b"verified provider payload";
         let hash = format!("{:x}", Sha256::digest(payload));
         let client = Client::builder().no_proxy().timeout(Duration::from_secs(3)).build().unwrap();
+        let adapter = PackagedAdapter {
+            provider: "claude".into(), id: "claude-agent-acp".into(), version: "1.0.0".into(),
+            executable: "adapter".into(), files: vec![packaged::PackagedFile { path: "adapter".into(), sha256: hash.clone() }],
+        };
+        let observed = Arc::new(std::sync::Mutex::new(Vec::<ProviderDownloadProgress>::new()));
+        let progress: ProgressSink = {
+            let observed = observed.clone();
+            Arc::new(move |update| observed.lock().unwrap().push(update))
+        };
         for (name, expected_hash, extra_length) in [
             ("valid", hash.clone(), 0),
             ("corrupt", "0".repeat(64), 0),
@@ -936,11 +986,15 @@ mod tests {
                 socket.write_all(payload).await.unwrap();
                 socket.shutdown().await.unwrap();
             });
-            let result = download_file(&client, &format!("http://{address}/adapter"), &directory.join(name), &expected_hash).await;
+            let result = download_file(&client, &format!("http://{address}/adapter"), &directory.join(name), &expected_hash, &adapter, 0, &progress).await;
             server.await.unwrap();
             if name == "valid" {
                 result.unwrap();
                 assert_eq!(std::fs::read(directory.join(name)).unwrap(), payload);
+                let final_progress = observed.lock().unwrap().last().unwrap().clone();
+                assert_eq!(final_progress.downloaded, payload.len() as u64);
+                assert_eq!(final_progress.total, Some(payload.len() as u64));
+                assert_eq!(final_progress.provider, "claude");
             } else if name == "corrupt" {
                 assert!(result.unwrap_err().contains("SHA-256"));
             } else {
@@ -962,8 +1016,9 @@ mod tests {
             target: release_target().unwrap(),
             adapters: Vec::new(),
         };
+        let progress: ProgressSink = Arc::new(|_| {});
 
-        assert!(install_manifest(&directory, &manifest, "codex")
+        assert!(install_manifest(&directory, &manifest, "codex", &progress)
             .await
             .is_err());
         let provider_root = directory.join("provider-adapters");

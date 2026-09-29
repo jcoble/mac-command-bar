@@ -1,4 +1,14 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+
+type ProviderDownloadProgress = {
+  provider: string;
+  fileIndex: number;
+  fileCount: number;
+  downloaded: number;
+  total: number | null;
+  profileId: string | null;
+};
 
 export type ProviderUpdateVersion = {
   provider: string;
@@ -60,7 +70,14 @@ export async function installProviderUpdates(provider: string, stopSignal: Abort
   ++state.generation;
   state.phase = 'installing';
   state.message = `Downloading and verifying ${providerLabel(provider)}…`;
+  let unlisten: (() => void) | undefined;
   try {
+    unlisten = await listen<ProviderDownloadProgress>('provider-download-progress', ({ payload }) => {
+      if (payload.provider !== provider || (payload.profileId ?? undefined) !== profileId || state.phase !== 'installing') return;
+      const part = payload.fileCount > 1 ? ` · file ${payload.fileIndex}/${payload.fileCount}` : '';
+      const total = payload.total ? ` of ${formatDownloadSize(payload.total)}` : '';
+      state.message = `Downloading ${providerLabel(provider)}${part} · ${formatDownloadSize(payload.downloaded)}${total}`;
+    });
     const status = await invoke<ProviderUpdateStatus>(profileId ? 'install_remote_provider_updates' : 'install_provider_updates', { provider, ...(profileId ? { profileId } : {}) });
     // Installation is owned by the app, not the Settings component. Closing
     // Settings must not lose an already installed update or restart the app.
@@ -72,7 +89,13 @@ export async function installProviderUpdates(provider: string, stopSignal: Abort
   } catch (error) {
     state.phase = 'error';
     state.message = String(error);
+  } finally {
+    unlisten?.();
   }
+}
+
+function formatDownloadSize(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 export async function restartProviders(state: ProviderUpdateState, profileId?: string): Promise<void> {
