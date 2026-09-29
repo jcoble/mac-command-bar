@@ -41,8 +41,8 @@
     RotateCcw
   } from '@lucide/svelte';
   import type { SourceDockPanelID } from '$lib/sourceDockLayout';
-  import type { ProjectGitFileStatus, GitTaskSourceGroup, GitBranchHealthSummary } from '$lib/sourceData';
-  import type { GitCommitHistoryEntry, SourceGitDiff } from '$lib/tauriSource';
+  import type { GitTaskSourceGroup, GitBranchHealthSummary } from '$lib/sourceData';
+  import type { GitCommitHistoryEntry, ProjectGitFileStatus, SourceGitDiff } from '$lib/tauriSource';
   import type { GitGraphViewModel, GitGraphCommitRow } from '$lib/gitGraphViewModel';
 
   /** Mirrors the page-local `GitStatusFileGroup` (assigns structurally). */

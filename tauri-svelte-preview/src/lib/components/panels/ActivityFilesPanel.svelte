@@ -43,7 +43,6 @@
   import {
     formatSourceContextRootLabel,
     type ProjectRoot,
-    type ProjectGitFileStatus,
     type SourceRecord,
     type SourceRecentRecord,
     type SourceSearchMatch,
@@ -53,6 +52,7 @@
     type SourceTreeRow,
     virtualizeSourceTreeRows
   } from '$lib/sourceData';
+  import type { ProjectGitFileStatus } from '$lib/tauriSource';
 
   /** The three nested files-Dockview pane ids (page-local union, restated here). */
   type SourceFilesPaneID = 'files' | 'search' | 'recent';

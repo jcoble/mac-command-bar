@@ -420,8 +420,10 @@
     if (showing && target) untrack(() => void loadDetail(target.localRoot, target.number));
   });
   $effect(() => {
-    if (showing && detailTab === 'files' && diffMode === 'side-by-side' && detail && selectedFile) {
-      untrack(() => void loadFileVersions(detail, selectedFile));
+    const currentDetail = detail;
+    const currentFile = selectedFile;
+    if (showing && detailTab === 'files' && diffMode === 'side-by-side' && currentDetail && currentFile) {
+      untrack(() => void loadFileVersions(currentDetail, currentFile));
     } else {
       untrack(() => { fileGeneration += 1; fileVersions = null; });
     }
@@ -466,7 +468,7 @@
         </div>
         <div class="pr-actions">
           <a class="action primary" href={selected.url} target="_blank" rel="noreferrer">Open on GitHub</a>
-          <button type="button" class="action" disabled={detailLoading || posting} onclick={() => void loadDetail(selected.localRoot, selected.number)}>{detailLoading ? 'Refreshing…' : 'Refresh'}</button>
+          <button type="button" class="action" disabled={detailLoading || posting} onclick={() => { const target = selected; if (target) void loadDetail(target.localRoot, target.number); }}>{detailLoading ? 'Refreshing…' : 'Refresh'}</button>
         </div>
         {#if detail}
           <p class="pr-facts">

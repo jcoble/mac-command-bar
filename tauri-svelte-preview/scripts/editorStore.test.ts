@@ -161,3 +161,26 @@ const stripOf = (...names) => names.reduce((files, name) => upsertOpenFile(files
 }
 
 console.log('editorStore tests passed');
+
+// A refresh must preserve a local draft without inventing a disk conflict.
+globalThis.$state = <T>(value: T): T => value;
+const store = await import('../src/lib/shell/editor/editorStore.svelte.ts');
+{
+  const record = recordFor('refresh-draft.ts');
+  const preview = { ...record, content: 'saved', lineCount: 1 };
+  store.openEditorFile(record);
+  store.setEditorFilePreview(record.path, preview);
+  store.setEditorFileDraft(record.path, 'my draft');
+  store.setEditorFilePreview(record.path, preview);
+  assert.equal(store.editorFileFor(record.path)?.draftContent, 'my draft');
+  assert.equal(store.editorFileFor(record.path)?.conflict, null);
+  store.setEditorFilePreview(record.path, { ...preview, content: 'external edit' });
+  assert.match(store.editorFileFor(record.path)?.conflict ?? '', /changed on disk/);
+  store.setEditorFilePreview(record.path, { ...preview, content: 'external edit' });
+  assert.match(store.editorFileFor(record.path)?.conflict ?? '', /changed on disk/);
+  assert.equal(store.editorFileFor(record.path)?.draftContent, 'my draft');
+  store.setEditorFilePreview(record.path, { ...preview, content: 'my draft' }, 'my draft');
+  assert.equal(store.editorFileFor(record.path)?.conflict, null);
+  assert.equal(store.editorFileFor(record.path)?.dirty, false);
+}
+console.log('editor refresh preserves drafts and reports actual disk changes');
