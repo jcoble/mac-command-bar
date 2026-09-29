@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>TSK-1286 · Selective Assembly adapters</title>
+<style>body{font:16px/1.55 system-ui;max-width:960px;margin:40px auto;padding:0 24px;color:#e6e7ed;background:#191b23}h1,h2{line-height:1.2}code{color:#9be0cf}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #464a57;padding:10px;text-align:left;vertical-align:top}.note{padding:16px;background:#292d39;border-radius:10px}</style>
+<h1>Selective adapter installation</h1>
+<p>One signed provider feed can keep publishing versions for all three providers. Each machine downloads only the adapter its user chooses. The backend release contains the server alone.</p>
+<h2>Current path</h2>
+<p>The provider feed is signed, but <code>updates.rs</code> requires all three adapters and installs every file in one bundle. <code>remoteBackendPackage.ts</code> includes every adapter in the 423 MB backend archive. Settings offers a single Install adapters button.</p>
+<h2>Cutover</h2>
+<table><tr><th>Step</th><th>Change</th><th>Proof</th></tr>
+<tr><td>1</td><td>Keep the signed feed. Check all three versions, allow one selected provider to install, and retain any other already installed providers by copying their verified files locally. One active pointer continues to select the complete installed set.</td><td>Clean install with only Claude, then install or update Codex without downloading or changing Claude.</td></tr>
+<tr><td>2</td><td>Show each provider's installed and available version with its own Install or Update action. Show activity only during an actual download and leave restart explicit.</td><td>Native UI check, install, restart, and provider launch on workbox and local.</td></tr>
+<tr><td>3</td><td>Remove adapter payloads from both desktop and backend release bundles. The remote backend package verifier expects only the server, manifest, hashes, and install script. The new backend removes the old fixed adapter directory but preserves independently installed providers.</td><td>Compare signed archive size and clean direct-install time; existing remote sessions resume after the selected provider is installed.</td></tr></table>
+<h2>Boundaries</h2>
+<p>Use the existing provider registry, updater, signed manifest, backend installer, and Settings control. The provider-native session remains the context authority; no transcript migration or new service. An unavailable provider gives a visible install path and never silently changes identity. Keep active work and failed verification from replacing the last usable installed set.</p>
+<p class="note">Planned files: <code>providers/updates.rs</code>, <code>providers/mod.rs</code>, <code>ProviderUpdateControl.svelte</code>, <code>providerUpdateService.svelte.ts</code>, <code>remote.rs</code>, <code>remoteBackendPackage.ts</code>, <code>remote_install.rs</code>, <code>tauri.conf.json</code>, their focused tests, and <code>main-architecture-explained.html</code>. Expected source diff: roughly 450–650 changed lines plus focused tests and architecture receipts. A larger design needs a new review before implementation.</p>
+</html>

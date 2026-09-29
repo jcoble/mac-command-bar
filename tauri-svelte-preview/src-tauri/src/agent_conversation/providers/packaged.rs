@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::file_sha256;
 use crate::agent_conversation::capabilities::{
@@ -21,14 +21,14 @@ pub(super) type AdapterPairs = (
     Option<AdapterPair>,
 );
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct PackagedManifest {
     pub schema_version: u32,
     pub adapters: Vec<PackagedAdapter>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct PackagedAdapter {
     pub provider: String,
     pub id: String,
@@ -37,7 +37,7 @@ pub(super) struct PackagedAdapter {
     pub files: Vec<PackagedFile>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct PackagedFile {
     pub path: String,
     pub sha256: String,
@@ -111,14 +111,20 @@ pub(super) fn discover_in(
                 adapter.provider
             ));
         }
+        let mut verified = true;
         for file in &adapter.files {
-            let actual_hash = file_sha256(&directory.join(&file.path))?;
-            if !actual_hash.eq_ignore_ascii_case(&file.sha256) {
-                return Err(format!(
-                    "Packaged {} adapter failed SHA-256 verification",
-                    adapter.provider
-                ));
+            let actual_hash = file_sha256(&directory.join(&file.path));
+            if actual_hash.as_ref().is_ok_and(|hash| hash.eq_ignore_ascii_case(&file.sha256)) {
+                continue;
             }
+            if require_bundled_versions {
+                return Err(format!("Packaged {} adapter failed SHA-256 verification", adapter.provider));
+            }
+            verified = false;
+            break;
+        }
+        if !verified {
+            continue;
         }
         let path = directory.join(&adapter.executable);
         let actual_hash = file_sha256(&path)?;
@@ -181,6 +187,9 @@ mod tests {
         assert!(discover_in(&directory, true)
             .unwrap_err()
             .contains("SHA-256"));
+        let (codex, claude, antigravity) = discover_in(&directory, false).unwrap();
+        assert!(codex.is_none());
+        assert!(claude.is_some() && antigravity.is_some());
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -169,23 +169,25 @@ impl ProviderRegistry {
         // An explicitly installed update wins even when a dev relaunch inherits
         // the bootstrap wrappers in its environment.
         let (mut codex, mut claude, mut antigravity) = (None, None, None);
+        let mut installed = false;
         if let Some(app_data_dir) = app_data_dir {
+            installed = app_data_dir.join("provider-adapters/active.json").is_file();
             match updates::discover_active(app_data_dir) {
                 Ok(active) => (codex, claude, antigravity) = active,
                 Err(error) => crate::debug_log::stderr_log!(
-                    "Ignoring invalid active provider adapters and using the bundled set: {error}"
+                    "Invalid active provider adapters; no installed adapters were registered: {error}"
                 ),
             }
         }
-        if codex.is_none() && claude.is_none() && antigravity.is_none() {
+        if !installed && codex.is_none() && claude.is_none() && antigravity.is_none() {
             codex = configured_pair("MCB_CODEX_ACP_PATH", "MCB_CODEX_ACP_SHA256")?;
             claude = configured_pair("MCB_CLAUDE_AGENT_ACP_PATH", "MCB_CLAUDE_AGENT_ACP_SHA256")?;
             antigravity = configured_pair("MCB_AGY_ACP_PATH", "MCB_AGY_ACP_SHA256")?;
         }
-        if codex.is_none() && claude.is_none() && antigravity.is_none() {
+        if !installed && codex.is_none() && claude.is_none() && antigravity.is_none() {
             (codex, claude, antigravity) = packaged::discover()?;
         }
-        if codex.is_none() || claude.is_none() || antigravity.is_none() {
+        if !installed && (codex.is_none() || claude.is_none() || antigravity.is_none()) {
             if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
                 if codex.is_none() {
                     codex =
@@ -195,12 +197,6 @@ impl ProviderRegistry {
                     claude = discover_home_wrapper(&home, &["claude-acp-wrapper.sh"])?;
                 }
             }
-        }
-        if codex.is_some() != claude.is_some() {
-            return Err(
-                "Packaged ACP adapter paths and SHA-256 values must be configured together"
-                    .to_string(),
-            );
         }
         Self::initial_manifests(codex, claude, antigravity)
     }

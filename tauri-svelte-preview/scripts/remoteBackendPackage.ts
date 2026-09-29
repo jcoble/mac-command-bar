@@ -10,19 +10,8 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 export const REMOTE_BACKEND_TARGET = 'x86_64-unknown-linux-gnu';
-export const REMOTE_BACKEND_ADAPTER_FILES = [
-  'manifest.json',
-  'codex-acp',
-  'codex-acp-runtime',
-  'claude-agent-acp',
-  'claude-agent-acp-runtime',
-  'agy-acp',
-  'agy_acp_server.par',
-  'localharness_external'
-] as const;
 export const REMOTE_BACKEND_PAYLOAD_FILES = [
   'payload/assembly-remote-server',
-  ...REMOTE_BACKEND_ADAPTER_FILES.map((file) => `payload/adapters/${file}`),
   'install.sh'
 ] as const;
 
@@ -37,7 +26,6 @@ export type RemoteBackendManifest = {
 
 export type RemoteBackendPackageInput = {
   binaryPath: string;
-  adapterDirectory: string;
   outputDirectory: string;
   version: string;
   commit: string;
@@ -57,15 +45,7 @@ install -d "$HOME/.local/bin" "$HOME/.local/share/assembly" "$HOME/.config/assem
 systemctl --user stop assembly-remote.service >/dev/null 2>&1 || true
 install -m 755 payload/assembly-remote-server "$HOME/.local/bin/.assembly-remote-server.new"
 mv "$HOME/.local/bin/.assembly-remote-server.new" "$HOME/.local/bin/assembly-remote-server"
-adapter_stage="$HOME/.local/bin/.assembly-adapters.new"
-rm -rf "$adapter_stage"
-install -d -m 755 "$adapter_stage"
-install -m 644 payload/adapters/manifest.json "$adapter_stage/manifest.json"
-for adapter in codex-acp codex-acp-runtime claude-agent-acp claude-agent-acp-runtime agy-acp agy_acp_server.par localharness_external; do
-  install -m 755 "payload/adapters/$adapter" "$adapter_stage/$adapter"
-done
 rm -rf "$HOME/.local/bin/assembly-adapters"
-mv "$adapter_stage" "$HOME/.local/bin/assembly-adapters"
 
 token=$(sed -n 's/^ASSEMBLY_SERVER_TOKEN=//p' "$HOME/.config/assembly/server.env" 2>/dev/null || true)
 [ "\${#token}" -ge 32 ] || token=$(openssl rand -hex 32)
@@ -145,23 +125,14 @@ export async function writeRemoteBackendPackage(input: RemoteBackendPackageInput
   const archiveName = `assembly-remote-backend-${input.version}-${REMOTE_BACKEND_TARGET}.tar.gz`;
   const archivePath = path.join(input.outputDirectory, archiveName);
   try {
-    const adapters = path.join(payload, 'adapters');
-    await mkdir(adapters, { recursive: true });
+    await mkdir(payload, { recursive: true });
     await mkdir(input.outputDirectory, { recursive: true });
     const binary = path.join(payload, 'assembly-remote-server');
     await copyFile(input.binaryPath, binary);
-    for (const file of REMOTE_BACKEND_ADAPTER_FILES) {
-      await copyFile(path.join(input.adapterDirectory, file), path.join(adapters, file));
-    }
     const installScript = path.join(staging, 'install.sh');
     await writeFile(installScript, REMOTE_BACKEND_INSTALL_SCRIPT, { mode: 0o755 });
     const files: RemoteBackendManifest['files'] = [
       { path: 'payload/assembly-remote-server', sha256: await sha256(binary), mode: '0755' },
-      ...await Promise.all(REMOTE_BACKEND_ADAPTER_FILES.map(async (file) => ({
-        path: `payload/adapters/${file}`,
-        sha256: await sha256(path.join(adapters, file)),
-        mode: file === 'manifest.json' ? '0644' as const : '0755' as const
-      }))),
       { path: 'install.sh', sha256: await sha256(installScript), mode: '0755' }
     ];
     const manifest: RemoteBackendManifest = {
@@ -203,7 +174,6 @@ async function main(): Promise<void> {
   const { stdout: commitOutput } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: projectRoot });
   const archivePath = await writeRemoteBackendPackage({
     binaryPath: path.join(projectRoot, 'src-tauri/target/release/mac-command-bar-webview-preview'),
-    adapterDirectory: path.join(projectRoot, 'src-tauri/adapters'),
     outputDirectory: path.join(projectRoot, 'remote-backend-release'),
     version,
     commit: commitOutput.trim()

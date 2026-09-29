@@ -40,7 +40,7 @@ struct ActiveAdapterDirectory {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUpdateVersion {
     provider: String,
-    current_version: String,
+    current_version: Option<String>,
     available_version: String,
     update_available: bool,
 }
@@ -87,12 +87,13 @@ pub async fn check_provider_updates(
 pub async fn install_provider_updates(
     app: tauri::AppHandle,
     manager: tauri::State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
+    provider: String,
 ) -> Result<ProviderUpdateStatus, String> {
     let app_data_dir = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("Application data directory is unavailable: {error}"))?;
-    install_at(&app_data_dir, manager.providers()).await
+    install_at(&app_data_dir, manager.providers(), &provider).await
 }
 
 pub(crate) async fn check_at(
@@ -106,19 +107,22 @@ pub(crate) async fn check_at(
 pub(crate) async fn install_at(
     app_data_dir: &Path,
     providers: &ProviderRegistry,
+    provider: &str,
 ) -> Result<ProviderUpdateStatus, String> {
     // Native commands and remote clients share the same installation owner.
-    // Reject overlap instead of queueing an obsolete second bundle activation.
+    // Reject overlap instead of queueing an obsolete second activation.
     let _installation = INSTALL_LOCK.try_lock()
         .map_err(|_| "A provider adapter installation is already running".to_string())?;
-    let (manifest_bytes, manifest) = fetch_signed_manifest().await?;
+    let (_, manifest) = fetch_signed_manifest().await?;
     let running = running_versions(providers)?;
     let before = status_for(app_data_dir, &manifest, &running).await?;
-    if !before.update_available {
+    let selected = before.providers.iter().find(|version| version.provider == provider)
+        .ok_or_else(|| format!("Unknown provider adapter: {provider}"))?;
+    if !selected.update_available {
         return Ok(before);
     }
-    ensure_no_downgrades(&before)?;
-    install_manifest(app_data_dir, &manifest_bytes, &manifest).await?;
+    ensure_no_downgrade(selected)?;
+    install_manifest(app_data_dir, &manifest, provider).await?;
     status_for(app_data_dir, &manifest, &running).await
 }
 
@@ -133,13 +137,12 @@ pub fn restart_for_provider_updates(
     app.restart();
 }
 
-fn ensure_no_downgrades(status: &ProviderUpdateStatus) -> Result<(), String> {
-    for provider in &status.providers {
+fn ensure_no_downgrade(provider: &ProviderUpdateVersion) -> Result<(), String> {
+    if let Some(current) = &provider.current_version {
         if Version::parse(&provider.available_version).map_err(|error| error.to_string())?
-            < Version::parse(&provider.current_version).map_err(|error| error.to_string())?
-        {
+            < Version::parse(current).map_err(|error| error.to_string())? {
             return Err(format!(
-                "Provider update would downgrade {}; the installed adapters were kept",
+                "Provider update would downgrade {}; the installed adapter was kept",
                 provider.provider
             ));
         }
@@ -266,29 +269,35 @@ async fn status_for(
 ) -> Result<ProviderUpdateStatus, String> {
     // Hashing large adapter files must not block an async runtime worker.
     let directory = app_data_dir.to_path_buf();
-    let (current, damaged) = tokio::task::spawn_blocking(move || {
-        let damaged = discover_active(&directory).is_err();
-        (active_versions(&directory).unwrap_or_default(), damaged)
+    let (current, damaged, has_active, verified) = tokio::task::spawn_blocking(move || {
+        let has_active = directory.join("provider-adapters/active.json").is_file();
+        let active = discover_active(&directory);
+        let mut verified = HashSet::new();
+        if let Ok((codex, claude, antigravity)) = &active {
+            if codex.is_some() { verified.insert("codex"); }
+            if claude.is_some() { verified.insert("claude"); }
+            if antigravity.is_some() { verified.insert("antigravity"); }
+        }
+        (active_versions(&directory).unwrap_or_default(), active.is_err(), has_active, verified)
     }).await.map_err(|error| format!("Could not inspect installed provider adapters: {error}"))?;
-    let restart_required = !damaged && current.iter().any(|(provider, version, executable)| {
+    let restart_required = !damaged && current.iter().filter(|(provider, _, _)| verified.contains(provider.as_str())).any(|(provider, version, executable)| {
         running.iter().find(|(name, _, _)| name == provider)
             .map(|(_, active, path)| (active, path)) != Some((version, executable))
     });
     let mut providers = Vec::with_capacity(manifest.adapters.len());
     for adapter in &manifest.adapters {
-        let running_version = running.iter().find(|(provider, _, _)| provider == &adapter.provider)
-            .map(|(_, version, _)| version.as_str())
-            .ok_or_else(|| format!("No running adapter version for {}", adapter.provider))?;
         let current_version = current
             .iter()
             .find(|(provider, _, _)| provider == &adapter.provider)
             .map(|(_, version, _)| version.as_str())
-            .unwrap_or(running_version);
+            .or_else(|| (!has_active).then(|| running.iter().find(|(provider, _, _)| provider == &adapter.provider))
+                .flatten()
+                .map(|(_, version, _)| version.as_str()));
         let available = Version::parse(&adapter.version).map_err(|error| error.to_string())?;
-        let installed = Version::parse(current_version).map_err(|error| error.to_string())?;
+        let installed = current_version.map(Version::parse).transpose().map_err(|error| error.to_string())?;
         // Assembly can correct a launcher without an upstream adapter version bump.
         // Compare the signed payload on the blocking pool, including bundled installs.
-        let changed_payload = if available == installed {
+        let changed_payload = if installed.as_ref() == Some(&available) {
             let executable = current.iter().chain(running.iter())
                 .find(|(provider, _, _)| provider == &adapter.provider)
                 .map(|(_, _, path)| path.clone()).unwrap();
@@ -301,10 +310,12 @@ async fn status_for(
         } else {
             false
         };
-        let update_available = damaged || available > installed || changed_payload;
+        let damaged_provider = has_active && current_version.is_some() && !verified.contains(adapter.provider.as_str());
+        let update_available = current_version.is_none() || damaged || damaged_provider
+            || installed.is_some_and(|installed| available > installed) || changed_payload;
         providers.push(ProviderUpdateVersion {
             provider: adapter.provider.clone(),
-            current_version: current_version.to_string(),
+            current_version: current_version.map(str::to_string),
             available_version: adapter.version.clone(),
             update_available,
         });
@@ -366,8 +377,8 @@ fn prepare_installation(root: &Path) -> Result<std::fs::File, String> {
     owner.try_lock()
         .map_err(|error| format!("Provider installation directory is busy: {error}"))?;
     let active = match std::fs::read(root.join("active.json")) {
-        Ok(bytes) => Some(serde_json::from_slice::<ActiveAdapterDirectory>(&bytes)
-            .map_err(|error| format!("Active provider adapter pointer is invalid: {error}"))?.directory),
+        Ok(bytes) => serde_json::from_slice::<ActiveAdapterDirectory>(&bytes).ok()
+            .map(|pointer| pointer.directory).filter(|name| safe_file_name(name)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(format!("Could not read active provider adapters: {error}")),
     };
@@ -388,11 +399,13 @@ fn prepare_installation(root: &Path) -> Result<std::fs::File, String> {
 
 async fn install_manifest(
     app_data_dir: &Path,
-    manifest_bytes: &[u8],
     manifest: &RemoteManifest,
+    provider: &str,
 ) -> Result<(), String> {
     let root = app_data_dir.join("provider-adapters");
     let _directory_owner = prepare_installation(&root)?;
+    let selected = manifest.adapters.iter().find(|adapter| adapter.provider == provider)
+        .ok_or_else(|| format!("Unknown provider adapter: {provider}"))?;
     // Each verified install owns its directory; never reuse a damaged or
     // interrupted prior installation of the same manifest.
     let directory_name = format!("{}-{}", manifest.target, uuid::Uuid::new_v4());
@@ -402,10 +415,51 @@ async fn install_manifest(
         .map_err(|error| format!("Could not stage provider update: {error}"))?;
     let mut pending = PendingInstallation(Some(temporary.clone()));
 
-    download_adapter_files(&temporary, manifest).await?;
-    std::fs::write(temporary.join("manifest.json"), manifest_bytes)
+    let mut installed = Vec::new();
+    let active = match std::fs::read(root.join("active.json")) {
+        Ok(bytes) => serde_json::from_slice::<ActiveAdapterDirectory>(&bytes).ok()
+            .filter(|pointer| safe_file_name(&pointer.directory)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("Could not read active provider adapters: {error}")),
+    };
+    if let Some(pointer) = active {
+        let source = root.join(pointer.directory);
+        let previous = match std::fs::read(source.join("manifest.json")) {
+            Ok(bytes) => serde_json::from_slice::<packaged::PackagedManifest>(&bytes).ok(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("Could not read installed provider manifest: {error}")),
+        };
+        for adapter in previous.into_iter().flat_map(|manifest| manifest.adapters)
+            .filter(|adapter| adapter.provider != provider) {
+            if adapter.files.is_empty() || !adapter.files.iter().all(|file| safe_file_name(&file.path)
+                && super::file_sha256(&source.join(&file.path))
+                    .is_ok_and(|hash| hash.eq_ignore_ascii_case(&file.sha256))) {
+                continue;
+            }
+            for file in &adapter.files {
+                std::fs::hard_link(source.join(&file.path), temporary.join(&file.path))
+                    .map_err(|error| format!("Could not retain installed {} adapter: {error}", adapter.provider))?;
+            }
+            installed.push(adapter);
+        }
+    }
+    download_adapter_files(&temporary, &manifest.target, selected).await?;
+    installed.push(selected.clone());
+    std::fs::write(temporary.join("manifest.json"), serde_json::to_vec(&packaged::PackagedManifest {
+        schema_version: 1,
+        adapters: installed,
+    }).map_err(|error| format!("Could not encode installed provider manifest: {error}"))?)
         .map_err(|error| format!("Could not stage provider manifest: {error}"))?;
-    packaged::discover_in(&temporary, false)?;
+    let (codex, claude, antigravity) = packaged::discover_in(&temporary, false)?;
+    let selected_verified = match provider {
+        "codex" => codex.is_some(),
+        "claude" => claude.is_some(),
+        "antigravity" => antigravity.is_some(),
+        _ => false,
+    };
+    if !selected_verified {
+        return Err(format!("Downloaded {provider} adapter failed verification"));
+    }
 
     // No await between promotion and pointer activation: cancellation cannot
     // race filesystem work and accidentally remove the newly active bundle.
@@ -432,24 +486,22 @@ async fn install_manifest(
     Ok(())
 }
 
-async fn download_adapter_files(directory: &Path, manifest: &RemoteManifest) -> Result<(), String> {
+async fn download_adapter_files(directory: &Path, target: &str, adapter: &PackagedAdapter) -> Result<(), String> {
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(180))
         .user_agent("Assembly provider updater")
         .build()
         .map_err(|error| format!("Could not create provider download client: {error}"))?;
-    for adapter in &manifest.adapters {
-        for file in &adapter.files {
-            let asset_name = format!("provider-{}-{}", manifest.target, file.path);
-            download_file(
-                &client,
-                &format!("{RELEASE_BASE_URL}/{asset_name}"),
-                &directory.join(&file.path),
-                &file.sha256,
-            )
-            .await?;
-        }
+    for file in &adapter.files {
+        let asset_name = format!("provider-{target}-{}", file.path);
+        download_file(
+            &client,
+            &format!("{RELEASE_BASE_URL}/{asset_name}"),
+            &directory.join(&file.path),
+            &file.sha256,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -508,13 +560,13 @@ async fn download_file(
 }
 
 fn running_versions(registry: &ProviderRegistry) -> Result<Vec<(String, String, PathBuf)>, String> {
-    [
+    Ok([
         ("codex", AgentConversationProvider::Codex),
         ("claude", AgentConversationProvider::Claude),
         ("antigravity", AgentConversationProvider::Antigravity),
-    ].into_iter().map(|(name, provider)| {
-        registry.manifest(provider).map(|manifest| (name.to_string(), manifest.version, manifest.executable))
-    }).collect()
+    ].into_iter().filter_map(|(name, provider)| {
+        registry.manifest(provider).ok().map(|manifest| (name.to_string(), manifest.version, manifest.executable))
+    }).collect())
 }
 
 fn safe_file_name(value: &str) -> bool {
@@ -564,23 +616,18 @@ mod tests {
     }
 
     #[test]
-    fn mixed_bundle_cannot_downgrade_an_installed_adapter() {
-        let mut status = ProviderUpdateStatus {
-            target: release_target().unwrap(),
-            update_available: true,
-            restart_required: false,
-            providers: vec![ProviderUpdateVersion {
+    fn selected_adapter_cannot_downgrade() {
+        let mut status = ProviderUpdateVersion {
                 provider: "claude".into(),
-                current_version: "0.81.2".into(),
+                current_version: Some("0.81.2".into()),
                 available_version: "0.76.0".into(),
                 update_available: false,
-            }],
         };
-        assert!(ensure_no_downgrades(&status).is_err());
-        status.providers[0].available_version = "0.81.2".into();
-        assert!(ensure_no_downgrades(&status).is_ok());
-        status.providers[0].available_version = "0.82.0".into();
-        assert!(ensure_no_downgrades(&status).is_ok());
+        assert!(ensure_no_downgrade(&status).is_err());
+        status.available_version = "0.81.2".into();
+        assert!(ensure_no_downgrade(&status).is_ok());
+        status.available_version = "0.82.0".into();
+        assert!(ensure_no_downgrade(&status).is_ok());
     }
 
     #[test]
@@ -588,6 +635,78 @@ mod tests {
         assert!(safe_file_name("aarch64-apple-darwin-1234"));
         assert!(!safe_file_name("../outside"));
         assert!(!safe_file_name("nested/value"));
+    }
+
+    #[test]
+    fn invalid_active_pointer_does_not_block_staging() {
+        let root = std::env::temp_dir().join(format!("mcb-provider-pointer-repair-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("active.json"), br#"{"directory":"../outside"}"#).unwrap();
+        let owner = prepare_installation(&root).unwrap();
+        assert!(root.join("active.json").exists());
+        drop(owner);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn missing_provider_is_offered_when_another_is_installed() {
+        let directory = std::env::temp_dir().join(format!("mcb-selective-adapters-{}", uuid::Uuid::new_v4()));
+        let installed = directory.join("provider-adapters/installed");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(directory.join("provider-adapters/active.json"), r#"{"directory":"installed"}"#).unwrap();
+        let hash = format!("{:x}", Sha256::digest(b"claude"));
+        let claude = PackagedAdapter {
+            provider: "claude".into(), id: "claude-agent-acp".into(), version: "1.0.0".into(),
+            executable: "claude-agent-acp".into(),
+            files: vec![packaged::PackagedFile { path: "claude-agent-acp".into(), sha256: hash }],
+        };
+        std::fs::write(installed.join("claude-agent-acp"), b"claude").unwrap();
+        std::fs::write(installed.join("manifest.json"), serde_json::to_vec(&packaged::PackagedManifest {
+            schema_version: 1, adapters: vec![claude.clone()],
+        }).unwrap()).unwrap();
+        let feed = RemoteManifest {
+            schema_version: 1, target: release_target().unwrap(),
+            adapters: vec![claude, PackagedAdapter {
+                provider: "codex".into(), id: "codex-acp".into(), version: "1.0.0".into(),
+                executable: "codex-acp".into(),
+                files: vec![packaged::PackagedFile { path: "codex-acp".into(), sha256: "0".repeat(64) }],
+            }],
+        };
+        let status = status_for(&directory, &feed, &[]).await.unwrap();
+        assert!(!status.providers[0].update_available);
+        assert_eq!(status.providers[0].current_version.as_deref(), Some("1.0.0"));
+        assert!(status.providers[1].update_available);
+        assert_eq!(status.providers[1].current_version, None);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn damaged_provider_does_not_hide_healthy_provider() {
+        let directory = std::env::temp_dir().join(format!("mcb-damaged-one-adapter-{}", uuid::Uuid::new_v4()));
+        let installed = directory.join("provider-adapters/installed");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(directory.join("provider-adapters/active.json"), r#"{"directory":"installed"}"#).unwrap();
+        let adapters = [("codex", "codex-acp"), ("claude", "claude-agent-acp")].map(|(provider, id)| {
+            std::fs::write(installed.join(id), provider.as_bytes()).unwrap();
+            PackagedAdapter {
+                provider: provider.into(), id: id.into(), version: "1.0.0".into(), executable: id.into(),
+                files: vec![packaged::PackagedFile { path: id.into(), sha256: format!("{:x}", Sha256::digest(provider.as_bytes())) }],
+            }
+        });
+        std::fs::write(installed.join("manifest.json"), serde_json::to_vec(&packaged::PackagedManifest {
+            schema_version: 1, adapters: adapters.to_vec(),
+        }).unwrap()).unwrap();
+        std::fs::write(installed.join("codex-acp"), b"damaged").unwrap();
+        let registry = ProviderRegistry::bundled_from_environment_at(Some(&directory)).unwrap();
+        assert!(registry.manifest(AgentConversationProvider::Codex).is_err());
+        assert!(registry.manifest(AgentConversationProvider::Claude).is_ok());
+        let feed = RemoteManifest { schema_version: 1, target: release_target().unwrap(), adapters: adapters.to_vec() };
+        let running = vec![("claude".into(), "1.0.0".into(), installed.join("claude-agent-acp"))];
+        let status = status_for(&directory, &feed, &running).await.unwrap();
+        assert!(status.providers[0].update_available);
+        assert!(!status.providers[1].update_available);
+        assert!(!status.restart_required);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]
@@ -632,7 +751,7 @@ mod tests {
         let before = status_for(&directory, &manifest, &[("codex".into(), "1.0.0".into(), PathBuf::from("/bundled/codex-acp"))]).await.unwrap();
         assert!(before.restart_required);
         assert!(!before.update_available);
-        assert_eq!(before.providers[0].current_version, "2.0.0");
+        assert_eq!(before.providers[0].current_version.as_deref(), Some("2.0.0"));
         let after = status_for(&directory, &manifest, &[("codex".into(), "2.0.0".into(), root.join("installed/codex-acp"))]).await.unwrap();
         assert!(!after.restart_required);
         assert!(!after.update_available);
@@ -734,7 +853,7 @@ mod tests {
         let _owner = INSTALL_LOCK.lock().await;
         let directory = std::env::temp_dir().join(format!("mcb-provider-overlap-{}", uuid::Uuid::new_v4()));
         let registry = ProviderRegistry::new([]).unwrap();
-        let result = install_at(&directory, &registry).await;
+        let result = install_at(&directory, &registry, "codex").await;
         assert!(result.unwrap_err().contains("already running"));
         assert!(!directory.exists());
     }
@@ -844,7 +963,7 @@ mod tests {
             adapters: Vec::new(),
         };
 
-        assert!(install_manifest(&directory, b"invalid manifest", &manifest)
+        assert!(install_manifest(&directory, &manifest, "codex")
             .await
             .is_err());
         let provider_root = directory.join("provider-adapters");
