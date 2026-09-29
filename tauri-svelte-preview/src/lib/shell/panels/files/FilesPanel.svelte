@@ -349,6 +349,10 @@
 		try {
 			const grouped = await listRepositoryCheckoutsFromTauri(roots);
 			if (signal.aborted || generation !== checkoutGeneration) return;
+			if (!grouped) {
+				checkouts = [];
+				return;
+			}
 			const unique = new Map<string, RepositoryCheckout>();
 			for (const checkout of Object.values(grouped).flat()) {
 				const path = canonicalPath(checkout.path);

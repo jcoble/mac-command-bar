@@ -52,6 +52,7 @@ export async function startShell(options: ShellStartupOptions): Promise<void> {
 		const initial = combined.find((session) => session.ownedId === rememberedOwnedId) ?? combined[0] ?? null;
 		if (initial) {
 			if (!shellActive(generation, controller.signal)) return;
+			shellPanels.allowSessionLoads();
 			await options.onSelectInitial(initial.ownedId, controller.signal);
 			if (!shellActive(generation, controller.signal)) return;
 		}
