@@ -487,6 +487,7 @@
 	$effect(() => {
 		const query = searchText.trim();
 		explorer.includeExcluded;
+		const generation = ++searchGeneration;
 		cancelActiveSearch();
 		searchMatches = [];
 		searchNextCursor = null;
@@ -496,7 +497,6 @@
 			return;
 		}
 
-		const generation = ++searchGeneration;
 		const signal = filesOwnerSignal;
 		if (signal && !signal.aborted) void loadSearchPage(generation, null, true, signal);
 	});
