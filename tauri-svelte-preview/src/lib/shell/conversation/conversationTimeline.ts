@@ -1070,7 +1070,7 @@ export function turnFileChanges(
     if (item.kind === 'file') {
       paths.add(typeof item.metadata?.path === 'string' ? item.metadata.path : item.itemId);
       diff = typeof item.metadata?.diff === 'string' ? item.metadata.diff : item.text;
-    } else if (item.kind === 'tool' && (item.diff || (item.toolKind === 'file-edit' && item.path))) {
+    } else if (item.kind === 'tool' && item.state === 'completed' && (item.diff || (item.toolKind === 'file-edit' && item.path))) {
       paths.add(item.path ?? item.itemId);
       diff = item.diff ?? '';
     } else continue;

@@ -521,6 +521,16 @@ const noPlanFileChanges = turnFileChanges([
   }
 ]);
 assert.deepEqual(noPlanFileChanges, { files: 1, added: 1, removed: 1 }, 'file changes produce chip data without a plan');
+for (const state of ['pending', 'running', 'failed'] as const) {
+  assert.equal(turnFileChanges([
+    textItem('user', 'denied-user', 'denied-turn', 1),
+    {
+      kind: 'tool', itemId: 'denied-edit', turnId: 'denied-turn', title: 'Edited a file',
+      toolKind: 'file-edit', state, path: 'probe.txt',
+      diff: '@@ -0,0 +1 @@\n+not written', timestampMs: 2
+    }
+  ]), null, `${state} file edits do not count as changed files`);
+}
 
 // ── Repeated plan updates draw one line (duplicate_plan_updates_collapse) ─
 // A plan update arrives without an id of its own, so every one of them lands
