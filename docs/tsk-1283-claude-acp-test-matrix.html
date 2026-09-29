@@ -28,13 +28,13 @@
 <body>
   <h1>Claude ACP test matrix</h1>
   <p class="lede">TSK-1283 · 28 September 2026 · Branch <code>tsk-1283-claude-models</code></p>
-  <p>The pinned Claude adapter now offers the current models to desktop and remote backend packages. Live ACP behavior and focused application checks passed. Published signed updates and installation on connected machines remain to be verified.</p>
+  <p>The pinned Claude adapter offers the current models to desktop and remote backend packages. Live ACP and native desktop checks passed. The shared remote backend and signed adapter feed are being updated in another lane; remote connection testing remains.</p>
 
   <div class="summary">
     <div><strong>0.84.0</strong>pinned Claude ACP</div>
     <div><strong>3</strong>new model IDs accepted</div>
-    <div><strong>2</strong>live prompts completed</div>
-    <div><strong>3</strong>integration checks pending</div>
+    <div><strong>3</strong>native model replies</div>
+    <div><strong>2</strong>remote checks pending</div>
   </div>
 
   <h2>Model and session behavior</h2>
@@ -59,9 +59,11 @@
       <tr><td>Model config persistence</td><td>Keep adapter IDs and names paired across serialization and config updates.</td><td><span class="pass">Passed:</span> <code>cargo test agent_conversation::providers::acp_client::tests</code> (23 tests) and <code>cargo test provider_probe</code> (3 tests).</td></tr>
       <tr><td>Local update display</td><td>Report the available Claude version and recover from update-check failure.</td><td><span class="pass">Passed:</span> <code>scripts/providerUpdateService.test.ts</code> covers the 0.84.0 message and offline error path.</td></tr>
       <tr><td>Usage costs</td><td>Price all three new model IDs without client-side SQL aggregation or charging unknown IDs.</td><td><span class="pass">Passed:</span> <code>scripts/usageCostModel.test.ts</code> and Rust <code>provider_costs_are_aggregated_in_sql</code>.</td></tr>
-      <tr><td>Native desktop picker</td><td>See all three names in the real Tauri app and switch models during a turn.</td><td><span class="pending">Pending:</span> this matrix has protocol-level proof; no native desktop screenshot yet.</td></tr>
-      <tr><td>Signed provider feed</td><td>Publish Claude 0.84.0 for macOS arm64/x64 and Linux x64.</td><td><span class="pending">Pending:</span> published manifests still name Claude 0.83.0. The same feed already names Codex 2.0.0; its signed payload hashes will be compared after publishing.</td></tr>
-      <tr><td>Connected installations</td><td>Install from the signed feed locally and on the remote backend, then verify reported versions.</td><td><span class="pending">Pending:</span> requires the signed feed and access to those app instances.</td></tr>
+      <tr><td>Native desktop picker</td><td>See all three names in the real Tauri app and switch models in one conversation.</td><td><span class="pass">Passed:</span> Fable 5.1, Sonnet 5.5 and Opus 5.5 each answered its UI prompt. Evidence: <code>~/Workbox/screenshots/tsk-1283-local-claude-models-after.png</code> and the three <code>tsk-1283-local-*-response-after.png</code> screenshots.</td></tr>
+      <tr><td>Native approval and files</td><td>Decline a file write, approve its retry, then open the file in the editor.</td><td><span class="pass">Passed:</span> decline left the scratch folder empty; approval created <code>probe.txt</code> with the requested text, shown in Files and the editor. <span class="bug">Found:</span> the declined edit incorrectly showed a changed-file count; <a href="https://github.com/jcoble/mac-command-bar/pull/106">draft PR #106</a> fixes that separately.</td></tr>
+      <tr><td>Session resume</td><td>Restart the app and continue the same provider-native conversation with prior context.</td><td><span class="pass">Passed:</span> Opus recalled its first two replies, <code>ready</code> and <code>sonnet</code>, after the Tauri app restarted. Evidence: <code>~/Workbox/screenshots/tsk-1283-local-resume-context-after.png</code>.</td></tr>
+      <tr><td>Signed provider feed</td><td>Offer Claude 0.84.0 for macOS arm64/x64 and Linux x64.</td><td><span class="pending">Pending:</span> the published manifests still named Claude 0.83.0 at the last check. Another lane is reworking adapter delivery; no release was triggered here.</td></tr>
+      <tr><td>Shared remote backend</td><td>Connect through the native Connections UI and start a fresh remote Claude conversation against the backend installed by the other lane.</td><td><span class="pending">Pending:</span> wait for that lane's backend and adapter update; this lane will connect and test without installing or updating anything remotely.</td></tr>
     </tbody>
   </table>
 
