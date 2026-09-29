@@ -120,10 +120,10 @@
     sourceRoot: '',
     defaultCwd: ''
   });
-  let pickerUpdates = $state<ProviderUpdateState>({ phase: 'idle', generation: 0, message: '', status: null });
+  let pickerUpdates = $state<ProviderUpdateState>({ phase: 'idle', generation: 0, installingProvider: null, message: '', status: null });
 
   function checkSelectedMachine(): void {
-    pickerUpdates = { phase: 'idle', generation: 0, message: '', status: null };
+    pickerUpdates = { phase: 'idle', generation: 0, installingProvider: null, message: '', status: null };
     void checkForProviderUpdates(stopSignal, pickerUpdates, draft.executionEnvironment === 'remote' ? draft.remoteProfileId ?? undefined : undefined);
   }
 
