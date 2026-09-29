@@ -532,8 +532,8 @@
         <p class="lede">How Svelte, Tauri, Rust, ACP adapters, native coding agents, SQLite, provider transcripts, terminals, and the future compaction boundary fit together.</p>
       </div>
       <aside class="hero-note" aria-label="Source authority">
-        <strong>This guide describes the newer worktree.</strong>
-        <p>Written against <code>tsk-808-assembly-wave</code> at <code>ce644e3</code>; kept current through the 2026-08-28 frontend-retention pass. It does not describe the older code on <code>main</code>. This page is the app’s architecture source of truth: a commit that changes what it describes updates it in the same commit and adds a row to the <a href="#changelog">change log</a>.</p>
+        <strong>This guide describes current main.</strong>
+        <p>Updated against <code>main</code> through the 2026-09-29 adapter release pass. This page is the app’s architecture source of truth: a commit that changes what it describes updates it in the same commit and adds a row to the <a href="#changelog">change log</a>.</p>
       </aside>
     </div>
     <div class="snapshot" aria-label="Architecture snapshot">
@@ -665,6 +665,7 @@
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
             <tr><td>2026-09-29 · “Restore verified Workbox editor and startup fixes”</td><td>Restored session selection enables panel loads before restoring its workspace. Native file access events no longer trigger another source read. Repeated previews of unchanged disk content retain dirty editor drafts without inventing conflicts; actual disk edits remain conflicts.</td><td>13</td></tr>
+            <tr><td>2026-09-29 · TSK-1286 · “Explain current adapter releases and installs”</td><td>Correct the provider cards that still described adapter payloads as bundled in the desktop app. Document the daily upstream resolver, signed catalog, selected-provider download, local and remote ownership, measured progress, explicit restart, CLI boundary, and absence of a global update alert.</td><td>04</td></tr>
             <tr><td>2026-09-29 · TSK-1286 · “Show selected adapter download progress”</td><td>The selected adapter download emits measured bytes and the response size for each file. Local installs send Tauri progress events; remote protocol 6 sends request-scoped progress frames over the existing socket and the desktop forwards them to the same Updates control. The control shows a spinner and byte counts until verification finishes; install and restart stay explicit.</td><td>04, 10</td></tr>
             <tr><td>2026-09-28 · TSK-1286 · “Install only selected provider adapters”</td><td>Desktop and remote backend releases no longer package adapter payloads. The signed provider feed remains separate; each machine installs one chosen provider and retains its other verified installed providers. Startup leaves a damaged provider unavailable while keeping the other verified providers registered and offering repair for the damaged one. An unsafe or malformed active pointer, or malformed manifest JSON, can be replaced by a fresh verified selection. Settings shows per-provider versions and actions, and the new-session picker offers an install for a missing provider. The remote command names the provider under protocol 5; both local and remote restarts remain explicit.</td><td>01, 04, 05, 10, 20</td></tr>
             <tr><td>2026-09-28 · TSK-1242 · “Move basic Git actions into git_workspace”</td><td>Stage, unstage, commit, fetch, pull, push, and publish implementations moved unchanged from <code>main.rs</code> into the existing <code>git_workspace.rs</code>. Source Control keeps its thin Tauri command adapter and the same serialized responses.</td><td>13</td></tr>
@@ -1025,23 +1026,23 @@
 
         <div class="provider-grid">
           <article class="provider-card">
-            <span class="badge current">Bundled release adapter</span>
+            <span class="badge current">Signed provider adapter</span>
             <h3>Codex</h3>
-            <p><strong>Manifest ID:</strong> <code>codex-acp</code> — the release build compiles the pinned official npm adapter into a standalone executable, records its SHA-256, and includes both executable and manifest in the application resources.</p>
+            <p><strong>Manifest ID:</strong> <code>codex-acp</code> — the daily provider release compiles the latest published official npm adapter into a standalone runtime, pairs it with a launcher, and records hashes in the signed platform feed. A clean desktop release downloads it only when Codex is selected for installation.</p>
             <p><strong>Development:</strong> <code>dev-app.sh</code> uses the prepared release payload and matching hash. A verified installed provider update takes priority over this bootstrap payload, including after relaunch.</p>
             <p>The current adapter reports a legacy composite <code>models</code> projection and also publishes the controls it actually accepts as <code>configOptions</code>: base model ids under <code>model</code> and thinking depth under <code>reasoning_effort</code>. Assembly gives those mutable options precedence, maps the effort id into its reasoning field, and changes either value through <code>session/set_config_option</code>; it does not put a composite model id into the base-model control.</p>
             <span class="source"><code>scripts/prepareReleaseAdapters.ts</code> · <code>scripts/dev-app.sh</code> · <code>providers/packaged.rs</code></span>
           </article>
           <article class="provider-card">
-            <span class="badge current">Bundled release adapter</span>
+            <span class="badge current">Signed provider adapter</span>
             <h3>Claude</h3>
-            <p><strong>Manifest ID:</strong> <code>claude-agent-acp</code> — the release build compiles the pinned official npm adapter and its Claude Agent SDK into a standalone executable, records its SHA-256, and bundles it beside the other adapters. <code>CLAUDE_CODE_EXECUTABLE</code> in its environment is honoured, and an inherited <code>MAX_THINKING_TOKENS</code> is scrubbed so the adapter’s own effort option is the only way effort is set.</p>
+            <p><strong>Manifest ID:</strong> <code>claude-agent-acp</code> — the daily provider release compiles the latest published official npm adapter and its Claude Agent SDK into a standalone runtime, pairs it with a launcher, and records hashes in the signed platform feed. A clean desktop release downloads it only when Claude is selected for installation. <code>CLAUDE_CODE_EXECUTABLE</code> in its environment is honoured, and an inherited <code>MAX_THINKING_TOKENS</code> is scrubbed so the adapter’s own effort option is the only way effort is set.</p>
             <p><strong>Development:</strong> the same prepared adapter payload is used, with inherited nested-Claude markers cleared. Installed updates take priority over bootstrap payloads.</p>
             <p>Its implementation is external to this repository. Assembly treats it as an ACP agent and learns its session, image, command, and interaction capabilities during <code>initialize</code>. <code>session/new</code> answers with <code>modes</code> and <code>configOptions</code> (<code>mode</code>, <code>model</code>, <code>effort</code>, <code>agent</code>) rather than a <code>models</code> list; the client remembers the offered option ids and changes model or effort with <code>session/set_config_option</code>, whose reply carries the whole option set back. The adapter has no <code>session/set_model</code>. Model display names from ACP configOptions remain paired with their wire IDs in the conversation config and menus; aliases such as opus display the provider’s current Opus 5.5 name without changing the value sent to the adapter. A new session takes whatever the adapter reports; the model and effort chosen for the conversation are then asked of it, and the reply names what the session is actually on — a request the adapter resolves to something else is shown resolved, not as typed. Effort is no longer fixed when the process starts, so it can change at any point in a conversation; the “Effort is set when the session starts” refusal is reserved for an adapter that reports no effort option at all.</p>
             <span class="source"><code>scripts/prepareReleaseAdapters.ts</code> · <code>scripts/dev-app.sh</code> · <code>capabilities.rs:11</code> · <code>providers/packaged.rs</code></span>
           </article>
           <article class="provider-card">
-            <span class="badge current">Bundled release adapter</span>
+            <span class="badge current">Signed provider adapter</span>
             <h3>Antigravity / Agy</h3>
             <p><strong>Manifest ID:</strong> <code>agy-acp</code> — Google’s official Antigravity ACP server, currently 1.2.1. The stable Assembly provider id is retained; the archived community implementation is removed.</p>
             <p>The packaging script resolves <code>antigravity-acp</code> from the ACP registry and downloads only Google-hosted platform assets. It packages <code>agy_acp_server.par</code> and <code>localharness_external</code>, with hashes for both in the signed provider manifest. The launcher does not require the agy CLI or bypass permissions. Personal OAuth is handled by the official server. On Send, only its ACP authentication-required code (-32000) starts authentication. <code>providers/authentication.rs</code> owns one temporary, unpooled attempt, validates the advertised <code>oauth-personal</code> method, and calls <code>authenticate</code> with a five-minute deadline outside the session lifecycle lock. Stop and session close cancel by Assembly session id and generation; the client detaches on success, error, cancellation or timeout. A pending attempt blocks provider restart. Success retries activation once before dispatching the original prompt. Assembly does not copy or store OAuth credentials. Provider payloads stream to disk under a one-GiB per-file limit, including the official Linux server; this does not buffer the whole file in memory.</p>
@@ -1050,6 +1051,15 @@
             <span class="source"><code>scripts/prepareReleaseAdapters.ts</code> · <code>scripts/dev-app.sh</code> · <code>providers/acp_client.rs</code> · <code>providers/packaged.rs</code> · <code>conversation/conversationService.ts</code></span>
           </article>
         </div>
+
+        <h3>How a new adapter version reaches local and remote sessions</h3>
+        <ol class="sequence">
+          <li><strong>GitHub Actions publishes a signed provider feed each day.</strong><p>The workflow runs at 08:23 UTC, updates the Claude and Codex ACP npm packages to their newest published versions, and resolves Antigravity through the official ACP registry. It builds platform assets for Apple Silicon Mac, Intel Mac, and Linux x86-64. The signed manifest lists all three providers, but an installation downloads only the chosen provider’s files. A source package pin is not the feed’s version ceiling.</p></li>
+          <li><strong>Assembly checks and offers, then waits for a choice.</strong><p>The local Settings host checks once when mounted. A ready remote connection checks its own provider status in Connections; the new-session picker checks the selected machine and offers Install for a missing provider. Settings shows installed and available versions with separate Install or Update buttons. There is no global update flyout, badge, banner, idle poll, or silent adapter installation.</p></li>
+          <li><strong>The machine running the session owns the files.</strong><p>Local Rust downloads the selected Mac assets. For remote work, the desktop sends a named provider command through the existing WebSocket and the backend downloads the Linux assets directly to the remote machine. Remote protocol 6 carries request-scoped byte progress back to the same UI control. Both paths verify the signed manifest and file hashes, stage only the selected provider, retain other verified installed providers, then atomically switch the active pointer. A failed or interrupted transfer keeps the prior active selection. Restart Assembly or the remote server explicitly to load the new adapter; active provider work blocks a remote install or either restart.</p></li>
+        </ol>
+        <p>Claude and Codex launchers need their respective <code>claude</code> and <code>codex</code> CLIs on the machine that runs the session. Adapter updates do not install, version-check, or update those CLIs. The official Antigravity server files are part of its adapter payload. Assembly app updates and remote backend updates are separate again.</p>
+        <span class="source"><code>.github/workflows/provider-updates.yml</code> · <code>scripts/prepareReleaseAdapters.ts</code> · <code>providers/updates.rs</code> · <code>remote.rs</code> · <code>providerUpdateService.svelte.ts</code></span>
 
         <h3>The Rust adapter interface</h3>
         <pre><code>trait AgentRuntimeAdapter {
@@ -1936,7 +1946,7 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
   </div>
 
   <footer>
-    <p>Implementation-focused architecture guide for the <code>tsk-808-assembly-wave</code> worktree, kept current commit by commit (see the change log). Labels distinguish code that runs today from conditional behavior, external adapters, known limitations, and proposed compaction work.</p>
+    <p>Implementation-focused architecture guide for <code>main</code>, kept current commit by commit (see the change log). Labels distinguish code that runs today from conditional behavior, external adapters, known limitations, and proposed compaction work.</p>
   </footer>
 
   <script>
