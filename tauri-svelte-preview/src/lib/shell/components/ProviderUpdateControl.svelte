@@ -1,11 +1,13 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import {
     checkForProviderUpdates,
     installProviderUpdates,
     providerUpdateState,
+    restartProviders,
     type ProviderUpdateState
   } from '$lib/shell/providerUpdateService.svelte';
 
@@ -20,6 +22,7 @@
 <div class="flex flex-col items-end gap-1.5">
   {#if profileId}<span class="text-[12px]">Provider adapters · {machineName}</span>{/if}
   <div class="flex items-center gap-2">
+    {#if updateState.phase === 'installing'}<LoaderCircle aria-label="Downloading adapter" class="size-4 animate-spin" />{/if}
     <Button
       variant="secondary"
       size="sm"
@@ -28,12 +31,24 @@
     >
       {updateState.phase === 'checking' ? 'Checking…' : 'Check now'}
     </Button>
-    {#if updateState.phase === 'available' || updateState.phase === 'restart'}
-      <Button variant="secondary" size="sm" onclick={() => void installProviderUpdates(owner.signal, updateState, profileId)}>
-        {updateState.phase === 'restart' ? (profileId ? 'Restart remote server' : 'Restart Assembly') : (profileId ? 'Install adapters' : 'Install and restart')}
+    {#if updateState.status?.restartRequired}
+      <Button variant="secondary" size="sm" disabled={updateState.phase === 'installing'} onclick={() => void restartProviders(updateState, profileId)}>
+        {profileId ? 'Restart remote server' : 'Restart Assembly'}
       </Button>
     {/if}
   </div>
+  {#if updateState.status}
+    {#each updateState.status.providers as provider (provider.provider)}
+      <div class="flex items-center gap-2 text-[12px]">
+        <span>{provider.provider === 'antigravity' ? 'Antigravity' : provider.provider}: {provider.currentVersion ?? 'Not installed'} → {provider.availableVersion}</span>
+        {#if provider.updateAvailable}
+          <Button variant="secondary" size="sm" disabled={updateState.phase === 'installing'} onclick={() => void installProviderUpdates(provider.provider, owner.signal, updateState, profileId)}>
+            {updateState.phase === 'installing' ? 'Installing…' : provider.currentVersion ? 'Update' : 'Install'}
+          </Button>
+        {/if}
+      </div>
+    {/each}
+  {/if}
   {#if updateState.message}
     <p class="max-w-[360px] text-right text-[12px] leading-[1.4] text-[var(--color-text-2)]">
       {updateState.message}

@@ -23,6 +23,7 @@
   import Server from '@lucide/svelte/icons/server';
   import Plus from '@lucide/svelte/icons/plus';
   import Settings2 from '@lucide/svelte/icons/settings-2';
+  import LoaderCircle from '@lucide/svelte/icons/loader-circle';
   import X from '@lucide/svelte/icons/x';
 
   import { Button } from '$lib/components/ui/button/index.js';
@@ -31,6 +32,7 @@
   import PendingFirstMessage from '$lib/shell/components/conversation/PendingFirstMessage.svelte';
   import RemoteDirectoryPicker from './RemoteDirectoryPicker.svelte';
   import RemoteConnections from '$lib/shell/components/RemoteConnections.svelte';
+  import { checkForProviderUpdates, installProviderUpdates, restartProviders, type ProviderUpdateState } from '$lib/shell/providerUpdateService.svelte';
   import ConversationComposer from '$lib/shell/components/conversation/ConversationComposer.svelte';
   import type {
     AgentConversationConfigField,
@@ -118,6 +120,12 @@
     sourceRoot: '',
     defaultCwd: ''
   });
+  let pickerUpdates = $state<ProviderUpdateState>({ phase: 'idle', generation: 0, message: '', status: null });
+
+  function checkSelectedMachine(): void {
+    pickerUpdates = { phase: 'idle', generation: 0, message: '', status: null };
+    void checkForProviderUpdates(stopSignal, pickerUpdates, draft.executionEnvironment === 'remote' ? draft.remoteProfileId ?? undefined : undefined);
+  }
 
   const roots = $derived(knownRoots());
   const selectedCatalogKey = $derived([
@@ -297,6 +305,7 @@
         branch: '',
         branchesAvailable: false
       });
+      checkSelectedMachine();
       return;
     }
     const projectPath = preferredRoot(presetProjectPath);
@@ -308,6 +317,7 @@
       branch: '',
       branchesAvailable: false
     });
+    checkSelectedMachine();
     if (projectPath) void loadRefs(projectPath);
   }
 
@@ -336,6 +346,7 @@
   function selectProvider(provider: ThreadStartProvider): void {
     if (provider === draft.provider) return;
     updateDraft({ provider });
+    if (!pickerUpdates.status && pickerUpdates.phase !== 'checking') checkSelectedMachine();
   }
 
   function chooseRef(ref: ProjectGitRef): void {
@@ -424,6 +435,7 @@
       draft = { ...draft, executionEnvironment: 'remote', remoteProfileId: remote.profileId };
     } else if (projectPath) void loadRefs(projectPath);
     hydrated = true;
+    checkSelectedMachine();
     composer?.focus();
   }
 
@@ -497,7 +509,7 @@
         </Button>
       {/snippet}
     </DropdownMenu.Trigger>
-    <DropdownMenu.Content side="top" align="start" sideOffset={8} avoidCollisions collisionPadding={12}>
+    <DropdownMenu.Content side="top" align="start" sideOffset={8} avoidCollisions collisionPadding={12} class="min-w-[230px]">
       <DropdownMenu.Label>Which agent runs this</DropdownMenu.Label>
       {#each PROVIDERS as provider (provider)}
         <DropdownMenu.Item
@@ -508,6 +520,9 @@
             {#if draft.provider === provider}<Check aria-hidden="true" class="size-3.5" />{/if}
           </span>
           {provider === 'antigravity' ? 'Antigravity' : provider}
+          {#if pickerUpdates.status?.providers.find((item) => item.provider === provider)?.currentVersion === null}
+            <span class="text-[var(--color-text-2)]"> · Install available</span>
+          {/if}
         </DropdownMenu.Item>
       {/each}
     </DropdownMenu.Content>
@@ -670,6 +685,26 @@
     {/if}
   </div>
 
+  {#if pickerUpdates.status?.providers.find((item) => item.provider === draft.provider)?.currentVersion === null}
+    <div class="draft-adapter-action" data-testid="draft-provider-install-offer">
+      {#if pickerUpdates.phase === 'installing'}<LoaderCircle aria-label="Downloading adapter" class="size-4 animate-spin" />{/if}
+      <span>{displayProvider(draft.provider)} is not installed on {draft.executionEnvironment === 'remote' ? 'the remote machine' : 'this machine'}.</span>
+      <Button variant="secondary" size="sm" disabled={pickerUpdates.phase === 'installing'} onclick={() => void installProviderUpdates(draft.provider, stopSignal, pickerUpdates, draft.executionEnvironment === 'remote' ? draft.remoteProfileId ?? undefined : undefined)}>
+        {pickerUpdates.phase === 'installing' ? 'Installing…' : 'Install'}
+      </Button>
+    </div>
+  {/if}
+  {#if pickerUpdates.phase === 'error'}
+    <p class="draft-adapter-message">{pickerUpdates.message}</p>
+  {/if}
+  {#if pickerUpdates.status?.restartRequired}
+    <div class="draft-adapter-action">
+      <span>{pickerUpdates.message}</span>
+      <Button variant="secondary" size="sm" onclick={() => void restartProviders(pickerUpdates, draft.executionEnvironment === 'remote' ? draft.remoteProfileId ?? undefined : undefined)}>
+        Restart {draft.executionEnvironment === 'remote' ? 'remote server' : 'Assembly'}
+      </Button>
+    </div>
+  {/if}
   <ConversationComposer
     bind:this={composer}
     provider={draft.provider}
@@ -703,6 +738,9 @@
     color: var(--color-text);
     font: 13px ui-sans-serif, system-ui;
   }
+
+  .draft-adapter-action { position: absolute; z-index: 3; bottom: 240px; left: 46px; right: 46px; display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface-raised); font-size: 12px; }
+  .draft-adapter-message { position: absolute; z-index: 3; bottom: 290px; left: 46px; right: 46px; color: var(--color-text-2); font-size: 12px; }
 
   .draft-topline {
     display: flex;

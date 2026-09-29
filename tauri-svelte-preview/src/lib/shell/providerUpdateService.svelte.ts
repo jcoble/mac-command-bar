@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 export type ProviderUpdateVersion = {
   provider: string;
-  currentVersion: string;
+  currentVersion: string | null;
   availableVersion: string;
   updateAvailable: boolean;
 };
@@ -54,36 +54,28 @@ export async function checkForProviderUpdates(stopSignal: AbortSignal, state: Pr
   }
 }
 
-export async function installProviderUpdates(stopSignal: AbortSignal, state: ProviderUpdateState = providerUpdateState, profileId?: string): Promise<void> {
+export async function installProviderUpdates(provider: string, stopSignal: AbortSignal, state: ProviderUpdateState = providerUpdateState, profileId?: string): Promise<void> {
   if (stopSignal.aborted) return;
-  if (state.phase === 'restart') {
-    await restartProviders(state, profileId);
-    return;
-  }
-  if (state.phase !== 'available') return;
+  if (state.phase === 'installing' || !state.status?.providers.some((item) => item.provider === provider && item.updateAvailable)) return;
   ++state.generation;
   state.phase = 'installing';
-  state.message = 'Downloading and verifying provider adapters…';
+  state.message = `Downloading and verifying ${providerLabel(provider)}…`;
   try {
-    const status = await invoke<ProviderUpdateStatus>(profileId ? 'install_remote_provider_updates' : 'install_provider_updates', profileId ? { profileId } : undefined);
+    const status = await invoke<ProviderUpdateStatus>(profileId ? 'install_remote_provider_updates' : 'install_provider_updates', { provider, ...(profileId ? { profileId } : {}) });
     // Installation is owned by the app, not the Settings component. Closing
     // Settings must not lose an already installed update or restart the app.
     state.status = status;
-    if (!status.restartRequired) {
-      state.phase = 'current';
-      state.message = 'Provider adapters are up to date.';
-      return;
-    }
-    state.phase = 'restart';
-    state.message = `Provider adapters installed. Restart ${profileId ? 'the remote server' : 'Assembly'} to use them.`;
-    if (!stopSignal.aborted && !profileId) await restartProviders(state, profileId);
+    state.phase = status.restartRequired ? 'restart' : status.updateAvailable ? 'available' : 'current';
+    state.message = status.restartRequired
+      ? `${providerLabel(provider)} installed. Restart ${profileId ? 'the remote server' : 'Assembly'} to use it.`
+      : 'Provider adapter is up to date.';
   } catch (error) {
     state.phase = 'error';
     state.message = String(error);
   }
 }
 
-async function restartProviders(state: ProviderUpdateState, profileId?: string): Promise<void> {
+export async function restartProviders(state: ProviderUpdateState, profileId?: string): Promise<void> {
   state.phase = 'installing';
   state.message = `Restarting ${profileId ? 'the remote server' : 'Assembly'}…`;
   try {

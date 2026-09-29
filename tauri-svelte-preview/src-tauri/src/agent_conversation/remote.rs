@@ -39,7 +39,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 4;
+pub(super) const PROTOCOL_VERSION: u16 = 5;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -69,7 +69,7 @@ enum RemoteCommand {
     ProbeProviderConfig { provider: AgentConversationProvider, cwd: String },
     ListSessions,
     CheckProviderUpdates,
-    InstallProviderUpdates,
+    InstallProviderUpdates { provider: String },
     RestartForProviderUpdates,
     Ensure(EnsureAgentConversationRequest),
     Snapshot {
@@ -1046,7 +1046,7 @@ impl RemoteConnectionManager {
         // seven payloads, each bounded to 180 seconds, then verifies them on disk.
         let timeout_seconds = match &command {
             RemoteCommand::CheckProviderUpdates => 75,
-            RemoteCommand::InstallProviderUpdates => 25 * 60,
+            RemoteCommand::InstallProviderUpdates { .. } => 25 * 60,
             _ => 15,
         };
         let (reply, answer) = oneshot::channel();
@@ -2483,14 +2483,14 @@ async fn execute_remote_command(
             .probe_provider_config(provider, &cwd)
             .await
             .map(RemoteResponse::Config),
-        RemoteCommand::CheckProviderUpdates | RemoteCommand::InstallProviderUpdates => {
+        command @ (RemoteCommand::CheckProviderUpdates | RemoteCommand::InstallProviderUpdates { .. }) => {
             let data_dir = std::env::var_os("ASSEMBLY_SERVER_DATA_DIR").map(PathBuf::from)
                 .ok_or_else(|| "Remote server data directory is unavailable".to_string())?;
-            let status = if matches!(command, RemoteCommand::InstallProviderUpdates) {
+            let status = if let RemoteCommand::InstallProviderUpdates { provider } = command {
                 if manager.has_pending_provider_work() {
                     return Err("Finish or stop remote conversations before updating their adapters".into());
                 }
-                super::providers::updates::install_at(&data_dir, manager.providers()).await?
+                super::providers::updates::install_at(&data_dir, manager.providers(), &provider).await?
             } else {
                 super::providers::updates::check_at(&data_dir, manager.providers()).await?
             };
@@ -3460,8 +3460,9 @@ pub async fn check_remote_provider_updates(
 pub async fn install_remote_provider_updates(
     remote: tauri::State<'_, RemoteConnectionManager>,
     profile_id: String,
+    provider: String,
 ) -> Result<super::providers::updates::ProviderUpdateStatus, String> {
-    match remote.request_for_profile(&profile_id, RemoteCommand::InstallProviderUpdates).await? {
+    match remote.request_for_profile(&profile_id, RemoteCommand::InstallProviderUpdates { provider }).await? {
         RemoteResponse::ProviderUpdates(status) => Ok(status),
         _ => Err("The remote backend does not support provider updates; update its backend first".into()),
     }

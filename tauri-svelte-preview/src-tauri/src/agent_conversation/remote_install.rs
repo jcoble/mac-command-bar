@@ -20,11 +20,7 @@ const REMOTE_DOWNLOAD: &str = r#"
 import hashlib, json, os, sys, tarfile, time, urllib.request
 url, archive_path, total_text, trusted_hash, expected_version = sys.argv[1:]
 total = int(total_text)
-expected_files = {'manifest.json', 'SHA256SUMS', 'install.sh', 'payload/assembly-remote-server',
-    'payload/adapters/manifest.json', 'payload/adapters/codex-acp',
-    'payload/adapters/codex-acp-runtime', 'payload/adapters/claude-agent-acp',
-    'payload/adapters/claude-agent-acp-runtime', 'payload/adapters/agy-acp',
-    'payload/adapters/agy_acp_server.par', 'payload/adapters/localharness_external'}
+expected_files = {'manifest.json', 'SHA256SUMS', 'install.sh', 'payload/assembly-remote-server'}
 request = urllib.request.Request(url, headers={'User-Agent': 'Assembly-backend-installer'})
 with urllib.request.urlopen(request, timeout=30) as response:
     if not response.geturl().startswith('https://'):
