@@ -9,16 +9,17 @@ const providerCapabilitiesSource = await readFile(
   new URL('../src-tauri/src/agent_conversation/capabilities.rs', import.meta.url),
   'utf8'
 );
-const providerUpdateServiceSource = await readFile(
-  new URL('../src/lib/shell/providerUpdateService.svelte.ts', import.meta.url),
-  'utf8'
-);
+const providerUpdateServiceSource = await readFile(new URL('../src/lib/shell/providerUpdateService.svelte.ts', import.meta.url), 'utf8');
 const cargoManifest = await readFile(new URL('../src-tauri/Cargo.toml', import.meta.url), 'utf8');
 const desktopCapabilities = JSON.parse(
   await readFile(new URL('../src-tauri/capabilities/default.json', import.meta.url), 'utf8')
 );
 const releaseWorkflow = await readFile(
   new URL('../../.github/workflows/release.yml', import.meta.url),
+  'utf8'
+);
+const providerWorkflow = await readFile(
+  new URL('../../.github/workflows/provider-updates.yml', import.meta.url),
   'utf8'
 );
 
@@ -49,6 +50,9 @@ assert.ok(desktopCapabilities.permissions.includes('updater:default'));
 assert.ok(desktopCapabilities.permissions.includes('process:allow-restart'));
 assert.match(releaseWorkflow, /TAURI_SIGNING_PRIVATE_KEY:/);
 assert.match(releaseWorkflow, /releaseDraft: false/);
+assert.match(providerWorkflow, /prepare:provider-release-assets/);
+assert.match(providerWorkflow, /tauri signer sign/);
+assert.match(providerWorkflow, /gh release upload/);
 assert.match(providerCapabilitiesSource, /CODEX_ACP_VERSION: &str = "\d+\.\d+\.\d+"/);
 assert.match(providerCapabilitiesSource, /CLAUDE_AGENT_ACP_VERSION: &str = "\d+\.\d+\.\d+"/);
 assert.match(providerUpdateServiceSource, /status\.restartRequired \? 'restart'/,

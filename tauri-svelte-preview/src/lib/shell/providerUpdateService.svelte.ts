@@ -99,6 +99,7 @@ function formatDownloadSize(bytes: number): string {
 }
 
 export async function restartProviders(state: ProviderUpdateState, profileId?: string): Promise<void> {
+  if (state.phase === 'installing') return;
   state.phase = 'installing';
   state.message = `Restarting ${profileId ? 'the remote server' : 'Assembly'}…`;
   try {

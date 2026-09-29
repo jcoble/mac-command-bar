@@ -3,11 +3,11 @@ import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
 
 // Exercise the store and async ownership contract without mounting UI.
 globalThis.$state = <T>(value: T): T => value;
-globalThis.window = {} as Window & typeof globalThis;
-const { checkForProviderUpdates, installProviderUpdates, providerUpdateState } = await import('../src/lib/shell/providerUpdateService.svelte.ts');
+globalThis.window = { crypto: globalThis.crypto, __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener() {} } } as unknown as Window & typeof globalThis;
+const { checkForProviderUpdates, installProviderUpdates, restartProviders, providerUpdateState } = await import('../src/lib/shell/providerUpdateService.svelte.ts');
 const status = {
   target: 'aarch64-apple-darwin', updateAvailable: true, restartRequired: false,
-  providers: [{ provider: 'claude', currentVersion: '0.76.0', availableVersion: '0.81.2', updateAvailable: true }]
+  providers: [{ provider: 'claude', currentVersion: '0.81.2', availableVersion: '0.84.0', updateAvailable: true }]
 };
 let calls = 0;
 let complete: (value: typeof status) => void = () => { throw new Error('No pending request'); };
@@ -28,7 +28,7 @@ const next = checkForProviderUpdates(new AbortController().signal);
 complete(status);
 await next;
 assert.equal(providerUpdateState.phase, 'available');
-assert.equal(providerUpdateState.message, 'Claude 0.81.2');
+assert.equal(providerUpdateState.message, 'Claude 0.84.0');
 mockIPC(() => { throw new Error('offline'); });
 await checkForProviderUpdates(new AbortController().signal);
 assert.equal(providerUpdateState.phase, 'error');
@@ -39,8 +39,11 @@ const installOwner = new AbortController();
 let finishInstall: (value: typeof status) => void = () => { throw new Error('No install'); };
 let installs = 0;
 let restarts = 0;
-mockIPC((command) => {
+mockIPC((command, payload) => {
+  if (command === 'plugin:event|listen') return 1;
+  if (command === 'plugin:event|unlisten') return null;
   if (command === 'install_provider_updates') {
+    assert.equal(payload?.provider, 'claude');
     installs += 1;
     return new Promise<typeof status>(resolve => { finishInstall = resolve; });
   }
@@ -50,15 +53,16 @@ mockIPC((command) => {
   }
   throw new Error(`Unexpected command ${command}`);
 });
-const installing = installProviderUpdates(installOwner.signal);
-await installProviderUpdates(installOwner.signal);
-assert.equal(installs, 1, 'duplicate install is ignored');
+const installing = installProviderUpdates('claude', installOwner.signal);
+await installProviderUpdates('claude', installOwner.signal);
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(installs, 1, `duplicate install is ignored: ${providerUpdateState.message}`);
 installOwner.abort();
 finishInstall({ ...status, updateAvailable: false, restartRequired: true });
 await installing;
 assert.equal(providerUpdateState.phase, 'restart');
 assert.equal(restarts, 0, 'closing Settings never triggers an unexpected restart');
-await installProviderUpdates(new AbortController().signal);
+await restartProviders(providerUpdateState);
 assert.equal(installs, 1, 'restart does not redownload the bundle');
 assert.equal(restarts, 1);
 assert.equal(providerUpdateState.phase, 'restart', 'busy restart keeps the retry action');
@@ -70,6 +74,8 @@ assert.equal(providerUpdateState.phase, 'restart', 'checking keeps a pending res
 const remote: typeof providerUpdateState = { phase: 'idle', generation: 0, message: '', status: null };
 const remoteCalls: { command: string; profileId: unknown }[] = [];
 mockIPC((command, payload) => {
+  if (command === 'plugin:event|listen') return 2;
+  if (command === 'plugin:event|unlisten') return null;
   remoteCalls.push({ command, profileId: payload?.profileId });
   if (command === 'check_remote_provider_updates') return status;
   if (command === 'install_remote_provider_updates') return { ...status, updateAvailable: false, restartRequired: true };
@@ -80,10 +86,10 @@ const remoteOwner = new AbortController();
 await checkForProviderUpdates(remoteOwner.signal, remote, 'workbox');
 assert.equal(remote.phase, 'available');
 assert.equal(providerUpdateState.phase, 'restart', 'remote checks cannot overwrite local status');
-await installProviderUpdates(remoteOwner.signal, remote, 'workbox');
+await installProviderUpdates('claude', remoteOwner.signal, remote, 'workbox');
 assert.equal(remote.phase, 'restart');
 assert.equal(remoteCalls.length, 2, 'remote installation waits for a separate explicit restart');
-await installProviderUpdates(remoteOwner.signal, remote, 'workbox');
+await restartProviders(remote, 'workbox');
 assert.equal(remote.phase, 'idle');
 assert.match(remote.message, /reconnects/);
 assert.deepEqual(remoteCalls.map(call => call.command), [
@@ -100,8 +106,8 @@ mockIPC((command) => {
   remoteRestarts += 1;
   return new Promise<void>(resolve => { finishRestart = resolve; });
 });
-const restarting = installProviderUpdates(remoteOwner.signal, remote, 'workbox');
-await installProviderUpdates(remoteOwner.signal, remote, 'workbox');
+const restarting = restartProviders(remote, 'workbox');
+await restartProviders(remote, 'workbox');
 assert.equal(remoteRestarts, 1);
 finishRestart();
 await restarting;

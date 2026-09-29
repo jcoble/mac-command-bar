@@ -14,13 +14,16 @@ export type UsageCostEstimate = {
   unpricedShare: number;
 };
 
-export const USAGE_COST_RATE_VERSION = 'published-api-rates-2026-08-09';
+export const USAGE_COST_RATE_VERSION = 'published-api-rates-2026-09-28';
 
 export const USAGE_COST_SOURCES = [
   'https://openai.com/index/gpt-5-6/',
   'https://openai.com/index/introducing-gpt-5-4/',
   'https://developers.openai.com/api/docs/models/gpt-5.3-codex',
   'https://developers.openai.com/api/docs/models/gpt-5.2-codex',
+  'https://platform.claude.com/docs/en/models/fable-5-1/overview',
+  'https://platform.claude.com/docs/en/models/opus-5-5/overview',
+  'https://platform.claude.com/docs/en/models/sonnet-5-5/overview',
   'https://platform.claude.com/docs/en/about-claude/pricing'
 ] as const;
 
@@ -87,6 +90,22 @@ export const USAGE_COST_RATES: readonly UsageTokenRates[] = [
     cacheWriteUsdPerMillion: 1.75
   },
   {
+    id: 'fable-5.1',
+    models: ['claude-fable-5-1'],
+    inputUsdPerMillion: 10,
+    outputUsdPerMillion: 50,
+    cacheReadUsdPerMillion: 0.25,
+    cacheWriteUsdPerMillion: 12.5
+  },
+  {
+    id: 'opus-5.5',
+    models: ['claude-opus-5-5'],
+    inputUsdPerMillion: 4,
+    outputUsdPerMillion: 20,
+    cacheReadUsdPerMillion: 0.2,
+    cacheWriteUsdPerMillion: 5
+  },
+  {
     id: 'opus-current',
     models: [
       'claude-opus-5',
@@ -105,8 +124,8 @@ export const USAGE_COST_RATES: readonly UsageTokenRates[] = [
     cacheWriteUsdPerMillion: 6.25
   },
   {
-    id: 'sonnet-5-introductory',
-    models: ['claude-sonnet-5'],
+    id: 'sonnet-5',
+    models: ['claude-sonnet-5-5', 'claude-sonnet-5'],
     inputUsdPerMillion: 2,
     outputUsdPerMillion: 10,
     cacheReadUsdPerMillion: 0.2,

@@ -125,7 +125,7 @@
     "test:notion-project-match": "node --experimental-strip-types src/lib/shell/notionProjectMatch.test.ts"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.81.2",
+    "@agentclientprotocol/claude-agent-acp": "0.84.0",
     "@agentclientprotocol/codex-acp": "1.13.1",
     "@codemirror/autocomplete": "6.20.3",
     "@codemirror/commands": "6.11.0",

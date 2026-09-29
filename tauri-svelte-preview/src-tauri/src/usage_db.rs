@@ -646,7 +646,7 @@ struct UsageQuery {
 const NORMALIZED_INPUT_SQL: &str = "CASE WHEN provider = 'codex' THEN MAX(input_tokens - cache_read_tokens - cache_write_tokens, 0) ELSE input_tokens END";
 const MAX_USAGE_QUERY_ROWS: usize = 200;
 const NORMALIZED_RATE_MODEL_SQL: &str = "CASE WHEN lower(model) GLOB '*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' THEN substr(lower(model), 1, length(model) - 9) WHEN lower(model) GLOB '*-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' THEN substr(lower(model), 1, length(model) - 11) ELSE lower(model) END";
-const USAGE_COST_RATES_SQL: &str = "VALUES ('gpt-5.6-sol', 5.0, 30.0, 0.5, 6.25), ('codex', 5.0, 30.0, 0.5, 6.25), ('gpt-5.6-terra', 2.5, 15.0, 0.25, 3.125), ('gpt-5.6-luna', 1.0, 6.0, 0.1, 1.25), ('gpt-5.5', 5.0, 30.0, 0.5, 6.25), ('gpt-5.4', 2.5, 15.0, 0.25, 2.5), ('gpt-5.3-codex', 1.75, 14.0, 0.175, 1.75), ('gpt-5.2-codex', 1.75, 14.0, 0.175, 1.75), ('claude-opus-5', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4-8', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4.8', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4-7', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4.7', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4-6', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4.6', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4-5', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4.5', 5.0, 25.0, 0.5, 6.25), ('claude-sonnet-5', 2.0, 10.0, 0.2, 2.5), ('claude-sonnet-4-6', 3.0, 15.0, 0.3, 3.75), ('claude-sonnet-4.6', 3.0, 15.0, 0.3, 3.75), ('claude-haiku-4-5', 1.0, 5.0, 0.1, 1.25), ('claude-haiku-4.5', 1.0, 5.0, 0.1, 1.25)";
+const USAGE_COST_RATES_SQL: &str = "VALUES ('gpt-5.6-sol', 5.0, 30.0, 0.5, 6.25), ('codex', 5.0, 30.0, 0.5, 6.25), ('gpt-5.6-terra', 2.5, 15.0, 0.25, 3.125), ('gpt-5.6-luna', 1.0, 6.0, 0.1, 1.25), ('gpt-5.5', 5.0, 30.0, 0.5, 6.25), ('gpt-5.4', 2.5, 15.0, 0.25, 2.5), ('gpt-5.3-codex', 1.75, 14.0, 0.175, 1.75), ('gpt-5.2-codex', 1.75, 14.0, 0.175, 1.75), ('claude-fable-5-1', 10.0, 50.0, 0.25, 12.5), ('claude-opus-5-5', 4.0, 20.0, 0.2, 5.0), ('claude-opus-5', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4-8', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4.8', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4-7', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4.7', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4-6', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4.6', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4-5', 5.0, 25.0, 0.5, 6.25), ('claude-opus-4.5', 5.0, 25.0, 0.5, 6.25), ('claude-sonnet-5-5', 2.0, 10.0, 0.2, 2.5), ('claude-sonnet-5', 2.0, 10.0, 0.2, 2.5), ('claude-sonnet-4-6', 3.0, 15.0, 0.3, 3.75), ('claude-sonnet-4.6', 3.0, 15.0, 0.3, 3.75), ('claude-haiku-4-5', 1.0, 5.0, 0.1, 1.25), ('claude-haiku-4.5', 1.0, 5.0, 0.1, 1.25)";
 
 fn summary_query(filter: &UsageFilter) -> UsageQuery {
     let (where_clause, parameters) = where_clause(filter);
@@ -1085,16 +1085,22 @@ mod tests {
         let db = UsageDb::open(&path).expect("sqlite database should open");
         let mut priced = event("priced-provider-event");
         priced.model = "gpt-5.6-sol".into();
-        db.insert_events_with_cursor(&[priced], None)
+        let mut fable = event("priced-fable-event");
+        fable.model = "claude-fable-5-1".into();
+        let mut opus = event("priced-opus-event");
+        opus.model = "claude-opus-5-5".into();
+        let mut sonnet = event("priced-sonnet-event");
+        sonnet.model = "claude-sonnet-5-5".into();
+        db.insert_events_with_cursor(&[priced, fable, opus, sonnet], None)
             .expect("priced event should insert");
 
         let rows = db
             .read_usage_provider_summary(&UsageFilter::default())
             .expect("provider cost summary should query");
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].estimated_cost_micros, Some(170));
+        assert_eq!(rows[0].estimated_cost_micros, Some(650));
         assert_eq!(rows[0].unpriced_percent, 0);
-        assert_eq!(rows[0].range_estimated_cost_micros, Some(170));
+        assert_eq!(rows[0].range_estimated_cost_micros, Some(650));
         assert_eq!(rows[0].range_unpriced_percent, 0);
         let _ = fs::remove_file(path);
     }
