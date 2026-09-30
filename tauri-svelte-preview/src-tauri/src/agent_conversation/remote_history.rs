@@ -94,7 +94,7 @@ mod tests {
                 .len(),
             3
         );
-        assert!(history.live("a", 0, &event(6)).is_err());
+        assert!(history.live_batch("a", 0, &[event(6)]).is_err());
         assert!(history.snapshot("a", 0, None, &expected).is_err());
         assert!(history
             .page(
@@ -117,7 +117,7 @@ mod tests {
     fn remote_history_fills_gaps_without_claiming_unfetched_events() {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
         history.snapshot("a", 0, None, &snapshot(10, 12)).unwrap();
-        history.live("a", 0, &event(15)).unwrap();
+        history.live_batch("a", 0, &[event(15)]).unwrap();
         assert_eq!(history.through("a", "same-session-id").unwrap(), Some(12));
         assert!(history
             .read_page("a", "same-session-id", 12, 1024, false)
@@ -179,16 +179,33 @@ mod tests {
     }
 
     #[test]
+    fn adjacent_live_batch_survives_reopen_in_order() {
+        let directory = std::env::temp_dir().join(format!("assembly-batch-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("sessions.db");
+        let history = RemoteHistory::new(Arc::new(SessionStore::open(&path).unwrap()));
+        history.snapshot("a", 0, None, &snapshot(1, 1)).unwrap();
+        history.live_batch("a", 0, &[event(2), event(3), event(4)]).unwrap();
+        drop(history);
+        let history = RemoteHistory::new(Arc::new(SessionStore::open(&path).unwrap()));
+        assert_eq!(history.through("a", "same-session-id").unwrap(), Some(4));
+        assert_eq!(history.read_snapshot("a", 0, "same-session-id").unwrap().events,
+            vec![event(1), event(2), event(3), event(4)]);
+        drop(history);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn live_skips_events_already_covered() {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
         for sequence in 1..=3 {
-            history.live("a", 0, &event(sequence)).unwrap();
+            history.live_batch("a", 0, &[event(sequence)]).unwrap();
         }
         history.snapshot("a", 0, Some(3), &snapshot(4, 3)).unwrap();
-        // A reconnect replays from the last acknowledgement; the cache already has it.
+        // A reconnect replays from the last applied cursor; the cache already has it.
         let mut replayed = event(2);
         replayed.timestamp_ms = 999;
-        history.live("a", 0, &replayed).unwrap();
+        history.live_batch("a", 0, &[replayed]).unwrap();
         let cached = history.read_snapshot("a", 0, "same-session-id").unwrap();
         assert_eq!(cached.events[1].sequence, 2);
         assert_eq!(cached.events[1].timestamp_ms, 123);
@@ -198,7 +215,7 @@ mod tests {
     fn remote_history_caches_live_messages_before_a_snapshot_and_bounds_reads() {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
         for sequence in 1..=10 {
-            history.live("a", 0, &event(sequence)).unwrap();
+            history.live_batch("a", 0, &[event(sequence)]).unwrap();
         }
         history
             .snapshot("a", 0, Some(10), &snapshot(11, 10))
@@ -330,36 +347,31 @@ impl RemoteHistory {
             .map_err(|e| e.to_string())
     }
 
-    pub fn live(
+    pub fn live_batch(
         &self,
         profile: &str,
         epoch: u64,
-        event: &AgentConversationEvent,
+        events: &[AgentConversationEvent],
     ) -> Result<(), String> {
         self.check(profile, epoch)?;
-        let mut coverage = self.coverage(profile, &event.owned_id)?;
-        // A reconnect replays from the last acknowledgement. Rows already
-        // covered are not rewritten.
-        if coverage.through.is_some_and(|through| event.sequence <= through) {
-            return Ok(());
-        }
-        if coverage.oldest.is_none() {
-            coverage.oldest = Some(event.sequence);
-        }
-        if coverage.through.is_none() {
-            coverage.oldest = Some(event.sequence);
-            coverage.through = Some(event.sequence);
-        } else if coverage.through.and_then(|seq| seq.checked_add(1)) == Some(event.sequence) {
-            coverage.through = Some(event.sequence);
+        let Some(first) = events.first() else { return Ok(()); };
+        let mut coverage = self.coverage(profile, &first.owned_id)?;
+        let start = events.iter().position(|event| !coverage.through.is_some_and(|through| event.sequence <= through));
+        let Some(start) = start else { return Ok(()); };
+        for event in &events[start..] {
+            if event.owned_id != first.owned_id {
+                return Err("remote history batch contains multiple sessions".into());
+            }
+            if coverage.through.is_none() {
+                coverage.oldest = Some(event.sequence);
+                coverage.through = Some(event.sequence);
+            } else if coverage.through.and_then(|seq| seq.checked_add(1)) == Some(event.sequence) {
+                coverage.through = Some(event.sequence);
+            }
         }
         // A gap is stored, but never advertised as covered. Snapshot catch-up
         // fills it from the last confirmed sequence before reading it locally.
-        self.write(
-            profile,
-            &event.owned_id,
-            &coverage,
-            std::slice::from_ref(event),
-        )
+        self.write(profile, &first.owned_id, &coverage, &events[start..])
     }
 
     pub fn snapshot(

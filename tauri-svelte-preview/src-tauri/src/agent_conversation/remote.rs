@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message as AxumMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -23,7 +23,7 @@ use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as Tungs
 
 use super::manager::AgentRuntimeManager;
 use super::remote_history::RemoteHistory;
-type RemoteEventSink = Arc<dyn Fn(AgentConversationEvent) -> Result<(), String> + Send + Sync>;
+type RemoteEventSink = Arc<dyn Fn(Vec<AgentConversationEvent>) -> Result<(), String> + Send + Sync>;
 use super::attachments::{self, DeleteConversationAttachmentRequest, SavedConversationAttachment};
 use super::prompt_content::prompt_from_blocks;
 use super::protocol::{
@@ -59,7 +59,6 @@ enum ClientFrame {
     Request { id: u64, command: RemoteCommand },
     Cancel { id: u64 },
     Resume { cursors: BTreeMap<String, i64> },
-    Ack { owned_id: String, sequence: i64 },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -924,17 +923,29 @@ impl RemoteConnectionManager {
         let profile = profile_id.to_string();
         let epoch = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).epoch(&profile);
         let sink = self.event_sink.clone();
-        Arc::new(move |event| {
+        Arc::new(move |events| {
+            let started = Instant::now();
             {
                 let history = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 // A replaced connection must stop; a failed cache write must not.
                 // Snapshot catch-up refills any row the cache missed.
                 history.check(&profile, epoch)?;
-                if let Err(error) = history.live(&profile, epoch, &event) {
-                    eprintln!("Remote history cache write failed for {} at {}: {error}", event.owned_id, event.sequence);
+                let mut by_session = BTreeMap::<String, Vec<AgentConversationEvent>>::new();
+                for event in &events {
+                    by_session.entry(event.owned_id.clone()).or_default().push(event.clone());
+                }
+                for (owned_id, batch) in by_session {
+                    if let Err(error) = history.live_batch(&profile, epoch, &batch) {
+                        eprintln!("Remote history cache write failed for {owned_id}: {error}");
+                    }
                 }
             }
-            sink(event);
+            let cache_ms = started.elapsed().as_millis();
+            let count = events.len();
+            for event in events { sink(event); }
+            if cache_ms > 16 {
+                eprintln!("Remote event batch: {count} events, cache {cache_ms} ms, publish {} ms", started.elapsed().as_millis().saturating_sub(cache_ms));
+            }
             Ok(())
         })
     }
@@ -1983,7 +1994,7 @@ async fn client_loop(
         let mut pending = HashMap::<u64, ClientReply>::new();
         let mut pending_progress = HashMap::<u64, mpsc::UnboundedSender<super::providers::updates::ProviderDownloadProgress>>::new();
         let mut interruption = "The Remote Assembly connection was interrupted".to_string();
-        loop {
+        'connected: loop {
             tokio::select! {
                 request = requests.recv() => {
                     let Some(request) = request else {
@@ -2038,7 +2049,7 @@ async fn client_loop(
                             break;
                         }
                     };
-                    let frame = match parse_server_frame(message) {
+                    let mut frame = match parse_server_frame(message) {
                         Ok(Some(frame)) => frame,
                         Ok(None) => continue,
                         Err(error) => {
@@ -2047,6 +2058,48 @@ async fn client_loop(
                             return;
                         }
                     };
+                    if let ServerFrame::Event { event } = frame {
+                        let received = Instant::now();
+                        let mut events = vec![event];
+                        let mut ended = false;
+                        let mut deferred = None;
+                        let deadline = tokio::time::Instant::now() + Duration::from_millis(16);
+                        loop {
+                            if events.len() >= 64 { break; }
+                            let Ok(next) = tokio::time::timeout_at(deadline, socket.next()).await else { break; };
+                            let next = match next {
+                                Some(Ok(next)) => next,
+                                Some(Err(error)) => {
+                                    interruption = format!("The Remote Assembly connection failed: {error}");
+                                    ended = true;
+                                    break;
+                                }
+                                None => { ended = true; break; }
+                            };
+                            if let TungsteniteMessage::Close(close) = &next {
+                                interruption = close.as_ref().map_or_else(
+                                    || "The Remote Assembly connection closed without a reason".to_string(),
+                                    |frame| format!("The Remote Assembly connection closed ({:?}): {}", frame.code, frame.reason),
+                                );
+                                ended = true;
+                                break;
+                            }
+                            match parse_server_frame(next) {
+                                Ok(Some(ServerFrame::Event { event })) => events.push(event),
+                                Ok(Some(other)) => { deferred = Some(other); break; }
+                                Ok(None) => continue,
+                                Err(error) => { interruption = error; ended = true; break; }
+                            }
+                        }
+                        let count = events.len();
+                        if apply_event_batch(events, &event_sink, &cursors).is_err() { break 'connected; }
+                        if received.elapsed().as_millis() > 32 {
+                            eprintln!("Remote socket receive: {count} events in {} ms", received.elapsed().as_millis());
+                        }
+                        if ended { break 'connected; }
+                        let Some(other) = deferred else { continue; };
+                        frame = other;
+                    }
                     match frame {
                         ServerFrame::Ready { protocol_version } if protocol_version != PROTOCOL_VERSION => {
                             for (_, reply) in pending.drain() {
@@ -2083,22 +2136,7 @@ async fn client_loop(
                                 let _ = reply.send(Err(message));
                             }
                         }
-                        ServerFrame::Event { event } => {
-                            let should_apply = {
-                                let mut values = cursors.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                                let cursor = values.entry(event.owned_id.clone()).or_insert(i64::MIN);
-                                event.sequence > *cursor
-                            };
-                            if should_apply {
-                                if event_sink(event.clone()).is_err() { break; }
-                                cursors.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                                    .insert(event.owned_id.clone(), event.sequence);
-                                let _ = send_client_frame(&mut socket, &ClientFrame::Ack {
-                                    owned_id: event.owned_id,
-                                    sequence: event.sequence,
-                                }).await;
-                            }
-                        }
+                        ServerFrame::Event { .. } => unreachable!(),
                         ServerFrame::ProviderDownloadProgress { id, progress } => {
                             if let Some(sender) = pending_progress.get(&id) { let _ = sender.send(progress); }
                         }
@@ -2116,6 +2154,29 @@ async fn client_loop(
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
+}
+
+fn apply_event_batch(
+    events: Vec<AgentConversationEvent>,
+    event_sink: &RemoteEventSink,
+    cursors: &Mutex<BTreeMap<String, i64>>,
+) -> Result<(), String> {
+    let current = cursors.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut next = BTreeMap::<String, i64>::new();
+    let mut accepted = Vec::new();
+    for event in events {
+        let cursor = next.entry(event.owned_id.clone()).or_insert_with(||
+            *current.get(&event.owned_id).unwrap_or(&i64::MIN));
+        if event.sequence > *cursor {
+            *cursor = event.sequence;
+            accepted.push(event);
+        }
+    }
+    drop(current);
+    if accepted.is_empty() { return Ok(()); }
+    event_sink(accepted)?;
+    cursors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend(next);
+    Ok(())
 }
 
 fn fail_queued_requests(requests: &mut mpsc::Receiver<ClientRequest>, message: String) {
@@ -2288,6 +2349,7 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
         })
         .await;
     let mut live_events = state.events.subscribe();
+    let mut queued = BTreeMap::<String, i64>::new();
     let (completed, mut completions) = mpsc::channel::<(u64, Result<RemoteResponse, String>)>(32);
     let upload = Arc::new(Mutex::new(None::<PendingAttachment>));
     let mut request_tasks = HashMap::new();
@@ -2307,12 +2369,25 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
             event = live_events.recv() => {
                 match event {
                     Ok(event) => {
-                        if outbound.send(ServerFrame::Event { event }).await.is_err() { break; }
+                        let cursor = queued.entry(event.owned_id.clone()).or_insert(i64::MIN);
+                        if event.sequence > *cursor {
+                            *cursor = event.sequence;
+                            if outbound.send(ServerFrame::Event { event }).await.is_err() { break; }
+                        }
                     }
-                    // Dropped broadcast frames are recoverable from SQLite, but only
-                    // through the ordered resume handshake. Closing this socket makes
-                    // the client reconnect with its last acknowledged sequence.
-                    Err(broadcast::error::RecvError::Lagged(_)) => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // Replay only sessions known to this socket. A missing session's
+                        // next live event exposes a gap for the client's snapshot repair.
+                        let mut failed = false;
+                        for owned_id in queued.keys().cloned().collect::<Vec<_>>() {
+                            if let Err(error) = replay_session(&state, &outbound, &mut queued, &owned_id).await {
+                                eprintln!("Remote lag replay failed: {error}");
+                                failed = true;
+                                break;
+                            }
+                        }
+                        if failed { break; }
+                    }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
                 None
@@ -2360,31 +2435,17 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
                 }
             }
             ClientFrame::Resume { cursors } => {
-                for (owned_id, mut sequence) in cursors {
-                    loop {
-                        let Ok(page) =
-                            state
-                                .manager
-                                .list_events_after(&owned_id, sequence, REPLAY_PAGE_BYTES)
-                        else {
-                            break;
-                        };
-                        if page.events.is_empty() {
-                            break;
-                        }
-                        for event in page.events {
-                            sequence = sequence.max(event.sequence);
-                            if outbound.send(ServerFrame::Event { event }).await.is_err() {
-                                break;
-                            }
-                        }
-                        if !page.has_more {
-                            break;
-                        }
+                queued.extend(cursors);
+                let mut failed = false;
+                for owned_id in queued.keys().cloned().collect::<Vec<_>>() {
+                    if let Err(error) = replay_session(&state, &outbound, &mut queued, &owned_id).await {
+                        eprintln!("Remote resume replay failed: {error}");
+                        failed = true;
+                        break;
                     }
                 }
+                if failed { break; }
             }
-            ClientFrame::Ack { .. } => {}
         }
     }
     for (_, task) in request_tasks.drain() {
@@ -2392,6 +2453,27 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
     }
     drop(outbound);
     let _ = writer_task.await;
+}
+
+async fn replay_session(
+    state: &ServerState,
+    outbound: &mpsc::Sender<ServerFrame>,
+    queued: &mut BTreeMap<String, i64>,
+    owned_id: &str,
+) -> Result<(), String> {
+    let mut sequence = *queued.get(owned_id).unwrap_or(&i64::MIN);
+    loop {
+        let page = state.manager.list_events_after(owned_id, sequence, REPLAY_PAGE_BYTES)?;
+        if page.events.is_empty() { break; }
+        let has_more = page.has_more;
+        for event in page.events {
+            sequence = event.sequence;
+            outbound.send(ServerFrame::Event { event }).await.map_err(|error| error.to_string())?;
+            queued.insert(owned_id.to_string(), sequence);
+        }
+        if !has_more { break; }
+    }
+    Ok(())
 }
 
 fn abort_attachment_upload(upload: &Mutex<Option<PendingAttachment>>, upload_id: &str) {
@@ -2766,7 +2848,7 @@ mod connection_tests {
         let sink = manager.history_event_sink("cache-test");
         let event = large_history_event(32);
 
-        assert!(sink(event.clone()).is_ok(), "a cache write failure must not drop the connection");
+        assert!(sink(vec![event.clone()]).is_ok(), "a cache write failure must not drop the connection");
         assert_eq!(*delivered.lock().unwrap(), vec![event]);
     }
 
@@ -2806,7 +2888,7 @@ mod connection_tests {
         assert!(requests.try_recv().is_err(), "scrolling must not request cached pages");
         let late_sink = manager.history_event_sink("cache-test");
         manager.disconnect_profile("cache-test").unwrap();
-        assert!(late_sink(large_history_event(32)).is_err());
+        assert!(late_sink(vec![large_history_event(32)]).is_err());
         assert!(manager.history.lock().unwrap().through("cache-test", "large-history").unwrap().is_none());
     }
 
@@ -3382,6 +3464,189 @@ mod connection_tests {
         drop(requests);
         server.await.unwrap();
         actor.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn batched_events_resume_from_applied_cursor_without_ack() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket.send(TungsteniteMessage::Text(serde_json::to_string(
+                &ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }).unwrap().into())).await.unwrap();
+            assert!(matches!(serde_json::from_str::<ClientFrame>(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap(), ClientFrame::Resume { cursors } if cursors.is_empty()));
+            let _readiness = socket.next().await.unwrap().unwrap();
+            let mut first = large_history_event(32);
+            first.sequence = 1;
+            let mut second = first.clone();
+            second.sequence = 2;
+            let mut other = first.clone();
+            other.owned_id = "other-history".into();
+            for event in [first, other, second] {
+                socket.send(TungsteniteMessage::Text(serde_json::to_string(&ServerFrame::Event { event }).unwrap().into())).await.unwrap();
+            }
+            socket.send(TungsteniteMessage::Text(serde_json::to_string(
+                &ServerFrame::Response { id: READINESS_REQUEST_ID, response: RemoteResponse::Sessions(vec![]) }
+            ).unwrap().into())).await.unwrap();
+            assert!(tokio::time::timeout(Duration::from_millis(100), socket.next()).await.is_err(), "events must not produce Ack frames");
+            socket.close(None).await.unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket.send(TungsteniteMessage::Text(serde_json::to_string(
+                &ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }).unwrap().into())).await.unwrap();
+            let resume: ClientFrame = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            assert!(matches!(resume, ClientFrame::Resume { cursors }
+                if cursors.get("large-history") == Some(&2) && cursors.get("other-history") == Some(&1)));
+        });
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let captured = delivered.clone();
+        let (requests, mut receiver) = mpsc::channel(1);
+        let (ready_reply, ready_answer) = oneshot::channel();
+        let actor = tokio::spawn(async move {
+            client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver,
+                Arc::new(move |events| { captured.lock().unwrap().extend(events); Ok(()) }),
+                Some(2), Arc::new(AtomicBool::new(false)), &mut Some(ready_reply), Arc::new(|| {})).await;
+        });
+        ready_answer.await.unwrap().unwrap();
+        server.await.unwrap();
+        let sequences: Vec<_> = delivered.lock().unwrap().iter()
+            .map(|event: &AgentConversationEvent| (event.owned_id.clone(), event.sequence)).collect();
+        assert_eq!(sequences, vec![("large-history".into(), 1), ("other-history".into(), 1), ("large-history".into(), 2)]);
+        drop(requests);
+        actor.abort();
+        let _ = actor.await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_replay_fills_queued_gap_and_reports_read_failure() {
+        let directory = std::env::temp_dir().join(format!("assembly-replay-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let database = directory.join("sessions.db");
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+        let store = manager.store();
+        store.upsert_session(&mcb_core::session_store::SessionRow {
+            owned_id: "large-history".into(), native_session_id: None, provider: "codex".into(),
+            model: None, effort: None, cwd: String::new(), worktree: None, branch: None,
+            title: None, title_source: None, project: None, state: "idle".into(),
+            suspended: false, created_at_ms: 0, last_activity_at_ms: 0, extra_json: "{}".into(),
+        }).unwrap();
+        for sequence in 1..=4 {
+            let mut event = large_history_event(32);
+            event.sequence = sequence;
+            store.append_event(&mcb_core::session_store::EventRow {
+                owned_id: event.owned_id.clone(), seq: sequence, turn_id: None,
+                kind: "test".into(), payload_json: serde_json::to_string(&event).unwrap(),
+                created_at_ms: 0,
+            }).unwrap();
+        }
+        let (events, _) = broadcast::channel(2);
+        let state = ServerState {
+            manager, data_dir: directory.clone(), token: Arc::from("test"),
+            maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
+            restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events,
+        };
+        let (outbound, mut received) = mpsc::channel(8);
+        let mut queued = BTreeMap::from([("large-history".to_string(), 1)]);
+        replay_session(&state, &outbound, &mut queued, "large-history").await.unwrap();
+        assert_eq!(queued["large-history"], 4);
+        let mut sequences = Vec::new();
+        while let Ok(ServerFrame::Event { event }) = received.try_recv() { sequences.push(event.sequence); }
+        assert_eq!(sequences, vec![2, 3, 4]);
+        let mut new_event = large_history_event(32);
+        new_event.sequence = 5;
+        state.manager.store().append_event(&mcb_core::session_store::EventRow {
+            owned_id: new_event.owned_id.clone(), seq: 5, turn_id: None,
+            kind: "test".into(), payload_json: serde_json::to_string(&new_event).unwrap(),
+            created_at_ms: 0,
+        }).unwrap();
+        replay_session(&state, &outbound, &mut queued, "large-history").await.unwrap();
+        assert!(matches!(received.try_recv(), Ok(ServerFrame::Event { event }) if event.sequence == 5));
+        assert_eq!(queued["large-history"], 5);
+        replay_session(&state, &outbound, &mut queued, "large-history").await.unwrap();
+        assert!(received.try_recv().is_err());
+        rusqlite::Connection::open(&database).unwrap().execute("DROP TABLE events", []).unwrap();
+        assert!(replay_session(&state, &outbound, &mut queued, "large-history").await.is_err());
+        drop(state);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn lagging_socket_replays_missing_rows_and_stays_open() {
+        let directory = std::env::temp_dir().join(format!("assembly-socket-lag-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("sessions.db")).unwrap();
+        let store = manager.store();
+        store.upsert_session(&mcb_core::session_store::SessionRow {
+            owned_id: "large-history".into(), native_session_id: None, provider: "codex".into(),
+            model: None, effort: None, cwd: String::new(), worktree: None, branch: None,
+            title: None, title_source: None, project: None, state: "suspended".into(),
+            suspended: true, created_at_ms: 0, last_activity_at_ms: 0,
+            extra_json: super::super::manager::imported_session_extra(AgentConversationProvider::Codex).unwrap(),
+        }).unwrap();
+        store.upsert_session(&mcb_core::session_store::SessionRow {
+            owned_id: "unknown-history".into(), native_session_id: None, provider: "codex".into(),
+            model: None, effort: None, cwd: String::new(), worktree: None, branch: None,
+            title: None, title_source: None, project: None, state: "suspended".into(),
+            suspended: true, created_at_ms: 0, last_activity_at_ms: 0,
+            extra_json: super::super::manager::imported_session_extra(AgentConversationProvider::Codex).unwrap(),
+        }).unwrap();
+        let append = |sequence| {
+            let mut event = large_history_event(32);
+            event.sequence = sequence;
+            store.append_event(&mcb_core::session_store::EventRow {
+                owned_id: event.owned_id.clone(), seq: sequence, turn_id: None,
+                kind: "test".into(), payload_json: serde_json::to_string(&event).unwrap(),
+                created_at_ms: 0,
+            }).unwrap();
+            event
+        };
+        for sequence in 1..=12 { append(sequence); }
+        let mut unknown = large_history_event(32);
+        unknown.owned_id = "unknown-history".into();
+        unknown.sequence = 1;
+        store.append_event(&mcb_core::session_store::EventRow {
+            owned_id: unknown.owned_id.clone(), seq: 1, turn_id: None,
+            kind: "test".into(), payload_json: serde_json::to_string(&unknown).unwrap(),
+            created_at_ms: 0,
+        }).unwrap();
+        let (events, _) = broadcast::channel(2);
+        let state = ServerState {
+            manager: manager.clone(), data_dir: directory.clone(), token: Arc::from("test-token"),
+            maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
+            restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events: events.clone(),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(axum::serve(listener, Router::new().route("/assembly", get(upgrade_remote_socket)).with_state(state.clone())).into_future());
+        let mut request = format!("ws://{address}/assembly").into_client_request().unwrap();
+        request.headers_mut().insert("authorization", "Bearer test-token".parse().unwrap());
+        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        assert!(matches!(parse_server_frame(socket.next().await.unwrap().unwrap()).unwrap(), Some(ServerFrame::Ready { .. })));
+        send_client_frame(&mut socket, &ClientFrame::Resume { cursors: BTreeMap::from([("large-history".into(), 0)]) }).await.unwrap();
+        let first = parse_server_frame(socket.next().await.unwrap().unwrap()).unwrap().unwrap();
+        assert!(matches!(first, ServerFrame::Event { event } if event.sequence == 1));
+
+        // The current-thread runtime cannot poll the server while this burst is sent.
+        // Its two-slot receiver must report Lagged after the in-progress replay.
+        for sequence in 13..=17 { events.send(append(sequence)).unwrap(); }
+        let mut sequences = vec![1];
+        while sequences.len() < 17 {
+            let frame = tokio::time::timeout(Duration::from_secs(5), socket.next()).await.unwrap().unwrap().unwrap();
+            if let Some(ServerFrame::Event { event }) = parse_server_frame(frame).unwrap() {
+                assert_eq!(event.owned_id, "large-history", "unknown session must not replay from the start");
+                sequences.push(event.sequence);
+            }
+        }
+        assert_eq!(sequences, (1..=17).collect::<Vec<_>>());
+        send_client_frame(&mut socket, &ClientFrame::Request { id: 7, command: RemoteCommand::ListSessions }).await.unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(5), socket.next()).await.unwrap().unwrap().unwrap();
+        assert!(matches!(parse_server_frame(response).unwrap(), Some(ServerFrame::Response { id: 7, response: RemoteResponse::Sessions(_) })));
+        socket.close(None).await.unwrap();
+        server.abort();
+        let _ = server.await;
+        drop(state);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[tokio::test]
