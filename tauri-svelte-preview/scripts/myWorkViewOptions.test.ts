@@ -1,3 +1,4 @@
+import './svelteRuneTestSetup.ts';
 import assert from 'node:assert/strict';
 
 import {
@@ -11,6 +12,7 @@ import {
   type MyWorkGroup
 } from '../src/lib/shell/components/myWorkViewOptions.ts';
 import type { OwnedSession } from '../src/lib/shell/ownedSessions.ts';
+import { hydrateOwned, rail, setOwnedSessionStatus } from '../src/lib/shell/stores/sessionRailStore.svelte.ts';
 
 function session(ownedId: string, extra: Record<string, unknown> = {}): OwnedSession {
   return {
@@ -198,6 +200,24 @@ function shape(groups: MyWorkGroup[]): unknown[] {
   assert.deepEqual(kept({ provider: ['claude', 'codex'], location: ['local'] }), ['claude-local-working']);
   assert.deepEqual(kept({ status: ['done', 'settled'] }), ['codex-remote-done', 'agy-local-settled']);
   assert.deepEqual(kept({ provider: ['antigravity'], status: ['working'] }), []);
+}
+
+// The rail's status actions must change the same rows that the pills filter.
+{
+  hydrateOwned([session('working'), session('done'), session('settled')]);
+  setOwnedSessionStatus('done', 'done', new Date('2026-09-30T12:00:00.000Z'));
+  setOwnedSessionStatus('settled', 'settled', new Date('2026-09-30T12:00:00.000Z'));
+  const kept = (status: string[]) => rail.owned
+    .filter((row) => matchesMyWorkFilters(row, { status }))
+    .map((row) => row.ownedId);
+  assert.deepEqual(kept(['working']), ['working']);
+  assert.deepEqual(kept(['done']), ['done']);
+  assert.deepEqual(kept(['settled']), ['settled']);
+  assert.deepEqual(kept(['done', 'settled']), ['done', 'settled']);
+  setOwnedSessionStatus('settled', 'done', new Date('2026-09-30T13:00:00.000Z'));
+  assert.deepEqual(kept(['done']), ['done', 'settled']);
+  setOwnedSessionStatus('done', 'working', new Date('2026-09-30T14:00:00.000Z'));
+  assert.deepEqual(kept(['working']), ['working', 'done']);
 }
 
 // normalizeMyWorkFilters keeps only known group ids and option values.
