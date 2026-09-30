@@ -210,9 +210,10 @@
 		selectCenterTab("session");
 	}
 
-	async function startNewSession(request: ThreadStartRequest): Promise<void> {
+	async function startNewSession(request: ThreadStartRequest, images: File[]): Promise<void> {
 		await selection.newSession.start(
 			request,
+			images,
 			async (ownedId) => {
 				await selectSession(ownedId);
 			},
@@ -220,6 +221,7 @@
 				selectCenterTab("session");
 				selectRightTab("files");
 			},
+			(ownedId, ids) => selection.persistConversationAttachmentIds(ownedId, ids),
 		);
 	}
 </script>
