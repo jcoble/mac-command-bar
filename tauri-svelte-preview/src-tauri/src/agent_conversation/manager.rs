@@ -6344,15 +6344,17 @@ struct ToolDetails {
 fn tool_details(update: &Value) -> ToolDetails {
     let mut output = Vec::new();
     let mut diff = Vec::new();
-    let mut path = None;
+    let mut paths = Vec::new();
 
     match update.get("content") {
         Some(Value::Array(blocks)) => {
             for block in blocks {
                 if block.get("type").and_then(Value::as_str) == Some("diff") {
                     let block_path = block.get("path").and_then(Value::as_str);
-                    if path.is_none() {
-                        path = block_path.map(str::to_owned);
+                    if let Some(block_path) = block_path {
+                        if !paths.contains(&block_path.to_owned()) {
+                            paths.push(block_path.to_owned());
+                        }
                     }
                     let patch = unified_diff(
                         block
@@ -6370,8 +6372,10 @@ fn tool_details(update: &Value) -> ToolDetails {
                 } else if let Some(text) = text_from_value(block) {
                     match patch_in_text(&text) {
                         Some(patch) => {
-                            if path.is_none() {
-                                path = patch_target_path(&text);
+                            if let Some(target) = patch_target_path(&text) {
+                                if !paths.contains(&target) {
+                                    paths.push(target);
+                                }
                             }
                             diff.push(patch);
                         }
@@ -6384,8 +6388,10 @@ fn tool_details(update: &Value) -> ToolDetails {
             if let Some(text) = text_from_value(content) {
                 match patch_in_text(&text) {
                     Some(patch) => {
-                        if path.is_none() {
-                            path = patch_target_path(&text);
+                        if let Some(target) = patch_target_path(&text) {
+                            if !paths.contains(&target) {
+                                paths.push(target);
+                            }
                         }
                         diff.push(patch);
                     }
@@ -6406,8 +6412,20 @@ fn tool_details(update: &Value) -> ToolDetails {
         }
     }
 
-    if path.is_none() {
-        path = update.get("locations").and_then(text_from_value);
+    if let Some(location) = update.get("locations").and_then(text_from_value) {
+        if !paths.contains(&location) {
+            paths.push(location);
+        }
+    } else {
+        for key in ["file_path", "path"] {
+            if let Some(target) = update.get("rawInput").and_then(|input| input.get(key))
+                .and_then(Value::as_str).filter(|target| !target.is_empty())
+            {
+                if !paths.contains(&target.to_owned()) {
+                    paths.push(target.to_owned());
+                }
+            }
+        }
     }
     if let Some(file) = update
         .pointer("/rawInput/command")
@@ -6416,7 +6434,9 @@ fn tool_details(update: &Value) -> ToolDetails {
         .and_then(Value::as_str)
         .and_then(transcript::simple_shell_file_path)
     {
-        path = Some(file);
+        if !paths.contains(&file) {
+            paths.push(file);
+        }
     }
 
     // Completion titles may contain the result, not the tool or its input.
@@ -6450,7 +6470,7 @@ fn tool_details(update: &Value) -> ToolDetails {
         name,
         summary,
         output,
-        path,
+        path: (!paths.is_empty()).then(|| paths.join("\n")),
         diff: (!diff.is_empty()).then(|| diff.join("\n")),
     }
 }
@@ -12319,6 +12339,36 @@ mod tests {
                     diff,
                     "@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"one\");\n+    println!(\"two\");\n }\n\\ No newline at end of file\n"
                 );
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn live_tool_paths_include_raw_input_reads_and_every_edited_file() {
+        for (field, target) in [("file_path", "src/read.rs"), ("path", "src/other.rs")] {
+            let update = json!({ "update": {
+                "sessionUpdate": "tool_call_update", "toolCallId": "read-1",
+                "kind": "read", "rawInput": { field: target }
+            } });
+            match payload_from_session_update_for_turn(&update, None) {
+                Some(AgentConversationPayload::Tool { path, .. }) => {
+                    assert_eq!(path.as_deref(), Some(target));
+                }
+                other => panic!("expected Tool, got {other:?}"),
+            }
+        }
+
+        let update = json!({ "update": {
+            "sessionUpdate": "tool_call_update", "toolCallId": "edit-1",
+            "kind": "edit", "content": [
+                { "type": "diff", "path": "src/first.rs", "oldText": "old\n", "newText": "new\n" },
+                { "type": "diff", "path": "src/second.rs", "oldText": "old\n", "newText": "new\n" }
+            ]
+        } });
+        match payload_from_session_update_for_turn(&update, None) {
+            Some(AgentConversationPayload::Tool { path, .. }) => {
+                assert_eq!(path.as_deref(), Some("src/first.rs\nsrc/second.rs"));
             }
             other => panic!("expected Tool, got {other:?}"),
         }
