@@ -1068,7 +1068,11 @@ impl SessionStore {
                  SELECT owned_id, ?, CAST(strftime('%s', 'now') AS INTEGER) * 1000
                  FROM sessions WHERE owned_id = ?
                  ON CONFLICT(owned_id) DO UPDATE SET
-                    snapshot_json = excluded.snapshot_json,
+                    snapshot_json = CASE
+                        WHEN json_type(session_workspaces.snapshot_json, '$.expandedPathsByRoot') = 'object'
+                        THEN json_set(excluded.snapshot_json, '$.expandedPathsByRoot',
+                            json_extract(session_workspaces.snapshot_json, '$.expandedPathsByRoot'))
+                        ELSE excluded.snapshot_json END,
                     updated_at = excluded.updated_at",
                 params![snapshot_json, owned_id],
             )
@@ -4673,5 +4677,35 @@ mod tests {
             .get_workspace_expanded_paths("session-tree-1", "/test/project")
             .expect("reread paths a");
         assert_eq!(reread_a, paths_a);
+
+        // Editor checkpoints must never overwrite tree state, in either order.
+        let stale = r#"{"tabs":[],"expandedPathsByRoot":{"/test/project":["/test/project/old"]}}"#;
+        store
+            .upsert_workspace_snapshot("session-tree-1", stale)
+            .unwrap();
+        assert_eq!(
+            store.get_workspace_expanded_paths("session-tree-1", "/test/project").unwrap(),
+            paths_a
+        );
+        store
+            .set_workspace_expanded_paths("session-tree-1", "/test/project", &[])
+            .unwrap();
+        store
+            .upsert_workspace_snapshot("session-tree-1", stale)
+            .unwrap();
+        drop(store);
+        let reopened = SessionStore::open(&dir.path().join("sessions.db")).unwrap();
+        assert!(reopened
+            .get_workspace_expanded_paths("session-tree-1", "/test/project")
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            reopened.get_workspace_expanded_paths("session-tree-1", "/other/repo").unwrap(),
+            paths_b
+        );
+        let snapshot: serde_json::Value = serde_json::from_str(
+            &reopened.get_workspace_snapshot("session-tree-1").unwrap().unwrap(),
+        ).unwrap();
+        assert_eq!(snapshot["tabs"], serde_json::json!([]));
     }
 }
