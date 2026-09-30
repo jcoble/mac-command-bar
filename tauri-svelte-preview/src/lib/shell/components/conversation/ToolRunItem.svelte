@@ -151,19 +151,7 @@
   }
 
   function isCommandTool(subItem: ConversationDisplayItem): boolean {
-    if (subItem.kind === 'command') return true;
-    if (subItem.kind !== 'tool') return false;
-    if (subItem.toolKind === 'command') return true;
-    const title = (subItem.title || '').toLowerCase();
-    const summary = (subItem.summary || '').toLowerCase();
-    const meta = subItem.metadata as Record<string, unknown> | undefined;
-    const name = String(meta?.name || meta?.toolName || meta?.tool || '').toLowerCase();
-    const rawArgs = (meta?.args || meta?.arguments || meta?.parameters || meta?.input || meta?.rawInput) as Record<string, unknown> | undefined;
-    const hasCommandArg = Boolean(meta?.CommandLine || meta?.command || meta?.cmd || rawArgs?.CommandLine || rawArgs?.command || rawArgs?.cmd);
-    return hasCommandArg
-      || title.includes('console') || title.includes('```') || title === 'bash' || title.startsWith('bash ') || title === 'sh' || title === 'zsh' || title.includes('command') || title.includes('run') || title.includes('exec') || title.includes('terminal') || title.includes('shell')
-      || name.includes('console') || name.includes('```') || name === 'bash' || name.startsWith('bash ') || name === 'sh' || name === 'zsh' || name.includes('command') || name.includes('run') || name.includes('exec') || name.includes('terminal') || name.includes('shell')
-      || summary.includes('bash') || summary.includes('sh') || summary.includes('console') || summary.includes('```') || summary.includes('command') || summary.includes('run') || summary.includes('exec');
+    return subItem.kind === 'command' || (subItem.kind === 'tool' && subItem.toolKind === 'command');
   }
 
   function isSearchTool(subItem: ConversationDisplayItem): boolean {
@@ -219,16 +207,13 @@
         || (typeof rawArgs?.command === 'string' ? rawArgs.command : null)
         || (typeof rawArgs?.cmd === 'string' ? rawArgs.cmd : null)
         || actionItem.summary
-        || actionItem.title
         || '';
-      const cmd = cleanToolTitle(String(rawCmd));
-      const directTitle = cleanToolTitle(actionItem.title);
-      const displayTitle = (directTitle && directTitle.toLowerCase() !== 'tool' && directTitle.toLowerCase() !== 'mcp-tool')
-        ? directTitle
-        : (cmd || 'command');
+      const cmd = String(rawCmd);
+      const preview = cmd.split('\n')[0].slice(0, 80);
+      const displayTitle = `${actionItem.title}${preview ? `: ${preview}` : ''}`;
       return {
         title: displayTitle,
-        command: cmd || displayTitle,
+        command: cmd,
         output: actionItem.output || ''
       };
     }
@@ -389,7 +374,8 @@
       }
       if (typeof meta.name === 'string' && meta.name.trim() && meta.name !== 'mcp-tool' && meta.name !== 'Tool') {
         const name = cleanToolTitle(meta.name.trim());
-        if (name) return `Used ${name}`;
+        const summary = 'summary' in actionItem ? actionItem.summary?.split('\n')[0].slice(0, 80) : '';
+        if (name) return `Used ${name}${summary ? `: ${summary}` : ''}`;
       }
     }
     if ('title' in actionItem && actionItem.title) {
@@ -418,6 +404,7 @@
 </script>
 
 <div class="tool-run-item" data-testid="tool-run-item">
+  {#if item.items.length > 1}
   <button
     class="run-header"
     type="button"
@@ -442,9 +429,10 @@
       <ChevronRight size={13} />
     </span>
   </button>
+  {/if}
 
-  {#if runOpen}
-    <div class="run-body">
+  {#if runOpen || item.items.length === 1}
+    <div class:run-body={item.items.length > 1}>
       {#each item.items as subItem (subItem.itemId)}
         {#if subItem.kind === 'reasoning'}
           <div class="sub-row">
@@ -509,8 +497,8 @@
                   <button
                     class="copy-shell-btn"
                     type="button"
-                    title="Copy output"
-                    onclick={() => copyCommandOutput(subItem.itemId, info.output || info.command)}
+                    title="Copy command"
+                    onclick={() => copyCommandOutput(subItem.itemId, info.command)}
                   >
                     {#if copiedCommandId === subItem.itemId}
                       <Check size={12} />

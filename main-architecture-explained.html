@@ -664,6 +664,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-09-30 · TSK-1309 · “Preserve tool identity and command input in chat rows”</td><td>ACP tool names and input stay separate from output. Output-only updates retain the start identity and command in both frontend projections. Complete console wrappers are removed at normalization; single-call runs omit the redundant group header and shell copy keeps the full command.</td><td>08</td></tr>
             <tr><td>2026-09-30 · TSK-1300 · “Keep streaming through late conversation snapshots”</td><td>Active history reads buffer persisted live events, including the event that triggered gap recovery. Snapshot replay appends the continuous suffix once per sequence before publication. Late snapshots no longer chase an advancing live head; actual missing events still use bounded repair. Payload-free gap/read logs expose the recovery.</td><td>12, 13</td></tr>
             <tr><td>2026-09-30 · TSK-1311 · “Restore each session’s own file tree”</td><td>Every session selection restores its SQLite expansion state after queued tree writes. Files ownership is withheld until restoration completes; session changes reset hydration and cancel outgoing file work even on the same worktree. Full editor checkpoints atomically preserve the saved expansion field.</td><td>10, 13, 18</td></tr>
             <tr><td>2026-09-29 · “Show adapter activity only on the selected provider”</td><td>The update state records the installing provider. Only that provider row shows a download spinner and Installing label; completion or failure clears the activity. Other providers remain disabled during the single installation without claiming to install.</td><td>04</td></tr>
@@ -1199,6 +1200,8 @@
         </div>
 
         <h3>The ordered event path</h3>
+        <p>Tool normalization reads Claude’s <code>_meta.claudeCode.toolName</code>, ACP kind, and <code>rawInput</code> before persistence. The existing summary field carries input detail, including the complete multiline shell command and a Notion fetch’s ID; output never supplies a title. Completion titles are ignored because they can contain results. An output-only completion leaves absent identity and input fields untouched in both timeline projections. Complete provider console fences are unwrapped for the existing code renderer. The shell row shortens only its preview and copies the complete command; a single-call run draws its row directly, while multiple calls retain their group.</p>
+        <span class="source"><code>manager.rs:6344-6456</code> · <code>conversationTimeline.ts:796,913,1203</code> · <code>components/conversation/ToolRunItem.svelte</code></span>
         <div class="mini-flow" aria-label="Event path">
           <div>Adapter frame<small>ACP update or agent-to-client request.</small></div>
           <div>Rust normalizer<small>Provider vocabulary becomes canonical <code>AgentEvent</code>.</small></div>
