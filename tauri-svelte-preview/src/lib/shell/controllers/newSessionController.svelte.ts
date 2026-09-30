@@ -2,10 +2,11 @@
 import { sessionWorkspaceRoot } from '../../workspacePaths';
 import {
 	getConversationSession,
+	setConversationAttachments,
 	setConversationDraft,
 	setConversationSendError,
 } from '../conversation/conversationStore.svelte';
-import { flushConversationSessionDraft, persistConversationSessionDraft, sendStructuredMessage } from '../conversation/conversationService';
+import { ensureStructuredConversation, flushConversationSessionDraft, persistConversationSessionDraft, saveConversationClipboardImage, sendStructuredMessage } from '../conversation/conversationService';
 import { rememberLastUsed } from '../newSession/projectRootsStore.svelte';
 import {
 	deriveThreadStartProjects,
@@ -37,7 +38,7 @@ export class NewSessionController {
 
 	get sessionRoots(): string[] {
 		return deriveThreadStartProjects(
-			rail.owned.filter((session) => session.executionEnvironment !== 'remote').map((session) => session.projectPath ?? session.cwd),
+			rail.owned.filter((session) => session.executionEnvironment !== 'remote' && session.projectPath).map((session) => session.projectPath!),
 		).map((project) => project.path);
 	}
 
@@ -55,14 +56,17 @@ export class NewSessionController {
 
 	/** One session-selection seam: commenting out this call leaves drafts alone. */
 	abandonDraftForSessionSwitch(ownedId: string): void {
+		if (this.startingOwnedId === ownedId) return;
 		this.draftOpen = false;
-		if (this.startingOwnedId !== ownedId) this.stopDraftWork();
+		this.stopDraftWork();
 	}
 
 	async start(
 		request: ThreadStartRequest,
+		images: File[],
 		selectSession: (ownedId: string) => Promise<void>,
 		showSession: () => void,
+		persistAttachmentIds: (ownedId: string, ids: readonly string[]) => Promise<void>,
 	): Promise<string> {
 		const stopSignal = this.stopSignal;
 		if (stopSignal.aborted) throw new Error('the new session draft was closed');
@@ -82,7 +86,6 @@ export class NewSessionController {
 		};
 		this.startingOwnedId = owned.ownedId;
 		this.pendingFirstMessage = { ownedId: owned.ownedId, text: request.prompt };
-		this.draftOpen = false;
 		addOwnedSession(owned);
 		updateOwnedSession(owned.ownedId, {
 			state: 'live',
@@ -105,17 +108,36 @@ export class NewSessionController {
 			}
 
 			showSession();
+			if (images.length) {
+				const connection = await ensureStructuredConversation({
+					ownedId: owned.ownedId,
+					executionEnvironment: owned.executionEnvironment,
+					remoteProfileId: owned.remoteProfileId,
+					provider: request.provider,
+					cwd: owned.cwd,
+					reasoningEffort: request.reasoningEffort,
+					signal: stopSignal,
+				});
+				if (!connection) throw new Error('The new conversation could not be started');
+			}
+			for (const file of images) {
+				const attachment = await saveConversationClipboardImage(owned.ownedId, file);
+				const current = getConversationSession(owned.ownedId);
+				setConversationAttachments(owned.ownedId, [...(current?.attachments ?? []), attachment]);
+				await persistAttachmentIds(owned.ownedId, getConversationSession(owned.ownedId)?.attachmentIds ?? []);
+			}
 			await sendStructuredMessage(owned.ownedId, request.prompt, {
 				reasoningEffort: request.reasoningEffort,
 				model: request.model,
 				approvalPolicy: request.approvalPolicy,
 			});
 			promptAccepted = true;
+			this.draftOpen = false;
 			// A switch may stop draft ownership, but it must not cancel the agent turn
 			// that sendStructuredMessage has already handed to the background runtime.
 			const stillPresented = !stopSignal.aborted;
 			await this.persistOwnedMetadata(owned.ownedId);
-			if (!stopSignal.aborted && request.executionEnvironment !== 'remote') rememberLastUsed(request.projectPath);
+			if (!stopSignal.aborted && request.executionEnvironment !== 'remote' && request.projectPath) rememberLastUsed(request.projectPath);
 			updateOwnedSession(owned.ownedId, { runtimeState: 'ready', lastError: null });
 			if (stillPresented && !stopSignal.aborted) showSession();
 			return owned.ownedId;
@@ -158,12 +180,12 @@ export class NewSessionController {
 
 	private mostRecentProjectPath(): string | undefined {
 		const active = rail.owned.find((session) => session.ownedId === rail.activeOwnedId);
-		if (active) return sessionWorkspaceRoot(active) || undefined;
+		if (active?.projectPath) return sessionWorkspaceRoot(active) || undefined;
 		const activityTime = (value: string | null): number => {
 			const parsed = Date.parse(value ?? '');
 			return Number.isFinite(parsed) ? parsed : 0;
 		};
-		const recent = [...rail.owned].sort(
+		const recent = rail.owned.filter((session) => session.projectPath).sort(
 			(left, right) => activityTime(right.lastActivity) - activityTime(left.lastActivity),
 		)[0];
 		return recent ? sessionWorkspaceRoot(recent) || undefined : undefined;
