@@ -258,7 +258,7 @@
 		filesRoot={selection.filesProjectionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
-		onExpandedPathsChange={(root, paths) => selection.rememberExpandedPaths(root, paths)}
+		onExpandedPathsChange={(ownedId, root, paths) => selection.rememberExpandedPaths(ownedId, root, paths)}
 		filesInspectionRoot={selection.activeWorkspaceSnapshot?.filesInspectionRoot ?? null}
 		sourceControlInspectionRoot={selection.activeWorkspaceSnapshot?.sourceControlInspectionRoot ?? null}
 		onFilesInspectionRootChange={(root) => selection.rememberWorkspaceState({ filesInspectionRoot: root })}
