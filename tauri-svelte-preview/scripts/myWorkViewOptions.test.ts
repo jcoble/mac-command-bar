@@ -1,6 +1,9 @@
 import './svelteRuneTestSetup.ts';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { parse } from 'svelte/compiler';
+import ts from 'typescript';
 
 import {
   buildMyWorkGroups,
@@ -13,7 +16,8 @@ import {
   type MyWorkGroup
 } from '../src/lib/shell/components/myWorkViewOptions.ts';
 import type { OwnedSession } from '../src/lib/shell/ownedSessions.ts';
-import { hydrateOwned, rail, setOwnedSessionStatus } from '../src/lib/shell/stores/sessionRailStore.svelte.ts';
+import { ownedSessionMetaForBackend } from '../src/lib/shell/ownedSessions.ts';
+import { hydrateOwned, rail, setOwnedSessionStatus, updateOwnedSession } from '../src/lib/shell/stores/sessionRailStore.svelte.ts';
 
 function session(ownedId: string, extra: Record<string, unknown> = {}): OwnedSession {
   return {
@@ -203,21 +207,52 @@ function shape(groups: MyWorkGroup[]): unknown[] {
   assert.deepEqual(kept({ provider: ['antigravity'], status: ['working'] }), []);
 }
 
-// The rail's status actions must change the same rows that the pills filter.
+// Run the route's status callbacks through the real rail projection and filter.
 {
-  const route = readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
-  for (const [action, status] of [
-    ['onComplete', 'done'],
-    ['onReopen', 'working'],
-    ['onSettle', 'settled'],
-    ['onUnsettle', 'done']
-  ]) {
-    assert.ok(new RegExp(`${action}=\\{\\(ownedId\\) => void changeSessionStatus\\(ownedId, '${status}'\\)\\}`).test(route),
-      `${action} must reach the saved status action`);
+  const route = process.env.STATUS_TEST_BASE
+    ? execFileSync('git', ['show', `${process.env.STATUS_TEST_BASE}:tauri-svelte-preview/src/routes/+page.svelte`], { encoding: 'utf8' })
+    : readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
+  const ast = parse(route, { modern: true });
+  const action = ast.instance?.content.body.find((node) => node.type === 'FunctionDeclaration'
+    && node.id?.name === 'changeSessionStatus');
+  assert.ok(action, 'route status action exists');
+  const saves: Array<{ ownedId: string; completedAt: string | null; settledAt: string | null }> = [];
+  const actionCode = ts.transpileModule(route.slice(action.start, action.end), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 }
+  }).outputText;
+  const changeSessionStatus = new Function('selection', 'setOwnedSessionStatus',
+    'updateOwnedSession', 'ownedSessionMetaForBackend', 'updateAgentConversationSessionMetaFromTauri',
+    `${actionCode}; return changeSessionStatus;`)(
+      { get railOwned() { return rail.owned; } }, setOwnedSessionStatus, updateOwnedSession,
+      ownedSessionMetaForBackend,
+      async ({ ownedId, meta }: { ownedId: string; meta: { completedAt: string | null; settledAt: string | null } }) => {
+        saves.push({ ownedId, completedAt: meta.completedAt, settledAt: meta.settledAt });
+      }
+    ) as (ownedId: string, status: string) => Promise<void>;
+  let column: { attributes: Array<{ name?: string; value?: { expression?: { start: number; end: number } } }> } | undefined;
+  function findColumn(node: unknown): void {
+    if (!node || typeof node !== 'object') return;
+    const current = node as { type?: string; name?: string; [key: string]: unknown };
+    if (current.type === 'Component' && current.name === 'SessionsColumn') column = current as typeof column;
+    for (const value of Object.values(current)) {
+      if (Array.isArray(value)) value.forEach(findColumn);
+      else if (value && typeof value === 'object') findColumn(value);
+    }
   }
+  findColumn(ast.fragment);
+  assert.ok(column, 'route renders the sessions column');
+  const invoke = async (name: string, ownedId: string) => {
+    const expression = column.attributes.find((attribute) => attribute.name === name)?.value?.expression;
+    assert.ok(expression, `${name} status callback exists`);
+    const callback = new Function('changeSessionStatus', `return (${route.slice(expression.start, expression.end)});`)(
+      changeSessionStatus
+    ) as (id: string) => void;
+    callback(ownedId);
+    await Promise.resolve();
+  };
   hydrateOwned([session('working'), session('done'), session('settled')]);
-  setOwnedSessionStatus('done', 'done', new Date('2026-09-30T12:00:00.000Z'));
-  setOwnedSessionStatus('settled', 'settled', new Date('2026-09-30T12:00:00.000Z'));
+  await invoke('onComplete', 'done');
+  await invoke('onSettle', 'settled');
   const kept = (status: string[]) => rail.owned
     .filter((row) => matchesMyWorkFilters(row, { status }))
     .map((row) => row.ownedId);
@@ -225,10 +260,16 @@ function shape(groups: MyWorkGroup[]): unknown[] {
   assert.deepEqual(kept(['done']), ['done']);
   assert.deepEqual(kept(['settled']), ['settled']);
   assert.deepEqual(kept(['done', 'settled']), ['done', 'settled']);
-  setOwnedSessionStatus('settled', 'done', new Date('2026-09-30T13:00:00.000Z'));
+  assert.deepEqual(saves.map(({ ownedId, completedAt, settledAt }) => [ownedId, !!completedAt, !!settledAt]), [
+    ['done', true, false], ['settled', true, true]
+  ]);
+  await invoke('onUnsettle', 'settled');
   assert.deepEqual(kept(['done']), ['done', 'settled']);
-  setOwnedSessionStatus('done', 'working', new Date('2026-09-30T14:00:00.000Z'));
+  await invoke('onReopen', 'done');
   assert.deepEqual(kept(['working']), ['working', 'done']);
+  assert.deepEqual(saves.map(({ ownedId, completedAt, settledAt }) => [ownedId, !!completedAt, !!settledAt]), [
+    ['done', true, false], ['settled', true, true], ['settled', true, false], ['done', false, false]
+  ]);
 }
 
 // normalizeMyWorkFilters keeps only known group ids and option values.
