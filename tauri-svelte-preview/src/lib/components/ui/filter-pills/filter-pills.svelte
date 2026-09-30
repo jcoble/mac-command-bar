@@ -3,10 +3,11 @@
   manner of Spotify's Your Library filters.
 
   At rest the row shows one pill per group. Pressing a group opens it: the row
-  shows that group's options, which toggle on and off, and an X that closes it.
-  A closed group with a selection shows the chosen labels joined ("Claude/Codex")
-  as a filled pill. A group left open with no press for ten seconds closes by
-  itself. The X at the far left of the resting row clears every group.
+  shows an "All" pill, which clears that group and closes it, then the group's
+  options, which toggle on and off. A press anywhere outside the row, or ten
+  seconds with no press, closes the group and keeps its selection. A closed
+  group with a selection shows the chosen labels joined ("Claude/Codex") as a
+  filled pill. The X at the far left of the resting row clears every group.
 
   Plain config in, selected values per group id out. The caller owns what the
   values mean and whether they are saved. Needs only Tailwind and the shadcn
@@ -41,11 +42,23 @@
   const AUTO_CLOSE_MS = 10_000;
   let openId = $state<string | null>(null);
   let timer: number | undefined;
+  let row = $state<HTMLDivElement | null>(null);
 
   const openGroup = $derived(groups.find((group) => group.id === openId) ?? null);
   const anySelected = $derived(groups.some((group) => selected(group.id).length > 0));
 
   $effect(() => () => clearTimeout(timer));
+
+  // While a group is open, a press outside the row closes it and keeps its
+  // selection. The listener exists only while open; closing or unmounting removes it.
+  $effect(() => {
+    if (openId === null) return;
+    const closeOnOutsidePress = (event: PointerEvent): void => {
+      if (!row?.contains(event.target as Node)) close();
+    };
+    window.addEventListener('pointerdown', closeOnOutsidePress, true);
+    return () => window.removeEventListener('pointerdown', closeOnOutsidePress, true);
+  });
 
   function selected(groupId: string): string[] {
     return value[groupId] ?? [];
@@ -75,6 +88,11 @@
       );
     onChange({ ...value, [group.id]: next });
     restartTimer();
+  }
+
+  function clearGroup(group: FilterPillGroup): void {
+    onChange({ ...value, [group.id]: [] });
+    close();
   }
 
   function clearAll(): void {
@@ -111,15 +129,16 @@
   </svg>
 {/snippet}
 
-<div role="group" aria-label={label} class="flex flex-nowrap items-center gap-2 overflow-x-auto">
+<div bind:this={row} role="group" aria-label={label} class="flex flex-nowrap items-center gap-2 overflow-x-auto">
   {#if openGroup}
     {@const group = openGroup}
+    {@const all = selected(group.id).length === 0}
     <button
       type="button"
-      class="{PILL} {ICON}"
-      aria-label="Close {group.label}"
-      onclick={close}
-    >{@render closeIcon()}</button>
+      class="{PILL} px-3 {all ? CHOSEN : REST}"
+      aria-pressed={all}
+      onclick={() => clearGroup(group)}
+    >All</button>
     {#each group.options as option (option.value)}
       {@const pressed = selected(group.id).includes(option.value)}
       <button
