@@ -4,23 +4,27 @@
  */
 import { resolveOwnedSessionProject, type OwnedSession } from '../ownedSessions.ts';
 
-export type MyWorkGrouping = 'none' | 'status' | 'project';
 export type MyWorkSort = 'recent' | 'name';
 export type MyWorkSortDirection = 'asc' | 'desc';
 export type MyWorkStatus = 'working' | 'done' | 'settled';
 
 export interface MyWorkViewOptions {
-  groupBy: MyWorkGrouping;
+  groupByProject: boolean;
+  groupByStatus: boolean;
   sortBy: MyWorkSort;
   sortDirection: MyWorkSortDirection;
-  visibleStatuses: MyWorkStatus[];
 }
 
 export interface MyWorkGroup {
   key: string;
   label: string;
   sessions: OwnedSession[];
+  /** Status sections inside a project, when both groupings are on. */
+  subgroups?: MyWorkGroup[];
 }
+
+/** Selected option values per filter group id; an empty list filters nothing. */
+export type MyWorkFilters = Record<string, string[]>;
 
 export const MY_WORK_STATUSES: readonly MyWorkStatus[] = ['working', 'done', 'settled'];
 /**
@@ -37,11 +41,41 @@ export const NATURAL_SORT_DIRECTION: Record<MyWorkSort, MyWorkSortDirection> = {
 };
 
 export const DEFAULT_MY_WORK_VIEW_OPTIONS: MyWorkViewOptions = {
-  groupBy: 'status',
+  groupByProject: false,
+  groupByStatus: true,
   sortBy: 'recent',
-  sortDirection: NATURAL_SORT_DIRECTION.recent,
-  visibleStatuses: [...MY_WORK_STATUSES]
+  sortDirection: NATURAL_SORT_DIRECTION.recent
 };
+
+/** The rail's filter pills: one source for the pills and for the predicate. */
+export const MY_WORK_FILTER_GROUPS = [
+  {
+    id: 'provider',
+    label: 'Provider',
+    options: [
+      { value: 'claude', label: 'Claude' },
+      { value: 'codex', label: 'Codex' },
+      { value: 'antigravity', label: 'Agy' }
+    ]
+  },
+  {
+    id: 'status',
+    label: 'Status',
+    options: [
+      { value: 'working', label: 'Working' },
+      { value: 'done', label: 'Done' },
+      { value: 'settled', label: 'Settled' }
+    ]
+  },
+  {
+    id: 'location',
+    label: 'Location',
+    options: [
+      { value: 'local', label: 'Local' },
+      { value: 'remote', label: 'Remote' }
+    ]
+  }
+];
 
 /** What the direction control says it will do, for the sort in force. */
 export function myWorkSortDirectionLabel(
@@ -84,15 +118,24 @@ function activityRank(session: OwnedSession): number {
   return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
 }
 
+/** Options inside a group combine as OR; groups combine as AND. */
+export function matchesMyWorkFilters(session: OwnedSession, filters: MyWorkFilters): boolean {
+  const values: Record<string, string> = {
+    provider: session.agent,
+    status: myWorkStatus(session),
+    location: session.executionEnvironment
+  };
+  return MY_WORK_FILTER_GROUPS.every((group) => {
+    const chosen = filters[group.id] ?? [];
+    return chosen.length === 0 || chosen.includes(values[group.id]);
+  });
+}
+
 export function prepareMyWorkSessions(
   sessions: OwnedSession[],
-  options: Pick<MyWorkViewOptions, 'sortBy' | 'visibleStatuses'> &
-    Partial<Pick<MyWorkViewOptions, 'sortDirection'>>
+  options: Pick<MyWorkViewOptions, 'sortBy'> & Partial<Pick<MyWorkViewOptions, 'sortDirection'>>
 ): OwnedSession[] {
-  const visible = new Set(options.visibleStatuses);
-  const indexed = sessions
-    .map((session, index) => ({ session, index }))
-    .filter(({ session }) => visible.has(myWorkStatus(session)));
+  const indexed = sessions.map((session, index) => ({ session, index }));
   const direction = options.sortDirection ?? NATURAL_SORT_DIRECTION[options.sortBy];
   const flip = direction === 'asc' ? 1 : -1;
 
@@ -110,19 +153,11 @@ export function prepareMyWorkSessions(
   return indexed.map(({ session }) => session);
 }
 
-export function buildMyWorkGroups(
-  sessions: OwnedSession[],
-  options: MyWorkViewOptions
-): MyWorkGroup[] {
-  const prepared = prepareMyWorkSessions(sessions, options);
-  if (options.groupBy === 'none') {
-    return [{ key: 'all', label: '', sessions: prepared }];
-  }
-
+function groupSessions(sessions: OwnedSession[], by: 'status' | 'project'): MyWorkGroup[] {
   const groups = new Map<string, MyWorkGroup>();
-  for (const session of prepared) {
+  for (const session of sessions) {
     const identity =
-      options.groupBy === 'status'
+      by === 'status'
         ? { key: myWorkStatus(session), label: STATUS_LABELS[myWorkStatus(session)] }
         : myWorkProject(session);
     const group = groups.get(identity.key) ?? { ...identity, sessions: [] };
@@ -130,7 +165,7 @@ export function buildMyWorkGroups(
     groups.set(identity.key, group);
   }
 
-  if (options.groupBy === 'status') {
+  if (by === 'status') {
     return MY_WORK_STATUSES.flatMap((status) => {
       const group = groups.get(status);
       return group ? [group] : [];
@@ -141,8 +176,23 @@ export function buildMyWorkGroups(
   );
 }
 
-function isGrouping(value: unknown): value is MyWorkGrouping {
-  return value === 'none' || value === 'status' || value === 'project';
+export function buildMyWorkGroups(
+  sessions: OwnedSession[],
+  options: MyWorkViewOptions
+): MyWorkGroup[] {
+  const prepared = prepareMyWorkSessions(sessions, options);
+  if (options.groupByProject && options.groupByStatus) {
+    return groupSessions(prepared, 'project').map((project) => ({
+      ...project,
+      subgroups: groupSessions(project.sessions, 'status').map((status) => ({
+        ...status,
+        key: `${project.key}::${status.key}`
+      }))
+    }));
+  }
+  if (options.groupByProject) return groupSessions(prepared, 'project');
+  if (options.groupByStatus) return groupSessions(prepared, 'status');
+  return [{ key: 'all', label: '', sessions: prepared }];
 }
 
 function isSort(value: unknown): value is MyWorkSort {
@@ -155,21 +205,41 @@ function isSortDirection(value: unknown): value is MyWorkSortDirection {
 
 export function normalizeMyWorkViewOptions(value: unknown): MyWorkViewOptions {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return { ...DEFAULT_MY_WORK_VIEW_OPTIONS, visibleStatuses: [...MY_WORK_STATUSES] };
+    return { ...DEFAULT_MY_WORK_VIEW_OPTIONS };
   }
-  const candidate = value as Partial<MyWorkViewOptions>;
+  // A stored option from before the two toggles carries one `groupBy` value;
+  // an old `visibleStatuses` is dropped because the status pill replaced it.
+  const candidate = value as Partial<MyWorkViewOptions> & { groupBy?: unknown };
+  const legacy = ['none', 'status', 'project'].includes(candidate.groupBy as string)
+    ? candidate.groupBy
+    : null;
   const sortBy = isSort(candidate.sortBy) ? candidate.sortBy : DEFAULT_MY_WORK_VIEW_OPTIONS.sortBy;
-  const visibleStatuses = Array.isArray(candidate.visibleStatuses)
-    ? MY_WORK_STATUSES.filter((status) => candidate.visibleStatuses?.includes(status))
-    : [...MY_WORK_STATUSES];
   return {
-    groupBy: isGrouping(candidate.groupBy) ? candidate.groupBy : DEFAULT_MY_WORK_VIEW_OPTIONS.groupBy,
+    groupByProject:
+      typeof candidate.groupByProject === 'boolean'
+        ? candidate.groupByProject
+        : legacy ? legacy === 'project' : DEFAULT_MY_WORK_VIEW_OPTIONS.groupByProject,
+    groupByStatus:
+      typeof candidate.groupByStatus === 'boolean'
+        ? candidate.groupByStatus
+        : legacy ? legacy === 'status' : DEFAULT_MY_WORK_VIEW_OPTIONS.groupByStatus,
     sortBy,
     // A stored option from before the direction existed carries none, and the
     // sort it was saved with is the direction that sort means.
     sortDirection: isSortDirection(candidate.sortDirection)
       ? candidate.sortDirection
-      : NATURAL_SORT_DIRECTION[sortBy],
-    visibleStatuses
+      : NATURAL_SORT_DIRECTION[sortBy]
   };
+}
+
+/** Keeps only known filter groups and their known option values, in option order. */
+export function normalizeMyWorkFilters(value: unknown): MyWorkFilters {
+  const candidate = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  return Object.fromEntries(
+    MY_WORK_FILTER_GROUPS.map((group) => {
+      const stored = candidate[group.id];
+      const chosen = Array.isArray(stored) ? stored : [];
+      return [group.id, group.options.map((option) => option.value).filter((v) => chosen.includes(v))];
+    })
+  );
 }

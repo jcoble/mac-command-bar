@@ -1045,6 +1045,71 @@ test('attachment previews are revoked when replaced, but not while shown in a se
   }
 });
 
+
+await test('snapshot reads top up overlapping live events and keep streaming after one read', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const reads = source.slice(source.indexOf('function bufferConversationEvent('), source.indexOf('/** Stored event bytes'));
+  const handler = source.slice(source.indexOf('async function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
+  for (const initialRead of [true, false]) {
+    const ownedId = `owned-deferred-${initialRead}`;
+    store.ensureConversationSession(ownedId, 'codex');
+    let finishRead!: (snapshot: AgentConversationSnapshot) => void;
+    const pending = new Promise<AgentConversationSnapshot>((resolve) => { finishRead = resolve; });
+    let readCount = 0;
+    const dependencies = {
+      ...store, get, sessionPresenceHistory, sessionPresenceEventFromConversation,
+      synchronizeSessionPresenceWork, shouldClearConversationSending,
+      rail: { activeOwnedId: ownedId, owned: [] },
+      updateOwnedSession: () => undefined,
+      publishConversationSnapshotReadDiagnostics: () => undefined,
+      hydrateSentConversationAttachments: async () => undefined,
+      readAgentConversationSnapshotFromTauri: async () => { readCount += 1; return pending; }
+    };
+    const service = Function(...Object.keys(dependencies), stripTypeScriptTypes(`
+      const resyncing = new Map(); const readVersions = new Map(); const railActivityEvents = new Map();
+      const conversationEventsDisposed = false; const conversationEventsGeneration = 1;
+      ${reads.replaceAll('export async function', 'async function')}
+      ${handler}
+    `, { mode: 'strip' }) + '\nreturn { loadConversationForRead, handleConversationStreamEnvelope, resyncing };')(...Object.values(dependencies));
+    const event = (sequence: number, text: string): AgentConversationEvent => ({
+      ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
+      payload: { kind: 'assistantDelta', itemId: 'answer', delta: text }
+    });
+    const opening = initialRead ? service.loadConversationForRead(ownedId, false) : Promise.resolve();
+    const first = service.handleConversationStreamEnvelope(1, { chunk: event(10, 'B') });
+    const second = service.handleConversationStreamEnvelope(1, { chunk: event(11, 'C') });
+    const duplicate = service.handleConversationStreamEnvelope(1, { chunk: event(11, 'C') });
+    finishRead({
+      connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
+      lastSequence: initialRead ? 10 : 9, events: initialRead ? [event(9, 'A'), event(10, 'B')] : [event(9, 'A')]
+    });
+    await Promise.all([opening, first, second, duplicate]);
+    assert.equal(readCount, 1, 'a late snapshot with a contiguous suffix needs only one read');
+    assert.equal(store.getConversationSession(ownedId).desynchronized, false);
+    assert.equal(store.getConversationSession(ownedId).timeline[0].text, 'ABC');
+    assert.deepEqual(store.getConversationSession(ownedId).loadedEvents.map((event: AgentConversationEvent) => event.sequence), [9, 10, 11]);
+    await service.handleConversationStreamEnvelope(1, { chunk: event(12, 'D') });
+    assert.equal(store.getConversationSession(ownedId).timeline[0].text, 'ABCD');
+    assert.equal(service.resyncing.size, 0, 'completed reads release their buffers');
+    synchronizeSessionPresenceWork(ownedId, 'buffered-turn', true);
+    const finishingRead = service.loadConversationForRead(ownedId, false);
+    await service.handleConversationStreamEnvelope(1, { chunk: {
+      ...event(13, ''), timestampMs: Date.now(),
+      payload: { kind: 'turn', turnId: 'buffered-turn', state: 'completed' }
+    } });
+    assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, null,
+      'buffering must still clear active presence immediately on completion');
+    await finishingRead;
+    synchronizeSessionPresenceWork(ownedId, 'gapped-turn', true);
+    await service.handleConversationStreamEnvelope(1, { chunk: {
+      ...event(15, ''), timestampMs: Date.now(),
+      payload: { kind: 'turn', turnId: 'gapped-turn', state: 'completed' }
+    } });
+    assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, null,
+      'the event triggering gap recovery must also clear completed presence');
+  }
+});
+
 await test('sendStructuredMessage resolves the terminal from the owned session, not a passed argument', async () => {
   const ownedId = 'owned-terminal-route';
   const terminalId = 'terminal-from-owned-session';
