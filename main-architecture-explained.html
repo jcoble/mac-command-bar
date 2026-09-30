@@ -664,6 +664,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-09-30 · “Prototype TanStack chat over Assembly’s existing channel”</td><td>Spike branch only: a development button selects a small TanStack client view. One observer follows the existing channel after Assembly updates its bounded SQL projection; Rust, provider context and storage stay unchanged. Explicit client disposal releases the observer. This is a measured experiment, not an adopted architecture.</td><td>01, 13</td></tr>
             <tr><td>2026-09-29 · “Show adapter activity only on the selected provider”</td><td>The update state records the installing provider. Only that provider row shows a download spinner and Installing label; completion or failure clears the activity. Other providers remain disabled during the single installation without claiming to install.</td><td>04</td></tr>
             <tr><td>2026-09-29 · “Restore verified Workbox editor and startup fixes”</td><td>Restored session selection enables panel loads before restoring its workspace. Native file access events no longer trigger another source read. Repeated previews of unchanged disk content retain dirty editor drafts without inventing conflicts; actual disk edits remain conflicts.</td><td>13</td></tr>
             <tr><td>2026-09-29 · TSK-1286 · “Explain current adapter releases and installs”</td><td>Correct the provider cards that still described adapter payloads as bundled in the desktop app. Document the daily upstream resolver, signed catalog, selected-provider download, local and remote ownership, measured progress, explicit restart, CLI boundary, and absence of a global update alert.</td><td>04</td></tr>
@@ -1174,7 +1175,7 @@
 
         <div class="callout current">
           <p><strong>The app sends the current prompt, not the entire transcript.</strong> The provider resumes its own native context. Assembly’s journal is the durable UI/audit copy; it is not re-uploaded as model context on every message.</p>
-          <span class="source"><code>conversationService.ts:609-752</code> · <code>manager.rs:1144-1216,2930-3039,3103-3126,3763-3997</code></span>
+          <span class="source"><code>conversationService.ts:618-761</code> · <code>manager.rs:1144-1216,2930-3039,3103-3126,3763-3997</code></span>
         </div>
       </section>
 
@@ -1207,7 +1208,7 @@
 
         <div class="callout conditional">
           <p><strong>Sequence gaps wait for repair.</strong> The reducer rejects stale or duplicate events. If it observes a gap, the selected transcript keeps its existing rows and does not project later live updates. The service reloads a bounded snapshot from Rust, then publishes the repaired rows together.</p>
-          <span class="source"><code>conversationStore.svelte.ts:353-373</code> · <code>conversationStore.svelte.ts:451-466</code> · <code>conversationService.ts:1188-1190</code></span>
+          <span class="source"><code>conversationStore.svelte.ts:353-373</code> · <code>conversationStore.svelte.ts:451-466</code> · <code>conversationService.ts:1198-1200</code></span>
         </div>
 
         <details>
@@ -1271,7 +1272,7 @@
           <p><strong>Model changes refresh controls.</strong> The ACP client replaces its advertised option IDs from each standard config reply and checks the refreshed set before applying effort. A resumed model with no effort control can therefore switch to a model that offers one without retaining the stale model metadata. Source: <code>providers/acp_client.rs:751-830</code>.</p>
           <p><strong>Stop covers startup.</strong> The frontend retains only a cancellation bit while preparing a first send, checks it before dispatch, and removes that record in finally. A cancelled preparation asks the backend to release the idle runtime and returns the existing draft-recovery error. Backend cancel_turn takes the same lifecycle guard as send_message before reading its active turn, and releases it before quiescent suspension.</p>
           <p><strong>A refused send stops what it started.</strong> When <code>send_message</code> activates an adapter and the configuration or the prompt is then refused, it takes the same <code>suspend_if_quiescent</code> path, so a failed first message does not leave a provider process idling until the app quits.</p>
-          <span class="source"><code>manager.rs:1704-1745,2443-2481; conversationService.ts:1162-1347</code></span>
+          <span class="source"><code>manager.rs:1704-1745,2443-2481; conversationService.ts:1171-1358</code></span>
         </div>
       </section>
 
@@ -1370,7 +1371,7 @@
           <li>The user-message event stores attachment IDs, so restart replay can reconnect timeline items to indexed files.</li>
           <li>Chat loads thumbnails; the lightbox and structured send load original bytes only on request.</li>
         </ol>
-        <span class="source"><code>attachments.rs:38-220,225-350</code> · <code>conversationService.ts:133-220,390-437,609-752</code></span>
+        <span class="source"><code>attachments.rs:38-220,225-350</code> · <code>conversationService.ts:142-229,399-446,618-761</code></span>
       </section>
 
       <section id="formats">
@@ -1488,7 +1489,7 @@
 
         <h3>Provider transcript import</h3>
         <p>When adopting or migrating provider-owned history, the importer stores a byte-offset cursor in session metadata. Older imported records can receive negative event sequences, leaving zero and positive sequences available for current Assembly activity. When SQLite paging reaches the imported boundary, the frontend can ask Rust to extend the provider transcript import and then query SQLite again.</p>
-        <span class="source"><code>transcript_import.rs:16-29</code> · <code>conversationService.ts:456-523</code></span>
+        <span class="source"><code>transcript_import.rs:16-29</code> · <code>conversationService.ts:465-532</code></span>
 
         <div class="callout conditional">
           <p><strong>History and context can diverge deliberately.</strong> Assembly may show a complete normalized journal even though a provider has internally compacted its native context. Conversely, an imported provider transcript can contain records Assembly has not loaded into the current page. Durable display history is not proof of the provider’s current context window.</p>
@@ -1508,6 +1509,8 @@
       <section id="svelte">
         <span class="section-label">13 · Svelte frontend</span>
         <h2>From event journal to conversation UI.</h2>
+        <aside class="callout"><strong>TanStack spike branch only (2026-09-30).</strong> A development-only button in <code>ConversationSurface.svelte</code> selects <code>TanstackSpike.svelte</code>. Its <code>createChat</code> client uses <code>assemblySpikeAdapter</code> over the existing conversation-service channel observer, never a second Tauri registration (registration replaces the channel). Text deltas flow through TanStack; Assembly still normalizes the SQL window, approvals and lifecycle. The spike copies only that window into client parts and explicitly disposes the client on unmount. It is not production migration code: rich parts, safe mid-stream resync and a memory improvement remain unproven. See <a href="docs/tanstack-spike.html">the spike evidence and decision</a>.</aside>
+        <span class="source"><code>conversationService.ts:94-102,1196-1203</code> · <code>tanstackSpike.ts:8-110</code> · <code>TanstackSpike.svelte:10-16</code> · <code>projection_streams.rs:99-115,435-441</code></span>
         <p class="intro">Svelte is a projection of backend truth plus temporary interaction state. It does not own provider processes, context recovery, or durable event ordering.</p>
 
         <div class="mini-flow" aria-label="Frontend rendering flow">
@@ -1524,12 +1527,12 @@
 
         <p>Remote activity is reconciled from the backend’s compact live session inventory after stream setup, reconnect, and stream resynchronization. Turn-start and terminal events update the rail’s runtime fields even when its transcript is not loaded, so a cached suspension cannot hide current work and a cached active-turn ID cannot survive completion. Inventory replies never overwrite a newer live event, a newer inventory read, a send being prepared, or a disconnected/stopped stream. A missing turn-start timestamp remains unknown; reconnect does not invent an elapsed duration. A live turn takes precedence over unread completion from an earlier turn.</p>
         <p>Composer activity follows the selected session’s live turn presence as well as local send preparation. A reselected session can have an active turn even when its bounded transcript omits the older turn-start event; Stop and advertised steering remain available without retaining its inactive transcript. Terminal events clear inactive send state before recording finished rail presence, while selection continues to own transcript release and unsent draft or attachment recovery. After a remote send is accepted, the desktop refreshes the bounded active conversation snapshot so its sent message and attachment appear without a session switch; if that read fails, it reports a refresh failure without treating the delivered prompt as unsent. Local sends retain their live-event path. Stop marks a pending correction cancelled and reaches the running backend turn; the cancelled correction returns to the existing draft recovery path without dispatch.</p>
-        <span class="source"><code>ConversationSurface.svelte:100-110,437-448,702-707</code> · <code>conversationService.ts:1039,1096,1129,1186,1324,1500</code></span>
+        <span class="source"><code>ConversationSurface.svelte:102-112,439-450,704-709</code> · <code>conversationService.ts:1048,1105,1138,1195,1335,1511</code></span>
         <p>The live activity line belongs to the transcript, not the composer. While that same turn presence is active, the root transcript at its live end draws one fixed-height line after the newest row: the turn's <code>WorkingSpinner</code> and a label derived from the newest non-plan row when that row carries the same authoritative active turn ID that drives Stop (presence first, then the conversation's own). An unfinished reasoning row reads Thinking, unfinished assistant text reads Writing, a pending or running tool names its kind, and an open entry in the session's pending approval or input map reads Waiting; an unknown ID, a sent message, an older turn's row, or anything else reads Working. Sub-agent views and windows trimmed while reading upward show no line, and the composer keeps only its fixed controls.</p>
-        <span class="source"><code>conversationTimeline.ts:392-414</code> · <code>ConversationSurface.svelte:104-106,162-171,680</code> · <code>ConversationTimeline.svelte:589-594,620</code> · <code>WorkingSpinner.svelte</code></span>
+        <span class="source"><code>conversationTimeline.ts:392-414</code> · <code>ConversationSurface.svelte:106-108,164-173,682</code> · <code>ConversationTimeline.svelte:589-594,620</code> · <code>WorkingSpinner.svelte</code></span>
 
         <p>ConversationSurface owns capability loading through a stable session/generation/provider/connection-state/native-session-ID key. Same-identity projection updates leave the request running; changing identity or unmounting aborts it. Remote transcripts show the selected saved machine's name and SSH destination beside the session working directory; changing sessions discards a late profile read. A pointer press in the conversation clears an earlier text selection before a new selection starts. First and resumed activations persist the adapter's advertised capabilities before emitting a ready <code>Connection</code> event; the native session ID change also triggers a reread when the frontend already shows <code>connected</code>. The composer shows steering only when the adapter advertises <code>initialize._meta.steering.supported</code>. The backend sends <code>_session/steering</code> with <code>_meta.steering.idleBehavior: promptRequired</code>, records a correction only after an <code>injected</code> response, and returns an unconsumed correction to existing draft recovery if the turn already finished or delivery fails. The installed official Antigravity 1.2.1 does not advertise this extension.</p>
-        <span class="source"><code>agent_conversation/manager.rs:1624-1673</code> · <code>ConversationSurface.svelte:188-191,268-282</code></span>
+        <span class="source"><code>agent_conversation/manager.rs:1624-1673</code> · <code>ConversationSurface.svelte:190-193,270-284</code></span>
         <h3>What a session switch releases</h3>
         <p>Before changing the active ID, the route flushes the departing draft and, once workspace capture is available, saves its editor tabs, view state, panel choices, selected diff, selected child, scroll position, and compact browser address. Center-tab and right-tab changes queue that compact SQLite checkpoint immediately. Route disposal is single-flight; during development, Vite's pre-replacement hook starts the same final checkpoint before replacement modules can reset editor state, and ordinary component cleanup joins it. The selected rail id is a separate SQLite app setting; startup combines local and saved remote rail rows before restoring it, and falls back to the first row only when the remembered session no longer exists. A failed required SQLite checkpoint blocks a session switch. The switch then closes the departing native browser child WebViews, revokes attachment blob URLs, and unconditionally evicts the materialized conversation—even during startup, when the workspace-capture gate has not opened yet—so an early selection cannot strand a full inactive transcript projection. The Browser controller stays mounted while the right region is open, but leaving the Browser tab closes its native child WebViews after retaining compact tab metadata; returning lazily recreates them from that metadata and the application's one stable persistent WebKit data store. Closing the right region, changing session owner, or changing checkout root uses the same full close path and also discards its still/object-URL/annotation projection. The root agent Channel still records background working and attention transitions without rebuilding that transcript; a resync marker reloads only the active projection. Returning reads the current durable snapshot and draft, then restores the saved UI state, including a remembered diff only while that path remains a current change in the same repository. If startup selected a remote row while its machine was disconnected, explicit reconnect refreshes that selected session and then reapplies the same durable workbench state after its projections become available.</p>
         <p>Every rail selection immediately aborts the prior owner's frontend work, advances its generation, and becomes the only result allowed to publish workspace, tree, conversation, editor, or extension state. There is no predecessor queue, quiet-window delay, or selection timer. The rail may move directly through many sessions, but it does not request a conversation snapshot or normalize transcript events; the large conversation and Files projections stay unmounted until the user explicitly opens the final transcript or lists the final tree. Conversation snapshot requests made by that explicit open carry an exact monotonically increasing read identity. Rust records that identity before reading local SQLite and uses the store's dedicated interrupt handle to stop only the older active statement; releasing the projection sends the same exact cancellation even when no replacement read follows. An interrupted read returns no snapshot, so obsolete rows are not collected, serialized through Tauri, or materialized as JavaScript objects. Project-root validation has the same exact generation ownership and checks it around bounded filesystem and Git work; a <code>git rev-parse</code> already running is allowed to finish, but its stale result cannot reach the released session. Small capabilities, attachment, and workspace-metadata reads are likewise bounded commands whose stale frontend publication is rejected.</p>
@@ -1574,7 +1577,7 @@
 
         <h3>Where the context was cut</h3>
         <p>A <code>contextCompaction</code> event becomes a <code>compaction</code> timeline entry, drawn by <code>CompactionItem.svelte</code> as a divider (“Context compacted · 351k → 22k” when the provider reports sizes). Not every adapter reports one, so the reducer also infers a compaction from usage: a drop to at most 60% of the previous figure, from at least 32k tokens, adds the same entry unless the last entry already is one. <code>childUpdate</code> payloads (sub-agent progress) update the child state and produce no timeline row; live updates and restored transcript descriptors pass through the same child projection normalizer, so provider aliases become one Codex/Claude/Agy vocabulary, duplicate IDs collapse, workflow rows stay separate, and no child transcript body is retained in the list. Only an explicit child selection reads that child's transcript. Closing it, opening another child, switching away from the parent session, or advancing the parent generation releases the child rows and their retained bytes; stale read results are dropped before they can repopulate the store. An unknown item with no text is hidden like an empty message.</p>
-        <span class="source"><code>conversationReducer.ts:11-30,260-275</code> · <code>conversationTimeline.ts:369,505,613,840-846</code> · <code>conversationStore.svelte.ts:190-205,1278-1298,1513-1525,1605-1665</code> · <code>conversationService.ts:119-161,223-226</code> · <code>conversationItemVisibility.ts</code> · <code>components/conversation/CompactionItem.svelte</code></span>
+        <span class="source"><code>conversationReducer.ts:11-30,260-275</code> · <code>conversationTimeline.ts:369,505,613,840-846</code> · <code>conversationStore.svelte.ts:190-205,1278-1298,1513-1525,1605-1665</code> · <code>conversationService.ts:128-170,232-235</code> · <code>conversationItemVisibility.ts</code> · <code>components/conversation/CompactionItem.svelte</code></span>
 
         <h3>How Markdown is displayed safely</h3>
         <div class="two-up">
@@ -1643,7 +1646,7 @@ StructuredOwned</code></pre>
 
         <div class="callout conditional">
           <p><strong>A PTY is a deliberate mode, not ACP transport.</strong> The terminal can show a provider’s full native TUI and remains useful for recovery or unsupported capabilities. Its raw bytes are not parsed as ACP just because the command running inside is an agent.</p>
-          <span class="source"><code>routes/next/+page.svelte:860-1007</code> · <code>conversationService.ts:609-752</code></span>
+          <span class="source"><code>routes/next/+page.svelte:860-1007</code> · <code>conversationService.ts:618-761</code></span>
         </div>
       </section>
 

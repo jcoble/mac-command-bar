@@ -91,6 +91,15 @@ import {
   handoffGenerationMatches
 } from './conversationTypes.ts';
 
+// Throwaway TanStack spike: observe the ONE existing channel after Assembly applies it.
+let spikeEvent: ((event: AgentConversationEvent) => void) | null = null;
+let spikeResync: (() => void) | null = null;
+export function observeConversationForSpike(onEvent: (event: AgentConversationEvent) => void, onResync: () => void): () => void {
+  spikeEvent = onEvent;
+  spikeResync = onResync;
+  return () => { if (spikeEvent === onEvent) { spikeEvent = null; spikeResync = null; } };
+}
+
 let conversationStream: ProjectionStreamRegistration | null = null;
 let unlistenTitles: (() => void) | null = null;
 let unlistenRemoteConnections: (() => void) | null = null;
@@ -1184,12 +1193,14 @@ async function handleConversationStreamEnvelope(
   if (active && terminal) {
     setConversationSending(payload.ownedId, false);
   }
+  spikeEvent?.(payload);
 }
 
 async function handleConversationStreamResync(streamGeneration: number): Promise<void> {
   if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
   const activeOwnedId = rail.activeOwnedId;
   if (activeOwnedId) await resyncConversation(activeOwnedId);
+  spikeResync?.();
   await refreshRemoteSessionActivity(streamGeneration);
 }
 

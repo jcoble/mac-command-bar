@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>TanStack AI client spike — Assembly</title>
+  <style>
+    :root { color-scheme: dark; font: 15px/1.5 system-ui, sans-serif; background:#101217; color:#e8eaf0; }
+    body { max-width:1180px; margin:auto; padding:32px 24px 64px; }
+    h1 { font-size:30px; line-height:1.15; margin:0 0 10px; }
+    h2 { margin-top:34px; font-size:20px; }
+    p { max-width:82ch; }
+    .decision { border-left:4px solid #e4b64b; background:#1b1d24; padding:14px 18px; }
+    .pending { color:#ffd36a; font-weight:700; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th, td { text-align:left; vertical-align:top; padding:10px; border:1px solid #343844; }
+    th { background:#1b1e26; }
+    .proven { color:#73d89b; font-weight:700; white-space:nowrap; }
+    .work { color:#ffd36a; font-weight:700; white-space:nowrap; }
+    .blocked { color:#ff8c8c; font-weight:700; white-space:nowrap; }
+    code { color:#bcd5ff; overflow-wrap:anywhere; }
+    a { color:#8fc4ff; }
+    li { margin:7px 0; }
+    .small { color:#aeb4c2; font-size:13px; }
+  </style>
+</head>
+<body>
+  <h1>Can TanStack AI back Assembly’s frontend chat state?</h1>
+  <p class="decision"><span class="pending">Keep the current chat for now.</span> TanStack streamed a real Claude reply over Assembly’s unchanged Rust backend. It can back the view, but this spike does not establish a memory saving or safe replacement of the bounded state layer.</p>
+
+  <h2>Ten-line verdict</h2>
+  <ol>
+    <li>SQL can remain authoritative, but Assembly must continue owning the 512 KiB–4 MiB window and trimming.</li>
+    <li>Incremental text is supported and processing yields to the UI; gap recovery still needs one safe reset rule.</li>
+    <li>Approval, interrupt and steering can remain Assembly commands and events.</li>
+    <li>Tool parts are structured and the app controls grouping, summaries and height.</li>
+    <li>TanStack has recursive sub-agent parts with child transcripts.</li>
+    <li>Media parts exist; immediate thumbnails and background uploads remain Assembly work.</li>
+    <li>The custom adapter is transport-neutral, but this spike has only exercised the local path so far.</li>
+    <li>Memory stability is unproven; process memory grew through repeated switches. Devtools are not a heap profiler.</li>
+    <li>Fast switching is feasible only with explicit disposal and restore from Assembly SQL.</li>
+    <li>The client is browser-side TypeScript over a custom Rust/Tauri adapter; no Node process or built-in harness is needed.</li>
+  </ol>
+
+  <h2>Must-haves and evidence</h2>
+  <table>
+    <thead><tr><th>#</th><th>Verdict</th><th>What the evidence says</th><th>Receipts</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td class="work">POSSIBLE WITH WORK</td><td>Server hydration accepts <code>limit</code>/<code>before</code>, but loading older messages prepends forever. <code>StreamProcessor</code> owns one message array. The prototype restores only <code>spikeWindow()</code>, so Assembly still supplies byte trimming and SQL paging.</td><td><code>connection-adapters.ts:959-994</code>; <code>chat-client.ts:1146-1189, 3217-3253</code>; <code>processor.ts:204-226, 304-316</code>; <code>tanstackSpike.ts:8-27</code>; <a href="https://tanstack.com/ai/latest/docs/persistence/client-persistence">client persistence</a></td></tr>
+      <tr><td>2</td><td class="work">POSSIBLE WITH WORK</td><td>A content delta can create or resume its assistant message without a start event. Ordered processing yields after an 8 ms work budget. However, <code>setMessages()</code> replaces the array without resetting transient stream maps; a mid-stream SQL resync can let stale accumulated text overwrite the restored text. Recreate/reset the client on a gap, or resync only after the run settles.</td><td><code>processor.ts:857-928, 1772-1825, 280-286</code>; <code>chat-client.ts:92-104, 1938-1956</code>; <code>tanstackSpike.ts:40-49, 65-67</code></td></tr>
+      <tr><td>3</td><td class="work">POSSIBLE WITH WORK</td><td>A real approval was accepted (journal 1854→1857), a tool completed (1859), and a turn was interrupted (1880). Steering is wired but was not exercised. All use existing Assembly services. The client also supports an interrupt-on-busy policy, but Assembly does not need to adopt TanStack’s server approval model.</td><td><code>tanstackSpike.ts:96-109</code>; <code>types.ts:420-430</code>; <a href="https://tanstack.com/ai/latest/docs/tools/tool-approval">tool approvals</a></td></tr>
+      <tr><td>4</td><td class="proven">PROVEN</td><td>Tool calls and results are discriminated message parts. One real shell tool rendered in a custom disclosure with a summary and 240 px maximum body height. Multiple-call grouping remains renderer work; the spike proves control over the parts.</td><td><code>ai-client/src/types.ts:512-627</code>; <code>TanstackSpike.svelte:52-55, 86</code>; <a href="https://tanstack.com/ai/latest/docs/tools/tools">tools</a></td></tr>
+      <tr><td>5</td><td class="work">POSSIBLE WITH WORK</td><td>A sub-agent part carries status, nested messages, approvals, tools and nested children. Assembly events still need a small mapping into <code>SUBAGENT_*</code> chunks or restored parts; the local prototype does not do that mapping.</td><td><code>ai-client/src/types.ts:634-719</code>; <code>ai/src/types.ts:507-536</code>; <a href="https://tanstack.com/ai/latest/docs/chat/subagents">sub-agents</a></td></tr>
+      <tr><td>6</td><td class="work">POSSIBLE WITH WORK</td><td>Image, audio, video and document parts can render immediately, including URL/data sources. TanStack has no Assembly upload queue, so optimistic thumbnail creation and background upload must stay in Assembly and later update the bounded projection.</td><td><code>ai-client/src/types.ts:380-417, 721-735</code>; <code>ai/src/types.ts:273-336</code></td></tr>
+      <tr><td>7</td><td class="work">POSSIBLE WITH WORK</td><td>The adapter contract is transport-neutral and matches a persistent Tauri/WebSocket channel. The prototype uses the shared Assembly service boundary, but only one local Claude session has been targeted; remote workbox proof is still pending.</td><td><code>connection-adapters.ts:1023-1064</code>; <code>tanstackSpike.ts:29-103</code>; <a href="https://tanstack.com/ai/latest/docs/chat/connection-adapters">connection adapters</a></td></tr>
+      <tr><td>8</td><td class="blocked">BLOCKED</td><td>Native process measurements do not establish a stable memory saving or a flat switch trend, and no macOS release-memory result is established. The Svelte wrapper enables the real devtools bridge, and each snapshot deep-copies the current message graph. The devtools “Memory Inspector” shows AI memory middleware records, not JavaScript heap leaks. The full devtools panel was not mounted.</td><td><code>create-chat.svelte.ts:117-119, 225</code>; <code>chat-client.ts:1829-1841</code>; <a href="https://tanstack.com/ai/latest/docs/getting-started/devtools">devtools</a></td></tr>
+      <tr><td>9</td><td class="work">POSSIBLE WITH WORK</td><td>Session teardown must call <code>dispose()</code>. With <code>live:true</code>, Svelte starts a long subscription, while its automatic <code>detach()</code> does not abort that subscription. The prototype now explicitly disposes on destroy, then a new instance restores the bounded SQL window.</td><td><code>create-chat.svelte.ts:221-265</code>; <code>chat-client.ts:1056-1064, 1867-1875, 3600-3611</code>; <code>TanstackSpike.svelte:10-15</code></td></tr>
+      <tr><td>10</td><td class="proven">PROVEN</td><td>A connection is exactly <code>connect</code> or <code>subscribe</code> plus <code>send</code>. Parts are plain typed data and rendering stays app-owned. This prototype imports only client packages and calls Assembly’s existing Tauri services; no Node or TanStack harness adapter is involved.</td><td><code>connection-adapters.ts:885-930, 1023-1064</code>; <code>tanstackSpike.ts:1-6, 34-103</code>; <a href="https://tanstack.com/ai/latest/docs/api/ai-svelte">Svelte API</a></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Native evidence and memory</h2>
+  <p>Fresh-process runs start from the same temporary SQL snapshot, ask for the same 150-sentence reply, then perform ten session switches. Each number is the median of ten one-second samples of the app + WebKit content + WebKit network processes. RSS double-counts shared pages; PSS apportions them. Vite, Xvfb and provider processes are outside this desktop total.</p>
+  <div id="memory-results"><table><thead><tr><th>Fresh process stage</th><th>Current RSS / PSS (MiB)</th><th>Prototype RSS / PSS (MiB)</th></tr></thead><tbody><tr><td>Before long reply</td><td>619.2 / 431.7</td><td>618.4 / 430.5</td></tr><tr><td>Streaming interval</td><td>670.6 / 486.1</td><td>642.6 / 456.9</td></tr><tr><td>Long reply + ten switches</td><td>722.1 / 536.8</td><td>679.8 / 494.2</td></tr><tr><td>Growth from own start</td><td>+102.9 / +105.1</td><td>+61.4 / +63.7</td></tr></tbody></table><p><strong>42.3 MiB lower final RSS is not proof of a library saving.</strong> The prototype still grew 61.4 MiB, generated 8.7% less text (11,450 versus 12,536 characters), and uses a simpler renderer. Its end-of-reply screenshot also loaded an older page before switching restored the tail. A later settled prototype sample fell to 631.6 MiB RSS / 387.1 MiB PSS and 0.21% CPU. There is no matching settled baseline; this reclamation means the earlier growth is not proof of a retained leak. Immediate post-switch CPU was 5.48% versus 6.51% of one core, including settling.</p></div>
+  <p>The prototype uses simpler markup and both builds load the client packages. Provider-native context continues across runs, although SQL starts identically. These are Linux debug measurements, not a macOS release prediction or proof that TanStack caused a difference. An earlier exploratory run rose from 663.6 MiB RSS after its reply to 699.0 MiB after ten switches, then 758.9 MiB after paging and ten more switches.</p>
+  <p>Proof files in <code>/home/blackcolours/dev/work/reports/tanstack-spike/</code>: <code>report.md</code>, <code>memory.jsonl</code>, <code>memory-summary.json</code>, <code>sql-proof.json</code>. Recorder: <code>tauri-svelte-preview/scripts/tanstackSpikeMeasure.ts</code>.</p>
+  <p>Screenshots in <code>/home/blackcolours/Workbox/screenshots/</code>: <code>tanstack-spike-live-deltas.png</code>, <code>tanstack-spike-tool-request.png</code>, <code>tanstack-spike-approved-tools.png</code>, <code>tanstack-spike-tool-group.png</code>, <code>tanstack-spike-interrupted.png</code>, <code>tanstack-spike-older-sql-page.png</code>, and the four <code>tanstack-spike-paired-*-start/after.png</code> images. All were opened and inspected.</p>
+  <p><strong>Not proven:</strong> the 4→3 MiB trim boundary, newer paging after trimming, injected sequence gaps, steering, attachments, child transcripts, remote parity, devtools-panel overhead, heap retainers or a measured 350 ms switch threshold. Older SQL paging was demonstrated: 352 KiB after restore, then 611 KiB after loading older events.</p>
+
+  <h2>Smallest credible port</h2>
+  <ol>
+    <li><strong>Keep:</strong> all Rust session management, SQLite, Tauri/WebSocket commands and events, provider-native ids, permissions, attachment uploads, the byte-window reducer, paging and trimming.</li>
+    <li><strong>Gate first:</strong> prove safe reconstruction after gaps and a memory plateau in a release-like run (1–2 days). Stop if either fails. Then add one production custom adapter that translates Assembly events into TanStack chunks and recreates the client after a sequence-gap SQL resync. Estimate 250–400 TypeScript lines.</li>
+    <li><strong>Replace:</strong> the frontend’s incremental assistant/tool/reasoning assembly and turn-loading lifecycle with <code>ChatClient</code>, while projecting only Assembly’s current SQL window into it. Estimate 250–450 lines changed.</li>
+    <li><strong>Integrate:</strong> existing transcript, tool, approval, attachment and sub-agent components against TanStack parts. Estimate 200–350 lines changed; visual components remain.</li>
+    <li><strong>Delete last:</strong> only reducer branches and stream state proven redundant after local and remote parity. Do not delete the SQL projection or window logic. Expected implementation is roughly 700–1,200 changed lines across 5–8 frontend files over 4–7 focused days after the gates pass, plus 2–3 days of native local/remote and memory verification. This is a rough estimate; no Rust change is justified.</li>
+  </ol>
+
+  <h2>Top risks</h2>
+  <ul>
+    <li><strong>One channel only:</strong> registering a second Tauri stream replaces the first (<code>projection_streams.rs:99</code>). The final prototype observes the existing frontend service after event application (<code>conversationService.ts:94,1196</code>).</li>
+    <li><strong>Memory duplication:</strong> during migration, Assembly’s timeline and TanStack’s message graph coexist. Devtools add snapshot copies while active.</li>
+    <li><strong>Unsafe gap repair:</strong> mid-stream <code>setMessages()</code> does not reset transient processor state. Treat a gap as a client reconstruction boundary.</li>
+    <li><strong>Subscription retention:</strong> <code>detach()</code> is insufficient for a persistent subscribe adapter. Every destroyed session view must call <code>dispose()</code>.</li>
+    <li><strong>History semantics:</strong> TanStack’s built-in paging is count-based and grows the array; using it alone would violate Assembly’s byte cap.</li>
+    <li><strong>Translation surface:</strong> Assembly has richer event kinds than the prototype. Approval and uploads should remain Assembly-owned instead of being forced through TanStack’s server conventions.</li>
+  </ul>
+  <p><strong>Persistence boundary:</strong> <code>reconstructChat</code> can page parent history when its store honors limit/before; full-array loading is a fallback, not inherent. Its save contract receives complete history, and child reconstruction loads a child without paging. Assembly should retain Rust SQL paging and provider-native resume. <a href="https://github.com/TanStack/ai/blob/main/packages/ai-persistence/src/reconstruct.ts#L170-L199">Reconstruction source</a> · <a href="https://tanstack.com/ai/latest/docs/resumable-streams/overview">resumable streams</a>.</p>
+  <p class="small">Package versions inspected: <code>@tanstack/ai 0.63.0</code>, <code>@tanstack/ai-client 0.36.0</code>, <code>@tanstack/ai-svelte 0.24.3</code>. Source receipts refer to files under <code>tauri-svelte-preview/node_modules/@tanstack/</code>.</p>
+</body>
+</html>

@@ -9,6 +9,8 @@
     AgentConversationProvider,
     ConversationAttachment
   } from '$lib/shell/conversation/conversationTypes.ts';
+  import TanstackSpike from './conversation/TanstackSpike.svelte';
+  let tanstackSpike = $state(false);
   import ConversationTimeline from './conversation/ConversationTimeline.svelte';
   import ConversationComposer from './conversation/ConversationComposer.svelte';
   import ConversationAgentTree from './conversation/ConversationAgentTree.svelte';
@@ -777,6 +779,10 @@
           </button>
         </div>
       {/if}
+      {#if import.meta.env.DEV}<button onclick={() => tanstackSpike = !tanstackSpike}>{tanstackSpike ? "Use current chat" : "Use TanStack spike"}</button>{/if}
+      {#if tanstackSpike}
+        {#key active.ownedId}<TanstackSpike ownedId={active.ownedId} />{/key}
+      {:else}
       <ConversationAgentTree children={conversation.children} selectedChildId={conversation.selectedChildId} onSelect={(childId) => void selectChild(childId)} />
       <ConversationTimeline
         {pendingFirstMessage}
@@ -853,6 +859,7 @@
           onHeightChange={(height) => (composerHeight = height)}
         />
         {/key}
+      {/if}
       {/if}
     </section>
   {:else if active && isStructuredAgent(active.agent) && conversation?.mode === 'raw'}
