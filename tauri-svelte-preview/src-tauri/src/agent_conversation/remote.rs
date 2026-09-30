@@ -3553,6 +3553,16 @@ mod connection_tests {
         let mut sequences = Vec::new();
         while let Ok(ServerFrame::Event { event }) = received.try_recv() { sequences.push(event.sequence); }
         assert_eq!(sequences, vec![2, 3, 4]);
+        let mut new_event = large_history_event(32);
+        new_event.sequence = 5;
+        state.manager.store().append_event(&mcb_core::session_store::EventRow {
+            owned_id: new_event.owned_id.clone(), seq: 5, turn_id: None,
+            kind: "test".into(), payload_json: serde_json::to_string(&new_event).unwrap(),
+            created_at_ms: 0,
+        }).unwrap();
+        replay_session(&state, &outbound, &mut queued, "large-history").await.unwrap();
+        assert!(matches!(received.try_recv(), Ok(ServerFrame::Event { event }) if event.sequence == 5));
+        assert_eq!(queued["large-history"], 5);
         replay_session(&state, &outbound, &mut queued, "large-history").await.unwrap();
         assert!(received.try_recv().is_err());
         rusqlite::Connection::open(&database).unwrap().execute("DROP TABLE events", []).unwrap();
