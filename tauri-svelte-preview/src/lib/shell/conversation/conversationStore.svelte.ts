@@ -1600,8 +1600,18 @@ export function restoreSentConversationAttachments(
   const discarded: ConversationAttachment[] = [];
   for (const [itemId, attachments] of Object.entries(byItemId)) {
     if (!ids.has(itemId)) discarded.push(...attachments);
-    else if (!current.sentAttachments[itemId]?.length) current.sentAttachments[itemId] = attachments;
-    else discarded.push(...attachments);
+    else {
+      const previous = current.sentAttachments[itemId] ?? [];
+      const previewAdvanced = attachments.some((attachment) => {
+        const earlier = previous.find((record) => record.id === attachment.id);
+        return earlier && ((!earlier.previewUrl && !!attachment.previewUrl)
+          || (earlier.previewLoading && !attachment.previewLoading));
+      });
+      if (!previous.length || previewAdvanced) {
+        current.sentAttachments[itemId] = attachments;
+        discarded.push(...previous);
+      } else discarded.push(...attachments);
+    }
   }
   revokeUnretainedPreviewUrls(discarded, Object.values(current.sentAttachments).flat());
   publishConversationProjectionDiagnostics();

@@ -15,6 +15,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use futures_util::{future::join_all, SinkExt, StreamExt};
 use mcb_core::session_store::SessionStore;
 use serde::{Deserialize, Serialize};
@@ -39,7 +40,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 6;
+pub(super) const PROTOCOL_VERSION: u16 = 7;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -138,7 +139,7 @@ enum RemoteCommand {
     Delete {
         owned_id: String,
     },
-    AttachmentChunk { upload_id: String, owned_id: String, mime_type: String, first: bool, last: bool, bytes: Vec<u8> },
+    AttachmentChunk { upload_id: String, owned_id: String, mime_type: String, first: bool, last: bool, bytes: String },
     AbortAttachmentUpload { upload_id: String },
     ReadAttachments { owned_id: String },
     ReadAttachmentChunk { owned_id: String, attachment_id: String, thumbnail: bool, offset: u64 },
@@ -166,7 +167,7 @@ enum RemoteResponse {
     Session(AgentConversationSessionRecord),
     Attachment(SavedConversationAttachment),
     Attachments(Vec<SavedConversationAttachment>),
-    Bytes(Vec<u8>),
+    Bytes(String),
     OptionalString(Option<String>),
     Strings(Vec<String>),
     Bool(bool),
@@ -1550,8 +1551,11 @@ impl RemoteConnectionManager {
         for (index, chunk) in bytes.chunks(ATTACHMENT_CHUNK_BYTES).enumerate() {
             let first = index == 0;
             let last = (index + 1) * ATTACHMENT_CHUNK_BYTES >= bytes.len();
+            let chunk = chunk.to_vec();
+            let encoded = tokio::task::spawn_blocking(move || BASE64.encode(chunk))
+                .await.map_err(|error| error.to_string())?;
             let result = self.request_for_owned(&owned_id, RemoteCommand::AttachmentChunk {
-                upload_id: upload_id.clone(), owned_id: owned_id.clone(), mime_type: mime_type.clone(), first, last, bytes: chunk.to_vec(),
+                upload_id: upload_id.clone(), owned_id: owned_id.clone(), mime_type: mime_type.clone(), first, last, bytes: encoded,
             }).await;
             match result {
                 Ok(RemoteResponse::Attachment(attachment)) if last => saved = Some(attachment),
@@ -1582,7 +1586,8 @@ impl RemoteConnectionManager {
         }).await? else {
             return Err("Remote Assembly returned the wrong attachment bytes".into());
         };
-        Ok(bytes)
+        tokio::task::spawn_blocking(move || BASE64.decode(bytes).map_err(|error| error.to_string()))
+            .await.map_err(|error| error.to_string())?
     }
 
     pub async fn delete_attachment(&self, request: DeleteConversationAttachmentRequest) -> Result<(), String> {
@@ -2440,36 +2445,57 @@ fn write_attachment_chunk(
     Ok(if last { pending.take() } else { None })
 }
 
-async fn execute_server_command(state: &ServerState, upload: &Mutex<Option<PendingAttachment>>, command: RemoteCommand, progress: super::providers::updates::ProgressSink) -> Result<RemoteResponse, String> {
+async fn execute_server_command(state: &ServerState, upload: &Arc<Mutex<Option<PendingAttachment>>>, command: RemoteCommand, progress: super::providers::updates::ProgressSink) -> Result<RemoteResponse, String> {
     let vault = state.data_dir.join("conversation-attachments");
     let command = match command {
         RemoteCommand::AttachmentChunk { upload_id, owned_id, mime_type, first, last, bytes } => {
-            let complete = write_attachment_chunk(&state.data_dir, upload, upload_id, owned_id, mime_type, first, last, bytes)?;
+            let bytes = tokio::task::spawn_blocking(move || BASE64.decode(bytes).map_err(|error| error.to_string()))
+                .await.map_err(|error| error.to_string())??;
+            let data_dir = state.data_dir.clone();
+            let upload = upload.clone();
+            let complete = tokio::task::spawn_blocking(move ||
+                write_attachment_chunk(&data_dir, &upload, upload_id, owned_id, mime_type, first, last, bytes)
+            ).await.map_err(|error| error.to_string())??;
             return match complete {
                 Some(complete) => {
-                    use std::io::Read;
-                    let file = std::fs::File::open(&complete.path).map_err(|error| error.to_string())?;
-                    let mut bytes = Vec::new();
-                    file.take(attachments::MAX_ATTACHMENT_BYTES as u64 + 1).read_to_end(&mut bytes)
-                        .map_err(|error| error.to_string())?;
-                    if bytes.len() > attachments::MAX_ATTACHMENT_BYTES { return Err("Attachment exceeds 20 MB".into()); }
-                    attachments::save_at(&vault, state.manager.store(), &complete.owned_id, &complete.mime_type, &bytes).map(RemoteResponse::Attachment)
+                    let store = state.manager.store_handle();
+                    tokio::task::spawn_blocking(move || {
+                        use std::io::Read;
+                        let file = std::fs::File::open(&complete.path).map_err(|error| error.to_string())?;
+                        let mut bytes = Vec::new();
+                        file.take(attachments::MAX_ATTACHMENT_BYTES as u64 + 1).read_to_end(&mut bytes)
+                            .map_err(|error| error.to_string())?;
+                        if bytes.len() > attachments::MAX_ATTACHMENT_BYTES { return Err("Attachment exceeds 20 MB".into()); }
+                        attachments::save_at(&vault, &store, &complete.owned_id, &complete.mime_type, &bytes).map(RemoteResponse::Attachment)
+                    }).await.map_err(|error| error.to_string())?
                 }
                 None => Ok(RemoteResponse::Empty),
             };
         }
         RemoteCommand::AbortAttachmentUpload { upload_id } => {
-            abort_attachment_upload(upload, &upload_id);
+            let upload = upload.clone();
+            tokio::task::spawn_blocking(move || abort_attachment_upload(&upload, &upload_id))
+                .await.map_err(|error| error.to_string())?;
             return Ok(RemoteResponse::Empty);
         }
         RemoteCommand::ReadAttachments { owned_id } => {
-            return attachments::read_at(&vault, state.manager.store(), &owned_id).map(RemoteResponse::Attachments);
+            let store = state.manager.store_handle();
+            return tokio::task::spawn_blocking(move ||
+                attachments::read_at(&vault, &store, &owned_id).map(RemoteResponse::Attachments)
+            ).await.map_err(|error| error.to_string())?;
         }
         RemoteCommand::ReadAttachmentChunk { owned_id, attachment_id, thumbnail, offset } => {
-            return attachments::read_chunk_at(&vault, state.manager.store(), &owned_id, &attachment_id, thumbnail, offset, ATTACHMENT_CHUNK_BYTES).map(RemoteResponse::Bytes);
+            let store = state.manager.store_handle();
+            return tokio::task::spawn_blocking(move || {
+                attachments::read_chunk_at(&vault, &store, &owned_id, &attachment_id, thumbnail, offset, ATTACHMENT_CHUNK_BYTES)
+                    .map(|bytes| RemoteResponse::Bytes(BASE64.encode(bytes)))
+            }).await.map_err(|error| error.to_string())?;
         }
         RemoteCommand::DeleteAttachment(request) => {
-            return attachments::delete_at(&vault, state.manager.store(), request).map(|_| RemoteResponse::Empty);
+            let store = state.manager.store_handle();
+            return tokio::task::spawn_blocking(move ||
+                attachments::delete_at(&vault, &store, request).map(|_| RemoteResponse::Empty)
+            ).await.map_err(|error| error.to_string())?;
         }
         other => other,
     };
@@ -2656,23 +2682,29 @@ async fn execute_remote_command(
             if request.attachment_ids.is_empty() && prompt.text.is_empty() {
                 return Err("Message cannot be empty".into());
             }
-            let mut total_image_bytes = 0usize;
             if !request.attachment_ids.is_empty() {
-                let rows = manager.store().get_attachments(&request.owned_id, &request.attachment_ids)
-                    .map_err(|error| error.to_string())?;
-                for id in &request.attachment_ids {
-                    let row = rows.iter().find(|row| &row.id == id)
-                        .ok_or_else(|| "Attachment does not belong to this session".to_string())?;
-                    let bytes = attachments::read_original_at(vault, row)?;
-                    total_image_bytes += bytes.len();
-                    if total_image_bytes > attachments::MAX_ATTACHMENT_BYTES {
-                        return Err("Remote prompt images exceed 20 MB".into());
+                let store = manager.store_handle();
+                let vault = vault.to_path_buf();
+                let owned_id = request.owned_id.clone();
+                let ids = request.attachment_ids.clone();
+                prompt.images = tokio::task::spawn_blocking(move || {
+                    let rows = store.get_attachments(&owned_id, &ids).map_err(|error| error.to_string())?;
+                    let mut total_image_bytes = 0usize;
+                    let mut images = Vec::new();
+                    for id in &ids {
+                        let row = rows.iter().find(|row| &row.id == id)
+                            .ok_or_else(|| "Attachment does not belong to this session".to_string())?;
+                        let bytes = attachments::read_original_at(&vault, row)?;
+                        total_image_bytes += bytes.len();
+                        if total_image_bytes > attachments::MAX_ATTACHMENT_BYTES {
+                            return Err("Remote prompt images exceed 20 MB".into());
+                        }
+                        images.push(prompt_from_blocks("", vec![super::prompt_content::AgentPromptContentBlock::Image {
+                            mime_type: row.mime_type.clone(), data: bytes, name: Some(row.file_name.clone()),
+                        }])?.images.remove(0));
                     }
-                    let image = prompt_from_blocks("", vec![super::prompt_content::AgentPromptContentBlock::Image {
-                        mime_type: row.mime_type.clone(), data: bytes, name: Some(row.file_name.clone()),
-                    }])?.images.remove(0);
-                    prompt.images.push(image);
-                }
+                    Ok::<_, String>(images)
+                }).await.map_err(|error| error.to_string())??;
             }
             prompt.attachment_ids = request.attachment_ids;
             manager
@@ -2744,6 +2776,28 @@ pub(super) fn validate_ssh_target(target: &str) -> Result<(), String> {
 #[cfg(test)]
 mod connection_tests {
     use super::*;
+
+    #[test]
+    fn attachment_chunks_use_base64_on_both_wire_directions() {
+        let bytes: Vec<u8> = (0..ATTACHMENT_CHUNK_BYTES).map(|index| index as u8).collect();
+        let encoded = BASE64.encode(&bytes);
+        let request = ClientFrame::Request { id: 1, command: RemoteCommand::AttachmentChunk {
+            upload_id: "upload".into(), owned_id: "owned".into(), mime_type: "image/png".into(),
+            first: true, last: true, bytes: encoded.clone(),
+        } };
+        let response = RemoteResponse::Bytes(encoded);
+        let request_json = serde_json::to_string(&request).unwrap();
+        let response_json = serde_json::to_string(&response).unwrap();
+        assert!(request_json.len() < 180_000);
+        assert!(response_json.len() < 180_000);
+        let ClientFrame::Request { command: RemoteCommand::AttachmentChunk { bytes: upload, .. }, .. } =
+            serde_json::from_str(&request_json).unwrap() else { panic!("wrong upload frame"); };
+        let RemoteResponse::Bytes(download) = serde_json::from_str(&response_json).unwrap() else {
+            panic!("wrong download frame");
+        };
+        assert_eq!(BASE64.decode(upload).unwrap(), bytes);
+        assert_eq!(BASE64.decode(download).unwrap(), bytes);
+    }
 
     #[test]
     fn history_event_sink_delivers_the_event_when_the_cache_write_fails() {
