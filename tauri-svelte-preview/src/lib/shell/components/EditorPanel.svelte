@@ -728,7 +728,10 @@
     if (activeFileReadOnly && (languageServerStatus !== null || languageServerSubject !== null)) {
       applyLanguageServerStatus(null, null);
     }
-    const root = activeLanguageRoot();
+    // Plain-text lookup also works on remote workspaces; only LSP ownership is local.
+    const root = showing && rootAvailable && editorState.activePath && !activeFileReadOnly
+      ? editorState.projectRoot
+      : null;
     sourceIntelligence.setProjectRoot(root);
     sourceIntelligence.setActivePreview(root ? activeEditorFile()?.preview ?? null : null);
   }
