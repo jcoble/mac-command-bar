@@ -91,9 +91,9 @@
     'inline-flex h-[28px] shrink-0 cursor-pointer items-center justify-center rounded-full border-0 ' +
     'text-[13px] whitespace-nowrap outline-none transition-[background-color,color,filter] ' +
     'focus-visible:ring-ring/50 focus-visible:ring-3';
-  const REST = 'bg-secondary text-foreground hover:brightness-125';
-  const CHOSEN = 'bg-foreground text-background';
-  const ICON = 'w-[28px] bg-secondary text-muted-foreground hover:text-foreground hover:brightness-125';
+  const REST = 'bg-secondary text-foreground hover:bg-accent/60 hover:text-foreground';
+  const CHOSEN = 'bg-foreground text-background hover:brightness-125';
+  const ICON = 'w-[28px] bg-secondary text-muted-foreground hover:bg-accent/60 hover:text-foreground';
 </script>
 
 {#snippet closeIcon()}
