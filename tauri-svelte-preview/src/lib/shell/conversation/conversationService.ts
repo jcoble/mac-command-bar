@@ -212,7 +212,7 @@ export async function readChildConversationTranscript(input: {
   applyChildConversationTranscript(input.ownedId, input.childSessionId, snapshot.messages);
 }
 
-type SavedAttachment = Omit<ConversationAttachment, 'previewUrl' | 'originalUrl'> & { byteLength: number };
+export type SavedAttachment = Omit<ConversationAttachment, 'previewUrl' | 'originalUrl'> & { byteLength: number };
 type AttachmentWithBytes = ConversationAttachment & { byteLength?: number; bytes?: number[] };
 
 export interface AgentPromptTextContent {
@@ -442,14 +442,16 @@ export async function restoreConversationAttachments(
   }
 }
 
-async function restoreAttachmentList(
+export async function restoreAttachmentList(
   ownedId: string, records: readonly SavedAttachment[], signal?: AbortSignal,
   onUpdate?: (attachments: ConversationAttachment[]) => void
 ): Promise<ConversationAttachment[]> {
   const remote = isRemoteConversation(ownedId);
-  const restored = records.map((record) => remote
-    ? { ...record, remoteOwnedId: ownedId, previewUrl: '', previewLoading: record.thumbnailByteLength != null }
-    : restoreConversationAttachmentPreview(record));
+  const restored = records.map((record) => {
+    if (remote) return { ...record, remoteOwnedId: ownedId, previewUrl: '', previewLoading: record.thumbnailByteLength != null };
+    try { return restoreConversationAttachmentPreview(record); }
+    catch { return { ...record, previewUrl: '' }; }
+  });
   onUpdate?.([...restored]);
   if (!remote) return restored;
   let next = 0;
@@ -467,7 +469,11 @@ async function restoreAttachmentList(
       onUpdate?.([...restored]);
     }
   }));
-  return signal?.aborted ? [] : restored;
+  if (signal?.aborted) {
+    discardRestoredAttachments(restored);
+    return [];
+  }
+  return restored;
 }
 
 /** Ask the owner-validated vault to delete one managed file, then revoke its URL. */
