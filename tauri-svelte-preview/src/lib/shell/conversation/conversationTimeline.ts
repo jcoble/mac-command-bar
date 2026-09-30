@@ -756,21 +756,8 @@ function toolKindForPayload(payload: StringRecord, payloadKind: string): Convers
 }
 
 function toolTitleOf(value: unknown): string | null {
-  const title = stringOf(value).trim();
+  const title = stringOf(value).split('```')[0].trim();
   return title || null;
-}
-
-/** The first readable line of a title's fenced block, with the fence
- * markers and language tag stripped. Empty when the fence has no content. */
-function toolSummaryLine(raw: string): string {
-  if (!raw) return '';
-  const withoutFences = raw.replace(/```[a-zA-Z0-9_-]*/g, '').replace(/```/g, '');
-  const lines = withoutFences
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && line.toLowerCase() !== 'tool');
-  const first = lines[0] ?? '';
-  return first.slice(0, 80);
 }
 
 function toolStateOf(value: unknown): ConversationToolState {
@@ -830,12 +817,7 @@ export function displayItemFromAgentItem(item: AgentItem, timestampMs = Date.now
     timestampMs: startedAt
   };
   if (kind === 'tool') {
-    const rawTitle = toolTitleOf(metadata?.title) ?? toolTitleOf(metadata?.name) ?? item.type;
-    const hasFence = rawTitle.includes('```');
-    const fencedSummary = hasFence ? toolSummaryLine(rawTitle) : '';
-    const prefixTitle = hasFence ? rawTitle.slice(0, rawTitle.indexOf('```')).trim() : rawTitle;
-    const resolvedTitle = fencedSummary || prefixTitle || 'Tool';
-    const title = resolvedTitle.startsWith('```') ? 'Tool' : resolvedTitle;
+    const title = toolTitleOf(metadata?.title) ?? toolTitleOf(metadata?.name) ?? 'Tool';
     const summary = stringOf(metadata?.summary) || undefined;
     const toolKind = toolKindForAgentItem(item);
     const output = toolKind === 'file-edit' ? '' : textOf(item.content) || stringOf(metadata?.output);
@@ -937,20 +919,9 @@ function displayItemFromLegacy(entry: ConversationTimelineEntry): ConversationDi
     timestampMs: entry.timestampMs
   };
   if (entry.kind === 'tool') {
-    const rawTitle = entry.name || 'Tool';
-    const hasFence = rawTitle.includes('```');
-    const fencedSummary = hasFence ? toolSummaryLine(rawTitle) : '';
-    const prefixTitle = hasFence ? rawTitle.slice(0, rawTitle.indexOf('```')).trim() : rawTitle;
-    const resolvedTitle = fencedSummary || prefixTitle || entry.summary || 'Tool';
-    const title = resolvedTitle.startsWith('```') ? (entry.summary || 'Tool') : resolvedTitle;
-    const summary = entry.summary || fencedSummary || undefined;
-    const t = title.toLowerCase();
-    const s = (summary || '').toLowerCase();
-    let toolKind: ConversationToolKind = 'tool';
-    if (entry.diff || t.includes('edit') || t.includes('write') || s.includes('edit') || s.includes('write') || t.includes('patch')) toolKind = 'file-edit';
-    else if (t.includes('bash') || t.includes('sh') || t.includes('command') || t.includes('run') || t.includes('terminal') || t.includes('console') || s.includes('bash') || s.includes('sh')) toolKind = 'command';
-    else if (t.includes('grep') || t.includes('glob') || t.includes('search') || t.includes('find') || s.includes('grep') || s.includes('find')) toolKind = 'search';
-    else if (t.includes('read') || t.includes('view') || t.includes('cat') || s.includes('read') || entry.path) toolKind = 'fetch';
+    const title = toolTitleOf(entry.name) ?? 'Tool';
+    const summary = entry.summary;
+    const toolKind = entry.diff ? 'file-edit' : toolKindOf(entry.name);
     return {
       kind: 'tool',
       itemId: entry.itemId,
@@ -1233,7 +1204,7 @@ function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, pa
   // A row that was handed its own title keeps it: the only caller that does so
   // is the whole-turn file change, which already knows it covers several files.
   const givenTitle = toolTitleOf(payload.title) ?? '';
-  const name = givenTitle || stringOf(payload.name, stringOf(payload.command, stringOf(payload.path, 'Tool')));
+  const name = givenTitle || stringOf(payload.name, stringOf(payload.command, stringOf(payload.path)));
   // A summary is the row's one-line preview, and nothing else. It used to
   // stand in for the body as well, which printed the same sentence twice —
   // once on the row and again inside it when it was opened — and, on a file
@@ -1243,7 +1214,7 @@ function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, pa
   // update carries. A row reads whichever it was given.
   const contentText = textFromValue(payload.output) || textFromValue(payload.content);
   const toolKind = toolKindForPayload(payload, payloadKind);
-  const title = givenTitle || plainToolTitle(toolKind, name);
+  const title = givenTitle || (name ? plainToolTitle(toolKind, name) : undefined);
   const diff = stringOf(payload.diff) || firstNestedString(payload.content, ['diff', 'patch']);
   const output = toolKind === 'file-edit' ? '' : contentText;
   const path = stringOf(payload.path)
@@ -1257,8 +1228,8 @@ function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, pa
     content: output ? [{ channel: 'command-output', text: output }] : [],
     providerMetadata: eventMetadata(event, payload, {
       title,
-      name: title,
-      toolKind,
+      name: name || undefined,
+      toolKind: toolKind === 'tool' && !name ? undefined : toolKind,
       state: status,
       status,
       summary: stringOf(payload.summary) || undefined,

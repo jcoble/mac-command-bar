@@ -11,7 +11,7 @@
 
 	import type { OwnedSession } from "$lib/shell/ownedSessions";
 	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
-	import { buildMyWorkGroups, type MyWorkViewOptions } from "./myWorkViewOptions.ts";
+	import { buildMyWorkGroups, type MyWorkGroup, type MyWorkViewOptions } from "./myWorkViewOptions.ts";
 	import SessionRowContextMenu from "./SessionRowContextMenu.svelte";
 	import { sessionRowJump, type SessionRowSurface } from "./sessionRowJump.ts";
 	import { sessionRowMenuItems, type SessionRowMenuAction } from "./sessionRowMenu.ts";
@@ -114,36 +114,43 @@
 	}
 </script>
 
-<div data-testid="session-rail" class="session-scroll">
-	{#each groups as group (group.key)}
-		{@const needsYouCount = group.sessions.filter(sessionNeedsYou).length}
-		<section data-testid="session-rail-section" data-group-key={group.key} class:collapsed={!isOpen(group.key)}>
-			{#if group.label}
-				<button
-					data-testid="session-rail-section-toggle"
-					type="button"
-					class="section-heading"
-					aria-expanded={isOpen(group.key)}
-					onclick={() => toggleGroup(group.key)}
-				>
-					<!-- One chevron that turns, rather than two that swap: the quarter
-               turn is what tells a person the section answered them. -->
-					<ChevronRight class="chevron" aria-hidden="true" />
-					<span class="name">{group.label}</span>
-					<span data-testid="session-rail-section-count" class="count">{group.sessions.length}</span>
-					{#if needsYouCount > 0}
-						<span
-							data-testid="session-rail-needs-you-count"
-							class="needs-count"
-							aria-label={`${needsYouCount} ${needsYouCount === 1 ? "session needs" : "sessions need"} you`}
-						>
-							<span aria-hidden="true"></span>{needsYouCount}
-						</span>
-					{/if}
-				</button>
-			{/if}
+<!-- A section is a heading and its rows, or, with both groupings on, a project
+     heading and the status sections inside it. -->
+{#snippet section(group: MyWorkGroup, nested: boolean)}
+	{@const needsYouCount = group.sessions.filter(sessionNeedsYou).length}
+	<section data-testid="session-rail-section" data-group-key={group.key} class:collapsed={!isOpen(group.key)}>
+		{#if group.label}
+			<button
+				data-testid="session-rail-section-toggle"
+				type="button"
+				class="section-heading"
+				class:nested
+				aria-expanded={isOpen(group.key)}
+				onclick={() => toggleGroup(group.key)}
+			>
+				<!-- One chevron that turns, rather than two that swap: the quarter
+           turn is what tells a person the section answered them. -->
+				<ChevronRight class="chevron" aria-hidden="true" />
+				<span class="name">{group.label}</span>
+				<span data-testid="session-rail-section-count" class="count">{group.sessions.length}</span>
+				{#if needsYouCount > 0}
+					<span
+						data-testid="session-rail-needs-you-count"
+						class="needs-count"
+						aria-label={`${needsYouCount} ${needsYouCount === 1 ? "session needs" : "sessions need"} you`}
+					>
+						<span aria-hidden="true"></span>{needsYouCount}
+					</span>
+				{/if}
+			</button>
+		{/if}
 
-			{#if isOpen(group.key)}
+		{#if isOpen(group.key)}
+			{#if group.subgroups}
+				{#each group.subgroups as subgroup (subgroup.key)}
+					{@render section(subgroup, true)}
+				{/each}
+			{:else}
 				<ul class="rows">
 					{#each group.sessions as session (session.ownedId)}
 						<WorktreeAgentRow
@@ -159,7 +166,13 @@
 					{/each}
 				</ul>
 			{/if}
-		</section>
+		{/if}
+	</section>
+{/snippet}
+
+<div data-testid="session-rail" class="session-scroll">
+	{#each groups as group (group.key)}
+		{@render section(group, false)}
 	{/each}
 
 	{#if groups.every((group) => group.sessions.length === 0)}
@@ -223,6 +236,13 @@
 		font-size: 13px;
 		text-align: left;
 		cursor: pointer;
+	}
+
+	/* A status heading inside a project: indented under it, and not sticky, so
+     it scrolls away under the project heading rather than stacking on it. */
+	.section-heading.nested {
+		position: static;
+		padding-left: 32px;
 	}
 
 	.section-heading:focus-visible {

@@ -8,6 +8,7 @@ import {
   foldFileEdits,
   formatWorkedFor,
   latestPlan,
+  mergeAgentItem,
   turnActivityLabel,
   turnFileChanges,
   USER_MESSAGE_FOLD_LINES,
@@ -15,6 +16,8 @@ import {
   type ConversationDisplayItem,
   typedConversationTimeline
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
+import { applyConversationEvent, createConversationState } from '../src/lib/shell/conversation/conversationReducer.ts';
+import type { AgentConversationEvent, AgentItem } from '../src/lib/shell/conversation/conversationTypes.ts';
 import { conversationItemHasVisibleContent } from '../src/lib/shell/conversation/conversationItemVisibility.ts';
 import {
   decideConversationScroll,
@@ -471,7 +474,7 @@ const fencedTitleTool = displayItemFromAgentItem({
   content: [],
   providerMetadata: { title: 'Tool ```console\nls -la\n```' }
 });
-assert.equal(fencedTitleTool.title, 'ls -la', 'the title is the first fenced line, without fence text');
+assert.equal(fencedTitleTool.title, 'Tool', 'fenced content is not promoted into the tool identity');
 assert.equal(fencedTitleTool.summary, undefined, 'the fenced line is not repeated beneath the title');
 
 const blankFenceTool = displayItemFromAgentItem({
@@ -482,6 +485,36 @@ const blankFenceTool = displayItemFromAgentItem({
 });
 assert.equal(blankFenceTool.title, 'Tool', 'an empty fence falls back to a plain title');
 assert.equal(blankFenceTool.summary, undefined, 'an empty fence is not rendered as summary text');
+
+// Output-only completion must preserve identity and full input in both projections.
+for (const [name, summary, output, toolKind] of [
+  ['Bash', "printf 'first\\n'\nprintf 'second\\n'", 'first\nsecond', 'command'],
+  ['mcp__notion__search', 'show running shell tasks', '{"results":[]}', 'tool']
+]) {
+  const events: AgentConversationEvent[] = [
+    event(1, { kind: 'tool', itemId: 'identity', name, summary, state: 'started' }),
+    event(2, { kind: 'tool', itemId: 'identity', name: '', output, state: 'completed' })
+  ];
+  let live: AgentItem[] = [];
+  let legacy = createConversationState('owned-rich', 'codex');
+  for (const update of events) {
+    const incoming = agentItemFromEvent(update);
+    assert.ok(incoming);
+    live = mergeAgentItem(live, incoming, false);
+    legacy = applyConversationEvent(legacy, update);
+  }
+  const replay = displayItemsFromConversationEvents(events);
+  assert.deepEqual(typedConversationTimeline(live), replay, 'live and replay agree');
+  for (const item of [...replay, ...typedConversationTimeline([], legacy.timeline)]) {
+    assert.equal(item.kind, 'tool');
+    if (item.kind !== 'tool') throw new Error('expected tool');
+    assert.equal(item.title, name);
+    assert.equal(item.summary, summary, 'completion retains every command line');
+    assert.equal(item.toolKind, toolKind, 'input words do not classify an MCP tool');
+    assert.equal(item.output, output);
+    assert.equal(item.state, 'completed');
+  }
+}
 
 // ── The plan chip reads one newest plan (latest_plan_across_turns) ───────
 // The chip above the composer shows the plan the session is working to, so it

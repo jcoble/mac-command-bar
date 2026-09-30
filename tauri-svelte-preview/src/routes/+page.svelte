@@ -38,6 +38,9 @@
 	import type { UtilityId } from "$lib/shell/components/utilityStrip";
 
 	import { SessionSelectionController } from "$lib/shell/controllers/sessionSelectionController.svelte";
+	import { ownedSessionMetaForBackend } from "$lib/shell/ownedSessions";
+	import { setOwnedSessionStatus, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
+	import { updateAgentConversationSessionMetaFromTauri } from "$lib/tauriSource";
 	import type { EditorPanelLifecycle } from "$lib/shell/controllers/editorSessionController.svelte";
 	import { WorkbenchController } from "$lib/shell/controllers/workbenchController.svelte";
 	import { startShell, stopShell } from "$lib/shell/controllers/shellStartup";
@@ -71,6 +74,23 @@
 	let toolsRailWidth = $state(320);
 	let pullRequestDiff = $state<OpenPullRequestDiffRequest | null>(null);
 	let routeDisposal: Promise<void> | null = null;
+
+	async function changeSessionStatus(ownedId: string, status: 'working' | 'done' | 'settled'): Promise<void> {
+		const before = selection.railOwned.find((session) => session.ownedId === ownedId);
+		const updated = setOwnedSessionStatus(ownedId, status, new Date());
+		if (!before || !updated) return;
+		try {
+			await updateAgentConversationSessionMetaFromTauri({
+				ownedId,
+				model: null,
+				effort: null,
+				meta: ownedSessionMetaForBackend(updated)
+			});
+		} catch (error) {
+			updateOwnedSession(ownedId, { completedAt: before.completedAt, settledAt: before.settledAt });
+			console.error('Could not change session status', error);
+		}
+	}
 
 	if (import.meta.hot) {
 		import.meta.hot.dispose(() => {
@@ -244,6 +264,10 @@
 					void selectSession(ownedId);
 				}}
 				onAskRemove={handleAskRemoveSession}
+				onComplete={(ownedId) => void changeSessionStatus(ownedId, 'done')}
+				onReopen={(ownedId) => void changeSessionStatus(ownedId, 'working')}
+				onSettle={(ownedId) => void changeSessionStatus(ownedId, 'settled')}
+				onUnsettle={(ownedId) => void changeSessionStatus(ownedId, 'done')}
 			/>
 		</div>
 	</div>
@@ -260,7 +284,7 @@
 		filesRoot={selection.filesProjectionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
-		onExpandedPathsChange={(root, paths) => selection.rememberExpandedPaths(root, paths)}
+		onExpandedPathsChange={(ownedId, root, paths) => selection.rememberExpandedPaths(ownedId, root, paths)}
 		filesInspectionRoot={selection.activeWorkspaceSnapshot?.filesInspectionRoot ?? null}
 		sourceControlInspectionRoot={selection.activeWorkspaceSnapshot?.sourceControlInspectionRoot ?? null}
 		onFilesInspectionRootChange={(root) => selection.rememberWorkspaceState({ filesInspectionRoot: root })}

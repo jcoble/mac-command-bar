@@ -46,6 +46,7 @@ export class SessionSelectionController {
 	connectingRemote = $state(false);
 	private remoteConnectAbort: AbortController | null = null;
 
+	private expansionOwnedId = $state<string | null>(null);
 	private workspaceWriteQueue: Promise<void> | null = null;
 	private selectionGeneration = 0;
 	private selectionAbort: AbortController | null = null;
@@ -69,13 +70,13 @@ export class SessionSelectionController {
 	}
 
 	get filesProjectionRoot(): string {
-		return this.sessionSelectionLayers.hasTreeProjection
+		return this.sessionSelectionLayers.hasTreeProjection && this.expansionOwnedId === this.controlledSelectionOwnedId
 			? this.sessionSelectionLayers.treeRoot
 			: "";
 	}
 
 	get filesProjectionOwnedId(): string | null {
-		return this.sessionSelectionLayers.hasTreeProjection
+		return this.sessionSelectionLayers.hasTreeProjection && this.expansionOwnedId === this.controlledSelectionOwnedId
 			? this.sessionSelectionLayers.treeOwnedId
 			: null;
 	}
@@ -114,18 +115,15 @@ export class SessionSelectionController {
 		this.remoteConnectAbort?.abort();
 		this.selectionError = null;
 		this.activeWorkspaceSnapshot = null;
+		this.expansionOwnedId = null;
+		this.expandedPathsByRoot = {};
 		this.controlledSelectionOwnedId = ownedId;
 		setActiveOwned(ownedId);
 		void writeAssemblySettingFromTauri(ACTIVE_OWNED_SESSION_SETTING_KEY, ownedId).catch(() => undefined);
 		this.pendingSelectionOwnedId = ownedId;
 		const requestedSession = rail.owned.find((candidate) => candidate.ownedId === ownedId);
 		this.activeRootRemote = requestedSession?.executionEnvironment === "remote";
-		const requestedRoot = canonicalPath(
-			requestedSession ? sessionWorkspaceRoot(requestedSession) : "",
-		);
-		if (canonicalPath(this.sessionSelectionLayers.treeRoot) !== requestedRoot) {
-			this.sessionSelectionLayers.clearTreeView();
-		}
+		this.sessionSelectionLayers.clearTreeView();
 		if (this.selectionWork) {
 			this.selectionAbort?.abort();
 			await this.selectionWork;
@@ -205,12 +203,8 @@ export class SessionSelectionController {
 		if (session) {
 			this.activeRootRemote = session.executionEnvironment === "remote";
 			const root = canonicalPath(sessionWorkspaceRoot(session));
-			const rootChanged = canonicalPath(this.sessionSelectionLayers.treeRoot) !== root;
-			const needsWorkspaceState =
-				rootChanged || !Object.prototype.hasOwnProperty.call(this.expandedPathsByRoot, root);
-			if (rootChanged) this.expandedPathsByRoot = {};
 			try {
-				await this.materializeSelection(session, root, owner, this.chatOwnedId, needsWorkspaceState);
+				await this.materializeSelection(session, root, owner, this.chatOwnedId);
 			} catch (error) {
 				if (!this.isCurrent(owner)) return;
 				this.sessionSelectionLayers.clearTreeView();
@@ -230,10 +224,10 @@ export class SessionSelectionController {
 		}
 	}
 
-	rememberExpandedPaths(root: string, paths: readonly string[]): void {
-		const ownedId = this.controlledSelectionOwnedId;
+	rememberExpandedPaths(ownedId: string, root: string, paths: readonly string[]): void {
 		const projectRoot = canonicalPath(root);
-		if (!ownedId || !projectRoot) return;
+		if (ownedId !== this.controlledSelectionOwnedId || ownedId !== this.expansionOwnedId ||
+			!projectRoot) return;
 
 		this.expandedPathsByRoot = { [projectRoot]: [...paths] };
 		const previousWrite = this.workspaceWriteQueue;
@@ -297,6 +291,7 @@ export class SessionSelectionController {
 			if (!record) return false;
 			if (!this.isCurrent(owner)) return true;
 
+			this.expansionOwnedId = null;
 			await this.editorSessions.resetForCheckoutChange(owner.signal);
 			if (!this.isCurrent(owner)) return true;
 			this.expandedPathsByRoot = {};
@@ -304,7 +299,7 @@ export class SessionSelectionController {
 			const updated = rail.owned.find((session) => session.ownedId === ownedId);
 			if (!updated) return true;
 			this.activeRootRemote = updated.executionEnvironment === "remote";
-			await this.materializeSelection(updated, canonicalPath(sessionWorkspaceRoot(updated)), owner, this.chatOwnedId, true);
+			await this.materializeSelection(updated, canonicalPath(sessionWorkspaceRoot(updated)), owner, this.chatOwnedId);
 			return true;
 		} catch (error) {
 			if (this.isCurrent(owner)) {
@@ -365,7 +360,6 @@ export class SessionSelectionController {
 		root: string,
 		owner: SessionSelectionOwner,
 		displayedChatOwnedId: string | null,
-		needsWorkspaceState: boolean,
 	): Promise<void> {
 		if (!this.isCurrent(owner)) return;
 
@@ -390,7 +384,7 @@ export class SessionSelectionController {
 			restoreConversationAttachmentIds(session.ownedId, snapshot.conversation.attachmentIds);
 		}
 		if (!root) return;
-		if (needsWorkspaceState) await this.loadExpandedPaths(session.ownedId, root, owner);
+		await this.loadExpandedPaths(session.ownedId, root, owner);
 	}
 
 	private async loadExpandedPaths(
@@ -399,10 +393,13 @@ export class SessionSelectionController {
 		owner: SessionSelectionOwner,
 	): Promise<void> {
 		try {
+			await this.workspaceWriteQueue?.catch(() => undefined);
+			if (!this.isCurrent(owner)) return;
 			countInvoke("read_agent_conversation_workspace_expanded_paths");
 			const paths = await readAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, root, owner.signal);
 			if (!this.isCurrent(owner)) return;
 			this.expandedPathsByRoot = { [root]: paths };
+			this.expansionOwnedId = ownedId;
 		} catch {
 			// The session may have changed while the uncancellable invoke was in flight.
 		}
