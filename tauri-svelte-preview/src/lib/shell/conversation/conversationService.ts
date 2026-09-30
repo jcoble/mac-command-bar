@@ -213,7 +213,7 @@ export async function readChildConversationTranscript(input: {
   applyChildConversationTranscript(input.ownedId, input.childSessionId, snapshot.messages);
 }
 
-type SavedAttachment = Omit<ConversationAttachment, 'previewUrl' | 'originalUrl'> & { byteLength: number };
+export type SavedAttachment = Omit<ConversationAttachment, 'previewUrl' | 'originalUrl'> & { byteLength: number };
 type AttachmentWithBytes = ConversationAttachment & { byteLength?: number; bytes?: number[] };
 
 export interface AgentPromptTextContent {
@@ -449,23 +449,22 @@ async function restoreAttachmentForOwner(ownedId: string, attachment: SavedAttac
   return { ...attachment, remoteOwnedId: ownedId, previewUrl: await remoteAttachmentPreview(ownedId, attachment, signal) };
 }
 
-async function restoreAttachmentList(ownedId: string, records: readonly SavedAttachment[], signal?: AbortSignal): Promise<ConversationAttachment[]> {
+export async function restoreAttachmentList(ownedId: string, records: readonly SavedAttachment[], signal?: AbortSignal): Promise<ConversationAttachment[]> {
   const restored: ConversationAttachment[] = [];
-  try {
-    for (const record of records) {
-      if (signal?.aborted) break;
+  for (const record of records) {
+    if (signal?.aborted) break;
+    try {
       restored.push(await restoreAttachmentForOwner(ownedId, record, signal));
+    } catch {
+      if (signal?.aborted) break;
+      restored.push({ ...record, remoteOwnedId: isRemoteConversation(ownedId) ? ownedId : undefined, previewUrl: '' });
     }
-    if (signal?.aborted) {
-      discardRestoredAttachments(restored);
-      return [];
-    }
-    return restored;
-  } catch (error) {
-    discardRestoredAttachments(restored);
-    if (signal?.aborted) return [];
-    throw error;
   }
+  if (signal?.aborted) {
+    discardRestoredAttachments(restored);
+    return [];
+  }
+  return restored;
 }
 
 /** Ask the owner-validated vault to delete one managed file, then revoke its URL. */
