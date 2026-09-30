@@ -316,11 +316,7 @@
     const ownedId = active.ownedId;
     const generation = conversation.generation;
     if (!conversation.attachments.length && conversation.attachmentIds.length) {
-      const controller = new AbortController();
-      void restoreAttachmentsForSurface(controller.signal, ownedId, generation);
-      return () => {
-        controller.abort();
-      };
+      void restoreAttachmentsForSurface(surfaceController.signal, ownedId, generation);
     }
   });
 
@@ -376,7 +372,8 @@
   ): Promise<void> {
     try {
       if (ownsConversationGeneration(signal, ownedId, generation)) {
-        await restoreConversationAttachments(ownedId, [], signal);
+        // Publishing metadata reruns the effect; only the generation check may discard its thumbnail results.
+        await restoreConversationAttachments(ownedId, []);
       }
     } catch (_error) {
       // Attachment restore is best effort; saved ids remain in the session.

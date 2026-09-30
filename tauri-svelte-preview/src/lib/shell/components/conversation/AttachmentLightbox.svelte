@@ -32,9 +32,15 @@
   let fullObjectUrl = $state('');
   let loadError = $state('');
   let loadingFull = $state(false);
+  let thumbnailLoaded = $state(false);
   let loadGeneration = 0;
   let activeRead: AbortController | null = null;
   let originalTransfer = '';
+
+  $effect(() => {
+    src;
+    thumbnailLoaded = false;
+  });
 
   function discardOriginal(transferId: string): void {
     if (!remoteOwnedId || !attachmentId || !mimeType) return;
@@ -92,7 +98,7 @@
         }
       } finally {
         if (activeRead === controller) activeRead = null;
-        if (generation === loadGeneration) loadingFull = false;
+        if (generation === loadGeneration && !fullObjectUrl) loadingFull = false;
       }
       return;
     }
@@ -110,7 +116,7 @@
     } catch {
       if (generation === loadGeneration) fullObjectUrl = '';
     } finally {
-      if (generation === loadGeneration) loadingFull = false;
+      if (generation === loadGeneration && !fullObjectUrl) loadingFull = false;
     }
   }
 
@@ -120,10 +126,11 @@
 <Dialog.Root {open} onOpenChange={(next) => void openChanged(next)}>
   <Dialog.Trigger class={`attachment-lightbox-thumbnail ${variant}`} aria-label={`Enlarge ${name}`}>
     {#if src}
-      <img {src} alt={name} loading="lazy" decoding="async" />
-    {:else if previewLoading}
+      <img {src} alt={name} decoding="async" onload={() => thumbnailLoaded = true} onerror={() => thumbnailLoaded = true} style:opacity={thumbnailLoaded ? 1 : 0} />
+    {/if}
+    {#if (!src && previewLoading) || (src && !thumbnailLoaded)}
       <span class="attachment-spinner" role="status" aria-label={`Loading ${name}`}></span>
-    {:else}
+    {:else if !src}
       <span>{name}</span>
     {/if}
   </Dialog.Trigger>
@@ -136,7 +143,7 @@
     {#if open && loadingFull}<span class="attachment-spinner attachment-spinner-full" role="status" aria-label={`Loading enlarged ${name}`}></span>{/if}
     <Dialog.Close class="attachment-lightbox-full-image" aria-label={`Close enlarged ${name}`}>
       {#if open && fullObjectUrl}
-        <img src={fullObjectUrl} alt={name} />
+        <img src={fullObjectUrl} alt={name} onload={() => loadingFull = false} onerror={() => { loadingFull = false; loadError = 'Image display failed'; }} style:opacity={loadingFull ? 0 : 1} />
       {/if}
     </Dialog.Close>
   </Dialog.Content>
@@ -145,6 +152,8 @@
 <style>
   :global(.attachment-lightbox-thumbnail){display:block;overflow:hidden;padding:0;border:0;background:transparent;cursor:zoom-in}
   :global(.attachment-lightbox-thumbnail img){display:block;width:100%;height:100%;object-fit:cover}
+  :global(.attachment-lightbox-thumbnail){position:relative}
+  :global(.attachment-lightbox-thumbnail .attachment-spinner){position:absolute;inset:0;margin:auto}
   :global(.attachment-lightbox-thumbnail.composer){width:60px;height:52px;border-radius:7px}
   /* A fixed box, held whether or not the image has landed, so a transcript row
      never changes height when a screenshot finishes loading. The box itself
