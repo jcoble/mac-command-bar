@@ -3576,6 +3576,68 @@ mod connection_tests {
     }
 
     #[tokio::test]
+    async fn lagging_socket_replays_missing_rows_and_stays_open() {
+        let directory = std::env::temp_dir().join(format!("assembly-socket-lag-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("sessions.db")).unwrap();
+        let store = manager.store();
+        store.upsert_session(&mcb_core::session_store::SessionRow {
+            owned_id: "large-history".into(), native_session_id: None, provider: "codex".into(),
+            model: None, effort: None, cwd: String::new(), worktree: None, branch: None,
+            title: None, title_source: None, project: None, state: "suspended".into(),
+            suspended: true, created_at_ms: 0, last_activity_at_ms: 0,
+            extra_json: super::super::manager::imported_session_extra(AgentConversationProvider::Codex).unwrap(),
+        }).unwrap();
+        let append = |sequence| {
+            let mut event = large_history_event(32);
+            event.sequence = sequence;
+            store.append_event(&mcb_core::session_store::EventRow {
+                owned_id: event.owned_id.clone(), seq: sequence, turn_id: None,
+                kind: "test".into(), payload_json: serde_json::to_string(&event).unwrap(),
+                created_at_ms: 0,
+            }).unwrap();
+            event
+        };
+        for sequence in 1..=12 { append(sequence); }
+        let (events, _) = broadcast::channel(2);
+        let state = ServerState {
+            manager: manager.clone(), data_dir: directory.clone(), token: Arc::from("test-token"),
+            maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
+            restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events: events.clone(),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(axum::serve(listener, Router::new().route("/assembly", get(upgrade_remote_socket)).with_state(state.clone())).into_future());
+        let mut request = format!("ws://{address}/assembly").into_client_request().unwrap();
+        request.headers_mut().insert("authorization", "Bearer test-token".parse().unwrap());
+        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        assert!(matches!(parse_server_frame(socket.next().await.unwrap().unwrap()).unwrap(), Some(ServerFrame::Ready { .. })));
+        send_client_frame(&mut socket, &ClientFrame::Resume { cursors: BTreeMap::from([("large-history".into(), 0)]) }).await.unwrap();
+        let first = parse_server_frame(socket.next().await.unwrap().unwrap()).unwrap().unwrap();
+        assert!(matches!(first, ServerFrame::Event { event } if event.sequence == 1));
+
+        // The current-thread runtime cannot poll the server while this burst is sent.
+        // Its two-slot receiver must report Lagged after the in-progress replay.
+        for sequence in 13..=17 { events.send(append(sequence)).unwrap(); }
+        let mut sequences = vec![1];
+        while sequences.len() < 17 {
+            let frame = tokio::time::timeout(Duration::from_secs(5), socket.next()).await.unwrap().unwrap().unwrap();
+            if let Some(ServerFrame::Event { event }) = parse_server_frame(frame).unwrap() {
+                sequences.push(event.sequence);
+            }
+        }
+        assert_eq!(sequences, (1..=17).collect::<Vec<_>>());
+        send_client_frame(&mut socket, &ClientFrame::Request { id: 7, command: RemoteCommand::ListSessions }).await.unwrap();
+        let response = tokio::time::timeout(Duration::from_secs(5), socket.next()).await.unwrap().unwrap().unwrap();
+        assert!(matches!(parse_server_frame(response).unwrap(), Some(ServerFrame::Response { id: 7, response: RemoteResponse::Sessions(_) })));
+        socket.close(None).await.unwrap();
+        server.abort();
+        let _ = server.await;
+        drop(state);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
     async fn pending_remote_request_reports_socket_close_reason() {
         use tokio_tungstenite::tungstenite::protocol::{frame::coding::CloseCode, CloseFrame};
 
