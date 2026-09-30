@@ -1,5 +1,6 @@
 import './svelteRuneTestSetup.ts';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   buildMyWorkGroups,
@@ -204,6 +205,16 @@ function shape(groups: MyWorkGroup[]): unknown[] {
 
 // The rail's status actions must change the same rows that the pills filter.
 {
+  const route = readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
+  for (const [action, status] of [
+    ['onComplete', 'done'],
+    ['onReopen', 'working'],
+    ['onSettle', 'settled'],
+    ['onUnsettle', 'done']
+  ]) {
+    assert.ok(new RegExp(`${action}=\\{\\(ownedId\\) => void changeSessionStatus\\(ownedId, '${status}'\\)\\}`).test(route),
+      `${action} must reach the saved status action`);
+  }
   hydrateOwned([session('working'), session('done'), session('settled')]);
   setOwnedSessionStatus('done', 'done', new Date('2026-09-30T12:00:00.000Z'));
   setOwnedSessionStatus('settled', 'settled', new Date('2026-09-30T12:00:00.000Z'));
