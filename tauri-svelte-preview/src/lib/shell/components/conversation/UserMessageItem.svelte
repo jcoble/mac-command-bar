@@ -13,6 +13,7 @@
         <figure>
           <AttachmentLightbox
             src={attachment.previewUrl}
+            previewLoading={attachment.previewLoading}
             fullPath={attachment.path}
             remoteOwnedId={attachment.remoteOwnedId}
             attachmentId={attachment.id}
