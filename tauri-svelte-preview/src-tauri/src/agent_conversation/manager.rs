@@ -6416,6 +6416,15 @@ fn tool_details(update: &Value) -> ToolDetails {
     if path.is_none() {
         path = update.get("locations").and_then(text_from_value);
     }
+    if let Some(file) = update
+        .pointer("/rawInput/command")
+        .or_else(|| update.pointer("/rawInput/cmd"))
+        .or_else(|| update.get("title"))
+        .and_then(Value::as_str)
+        .and_then(transcript::simple_shell_file_path)
+    {
+        path = Some(file);
+    }
 
     let output = (!output.is_empty()).then(|| output.join("\n"));
     // The preview is the first line of what came back, which for a shell call

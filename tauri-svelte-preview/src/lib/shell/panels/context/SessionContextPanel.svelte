@@ -16,8 +16,8 @@
   percentage appears only when both halves of the pair are real.
   `sessionContextModel.ts` holds that rule and the script test pins it.
 
-  Files touched is derived, not stored: the panel reads the session's events
-  once each time it comes on screen and folds them down. It deliberately does
+  Files touched is derived, not stored: the panel reads the session's event
+  pages each time it comes on screen and folds them down. It deliberately does
   not subscribe to the live stream — the conversation store is already doing
   that work, and a second subscriber would double it for a list nobody is
   staring at while it changes.
@@ -32,10 +32,13 @@
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { agentDisplayName } from '$lib/shell/agentIcons.ts';
+  import AttachmentLightbox from '$lib/shell/components/conversation/AttachmentLightbox.svelte';
+  import { cleanupConversationAttachmentPreview, restoreAttachmentList, type SavedAttachment } from '$lib/shell/conversation/conversationService';
   import { getConversationSession } from '$lib/shell/conversation/conversationStore.svelte';
   import { openFileInEditor } from '$lib/shell/workbenchNavigation';
-  import { listAgentConversationEventsFromTauri } from '$lib/tauriSource';
-  import type { AgentConversationEvent } from '$lib/shell/conversation/conversationTypes.ts';
+  import { listAgentConversationEventsBeforeFromTauri } from '$lib/tauriSource';
+  import { invoke } from '@tauri-apps/api/core';
+  import type { ConversationAttachment } from '$lib/shell/conversation/conversationTypes.ts';
 
   import {
     fileNameOf,
@@ -69,15 +72,12 @@
     sessionContextFacts(metadataWithConfigFallback(session?.metadata ?? null, session?.agentConfig))
   );
   const usage = $derived(sessionContextUsage(session?.metadata ?? null, session?.usage));
-  const attachments = $derived(
-    session
-      ? sessionAttachments(
-          session.attachments,
-          session.unclaimedSentAttachments,
-          session.sentAttachments
-        )
-      : []
-  );
+  let savedAttachments = $state<ConversationAttachment[]>([]);
+  const attachments = $derived(sessionAttachments(
+    [...savedAttachments, ...(session?.attachments ?? [])],
+    session?.unclaimedSentAttachments ?? [],
+    session?.sentAttachments ?? {}
+  ));
 
   /** Whoever did not send a figure gets named for it, so "not reported" reads
    * as a fact about the provider rather than as a hole in the panel. */
@@ -86,6 +86,7 @@
 
   let filesTouched = $state<SessionFileTouch[]>([]);
   let filesLoaded = $state(false);
+  let filesError = $state(false);
 
   /**
    * Re-read the session's events whenever the panel comes on screen or the
@@ -99,17 +100,41 @@
     const forRoot = root.trim();
     if (!visible || !forSession) {
       filesLoaded = false;
+      filesError = false;
       filesTouched = [];
+      savedAttachments = [];
       return;
     }
 
     const owner = { active: true };
+    filesLoaded = false;
+    filesError = false;
+    filesTouched = [];
+    savedAttachments = [];
     void loadTouchedFiles(owner, forSession, forRoot);
+    void loadAttachments(owner, forSession);
 
     return () => {
       owner.active = false;
+      savedAttachments.forEach(cleanupConversationAttachmentPreview);
+      savedAttachments = [];
     };
   });
+
+  async function loadAttachments(owner: { active: boolean }, forSession: string): Promise<void> {
+    try {
+      const records = await invoke<SavedAttachment[]>('read_agent_conversation_attachments', { ownedId: forSession });
+      if (!owner.active) return;
+      const restored = await restoreAttachmentList(forSession, records);
+      if (!owner.active || ownedId !== forSession) {
+        restored.forEach(cleanupConversationAttachmentPreview);
+        return;
+      }
+      savedAttachments = restored;
+    } catch {
+      // Existing draft and loaded-message attachments remain visible.
+    }
+  }
 
   async function loadTouchedFiles(
     owner: { active: boolean },
@@ -117,14 +142,30 @@
     forRoot: string
   ): Promise<void> {
     try {
-      const events = await listAgentConversationEventsFromTauri(forSession, 0);
+      const touches = new Map<string, SessionFileTouch>();
+      let before = Number.MAX_SAFE_INTEGER;
+      while (owner.active) {
+        const page = await listAgentConversationEventsBeforeFromTauri(forSession, before, 512 * 1024);
+        if (!page) throw new Error('No event page returned');
+        for (const touch of sessionFilesTouched(page.events, forRoot)) {
+          const existing = touches.get(touch.path);
+          if (existing) existing.count += touch.count;
+          else touches.set(touch.path, touch);
+        }
+        const oldest = page.events[0]?.sequence;
+        if (!page.hasMore || touches.size >= 50 || oldest === undefined || oldest >= before) break;
+        before = oldest;
+      }
       if (!owner.active || ownedId !== forSession || root.trim() !== forRoot) return;
-      filesTouched = sessionFilesTouched(events ?? [], forRoot);
+      filesTouched = [...touches.values()]
+        .sort((a, b) => b.lastTouchedMs - a.lastTouchedMs || a.path.localeCompare(b.path))
+        .slice(0, 50);
       filesLoaded = true;
     } catch {
       if (!owner.active || ownedId !== forSession || root.trim() !== forRoot) return;
       filesTouched = [];
       filesLoaded = true;
+      filesError = true;
     }
   }
 
@@ -252,8 +293,10 @@
               {#if filesTouched.length === 0}
                 <EmptyState
                   class="px-2 py-2"
-                  title={filesLoaded ? 'No files yet' : 'Reading this session'}
-                  body={filesLoaded
+                  title={filesError ? 'Could not read files' : filesLoaded ? 'No files yet' : 'Reading this session'}
+                  body={filesError
+                    ? 'The session history could not be read. Reopen Context to try again.'
+                    : filesLoaded
                     ? 'Files this session reads or edits are listed here, most recent first.'
                     : 'Working out which files this session has touched.'}
                 />
@@ -299,10 +342,22 @@
               {:else}
                 <div class="flex flex-col">
                   {#each attachments as attachment (attachment.id)}
-                    <ListRow>
+                    <div class="flex min-h-9 items-center gap-2 px-2 py-1">
+                      {#if attachment.mimeType.startsWith('image/')}
+                        <AttachmentLightbox
+                          src={attachment.previewUrl}
+                          fullPath={attachment.path}
+                          remoteOwnedId={attachment.remoteOwnedId}
+                          attachmentId={attachment.id}
+                          mimeType={attachment.mimeType}
+                          originalByteLength={attachment.byteLength}
+                          name={attachment.name}
+                          variant="composer"
+                        />
+                      {/if}
                       <span class="min-w-0 flex-1 truncate">{attachment.name}</span>
                       <Chip tone="neutral">{attachment.mimeType || 'type not reported'}</Chip>
-                    </ListRow>
+                    </div>
                   {/each}
                 </div>
               {/if}
