@@ -241,6 +241,7 @@
   let composerHeight = $state(0);
   let composer = $state<{ focus(): void; expandPlan(): void } | null>(null);
   const pendingAttachmentUploads = new Map<string, Promise<void>>();
+  let pendingImageCounts = $state<Record<string, number>>({});
   const sendsWaitingForUpload = new Set<string>();
 
   /** Put the caret in the prompt box. The page calls this when a panel hands
@@ -315,11 +316,7 @@
     const ownedId = active.ownedId;
     const generation = conversation.generation;
     if (!conversation.attachments.length && conversation.attachmentIds.length) {
-      const controller = new AbortController();
-      void restoreAttachmentsForSurface(controller.signal, ownedId, generation);
-      return () => {
-        controller.abort();
-      };
+      void restoreAttachmentsForSurface(surfaceController.signal, ownedId, generation);
     }
   });
 
@@ -375,7 +372,8 @@
   ): Promise<void> {
     try {
       if (ownsConversationGeneration(signal, ownedId, generation)) {
-        await restoreConversationAttachments(ownedId, [], signal);
+        // Publishing metadata reruns the effect; only the generation check may discard its thumbnail results.
+        await restoreConversationAttachments(ownedId, []);
       }
     } catch (_error) {
       // Attachment restore is best effort; saved ids remain in the session.
@@ -573,6 +571,7 @@
   async function attachImages(files: File[], rejectedMessage: string): Promise<void> {
     const ownedId = active?.ownedId;
     if (!ownedId) return;
+    pendingImageCounts[ownedId] = (pendingImageCounts[ownedId] ?? 0) + files.filter((file) => file.type.startsWith('image/')).length;
     const previous = pendingAttachmentUploads.get(ownedId);
     const upload = (async () => {
       await previous;
@@ -582,6 +581,7 @@
     try {
       await upload;
     } finally {
+      pendingImageCounts[ownedId] = Math.max(0, (pendingImageCounts[ownedId] ?? 0) - files.filter((file) => file.type.startsWith('image/')).length);
       if (pendingAttachmentUploads.get(ownedId) === upload) pendingAttachmentUploads.delete(ownedId);
     }
   }
@@ -814,6 +814,7 @@
           provider={active.agent}
           draft={conversation.draft}
           attachments={conversation.attachments}
+          pendingImageCount={pendingImageCounts[active.ownedId] ?? 0}
           sending={turnActive}
           supportsSteering={conversation.capabilities?.session.steering === true}
           configState={conversation.agentConfig}

@@ -669,6 +669,7 @@ export interface ConversationAttachment {
   mimeType: string;
   path: string;
   previewUrl: string;
+  previewLoading?: boolean;
   byteLength?: number;
   remoteOwnedId?: string;
   originalUrl?: string;

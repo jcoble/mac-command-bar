@@ -19,7 +19,6 @@ import { listen } from '@tauri-apps/api/event';
 import { get } from 'svelte/store';
 import { hasBackendCapability } from '../backendCapabilities.ts';
 import {
-  createTrackedObjectUrl,
   revokeTrackedObjectUrl,
   setConversationSnapshotReadDiagnostics,
   trackTauriListener
@@ -259,13 +258,18 @@ export async function saveConversationClipboardImage(
   file: File,
   onSavedChange?: (attachment: SavedAttachment, retained: boolean) => Promise<void>
 ): Promise<ConversationAttachment> {
-  const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+  const bytes = dataUrl.slice(dataUrl.indexOf(',') + 1);
   const saved = await invoke<SavedAttachment>('save_agent_conversation_attachment', {
     ownedId,
     mimeType: file.type,
     bytes
   });
-  const attachment = { ...saved, bytes };
   if (isRemoteConversation(ownedId)) {
     try {
       await onSavedChange?.(saved, true);
@@ -282,7 +286,9 @@ export async function saveConversationClipboardImage(
       throw error;
     }
   }
-  return restoreConversationAttachmentPreview(attachment) as AttachmentWithBytes;
+  const localBytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+  const attachment: AttachmentWithBytes = { ...restoreConversationAttachmentPreview(saved), bytes: localBytes };
+  return attachment;
 }
 
 function isRemoteConversation(ownedId: string): boolean {
@@ -290,25 +296,15 @@ function isRemoteConversation(ownedId: string): boolean {
 }
 
 async function remoteAttachmentPreview(ownedId: string, attachment: SavedAttachment, signal?: AbortSignal): Promise<string> {
-  const length = attachment.thumbnailByteLength ?? attachment.byteLength;
-  const thumbnail = attachment.thumbnailByteLength != null;
-  if (length < 1 || length > 20 * 1024 * 1024) throw new Error('Attachment preview exceeds 20 MB');
-  const preview = new Uint8Array(length);
-  let offset = 0;
-  while (offset < length) {
-    if (signal?.aborted) throw new Error('Attachment preview cancelled');
-    const data = await invoke<number[]>('read_agent_conversation_attachment_chunk', {
-      ownedId, attachmentId: attachment.id, thumbnail, offset
-    });
-    if (signal?.aborted) throw new Error('Attachment preview cancelled');
-    if (!data.length || data.length > 128 * 1024 || offset + data.length > length) {
-      throw new Error('Remote attachment preview is incomplete');
-    }
-    preview.set(data, offset);
-    offset += data.length;
-  }
+  if (attachment.thumbnailByteLength == null) return '';
+  const path = await invoke<string>('read_agent_conversation_attachment_file', {
+    ownedId, attachmentId: attachment.id, thumbnail: true,
+    byteLength: attachment.thumbnailByteLength,
+    mimeType: attachment.thumbnailMimeType ?? 'image/webp',
+    transferId: crypto.randomUUID()
+  });
   if (signal?.aborted) throw new Error('Attachment preview cancelled');
-  return createTrackedObjectUrl(new Blob([preview.buffer as ArrayBuffer], { type: thumbnail ? attachment.thumbnailMimeType ?? 'image/webp' : attachment.mimeType }), 'attachment');
+  return convertFileSrc(path);
 }
 
 /** Revoke only URLs owned by this surface; the managed path never goes through the DOM. */
@@ -414,7 +410,8 @@ export async function restoreConversationAttachments(
   const generation = getConversationSession(ownedId)?.generation;
   if (generation === undefined) return [];
   if (saved.length > 0) {
-    const restored = await restoreAttachmentList(ownedId, saved as SavedAttachment[], signal);
+    const restored = await restoreAttachmentList(ownedId, saved as SavedAttachment[], signal,
+      (items) => { if (conversationGenerationMatches(ownedId, generation)) setConversationAttachments(ownedId, items); });
     if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) {
       discardRestoredAttachments(restored);
       return [];
@@ -429,7 +426,8 @@ export async function restoreConversationAttachments(
       'read_agent_conversation_attachments',
       { ownedId }
     );
-    const restored = Array.isArray(records) ? await restoreAttachmentList(ownedId, (records as SavedAttachment[]).filter((record) => draftIds.has(record.id)), signal) : [];
+    const restored = Array.isArray(records) ? await restoreAttachmentList(ownedId, (records as SavedAttachment[]).filter((record) => draftIds.has(record.id)), signal,
+      (items) => { if (conversationGenerationMatches(ownedId, generation)) setConversationAttachments(ownedId, items); }) : [];
     if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) {
       discardRestoredAttachments(restored);
       return [];
@@ -444,22 +442,33 @@ export async function restoreConversationAttachments(
   }
 }
 
-async function restoreAttachmentForOwner(ownedId: string, attachment: SavedAttachment, signal?: AbortSignal): Promise<ConversationAttachment> {
-  if (!isRemoteConversation(ownedId)) return restoreConversationAttachmentPreview(attachment);
-  return { ...attachment, remoteOwnedId: ownedId, previewUrl: await remoteAttachmentPreview(ownedId, attachment, signal) };
-}
-
-export async function restoreAttachmentList(ownedId: string, records: readonly SavedAttachment[], signal?: AbortSignal): Promise<ConversationAttachment[]> {
-  const restored: ConversationAttachment[] = [];
-  for (const record of records) {
-    if (signal?.aborted) break;
-    try {
-      restored.push(await restoreAttachmentForOwner(ownedId, record, signal));
-    } catch {
-      if (signal?.aborted) break;
-      restored.push({ ...record, remoteOwnedId: isRemoteConversation(ownedId) ? ownedId : undefined, previewUrl: '' });
+export async function restoreAttachmentList(
+  ownedId: string, records: readonly SavedAttachment[], signal?: AbortSignal,
+  onUpdate?: (attachments: ConversationAttachment[]) => void
+): Promise<ConversationAttachment[]> {
+  const remote = isRemoteConversation(ownedId);
+  const restored = records.map((record) => {
+    if (remote) return { ...record, remoteOwnedId: ownedId, previewUrl: '', previewLoading: record.thumbnailByteLength != null };
+    try { return restoreConversationAttachmentPreview(record); }
+    catch { return { ...record, previewUrl: '' }; }
+  });
+  onUpdate?.([...restored]);
+  if (!remote) return restored;
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(3, records.length) }, async () => {
+    while (!signal?.aborted && next < records.length) {
+      const index = next++;
+      try {
+        const previewUrl = await remoteAttachmentPreview(ownedId, records[index], signal);
+        if (signal?.aborted) return;
+        restored[index] = { ...restored[index], previewUrl, previewLoading: false };
+      } catch {
+        if (signal?.aborted) return;
+        restored[index] = { ...restored[index], previewLoading: false };
+      }
+      onUpdate?.([...restored]);
     }
-  }
+  }));
   if (signal?.aborted) {
     discardRestoredAttachments(restored);
     return [];
@@ -712,9 +721,21 @@ async function hydrateSentConversationAttachments(
   if (signal?.aborted || !Array.isArray(records)) return;
   const wantedIds = new Set([...wanted.values()].flat());
   let restored: ConversationAttachment[];
+  const publish = (items: ConversationAttachment[]) => {
+    if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) return;
+    const byId = new Map(items.map((record) => [record.id, record]));
+    const resolved: Record<string, ConversationAttachment[]> = {};
+    for (const [itemId, ids] of wanted) {
+      const attachments = [...new Set(ids)]
+        .map((id) => byId.get(id))
+        .filter((attachment): attachment is ConversationAttachment => !!attachment);
+      if (attachments.length) resolved[itemId] = attachments;
+    }
+    if (Object.keys(resolved).length) restoreSentConversationAttachments(ownedId, resolved, generation);
+  };
   try {
     restored = await restoreAttachmentList(ownedId, (records as SavedAttachment[])
-      .filter((record) => wantedIds.has(record.id)), signal);
+      .filter((record) => wantedIds.has(record.id)), signal, publish);
   } catch {
     return;
   }
@@ -722,17 +743,7 @@ async function hydrateSentConversationAttachments(
     discardRestoredAttachments(restored);
     return;
   }
-  const byId = new Map(restored.map((record) => [record.id, record]));
-  const resolved: Record<string, ConversationAttachment[]> = {};
-  for (const [itemId, ids] of wanted) {
-    const attachments = [...new Set(ids)]
-      .map((id) => byId.get(id))
-      .filter((attachment): attachment is ConversationAttachment => !!attachment);
-    if (attachments.length) resolved[itemId] = attachments;
-  }
-  if (!signal?.aborted && Object.keys(resolved).length) {
-    restoreSentConversationAttachments(ownedId, resolved, generation);
-  }
+  publish(restored);
 }
 
 function bufferConversationEvent(read: ConversationSnapshotRead, event: AgentConversationEvent): void {
