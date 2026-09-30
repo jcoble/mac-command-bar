@@ -454,6 +454,10 @@ function applyLegacyEventInPlace(current: ConversationWorkspaceState, event: Age
   const previousSequence = newGeneration ? 0 : current.lastSequence;
   if (!newGeneration && event.sequence <= previousSequence) return false;
   const hasGap = event.sequence !== previousSequence + 1;
+  if (hasGap) console.info('[conversation-sync]', {
+    cause: 'sequence-gap', session: event.ownedId, generation: event.generation,
+    expectedSequence: previousSequence + 1, receivedSequence: event.sequence
+  });
   current.generation = event.generation;
   current.lastSequence = event.sequence;
   current.desynchronized = newGeneration ? hasGap : current.desynchronized || hasGap;
@@ -884,13 +888,14 @@ function projectionSnapshot(current: ConversationWorkspaceState): AgentConversat
 
 export function applyAgentConversationSnapshot(
   snapshot: AgentConversationSnapshot,
-  window?: ProjectionWindowState
-): void {
+  window?: ProjectionWindowState,
+  bufferedEvents: readonly AgentConversationEvent[] = []
+): boolean {
   const current = ensureConversationSession(
     snapshot.connection.ownedId,
     snapshot.connection.provider
   );
-  if (snapshot.connection.generation < current.generation) return;
+  if (snapshot.connection.generation < current.generation) return false;
   // Re-selecting a session hands us a snapshot we have usually already applied.
   // When it is the same generation, holds no event newer than what is on
   // screen, and changes no connection fact, rebuilding would redo the whole
@@ -899,7 +904,31 @@ export function applyAgentConversationSnapshot(
   // its snapshot is the repair.
   let sourceEvents = window?.events ?? snapshot.events;
   if (!window) {
-    sourceEvents = [...sourceEvents];
+    // SQLite supplies the base; persisted live events supply only a continuous
+    // suffix. Never advance over an event missing from both sources.
+    const suffix = [...current.loadedEvents, ...bufferedEvents]
+      .filter((event) => event.generation >= snapshot.connection.generation
+        && (event.generation > snapshot.connection.generation || event.sequence > snapshot.lastSequence))
+      .sort((a, b) => a.generation - b.generation || a.sequence - b.sequence);
+    let head = snapshot.lastSequence;
+    const tail: AgentConversationEvent[] = [];
+    for (const event of suffix) {
+      if (event.generation !== snapshot.connection.generation) return false;
+      if (event.sequence <= head) continue;
+      if (event.sequence !== head + 1) {
+        console.info('[conversation-sync]', {
+          cause: 'snapshot-suffix-gap', session: event.ownedId, generation: event.generation,
+          expectedSequence: head + 1, receivedSequence: event.sequence
+        });
+        return false;
+      }
+      tail.push(event);
+      head = event.sequence;
+    }
+    if (snapshot.connection.generation === current.generation && head < current.lastSequence) return false;
+    snapshot = { ...snapshot, lastSequence: head };
+    // Replay normalization belongs to historical rows, not new live deltas.
+    sourceEvents = [...idempotentSnapshotEvents(sourceEvents), ...tail];
     if (sourceEvents.length > ACTIVE_EVENT_WINDOW_EVENTS) {
       sourceEvents.splice(0, sourceEvents.length - ACTIVE_EVENT_WINDOW_TRIM_EVENTS);
     }
@@ -922,12 +951,12 @@ export function applyAgentConversationSnapshot(
     && current.suspended === snapshot.suspended
     && current.connectionState === snapshot.connection.state
     && (!snapshot.suspended || (!current.activeTurnId && !current.sending))
-  ) return;
+  ) return true;
   let rebuilt = createConversationState(
     snapshot.connection.ownedId,
     snapshot.connection.provider
   );
-  const events = window ? sourceEvents : idempotentSnapshotEvents(sourceEvents);
+  const events = sourceEvents;
   const firstEvent = events[0];
   // A read snapshot is deliberately a bounded tail window. Seed the reducer
   // immediately before that window so the first retained event is contiguous
@@ -942,11 +971,6 @@ export function applyAgentConversationSnapshot(
   for (const event of events) {
     rebuilt = applyConversationEvent(rebuilt, event);
   }
-  if (
-    snapshot.connection.generation === current.generation
-    && rebuilt.lastSequence < current.lastSequence
-    && !window
-  ) return;
   const sentAttachments = retainSentAttachments(current.sentAttachments, sourceEvents);
   // Build the complete snapshot off the reactive graph. Publishing this object
   // before replay made every event traverse Svelte's deep proxy machinery and
@@ -1050,6 +1074,7 @@ export function applyAgentConversationSnapshot(
   // One reactive publication: subscribers see only the finished snapshot.
   conversationSessions[snapshot.connection.ownedId] = restored;
   publishConversationProjectionDiagnostics();
+  return !restored.desynchronized;
 }
 
 /**
