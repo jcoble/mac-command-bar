@@ -29,7 +29,10 @@
   import { onMount } from 'svelte';
   import Save from '@lucide/svelte/icons/save';
   import X from '@lucide/svelte/icons/x';
+  import Folder from '@lucide/svelte/icons/folder';
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
+  import * as Breadcrumb from '$lib/components/ui/breadcrumb/index.js';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 
   import { upgradeUnknownLanguage } from './editor/editorLanguage.ts';
   import {
@@ -100,6 +103,7 @@
     isNativeTauriRuntime,
     readSourceImageFromTauri,
     readSourceFromTauri,
+    listSourceDirectoryFromTauri,
     readSourceLspStatusFromTauri,
     setWorkspaceLanguageIntelligenceFromTauri,
     warmSourceLspForRootFromTauri,
@@ -113,6 +117,7 @@
     SourceInlayHint,
     SourcePreview,
     SourceRecord,
+    SourceDirectoryEntry,
     SourceSymbol
   } from '$lib/sourceData';
   import { applySourceTextEdits } from '$lib/sourceData';
@@ -226,6 +231,57 @@
   /** Inspection root for read-only tabs; a path alone is not enough context. */
   let readOnlyByPath = $state<Record<string, string>>({});
   const activeFileReadOnly = $derived(Boolean(activeFile && readOnlyByPath[activeFile.path]));
+  let breadcrumbFolder = $state<{ file: string; root: string; path: string } | null>(null);
+  let breadcrumbMenu = $state<{ file: string; root: string; directory: string; entries: SourceDirectoryEntry[] | null; error: string | null } | null>(null);
+  let breadcrumbMenuGeneration = 0;
+  let breadcrumbOwner = '';
+  const breadcrumbRoot = $derived(activeFile
+    ? (readOnlyByPath[activeFile.path] || editorState.projectRoot || '')
+    : '');
+  $effect(() => {
+    const owner = `${breadcrumbRoot}\0${activeFile?.path ?? ''}`;
+    if (owner === breadcrumbOwner) return;
+    breadcrumbOwner = owner;
+    breadcrumbFolder = null;
+    breadcrumbMenu = null;
+    breadcrumbMenuGeneration += 1;
+  });
+  const breadcrumbPath = $derived(activeFile && breadcrumbRoot && activeFile.path.startsWith(`${breadcrumbRoot}/`)
+    ? (breadcrumbFolder?.file === activeFile.path && breadcrumbFolder.root === breadcrumbRoot
+        ? breadcrumbFolder.path : activeFile.path)
+    : '');
+  const breadcrumbParts = $derived(breadcrumbPath
+    ? [breadcrumbRoot, ...breadcrumbPath.slice(breadcrumbRoot.length + 1).split('/').map((_, index, parts) =>
+        `${breadcrumbRoot}/${parts.slice(0, index + 1).join('/')}`)]
+    : []);
+
+  async function openBreadcrumbMenu(directory: string): Promise<void> {
+    if (!activeFile || !breadcrumbRoot || !rootAvailable) return;
+    const file = activeFile.path;
+    const root = breadcrumbRoot;
+    const generation = ++breadcrumbMenuGeneration;
+    breadcrumbMenu = { file, root, directory, entries: null, error: null };
+    try {
+      const entries = await listSourceDirectoryFromTauri(root, directory);
+      if (generation === breadcrumbMenuGeneration && activeFile?.path === file && breadcrumbRoot === root && breadcrumbMenu?.directory === directory) {
+        breadcrumbMenu = { file, root, directory, entries: entries ?? [], error: null };
+      }
+    } catch (error) {
+      if (generation === breadcrumbMenuGeneration && activeFile?.path === file && breadcrumbRoot === root && breadcrumbMenu?.directory === directory) {
+        breadcrumbMenu = { file, root, directory, entries: [], error: describeError(error) };
+      }
+    }
+  }
+
+  function chooseBreadcrumbEntry(entry: SourceDirectoryEntry): void {
+    if (!activeFile || !breadcrumbRoot) return;
+    if (entry.isDirectory) {
+      breadcrumbFolder = { file: activeFile.path, root: breadcrumbRoot, path: entry.path };
+    } else {
+      handleOpenFileRequest({ path: entry.path, projectRoot: breadcrumbRoot, readOnly: activeFileReadOnly });
+      breadcrumbFolder = null;
+    }
+  }
   const activeServerEnabled = $derived.by(() => {
     const language = activeFile?.language?.toLowerCase();
     if (language === 'csharp' || language === 'c#') return settings.intelligence.languageServerEnabled.csharp;
@@ -1644,6 +1700,45 @@
       </div>
     </div>
 
+    {#if activeFile && breadcrumbParts.length > 0}
+      <div class="editor-breadcrumb-row">
+        <Breadcrumb.Root>
+          <Breadcrumb.List class="flex-nowrap gap-1 text-[13px]">
+            {#each breadcrumbParts as part, index (part)}
+              {#if index > 0}<Breadcrumb.Separator class="shrink-0" />{/if}
+              <Breadcrumb.Item class="min-w-0 shrink-0">
+                <DropdownMenu.Root onOpenChange={(open) => { if (open) void openBreadcrumbMenu(part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part); }}>
+                  <DropdownMenu.Trigger class="breadcrumb-trigger" aria-label={`Browse ${part.split('/').at(-1)}`}>
+                    {part.split('/').at(-1)}
+                  </DropdownMenu.Trigger>
+                  <DropdownMenu.Content class="max-h-80 min-w-48 max-w-80" align="start">
+                    {#if breadcrumbMenu?.file === activeFile.path && breadcrumbMenu.root === breadcrumbRoot && breadcrumbMenu.directory === (part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part)}
+                      {#if breadcrumbMenu.error}
+                        <DropdownMenu.Item disabled>{breadcrumbMenu.error}</DropdownMenu.Item>
+                      {:else if breadcrumbMenu.entries === null}
+                        <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
+                      {:else if breadcrumbMenu.entries.filter((entry) => !entry.excluded && (part !== activeFile.path || !entry.isDirectory)).length === 0}
+                        <DropdownMenu.Item disabled>No files or folders</DropdownMenu.Item>
+                      {:else}
+                        {#each breadcrumbMenu.entries.filter((entry) => !entry.excluded && (part !== activeFile.path || !entry.isDirectory)) as entry (entry.path)}
+                          <DropdownMenu.Item onSelect={() => chooseBreadcrumbEntry(entry)}>
+                            {#if entry.isDirectory}<Folder class="size-3.5" />{:else}<FileIcon fileName={entry.name} size={13} />{/if}
+                            <span class="truncate">{entry.name}{entry.isDirectory ? '/' : ''}</span>
+                          </DropdownMenu.Item>
+                        {/each}
+                      {/if}
+                    {:else}
+                      <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
+                    {/if}
+                  </DropdownMenu.Content>
+                </DropdownMenu.Root>
+              </Breadcrumb.Item>
+            {/each}
+          </Breadcrumb.List>
+        </Breadcrumb.Root>
+      </div>
+    {/if}
+
     <div class="editor-canvas">
       {#if activeFile?.conflict}
         <div class="editor-conflict" role="alert">
@@ -1856,6 +1951,38 @@
     background: var(--color-surface);
     border-bottom: 1px solid var(--color-border);
     padding: 3px 8px 3px 4px;
+  }
+
+  .editor-breadcrumb-row {
+    flex: 0 0 auto;
+    min-width: 0;
+    overflow-x: auto;
+    padding: 2px 8px;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .editor-breadcrumb-row :global(.breadcrumb-trigger) {
+    min-height: 24px;
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border-radius: 8px;
+    padding: 0 6px;
+    color: var(--color-text-2);
+    font-size: 13px;
+  }
+
+  .editor-breadcrumb-row :global(.breadcrumb-trigger:hover),
+  .editor-breadcrumb-row :global(.breadcrumb-trigger[data-state='open']) {
+    background: var(--color-elevated);
+    color: var(--color-text);
+  }
+
+  .editor-breadcrumb-row :global(.breadcrumb-trigger:focus-visible) {
+    outline: 2px solid var(--color-focus);
+    outline-offset: -2px;
   }
 
   .file-strip {
