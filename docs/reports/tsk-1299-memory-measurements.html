@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TSK-1299 — Native memory measurements</title>
+<style>
+:root{color-scheme:light;font:16px/1.55 system-ui,sans-serif;background:#f5f7fa;color:#17202e}body{max-width:1050px;margin:auto;padding:36px 24px}h1{font-size:30px;line-height:1.2}h2{font-size:21px;margin-top:32px}p{max-width:85ch}.decision{padding:20px;background:#fff3d7;border-left:5px solid #aa6500}.card{background:white;border:1px solid #ccd3dd;border-radius:8px;padding:20px;margin:20px 0}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:10px;border-bottom:1px solid #d6dce4}th{background:#edf1f6}code{font-size:13px;overflow-wrap:anywhere}a{color:#174f9e}.muted{color:#526071}li{margin:8px 0}caption{text-align:left;margin-bottom:12px;font-weight:600}
+</style>
+<h1>TSK-1299: large memory spikes, no proven retained leak</h1>
+<p>Measured on agent-workbox, September 30, 2026, against <code>596389467</code> using the real Tauri application. <a href="https://app.notion.com/p/3eb394b0689d8169bbcee93e78a9f723">Task and acceptance</a>.</p>
+<div class="decision"><strong>The task remains incomplete.</strong> Image loads caused large temporary memory spikes, but repeated completed batches returned to similar or lower idle RSS. No growing allocation owner was established. No production fix or before/after improvement is claimed.</div>
+<div class="card">
+<table>
+<caption>Repeated remote workload on unchanged code — MiB</caption>
+<thead><tr><th>Batch</th><th>Starting app + WebKit RSS</th><th>Peak RSS</th><th>About 60 seconds idle, before explicit GC</th><th>JS node self-size after GC</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>768.1</td><td>1475.8</td><td>740.6</td><td>30.21</td></tr>
+<tr><td>2</td><td>749.7</td><td>1586.7</td><td>751.0</td><td>30.36</td></tr>
+<tr><td>3</td><td>712.0</td><td>1432.5</td><td>607.7</td><td>30.46</td></tr>
+</tbody></table>
+<p class="muted">RSS sums the app and its WebKit content/network processes; server, compiler, Vite and inspector clients are excluded. The separate server stayed below 92 MiB during these batches. Summed Linux RSS includes shared pages and is not macOS physical footprint. JS snapshot node self-size excludes native image and allocator memory.</p>
+<p>Each batch performed 20 session switches, four scroll traversals, and ten fully loaded original-image open/close cycles, then returned to the same text session. Scroll traversals did not prove page fetching; older paging was checked separately and the complete two-direction paging case remains unverified.</p>
+</div>
+<h2>Inspector-closed verification</h2>
+<p id="native-result">On a restarted native app, ten original-image opens and 20 switches started at 686.9 MiB, peaked at 1414.1 MiB and settled to 682.5 MiB after 60 seconds without an inspector connection or explicit GC. The app/display stopped unexpectedly about 75 seconds into idle (launcher exit 143; display exit 0), so the five-minute result is unavailable. A stopped process is not a memory-recovery sample.</p>
+<h2>What the evidence supports</h2>
+<ul>
+<li>Remote synthetic streaming traversed the real server, native client and WebView. The fixture emitted 2048 approximately 2.6 KB chunks at 10 ms intervals, crossing the 4 MiB event-window threshold. Post-GC JS size after the stream was 30.96 MiB.</li>
+<li>After the three completed batches, diagnostics showed one conversation projection, zero snapshot reads, and zero tracked attachment URLs. Total JS node self-size increased only 0.25 MiB across these batches; this does not identify an application retention owner.</li>
+<li>Early switch snapshots grew from 29.79 to 32.04 MiB, with 2.65 MiB of additional FunctionCodeBlock storage. This is consistent with code warm-up, not proof that every increase is harmless.</li>
+<li>WebKit RSS had already fallen to 396.4 MiB at 13:31:03.970 UTC, before the batch-1 explicit GC. Attributing the entire earlier drop to forced collection was incorrect and was corrected during independent review.</li>
+<li>The number-array attachment path is allocation-heavy, but replacing it with raw IPC has not been shown to repair the owner's returning leak. Resync storms and repeated JSON conversion remain hypotheses, not measured retention causes.</li>
+</ul>
+<h2>Fixture and limits</h2>
+<p>Two isolated remote sessions were seeded with 1800 turns and 3600 journal events each, approximately 10 MB per session. The image fixture contains a 12,588,868-byte, 2048-square PNG and a 389,343-byte, 360-square thumbnail. The older interrupted lane used an invalid attachment ID; this run corrected the fixture to a UUID and verified both image dimensions. Earlier invalid-image switches are not image proof.</p>
+<p>Originals loaded in the real lightbox before each close. The synthetic provider was injected through the existing adapter development override. No paid model, owner database or live assembly-remote service was used. Synthetic plain text is not a reproduction of the owner's tool-heavy sessions.</p>
+<p>The large synthetic reply caused CPU-bound rendering. A separate older-page check moved the loaded range from sequence 5513 to 4973 and grew the event window from 487,442 to 1,971,362 bytes; further paging stalled the WebView. That stress branch was stopped and the isolated app restarted. Newer-page fetching, full editor-state acceptance, adverse-network resync behavior and a native retaining owner remain unverified. This is not evidence that the reported leak is absent.</p>
+<h2>How this was run</h2>
+<p>Xvfb <code>:91</code>, verified 1710 × 990; identifier <code>dev.assembly.tsk1299.impl</code>; Vite <code>14299</code>; loopback inspector <code>14399</code>. Server bind <code>127.0.0.1:14499</code>, isolated server directory <code>/tmp/tsk1299-memory/server</code>. Client URL <code>ws://127.0.0.1:14499/assembly</code>, separate XDG data directory <code>/tmp/tsk1299-memory/remote-client</code>, absolute remote cwd <code>/tmp/tsk1299-memory/project</code>. Both use the same private token file; its contents are omitted.</p>
+<p><code>WEBKIT_INSPECTOR_HTTP_SERVER</code> exposed the native WebView's protocol. Heap.enable, Heap.gc and Heap.snapshot exported WebKit snapshots. Evaluated object groups were released and inspector sockets closed between captures. RSS was sampled once per second by owned process IDs. The final native-only pass made no inspector connections during its measured actions and valid 60-second idle period.</p>
+<h2>Checks and evidence</h2>
+<p>Native debug build passed with five existing warnings. <code>pnpm --dir tauri-svelte-preview test:agent-conversation-store</code>: 11 passed, 0 failed. No regression test was added for an unproven cause. Architecture and production code are unchanged.</p>
+<p>Independent evidence review: PASS for “retention remains unproven”; REWORK for the incorrect GC timing attribution, now resolved. No implementation approval or leak-fix acceptance is implied.</p>
+<p>Workbox artifact directory: <code>/home/blackcolours/dev/work/reports/assembly-lanes/TSK-1299/</code>. It contains <code>impl-report.md</code>, <code>measurement-plan-resolved.md</code>, <code>review-measurements.md</code>, scripts, snapshots, <code>remote-full-rss.csv</code>, <code>batch-events.jsonl</code>, <code>completed-batches-heap-comparison.json</code>, <code>native-only-rss.csv</code> and native logs. Snapshots are not committed because they are large and can contain runtime metadata.</p>
+<p>Inspected native screenshots live in <code>/home/blackcolours/Workbox/screenshots/TSK-1299-*.png</code>, including <code>remote-lightbox-loaded</code>, <code>remote-stream-active</code>, <code>history-stress</code> and the <code>native-only-*</code> series. The implementation report identifies the final proof and cleanup receipts. All owned app, Vite, server, WebKit and display processes are verified stopped; ports 14299, 14399 and 14499 are released. The worktree remains for reviewers.</p>
+<h2>Next evidence needed</h2>
+<p>A repeatable workload that raises settled memory after warm-up, followed by a JS retaining path or native allocation owner. The next investigation should use a representative tool-heavy remote fixture and the already working isolated server/client harness. This report records a diagnosis limit, not a proposed new architecture or a speculative optimization.</p>
+</html>
