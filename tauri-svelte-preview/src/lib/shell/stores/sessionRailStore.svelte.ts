@@ -72,12 +72,19 @@ export function updateOwnedSession(ownedId: string, patch: Partial<OwnedSession>
   );
 }
 
-export function completeOwnedSession(ownedId: string, when: Date): void {
-  updateOwnedSession(ownedId, { completedAt: when.toISOString() });
-}
-
-export function reopenOwnedSession(ownedId: string): void {
-  updateOwnedSession(ownedId, { completedAt: null });
+export function setOwnedSessionStatus(
+  ownedId: string,
+  status: 'working' | 'done' | 'settled',
+  when: Date
+): OwnedSession | null {
+  const session = rail.owned.find((row) => row.ownedId === ownedId);
+  if (!session) return null;
+  const stamp = when.toISOString();
+  updateOwnedSession(ownedId, {
+    completedAt: status === 'working' ? null : session.completedAt ?? stamp,
+    settledAt: status === 'settled' ? stamp : null
+  });
+  return rail.owned.find((row) => row.ownedId === ownedId) ?? null;
 }
 
 export function removeOwnedSession(ownedId: string): void {
