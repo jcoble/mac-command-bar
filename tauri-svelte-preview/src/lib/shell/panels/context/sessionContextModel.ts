@@ -137,16 +137,6 @@ export function sessionContextUsage(
   };
 }
 
-function legacyToolReportsFiles(payload: AgentConversationEvent['payload']): boolean {
-  if (payload.kind !== 'tool') return true;
-  if (reportedText(payload.diff) !== null) return true;
-
-  const name = reportedText(payload.name)?.toLowerCase() ?? '';
-  return name === 'apply file changes'
-    || name === 'view_file'
-    || /^(read|edit|write)(?:\s|$)/.test(name);
-}
-
 /** Every path a single tool-call payload names, in the order it names them. */
 function pathsInPayload(payload: AgentConversationEvent['payload']): string[] {
   if (
@@ -155,8 +145,6 @@ function pathsInPayload(payload: AgentConversationEvent['payload']): string[] {
     payload.kind !== 'toolCallUpdate' &&
     payload.kind !== 'turnDiff'
   ) return [];
-  if (!legacyToolReportsFiles(payload)) return [];
-
   const paths: string[] = [];
   const direct = reportedText(payload.path);
   if (direct !== null) paths.push(...direct.split(/\r?\n/).map((path) => path.trim()).filter(Boolean));
