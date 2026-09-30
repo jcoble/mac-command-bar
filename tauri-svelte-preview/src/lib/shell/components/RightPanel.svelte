@@ -55,7 +55,7 @@
     filesOwnedId?: string | null;
     onRootUnavailable?(root: string): void | Promise<void>;
     expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
-    onExpandedPathsChange?(root: string, paths: readonly string[]): void;
+    onExpandedPathsChange?(ownedId: string, root: string, paths: readonly string[]): void;
     filesInspectionRoot?: string | null;
     checkoutDiscoveryRoots?: readonly string[];
     sourceControlInspectionRoot?: string | null;

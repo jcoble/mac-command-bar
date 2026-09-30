@@ -38,6 +38,8 @@ import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
 import { shouldClearConversationSending } from './conversationReducer.ts';
 import { sessionPresenceHistory, sessionPresenceEventFromConversation, synchronizeSessionPresenceWork } from './sessionPresence.ts';
 import {
+  ACTIVE_EVENT_WINDOW_BYTES,
+  ACTIVE_EVENT_WINDOW_EVENTS,
   appendNewerConversationEvents,
   applyAgentConversationEvent,
   applyAgentConversationSnapshot,
@@ -99,6 +101,9 @@ let conversationEventsGeneration = 0;
 let remoteActivityRead = 0;
 const railActivityEvents = new Map<string, { generation: number; sequence: number }>();
 type ConversationSnapshotRead = {
+  events: AgentConversationEvent[];
+  bytes: number;
+  overflow: boolean;
   abortController: AbortController;
   invalidated: boolean;
   readVersion: number;
@@ -312,6 +317,7 @@ export function cancelConversationReadWork(ownedId: string): void {
   readVersions.delete(ownedId);
   const activeRead = resyncing.get(ownedId);
   if (activeRead) {
+    activeRead.events.length = 0;
     activeRead.invalidated = true;
     activeRead.abortController.abort();
   }
@@ -734,7 +740,23 @@ async function hydrateSentConversationAttachments(
   publish(restored);
 }
 
-async function resyncConversation(ownedId: string, signal?: AbortSignal) {
+function bufferConversationEvent(read: ConversationSnapshotRead, event: AgentConversationEvent): void {
+  if (read.overflow || read.invalidated || read.abortController.signal.aborted) return;
+  read.bytes += new TextEncoder().encode(JSON.stringify(event)).byteLength;
+  if (read.events.length >= ACTIVE_EVENT_WINDOW_EVENTS || read.bytes > ACTIVE_EVENT_WINDOW_BYTES) {
+    read.events.length = 0;
+    read.overflow = true;
+    console.info('[conversation-sync]', {
+      cause: 'read-buffer-overflow', session: event.ownedId, generation: event.generation,
+      expectedSequence: (getConversationSession(event.ownedId)?.lastSequence ?? 0) + 1,
+      receivedSequence: event.sequence
+    });
+    return;
+  }
+  read.events.push(event);
+}
+
+async function resyncConversation(ownedId: string, signal?: AbortSignal, firstEvent?: AgentConversationEvent) {
   if (signal?.aborted) return;
   const existing = resyncing.get(ownedId);
   if (existing) {
@@ -747,8 +769,10 @@ async function resyncConversation(ownedId: string, signal?: AbortSignal) {
   const abortController = new AbortController();
   const abortFromOwner = (): void => abortController.abort();
   signal?.addEventListener('abort', abortFromOwner, { once: true });
-  const work = resyncConversationOnce(ownedId, readVersion, token, abortController.signal);
-  resyncing.set(ownedId, { abortController, invalidated: false, readVersion, token, work });
+  const work = Promise.resolve().then(() => resyncConversationOnce(ownedId, readVersion, token, abortController.signal));
+  const read: ConversationSnapshotRead = { abortController, invalidated: false, readVersion, token, work, events: [], bytes: 0, overflow: false };
+  if (firstEvent) bufferConversationEvent(read, firstEvent);
+  resyncing.set(ownedId, read);
   publishConversationSnapshotReadDiagnostics();
   try {
     await work;
@@ -765,15 +789,38 @@ async function resyncConversationOnce(
 ): Promise<void> {
   try {
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      const read = resyncing.get(ownedId);
+      if (!read || read.token !== token || signal?.aborted) return;
+      // An overflow requires a new DB read; that read covers all discarded events.
+      if (read.overflow) { read.events.length = 0; read.bytes = 0; read.overflow = false; }
+      const started = performance.now();
+      console.info('[conversation-sync]', {
+        cause: 'snapshot-read', session: ownedId, attempt, readVersion,
+        generation: getConversationSession(ownedId)?.generation,
+        expectedSequence: (getConversationSession(ownedId)?.lastSequence ?? 0) + 1
+      });
       const snapshot = await readAgentConversationSnapshotFromTauri(ownedId, signal);
+      console.info('[conversation-sync]', {
+        cause: 'snapshot-result', session: ownedId, generation: snapshot?.connection.generation,
+        expectedSequence: (getConversationSession(ownedId)?.lastSequence ?? 0) + 1,
+        receivedSequence: snapshot?.lastSequence, elapsedMs: Math.round(performance.now() - started)
+      });
       if (!snapshot || readVersions.get(ownedId) !== readVersion) return;
-      const sequenceBeforeApply = getConversationSession(ownedId)?.lastSequence ?? 0;
-      applyAgentConversationSnapshot(snapshot);
+      if (signal.aborted || resyncing.get(ownedId)?.token !== token) return;
+      const applied = !read.overflow && applyAgentConversationSnapshot(snapshot, undefined, read.events);
+      console.info('[conversation-sync]', {
+        cause: applied ? 'snapshot-applied' : 'snapshot-incomplete', session: ownedId,
+        generation: snapshot.connection.generation, expectedSequence: snapshot.lastSequence + 1,
+        receivedSequence: read.events.at(-1)?.sequence ?? snapshot.lastSequence,
+        bufferedCount: read.events.length
+      });
+      if (!applied) continue;
       void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events, signal);
-      if (sequenceBeforeApply <= snapshot.lastSequence) return;
+      return;
     }
   } finally {
     if (resyncing.get(ownedId)?.token === token) {
+      resyncing.get(ownedId)!.events.length = 0;
       resyncing.delete(ownedId);
       publishConversationSnapshotReadDiagnostics();
     }
@@ -809,15 +856,15 @@ export async function loadConversationForRead(
   const abortController = new AbortController();
   const abortFromOwner = (): void => abortController.abort();
   signal?.addEventListener('abort', abortFromOwner, { once: true });
-  const work = loadConversationSnapshot(
+  const work = Promise.resolve().then(() => loadConversationSnapshot(
     ownedId,
     readVersion,
     token,
     includeAttachments,
     abortController.signal,
     signal
-  );
-  resyncing.set(ownedId, { abortController, invalidated: false, readVersion, token, work });
+  ));
+  resyncing.set(ownedId, { abortController, invalidated: false, readVersion, token, work, events: [], bytes: 0, overflow: false });
   publishConversationSnapshotReadDiagnostics();
   try {
     await work;
@@ -836,13 +883,33 @@ async function loadConversationSnapshot(
 ): Promise<void> {
   try {
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      const read = resyncing.get(ownedId);
+      if (!read || read.token !== token || signal?.aborted) return;
+      // An overflow requires a new DB read; that read covers all discarded events.
+      if (read.overflow) { read.events.length = 0; read.bytes = 0; read.overflow = false; }
+      const started = performance.now();
+      console.info('[conversation-sync]', {
+        cause: 'snapshot-read', session: ownedId, attempt, readVersion,
+        generation: getConversationSession(ownedId)?.generation,
+        expectedSequence: (getConversationSession(ownedId)?.lastSequence ?? 0) + 1
+      });
       const snapshot = await readAgentConversationSnapshotFromTauri(ownedId, signal);
+      console.info('[conversation-sync]', {
+        cause: 'snapshot-result', session: ownedId, generation: snapshot?.connection.generation,
+        expectedSequence: (getConversationSession(ownedId)?.lastSequence ?? 0) + 1,
+        receivedSequence: snapshot?.lastSequence, elapsedMs: Math.round(performance.now() - started)
+      });
       const current = getConversationSession(ownedId);
       if (signal?.aborted || !snapshot || readVersions.get(ownedId) !== readVersion || !current) return;
-      applyAgentConversationSnapshot(snapshot);
-      // Live events may advance the generation or head while this read is in
-      // flight. Fetch the new head instead of showing only those live events.
-      if (snapshot.connection.generation < current.generation || snapshot.lastSequence < current.lastSequence) continue;
+      if (resyncing.get(ownedId)?.token !== token) return;
+      const applied = !read.overflow && applyAgentConversationSnapshot(snapshot, undefined, read.events);
+      console.info('[conversation-sync]', {
+        cause: applied ? 'snapshot-applied' : 'snapshot-incomplete', session: ownedId,
+        generation: snapshot.connection.generation, expectedSequence: snapshot.lastSequence + 1,
+        receivedSequence: read.events.at(-1)?.sequence ?? snapshot.lastSequence,
+        bufferedCount: read.events.length
+      });
+      if (!applied) continue;
       if (includeAttachments) {
         void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events, ownerSignal ?? signal);
       }
@@ -850,6 +917,7 @@ async function loadConversationSnapshot(
     }
   } finally {
     if (resyncing.get(ownedId)?.token === token) {
+      resyncing.get(ownedId)!.events.length = 0;
       resyncing.delete(ownedId);
       publishConversationSnapshotReadDiagnostics();
     }
@@ -1164,7 +1232,12 @@ async function handleConversationStreamEnvelope(
     });
   }
   if (terminal && !transition) synchronizeSessionPresenceWork(payload.ownedId, null, false);
-  if (active) applyAgentConversationEvent(payload);
+  const pendingRead = active ? resyncing.get(payload.ownedId) : undefined;
+  if (pendingRead) {
+    bufferConversationEvent(pendingRead, payload);
+    recordAgentConversationPresenceEvent(payload);
+  }
+  else if (active) applyAgentConversationEvent(payload);
   else {
     if (terminal) {
       setConversationSending(payload.ownedId, false);
@@ -1182,8 +1255,9 @@ async function handleConversationStreamEnvelope(
       if (title) updateOwnedSession(payload.ownedId, { title });
     }
   }
-  if (active && getConversationSession(payload.ownedId)?.desynchronized) {
-    await resyncConversation(payload.ownedId);
+  if (active && !pendingRead && getConversationSession(payload.ownedId)?.desynchronized) {
+    recordAgentConversationPresenceEvent(payload);
+    await resyncConversation(payload.ownedId, undefined, payload);
   }
   if (active && terminal) {
     setConversationSending(payload.ownedId, false);
@@ -1203,6 +1277,7 @@ export function stopConversationEvents(): void {
   childTranscriptReads.clear();
   // Nothing can read a session's snapshot once the stream is gone, so the
   // per-session read counters have nothing left to invalidate.
+  for (const ownedId of [...resyncing.keys()]) cancelConversationReadWork(ownedId);
   readVersions.clear();
   railActivityEvents.clear();
   void conversationStream?.unregister();
