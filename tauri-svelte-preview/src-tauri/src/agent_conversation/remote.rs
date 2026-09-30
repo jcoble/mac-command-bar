@@ -2376,15 +2376,11 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
-                        // The broadcast receiver lost frames. Read every session's missing
-                        // rows, including sessions whose first live frame was dropped.
-                        let sessions = match state.manager.list_sessions() {
-                            Ok(sessions) => sessions,
-                            Err(error) => { eprintln!("Remote lag replay failed: {error}"); break; }
-                        };
+                        // Replay only sessions known to this socket. A missing session's
+                        // next live event exposes a gap for the client's snapshot repair.
                         let mut failed = false;
-                        for session in sessions {
-                            if let Err(error) = replay_session(&state, &outbound, &mut queued, &session.owned_id).await {
+                        for owned_id in queued.keys().cloned().collect::<Vec<_>>() {
+                            if let Err(error) = replay_session(&state, &outbound, &mut queued, &owned_id).await {
                                 eprintln!("Remote lag replay failed: {error}");
                                 failed = true;
                                 break;
@@ -3588,6 +3584,13 @@ mod connection_tests {
             suspended: true, created_at_ms: 0, last_activity_at_ms: 0,
             extra_json: super::super::manager::imported_session_extra(AgentConversationProvider::Codex).unwrap(),
         }).unwrap();
+        store.upsert_session(&mcb_core::session_store::SessionRow {
+            owned_id: "unknown-history".into(), native_session_id: None, provider: "codex".into(),
+            model: None, effort: None, cwd: String::new(), worktree: None, branch: None,
+            title: None, title_source: None, project: None, state: "suspended".into(),
+            suspended: true, created_at_ms: 0, last_activity_at_ms: 0,
+            extra_json: super::super::manager::imported_session_extra(AgentConversationProvider::Codex).unwrap(),
+        }).unwrap();
         let append = |sequence| {
             let mut event = large_history_event(32);
             event.sequence = sequence;
@@ -3599,6 +3602,14 @@ mod connection_tests {
             event
         };
         for sequence in 1..=12 { append(sequence); }
+        let mut unknown = large_history_event(32);
+        unknown.owned_id = "unknown-history".into();
+        unknown.sequence = 1;
+        store.append_event(&mcb_core::session_store::EventRow {
+            owned_id: unknown.owned_id.clone(), seq: 1, turn_id: None,
+            kind: "test".into(), payload_json: serde_json::to_string(&unknown).unwrap(),
+            created_at_ms: 0,
+        }).unwrap();
         let (events, _) = broadcast::channel(2);
         let state = ServerState {
             manager: manager.clone(), data_dir: directory.clone(), token: Arc::from("test-token"),
@@ -3623,6 +3634,7 @@ mod connection_tests {
         while sequences.len() < 17 {
             let frame = tokio::time::timeout(Duration::from_secs(5), socket.next()).await.unwrap().unwrap().unwrap();
             if let Some(ServerFrame::Event { event }) = parse_server_frame(frame).unwrap() {
+                assert_eq!(event.owned_id, "large-history", "unknown session must not replay from the start");
                 sequences.push(event.sequence);
             }
         }
