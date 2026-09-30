@@ -36,7 +36,9 @@ const allowedHits = new Set([
   'src/lib/shell/notionOAuth.ts:setTimeout:const timeout = window.setTimeout(finish, CLAIM_INTERVAL_MS);',
   'src/lib/shell/panels/agents/WorkflowRuns.svelte:setTimeout:const timer = window.setTimeout(() => {',
   // One five-second shot per active turn; the effect clears it when the turn ends or the composer unmounts.
-  'src/lib/shell/components/conversation/ConversationComposer.svelte:setTimeout:const timer = setTimeout(() => (turnSettled = true), 5000);'
+  'src/lib/shell/components/conversation/ConversationComposer.svelte:setTimeout:const timer = setTimeout(() => (turnSettled = true), 5000);',
+  // One ten-second shot while a filter group is open; closing the group or unmounting clears it.
+  'src/lib/components/ui/filter-pills/filter-pills.svelte:setTimeout:timer = window.setTimeout(close, AUTO_CLOSE_MS);'
 ]);
 
 interface Hit {

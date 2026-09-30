@@ -7,19 +7,16 @@
    * inert while their selection lifecycle is rebuilt one responsibility at a time.
    */
   import Bot from '@lucide/svelte/icons/bot';
-  import Archive from '@lucide/svelte/icons/archive';
-  import Check from '@lucide/svelte/icons/check';
-  import CircleDot from '@lucide/svelte/icons/circle-dot';
   import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
   import Plus from '@lucide/svelte/icons/plus';
   import Search from '@lucide/svelte/icons/search';
   import List from '@lucide/svelte/icons/list';
-  import X from '@lucide/svelte/icons/x';
   import { onMount } from 'svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
+  import { FilterPills } from '$lib/components/ui/filter-pills/index.js';
   import * as Select from '$lib/components/ui/select/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
@@ -27,7 +24,6 @@
   import { resolveOwnedSessionProject, type OwnedSession } from '$lib/shell/ownedSessions';
   import { AGENT_ICONS } from '$lib/shell/agentIcons';
   import { openSessionLibrary } from '$lib/shell/sessionLibrary/sessionLibraryNavigation';
-  import SegmentedTabs from './SegmentedTabs.svelte';
   import SessionRail from './SessionRail.svelte';
   import { sessionLabel, stripCells } from '$lib/shell/sessionStrip';
   import {
@@ -37,14 +33,15 @@
   import { cn } from '$lib/utils';
   import {
     DEFAULT_MY_WORK_VIEW_OPTIONS,
-    MY_WORK_STATUSES,
+    MY_WORK_FILTER_GROUPS,
+    matchesMyWorkFilters,
+    normalizeMyWorkFilters,
     normalizeMyWorkViewOptions,
-    type MyWorkGrouping,
+    type MyWorkFilters,
     type MyWorkSort,
     type MyWorkSortDirection,
     NATURAL_SORT_DIRECTION,
     myWorkSortDirectionLabel,
-    type MyWorkStatus,
     type MyWorkViewOptions
   } from './myWorkViewOptions';
 
@@ -77,29 +74,39 @@
   }: Props = $props();
 
   const cells = $derived(stripCells(owned, activeOwnedId));
-  let viewOptions = $state<MyWorkViewOptions>({
-    ...DEFAULT_MY_WORK_VIEW_OPTIONS,
-    visibleStatuses: [...MY_WORK_STATUSES]
-  });
+  let viewOptions = $state<MyWorkViewOptions>({ ...DEFAULT_MY_WORK_VIEW_OPTIONS });
   const MY_WORK_VIEW_OPTIONS_SETTING_KEY = 'rail.my-work-view-options';
   let viewOptionsVersion = 0;
 
-  const GROUPING_ITEMS = [
-    { id: 'none', label: 'None' },
-    { id: 'status', label: 'Status' },
-    { id: 'project', label: 'Project' }
-  ] as const;
+  /** Status and Project group independently; None turns both off. */
+  const GROUPING_BUTTONS = [
+    {
+      label: 'None',
+      pressed: () => !viewOptions.groupByStatus && !viewOptions.groupByProject,
+      press: () => setViewOptions({ groupByStatus: false, groupByProject: false })
+    },
+    {
+      label: 'Status',
+      pressed: () => viewOptions.groupByStatus,
+      press: () => setViewOptions({ groupByStatus: !viewOptions.groupByStatus })
+    },
+    {
+      label: 'Project',
+      pressed: () => viewOptions.groupByProject,
+      press: () => setViewOptions({ groupByProject: !viewOptions.groupByProject })
+    }
+  ];
 
-  const STATUS_CONTROLS = [
-    { value: 'working', label: 'Working', icon: CircleDot },
-    { value: 'done', label: 'Done', icon: Check },
-    { value: 'settled', label: 'Settled', icon: Archive }
-  ] as const;
+  /** The filter pills' selection, saved under its own key. */
+  let filters = $state<MyWorkFilters>(normalizeMyWorkFilters(null));
+  const MY_WORK_FILTERS_SETTING_KEY = 'rail.my-work-filters';
+  let filtersVersion = 0;
 
   onMount(() => {
     const owner = { active: true };
     const restoreVersion = viewOptionsVersion;
     void restoreViewOptions(owner, restoreVersion);
+    void restoreFilters(owner, filtersVersion);
     return () => {
       owner.active = false;
     };
@@ -130,13 +137,29 @@
     }
   }
 
-  function toggleStatus(status: MyWorkStatus): void {
-    const visibleStatuses = viewOptions.visibleStatuses.includes(status)
-      ? viewOptions.visibleStatuses.filter((candidate) => candidate !== status)
-      : MY_WORK_STATUSES.filter(
-          (candidate) => candidate === status || viewOptions.visibleStatuses.includes(candidate)
-        );
-    setViewOptions({ visibleStatuses });
+  async function restoreFilters(owner: { active: boolean }, restoreVersion: number): Promise<void> {
+    try {
+      const stored = await readAssemblySettingFromTauri(MY_WORK_FILTERS_SETTING_KEY);
+      if (owner.active && filtersVersion === restoreVersion) {
+        filters = normalizeMyWorkFilters(stored);
+      }
+    } catch {
+      // Filters fall back to none when local settings are unavailable.
+    }
+  }
+
+  function setFilters(next: MyWorkFilters): void {
+    filtersVersion += 1;
+    filters = normalizeMyWorkFilters(next);
+    void persistFilters(filters);
+  }
+
+  async function persistFilters(next: MyWorkFilters): Promise<void> {
+    try {
+      await writeAssemblySettingFromTauri(MY_WORK_FILTERS_SETTING_KEY, next);
+    } catch {
+      // The selection stays in memory when local settings are unavailable.
+    }
   }
 
   /** Searching sessions means the full Session History tab, not a rail popover. */
@@ -149,19 +172,11 @@
   let filterText = $state('');
   let filterInput = $state<HTMLInputElement | null>(null);
 
-  /** Spotify-style agent chips over the list. Filters what is already loaded. */
-  const AGENT_CHIPS = [
-    { value: 'claude', label: 'Claude' },
-    { value: 'codex', label: 'Codex' }
-  ] as const;
-  let agentFilter = $state<'all' | 'claude' | 'codex'>('all');
-
   const filtered = $derived.by(() => {
     const needle = filterText.trim().toLowerCase();
-    const byAgent =
-      agentFilter === 'all' ? owned : owned.filter((session) => session.agent === agentFilter);
-    if (!needle) return byAgent;
-    return byAgent.filter((session) => {
+    const byPills = owned.filter((session) => matchesMyWorkFilters(session, filters));
+    if (!needle) return byPills;
+    return byPills.filter((session) => {
       const title = sessionLabel(session).toLowerCase();
       const project = resolveOwnedSessionProject(session).label.toLowerCase();
       return title.includes(needle) || project.includes(needle);
@@ -279,12 +294,28 @@
             >
               <div class="flex flex-col gap-[var(--space-2)]">
                 <span class="text-[13px] text-foreground">Group by</span>
-                <SegmentedTabs
-                  items={GROUPING_ITEMS}
-                  value={viewOptions.groupBy}
-                  label="Group My Work sessions"
-                  onChange={(id) => setViewOptions({ groupBy: id as MyWorkGrouping })}
-                />
+                <div class="grid grid-cols-3 gap-1" role="group" aria-label="Group My Work sessions">
+                  {#each GROUPING_BUTTONS as grouping (grouping.label)}
+                    {@const pressed = grouping.pressed()}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      class={cn(
+                        'min-w-0 px-1 text-[13px] font-normal',
+                        pressed
+                          ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)] hover:bg-[var(--color-accent)] hover:text-[var(--color-on-accent)]'
+                          : 'text-[var(--color-text-3)]'
+                      )}
+                      aria-pressed={pressed}
+                      style={pressed
+                        ? 'background-color: var(--color-accent); color: var(--color-on-accent)'
+                        : 'color: var(--color-text)'}
+                      onclick={grouping.press}
+                    >
+                      <span class="truncate">{grouping.label}</span>
+                    </Button>
+                  {/each}
+                </div>
               </div>
 
               <div class="flex min-h-8 items-center justify-between gap-3">
@@ -333,34 +364,6 @@
                   </Select.Content>
                 </Select.Root>
               </div>
-
-              <div class="flex flex-col gap-[var(--space-2)]">
-                <span class="text-[13px] text-foreground">Status filters</span>
-                <div class="grid grid-cols-3 gap-1" aria-label="Visible statuses">
-                  {#each STATUS_CONTROLS as control (control.value)}
-                    {@const StatusIcon = control.icon}
-                    {@const pressed = viewOptions.visibleStatuses.includes(control.value)}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      class={cn(
-                        'min-w-0 gap-1 px-1 text-[13px] font-normal',
-                        pressed
-                          ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)] hover:bg-[var(--color-accent)] hover:text-[var(--color-on-accent)]'
-                          : 'text-[var(--color-text-3)]'
-                      )}
-                      aria-pressed={pressed}
-                      style={pressed
-                        ? 'background-color: var(--color-accent); color: var(--color-on-accent)'
-                        : 'color: var(--color-text)'}
-                      onclick={() => toggleStatus(control.value)}
-                    >
-                      <StatusIcon class="size-3" aria-hidden="true" />
-                      <span class="truncate">{control.label}</span>
-                    </Button>
-                  {/each}
-                </div>
-              </div>
             </DropdownMenu.Content>
           </DropdownMenu.Root>
           {@render action('New session', Plus, onNewSession, 'text-[var(--color-accent)]')}
@@ -368,31 +371,13 @@
       </header>
       </Tooltip.Provider>
 
-      <div class="agent-chips" role="group" aria-label="Show sessions by agent">
-        {#if agentFilter !== 'all'}
-          <button
-            type="button"
-            class="chip-clear"
-            aria-label="Clear agent filter"
-            onclick={() => (agentFilter = 'all')}
-          ><X class="size-3.5" aria-hidden="true" /></button>
-        {/if}
-        <button
-          type="button"
-          class="agent-chip"
-          class:selected={agentFilter === 'all'}
-          aria-pressed={agentFilter === 'all'}
-          onclick={() => (agentFilter = 'all')}
-        >All</button>
-        {#each AGENT_CHIPS as chip (chip.value)}
-          <button
-            type="button"
-            class="agent-chip"
-            class:selected={agentFilter === chip.value}
-            aria-pressed={agentFilter === chip.value}
-            onclick={() => (agentFilter = agentFilter === chip.value ? 'all' : chip.value)}
-          >{chip.label}</button>
-        {/each}
+      <div class="filter-pills">
+        <FilterPills
+          label="Filter sessions"
+          groups={MY_WORK_FILTER_GROUPS}
+          value={filters}
+          onChange={setFilters}
+        />
       </div>
 
       {#if filterOpen}
@@ -484,56 +469,9 @@
     background: var(--color-elevated);
   }
 
-  .agent-chips {
-    display: flex;
+  .filter-pills {
     flex: 0 0 auto;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-2);
     padding: 0 9px 8px 13px;
-  }
-
-  /* Spotify's filter pills: dark at rest, a filled white pill when chosen. */
-  .agent-chip,
-  .chip-clear {
-    display: inline-flex;
-    height: 30px;
-    align-items: center;
-    justify-content: center;
-    border: 0;
-    border-radius: var(--radius-pill);
-    background: var(--color-elevated);
-    color: var(--color-text);
-    cursor: pointer;
-    font-size: var(--text-quiet);
-    transition: background-color 0.15s ease, color 0.15s ease;
-  }
-
-  .agent-chip {
-    padding: 0 12px;
-  }
-
-  .chip-clear {
-    width: 30px;
-    color: var(--color-text-2);
-  }
-
-  .agent-chip:hover,
-  .chip-clear:hover {
-    background: color-mix(in srgb, var(--color-text) 10%, var(--color-elevated));
-    color: var(--color-text);
-  }
-
-  .agent-chip.selected,
-  .agent-chip.selected:hover {
-    background: var(--color-text);
-    color: var(--color-bg);
-  }
-
-  .agent-chip:focus-visible,
-  .chip-clear:focus-visible {
-    outline: 2px solid var(--color-focus-solid);
-    outline-offset: 2px;
   }
 
   .filter-strip {
