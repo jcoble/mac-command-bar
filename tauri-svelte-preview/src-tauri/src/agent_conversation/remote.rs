@@ -3485,7 +3485,9 @@ mod connection_tests {
             first.sequence = 1;
             let mut second = first.clone();
             second.sequence = 2;
-            for event in [first, second] {
+            let mut other = first.clone();
+            other.owned_id = "other-history".into();
+            for event in [first, other, second] {
                 socket.send(TungsteniteMessage::Text(serde_json::to_string(&ServerFrame::Event { event }).unwrap().into())).await.unwrap();
             }
             socket.send(TungsteniteMessage::Text(serde_json::to_string(
@@ -3498,7 +3500,8 @@ mod connection_tests {
             socket.send(TungsteniteMessage::Text(serde_json::to_string(
                 &ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }).unwrap().into())).await.unwrap();
             let resume: ClientFrame = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
-            assert!(matches!(resume, ClientFrame::Resume { cursors } if cursors.get("large-history") == Some(&2)));
+            assert!(matches!(resume, ClientFrame::Resume { cursors }
+                if cursors.get("large-history") == Some(&2) && cursors.get("other-history") == Some(&1)));
         });
         let delivered = Arc::new(Mutex::new(Vec::new()));
         let captured = delivered.clone();
@@ -3511,8 +3514,9 @@ mod connection_tests {
         });
         ready_answer.await.unwrap().unwrap();
         server.await.unwrap();
-        let sequences: Vec<_> = delivered.lock().unwrap().iter().map(|event: &AgentConversationEvent| event.sequence).collect();
-        assert_eq!(sequences, vec![1, 2]);
+        let sequences: Vec<_> = delivered.lock().unwrap().iter()
+            .map(|event: &AgentConversationEvent| (event.owned_id.clone(), event.sequence)).collect();
+        assert_eq!(sequences, vec![("large-history".into(), 1), ("other-history".into(), 1), ("large-history".into(), 2)]);
         drop(requests);
         actor.abort();
         let _ = actor.await;
