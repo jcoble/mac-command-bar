@@ -126,7 +126,7 @@
 <Dialog.Root {open} onOpenChange={(next) => void openChanged(next)}>
   <Dialog.Trigger class={`attachment-lightbox-thumbnail ${variant}`} aria-label={`Enlarge ${name}`}>
     {#if src}
-      <img {src} alt={name} decoding="async" onload={() => thumbnailLoaded = true} onerror={() => thumbnailLoaded = true} style:opacity={thumbnailLoaded ? 1 : 0} />
+      <img {src} alt={name} loading="lazy" decoding="async" onload={() => thumbnailLoaded = true} onerror={() => thumbnailLoaded = true} style:opacity={thumbnailLoaded ? 1 : 0} />
     {/if}
     {#if (!src && previewLoading) || (src && !thumbnailLoaded)}
       <span class="attachment-spinner" role="status" aria-label={`Loading ${name}`}></span>
