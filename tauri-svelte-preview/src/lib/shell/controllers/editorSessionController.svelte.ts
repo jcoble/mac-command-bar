@@ -55,7 +55,16 @@ export class EditorSessionController {
 		this.checkpointQueue = this.checkpointQueue
 			.catch(() => undefined)
 			.then(() => this.checkpointActiveWorkspace(stopSignal));
-		await this.checkpointQueue;
+		try {
+			await this.checkpointQueue;
+		} catch (error) {
+			const message = error instanceof Error ? error.message
+				: typeof error === 'object' && error !== null && 'message' in error
+					? String(error.message) : String(error);
+			// A removed departing session has nowhere to save its workspace. It must
+			// not prevent opening an existing session; other save failures still do.
+			if (message !== 'could not save the workspace because the session does not exist') throw error;
+		}
 		if (stopSignal.aborted) return null;
 		this.releaseActiveEditorResources();
 
