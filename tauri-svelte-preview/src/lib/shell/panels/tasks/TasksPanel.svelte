@@ -579,6 +579,12 @@
     --secondary: var(--pill-surface);
     --accent: var(--pill-surface-hover);
   }
+  /* An open Status group is wider than the panel. The row's own scrollbar
+     must not exist: WebKitGTK otherwise hit-tests its lower 20px as the
+     scrollbar and the pills under it ignore clicks. */
+  .tasks-pills :global([role='group']) {
+    scrollbar-width: none;
+  }
 
   /* The Sessions rail's header group: 29px round buttons in one pill. */
   .tasks-actions {
