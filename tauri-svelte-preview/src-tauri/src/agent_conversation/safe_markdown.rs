@@ -253,15 +253,15 @@ fn collect_blocks<'a>(nodes: impl Iterator<Item = &'a AstNode<'a>>) -> Vec<SafeM
                 for item_node in child.children() {
                     let mut item_parts = Vec::new();
                     let mut item_blocks = Vec::new();
-                    let mut task = false;
-                    let mut checked = false;
+                    // comrak marks a task by turning the item itself into a
+                    // task item, with its box already taken off the text.
+                    let (task, checked) = match &item_node.data.borrow().value {
+                        NodeValue::TaskItem(status) => (true, status.is_some()),
+                        _ => (false, false),
+                    };
 
                     for sub in item_node.children() {
                         match &sub.data.borrow().value {
-                            NodeValue::TaskItem(status) => {
-                                task = true;
-                                checked = status.is_some();
-                            }
                             NodeValue::Paragraph => {
                                 if item_parts.is_empty() {
                                     item_parts = collect_inline_parts(sub);
@@ -461,6 +461,42 @@ mod tests {
                     ],
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn task_items_keep_their_box_and_state() {
+        let md = "- [x] Eta done\n- [ ] Theta open\n  - nested under theta\n";
+        let text = |value: &str| SafeInlinePart::Text {
+            value: value.to_string(),
+        };
+        assert_eq!(
+            parse_safe_markdown(md),
+            vec![SafeMarkdownBlock::List {
+                ordered: false,
+                items: vec![
+                    SafeListItem {
+                        task: true,
+                        checked: true,
+                        parts: vec![text("Eta done")],
+                        blocks: vec![],
+                    },
+                    SafeListItem {
+                        task: true,
+                        checked: false,
+                        parts: vec![text("Theta open")],
+                        blocks: vec![SafeMarkdownBlock::List {
+                            ordered: false,
+                            items: vec![SafeListItem {
+                                task: false,
+                                checked: false,
+                                parts: vec![text("nested under theta")],
+                                blocks: vec![],
+                            }],
+                        }],
+                    },
+                ],
+            }]
         );
     }
 }
