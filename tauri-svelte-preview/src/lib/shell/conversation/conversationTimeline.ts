@@ -11,8 +11,7 @@ import type {
   AgentPermissionRequest,
   AgentUserInputRequest,
   AgentUserInputField,
-  ConversationAttachment,
-  ConversationTimelineEntry
+  ConversationAttachment
 } from './conversationTypes.ts';
 
 import type { SafeMarkdownBlock } from './conversationMessageSafety.ts';
@@ -647,18 +646,6 @@ function stepsOf(value: unknown): AgentPlanStep[] {
   });
 }
 
-function planItemsOf(items: readonly { text: string; status: string }[]): AgentPlanStep[] {
-  return items.map((item, index) => ({
-    id: `step-${index + 1}`,
-    title: item.text,
-    detail: null,
-    state: planStateOf(item.status),
-    ownerAgentId: null,
-    startedAt: null,
-    completedAt: null
-  }));
-}
-
 function tasksOf(value: unknown): ConversationTask[] {
   return stepsOf(value).map((step) => ({
     id: step.id,
@@ -931,79 +918,6 @@ export function displayItemFromInput(
   };
 }
 
-function displayItemFromLegacy(entry: ConversationTimelineEntry): ConversationDisplayItem {
-  if (entry.kind === 'user' || entry.kind === 'assistant') return {
-    kind: entry.kind,
-    itemId: entry.itemId,
-    text: entry.text,
-    completed: entry.completed,
-    timestampMs: entry.timestampMs
-  };
-  if (entry.kind === 'tool') {
-    const title = toolTitleOf(entry.name) ?? 'Tool';
-    const summary = entry.summary;
-    const toolKind = entry.diff ? 'file-edit' : toolKindOf(entry.name);
-    return {
-      kind: 'tool',
-      itemId: entry.itemId,
-      title,
-      toolKind,
-      state: toolStateOf(entry.state),
-      output: entry.output,
-      diff: entry.diff,
-      path: entry.path,
-      summary,
-      timestampMs: entry.timestampMs
-    };
-  }
-  if (entry.kind === 'approval') return {
-    kind: 'approval',
-    itemId: entry.itemId,
-    requestId: entry.requestId,
-    title: 'Approval requested',
-    toolTitle: entry.summary,
-    summary: entry.summary,
-    state: entry.state,
-    options: defaultPermissionOptions(),
-    timestampMs: entry.timestampMs
-  };
-  if (entry.kind === 'plan') return {
-    kind: 'plan',
-    itemId: entry.itemId,
-    title: 'Plan',
-    steps: planItemsOf(entry.items),
-    timestampMs: entry.timestampMs
-  };
-  if (entry.kind === 'error') return {
-    kind: 'error',
-    itemId: entry.itemId,
-    text: conversationErrorText(entry.message),
-    timestampMs: entry.timestampMs,
-    metadata: { code: entry.code, recoverable: entry.recoverable }
-  };
-  if (entry.kind === 'compaction') return {
-    kind: 'compaction',
-    itemId: entry.itemId,
-    trigger: entry.trigger,
-    preTokens: entry.preTokens,
-    postTokens: entry.postTokens,
-    timestampMs: entry.timestampMs
-  };
-  if (entry.kind === 'checkoutChanged') return {
-    kind: 'unknown',
-    itemId: entry.itemId,
-    text: `Checkout changed\n${entry.fromCwd}\n${entry.toCwd}`,
-    timestampMs: entry.timestampMs
-  };
-  if (entry.kind === 'turn') return {
-    kind: 'unknown',
-    itemId: entry.itemId,
-    text: `${entry.turnId} · ${entry.state}`,
-    timestampMs: entry.timestampMs
-  };
-  return { kind: 'unknown', itemId: entry.itemId, text: '', timestampMs: 0 };
-}
-
 /**
  * What an error card says. An error that arrives without a message still has
  * to say something: a card with an empty body tells the reader only that the
@@ -1013,7 +927,6 @@ export function conversationErrorText(message: string | null | undefined): strin
   return (message ?? '').trim() || 'The agent reported an error without saying what went wrong.';
 }
 
-/** Merge typed provider items with legacy reducer entries without flattening them. */
 /** The plan the session is working to, or nothing when it has none.
  *
  * A transcript holds every plan update it was ever sent, and the chip above
@@ -1087,7 +1000,7 @@ function samePlanSteps(left: readonly AgentPlanStep[], right: readonly AgentPlan
  * an unchanged plan therefore wrote the same plan into the transcript twice.
  * The first of a run keeps its place, which holds the row still while the
  * repeats arrive; anything that actually moved on keeps its own row. */
-function withoutRepeatedPlans(items: readonly ConversationDisplayItem[]): ConversationDisplayItem[] {
+export function withoutRepeatedPlans(items: readonly ConversationDisplayItem[]): ConversationDisplayItem[] {
   let previousSteps: readonly AgentPlanStep[] | null = null;
   return items.filter((item) => {
     if (item.kind !== 'plan') return true;
@@ -1095,33 +1008,6 @@ function withoutRepeatedPlans(items: readonly ConversationDisplayItem[]): Conver
     previousSteps = item.steps;
     return !repeat;
   });
-}
-
-export function typedConversationTimeline(
-  items: readonly AgentItem[] = [],
-  legacy: readonly ConversationTimelineEntry[] = [],
-  timestamps: Readonly<Record<string, number>> = {},
-  previous: readonly ConversationDisplayItem[] = [],
-  sentAttachments: Readonly<Record<string, readonly ConversationAttachment[]>> = {}
-): ConversationDisplayItem[] {
-  const byId = new Map<string, ConversationDisplayItem>();
-  legacy
-    .filter((entry) => entry.kind !== 'turn')
-    .forEach((entry) => byId.set(entry.itemId, displayItemFromLegacy(entry)));
-  const legacyEnd = legacy.reduce((latest, entry) => Math.max(latest, entry.timestampMs), 0);
-  items.forEach((item, index) => byId.set(
-    item.id,
-    displayItemFromAgentItem(item, timestamps[item.id] ?? displayTimestamp(item, legacyEnd + index + 1))
-  ));
-  const next = withoutRepeatedPlans(
-    [...byId.values()]
-      .map((item) => {
-        const sent = item.kind === 'user' ? sentAttachments[item.itemId] : undefined;
-        return sent?.length ? { ...item, attachments: sent } : item;
-      })
-      .sort((left, right) => left.timestampMs - right.timestampMs)
-  );
-  return reuseConversationDisplayItems(next, previous);
 }
 
 function shallowRecordEqual(
@@ -1225,7 +1111,7 @@ function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, pa
   // A row that was handed its own title keeps it: the only caller that does so
   // is the whole-turn file change, which already knows it covers several files.
   const givenTitle = toolTitleOf(payload.title) ?? '';
-  const name = givenTitle || stringOf(payload.name, stringOf(payload.command, stringOf(payload.path)));
+  const name = stringOf(payload.name, stringOf(payload.toolName, stringOf(payload.command, stringOf(payload.path))));
   // A summary is the row's one-line preview, and nothing else. It used to
   // stand in for the body as well, which printed the same sentence twice —
   // once on the row and again inside it when it was opened — and, on a file
@@ -1250,6 +1136,7 @@ function toolItemFromPayload(event: ConversationEvent, payload: StringRecord, pa
     providerMetadata: eventMetadata(event, payload, {
       title,
       name: name || undefined,
+      rawInput: (payload.rawInput ?? payload.input ?? payload.arguments) as AgentConfigValue | undefined,
       toolKind: toolKind === 'tool' && !name ? undefined : toolKind,
       state: status,
       status,
@@ -1275,6 +1162,12 @@ function planItemFromPayload(event: ConversationEvent, payload: StringRecord): A
 
 export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
   const payload = event.payload as unknown as StringRecord;
+  if ('type' in event && event.type === 'plan.updated') return planItemFromPayload(event, payload);
+  if ('type' in event && event.type === 'tasks.updated') return {
+    id: eventIdentity(event, { ...payload, itemId: payload.itemId ?? `tasks:${event.generation}` }, 'tasks'),
+    type: 'task-list', content: [],
+    providerMetadata: eventMetadata(event, payload, { title: stringOf(payload.title, 'Tasks'), tasks: payload.tasks as AgentConfigValue })
+  };
   const raw = recordOf(payload.item);
   if (raw && typeof raw.id === 'string' && typeof raw.type === 'string') {
     return {
@@ -1299,6 +1192,11 @@ export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
   // A sub-agent's progress belongs to the agent tree, which reads it from the
   // session's children. As a transcript row it had nothing to show.
   if (payloadKind === 'childUpdate') return null;
+  if (payloadKind === 'checkoutChanged') return {
+    id: `checkout:${event.sequence}`, type: 'unknown',
+    content: [{ channel: 'assistant', text: `Checkout changed\n${stringOf(payload.fromCwd)}\n${stringOf(payload.toCwd)}` }],
+    providerMetadata: eventMetadata(event, payload, { completed: true })
+  };
   if (payloadKind === 'contextCompaction') {
     return {
       id: `compaction:${event.sequence}`,
@@ -1337,9 +1235,7 @@ export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
   }
 
   if (payloadKind === 'error') {
-    // Same identity the reducer gives its own error entry, so the typed item
-    // and the legacy entry are one card rather than two — and the message
-    // lives under `message`, which the generic text lookup below never reads.
+    // Error text lives under `message`, unlike the ordinary content events.
     return {
       id: `error:${event.generation}:${event.sequence}`,
       type: 'error',
@@ -1405,86 +1301,6 @@ export function conversationEventAppendsItemContent(event: ConversationEvent): b
     || ('type' in event && event.type === 'content.delta');
 }
 
-export function mergeAgentItem(items: readonly AgentItem[], incoming: AgentItem, append: boolean): AgentItem[] {
-  const index = items.findIndex((item) => item.id === incoming.id);
-  if (index < 0) return [...items, incoming];
-  const existing = items[index];
-  const merged = mergeAgentItemValue(existing, incoming, append);
-  if (mergeLeftItemUnchanged(existing, merged)) return items as AgentItem[];
-  const next = items.slice();
-  next[index] = merged;
-  return next;
-}
-
-export function mergeAgentItemValue(existing: AgentItem, incoming: AgentItem, append: boolean): AgentItem {
-  const replay = incoming.providerMetadata?.replay === true;
-  let content = incoming.content.length ? incoming.content : existing.content;
-  if (append && existing.content.length && incoming.content.length
-    && existing.content[existing.content.length - 1].channel === incoming.content[0].channel) {
-    const previous = existing.content[existing.content.length - 1];
-    const nextText = incoming.content[0].text;
-    const duplicateReplay = replay && (previous.text === nextText || previous.text.endsWith(nextText));
-    content = duplicateReplay
-      ? existing.content
-      : [
-        ...existing.content.slice(0, -1),
-        { ...previous, text: `${previous.text}${nextText}` },
-        ...incoming.content.slice(1)
-      ];
-  }
-  const providerMetadata: Record<string, AgentConfigValue> = {
-    ...(existing.providerMetadata ?? {}),
-    ...(incoming.providerMetadata ?? {})
-  };
-  const startedAtMs = existing.providerMetadata?.startedAtMs ?? incoming.providerMetadata?.startedAtMs;
-  if (startedAtMs !== undefined) providerMetadata.startedAtMs = startedAtMs;
-  return { ...existing, ...incoming, content, providerMetadata };
-}
-
-/** Whether a merge left the item exactly as it was, so callers can keep the
- * previous array and every identity that hangs off it. */
-function mergeLeftItemUnchanged(existing: AgentItem, merged: AgentItem): boolean {
-  if (existing.type !== merged.type || existing.turnId !== merged.turnId) return false;
-  if (existing.content !== merged.content) {
-    if (existing.content.length !== merged.content.length) return false;
-    for (let contentIndex = 0; contentIndex < existing.content.length; contentIndex += 1) {
-      const previous = existing.content[contentIndex];
-      const candidate = merged.content[contentIndex];
-      if (previous.channel !== candidate.channel
-        || previous.text !== candidate.text
-        || previous.mimeType !== candidate.mimeType) return false;
-    }
-  }
-  return shallowRecordEqual(existing.providerMetadata, merged.providerMetadata);
-}
-
-/** Snapshot replay owns a private, unpublished array, so it can update by an
- * id index instead of searching and copying a growing array for every event. */
-export function mergeAgentItemForReplay(
-  items: AgentItem[],
-  indexes: Map<string, number>,
-  incoming: AgentItem,
-  append: boolean
-): void {
-  const index = indexes.get(incoming.id);
-  if (index === undefined) {
-    indexes.set(incoming.id, items.length);
-    items.push(incoming);
-    return;
-  }
-  items[index] = mergeAgentItemValue(items[index], incoming, append);
-}
-
-export function agentItemsFromEvents(events: readonly ConversationEvent[]): AgentItem[] {
-  const items: AgentItem[] = [];
-  const indexes = new Map<string, number>();
-  for (const event of events) {
-    const item = agentItemFromEvent(event);
-    if (item) mergeAgentItemForReplay(items, indexes, item, conversationEventAppendsItemContent(event));
-  }
-  return items;
-}
-
 export function permissionRequestFromEvent(event: ConversationEvent): AgentPermissionRequest | null {
   const payload = event.payload as unknown as StringRecord;
   const kind = normalizedPayloadKind(payload);
@@ -1525,16 +1341,4 @@ export function availableCommandsFromEvent(event: ConversationEvent): AgentComma
       providerMetadata: metadataRecord(row.providerMetadata)
     }];
   });
-}
-
-/** Pure replay/live projection used by the store and timeline script tests. */
-export function displayItemsFromConversationEvents(events: readonly ConversationEvent[]): ConversationDisplayItem[] {
-  const items = typedConversationTimeline(agentItemsFromEvents(events));
-  const approvals = new Map<string, ConversationDisplayItem>();
-  for (const event of events) {
-    const request = permissionRequestFromEvent(event);
-    if (!request) continue;
-    approvals.set(request.requestId, displayItemFromApproval(request, event.timestampMs));
-  }
-  return [...items, ...approvals.values()].sort((left, right) => left.timestampMs - right.timestampMs);
 }

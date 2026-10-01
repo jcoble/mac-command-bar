@@ -1,10 +1,13 @@
+import { EventType, StreamProcessor } from '@tanstack/ai/client';
+import { conversationMessageDisplayItem, displayEventFrom, transcriptMessages } from './conversationMessages.ts';
+export { displayEventFrom } from './conversationMessages.ts';
 /**
  * Reactive conversation state keyed by Command Bar's stable `ownedId`.
  *
  * This module performs no IO. The conversation service owns Tauri calls and
  * feeds normalized events into `applyAgentConversationEvent`.
  */
-import { applyConversationEvent, createConversationState, usageDropIsCompaction } from './conversationReducer.ts';
+import { applyConversationEvent, createConversationState } from './conversationReducer.ts';
 import type {
   AgentApprovalRequest,
   AgentCapabilities,
@@ -16,7 +19,6 @@ import type {
   AgentConversationProvider,
   AgentConversationSnapshot,
   AgentConfigValue,
-  AgentItem,
   AgentPermissionOption,
   AgentPermissionRequest,
   AgentUserInputRequest,
@@ -27,17 +29,11 @@ import type {
   ConversationMetadata,
   ConversationTranscriptMessage,
   ConversationTranscriptSnapshot,
-  ConversationSessionState,
-  ConversationTimelineEntry
+  ConversationSessionState
 } from './conversationTypes.ts';
 import {
-  agentItemFromEvent,
   availableCommandsFromEvent,
-  conversationEventAppendsItemContent,
-  mergeAgentItemValue,
-  permissionRequestFromEvent,
-  type AgentPlanStep,
-  type ConversationTask
+  permissionRequestFromEvent
 } from './conversationTimeline.ts';
 import {
   emptyAgentConversationConfigState,
@@ -109,7 +105,7 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   metadata: ConversationMetadata;
   children: ConversationChildAgent[];
   selectedChildId: string | null;
-  childTimeline: ConversationTimelineEntry[];
+  childTranscript: StreamProcessor;
   scrollTop: number;
   childScrollTopById: Record<string, number>;
   executionOwner: AgentExecutionOwner;
@@ -131,17 +127,13 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   capabilities: AgentCapabilities | null;
   capabilitiesGeneration: number;
   capabilityError: string | null;
-  /** Typed ACP items are kept beside the legacy reducer projection. */
-  agentItems: AgentItem[];
-  planSteps: AgentPlanStep[];
-  tasks: ConversationTask[];
   availableCommands: AgentCommandDescriptor[];
   pendingApprovals: Record<string, AgentPermissionRequest>;
   pendingInputs: Record<string, AgentUserInputRequest>;
   pendingConfig: Record<string, AgentConfigValue>;
   configErrors: Record<string, string>;
   recentEvents: ConversationRecentEvent[];
-  /** The bounded SQLite event window that produced `timeline` and `agentItems`.
+  /** The bounded SQLite event window that produced the canonical messages.
    * It is retained only for the active projection so either trimmed end can be
    * rebuilt without introducing a second display model. */
   loadedEvents: AgentConversationEvent[];
@@ -229,16 +221,12 @@ function retainSentAttachments(
   return retained;
 }
 
-const timelineIndexBySession = new WeakMap<ConversationWorkspaceState, Map<string, number>>();
-const agentItemIndexBySession = new WeakMap<ConversationWorkspaceState, Map<string, number>>();
-const activeReasoningBySession = new WeakMap<ConversationWorkspaceState, Set<AgentItem>>();
-
 function releaseChildTranscriptProjection(current: ConversationWorkspaceState): boolean {
   const hadProjection = current.selectedChildId !== null
-    || current.childTimeline.length > 0
+    || current.childTranscript.getMessages().length > 0
     || current.loadedChildTranscriptBytes > 0;
   current.selectedChildId = null;
-  current.childTimeline = [];
+  current.childTranscript = new StreamProcessor();
   current.loadedChildTranscriptBytes = 0;
   return hadProjection;
 }
@@ -268,7 +256,7 @@ function freshState(
     metadata: emptyMetadata(),
     children: [],
     selectedChildId: null,
-    childTimeline: [],
+    childTranscript: new StreamProcessor(),
     scrollTop: 0,
     childScrollTopById: {},
     executionOwner: 'stopped',
@@ -285,9 +273,6 @@ function freshState(
     capabilities: null,
     capabilitiesGeneration: 0,
     capabilityError: null,
-    agentItems: [],
-    planSteps: [],
-    tasks: [],
     availableCommands: [],
     pendingApprovals: {},
     pendingInputs: {},
@@ -323,36 +308,7 @@ export function ensureConversationSession(
   return created;
 }
 
-/**
- * A session picked up from a past transcript stores its events wrapped in a
- * terminal projection, with the real event one level further down. Typing an
- * item reads the inner event, so the wrapper has to come off first — a wrapper
- * read as an event has none of the fields that give an item its type or text,
- * and becomes an empty `unknown` row.
- *
- * Both the live path and snapshot restore go through here. They did not always:
- * restore typed the wrapper, so a resumed transcript painted one empty row per
- * stored event. An event that is not a projection is returned untouched, which
- * is every event a session of this app's own produces.
- */
-export function displayEventFrom(event: AgentConversationEvent): AgentConversationEvent | AgentEvent {
-  if (event.payload.kind !== 'terminalProjection') return event;
-  return {
-    type: event.payload.eventType,
-    ownedId: event.ownedId,
-    provider: event.provider,
-    providerInstanceId: event.payload.providerInstanceId,
-    generation: event.generation,
-    sequence: event.sequence,
-    timestampMs: event.payload.timestampMs ?? event.timestampMs,
-    nativeSessionId: event.payload.nativeSessionId,
-    itemId: event.payload.itemId ?? undefined,
-    payload: event.payload.payload,
-    providerMetadata: event.payload.providerMetadata,
-    rawFrameReference: event.payload.rawFrameReference
-  };
-}
-
+/** Apply one native journal event through the shared live/replay reducer. */
 export function applyAgentConversationEvent(event: AgentConversationEvent): boolean {
   const existing = conversationSessions[event.ownedId];
   if (existing && event.provider !== existing.provider) return false;
@@ -364,27 +320,22 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
     recordConversationPresenceEvent(displayEventFrom(event));
     return false;
   }
-  const applied = applyLegacyEventInPlace(current, event);
-  if (!applied) return false;
-  // A missing journal event can change the meaning or position of everything
-  // after it. Keep the current view intact until a snapshot repairs the gap.
+  const reduced = applyConversationEvent(current, event);
+  if (reduced === current) return false;
+  Object.assign(current, reduced);
+  current.writerLease.generation = event.generation;
   if (current.desynchronized) return true;
   const displayEvent = displayEventFrom(event);
-  const typedItem = agentItemFromEvent(displayEvent);
-  if (typedItem) {
-    if (mergeAgentItemInPlace(current, typedItem, conversationEventAppendsItemContent(displayEvent))
-      && !['userMessage', 'assistantDelta', 'assistantMessage', 'tool'].includes(event.payload.kind)) {
-      current.timelineRevision += 1;
-    }
-    const itemIndex = agentItemIndex(current).get(typedItem.id);
-    const mergedItem = itemIndex === undefined ? null : current.agentItems[itemIndex];
-    const changedPath = mergedItem?.providerMetadata?.path;
-    const changedDiff = mergedItem?.providerMetadata?.diff;
-    if (mergedItem?.providerMetadata?.completed === true
-      && typeof changedPath === 'string'
-      && typeof changedDiff === 'string') {
-      publishWorkspaceFileChange({ ownedId: event.ownedId, path: changedPath });
-    }
+  if (event.payload.kind === 'userMessage' && current.unclaimedSentAttachments.length) {
+    current.sentAttachments[event.payload.itemId] = current.unclaimedSentAttachments;
+    current.unclaimedSentAttachments = [];
+  }
+  const payload = displayEvent.payload as Record<string, unknown>;
+  const itemId = ('itemId' in displayEvent ? displayEvent.itemId : undefined) ?? payload.itemId ?? payload.toolCallId ?? payload.messageId;
+  const message = current.transcript.getMessages().find((message) => message.id === itemId);
+  const row = message ? conversationMessageDisplayItem(message) : null;
+  if (row?.kind === 'tool' && row.state === 'completed' && row.path && row.diff) {
+    publishWorkspaceFileChange({ ownedId: event.ownedId, path: row.path });
   }
   applyTypedEventPayload(current, displayEvent);
   current.loadedEvents.push(event);
@@ -426,274 +377,6 @@ export function applyAgentConversationEvent(event: AgentConversationEvent): bool
 /** Update rail attention for an inactive session without retaining its transcript. */
 export function recordAgentConversationPresenceEvent(event: AgentConversationEvent): void {
   recordConversationPresenceEvent(displayEventFrom(event));
-}
-
-function timelineIndex(current: ConversationWorkspaceState): Map<string, number> {
-  let index = timelineIndexBySession.get(current);
-  if (!index) {
-    index = new Map(current.timeline.map((entry, entryIndex) => [entry.itemId, entryIndex]));
-    timelineIndexBySession.set(current, index);
-  }
-  return index;
-}
-
-function timelineEntry(current: ConversationWorkspaceState, itemId: string): ConversationTimelineEntry | undefined {
-  const index = timelineIndex(current).get(itemId);
-  return index === undefined ? undefined : current.timeline[index];
-}
-
-function appendTimelineEntry(current: ConversationWorkspaceState, entry: ConversationTimelineEntry): void {
-  timelineIndex(current).set(entry.itemId, current.timeline.length);
-  current.timeline.push(entry);
-}
-
-function applyLegacyEventInPlace(current: ConversationWorkspaceState, event: AgentConversationEvent): boolean {
-  if (event.ownedId !== current.ownedId || event.provider !== current.provider) return false;
-  if (event.generation < current.generation) return false;
-  const newGeneration = event.generation > current.generation;
-  const previousSequence = newGeneration ? 0 : current.lastSequence;
-  if (!newGeneration && event.sequence <= previousSequence) return false;
-  const hasGap = event.sequence !== previousSequence + 1;
-  if (hasGap) console.info('[conversation-sync]', {
-    cause: 'sequence-gap', session: event.ownedId, generation: event.generation,
-    expectedSequence: previousSequence + 1, receivedSequence: event.sequence
-  });
-  current.generation = event.generation;
-  current.lastSequence = event.sequence;
-  current.desynchronized = newGeneration ? hasGap : current.desynchronized || hasGap;
-  current.writerLease.generation = event.generation;
-  if (current.desynchronized) return true;
-
-  const { payload } = event;
-  let displayChanged = false;
-  switch (payload.kind) {
-    case 'connection':
-      current.connectionState = payload.state;
-      current.nativeSessionId = payload.nativeSessionId ?? current.nativeSessionId;
-      break;
-    case 'userMessage': {
-      const existing = timelineEntry(current, payload.itemId);
-      if (existing?.kind === 'user') {
-        displayChanged = existing.text !== payload.text || existing.completed !== payload.completed;
-        existing.text = payload.text;
-        existing.completed = payload.completed;
-      } else {
-        appendTimelineEntry(current, {
-          kind: 'user', itemId: payload.itemId, text: payload.text,
-          completed: payload.completed, timestampMs: event.timestampMs
-        });
-        if (current.unclaimedSentAttachments.length) {
-          current.sentAttachments[payload.itemId] = current.unclaimedSentAttachments;
-          current.unclaimedSentAttachments = [];
-        }
-        displayChanged = true;
-      }
-      break;
-    }
-    case 'assistantDelta': {
-      const existing = timelineEntry(current, payload.itemId);
-      if (existing?.kind === 'assistant') {
-        if (payload.delta) {
-          existing.text += payload.delta;
-          displayChanged = true;
-        }
-        existing.completed = false;
-      } else {
-        appendTimelineEntry(current, {
-          kind: 'assistant', itemId: payload.itemId, text: payload.delta,
-          completed: false, timestampMs: event.timestampMs
-        });
-        displayChanged = payload.delta.length > 0;
-      }
-      break;
-    }
-    case 'assistantMessage': {
-      const existing = timelineEntry(current, payload.itemId);
-      if (existing?.kind === 'assistant') {
-        displayChanged = existing.text !== payload.text || !existing.completed;
-        existing.text = payload.text;
-        existing.completed = true;
-      } else {
-        appendTimelineEntry(current, {
-          kind: 'assistant', itemId: payload.itemId, text: payload.text,
-          completed: true, timestampMs: event.timestampMs
-        });
-        displayChanged = true;
-      }
-      break;
-    }
-    case 'tool': {
-      const existing = timelineEntry(current, payload.itemId);
-      if (existing?.kind === 'tool') {
-        displayChanged = existing.name !== payload.name
-          || existing.state !== payload.state
-          || existing.summary !== payload.summary
-          || existing.output !== payload.output
-          || existing.diff !== payload.diff;
-        // A call and its result are the same row arriving twice: the call names
-        // the tool and says what was asked, the result says what came back and
-        // names nothing. Each only writes what it actually carries, or the
-        // result would blank out the row it belongs to.
-        if (payload.name) existing.name = payload.name;
-        existing.state = payload.state;
-        if (payload.summary !== undefined) existing.summary = payload.summary;
-        if (payload.output !== undefined) existing.output = payload.output;
-        if (payload.path !== undefined) existing.path = payload.path;
-        if (payload.diff !== undefined) existing.diff = payload.diff;
-      } else {
-        appendTimelineEntry(current, {
-          kind: 'tool', itemId: payload.itemId,
-          // A result names no tool, and its call is what would have. When the
-          // two are separated — a page boundary can fall between them — the row
-          // is still worth drawing, so it takes a plain name until the call
-          // turns up and gives it the real one.
-          name: payload.name || 'Tool',
-          state: payload.state, summary: payload.summary, output: payload.output,
-          path: payload.path, diff: payload.diff, timestampMs: event.timestampMs
-        });
-        displayChanged = true;
-      }
-      break;
-    }
-    case 'childUpdate':
-      break;
-    case 'approval': {
-      const itemId = `approval:${payload.requestId}`;
-      const existing = timelineEntry(current, itemId);
-      if (existing?.kind === 'approval') {
-        displayChanged = existing.state !== payload.state || existing.summary !== payload.summary;
-        existing.state = payload.state;
-        existing.summary = payload.summary;
-      } else {
-        appendTimelineEntry(current, {
-          kind: 'approval', itemId, requestId: payload.requestId,
-          state: payload.state, summary: payload.summary, timestampMs: event.timestampMs
-        });
-        displayChanged = true;
-      }
-      break;
-    }
-    case 'plan': {
-      const itemId = `plan:${event.generation}`;
-      const items = payload.items ?? (payload.entries ?? []).map((entry) => ({
-        text: entry.title ?? entry.text ?? entry.content ?? '',
-        status: entry.status ?? 'pending'
-      }));
-      const existing = timelineEntry(current, itemId);
-      if (existing?.kind === 'plan') {
-        existing.items = items;
-      } else {
-        appendTimelineEntry(current, { kind: 'plan', itemId, items, timestampMs: event.timestampMs });
-      }
-      displayChanged = true;
-      break;
-    }
-    case 'error': {
-      appendTimelineEntry(current, {
-        kind: 'error', itemId: `error:${event.generation}:${event.sequence}`,
-        code: payload.code, message: payload.message, recoverable: payload.recoverable,
-        timestampMs: event.timestampMs
-      });
-      current.activeTurnId = undefined;
-      if (!payload.recoverable) current.connectionState = 'failed';
-      displayChanged = true;
-      break;
-    }
-    case 'turn':
-      current.activeTurnId = payload.state === 'started' ? payload.turnId : undefined;
-      break;
-    case 'contextCompaction': {
-      appendTimelineEntry(current, {
-        kind: 'compaction', itemId: `compaction:${event.sequence}`,
-        trigger: payload.trigger ?? undefined,
-        preTokens: payload.preTokens ?? undefined,
-        postTokens: payload.postTokens ?? undefined,
-        timestampMs: event.timestampMs
-      });
-      displayChanged = true;
-      break;
-    }
-    case 'checkoutChanged': {
-      appendTimelineEntry(current, {
-        kind: 'checkoutChanged',
-        itemId: `checkout:${event.sequence}`,
-        fromCwd: payload.fromCwd,
-        toCwd: payload.toCwd,
-        timestampMs: event.timestampMs
-      });
-      displayChanged = true;
-      break;
-    }
-    case 'usage': {
-      // Claude says nothing when it compacts; the only sign is the reported
-      // occupancy falling off a cliff. A full window dropping to a fraction of
-      // itself has no other cause, so the transcript says so where it happened
-      // rather than leaving the reader to guess. A small decline is ordinary —
-      // a report of the last request rather than the session — and is ignored.
-      const previous = current.usage?.usedTokens;
-      const alreadySaid = current.timeline[current.timeline.length - 1]?.kind === 'compaction';
-      if (!alreadySaid && usageDropIsCompaction(previous, payload.usedTokens)) {
-        appendTimelineEntry(current, {
-          kind: 'compaction', itemId: `compaction:${event.sequence}`,
-          preTokens: previous, postTokens: payload.usedTokens, timestampMs: event.timestampMs
-        });
-        displayChanged = true;
-      }
-      current.usage = {
-        inputTokens: payload.inputTokens ?? current.usage?.inputTokens,
-        outputTokens: payload.outputTokens ?? current.usage?.outputTokens,
-        usedTokens: payload.usedTokens ?? current.usage?.usedTokens,
-        contextWindow: payload.contextWindow ?? current.usage?.contextWindow,
-        totalTokens: payload.totalTokens ?? current.usage?.totalTokens
-      };
-      break;
-    }
-    case 'terminalProjection':
-      break;
-    case 'agentThoughtChunk':
-    case 'toolCall':
-    case 'toolCallUpdate':
-    case 'turnDiff':
-    case 'permissionRequest':
-    case 'availableCommandsUpdate':
-    case 'agentMessageChunk':
-    case 'userMessageChunk':
-      break;
-  }
-  if (displayChanged) current.timelineRevision += 1;
-  return true;
-}
-
-function agentItemIndex(current: ConversationWorkspaceState): Map<string, number> {
-  let index = agentItemIndexBySession.get(current);
-  if (!index) {
-    index = new Map(current.agentItems.map((item, itemIndex) => [item.id, itemIndex]));
-    agentItemIndexBySession.set(current, index);
-  }
-  return index;
-}
-
-function mergeAgentItemInPlace(current: ConversationWorkspaceState, incoming: AgentItem, append: boolean): boolean {
-  const index = agentItemIndex(current);
-  const itemIndex = index.get(incoming.id);
-  if (itemIndex === undefined) {
-    index.set(incoming.id, current.agentItems.length);
-    current.agentItems.push(incoming);
-    if (incoming.type === 'reasoning' && incoming.providerMetadata?.completed !== true) {
-      const active = activeReasoningBySession.get(current) ?? new Set<AgentItem>();
-      active.add(current.agentItems[current.agentItems.length - 1]);
-      activeReasoningBySession.set(current, active);
-    }
-    return true;
-  }
-  const existing = current.agentItems[itemIndex];
-  const merged = mergeAgentItemValue(existing, incoming, append);
-  if (merged === existing) return false;
-  existing.type = merged.type;
-  existing.turnId = merged.turnId;
-  existing.content = merged.content;
-  existing.providerMetadata = merged.providerMetadata;
-  return true;
 }
 
 export function conversationRecentEvents(ownedId: string): ReadonlyArray<ConversationRecentEvent> {
@@ -952,7 +635,7 @@ export function applyAgentConversationSnapshot(
     && current.connectionState === snapshot.connection.state
     && (!snapshot.suspended || (!current.activeTurnId && !current.sending))
   ) return true;
-  let rebuilt = createConversationState(
+  const rebuilt = createConversationState(
     snapshot.connection.ownedId,
     snapshot.connection.provider
   );
@@ -968,9 +651,6 @@ export function applyAgentConversationSnapshot(
   rebuilt.lastSequence = firstEvent ? firstEvent.sequence - 1 : 0;
   rebuilt.connectionState = snapshot.connection.state;
   rebuilt.nativeSessionId = snapshot.connection.nativeSessionId;
-  for (const event of events) {
-    rebuilt = applyConversationEvent(rebuilt, event);
-  }
   const sentAttachments = retainSentAttachments(current.sentAttachments, sourceEvents);
   // Build the complete snapshot off the reactive graph. Publishing this object
   // before replay made every event traverse Svelte's deep proxy machinery and
@@ -985,11 +665,11 @@ export function applyAgentConversationSnapshot(
   const keepChildProjection = generation === current.generation;
   const restored: ConversationWorkspaceState = {
     ...rebuilt,
-    lastSequence: window ? current.lastSequence : snapshot.lastSequence,
+    lastSequence: rebuilt.lastSequence,
     // Paging can trim the newest turn event. Its old start must not revive a
     // turn the live head has already completed (or hide one still running).
     activeTurnId: snapshot.suspended ? undefined : window ? current.activeTurnId : rebuilt.activeTurnId,
-    generation,
+    generation: rebuilt.generation,
     suspended: snapshot.suspended === true,
     timelineRevision: current.timelineRevision + 1,
     draft: current.draft,
@@ -1002,7 +682,7 @@ export function applyAgentConversationSnapshot(
     metadata: current.metadata,
     children: current.children,
     selectedChildId: keepChildProjection ? current.selectedChildId : null,
-    childTimeline: keepChildProjection ? current.childTimeline : [],
+    childTranscript: keepChildProjection ? current.childTranscript : new StreamProcessor(),
     scrollTop: current.scrollTop,
     childScrollTopById: current.childScrollTopById,
     executionOwner: current.executionOwner,
@@ -1018,9 +698,6 @@ export function applyAgentConversationSnapshot(
       ? current.capabilitiesGeneration
       : 0,
     capabilityError: current.capabilityError,
-    agentItems: [],
-    planSteps: [],
-    tasks: [],
     availableCommands: current.availableCommands,
     pendingApprovals: {},
     pendingInputs: {},
@@ -1046,25 +723,24 @@ export function applyAgentConversationSnapshot(
     loadedChildTranscriptBytes: keepChildProjection ? current.loadedChildTranscriptBytes : 0
   };
   for (const event of events) {
-    const displayEvent = displayEventFrom(event);
-    const typedItem = agentItemFromEvent(displayEvent);
-    if (typedItem) {
-      // A bounded replay may start at a tool's update after its opening event
-      // was trimmed. Keep its original position while this view is live.
-      const previousIndex = generation === current.generation
-        ? agentItemIndex(current).get(typedItem.id)
-        : undefined;
-      const previousStart = previousIndex === undefined
-        ? undefined
-        : current.agentItems[previousIndex]?.providerMetadata?.startedAtMs;
-      const replayStart = typedItem.providerMetadata?.startedAtMs;
-      if (typeof previousStart === 'number' && (typeof replayStart !== 'number' || previousStart < replayStart)) {
-        typedItem.providerMetadata = { ...typedItem.providerMetadata, startedAtMs: previousStart };
-      }
-      mergeAgentItemInPlace(restored, typedItem, conversationEventAppendsItemContent(displayEvent));
-    }
-    applyTypedEventPayload(restored, displayEvent);
+    const reduced = applyConversationEvent(restored, event);
+    if (reduced !== restored) Object.assign(restored, reduced);
+    applyTypedEventPayload(restored, displayEventFrom(event));
   }
+  if (generation === current.generation) {
+    const starts = new Map(current.transcript.getMessages().map((message) => [message.id, message.metadata?.startedAtMs]));
+    for (const message of restored.transcript.getMessages()) {
+      const start = starts.get(message.id);
+      if (typeof start === 'number' && typeof message.metadata?.startedAtMs === 'number' && start < message.metadata.startedAtMs) {
+        restored.transcript.processChunk({ type: EventType.TEXT_MESSAGE_START, messageId: message.id, role: message.role,
+          metadata: { startedAtMs: start } });
+      }
+    }
+  }
+  restored.generation = generation;
+  restored.lastSequence = window ? current.lastSequence : snapshot.lastSequence;
+  restored.activeTurnId = snapshot.suspended ? undefined : window ? current.activeTurnId : restored.activeTurnId;
+  restored.timelineRevision = current.timelineRevision + 1;
   restored.recentEvents = events.slice(-CONVERSATION_RECENT_EVENT_CAP).map((event) => ({
     sequence: event.sequence,
     kind: String('type' in event ? event.type : event.payload.kind),
@@ -1080,8 +756,8 @@ export function applyAgentConversationSnapshot(
 /**
  * Puts the page of stored events just older than the transcript in front of it.
  *
- * The one retained event window is replayed through the existing reducers so
- * `timeline` and `agentItems` remain the only display projections. Once the
+ * The one retained event window is replayed through the same message mapper.
+ * The processor owns the complete display content. Once the
  * event ceiling is reached, the newest end is removed and remains refetchable.
  */
 export function prependOlderConversationEvents(
@@ -1343,24 +1019,6 @@ function permissionOptions(value: unknown): AgentPermissionOption[] {
   });
 }
 
-function finishReasoningItems(current: ConversationWorkspaceState, event: AgentConversationEvent | AgentEvent): void {
-  const payload = event.payload as Record<string, unknown>;
-  const rawKind = asString(payload.kind)?.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase()) ?? '';
-  const turnFinished = rawKind === 'turn' && payload.state !== 'started';
-  const assistantStarted = rawKind === 'assistantDelta' || rawKind === 'assistantMessage' || rawKind === 'agentMessageChunk';
-  const canonicalFinished = 'type' in event && (event.type === 'turn.completed' || event.type === 'turn.interrupted');
-  const canonicalAssistant = 'type' in event && event.type === 'content.delta' && payload.channel === 'assistant';
-  if (!turnFinished && !assistantStarted && !canonicalFinished && !canonicalAssistant) return;
-  const turnId = 'turnId' in event ? event.turnId : asString(payload.turnId) ?? undefined;
-  const active = activeReasoningBySession.get(current);
-  if (!active?.size) return;
-  for (const item of active) {
-    if (turnId && item.turnId && item.turnId !== turnId) continue;
-    item.providerMetadata = { ...(item.providerMetadata ?? {}), completed: true, streaming: false };
-    active.delete(item);
-  }
-}
-
 function applyTypedEventPayload(current: ConversationWorkspaceState, event: AgentConversationEvent | AgentEvent): void {
   const payload = event.payload as Record<string, unknown>;
   const raw = isRecord(payload);
@@ -1410,13 +1068,6 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
         contextWindow: contextWindow ?? current.metadata.contextWindow
       };
     }
-  }
-  if (eventType === 'plan.updated' || payload.kind === 'plan') {
-    const entries = Array.isArray(payload.items) ? payload.items : payload.entries;
-    if (Array.isArray(entries)) current.planSteps = parsePlanSteps(entries);
-  }
-  if (eventType === 'tasks.updated' || payload.kind === 'tasks') {
-    if (Array.isArray(payload.tasks)) current.tasks = parseTasks(payload.tasks);
   }
   if (payload.kind === 'childUpdate') {
     mergeConversationChild(current, payload, event.provider, event.generation, event.timestampMs);
@@ -1476,41 +1127,6 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
     const requestId = asString(payload.requestId) ?? requestIdFromEvent;
     if (requestId) delete current.pendingInputs[requestId];
   }
-  finishReasoningItems(current, event);
-}
-
-function parsePlanSteps(value: unknown): AgentPlanStep[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry, index) => {
-    if (!isRecord(entry)) return [];
-    const state = asString(entry.state);
-    return [{
-      id: asString(entry.id) ?? `step-${index + 1}`,
-      title: asString(entry.title) ?? asString(entry.text) ?? `Step ${index + 1}`,
-      detail: asString(entry.detail),
-      state: state === 'in-progress' || state === 'completed' || state === 'failed' || state === 'blocked'
-        ? state
-        : (() => {
-          const status = asString(entry.status)?.replaceAll('_', '-');
-          return status === 'in-progress' || status === 'completed' || status === 'failed' || status === 'blocked'
-            ? status
-            : 'pending';
-        })(),
-      ownerAgentId: asString(entry.ownerAgentId),
-      startedAt: asString(entry.startedAt),
-      completedAt: asString(entry.completedAt)
-    }];
-  });
-}
-
-function parseTasks(value: unknown): ConversationTask[] {
-  return parsePlanSteps(value).map((step) => ({
-    id: step.id,
-    title: step.title,
-    detail: step.detail,
-    state: step.state,
-    ownerAgentId: step.ownerAgentId
-  }));
 }
 
 export function applyConversationTranscript(
@@ -1534,13 +1150,8 @@ export function applyConversationTranscript(
       current.generation,
       0
     ),
-    timeline: snapshot.messages.map((message) => ({
-      kind: message.role,
-      itemId: message.itemId,
-      text: message.text,
-      completed: true,
-      timestampMs: message.timestampMs
-    }))
+    transcript: transcriptMessages(snapshot.messages),
+    timelineRevision: current.timelineRevision + 1
   };
 }
 
@@ -1552,13 +1163,8 @@ export function applyChildConversationTranscript(
   const current = conversationSessions[ownedId];
   if (!current || current.selectedChildId !== childId) return;
   releaseOtherChildTranscriptProjections(ownedId);
-  current.childTimeline = messages.map((message) => ({
-    kind: message.role,
-    itemId: `child:${childId}:${message.itemId}`,
-    text: message.text,
-    completed: true,
-    timestampMs: message.timestampMs
-  }));
+  current.childTranscript = transcriptMessages(messages, `child:${childId}:`);
+  current.timelineRevision += 1;
   current.loadedChildTranscriptBytes = messages.reduce(
     (total, message) => total + textBytes(message.text),
     0
@@ -1784,21 +1390,6 @@ export function failConversationConfigChange(ownedId: string, optionId: string, 
   current.configErrors[optionId] = message;
 }
 
-export function setConversationAgentItems(ownedId: string, items: AgentItem[]): void {
-  const current = conversationSessions[ownedId];
-  if (current) current.agentItems = [...items];
-}
-
-export function setConversationPlanSteps(ownedId: string, steps: AgentPlanStep[]): void {
-  const current = conversationSessions[ownedId];
-  if (current) current.planSteps = [...steps];
-}
-
-export function setConversationTasks(ownedId: string, tasks: ConversationTask[]): void {
-  const current = conversationSessions[ownedId];
-  if (current) current.tasks = [...tasks];
-}
-
 export function setConversationPendingApproval(
   ownedId: string,
   request: AgentApprovalRequest & { state: string }
@@ -1830,7 +1421,7 @@ export function setConversationSelectedChild(ownedId: string, childId: string | 
     return;
   }
   current.selectedChildId = childId;
-  current.childTimeline = [];
+  current.childTranscript = new StreamProcessor();
   current.loadedChildTranscriptBytes = 0;
   publishConversationProjectionDiagnostics();
 }
@@ -1990,9 +1581,6 @@ export function restoreConversationWorkspace(
 export function evictConversationSession(ownedId: string): void {
   const current = conversationSessions[ownedId];
   if (!current) return;
-  timelineIndexBySession.delete(current);
-  agentItemIndexBySession.delete(current);
-  activeReasoningBySession.delete(current);
   delete conversationSessions[ownedId];
   publishConversationProjectionDiagnostics();
 }

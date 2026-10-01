@@ -1,3 +1,5 @@
+import type { StreamProcessor } from '@tanstack/ai/client';
+
 export type AgentConversationProvider = 'codex' | 'claude' | 'antigravity';
 
 export interface ConversationCommandError {
@@ -554,72 +556,6 @@ export interface AgentConversationEvent {
   payload: AgentConversationPayload | AgentConversationRichPayload;
 }
 
-interface ConversationTextEntry {
-  itemId: string;
-  text: string;
-  completed: boolean;
-  timestampMs: number;
-}
-
-export type ConversationTimelineEntry =
-  | (ConversationTextEntry & { kind: 'user' | 'assistant' })
-  | {
-      kind: 'tool';
-      itemId: string;
-      name: string;
-      state: ToolState;
-      summary?: string;
-      /** What the call produced, which is what a row opens onto. */
-      output?: string;
-      path?: string;
-      diff?: string;
-      timestampMs: number;
-    }
-  | {
-      kind: 'approval';
-      itemId: string;
-      requestId: string;
-      state: ApprovalState;
-      summary: string;
-      timestampMs: number;
-    }
-  | {
-      kind: 'plan';
-      itemId: string;
-      items: { text: string; status: string }[];
-      timestampMs: number;
-    }
-  | {
-      kind: 'turn';
-      itemId: string;
-      turnId: string;
-      state: TurnState;
-      timestampMs: number;
-    }
-  | {
-      kind: 'error';
-      itemId: string;
-      code: string;
-      message: string;
-      recoverable: boolean;
-      timestampMs: number;
-    }
-  | {
-      kind: 'compaction';
-      itemId: string;
-      trigger?: string;
-      preTokens?: number;
-      postTokens?: number;
-      timestampMs: number;
-    }
-  | {
-      kind: 'checkoutChanged';
-      itemId: string;
-      fromCwd: string;
-      toCwd: string;
-      timestampMs: number;
-    };
-
 export interface ConversationUsage {
   inputTokens?: number;
   outputTokens?: number;
@@ -691,7 +627,7 @@ export interface ConversationSessionState {
   nativeSessionId?: string;
   activeTurnId?: string;
   usage?: ConversationUsage;
-  timeline: ConversationTimelineEntry[];
+  transcript: StreamProcessor;
 }
 
 export interface AgentConversationConnection {
