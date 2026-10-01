@@ -179,6 +179,9 @@ pub struct ManagedAgentSession {
     created_at_ms: u128,
     last_activity_ms: u128,
     live_tool_calls: HashSet<String>,
+    /// The reply the agent is streaming: its message id and the text of the
+    /// deltas stored for it so far.
+    streaming_reply: Option<(String, String)>,
     background_work: HashSet<String>,
     child_rollout_scan: Option<tokio::task::JoinHandle<()>>,
     child_rollout_parent_path: Option<PathBuf>,
@@ -1345,6 +1348,7 @@ impl AgentRuntimeManager {
                 created_at_ms,
                 last_activity_ms: created_at_ms,
                 live_tool_calls: HashSet::new(),
+                streaming_reply: None,
                 background_work: HashSet::new(),
                 child_rollout_scan: None,
                 child_rollout_parent_path: None,
@@ -4192,6 +4196,7 @@ fn recovered_session_from_row(
         created_at_ms: row.created_at_ms.max(0) as u128,
         last_activity_ms: row.last_activity_at_ms.max(0) as u128,
         live_tool_calls: HashSet::new(),
+        streaming_reply: None,
         background_work: HashSet::new(),
         child_rollout_scan: None,
         child_rollout_parent_path: None,
@@ -4256,10 +4261,9 @@ fn helper_title(answer: &str) -> Option<String> {
 }
 
 /// What the helper is given to name a session by: what the person first asked
-/// for, and what came back in the turn that just finished. On a live session
-/// the reply is only ever stored as its deltas, so they are joined back
-/// together here; a session read in from elsewhere holds whole messages, and
-/// both are read the same way.
+/// for, and what came back in the turn that just finished. Every reply ends as
+/// a whole message, whether it was streamed here or read in from elsewhere, so
+/// the deltas it was streamed as are not read again.
 fn title_input(store: &SessionStore, owned_id: &str, turn_id: &str) -> Option<String> {
     let prompt = store
         .first_user_message_payload(owned_id)
@@ -4282,10 +4286,8 @@ fn title_input(store: &SessionStore, owned_id: &str, turn_id: &str) -> Option<St
         let Ok(event) = serde_json::from_str::<AgentConversationEvent>(&row.payload_json) else {
             continue;
         };
-        match event.payload {
-            AgentConversationPayload::AssistantDelta { delta, .. } => reply.push_str(&delta),
-            AgentConversationPayload::AssistantMessage { text, .. } => reply.push_str(&text),
-            _ => {}
+        if let AgentConversationPayload::AssistantMessage { text, .. } = event.payload {
+            reply.push_str(&text);
         }
     }
     let prompt: String = prompt.chars().take(TITLE_INPUT_CHAR_CAP).collect();
@@ -4521,6 +4523,35 @@ fn record_payload_for_session_and_dispatch_with_lifecycle(
     let event = record_payload_for_session_with_lifecycle(session, payload, Some(lifecycle))?;
     dispatch_event(emitter, &event);
     Ok(event)
+}
+
+/// Stores the reply the agent just finished streaming as one whole message.
+/// Its deltas are already stored and drawn; this row carries all of its text,
+/// with the Markdown converted once as it is recorded, so nothing that draws
+/// the conversation later has to parse it.
+fn record_finished_reply(
+    session: &mut ManagedAgentSession,
+    emitter: &Arc<Mutex<Option<ConversationEmitter>>>,
+) {
+    let Some((item_id, text)) = session
+        .streaming_reply
+        .take()
+        .filter(|(_, text)| !text.is_empty())
+    else {
+        return;
+    };
+    if let Err(error) = record_payload_for_session_and_dispatch(
+        session,
+        emitter,
+        AgentConversationPayload::AssistantMessage {
+            item_id,
+            text,
+            completed: true,
+            blocks: None,
+        },
+    ) {
+        crate::debug_log::stderr_log!("Could not record the finished reply: {error}");
+    }
 }
 
 /// Describes a state-only lifecycle change while preserving current ownership.
@@ -4776,12 +4807,32 @@ async fn pump_inbound(
                     ) else {
                         break 'update reached_quiescence;
                     };
-                    if let Err(error) =
-                        record_payload_for_session_and_dispatch(session, &emitter, payload)
-                    {
-                        crate::debug_log::stderr_log!(
+                    // A delta for another message means the agent finished the
+                    // one it was streaming.
+                    if let AgentConversationPayload::AssistantDelta { item_id, .. } = &payload {
+                        if session
+                            .streaming_reply
+                            .as_ref()
+                            .is_some_and(|(streaming, _)| streaming != item_id)
+                        {
+                            record_finished_reply(session, &emitter);
+                        }
+                    }
+                    match record_payload_for_session_and_dispatch(session, &emitter, payload) {
+                        Ok(event) => {
+                            if let AgentConversationPayload::AssistantDelta { item_id, delta } =
+                                event.payload
+                            {
+                                session
+                                    .streaming_reply
+                                    .get_or_insert_with(|| (item_id, String::new()))
+                                    .1
+                                    .push_str(&delta);
+                            }
+                        }
+                        Err(error) => crate::debug_log::stderr_log!(
                             "Could not record ACP session update: {error}"
-                        );
+                        ),
                     }
                     reached_quiescence
                 };
@@ -4975,6 +5026,7 @@ async fn settle_closed_transport(
                     );
                 }
             }
+            record_finished_reply(session, &emitter);
             if let Some(turn_id) = session.active_turn_id.take() {
                 let _ = record_payload_for_session_and_dispatch(
                     session,
@@ -5525,6 +5577,7 @@ async fn handle_ordered_session_event(
                         return false;
                     }
                 }
+                record_finished_reply(session, &emitter);
                 let payload = match result {
                     Ok(_) if cancelled => AgentConversationPayload::Turn {
                         turn_id: turn_id.clone(),
@@ -10312,6 +10365,99 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn a_streamed_reply_is_stored_once_as_a_finished_message_with_rust_blocks() {
+        let fixture = fixture_manager_with_acp_session("two_replies").await;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await
+            .expect("prompt starts");
+        wait_until(|| {
+            seen.lock().unwrap().iter().any(|event| {
+                matches!(
+                    event.payload,
+                    AgentConversationPayload::Turn {
+                        state: super::super::protocol::TurnState::Completed,
+                        ..
+                    }
+                )
+            })
+        })
+        .await;
+
+        // Read the rows as stored, not through the read path that fills in
+        // missing blocks.
+        let store = Arc::clone(
+            &fixture
+                .manager
+                .sessions
+                .lock()
+                .unwrap()
+                .get(&fixture.owned_id)
+                .unwrap()
+                .store,
+        );
+        let stored = store
+            .list_events(&fixture.owned_id, 0, 1000)
+            .unwrap()
+            .into_iter()
+            .filter_map(|row| {
+                let event: AgentConversationEvent =
+                    serde_json::from_str(&row.payload_json).unwrap();
+                match event.payload {
+                    AgentConversationPayload::AssistantDelta { item_id, .. } => {
+                        Some(format!("delta {item_id}"))
+                    }
+                    AgentConversationPayload::AssistantMessage {
+                        item_id,
+                        text,
+                        blocks,
+                        ..
+                    } => {
+                        assert_eq!(
+                            blocks,
+                            Some(crate::agent_conversation::safe_markdown::parse_safe_markdown(
+                                &text
+                            ))
+                        );
+                        Some(format!("message {item_id}: {text}"))
+                    }
+                    AgentConversationPayload::Tool { .. } => Some("tool".to_string()),
+                    AgentConversationPayload::Turn {
+                        state: super::super::protocol::TurnState::Completed,
+                        ..
+                    } => Some("turn completed".to_string()),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            stored,
+            [
+                "delta reply-a",
+                "delta reply-a",
+                "tool",
+                "message reply-a: **Bold** start",
+                "delta reply-b",
+                "message reply-b: `code`",
+                "turn completed",
+            ]
+        );
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn current_mode_update_refreshes_the_stored_config() {
         let fixture = fixture_manager_with_acp_session("current_mode_update").await;
 
@@ -11870,7 +12016,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn transport_exit_emits_connection_failure_and_recoverable_error() {
-        let fixture = fixture_manager_with_acp_session("dies_midturn").await;
+        let fixture = fixture_manager_with_acp_session("reply_then_dies").await;
         let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
         let sink = Arc::clone(&seen);
         fixture
@@ -11907,7 +12053,7 @@ mod tests {
         assert!(seen
             .windows(2)
             .all(|events| events[1].sequence == events[0].sequence + 1));
-        assert!(seen.iter().any(|event| {
+        let failed_turn = seen.iter().position(|event| {
             matches!(
                 event.payload,
                 AgentConversationPayload::Turn {
@@ -11915,7 +12061,17 @@ mod tests {
                     ..
                 }
             )
-        }));
+        });
+        assert!(failed_turn.is_some());
+        // The reply the adapter was cut off in still ends as a finished message.
+        let finished_reply = seen.iter().position(|event| {
+            matches!(
+                &event.payload,
+                AgentConversationPayload::AssistantMessage { item_id, text, blocks: Some(_), .. }
+                    if item_id == "cut-off" && text == "partial"
+            )
+        });
+        assert!(finished_reply.is_some() && finished_reply < failed_turn);
         drop(seen);
         assert_eq!(
             fixture
