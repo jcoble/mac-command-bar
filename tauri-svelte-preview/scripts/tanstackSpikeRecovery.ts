@@ -92,6 +92,7 @@ type ProbeEvent = { ownedId: string; generation: number; sequence: number; times
 const state = {
   generation: 1, lastSequence: 1, reachedTranscriptEnd: true, sending: true,
   activeTurnId: 'turn' as string | undefined,
+  sentAttachments: {}, children: [],
   timeline: [{ kind: 'assistant', itemId: 'reply', text: 'before' }]
 };
 let observer: ((event: ProbeEvent) => void) | undefined;

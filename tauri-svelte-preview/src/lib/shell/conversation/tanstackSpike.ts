@@ -8,10 +8,13 @@ import { observeConversationForSpike, loadConversationForRead, sendStructuredMes
 export function spikeWindow(ownedId: string): UIMessage[] {
   const state = getConversationSession(ownedId);
   if (!state) return [];
-  return state.timeline.flatMap((entry): UIMessage[] => {
+  const messages = state.timeline.flatMap((entry): UIMessage[] => {
     if (entry.kind === 'assistant' || entry.kind === 'user') return [{
       id: entry.itemId, role: entry.kind === 'user' ? 'user' : 'assistant',
-      parts: [{ type: 'text', content: entry.text }]
+      parts: [{ type: 'text', content: entry.text }, ...(state.sentAttachments[entry.itemId] ?? []).map((attachment) => ({
+        type: 'image' as const, id: attachment.id,
+        source: { type: 'url' as const, value: attachment.previewUrl, mimeType: attachment.mimeType }
+      }))]
     }];
     if (entry.kind === 'tool') return [{
       id: entry.itemId, role: 'assistant', parts: [{
@@ -23,6 +26,20 @@ export function spikeWindow(ownedId: string): UIMessage[] {
     }];
     return [];
   });
+  for (const child of state.children) {
+    messages.push({ id: `child:${child.childId}`, role: 'assistant', parts: [{
+      type: 'subagent', subagent: {
+        id: child.childId, name: child.title, description: child.latestActivity,
+        status: child.state === 'failed' ? 'error' : (child.state === 'completed' || child.state === 'finished') ? 'finished'
+          : child.state === 'running' ? 'running' : 'suspended',
+        messages: state.selectedChildId === child.childId ? state.childTimeline.flatMap((entry): UIMessage[] =>
+          entry.kind === 'assistant' || entry.kind === 'user' ? [{
+            id: entry.itemId, role: entry.kind, parts: [{ type: 'text', content: entry.text }]
+          }] : []) : []
+      }
+    }] });
+  }
+  return messages;
 }
 
 export function assemblySpikeAdapter(ownedId: string) {

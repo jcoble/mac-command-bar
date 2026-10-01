@@ -196,6 +196,7 @@ export async function readChildConversationTranscript(input: {
   let snapshot: ConversationTranscriptSnapshot;
   try {
     snapshot = await invoke<ConversationTranscriptSnapshot>('read_agent_conversation_transcript', {
+      ownedId: input.ownedId,
       provider: input.provider,
       nativeSessionId: input.nativeSessionId,
       childSessionId: input.childSessionId

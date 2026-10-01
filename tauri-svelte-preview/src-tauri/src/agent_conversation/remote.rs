@@ -38,8 +38,9 @@ use super::protocol::{
     UpdateAgentConversationSessionMetaRequest,
 };
 use super::providers::ProviderRegistry;
+use super::transcript::TranscriptSnapshot;
 
-pub(super) const PROTOCOL_VERSION: u16 = 6;
+pub(super) const PROTOCOL_VERSION: u16 = 7;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -78,6 +79,10 @@ enum RemoteCommand {
         after_sequence: Option<i64>,
     },
     ExtendImport { owned_id: String },
+    ReadTranscript {
+        owned_id: String,
+        child_session_id: Option<String>,
+    },
     EventsBefore {
         owned_id: String,
         before_sequence: i64,
@@ -159,6 +164,7 @@ enum RemoteResponse {
     Restarting,
     Connection(AgentConversationConnection),
     Snapshot(#[serde(deserialize_with = "deserialize_wire_payload")] Option<AgentConversationSnapshot>),
+    Transcript(TranscriptSnapshot),
     EventPage(#[serde(deserialize_with = "deserialize_wire_payload")] AgentConversationEventPage),
     Capabilities(AgentCapabilities),
     Config(AgentConversationConfigState),
@@ -1576,6 +1582,26 @@ impl RemoteConnectionManager {
         Ok(rows)
     }
 
+    pub async fn read_transcript(
+        &self,
+        owned_id: String,
+        child_session_id: Option<String>,
+    ) -> Result<TranscriptSnapshot, String> {
+        let RemoteResponse::Transcript(snapshot) = self
+            .request_for_owned(
+                &owned_id,
+                RemoteCommand::ReadTranscript {
+                    owned_id: owned_id.clone(),
+                    child_session_id,
+                },
+            )
+            .await?
+        else {
+            return Err("Remote Assembly returned the wrong transcript response".into());
+        };
+        Ok(snapshot)
+    }
+
     pub async fn read_attachment_chunk(&self, owned_id: String, attachment_id: String, thumbnail: bool, offset: u64) -> Result<Vec<u8>, String> {
         let RemoteResponse::Bytes(bytes) = self.request_for_owned(&owned_id, RemoteCommand::ReadAttachmentChunk {
             owned_id: owned_id.clone(), attachment_id, thumbnail, offset,
@@ -2543,6 +2569,25 @@ async fn execute_remote_command(
             let progress = manager.extend_imported_session(&owned_id, super::IMPORT_MAX_BYTES, super::IMPORT_MAX_RECORDS)?;
             Ok(RemoteResponse::ImportProgress { added: progress.added, reached_start: progress.reached_start })
         }
+        RemoteCommand::ReadTranscript {
+            owned_id,
+            child_session_id,
+        } => {
+            let row = manager
+                .store()
+                .get_session(&owned_id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("Conversation session {owned_id} was not found"))?;
+            let native_session_id = row
+                .native_session_id
+                .ok_or_else(|| format!("Conversation session {owned_id} has no provider session"))?;
+            super::transcript::read(
+                &row.provider,
+                &native_session_id,
+                child_session_id.as_deref(),
+            )
+            .map(RemoteResponse::Transcript)
+        }
         RemoteCommand::EventsBefore {
             owned_id,
             before_sequence,
@@ -3341,6 +3386,76 @@ mod connection_tests {
             let _ = actor.await;
             server.await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn child_transcript_crosses_the_remote_socket_with_its_owner() {
+        let expected = TranscriptSnapshot {
+            messages: vec![super::super::transcript::TranscriptMessage {
+                item_id: "message-1".into(),
+                role: "assistant".into(),
+                text: "remote child answer".into(),
+                timestamp_ms: 42,
+            }],
+            ..Default::default()
+        };
+        let reply_snapshot = expected.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket.send(TungsteniteMessage::Text(serde_json::to_string(
+                &ServerFrame::Ready { protocol_version: PROTOCOL_VERSION }
+            ).unwrap().into())).await.unwrap();
+            let _resume = socket.next().await.unwrap().unwrap();
+            let readiness = socket.next().await.unwrap().unwrap();
+            assert!(matches!(
+                serde_json::from_str::<ClientFrame>(readiness.to_text().unwrap()).unwrap(),
+                ClientFrame::Request { id: READINESS_REQUEST_ID, command: RemoteCommand::ListSessions }
+            ));
+            socket.send(TungsteniteMessage::Text(serde_json::to_string(
+                &ServerFrame::Response { id: READINESS_REQUEST_ID, response: RemoteResponse::Sessions(vec![]) }
+            ).unwrap().into())).await.unwrap();
+            let request = socket.next().await.unwrap().unwrap();
+            let ClientFrame::Request { id, command } =
+                serde_json::from_str(request.to_text().unwrap()).unwrap()
+            else {
+                panic!("expected transcript request");
+            };
+            assert!(matches!(command, RemoteCommand::ReadTranscript {
+                owned_id, child_session_id: Some(child_session_id)
+            } if owned_id == "owned-remote" && child_session_id == "child-native"));
+            socket.send(TungsteniteMessage::Text(serde_json::to_string(
+                &ServerFrame::Response { id, response: RemoteResponse::Transcript(reply_snapshot) }
+            ).unwrap().into())).await.unwrap();
+        });
+
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), store(),
+        ).unwrap();
+        let (requests, mut receiver) = mpsc::channel(2);
+        let (ready_reply, ready_answer) = oneshot::channel();
+        let actor = tokio::spawn(async move {
+            client_loop(
+                format!("ws://{address}"), "test-token".into(), &mut receiver,
+                Arc::new(|_| Ok(())), Some(1), Arc::new(AtomicBool::new(false)),
+                &mut Some(ready_reply), Arc::new(|| {}),
+            ).await;
+        });
+        manager.client.lock().unwrap().clients.insert("workbox".into(), RemoteClient {
+            requests: Some(requests), profile: Some(profile("workbox")), target_key: None,
+            task: Some(actor.abort_handle()), ready: Arc::new(AtomicBool::new(true)),
+        });
+        manager.remember("owned-remote", "workbox");
+        ready_answer.await.unwrap().unwrap();
+
+        assert_eq!(manager.read_transcript(
+            "owned-remote".into(), Some("child-native".into()),
+        ).await.unwrap(), expected);
+        manager.disconnect_profile("workbox").unwrap();
+        server.await.unwrap();
+        let _ = actor.await;
     }
 
     #[tokio::test]

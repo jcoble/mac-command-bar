@@ -1,7 +1,7 @@
 mod claude;
 mod codex;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File, Metadata};
@@ -19,7 +19,7 @@ pub const RECONCILIATION_BYTES: u64 = 4 * 1024 * 1024;
 /// How much of a tool call's arguments one transcript row shows.
 const TOOL_SUMMARY_CHARS: usize = 200;
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptMessage {
     pub item_id: String,
@@ -28,7 +28,7 @@ pub struct TranscriptMessage {
     pub timestamp_ms: u64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationMetadata {
     pub model: Option<String>,
@@ -38,7 +38,7 @@ pub struct ConversationMetadata {
     pub context_window: Option<u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChildAgentDescriptor {
     pub child_id: String,
@@ -57,7 +57,7 @@ pub(crate) struct CodexChildRollout {
     pub latest_activity: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptSnapshot {
     pub messages: Vec<TranscriptMessage>,

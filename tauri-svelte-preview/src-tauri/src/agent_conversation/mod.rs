@@ -722,10 +722,15 @@ pub async fn update_agent_conversation_session_meta(
 #[tauri::command]
 /// Reads a provider transcript while keeping transcript failures in the shared shape.
 pub async fn read_agent_conversation_transcript(
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    owned_id: String,
     provider: String,
     native_session_id: String,
     child_session_id: Option<String>,
 ) -> CommandResult<transcript::TranscriptSnapshot> {
+    if remote.owns(&owned_id) {
+        return command_result(remote.read_transcript(owned_id, child_session_id).await);
+    }
     command_result(transcript::read(
         &provider,
         &native_session_id,
