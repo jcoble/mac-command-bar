@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { setContext } from 'svelte';
+  import { conversationMessagesContext, type ConversationMessagesContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import { remoteWorkspacePath } from '$lib/workspacePaths';
   import { readRemoteAssemblyEnvironmentFromTauri, type RemoteAssemblyProfile } from '$lib/tauriSource';
   import { untrack } from 'svelte';
@@ -62,10 +64,10 @@
     latestPlan,
     turnActivityLabel,
     turnFileChanges,
-    typedConversationTimeline,
     type ConversationDisplayItem,
     type ConversationFileLinkProvenance
   } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { conversationDisplayItems } from '$lib/shell/conversation/conversationMessages.ts';
   import { contextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
   import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
   import {
@@ -129,7 +131,15 @@
   const selectedChild = $derived(conversation && conversation.selectedChildId
     ? conversation.children.find((child) => child.childId === conversation.selectedChildId) ?? null
     : null);
-  const legacyTimeline = $derived(conversation?.selectedChildId ? conversation.childTimeline : conversation?.timeline ?? []);
+  const transcriptMessages = $derived.by(() => {
+    if (!conversation) return [];
+    conversation.timelineRevision;
+    return (conversation.selectedChildId ? conversation.childTranscript : conversation.transcript).getMessages();
+  });
+  const transcriptMessagesById = $derived(new Map(transcriptMessages.map((message) => [message.id, message])));
+  setContext<ConversationMessagesContext>(conversationMessagesContext, {
+    get messages() { return transcriptMessagesById; }
+  });
   let previousTimelineKey = '';
   let previousVisibleTimeline: ConversationDisplayItem[] = [];
   const visibleTimeline = $derived.by((): ConversationDisplayItem[] => {
@@ -139,29 +149,13 @@
       previousTimelineKey = timelineKey;
       previousVisibleTimeline = [];
     }
-    if (conversation.selectedChildId) {
-      previousVisibleTimeline = typedConversationTimeline([], legacyTimeline, {}, previousVisibleTimeline);
-      return previousVisibleTimeline;
-    }
-    const items = typedConversationTimeline(
-      conversation.agentItems,
-      legacyTimeline,
-      {},
+    previousVisibleTimeline = conversationDisplayItems(
+      transcriptMessages,
       previousVisibleTimeline,
-      conversation.sentAttachments
-    );
-    const now = items.reduce((latest, item) => Math.max(latest, item.timestampMs), 0) + 1;
-    const typedKinds = new Set(items.map((item) => item.kind));
-    if (conversation.planSteps.length && !typedKinds.has('plan')) {
-      items.push({ kind: 'plan', itemId: 'plan:current', turnId: conversation.activeTurnId ?? null, title: 'Plan', steps: conversation.planSteps, timestampMs: now });
-    }
-    if (conversation.tasks.length && !typedKinds.has('tasks')) {
-      items.push({ kind: 'tasks', itemId: 'tasks:current', turnId: conversation.activeTurnId ?? null, title: 'Tasks', tasks: conversation.tasks, timestampMs: now });
-    }
-    // Live requests render inline above the composer, keeping their response
-    // controls attached to the prompt. Resolved requests remain in the
-    // normalized transcript returned above.
-    previousVisibleTimeline = items.sort((left, right) => left.timestampMs - right.timestampMs);
+      conversation.selectedChildId ? {} : conversation.sentAttachments
+    ).filter((item) => conversation.selectedChildId
+      || (item.kind !== 'approval' || !conversation.pendingApprovals[item.requestId])
+        && (item.kind !== 'input' || !conversation.pendingInputs[item.requestId]));
     return previousVisibleTimeline;
   });
   const activePlan = $derived(latestPlan(visibleTimeline));

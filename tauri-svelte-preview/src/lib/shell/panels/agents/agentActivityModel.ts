@@ -12,10 +12,9 @@
  * and `0` means we looked and the transcript was empty. The panel shows blank
  * for the first and a real zero for the second.
  */
-import type {
-  ConversationChildAgent,
-  ConversationTimelineEntry
-} from '../../conversation/conversationTypes.ts';
+import type { UIMessage } from '@tanstack/ai/client';
+import type { ConversationChildAgent } from '../../conversation/conversationTypes.ts';
+import { conversationMessageDisplayItem } from '../../conversation/conversationMessages.ts';
 
 export type AgentStatus = 'working' | 'done' | 'failed' | 'idle';
 
@@ -57,29 +56,30 @@ function firstLine(text: string): string {
  * One line describing a single timeline entry, or '' when that entry says
  * nothing a person would want on a one-line summary.
  */
-function lineFor(entry: ConversationTimelineEntry): string {
+function lineFor(message: UIMessage): string {
+  const entry = conversationMessageDisplayItem(message);
   switch (entry.kind) {
     case 'user':
       return '';
     case 'assistant':
       return firstLine(entry.text);
     case 'tool':
-      if (entry.state === 'failed') return firstLine(`${entry.name} failed`);
-      if (entry.state === 'completed') return firstLine(`Finished ${entry.name}`);
-      return firstLine(`Running ${entry.name}`);
+      if (entry.state === 'failed') return firstLine(`${entry.title} failed`);
+      if (entry.state === 'completed') return firstLine(`Finished ${entry.title}`);
+      return firstLine(`Running ${entry.title}`);
     case 'approval':
-      return entry.state === 'requested' ? 'Waiting for approval' : firstLine(entry.summary);
+      return entry.state === 'requested' ? 'Waiting for approval' : firstLine(entry.summary ?? '');
     case 'plan':
       return 'Working through a plan';
     case 'error':
-      return firstLine(entry.message);
+      return firstLine(entry.text);
     default:
       return '';
   }
 }
 
 /** The newest entry that describes something, searching backwards. */
-function activityFrom(timeline: readonly ConversationTimelineEntry[]): string {
+function activityFrom(timeline: readonly UIMessage[]): string {
   for (let index = timeline.length - 1; index >= 0; index -= 1) {
     const line = lineFor(timeline[index]);
     if (line) return line;
@@ -91,7 +91,7 @@ function activityFrom(timeline: readonly ConversationTimelineEntry[]): string {
  *  `timelineByChild` supplies a count only for children whose transcript has been read. */
 export function agentActivityRows(
   children: readonly ConversationChildAgent[],
-  timelineByChild: Readonly<Record<string, readonly ConversationTimelineEntry[]>>
+  timelineByChild: Readonly<Record<string, readonly UIMessage[]>>
 ): AgentActivityRow[] {
   return [...children]
     .sort((left, right) => right.updatedAtMs - left.updatedAtMs)

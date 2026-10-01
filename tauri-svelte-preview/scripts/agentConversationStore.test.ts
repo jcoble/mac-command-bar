@@ -8,7 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { compileModule } from 'svelte/compiler';
 import { get } from 'svelte/store';
 import { applyConversationEvent, createConversationState, shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
-import { mergeAgentItem, typedConversationTimeline } from '../src/lib/shell/conversation/conversationTimeline.ts';
+import { conversationDisplayItems } from '../src/lib/shell/conversation/conversationMessages.ts';
+import type { ConversationSessionState } from '../src/lib/shell/conversation/conversationTypes.ts';
+const display = (state: ConversationSessionState) => conversationDisplayItems(state.transcript.getMessages());
 import { sessionPresenceHistory, sessionPresenceEventFromConversation, synchronizeSessionPresenceWork, deriveSessionPresence, EMPTY_SESSION_PRESENCE_HISTORY } from '../src/lib/shell/conversation/sessionPresence.ts';
 import { onWorkspaceFileChange } from '../src/lib/shell/workspaceFileChangeBus.ts';
 
@@ -157,7 +159,7 @@ assert.equal(store.getConversationSession('owned-a').metadata.model, 'gpt-5.6-so
 // WIP: disabled. The child record field is `title` since 81962044.
 // assert.equal(store.getConversationSession('owned-a').children[0].label, 'Reviewer');
 assert.equal(store.getConversationSession('owned-a').attachments[0].path, '/managed/a.png');
-assert.equal(store.getConversationSession('owned-a').childTimeline[0].text, 'Child A');
+assert.equal(conversationDisplayItems(store.getConversationSession('owned-a').childTranscript.getMessages())[0].text, 'Child A');
 assert.equal(store.getConversationSession('owned-a').scrollTop, 240);
 assert.equal(store.getConversationSession('owned-b').metadata.model, null);
 assert.equal(store.getConversationSession('owned-b').children.length, 0);
@@ -184,8 +186,8 @@ store.applyAgentConversationEvent({
   timestampMs: 100,
   payload: { kind: 'assistantMessage', itemId: 'a-1', text: 'Only A', completed: true }
 });
-assert.equal(store.getConversationSession('owned-a').timeline.length, 2);
-assert.equal(store.getConversationSession('owned-b').timeline.length, 0);
+assert.equal(display(store.getConversationSession('owned-a')).length, 2);
+assert.equal(display(store.getConversationSession('owned-b')).length, 0);
 
 // A completed structured file edit publishes its retained path once, even
 // when the provider's completion update omits the path and diff.
@@ -312,7 +314,7 @@ store.applyAgentConversationSnapshot({
 });
 assert.equal(store.getConversationSession('owned-a').suspended, true);
 assert.deepEqual(
-  store.getConversationSession('owned-a').timeline.map((item: { text: any; }) => item.text),
+  display(store.getConversationSession('owned-a')).map((item: { text: any; }) => item.text),
   ['Visible question', 'Visible answer']
 );
 assert.equal(store.getConversationSession('owned-a').desynchronized, false);
@@ -334,13 +336,13 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
   store.applyAgentConversationEvent(toolUpdate);
   const beforeRepair = store.getConversationSession(ownedId);
   assert.equal(beforeRepair.desynchronized, true);
-  assert.deepEqual(beforeRepair.timeline.map((item: { itemId: string }) => item.itemId), ['prior']);
-  assert.deepEqual(beforeRepair.agentItems.map((item: { id: string }) => item.id), ['prior']);
+  assert.deepEqual(display(beforeRepair).map((item: { itemId: string }) => item.itemId), ['prior']);
+  assert.deepEqual(beforeRepair.transcript.getMessages().map((item: { id: string }) => item.id), ['prior']);
   store.applyAgentConversationSnapshot({ connection, lastSequence: 4, events: [first, missing, toolStart, toolUpdate] });
   const repaired = store.getConversationSession(ownedId);
   assert.equal(repaired.desynchronized, false);
-  assert.deepEqual(repaired.timeline.map((item: { itemId: string }) => item.itemId), ['prior', 'question', 'tool']);
-  assert.equal(repaired.timeline.find((item: { itemId: string }) => item.itemId === 'tool')?.output, 'done');
+  assert.deepEqual(display(repaired).map((item: { itemId: string }) => item.itemId), ['prior', 'question', 'tool']);
+  assert.equal(display(repaired).find((item: { itemId: string }) => item.itemId === 'tool')?.output, 'done');
 }
 
 // A session picked up from a past Claude or Codex transcript stores every event
@@ -426,12 +428,12 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
 
   const imported = store.getConversationSession('owned-imported');
   assert.deepEqual(
-    imported.agentItems.map((item: { type: any; }) => item.type),
+    imported.transcript.getMessages().map((item) => item.metadata.itemType),
     ['user-message', 'assistant-message'],
     'restore must type an imported transcript the way the live path does'
   );
   assert.deepEqual(
-    imported.agentItems.map((item: { content: any[]; }) => item.content.map((part: { text: any; }) => part.text).join('')),
+    imported.transcript.getMessages().map((item) => item.parts.map((part) => part.content ?? '').join('')),
     ['Imported question', 'Imported answer'],
     'a restored imported transcript keeps its text instead of becoming empty unknown items'
   );
@@ -507,7 +509,7 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
   assert.equal(store.getConversationSession('owned-reensured').generation, 2);
   assert.equal(store.getConversationSession('owned-reensured').writerLease.generation, 2);
   assert.deepEqual(
-    store.getConversationSession('owned-reensured').timeline.map((item: { text: any; }) => item.text),
+    display(store.getConversationSession('owned-reensured')).map((item: { text: any; }) => item.text),
     ['Earlier question', 'Earlier answer']
   );
 }
@@ -555,12 +557,12 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
       }
     ]
   });
-  const assistantRows = store.getConversationSession('owned-nonconsecutive-replay').timeline
+  const assistantRows = display(store.getConversationSession('owned-nonconsecutive-replay'))
     .filter((item: { kind: string; }) => item.kind === 'assistant');
   assert.equal(assistantRows.length, 1);
   assert.equal(assistantRows[0].text, 'Complete answer');
-  assert.equal(store.getConversationSession('owned-nonconsecutive-replay').agentItems.length, 1);
-  assert.equal(store.getConversationSession('owned-nonconsecutive-replay').agentItems[0].content[0].text, 'Complete answer');
+  assert.equal(store.getConversationSession('owned-nonconsecutive-replay').transcript.getMessages().length, 1);
+  assert.equal(store.getConversationSession('owned-nonconsecutive-replay').transcript.getMessages()[0].parts[0].content, 'Complete answer');
 }
 
 // Live deltas mutate only the touched leaves and advance a cheap numeric revision.
@@ -582,8 +584,7 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
   });
   const before = store.getConversationSession(ownedId);
   const metadata = before.metadata;
-  const agentItems = before.agentItems;
-  const settledItem = before.agentItems[0];
+  const settledItem = before.transcript.getMessages()[0];
   const revision = before.timelineRevision;
   store.applyAgentConversationEvent({
     ownedId, provider: a.provider, generation: 1, sequence: 3, timestampMs: 720,
@@ -592,23 +593,9 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
   const after = store.getConversationSession(ownedId);
   assert.equal(after, before);
   assert.equal(after.metadata, metadata);
-  assert.equal(after.agentItems, agentItems);
-  assert.equal(after.agentItems[0], settledItem);
+  assert.equal(after.transcript, before.transcript);
+  assert.equal(after.transcript.getMessages()[0], settledItem);
   assert.equal(after.timelineRevision, revision + 1);
-}
-
-// Completing an already-complete stable item is an idempotent merge.
-{
-  const complete = {
-    id: 'complete-once',
-    type: 'assistant-message' as const,
-    content: [{ channel: 'assistant' as const, text: 'One copy' }],
-    providerMetadata: { completed: true as const }
-  };
-  const once = mergeAgentItem([], complete, false);
-  const twice = mergeAgentItem(once, complete, false);
-  assert.equal(twice.length, 1);
-  assert.equal(twice[0], once[0]);
 }
 
 // A bounded tail snapshot begins after omitted journal rows without marking
@@ -637,13 +624,13 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
     ]
   });
   assert.equal(store.getConversationSession('owned-windowed').desynchronized, false);
-  assert.equal(store.getConversationSession('owned-windowed').timeline[0].text, 'Recent question');
+  assert.equal(display(store.getConversationSession('owned-windowed'))[0].text, 'Recent question');
   assert.equal(get(sessionPresenceHistory)['owned-windowed'], presenceBefore);
 }
 
 // Re-applying the same snapshot is a read repair, not another stream of deltas.
-// This is the session-row re-entry regression: the legacy timeline was rebuilt,
-// but typed assistant items were retained and received the same delta again.
+// Session-row re-entry rebuilds the canonical transcript once, so retained
+// assistant items cannot receive the same delta a second time.
 {
   const replayedSnapshot = {
     connection: {
@@ -667,8 +654,8 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
   };
   store.applyAgentConversationSnapshot(replayedSnapshot);
   store.applyAgentConversationSnapshot(replayedSnapshot);
-  assert.equal(store.getConversationSession('owned-replayed').timeline[0].text, 'One answer');
-  assert.equal(store.getConversationSession('owned-replayed').agentItems[0].content[0].text, 'One answer');
+  assert.equal(display(store.getConversationSession('owned-replayed'))[0].text, 'One answer');
+  assert.equal(store.getConversationSession('owned-replayed').transcript.getMessages()[0].parts[0].content, 'One answer');
   assert.equal(store.getConversationSession('owned-replayed').recentEvents.length, 2);
 }
 
@@ -699,12 +686,12 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
       }
     ]
   });
-  assert.equal(store.getConversationSession('owned-poisoned').timeline[0].text, 'Recovered answer');
-  assert.equal(store.getConversationSession('owned-poisoned').agentItems[0].content[0].text, 'Recovered answer');
+  assert.equal(display(store.getConversationSession('owned-poisoned'))[0].text, 'Recovered answer');
+  assert.equal(store.getConversationSession('owned-poisoned').transcript.getMessages()[0].parts[0].content, 'Recovered answer');
 }
 
-// Snapshot replay combines stored streaming chunks before rebuilding the two
-// display projections. The final answer stays identical without allocating
+// Snapshot replay combines stored streaming chunks before rebuilding the
+// canonical transcript. The final answer stays identical without allocating
 // every intermediate string that was visible only while the answer was live.
 {
   const ownedId = 'owned-streamed-snapshot';
@@ -729,8 +716,8 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
   });
   const restored = store.getConversationSession(ownedId);
   const expected = chunks.join('');
-  assert.equal(restored.timeline[0].text, expected);
-  assert.equal(restored.agentItems[0].content[0].text, expected);
+  assert.equal(display(restored)[0].text, expected);
+  assert.equal(restored.transcript.getMessages()[0].parts[0].content, expected);
   assert.equal(restored.loadedEvents.length, chunks.length);
 }
 
@@ -767,9 +754,9 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
     ]
   });
   const restored = store.getConversationSession(ownedId);
-  assert.equal(restored.timeline[0].name, 'Apply file changes');
-  assert.equal(restored.timeline[0].state, 'completed');
-  assert.equal(restored.timeline[0].diff, '-old\n+final');
+  assert.equal(restored.transcript.getMessages()[0].parts.find((part) => part.type === 'tool-call')?.name, 'Apply file changes');
+  assert.equal(display(restored)[0].state, 'completed');
+  assert.equal(display(restored)[0].diff, '-old\n+final');
   assert.equal(restored.loadedEvents.filter((event: AgentConversationEvent) => event.payload.kind === 'tool').length, 2);
 }
 
@@ -805,10 +792,10 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
   store.applyAgentConversationSnapshot(snapshot);
   store.applyAgentConversationSnapshot(snapshot);
   const restored = store.getConversationSession(ownedId);
-  assert.equal(restored.timeline.length, 400);
-  assert.equal(restored.agentItems.length, 400);
+  assert.equal(display(restored).length, 400);
+  assert.equal(restored.transcript.getMessages().length, 400);
   assert.equal(restored.recentEvents.length, 200);
-  assert.equal(restored.agentItems.at(-1).content[0].text, 'Answer 199');
+  assert.equal(restored.transcript.getMessages().at(-1).parts[0].content, 'Answer 199');
 }
 
 // A stale snapshot cannot replace a newer generation.
@@ -843,7 +830,7 @@ assert.equal(store.getConversationSession('owned-a').connectionState, 'reconnect
   store.applyAgentConversationSnapshot(staleSnapshot);
   const current = store.getConversationSession(ownedId);
   assert.equal(current.lastSequence, 41);
-  assert.equal(current.timeline.some((item: { itemId: string }) => item.itemId === 'live-41'), true);
+  assert.equal(display(current).some((item: { itemId: string }) => item.itemId === 'live-41'), true);
 }
 
 // A stale connection response cannot move an existing session backwards.
@@ -868,7 +855,7 @@ assert.equal(store.getConversationSession('owned-a').connectionState, 'reconnect
   const current = store.getConversationSession(ownedId);
   assert.equal(current.provider, 'codex');
   assert.equal(current.draft, 'Keep this draft');
-  assert.equal(current.timeline.length, 0);
+  assert.equal(display(current).length, 0);
 }
 
 // Capabilities belong only to the generation that requested them.
@@ -925,8 +912,8 @@ assert.equal(store.getConversationSession('owned-a').connectionState, 'reconnect
   assert.equal(store.applyAgentConversationEvent(projectedEvent), true);
   const current = store.getConversationSession('owned-projection');
   assert.equal(current.lastSequence, 1);
-  assert.equal(current.agentItems.length, 1);
-  assert.equal(current.agentItems[0].content[0].text, 'Projected answer');
+  assert.equal(current.transcript.getMessages().length, 1);
+  assert.equal(current.transcript.getMessages()[0].parts[0].content, 'Projected answer');
 
   const staleProjection = {
     ...projectedEvent,
@@ -943,7 +930,7 @@ assert.equal(store.getConversationSession('owned-a').connectionState, 'reconnect
   };
   assert.equal(store.applyAgentConversationEvent(staleProjection), false);
   assert.equal(current.lastSequence, 1);
-  assert.equal(current.agentItems.length, 1);
+  assert.equal(current.transcript.getMessages().length, 1);
 }
 
 const saved = store.captureConversationWorkspace('owned-b');
@@ -1086,10 +1073,10 @@ await test('snapshot reads top up overlapping live events and keep streaming aft
     await Promise.all([opening, first, second, duplicate]);
     assert.equal(readCount, 1, 'a late snapshot with a contiguous suffix needs only one read');
     assert.equal(store.getConversationSession(ownedId).desynchronized, false);
-    assert.equal(store.getConversationSession(ownedId).timeline[0].text, 'ABC');
+    assert.equal(display(store.getConversationSession(ownedId))[0].text, 'ABC');
     assert.deepEqual(store.getConversationSession(ownedId).loadedEvents.map((event: AgentConversationEvent) => event.sequence), [9, 10, 11]);
     await service.handleConversationStreamEnvelope(1, { chunk: event(12, 'D') });
-    assert.equal(store.getConversationSession(ownedId).timeline[0].text, 'ABCD');
+    assert.equal(display(store.getConversationSession(ownedId))[0].text, 'ABCD');
     assert.equal(service.resyncing.size, 0, 'completed reads release their buffers');
     synchronizeSessionPresenceWork(ownedId, 'buffered-turn', true);
     const finishingRead = service.loadConversationForRead(ownedId, false);
@@ -1353,14 +1340,14 @@ assert.ok(store.getConversationSession('owned-b'));
   });
   const current = store.getConversationSession(ownedId);
   assert.deepEqual(
-    typedConversationTimeline(current.agentItems, current.timeline).map((item) => item.itemId),
+    display(current).map((item) => item.itemId),
     ['tool-a', 'message-a'],
     'the tool does not jump past a later message when its opening event leaves the window'
   );
-  assert.equal(current.agentItems.find((item: { id: string }) => item.id === 'tool-a')?.providerMetadata?.startedAtMs, 100);
+  assert.equal(current.transcript.getMessages().find((item: { id: string }) => item.id === 'tool-a')?.metadata?.startedAtMs, 100);
 
   const replayed = [opening, middle, completion].reduce(applyConversationEvent, createConversationState(ownedId, 'codex'));
-  assert.equal(replayed.timeline.find((item) => item.itemId === 'tool-a')?.timestampMs, 100);
+  assert.equal(display(replayed).find((item) => item.itemId === 'tool-a')?.timestampMs, 100);
 
   const pagedOwnedId = 'owned-tool-start-in-older-page';
   store.applyAgentConversationSnapshot({
@@ -1373,7 +1360,7 @@ assert.ok(store.getConversationSession('owned-b'));
     hasMore: false
   });
   assert.equal(
-    store.getConversationSession(pagedOwnedId).agentItems.find((item: { id: string }) => item.id === 'tool-a')?.providerMetadata?.startedAtMs,
+    store.getConversationSession(pagedOwnedId).transcript.getMessages().find((item: { id: string }) => item.id === 'tool-a')?.metadata?.startedAtMs,
     100,
     'loading the actual opening event moves the tool back to its true earlier position'
   );
@@ -1422,15 +1409,15 @@ assert.ok(store.getConversationSession('owned-b'));
 
   const paged = store.getConversationSession('owned-paged');
   assert.deepEqual(
-    paged.timeline.map((entry: { text: any; }) => entry.text),
+    display(paged).map((entry: { text: any; }) => entry.text),
     ['Older question', 'Older answer', 'Newer question', 'Newer answer'],
     'an older page lands in front of the transcript already on screen'
   );
   assert.deepEqual(
-    paged.agentItems.map((item: { content: any[]; }) => item.content.map((part: { text: any; }) => part.text).join('')),
+    paged.transcript.getMessages().map((item) => item.parts.map((part) => part.content ?? '').join('')),
     ['Older question', 'Older answer', 'Newer question', 'Newer answer']
   );
-  const itemIds = paged.timeline.map((entry: { itemId: any; }) => entry.itemId);
+  const itemIds = display(paged).map((entry: { itemId: any; }) => entry.itemId);
   assert.equal(new Set(itemIds).size, itemIds.length, 'no row is drawn twice');
   assert.equal(paged.oldestLoadedSequence, 9);
   assert.equal(paged.reachedTranscriptStart, false);
@@ -1444,7 +1431,7 @@ assert.ok(store.getConversationSession('owned-b'));
   });
   const deduped = store.getConversationSession('owned-paged');
   assert.deepEqual(
-    deduped.timeline.map((entry: { text: any; }) => entry.text),
+    display(deduped).map((entry: { text: any; }) => entry.text),
     ['Older question', 'Older answer', 'Newer question', 'Newer answer']
   );
   assert.equal(deduped.oldestLoadedSequence, 8);
@@ -1542,7 +1529,7 @@ assert.ok(store.getConversationSession('owned-b'));
 
   const negative = store.getConversationSession('owned-negative');
   assert.deepEqual(
-    negative.timeline.map((entry: { text: any; }) => entry.text),
+    display(negative).map((entry: { text: any; }) => entry.text),
     [
       'Question from the transcript',
       'Answer from the transcript',
@@ -1575,7 +1562,7 @@ assert.ok(store.getConversationSession('owned-b'));
     ownedId, provider: 'claude', generation: 1, sequence: 2, timestampMs: 910,
     payload: { kind: 'usage', usedTokens: 22_202, contextWindow: 400_000 }
   });
-  const compactions = store.getConversationSession(ownedId).timeline
+  const compactions = display(store.getConversationSession(ownedId))
     .filter((entry: { kind: string; }) => entry.kind === 'compaction');
   assert.equal(compactions.length, 1, 'a window falling to a fraction of itself is a compaction');
   assert.equal(compactions[0].preTokens, 351_238);
@@ -1602,7 +1589,7 @@ assert.ok(store.getConversationSession('owned-b'));
     payload: { kind: 'usage', usedTokens: 300_000 }
   });
   assert.equal(
-    store.getConversationSession(ownedId).timeline.filter((entry: { kind: string; }) => entry.kind === 'compaction').length,
+    display(store.getConversationSession(ownedId)).filter((entry: { kind: string; }) => entry.kind === 'compaction').length,
     0
   );
 }
@@ -1630,7 +1617,7 @@ assert.ok(store.getConversationSession('owned-b'));
     ]
   });
   assert.deepEqual(
-    store.getConversationSession(ownedId).timeline.map((entry: { kind: any; }) => entry.kind),
+    display(store.getConversationSession(ownedId)).map((entry: { kind: any; }) => entry.kind),
     ['compaction', 'assistant'],
     'replayed history marks the boundary where the live session did'
   );
@@ -1650,7 +1637,7 @@ assert.ok(store.getConversationSession('owned-b'));
       }
     ]
   });
-  const timeline = store.getConversationSession(ownedId).timeline;
+  const timeline = display(store.getConversationSession(ownedId));
   assert.deepEqual(timeline.map((entry: { kind: any; }) => entry.kind), ['compaction']);
   assert.equal(timeline[0].trigger, 'auto');
   assert.equal(timeline[0].preTokens, undefined);
@@ -1724,7 +1711,7 @@ await test('journal payloads stay plain across live events, snapshots, paging an
     assert.equal(state.loadedEvents[index], original, 'paging must not retain reactive event wrappers');
     assert.equal(state.loadedEvents[index].payload, original.payload);
   });
-  assert.deepEqual(state.timeline.map((entry: { text: string }) => entry.text), ['Message 2', 'Message 3', 'Message 4']);
+  assert.deepEqual(display(state).map((entry: { text: string }) => entry.text), ['Message 2', 'Message 3', 'Message 4']);
   store.applyConversationTranscript(ownedId, 'codex', { messages: [], metadata: state.metadata, children: [] });
   assert.equal(store.getConversationSession(ownedId).loadedEvents[0], older);
   store.evictConversationSession(ownedId);

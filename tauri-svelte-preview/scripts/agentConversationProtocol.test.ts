@@ -2,13 +2,15 @@ import assert from 'node:assert/strict';
 
 import {
   applyConversationEvent,
-  createConversationState,
-  importConversationHistory
+  createConversationState
 } from '../src/lib/shell/conversation/conversationReducer.ts';
+import { conversationDisplayItems } from '../src/lib/shell/conversation/conversationMessages.ts';
+import type { AgentConversationEvent, ConversationSessionState } from '../src/lib/shell/conversation/conversationTypes.ts';
+const display = (state: ConversationSessionState) => conversationDisplayItems(state.transcript.getMessages());
 import { configOptionPlacement } from '../src/lib/shell/conversation/conversationTypes.ts';
 import { decideConversationActivation } from '../src/lib/shell/conversation/conversationActivation.ts';
 
-const event = (overrides = {}) => ({
+const event = (overrides: Partial<AgentConversationEvent> = {}): AgentConversationEvent => ({
   ownedId: 'owned-a',
   provider: 'codex',
   generation: 1,
@@ -47,8 +49,8 @@ const event = (overrides = {}) => ({
     payload: { kind: 'assistantDelta', itemId: 'assistant-1', delta: 'Missing sequence three' }
   }));
   assert.equal(state.desynchronized, true);
-  assert.equal(state.timeline.length, 1);
-  assert.equal(state.timeline[0].text, 'Keep this');
+  assert.equal(display(state).length, 1);
+  assert.equal(display(state)[0].text, 'Keep this');
 }
 
 // Assistant deltas append to one item and completion seals the authoritative text.
@@ -66,7 +68,8 @@ const event = (overrides = {}) => ({
     sequence: 4,
     payload: { kind: 'assistantMessage', itemId: 'assistant-1', text: 'Hello world', completed: true }
   }));
-  assert.deepEqual(state.timeline[0], {
+  const { metadata, turnId, blocks, ...answer } = display(state)[0];
+  assert.deepEqual(answer, {
     kind: 'assistant',
     itemId: 'assistant-1',
     text: 'Hello world',
@@ -92,25 +95,9 @@ const event = (overrides = {}) => ({
       items: [{ text: 'Inspect the change', status: 'completed' }]
     }
   }));
-  assert.deepEqual(state.timeline[0], {
-    kind: 'plan',
-    itemId: 'plan:1',
-    items: [{ text: 'Inspect the change', status: 'completed' }],
-    timestampMs: 1_000
-  });
-}
-
-// Provider history is imported once by native item identity.
-{
-  const state = createConversationState('owned-a', 'codex');
-  const history = [
-    { kind: 'user', itemId: 'user-1', text: 'Question', completed: true, timestampMs: 100 },
-    { kind: 'assistant', itemId: 'assistant-1', text: 'Answer', completed: true, timestampMs: 200 }
-  ];
-  const once = importConversationHistory(state, history);
-  const twice = importConversationHistory(once, history);
-  assert.equal(once.timeline.length, 2);
-  assert.equal(twice.timeline.length, 2);
+  const plan = display(state).at(-1);
+  assert.equal(plan?.kind, 'plan');
+  assert.deepEqual(plan?.steps.map((step) => ({ title: step.title, state: step.state })), [{ title: 'Inspect the change', state: 'completed' }]);
 }
 
 // A connected structured runtime is a pure view switch. Only a stopped,
@@ -155,15 +142,16 @@ const event = (overrides = {}) => ({
 
 // A provider error is additive and does not clear completed messages.
 {
-  let state = importConversationHistory(createConversationState('owned-a', 'codex'), [
-    { kind: 'assistant', itemId: 'assistant-1', text: 'Still here', completed: true, timestampMs: 100 }
-  ]);
+  let state = applyConversationEvent(createConversationState('owned-a', 'codex'), event({
+    payload: { kind: 'assistantMessage', itemId: 'assistant-1', text: 'Still here', completed: true }
+  }));
   state = applyConversationEvent(state, event({
+    sequence: 2,
     payload: { kind: 'error', code: 'connection_lost', message: 'Reconnect', recoverable: true }
   }));
-  assert.equal(state.timeline[0].text, 'Still here');
-  assert.equal(state.timeline[1].kind, 'error');
-  assert.equal(state.timeline[1].recoverable, true);
+  assert.equal(display(state)[0].text, 'Still here');
+  assert.equal(display(state)[1].kind, 'error');
+  assert.equal(display(state)[1].metadata?.recoverable, true);
 }
 
 // Known categories get their fixed controls and future categories remain generic.

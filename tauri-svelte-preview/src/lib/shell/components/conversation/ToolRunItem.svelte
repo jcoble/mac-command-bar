@@ -12,6 +12,8 @@
   import Terminal from '@lucide/svelte/icons/terminal';
   import Wrench from '@lucide/svelte/icons/wrench';
   import FileChangeItem from './FileChangeItem.svelte';
+  import ConversationToolUI from './ConversationToolUI.svelte';
+  import ToolItem from './ToolItem.svelte';
   import ReasoningItem from './ReasoningItem.svelte';
   import SubagentSection from './SubagentSection.svelte';
   import { toolFilePath, type ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
@@ -389,37 +391,7 @@
   }
 </script>
 
-<div class="tool-run-item" data-testid="tool-run-item">
-  {#if item.items.length > 1}
-  <button
-    class="run-header"
-    type="button"
-    aria-expanded={runOpen}
-    onclick={() => (runOpen = !runOpen)}
-  >
-    <span class="run-icon">
-      {#if item.icon === 'pencil'}
-        <Pencil size={13} />
-      {:else if item.icon === 'book'}
-        <BookOpen size={13} />
-      {:else if item.icon === 'terminal'}
-        <Terminal size={13} />
-      {:else if item.icon === 'search'}
-        <Search size={13} />
-      {:else}
-        <Sparkles size={13} />
-      {/if}
-    </span>
-    <span class="run-summary">{item.summary}</span>
-    <span class="chevron-wrap" class:open={runOpen}>
-      <ChevronRight size={13} />
-    </span>
-  </button>
-  {/if}
-
-  {#if runOpen || item.items.length === 1}
-    <div class:run-body={item.items.length > 1}>
-      {#each item.items as subItem (subItem.itemId)}
+{#snippet renderRunItem(subItem: ConversationDisplayItem)}
         {#if subItem.kind === 'reasoning'}
           <div class="sub-row">
             <ReasoningItem item={subItem} {onFileLink} />
@@ -476,7 +448,7 @@
               onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCommand(subItem.itemId); } }}
             >
               <Terminal size={13} class="item-icon" />
-              <span class="item-label">Ran {info.title}</span>
+              <span class="item-label">{subItem.kind === 'tool' && subItem.state === 'running' ? 'Running' : 'Ran'} {info.title}</span>
               <span class="chevron-wrap" class:open={expandedCommands[subItem.itemId]}>
                 <ChevronRight size={12} />
               </span>
@@ -498,7 +470,7 @@
                     {/if}
                   </button>
                 </div>
-                <pre class="shell-pre"><code>{#if info.command}$ {info.command}{'\n'}{/if}{info.output || '(completed with no output)'}</code></pre>
+                <pre class="shell-pre"><code>{#if info.command}$ {info.command}{'\n'}{/if}{info.output || (subItem.kind === 'tool' && subItem.state === 'running' ? 'Running…' : '(completed with no output)')}</code></pre>
               </div>
             {/if}
           </div>
@@ -561,6 +533,8 @@
               </span>
             </div>
           </div>
+        {:else if subItem.kind === 'tool'}
+          <ToolItem item={subItem} {onFileLink} />
         {:else}
           <div class="sub-row generic-sub-row">
             <div class="sub-item-header non-clickable">
@@ -568,6 +542,48 @@
               <span class="item-label">{getGenericToolLabel(subItem)}</span>
             </div>
           </div>
+        {/if}
+{/snippet}
+
+<div class="tool-run-item" data-testid="tool-run-item">
+  {#if item.items.length > 1}
+  <button
+    class="run-header"
+    type="button"
+    aria-expanded={runOpen}
+    onclick={() => (runOpen = !runOpen)}
+  >
+    <span class="run-icon">
+      {#if item.icon === 'pencil'}
+        <Pencil size={13} />
+      {:else if item.icon === 'book'}
+        <BookOpen size={13} />
+      {:else if item.icon === 'terminal'}
+        <Terminal size={13} />
+      {:else if item.icon === 'search'}
+        <Search size={13} />
+      {:else}
+        <Sparkles size={13} />
+      {/if}
+    </span>
+    <span class="run-summary">{item.summary}</span>
+    <span class="chevron-wrap" class:open={runOpen}>
+      <ChevronRight size={13} />
+    </span>
+  </button>
+  {/if}
+
+  {#if runOpen || item.items.length === 1}
+    <div class:run-body={item.items.length > 1}>
+      {#each item.items as subItem (subItem.itemId)}
+        {#if subItem.kind === 'tool'}
+          <ConversationToolUI itemId={subItem.itemId} {onFileLink}>
+            {#snippet children(tool)}
+              {@render renderRunItem(tool)}
+            {/snippet}
+          </ConversationToolUI>
+        {:else}
+          {@render renderRunItem(subItem)}
         {/if}
       {/each}
     </div>
