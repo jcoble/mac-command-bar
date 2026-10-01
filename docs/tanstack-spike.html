@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en">
 <head>
+  <base href="file:///home/blackcolours/Workbox/from-box/">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>TanStack AI client spike — Assembly</title>
@@ -25,6 +26,48 @@
   </style>
 </head>
 <body>
+<section id="continuation">
+<h1>Continuation: recovery improved; memory gate failed</h1>
+<p class="decision"><strong>Keep Assembly’s current chat. Do not start the full TanStack port.</strong> The continuation reproduced and repaired the missing-text reset in the prototype, and exercised the actual adapter. Both native views failed the declared memory plateau check. That is evidence against proceeding now, not proof that TanStack caused a leak.</p>
+<p class="small">Proof links in this workbox source resolve to <code>/home/blackcolours/Workbox/from-box/</code>. The owner’s portable report copy is <code>/Volumes/workbox/Workbox/from-box/tanstack-spike-report-2026-09-30.html</code>; that copy uses relative links within the shared folder.</p>
+<p class="small">TSK-1320 · 30 September 2026, evening EDT · prior prototype commit 4069e01ba · separate isolated app, unchanged Rust/backend/schema · no PR or merge.</p>
+<h2>What the original directions said</h2>
+<p>The original Opus-to-Astra dispatch was recovered from <code>~/dev/work/reports/tanstack-spike/prompt.md</code> and the Astra transcript <code>rollout-2026-09-30T08-03-48-01a0f233-1150-7c73-a7cb-aee7c525ed91.jsonl:9</code>. <a href="tanstack-spike-original-prompt-2026-09-30.md">Read the recovered prompt</a> in the synced report folder.</p>
+<p>It called for an evidence-backed, disposable client experiment over the existing Rust channel. SQL remains authoritative, with a 512 KiB opening window and a 4→3 MiB cap. No built-in provider harness, Node bridge, production migration, PR or merge. Avoid elaborate tests and stop deep investigations with an honest verdict. The later report and task explicitly put recovery and memory ahead of a port; this continuation followed that order.</p>
+<h2>Ten current verdicts</h2>
+<ol>
+<li><strong>SQL window — possible with work.</strong> Native opening/older paging and deterministic removal of trimmed content work. The exact native 4→3 MiB crossing and forward paging after newer-end trimming remain unproven.</li>
+<li><strong>Streaming/recovery — possible with work.</strong> The actual adapter now passes injected sequence-gap, snapshot/delta ordering and teardown probes; native sends complete. Native dropped-channel injection and frame-time proof remain open.</li>
+<li><strong>Actions — possible with work.</strong> Earlier native approval and interrupt evidence stands. Steering remains untested.</li>
+<li><strong>Custom tool display — proven.</strong> Earlier custom capped tool row remains; the snapshot probe preserves tool output.</li>
+<li><strong>Sub-agents — possible with work.</strong> Mapping and bounded child transcript proof remain open.</li>
+<li><strong>Thumbnails/uploads — possible with work.</strong> No attachment work was added.</li>
+<li><strong>Local/remote parity — possible with work.</strong> Local Claude exercised; no live remote service touched.</li>
+<li><strong>Memory — blocked for adoption.</strong> Both views failed the matched 30-cycle plateau rule; neither demonstrates the owner’s approximately 400 MB target.</li>
+<li><strong>Switch teardown — possible with work.</strong> Sixty selections per view completed, the projection stayed bounded, and the probe verifies unsubscribe. Retained-heap analysis and sub-350 ms native timing remain open.</li>
+<li><strong>Rust/custom adapter — proven.</strong> The same command/channel boundary remains; only new input is sent to the provider.</li>
+</ol>
+<h2>The concrete recovery fix</h2>
+<p>Before the change, restoring <code>before missing </code> with <code>setMessages</code> and then receiving <code>after</code> produced <code>before after</code>. The message array changed but the processor’s text accumulator did not. The prototype now routes authoritative windows through the library’s ordered <code>MESSAGES_SNAPSHOT</code> event using <code>uiMessagesToWire</code>.</p>
+<p>The adapter discards deltas already included in that snapshot, advances its sequence/generation together, and ignores live callbacks during its existing SQL read. Snapshot application checks abort before doing late work. Pending terminal events survive content replacement, so an immediately following connection update cannot swallow completion. The component’s manual <code>setMessages</code> calls are removed; paging and trimming use the same adapter reset.</p>
+<p>Evidence: <code>tanstackSpike.ts:40</code> (snapshot boundary), <code>:61</code> (recovery), <code>:101</code> (unsubscribe); <code>TanstackSpike.svelte:19</code> (window changes); <code>scripts/tanstackSpikeRecovery.ts</code> (installed client plus actual adapter). The single probe covers exact recovered text, duplicate/trim prevention, tool output, a complete send through the real adapter with mocked service/SQL boundaries, terminal coalescing, and disposal during a pending read. It does not prove the native transport’s gap handling end to end.</p>
+<p><strong>Native status limitation:</strong> the Svelte client’s per-request <code>status</code> remained “streaming” in a completed native run even though Assembly had no active turn, <code>sending=false</code>, and TanStack’s <code>sessionGenerating=false</code>. The spike label now uses the library’s session-generation/loading/error states for its long-lived subscription. The underlying request-status discrepancy is not claimed fixed. Final native proof shows <strong>ready</strong> after SQL <code>turn.completed</code> sequence 2118 and disconnected 2119. <a href="../screenshots/tsk-1320-final-status-after.png">Final native status</a> · <a href="../screenshots/tsk-1320-request-status-before.png">Observed discrepancy</a>.</p>
+<h2>Matched native memory check</h2>
+<table><thead><tr><th>A→B→A cycles</th><th>Current chat RSS / PSS, MiB</th><th>Prototype RSS / PSS, MiB</th><th>Owned desktop processes, current / prototype</th></tr></thead><tbody><tr><td>0</td><td>579.3 / 393.4</td><td>610.0 / 423.3</td><td>3 / 3</td></tr>
+<tr><td>10</td><td>608.4 / 422.5</td><td>645.7 / 460.7</td><td>3 / 3</td></tr>
+<tr><td>20</td><td>627.5 / 441.5</td><td>626.9 / 440.0</td><td>3 / 3</td></tr>
+<tr><td>30</td><td>717.2 / 531.1</td><td>707.4 / 520.6</td><td>3 / 3</td></tr></tbody></table>
+<p><strong>Result: both fail.</strong> Current RSS grew 137.9 MiB (+23.8%); prototype grew 97.4 MiB (+16.0%). The final-three RSS medians span 17.9% and 12.8%, respectively; both exceed 5%. PSS also fails. The lower prototype endpoint does not establish a library saving, and neither run establishes a retained leak.</p>
+<p>Method declared before sampling: two backups of the same isolated SQLite database and the same two existing sessions; 0/10/20/30 A→B→A cycles; 600 ms between selections; 30 seconds of settling, then ten one-second samples per checkpoint. The decision rule required final-three medians within 5% and no monotonic increase above 5% from the first settled checkpoint. Three desktop processes remained in each run. Raw <a href="tsk-1320-proof/memory.jsonl">samples</a>, <a href="tsk-1320-proof/memory-summary.json">medians</a>, and <a href="tsk-1320-proof/switch-measure.ts">driver</a> are in the synced folder.</p>
+<p>These were switch-only Linux debug/Vite runs at 1710×990, measuring native app + WebKit content + network. “Current chat” means the original renderer on the preserved spike branch, not a fresh measurement of today’s main branch. Provider, Vite and Xvfb costs are excluded; no provider was running during the checkpoints. Identical stored content removes the earlier generated-reply-size difference. Both builds include the library, and the prototype renderer is simpler. This is not a release/macOS target result, a long-stream plateau, heap-retainer analysis, or a measurement of incremental package cost. Terminal/status corrections were made after this idle-switch comparison; they do not change the no-turn switch path measured here. The memory gate remains failed, so no broad port or unrelated feature work followed.</p>
+<h2>Verification, review, and next decision</h2>
+<p>TypeScript and frontend build pass. Direct <code>pnpm exec svelte-check --tsconfig ./tsconfig.json</code> passes with zero errors and four existing warnings. The repository’s <code>check:svelte</code> wrapper is entirely commented out; its zero exit was not counted as Svelte proof. The focused client/adapter probe passes. The native development build passed with five existing Rust warnings. The first window capture raced startup; retry after the window appeared worked.</p>
+<p>Independent SOL medium review approved the snapshot plan after removing unnecessary client recreation. Review then required predicate waits and a real <code>sendMessage</code> lifecycle in the probe; both were added and passed. Final combined review is recorded in the task. No broad regression suite was added.</p>
+<p><strong>What remains before reconsidering adoption:</strong> explain the shared switch-memory growth with a release-like measurement/retainer investigation, then prove native gap recovery and the full byte-window transitions. Only after those gates should the earlier 700–1,200-line replacement plan be considered. Steering, attachments, child transcripts and remote parity remain later proof. This experiment has not authorized or implemented that migration.</p>
+<p><strong>Cleanup:</strong> all ten recorded app/Vite/WebKit/Xvfb processes exited, and display :94’s socket was removed. <a href="tsk-1320-proof/cleanup.json">Cleanup receipt</a>. No browser was opened. The original clean spike worktree is kept for review under its original experiment instructions; it is not a production branch or PR.</p>
+</section>
+<hr><details><summary>Original morning spike report — historical evidence and port estimate</summary>
+
   <h1>Can TanStack AI back Assembly’s frontend chat state?</h1>
   <p class="decision"><span class="pending">Keep the current chat for now.</span> TanStack streamed a real Claude reply over Assembly’s unchanged Rust backend. It can back the view, but this spike does not establish a memory saving or safe replacement of the bounded state layer.</p>
 
@@ -87,5 +130,6 @@
   </ul>
   <p><strong>Persistence boundary:</strong> <code>reconstructChat</code> can page parent history when its store honors limit/before; full-array loading is a fallback, not inherent. Its save contract receives complete history, and child reconstruction loads a child without paging. Assembly should retain Rust SQL paging and provider-native resume. <a href="https://github.com/TanStack/ai/blob/main/packages/ai-persistence/src/reconstruct.ts#L170-L199">Reconstruction source</a> · <a href="https://tanstack.com/ai/latest/docs/resumable-streams/overview">resumable streams</a>.</p>
   <p class="small">Package versions inspected: <code>@tanstack/ai 0.63.0</code>, <code>@tanstack/ai-client 0.36.0</code>, <code>@tanstack/ai-svelte 0.24.3</code>. Source receipts refer to files under <code>tauri-svelte-preview/node_modules/@tanstack/</code>.</p>
+</details>
 </body>
 </html>

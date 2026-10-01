@@ -6,11 +6,10 @@
   import { loadOlderConversationEvents, loadNewerConversationEvents } from '../../conversation/conversationService';
   let { ownedId }: { ownedId: string } = $props();
   const id = untrack(() => ownedId);
-  const adapter = assemblySpikeAdapter(id, () => chat.setMessages(spikeWindow(id)));
+  const adapter = assemblySpikeAdapter(id);
   const chat = createChat({
     threadId: id, connection: adapter.connection, live: true,
-    initialMessages: spikeWindow(id),
-    onCustomEvent: () => chat.setMessages(spikeWindow(id))
+    initialMessages: spikeWindow(id)
   });
   onDestroy(() => chat.dispose());
   const workspace = $derived(conversationSessions[id]);
@@ -21,7 +20,7 @@
   $effect(() => {
     const oldest = workspace?.oldestLoadedSequence;
     const reachedEnd = workspace?.reachedTranscriptEnd;
-    untrack(() => { if (oldest !== undefined || reachedEnd !== undefined) chat.setMessages(spikeWindow(id)); });
+    untrack(() => { if (oldest !== undefined || reachedEnd !== undefined) adapter.syncWindow(); });
   });
   async function perform(work: Promise<unknown>) {
     try { error = ''; await work; } catch (cause) { error = String(cause); }
@@ -31,7 +30,7 @@
     paging = true;
     try {
       await (older ? loadOlderConversationEvents(id) : loadNewerConversationEvents(id));
-      chat.setMessages(spikeWindow(id));
+      adapter.syncWindow();
     } catch (cause) { error = String(cause); }
     finally { paging = false; }
   }
@@ -39,7 +38,7 @@
 </script>
 
 <div class="spike">
-  <header>TanStack client spike · SQL window {Math.round((workspace?.loadedEventsBytes ?? 0) / 1024)} KiB · {chat.messages.length} messages · {chat.status}</header>
+  <header>TanStack client spike · SQL window {Math.round((workspace?.loadedEventsBytes ?? 0) / 1024)} KiB · {chat.messages.length} messages · {chat.error ? "error" : chat.sessionGenerating ? "streaming" : chat.isLoading ? "sending" : "ready"}</header>
   <div class="transcript" onscroll={(event) => {
     const node = event.currentTarget;
     if (node.scrollTop < 40 && !workspace.reachedTranscriptStart) void page(true);
