@@ -1206,18 +1206,20 @@ impl RemoteConnectionManager {
     }
 
     /// Saves every server event newer than the Mac's confirmed copy, one page
-    /// at a time. `publish` also sends each saved page to an open transcript.
-    /// Answers false when the server has no such session.
+    /// at a time. `publish` then sends only the newest saved event: an open
+    /// transcript reads the rest from the Mac's copy, and replayed turns would
+    /// otherwise look live. Answers false when the server has no such session.
     async fn save_newer(&self, profile: &str, owned_id: &str, request_id: u64, publish: bool) -> Result<bool, String> {
         let (epoch, mut after) = {
             let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             (history.epoch(profile), history.through(profile, owned_id)?)
         };
+        let mut newest = None;
         loop {
             let RemoteResponse::Snapshot(snapshot) = self.request_with_id(profile, request_id,
                 RemoteCommand::Snapshot { owned_id: owned_id.into(), request_id, after_sequence: after }, None).await?
             else { return Err("Remote Assembly returned the wrong snapshot response".into()); };
-            let Some(snapshot) = snapshot else { return Ok(false); };
+            let Some(mut snapshot) = snapshot else { return Ok(false); };
             let end = {
                 let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 history.check(profile, epoch)?;
@@ -1232,8 +1234,11 @@ impl RemoteConnectionManager {
             };
             self.history_copied.notify_waiters();
             let head = snapshot.last_sequence;
-            if publish { for event in snapshot.events { (self.event_sink)(event); } }
-            if end >= head { return Ok(true); }
+            newest = snapshot.events.pop().or(newest);
+            if end >= head {
+                if let Some(event) = newest.filter(|_| publish) { (self.event_sink)(event); }
+                return Ok(true);
+            }
             if after == Some(end) { return Err("Remote history catch-up made no progress".into()); }
             after = Some(end);
         }
@@ -1301,10 +1306,12 @@ impl RemoteConnectionManager {
     }
 
     /// Scrolling reads only the Mac's saved copy. A page the background copy
-    /// has not reached yet waits for its next write.
+    /// has not reached yet waits for its next write; a copy that stopped, for
+    /// example when the connection dropped, starts again once.
     async fn history_page(&self, owned_id: String, cursor: i64, max_bytes: u32, before: bool)
         -> Result<AgentConversationEventPage, String> {
         let profile = self.profile_for_owned_id(&owned_id)?;
+        let mut restarted = false;
         loop {
             let copied = self.history_copied.notified();
             tokio::pin!(copied);
@@ -1313,7 +1320,10 @@ impl RemoteConnectionManager {
                 .read_page(&profile, &owned_id, cursor, max_bytes, before)?;
             if let Some(page) = page { return Ok(page); }
             if !self.history_copies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&owned_id) {
-                return Err("This part of the conversation is not saved on this Mac yet".into());
+                if restarted { return Err("This part of the conversation is not saved on this Mac yet".into()); }
+                restarted = true;
+                self.copy_history(profile.clone(), owned_id.clone());
+                continue;
             }
             copied.await;
         }
@@ -3042,7 +3052,7 @@ mod connection_tests {
         let older = manager.events_before("large-history".into(), 2, 1 << 20).await.unwrap();
         assert_eq!((sequences(&older.events), older.has_more), (vec![1], false));
         let mut requests = server.await.unwrap();
-        assert_eq!(*published.lock().unwrap(), vec![4, 5, 6], "the top-up sends each newer event once, in order");
+        assert_eq!(*published.lock().unwrap(), vec![6], "the top-up sends only its newest event, once");
         let newer = manager.events_after("large-history".into(), 3, 1 << 20).await.unwrap();
         assert_eq!((sequences(&newer.events), newer.has_more), (vec![4, 5, 6], false));
         assert_eq!(sequences(&manager.history.lock().unwrap().read_snapshot("cache-test", 0, "large-history").unwrap().events),
@@ -3058,6 +3068,88 @@ mod connection_tests {
         manager.disconnect_profile("cache-test").unwrap();
         assert!(late_sink(vec![large_history_event(32)]).is_err());
         assert!(manager.history.lock().unwrap().through("cache-test", "large-history").unwrap().is_none());
+    }
+
+    fn connect(manager: &RemoteConnectionManager) -> mpsc::Receiver<ClientRequest> {
+        let (sender, requests) = mpsc::channel(8);
+        manager.client.lock().unwrap().clients.insert("cache-test".into(), RemoteClient {
+            requests: Some(sender), profile: Some(profile("cache-test")), target_key: None,
+            task: None, ready: Arc::new(AtomicBool::new(true)),
+        });
+        requests
+    }
+
+    #[tokio::test]
+    async fn two_page_top_up_of_completed_turns_leaves_no_active_turn() {
+        use super::super::protocol::{AgentConversationPayload, TurnState};
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let captured = published.clone();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(move |event: AgentConversationEvent| captured.lock().unwrap().push(event)),
+            Arc::new(|_| {}), store(),
+        ).unwrap();
+        manager.remember("large-history", "cache-test");
+        manager.history.lock().unwrap()
+            .snapshot("cache-test", 0, None, &history_snapshot(vec![history_event(1)], 1)).unwrap();
+        let mut requests = connect(&manager);
+        let turn = |sequence: i64, turn_id: &str, state: TurnState| AgentConversationEvent {
+            turn_id: Some(turn_id.into()),
+            payload: AgentConversationPayload::Turn { turn_id: turn_id.into(), state },
+            ..history_event(sequence)
+        };
+        let server = tokio::spawn(async move {
+            // Two turns finished while the app was closed; the first page ends
+            // just after the second one started.
+            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected top-up"); };
+            assert!(matches!(command, RemoteCommand::Snapshot { after_sequence: Some(1), .. }));
+            reply.send(Ok(RemoteResponse::Snapshot(Some(history_snapshot(vec![
+                turn(2, "a", TurnState::Started), history_event(3), turn(4, "a", TurnState::Completed),
+                turn(5, "b", TurnState::Started),
+            ], 6))))).unwrap();
+            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected second page"); };
+            assert!(matches!(command, RemoteCommand::Snapshot { after_sequence: Some(5), .. }));
+            reply.send(Ok(RemoteResponse::Snapshot(Some(history_snapshot(vec![turn(6, "b", TurnState::Completed)], 6))))).unwrap();
+            let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected older page"); };
+            reply.send(Ok(RemoteResponse::EventPage(AgentConversationEventPage { events: vec![], has_more: false }))).unwrap();
+        });
+        manager.snapshot("large-history".into(), 1).await.unwrap().unwrap();
+        server.await.unwrap();
+
+        // The window's event stream is bounded and drops frames under load, so
+        // a replayed turn start can arrive without its end and leave the
+        // session working. Finished turns stay in the Mac's copy; only the
+        // newest event tells the open transcript to read it.
+        let published = published.lock().unwrap();
+        assert!(!published.iter().any(|event| matches!(event.payload,
+            AgentConversationPayload::Turn { state: TurnState::Started, .. })), "a finished turn must not start again");
+        assert_eq!(sequences(&published), vec![6]);
+    }
+
+    #[tokio::test]
+    async fn copy_stopped_by_a_connection_drop_resumes_after_reconnect() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+        manager.remember("large-history", "cache-test");
+        manager.history.lock().unwrap()
+            .snapshot("cache-test", 0, None, &history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
+        let mut requests = connect(&manager);
+        manager.snapshot("large-history".into(), 1).await.unwrap().unwrap();
+        let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected top-up"); };
+        reply.send(Err("Connection reset without closing handshake".into())).unwrap();
+        while manager.history_copies.lock().unwrap().contains("large-history") { tokio::task::yield_now().await; }
+
+        // Reconnected: scrolling past the saved edge waits for the copy to resume.
+        let mut requests = connect(&manager);
+        let server = tokio::spawn(async move {
+            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected top-up"); };
+            assert!(matches!(command, RemoteCommand::Snapshot { after_sequence: Some(3), .. }));
+            reply.send(Ok(RemoteResponse::Snapshot(Some(history_snapshot(vec![], 3))))).unwrap();
+            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected older page"); };
+            assert!(matches!(command, RemoteCommand::EventsBefore { before_sequence: 2, .. }));
+            reply.send(Ok(RemoteResponse::EventPage(AgentConversationEventPage { events: vec![history_event(1)], has_more: false }))).unwrap();
+        });
+        let older = manager.events_before("large-history".into(), 2, 1 << 20).await.unwrap();
+        assert_eq!((sequences(&older.events), older.has_more), (vec![1], false));
+        server.await.unwrap();
     }
 
     #[tokio::test]
