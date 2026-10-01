@@ -13,6 +13,7 @@
   import Wrench from '@lucide/svelte/icons/wrench';
   import FileChangeItem from './FileChangeItem.svelte';
   import ReasoningItem from './ReasoningItem.svelte';
+  import ToolItem from './ToolItem.svelte';
   import SubagentSection from './SubagentSection.svelte';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import { sanitizeConversationHref } from '$lib/shell/conversation/conversationMessageSafety.ts';
@@ -582,6 +583,8 @@
               </span>
             </div>
           </div>
+        {:else if subItem.kind === 'tool'}
+          <ToolItem item={subItem} {onFileLink} />
         {:else}
           <div class="sub-row generic-sub-row">
             <div class="sub-item-header non-clickable">

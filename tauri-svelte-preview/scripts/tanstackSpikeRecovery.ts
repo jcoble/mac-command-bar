@@ -119,7 +119,28 @@ const hooks = registerHooks({
     return nextResolve(specifier, context);
   }
 });
-const { assemblySpikeAdapter } = await import('../src/lib/shell/conversation/tanstackSpike.ts');
+const { assemblySpikeAdapter, spikeDisplayItems } = await import('../src/lib/shell/conversation/tanstackSpike.ts');
+// Existing renderer must use client content, never stale source text or blocks.
+const sourceRows = [
+  { kind: 'assistant' as const, itemId: 'display-text', text: 'stale source', blocks: [{ kind: 'paragraph' as const, parts: [] }], timestampMs: 17, turnId: 'turn' },
+  { kind: 'reasoning' as const, itemId: 'display-thinking', text: 'stale reasoning', timestampMs: 18, turnId: 'turn' },
+  { kind: 'tool' as const, itemId: 'display-tool', title: 'old tool', toolKind: 'command' as const, state: 'running' as const, output: 'old output', summary: 'stale source preview', timestampMs: 19, turnId: 'turn', path: '/tmp/proof' },
+  { kind: 'error' as const, itemId: 'assembly-error', text: 'Assembly-owned', timestampMs: 20 }
+];
+const projected = spikeDisplayItems([
+  message('display-text', '**client text**'),
+  { id: 'display-thinking', role: 'assistant', parts: [{ type: 'thinking', content: 'client reasoning' }] },
+  { id: 'display-tool', role: 'assistant', parts: [{ type: 'tool-call', id: 'display-tool', name: 'client tool', arguments: '{}', state: 'complete', output: 'client output' }] }
+], sourceRows);
+assert.equal(projected[0].kind === 'assistant' && projected[0].text, '**client text**');
+assert.equal(projected[0].kind === 'assistant' && projected[0].blocks, undefined);
+assert.equal(projected[1].kind === 'reasoning' && projected[1].text, 'client reasoning');
+assert.deepEqual(projected[2], { ...sourceRows[2], title: 'client tool', output: 'client output', state: 'completed', summary: undefined });
+assert.equal(projected[0].turnId, 'turn');
+assert.equal(projected[0].timestampMs, 17);
+assert.equal(projected[3], sourceRows[3]);
+assert.deepEqual(spikeDisplayItems([], sourceRows), [sourceRows[3]], 'Missing client rows never fall back to source text');
+console.log('PASS: existing renderer uses client text/reasoning/tool content while preserving bounded metadata');
 const adapter = assemblySpikeAdapter('owned');
 const actual = new ChatClient({ threadId: 'owned', connection: adapter.connection });
 const actualText = () => actual.getMessages()[0]?.parts.filter((p) => p.type === 'text').map((p) => p.content).join('');

@@ -1,6 +1,7 @@
 /** Throwaway spike: Assembly owns SQL, permissions and provider context. */
 import type { ConnectionAdapter, UIMessage } from '@tanstack/ai-client';
 import { EventType, uiMessagesToWire, type StreamChunk } from '@tanstack/ai/client';
+import { typedConversationTimeline, type ConversationDisplayItem } from './conversationTimeline.ts';
 import { getConversationSession } from './conversationStore.svelte';
 import { observeConversationForSpike, loadConversationForRead, sendStructuredMessage, stopStructuredTurn, sendPermissionResponse } from './conversationService';
 
@@ -8,17 +9,18 @@ import { observeConversationForSpike, loadConversationForRead, sendStructuredMes
 export function spikeWindow(ownedId: string): UIMessage[] {
   const state = getConversationSession(ownedId);
   if (!state) return [];
-  const messages = state.timeline.flatMap((entry): UIMessage[] => {
-    if (entry.kind === 'assistant' || entry.kind === 'user') return [{
+  const toMessages = (items: readonly ConversationDisplayItem[]): UIMessage[] => items.flatMap((entry): UIMessage[] => {
+    if (entry.kind === 'assistant' || entry.kind === 'user' || entry.kind === 'reasoning') return [{
       id: entry.itemId, role: entry.kind === 'user' ? 'user' : 'assistant',
-      parts: [{ type: 'text', content: entry.text }, ...(state.sentAttachments[entry.itemId] ?? []).map((attachment) => ({
-        type: 'image' as const, id: attachment.id,
-        source: { type: 'url' as const, value: attachment.previewUrl, mimeType: attachment.mimeType }
-      }))]
+      parts: [{ type: entry.kind === 'reasoning' ? 'thinking' : 'text', content: entry.text },
+        ...(entry.kind === 'user' ? entry.attachments ?? [] : []).map((attachment) => ({
+          type: 'image' as const, id: attachment.id,
+          source: { type: 'url' as const, value: attachment.previewUrl, mimeType: attachment.mimeType }
+        }))]
     }];
     if (entry.kind === 'tool') return [{
       id: entry.itemId, role: 'assistant', parts: [{
-        type: 'tool-call', id: entry.itemId, name: entry.name,
+        type: 'tool-call', id: entry.itemId, name: entry.title,
         arguments: JSON.stringify({ summary: entry.summary ?? '' }),
         state: entry.state === 'completed' ? 'complete' : entry.state === 'failed' ? 'error' : 'input-complete',
         output: entry.output ?? entry.summary ?? ''
@@ -26,20 +28,42 @@ export function spikeWindow(ownedId: string): UIMessage[] {
     }];
     return [];
   });
+  const messages = toMessages(typedConversationTimeline(state.agentItems, state.timeline, {}, [], state.sentAttachments));
   for (const child of state.children) {
     messages.push({ id: `child:${child.childId}`, role: 'assistant', parts: [{
       type: 'subagent', subagent: {
         id: child.childId, name: child.title, description: child.latestActivity,
         status: child.state === 'failed' ? 'error' : (child.state === 'completed' || child.state === 'finished') ? 'finished'
           : child.state === 'running' ? 'running' : 'suspended',
-        messages: state.selectedChildId === child.childId ? state.childTimeline.flatMap((entry): UIMessage[] =>
-          entry.kind === 'assistant' || entry.kind === 'user' ? [{
-            id: entry.itemId, role: entry.kind, parts: [{ type: 'text', content: entry.text }]
-          }] : []) : []
+        messages: state.selectedChildId === child.childId
+          ? toMessages(typedConversationTimeline([], state.childTimeline)) : []
       }
     }] });
   }
   return messages;
+}
+
+/** Client content drives existing rows; SQL supplies only metadata and non-client parts. */
+export function spikeDisplayItems(messages: readonly UIMessage[], source: readonly ConversationDisplayItem[]): ConversationDisplayItem[] {
+  const byId = new Map(messages.map((message) => [message.id, message]));
+  return source.flatMap((item): ConversationDisplayItem[] => {
+    const message = byId.get(item.itemId);
+    if (item.kind === 'user' || item.kind === 'assistant' || item.kind === 'reasoning') {
+      if (!message) return [];
+      const type = item.kind === 'reasoning' ? 'thinking' : 'text';
+      const text = message.parts.flatMap((part) => (part.type === 'text' || part.type === 'thinking') && part.type === type ? [part.content] : []).join('');
+      return [{ ...item, text, blocks: undefined }];
+    }
+    if (item.kind === 'tool') {
+      const part = message?.parts.find((part) => part.type === 'tool-call');
+      if (!part) return [];
+      return [{ ...item, title: part.name, summary: undefined,
+        output: typeof part.output === 'string' ? part.output : JSON.stringify(part.output),
+        state: part.state === 'complete' ? 'completed' : part.state === 'error' ? 'failed' : 'running'
+      }];
+    }
+    return [item];
+  });
 }
 
 export function assemblySpikeAdapter(ownedId: string) {

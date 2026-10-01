@@ -11,6 +11,7 @@
   } from '$lib/shell/conversation/conversationTypes.ts';
   import TanstackSpike from './conversation/TanstackSpike.svelte';
   let tanstackSpike = $state(false);
+  let spike = $state<ReturnType<typeof TanstackSpike> | null>(null);
   import ConversationTimeline from './conversation/ConversationTimeline.svelte';
   import ConversationComposer from './conversation/ConversationComposer.svelte';
   import ConversationAgentTree from './conversation/ConversationAgentTree.svelte';
@@ -490,6 +491,8 @@
     }
     if (!conversation.draft.trim() && conversation.attachments.length === 0) return;
     const steering = turnActive;
+    const selectedSpike = tanstackSpike ? spike : null;
+    if (tanstackSpike && !selectedSpike) return;
     const text = conversation.draft;
     const deliveredIds = new Set(conversation.attachments.map((attachment) => attachment.id));
     const retainedIds = conversation.attachmentIds.filter((id) => !deliveredIds.has(id));
@@ -507,7 +510,8 @@
     setConversationSendError(ownedId, '');
     try {
       await clearConversationSessionDraft(ownedId);
-      await sendStructuredMessage(ownedId, text);
+      if (selectedSpike) await selectedSpike.sendMessage(text, steering);
+      else await sendStructuredMessage(ownedId, text);
     } catch (error) {
       // Restore the draft. The service intentionally leaves attachments in the
       // store on every failure, so the user can retry without data loss. The
@@ -781,7 +785,8 @@
       {/if}
       {#if import.meta.env.DEV}<button onclick={() => tanstackSpike = !tanstackSpike}>{tanstackSpike ? "Use current chat" : "Use TanStack spike"}</button>{/if}
       {#if tanstackSpike}
-        {#key active.ownedId}<TanstackSpike ownedId={active.ownedId} />{/key}
+        {#key active.ownedId}<TanstackSpike bind:this={spike} ownedId={active.ownedId}
+          {composerHeight} anchorRequest={sendAnchorRequest} onFileLink={openConversationFile} {onInputSubmit} />{/key}
       {:else}
       <ConversationAgentTree children={conversation.children} selectedChildId={conversation.selectedChildId} onSelect={(childId) => void selectChild(childId)} />
       <ConversationTimeline
@@ -813,6 +818,7 @@
         onFileLink={openConversationFile}
         onPlanOpen={() => composer?.expandPlan()}
       />
+      {/if}
       {#if !conversation.selectedChildId}
         {#key active.ownedId}
         <ConversationComposer
@@ -859,7 +865,6 @@
           onHeightChange={(height) => (composerHeight = height)}
         />
         {/key}
-      {/if}
       {/if}
     </section>
   {:else if active && isStructuredAgent(active.agent) && conversation?.mode === 'raw'}

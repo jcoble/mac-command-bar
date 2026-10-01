@@ -26,6 +26,28 @@
   </style>
 </head>
 <body>
+<section id="renderer-results">
+<h1>TanStack spike: the normal conversation view now works</h1>
+<p class="decision">The spike now reuses Assembly’s formatted conversation renderer and normal composer. Native image sending, grouped tool output, child transcripts and live scrolling work. The completed composer reply exactly matches SQLite. This strengthens the case for a client-layer migration; production cutover and the deferred memory target remain separate work.</p>
+<p class="small">TSK-1320 · 1 October 2026 · isolated Linux native app, 1710×990 · experiment branch only</p>
+<h2>What this continuation proved</h2>
+<table><thead><tr><th>Behavior</th><th>Result</th><th>Direct evidence</th></tr></thead><tbody>
+<tr><td>Existing renderer</td><td>TanStack text, reasoning and tool content drives the existing rows; Assembly supplies bounded metadata and unsupported parts. Stale parsed text blocks and tool summaries are cleared. Headings, tables, highlighted code and child messages render through existing components.</td><td><a href="../screenshots/tsk-1320-composer-format-after.png">Formatted reply and normal composer</a> · <a href="../screenshots/tsk-1320-render-child-after.png">Child transcript</a></td></tr>
+<tr><td>Normal composer</td><td>Native file selection attached a blue image, removal and reattachment worked, and the normal send button delivered it. A draft survived a session switch. The resulting 5,172-byte answer matches all 457 SQL text deltas and the rendered client row exactly, ending COMPOSER-PROOF-COMPLETE.</td><td><a href="tsk-1320-proof/render/composer-proof.json">SQL equality</a> · <a href="../screenshots/tsk-1320-composer-draft-after.png">Restored draft</a></td></tr>
+<tr><td>Live scrolling</td><td>Fixed a native smooth-scroll race that re-enabled follow during upward scrolling. The viewport stayed at 8,587 px for 4.075 seconds while 69 events arrived, then Jump resumed following. Manual downward scrolling also dismisses Jump at the end.</td><td><a href="tsk-1320-proof/render/scroll-proof.json">Live hold and jump</a> · <a href="tsk-1320-proof/render/down-resume-final.json">Downward resume</a></td></tr>
+<tr><td>Grouped tools</td><td>Two separate real calls returned FIRST-TOOL-PROOF and 1–80. Generic grouped rows now reuse the existing ToolItem disclosure instead of hiding output. Expanding all lines keeps the group at 240 px and the output preformatted block at 258 px despite 1,656 px of content.</td><td><a href="../screenshots/tsk-1320-render-tools-after.png">Expanded output</a> · <a href="tsk-1320-proof/render/tools-expanded-proof.json">Native dimensions</a></td></tr>
+<tr><td>Paging</td><td>Removed premature anchor clearing when SQL loading finished before client rendering, and prevented a truncated window end from enabling live follow. The same surviving message retained its exact viewport offset in each direction. Jump reloaded the latest SQL tail.</td><td><a href="tsk-1320-proof/render/paging-proof.json">Older and forward paging receipts</a></td></tr>
+</tbody></table>
+<h2>How far this goes</h2>
+<p>The appearance now comes from the real Assembly components. This is direct native proof of reuse, not a new visual design. The earlier plain renderer’s frame and session-switch timing numbers below are historical and do not measure this richer view. The final composer turn was observed natively, but hot reload interrupted the temporary collector; final equality was checked after a fresh launch. No new frame-latency claim is made.</p>
+<p>The experiment still holds both Assembly and TanStack projections. Adoption requires replacing the duplicate accumulation, removing the spike toggle and component, and verifying release-like local/remote parity. Existing backend, SQL window limits, provider context, approvals, attachments and native services remain Assembly-owned. Installed Mac-to-workbox testing and memory/devtools overhead remain unproven; memory investigation remains deferred at the owner’s request.</p>
+<p>The original Opus-to-Astra directions and all earlier results remain below. No production migration, PR, merge or installed-service upgrade was performed. The existing rough migration estimate is historical, not a fresh estimate after this integration.</p>
+<h2>Verification and cleanup</h2>
+<p id="renderer-checks">PASS: pnpm exec tsc --noEmit; node --experimental-strip-types scripts/tanstackSpikeRecovery.ts; pnpm exec svelte-check --tsconfig ./tsconfig.json (0 errors, 4 existing warnings); pnpm build; git diff --check. Combined code/spec/evidence review: PASS, Codex SOL 6.1 medium. Task-owned app, WebKit helpers, Vite, Xvfb, collector and clipboard helper stopped; ports 5196/5198 have no listeners. No browser opened. Worktree retained as required by the experiment.</p>
+<p><a href="tsk-1320-proof/render/native.jsonl.gz">Raw native receipts</a> · <a href="tsk-1320-proof/render/README.md">Proof boundaries and reproduction notes</a>. Screenshots were opened and inspected. Temporary measurement hooks are removed from the delivered source.</p>
+</section>
+<details><summary>30 September results and original directions — historical; renderer limitations superseded above</summary>
+
 <section id="final-results">
 <h1>TanStack spike: final practical proof</h1>
 <p class="decision">The spike supports using TanStack as a client layer over Assembly’s existing Rust backend. The tested local stream was responsive and complete, and the isolated remote image/child paths worked. The bare prototype is not ready for daily use: it renders plain text, lacks automatic follow-to-bottom scrolling, and has not established the memory target.</p>
@@ -193,6 +215,7 @@
   </ul>
   <p><strong>Persistence boundary:</strong> <code>reconstructChat</code> can page parent history when its store honors limit/before; full-array loading is a fallback, not inherent. Its save contract receives complete history, and child reconstruction loads a child without paging. Assembly should retain Rust SQL paging and provider-native resume. <a href="https://github.com/TanStack/ai/blob/main/packages/ai-persistence/src/reconstruct.ts#L170-L199">Reconstruction source</a> · <a href="https://tanstack.com/ai/latest/docs/resumable-streams/overview">resumable streams</a>.</p>
   <p class="small">Package versions inspected: <code>@tanstack/ai 0.63.0</code>, <code>@tanstack/ai-client 0.36.0</code>, <code>@tanstack/ai-svelte 0.24.3</code>. Source receipts refer to files under <code>tauri-svelte-preview/node_modules/@tanstack/</code>.</p>
+</details>
 </details>
 </details>
 </body>
