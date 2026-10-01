@@ -1,6 +1,6 @@
 //! One authenticated WebSocket boundary for conversations owned by a remote machine.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::IntoFuture;
 use std::net::{TcpListener as StdTcpListener, TcpStream};
 use std::path::PathBuf;
@@ -48,6 +48,8 @@ const MAX_SERVER_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const ATTACHMENT_CHUNK_BYTES: usize = 128 * 1024;
 const OUTBOUND_FRAME_CAPACITY: usize = 8;
 const REPLAY_PAGE_BYTES: u32 = 1024 * 1024;
+// The background history copy saves older pages the same size as an opening page.
+const HISTORY_COPY_PAGE_BYTES: u32 = 512 * 1024;
 pub const REMOTE_ASSEMBLY_PROFILE_SETTING_KEY: &str = "remote-assembly.profile.v1";
 pub const REMOTE_ASSEMBLY_PROFILES_SETTING_KEY: &str = "remote-assembly.profiles.v1";
 const REMOTE_SESSION_PROJECTIONS_SETTING_KEY: &str = "remote-assembly.session-projections.v1";
@@ -248,6 +250,10 @@ pub struct RemoteConnectionManager {
     event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
     status_sink: Arc<dyn Fn(RemoteConnectionStatus) + Send + Sync>,
     connection_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Sessions whose background history copy is running, and the wake-up
+    /// for page reads waiting on one of them.
+    history_copies: Arc<Mutex<HashSet<String>>>,
+    history_copied: Arc<tokio::sync::Notify>,
     attempts: Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
     /// The attempt token of each profile whose connection attempt is running
     /// before any client exists. Removing the profile drops its token, which
@@ -448,6 +454,8 @@ impl RemoteConnectionManager {
             event_sink,
             status_sink,
             connection_lock: Arc::new(tokio::sync::Mutex::new(())),
+            history_copies: Arc::new(Mutex::new(HashSet::new())),
+            history_copied: Arc::new(tokio::sync::Notify::new()),
             attempts: Arc::new(Mutex::new(HashMap::new())),
             connecting: Arc::new(Mutex::new(HashMap::new())),
             next_attempt_token: Arc::new(AtomicU64::new(1)),
@@ -1177,34 +1185,94 @@ impl RemoteConnectionManager {
         Ok(connection)
     }
 
+    /// Opens from the Mac's saved copy at once. Only a session never opened on
+    /// this Mac waits for the server. Either way the background copy follows.
     pub async fn snapshot(
         &self, owned_id: String, request_id: u64,
     ) -> Result<Option<AgentConversationSnapshot>, String> {
         let profile = self.profile_for_owned_id(&owned_id)?;
+        let saved = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cached_snapshot(&profile, &owned_id)?;
+        let snapshot = match saved {
+            Some(snapshot) => snapshot,
+            None => {
+                if !self.save_newer(&profile, &owned_id, request_id, false).await? { return Ok(None); }
+                let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                history.read_snapshot(&profile, history.epoch(&profile), &owned_id)?
+            }
+        };
+        self.copy_history(profile, owned_id);
+        Ok(Some(snapshot))
+    }
+
+    /// Saves every server event newer than the Mac's confirmed copy, one page
+    /// at a time. `publish` also sends each saved page to an open transcript.
+    /// Answers false when the server has no such session.
+    async fn save_newer(&self, profile: &str, owned_id: &str, request_id: u64, publish: bool) -> Result<bool, String> {
         let (epoch, mut after) = {
             let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            (history.epoch(&profile), history.through(&profile, &owned_id)?)
+            (history.epoch(profile), history.through(profile, owned_id)?)
         };
         loop {
-            let RemoteResponse::Snapshot(snapshot) = self.request_with_id(&profile, request_id,
-                RemoteCommand::Snapshot { owned_id: owned_id.clone(), request_id, after_sequence: after }, None).await?
+            let RemoteResponse::Snapshot(snapshot) = self.request_with_id(profile, request_id,
+                RemoteCommand::Snapshot { owned_id: owned_id.into(), request_id, after_sequence: after }, None).await?
             else { return Err("Remote Assembly returned the wrong snapshot response".into()); };
-            let Some(snapshot) = snapshot else { return Ok(None); };
-            let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            history.check(&profile, epoch)?;
-            if after.is_some_and(|after| after > snapshot.last_sequence) {
-                // An authoritative journal was replaced/truncated, rather than
-                // appended. Its previous cache is no longer the same history.
-                history.forget(&profile, &owned_id)?;
-                after = None;
-                continue;
-            }
-            let end = history.snapshot(&profile, epoch, after, &snapshot)?;
-            if end >= snapshot.last_sequence {
-                return history.read_snapshot(&profile, epoch, &owned_id).map(Some);
-            }
+            let Some(snapshot) = snapshot else { return Ok(false); };
+            let end = {
+                let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                history.check(profile, epoch)?;
+                if after.is_some_and(|after| after > snapshot.last_sequence) {
+                    // An authoritative journal was replaced/truncated, rather than
+                    // appended. Its previous cache is no longer the same history.
+                    history.forget(profile, owned_id)?;
+                    after = None;
+                    continue;
+                }
+                history.snapshot(profile, epoch, after, &snapshot)?
+            };
+            self.history_copied.notify_waiters();
+            let head = snapshot.last_sequence;
+            if publish { for event in snapshot.events { (self.event_sink)(event); } }
+            if end >= head { return Ok(true); }
             if after == Some(end) { return Err("Remote history catch-up made no progress".into()); }
             after = Some(end);
+        }
+    }
+
+    /// Copies the rest of one session into the Mac's history in the background:
+    /// newer events first, then older pages back to its start. Pages go to
+    /// SQLite one at a time; only newer ones reach the open transcript.
+    fn copy_history(&self, profile: String, owned_id: String) {
+        if !self.history_copies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(owned_id.clone()) {
+            return;
+        }
+        let manager = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = manager.copy_history_pages(&profile, &owned_id).await {
+                eprintln!("Remote history copy for {owned_id} stopped: {error}");
+            }
+            manager.history_copies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&owned_id);
+            manager.history_copied.notify_waiters();
+        });
+    }
+
+    async fn copy_history_pages(&self, profile: &str, owned_id: &str) -> Result<(), String> {
+        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        self.save_newer(profile, owned_id, request_id, true).await?;
+        loop {
+            let (epoch, before) = {
+                let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                (history.epoch(profile), history.unsaved_older(profile, owned_id)?)
+            };
+            let Some(before) = before else { return Ok(()); };
+            let RemoteResponse::EventPage(page) = self.request_with_id(profile, request_id, RemoteCommand::EventsBefore {
+                owned_id: owned_id.into(), before_sequence: before, max_bytes: HISTORY_COPY_PAGE_BYTES,
+            }, None).await?
+            else { return Err("Remote Assembly returned the wrong event-page response".into()); };
+            if page.events.is_empty() && page.has_more { return Err("Remote history copy made no progress".into()); }
+            self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                .page(profile, epoch, owned_id, before, true, &page)?;
+            self.history_copied.notify_waiters();
         }
     }
 
@@ -1222,34 +1290,33 @@ impl RemoteConnectionManager {
         }
     }
 
-    pub async fn events_before(&self, owned_id: String, before_sequence: i64, max_bytes: u32, request_id: u64)
+    pub async fn events_before(&self, owned_id: String, before_sequence: i64, max_bytes: u32)
         -> Result<AgentConversationEventPage, String> {
-        self.history_page(owned_id, before_sequence, max_bytes, request_id, true).await
+        self.history_page(owned_id, before_sequence, max_bytes, true).await
     }
 
-    pub async fn events_after(&self, owned_id: String, after_sequence: i64, max_bytes: u32, request_id: u64)
+    pub async fn events_after(&self, owned_id: String, after_sequence: i64, max_bytes: u32)
         -> Result<AgentConversationEventPage, String> {
-        self.history_page(owned_id, after_sequence, max_bytes, request_id, false).await
+        self.history_page(owned_id, after_sequence, max_bytes, false).await
     }
 
-    async fn history_page(&self, owned_id: String, cursor: i64, max_bytes: u32, request_id: u64, before: bool)
+    /// Scrolling reads only the Mac's saved copy. A page the background copy
+    /// has not reached yet waits for its next write.
+    async fn history_page(&self, owned_id: String, cursor: i64, max_bytes: u32, before: bool)
         -> Result<AgentConversationEventPage, String> {
         let profile = self.profile_for_owned_id(&owned_id)?;
-        let epoch = {
-            let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(page) = history.read_page(&profile, &owned_id, cursor, max_bytes, before)? { return Ok(page); }
-            history.epoch(&profile)
-        };
-        let command = if before {
-            RemoteCommand::EventsBefore { owned_id: owned_id.clone(), before_sequence: cursor, max_bytes }
-        } else {
-            RemoteCommand::EventsAfter { owned_id: owned_id.clone(), after_sequence: cursor, max_bytes }
-        };
-        let RemoteResponse::EventPage(page) = self.request_with_id(&profile, request_id, command, None).await?
-        else { return Err("Remote Assembly returned the wrong event-page response".into()); };
-        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-            .page(&profile, epoch, &owned_id, cursor, before, &page)?;
-        Ok(page)
+        loop {
+            let copied = self.history_copied.notified();
+            tokio::pin!(copied);
+            copied.as_mut().enable();
+            let page = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                .read_page(&profile, &owned_id, cursor, max_bytes, before)?;
+            if let Some(page) = page { return Ok(page); }
+            if !self.history_copies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&owned_id) {
+                return Err("This part of the conversation is not saved on this Mac yet".into());
+            }
+            copied.await;
+        }
     }
 
     pub async fn extend_import(&self, owned_id: String) -> Result<super::transcript_import::ExtendedImport, String> {
@@ -1258,9 +1325,13 @@ impl RemoteConnectionManager {
         let RemoteResponse::ImportProgress { added, reached_start } = self.request_for_profile(&profile,
             RemoteCommand::ExtendImport { owned_id: owned_id.clone() }).await?
         else { return Err("Remote Assembly returned the wrong import response".into()); };
-        let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        history.check(&profile, epoch)?;
-        if added > 0 || !reached_start { history.imported_older(&profile, epoch, &owned_id)?; }
+        {
+            let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            history.check(&profile, epoch)?;
+            if added > 0 || !reached_start { history.imported_older(&profile, epoch, &owned_id)?; }
+        }
+        // The imported rows are older than the saved start; the copy fetches them.
+        if added > 0 || !reached_start { self.copy_history(profile, owned_id); }
         Ok(super::transcript_import::ExtendedImport { added, reached_start })
     }
 
@@ -2906,40 +2977,83 @@ mod connection_tests {
         assert_eq!(*delivered.lock().unwrap(), vec![event]);
     }
 
+    fn history_event(sequence: i64) -> AgentConversationEvent {
+        AgentConversationEvent { sequence, ..large_history_event(32) }
+    }
+
+    fn history_snapshot(events: Vec<AgentConversationEvent>, last_sequence: i64) -> AgentConversationSnapshot {
+        AgentConversationSnapshot {
+            connection: AgentConversationConnection {
+                owned_id: "large-history".into(), provider: AgentConversationProvider::Codex, generation: 1,
+                native_session_id: None, state: super::super::protocol::ConversationConnectionState::Disconnected,
+                config: Default::default(),
+            },
+            suspended: true, last_sequence, events,
+        }
+    }
+
+    fn sequences(events: &[AgentConversationEvent]) -> Vec<i64> {
+        events.iter().map(|event| event.sequence).collect()
+    }
+
     #[tokio::test]
-    async fn remote_history_reuses_cached_pages_and_fetches_only_snapshot_changes() {
-        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+    async fn cached_open_tops_up_once_and_pages_from_the_mac_copy() {
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let captured = published.clone();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(move |event: AgentConversationEvent| captured.lock().unwrap().push(event.sequence)),
+            Arc::new(|_| {}), store(),
+        ).unwrap();
+        manager.remember("large-history", "cache-test");
+        // An earlier run saved 2..=3; live event 5 then arrived after a missed 4.
+        manager.history.lock().unwrap()
+            .snapshot("cache-test", 0, None, &history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
+        manager.history_event_sink("cache-test")(vec![history_event(5)]).unwrap();
+        published.lock().unwrap().clear();
+
+        // Offline: the confirmed copy opens and pages; the gap row stays out.
+        let opened = manager.snapshot("large-history".into(), 1).await.unwrap().unwrap();
+        assert_eq!((sequences(&opened.events), opened.last_sequence), (vec![2, 3], 3));
+        let newer = manager.events_after("large-history".into(), 2, 1 << 20).await.unwrap();
+        assert_eq!((sequences(&newer.events), newer.has_more), (vec![3], false));
+        let older = manager.events_before("large-history".into(), 3, 1 << 20).await.unwrap();
+        assert_eq!((sequences(&older.events), older.has_more), (vec![2], true));
+        assert!(manager.events_before("large-history".into(), 2, 1 << 20).await.is_err(),
+            "an unsaved older page must not wait offline");
+
         let (sender, mut requests) = mpsc::channel(8);
         manager.client.lock().unwrap().clients.insert("cache-test".into(), RemoteClient {
             requests: Some(sender), profile: Some(profile("cache-test")), target_key: None,
             task: None, ready: Arc::new(AtomicBool::new(true)),
         });
-        manager.remember("large-history", "cache-test");
+        // Online: the open still returns the Mac's copy before the server answers.
+        let opened = manager.snapshot("large-history".into(), 2).await.unwrap().unwrap();
+        assert_eq!(sequences(&opened.events), vec![2, 3]);
         let server = tokio::spawn(async move {
-            for expected_after in [None, Some(42), Some(43)] {
-                let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected snapshot"); };
-                assert!(matches!(command, RemoteCommand::Snapshot { after_sequence, .. } if after_sequence == expected_after));
-                let mut event = large_history_event(32);
-                if expected_after.is_some() { event.sequence = 43; }
-                let events = if expected_after == Some(43) { vec![] } else { vec![event.clone()] };
-                reply.send(Ok(RemoteResponse::Snapshot(Some(AgentConversationSnapshot {
-                    connection: AgentConversationConnection {
-                        owned_id: event.owned_id.clone(), provider: event.provider, generation: 1,
-                        native_session_id: None, state: super::super::protocol::ConversationConnectionState::Disconnected,
-                        config: Default::default(),
-                    }, suspended: true, last_sequence: event.sequence, events,
-                })))).unwrap();
-            }
+            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected top-up"); };
+            assert!(matches!(command, RemoteCommand::Snapshot { after_sequence: Some(3), .. }));
+            reply.send(Ok(RemoteResponse::Snapshot(Some(history_snapshot((4..=6).map(history_event).collect(), 6))))).unwrap();
+            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected older page"); };
+            assert!(matches!(command, RemoteCommand::EventsBefore { before_sequence: 2, max_bytes: HISTORY_COPY_PAGE_BYTES, .. }));
+            reply.send(Ok(RemoteResponse::EventPage(AgentConversationEventPage { events: vec![history_event(1)], has_more: false }))).unwrap();
             requests
         });
-        assert_eq!(manager.snapshot("large-history".into(), 1).await.unwrap().unwrap().events.len(), 1);
-        for id in 2..5 {
-            assert_eq!(manager.events_before("large-history".into(), 43, 1024, id).await.unwrap().events.len(), 1);
-        }
-        assert_eq!(manager.snapshot("large-history".into(), 5).await.unwrap().unwrap().events.len(), 2);
-        assert_eq!(manager.snapshot("large-history".into(), 6).await.unwrap().unwrap().events.len(), 2);
+        // Scrolling up waits for the background copy instead of asking the server.
+        let older = manager.events_before("large-history".into(), 2, 1 << 20).await.unwrap();
+        assert_eq!((sequences(&older.events), older.has_more), (vec![1], false));
         let mut requests = server.await.unwrap();
-        assert!(requests.try_recv().is_err(), "scrolling must not request cached pages");
+        assert_eq!(*published.lock().unwrap(), vec![4, 5, 6], "the top-up sends each newer event once, in order");
+        let newer = manager.events_after("large-history".into(), 3, 1 << 20).await.unwrap();
+        assert_eq!((sequences(&newer.events), newer.has_more), (vec![4, 5, 6], false));
+        assert_eq!(sequences(&manager.history.lock().unwrap().read_snapshot("cache-test", 0, "large-history").unwrap().events),
+            (1..=6).collect::<Vec<_>>());
+        tokio::task::yield_now().await;
+        assert!(requests.try_recv().is_err(), "scrolling must not request pages from the server");
+
+        // Offline again: the whole saved copy still opens and pages.
+        manager.client.lock().unwrap().clients.remove("cache-test");
+        assert_eq!(sequences(&manager.snapshot("large-history".into(), 3).await.unwrap().unwrap().events), (1..=6).collect::<Vec<_>>());
+        assert_eq!(sequences(&manager.events_before("large-history".into(), 4, 1 << 20).await.unwrap().events), vec![1, 2, 3]);
         let late_sink = manager.history_event_sink("cache-test");
         manager.disconnect_profile("cache-test").unwrap();
         assert!(late_sink(vec![large_history_event(32)]).is_err());
@@ -2980,7 +3094,7 @@ mod connection_tests {
         assert_eq!(progress.added, 0);
         assert!(progress.reached_start);
         let mut requests = server.await.unwrap();
-        let page = manager.events_before(event.owned_id, event.sequence, 1024, 1).await.unwrap();
+        let page = manager.events_before(event.owned_id, event.sequence, 1024).await.unwrap();
         assert!(page.events.is_empty());
         assert!(!page.has_more);
         assert!(requests.try_recv().is_err(), "confirmed start must not request the workbox again");

@@ -119,10 +119,12 @@ mod tests {
         history.snapshot("a", 0, None, &snapshot(10, 12)).unwrap();
         history.live_batch("a", 0, &[event(15)]).unwrap();
         assert_eq!(history.through("a", "same-session-id").unwrap(), Some(12));
-        assert!(history
-            .read_page("a", "same-session-id", 12, 1024, false)
-            .unwrap()
-            .is_none());
+        // The saved row past the gap is not confirmed, so the Mac's copy ends at 12.
+        for cursor in [11, 12] {
+            let newer = history.read_page("a", "same-session-id", cursor, 1024, false).unwrap().unwrap();
+            assert_eq!(newer.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), (cursor + 1..=12).collect::<Vec<_>>());
+            assert!(!newer.has_more);
+        }
         history
             .snapshot("a", 0, Some(12), &snapshot(13, 15))
             .unwrap();
@@ -432,6 +434,25 @@ impl RemoteHistory {
         })
     }
 
+    /// The confirmed tail of a session opened here before, or None when the
+    /// Mac has never saved its connection details. Rows past a gap stay out.
+    pub fn cached_snapshot(
+        &self,
+        profile: &str,
+        owned: &str,
+    ) -> Result<Option<AgentConversationSnapshot>, String> {
+        if self.coverage(profile, owned)?.connection.is_none() {
+            return Ok(None);
+        }
+        self.read_snapshot(profile, self.epoch(profile), owned).map(Some)
+    }
+
+    /// Where the next older page must end, until the session's start is saved.
+    pub fn unsaved_older(&self, profile: &str, owned: &str) -> Result<Option<i64>, String> {
+        let coverage = self.coverage(profile, owned)?;
+        Ok(coverage.oldest.filter(|_| !coverage.start_complete))
+    }
+
     fn decode(rows: Vec<EventRow>) -> Result<Vec<AgentConversationEvent>, String> {
         rows.into_iter()
             .map(|row| serde_json::from_str(&row.payload_json).map_err(|e| e.to_string()))
@@ -454,7 +475,7 @@ impl RemoteHistory {
         if before
             && (cursor > through.saturating_add(1)
                 || (cursor <= oldest && !coverage.start_complete))
-            || !before && (cursor < oldest || cursor >= through)
+            || !before && cursor < oldest
         {
             return Ok(None);
         }
@@ -465,15 +486,14 @@ impl RemoteHistory {
             self.store.list_events_after(&key, cursor, bytes)
         }
         .map_err(|e| e.to_string())?;
-        // Live rows beyond a gap must not leak into a supposedly complete page.
-        if page.events.first().is_some_and(|event| event.seq < oldest)
-            || page.events.last().is_some_and(|event| event.seq > through)
-        {
-            return Ok(None);
-        }
+        // Rows saved past a gap are not confirmed: the page stops at the edge.
+        let mut events = page.events;
+        let count = events.len();
+        events.retain(|event| (oldest..=through).contains(&event.seq));
+        let at_edge = events.len() < count;
         Ok(Some(AgentConversationEventPage {
-            events: Self::decode(page.events)?,
-            has_more: page.has_more || (before && !coverage.start_complete),
+            events: Self::decode(events)?,
+            has_more: (page.has_more && !at_edge) || (before && !coverage.start_complete),
         }))
     }
 

@@ -1110,6 +1110,83 @@ await test('snapshot reads top up overlapping live events and keep streaming aft
   }
 });
 
+await test('a background top-up fills an open transcript the rail already saw past', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const reads = source.slice(source.indexOf('function bufferConversationEvent('), source.indexOf('/** Stored event bytes'));
+  const handler = source.slice(source.indexOf('async function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
+  const ownedId = 'owned-top-up-behind-rail';
+  store.ensureConversationSession(ownedId, 'codex');
+  const event = (sequence: number): AgentConversationEvent => ({
+    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
+    payload: { kind: 'assistantDelta', itemId: 'answer', delta: String(sequence) }
+  });
+  const snapshot = (last: number): AgentConversationSnapshot => ({
+    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
+    lastSequence: last, events: Array.from({ length: last }, (_, index) => event(index + 1))
+  });
+  let finishRepair!: (snapshot: AgentConversationSnapshot) => void;
+  const repair = new Promise<AgentConversationSnapshot>((resolve) => { finishRepair = resolve; });
+  let readCount = 0;
+  const rail = { activeOwnedId: 'another-session' as string | null, owned: [] };
+  const dependencies = {
+    ...store, get, sessionPresenceHistory, sessionPresenceEventFromConversation,
+    synchronizeSessionPresenceWork, shouldClearConversationSending, rail,
+    updateOwnedSession: () => undefined,
+    publishConversationSnapshotReadDiagnostics: () => undefined,
+    hydrateSentConversationAttachments: async () => undefined,
+    // The open reads the Mac's confirmed copy (1..3); the gap repair reads it again.
+    readAgentConversationSnapshotFromTauri: async () => (readCount += 1) === 1 ? snapshot(3) : readCount === 2 ? repair : snapshot(4)
+  };
+  const service = Function(...Object.keys(dependencies), stripTypeScriptTypes(`
+    const resyncing = new Map(); const readVersions = new Map(); const railActivityEvents = new Map();
+    const conversationEventsDisposed = false; const conversationEventsGeneration = 1;
+    ${reads.replaceAll('export async function', 'async function')}
+    ${handler}
+  `, { mode: 'strip' }) + '\nreturn { loadConversationForRead, handleConversationStreamEnvelope, resyncing };')(...Object.values(dependencies));
+  // The rail saw live event 5 while the session was closed; the Mac's copy stops at 3.
+  await service.handleConversationStreamEnvelope(1, { chunk: event(5) });
+  rail.activeOwnedId = ownedId;
+  await service.loadConversationForRead(ownedId, false);
+  assert.deepEqual(store.getConversationSession(ownedId).loadedEvents.map((item: AgentConversationEvent) => item.sequence), [1, 2, 3]);
+  // The top-up repeats 4 and 5; a live 6 arrives between them.
+  await service.handleConversationStreamEnvelope(1, { chunk: event(4) });
+  const live = service.handleConversationStreamEnvelope(1, { chunk: event(6) });
+  const repeated = service.handleConversationStreamEnvelope(1, { chunk: event(5) });
+  finishRepair(snapshot(4));
+  await Promise.all([live, repeated]);
+  const session = store.getConversationSession(ownedId);
+  assert.deepEqual(session.loadedEvents.map((item: AgentConversationEvent) => item.sequence), [1, 2, 3, 4, 5, 6]);
+  assert.equal(session.timeline[0].text, '123456', 'each event is applied exactly once');
+  assert.equal(session.desynchronized, false);
+  assert.equal(readCount, 2, 'one repair read joins the repeated event to the live one');
+  assert.equal(service.resyncing.size, 0);
+});
+
+await test('start-up starts the event stream before it opens the remembered session', async () => {
+  // A remote open shows the Mac's copy at once and its background top-up is
+  // published moments later; a stream registered after the open would miss it.
+  const source = readFileSync(new URL('../src/lib/shell/controllers/shellStartup.ts', import.meta.url), 'utf8');
+  const startShell = source.slice(source.indexOf('export async function startShell('), source.indexOf('export function stopShell('));
+  const calls: string[] = [];
+  const dependencies = {
+    document: { documentElement: { classList: { add: () => undefined } } },
+    applyStoredTheme: () => undefined, applyStoredFonts: () => undefined,
+    hydrateShellSettings: async () => undefined, shellActive: () => true,
+    listAgentConversationSessionsFromTauri: async () => [],
+    listRemoteAgentConversationSessionsFromTauri: async () => [{ ownedId: 'remembered' }],
+    readAssemblySettingFromTauri: async () => 'remembered', ACTIVE_OWNED_SESSION_SETTING_KEY: 'active',
+    ownedSessionFromBackend: (session: unknown) => session, hydrateOwned: () => undefined,
+    shellPanels: { allowSessionLoads: () => undefined }, rail: { error: null },
+    startConversationEventsForOwner: async () => { calls.push('event stream'); }
+  };
+  const shell = Function(...Object.keys(dependencies), stripTypeScriptTypes(`
+    let shellAbort = null; let shellGeneration = 0;
+    ${startShell.replace('export async function', 'async function')}
+  `, { mode: 'strip' }) + '\nreturn { startShell };')(...Object.values(dependencies));
+  await shell.startShell({ onSelectInitial: async (ownedId: string) => { calls.push('open ' + ownedId); } });
+  assert.deepEqual(calls, ['event stream', 'open remembered']);
+});
+
 await test('sendStructuredMessage resolves the terminal from the owned session, not a passed argument', async () => {
   const ownedId = 'owned-terminal-route';
   const terminalId = 'terminal-from-owned-session';

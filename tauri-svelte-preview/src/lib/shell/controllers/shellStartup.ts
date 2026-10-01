@@ -47,6 +47,9 @@ export async function startShell(options: ShellStartupOptions): Promise<void> {
 		const combined = [...projected.filter((session) => !remoteIds.has(session.ownedId)), ...projectedRemote];
 
 		hydrateOwned(combined);
+		// The event stream starts before the remembered session opens: a remote
+		// open shows the Mac's copy at once, and its background top-up follows.
+		void startConversationEventsForOwner(generation, controller.signal);
 
 		const rememberedOwnedId = typeof storedActiveOwnedId === 'string' ? storedActiveOwnedId : null;
 		const initial = combined.find((session) => session.ownedId === rememberedOwnedId) ?? combined[0] ?? null;
@@ -56,8 +59,6 @@ export async function startShell(options: ShellStartupOptions): Promise<void> {
 			await options.onSelectInitial(initial.ownedId, controller.signal);
 			if (!shellActive(generation, controller.signal)) return;
 		}
-
-		void startConversationEventsForOwner(generation, controller.signal);
 	} catch (error) {
 		if (!shellActive(generation, controller.signal)) return;
 		rail.error = `shell start-up failed: ${error instanceof Error ? error.message : String(error)}`;

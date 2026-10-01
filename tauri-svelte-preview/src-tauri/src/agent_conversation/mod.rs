@@ -683,14 +683,9 @@ pub async fn list_agent_conversation_events_before(
     owned_id: String,
     before_sequence: i64,
     max_bytes: u32,
-    request_id: u64,
 ) -> CommandResult<AgentConversationEventPage> {
     if remote.owns(&owned_id) {
-        return command_result(
-            remote
-                .events_before(owned_id, before_sequence, max_bytes, request_id)
-                .await,
-        );
+        return command_result(remote.events_before(owned_id, before_sequence, max_bytes).await);
     }
     command_result(manager.list_events_before(&owned_id, before_sequence, max_bytes))
 }
@@ -703,14 +698,9 @@ pub async fn list_agent_conversation_events_after(
     owned_id: String,
     after_sequence: i64,
     max_bytes: u32,
-    request_id: u64,
 ) -> CommandResult<AgentConversationEventPage> {
     if remote.owns(&owned_id) {
-        return command_result(
-            remote
-                .events_after(owned_id, after_sequence, max_bytes, request_id)
-                .await,
-        );
+        return command_result(remote.events_after(owned_id, after_sequence, max_bytes).await);
     }
     command_result(manager.list_events_after(&owned_id, after_sequence, max_bytes))
 }
