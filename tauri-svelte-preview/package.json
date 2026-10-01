@@ -105,7 +105,7 @@
     "test:new-session-git-refs": "node --experimental-strip-types scripts/newSessionGitRefs.test.ts",
     "test:thread-start-flow": "node --experimental-strip-types scripts/threadStartFlow.test.ts",
     "test:draft-session-lifecycle": "node --experimental-strip-types scripts/draftSessionLifecycle.test.ts",
-    "test:session-rail": "node --experimental-strip-types scripts/ownedSessions.test.ts && node --experimental-strip-types scripts/myWorkViewOptions.test.mjs && node --experimental-strip-types scripts/errorPresentation.test.ts && node --experimental-strip-types scripts/railElapsedTicker.test.ts",
+    "test:session-rail": "node --experimental-strip-types scripts/ownedSessions.test.ts && node --experimental-strip-types scripts/myWorkViewOptions.test.ts && node --experimental-strip-types scripts/errorPresentation.test.ts && node --experimental-strip-types scripts/railElapsedTicker.test.ts",
     "test:theme-registry": "node --experimental-strip-types scripts/themeRegistry.test.mjs",
     "test:extension-api-probe-scm": "node --experimental-strip-types scripts/extensionApiProbeScmAdapter.test.mjs",
     "test:extension-api-probe-controller": "node --experimental-strip-types scripts/extensionApiProbeController.test.mjs",

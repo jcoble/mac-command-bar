@@ -29,6 +29,7 @@ export type ProviderUpdatePhase = 'idle' | 'checking' | 'available' | 'current' 
 export const providerUpdateState = $state({
   phase: 'idle' as ProviderUpdatePhase,
   generation: 0,
+  installingProvider: null as string | null,
   message: '',
   status: null as ProviderUpdateStatus | null
 });
@@ -69,6 +70,7 @@ export async function installProviderUpdates(provider: string, stopSignal: Abort
   if (state.phase === 'installing' || !state.status?.providers.some((item) => item.provider === provider && item.updateAvailable)) return;
   ++state.generation;
   state.phase = 'installing';
+  state.installingProvider = provider;
   state.message = `Downloading and verifying ${providerLabel(provider)}…`;
   let unlisten: (() => void) | undefined;
   try {
@@ -91,6 +93,7 @@ export async function installProviderUpdates(provider: string, stopSignal: Abort
     state.message = String(error);
   } finally {
     unlisten?.();
+    state.installingProvider = null;
   }
 }
 

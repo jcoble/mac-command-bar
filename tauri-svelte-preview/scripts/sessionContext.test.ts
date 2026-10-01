@@ -147,6 +147,26 @@ assert.equal(capped.length, 50, 'the list stops at 50 files even when more were 
 assert.equal(capped[0].path, 'src/file-59.ts', 'the cap keeps the most recently touched files');
 assert.equal(capped[49].path, 'src/file-10.ts', 'the cap drops the oldest touches first');
 
+const newestPage = sessionFilesTouched([
+  toolEvent(4, 4_000, { kind: 'tool', path: 'src/edited.ts' }),
+  toolEvent(3, 3_000, { kind: 'tool', path: 'src/read.ts' })
+], '/workspace');
+const olderPage = sessionFilesTouched([
+  toolEvent(2, 2_000, { kind: 'tool', path: 'src/edited.ts' }),
+  toolEvent(1, 1_000, { kind: 'tool', path: 'src/older.ts' })
+], '/workspace');
+const pageTouches = new Map(newestPage.map((touch) => [touch.path, touch]));
+for (const touch of olderPage) {
+  const existing = pageTouches.get(touch.path);
+  if (existing) existing.count += touch.count;
+  else pageTouches.set(touch.path, touch);
+}
+assert.deepEqual(
+  [...pageTouches.values()].sort((a, b) => b.lastTouchedMs - a.lastTouchedMs).map(({ path, count }) => [path, count]),
+  [['/workspace/src/edited.ts', 2], ['/workspace/src/read.ts', 1], ['/workspace/src/older.ts', 1]],
+  'older pages add missing files without moving a repeated file ahead of its latest edit'
+);
+
 const attachment = (id: string, name = `${id}.png`): ConversationAttachment => ({
   id,
   name,

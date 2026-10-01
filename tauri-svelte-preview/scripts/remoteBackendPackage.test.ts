@@ -35,7 +35,7 @@ test('builds a deterministic remote backend package contract', async () => {
       archiveFile: string; bytes: number; sha256: string;
     };
     assert.deepEqual(record, {
-      schemaVersion: 1, version: '1.2.3', protocolVersion: 6,
+      schemaVersion: 1, version: '1.2.3', protocolVersion: 7,
       target: 'x86_64-unknown-linux-gnu', archiveFile: path.basename(archive),
       bytes: archiveBytes.length, sha256: createHash('sha256').update(archiveBytes).digest('hex')
     });

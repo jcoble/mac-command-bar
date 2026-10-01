@@ -38,6 +38,7 @@
     selected?: boolean;
     disabled?: boolean;
     onclick?: (event: MouseEvent) => void;
+    oncontextmenu?: (event: MouseEvent) => void;
     class?: string;
     'data-testid'?: string;
   }
@@ -49,6 +50,7 @@
     selected = false,
     disabled = false,
     onclick,
+    oncontextmenu,
     class: className,
     'data-testid': dataTestId
   }: Props = $props();
@@ -75,6 +77,7 @@
              focus-visible:ring-3 focus-visible:ring-ring/50
              disabled:pointer-events-none disabled:opacity-50"
       onclick={(event) => onclick(event)}
+      {oncontextmenu}
     >
       {@render children()}
     </button>

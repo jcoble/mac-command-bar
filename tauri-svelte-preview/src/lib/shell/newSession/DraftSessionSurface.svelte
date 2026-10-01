@@ -14,6 +14,7 @@
 <script lang="ts">
   import { parseRemoteWorkspacePath } from '$lib/workspacePaths';
   import { onMount } from 'svelte';
+  import { homeDir } from '@tauri-apps/api/path';
   import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
@@ -34,6 +35,7 @@
   import RemoteConnections from '$lib/shell/components/RemoteConnections.svelte';
   import { checkForProviderUpdates, installProviderUpdates, restartProviders, type ProviderUpdateState } from '$lib/shell/providerUpdateService.svelte';
   import ConversationComposer from '$lib/shell/components/conversation/ConversationComposer.svelte';
+  import type { ConversationAttachment } from '$lib/shell/conversation/conversationTypes.ts';
   import type {
     AgentConversationConfigField,
     AgentConversationConfigState
@@ -66,6 +68,7 @@
   import { rememberAgentConfigChoice, rememberedAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
   import {
     probeAgentProviderConfigFromTauri,
+    listRemoteDirectoriesFromTauri,
     readRemoteAssemblyEnvironmentFromTauri,
     type RemoteAssemblyEnvironment,
     type RemoteAssemblyProfile,
@@ -78,7 +81,7 @@
     sessionRoots: string[];
     presetProjectPath: string | null;
     stopSignal: AbortSignal;
-    onSend: (request: ThreadStartRequest) => void | Promise<void>;
+    onSend: (request: ThreadStartRequest, images: File[]) => void | Promise<void>;
     onClose: () => void;
   }
 
@@ -105,6 +108,8 @@
   let refsMessage = $state<string | null>(null);
   let refSearch = $state('');
   let submitting = $state(false);
+  let stagedImages = $state<Array<{ file: File; attachment: ConversationAttachment }>>([]);
+  let attachmentError = $state('');
   let submitError = $state('');
   let catalogConfig = $state<AgentConversationConfigState | null>(null);
   let catalogKey = $state('');
@@ -120,10 +125,10 @@
     sourceRoot: '',
     defaultCwd: ''
   });
-  let pickerUpdates = $state<ProviderUpdateState>({ phase: 'idle', generation: 0, message: '', status: null });
+  let pickerUpdates = $state<ProviderUpdateState>({ phase: 'idle', generation: 0, installingProvider: null, message: '', status: null });
 
   function checkSelectedMachine(): void {
-    pickerUpdates = { phase: 'idle', generation: 0, message: '', status: null };
+    pickerUpdates = { phase: 'idle', generation: 0, installingProvider: null, message: '', status: null };
     void checkForProviderUpdates(stopSignal, pickerUpdates, draft.executionEnvironment === 'remote' ? draft.remoteProfileId ?? undefined : undefined);
   }
 
@@ -132,7 +137,7 @@
     draft.executionEnvironment, draft.remoteProfileId ?? '', draft.provider, draft.cwd
   ].join('\u0000'));
   const currentCatalog = $derived(catalogKey === selectedCatalogKey ? catalogConfig : null);
-  const problems = $derived(validateThreadStart(draft));
+  const problems = $derived(validateThreadStart(draft, stagedImages.length > 0));
   const filteredRefs = $derived(filterThreadStartGitRefs(gitRefs, refSearch));
   const selectedRef = $derived(gitRefs.find((ref) => ref.name === draft.branch) ?? null);
   const projectName = $derived(draft.projectPath.split('/').filter(Boolean).at(-1) ?? '');
@@ -281,6 +286,46 @@
     void loadRefs(path);
   }
 
+  async function selectNoProject(): Promise<void> {
+    const environment = draft.executionEnvironment;
+    const profileId = draft.remoteProfileId;
+    try {
+      const cwd = environment === 'remote'
+        ? (await listRemoteDirectoriesFromTauri(profileId!, '~')).path
+        : await homeDir();
+      if (stopSignal.aborted || draft.executionEnvironment !== environment || draft.remoteProfileId !== profileId) return;
+      loadSequence += 1;
+      gitRefs = [];
+      refsLoading = false;
+      refsMessage = null;
+      updateDraft({ projectPath: '', cwd, branch: '', branchesAvailable: false });
+    } catch (error) {
+      submitError = describeError(error);
+    }
+  }
+
+  function stageImages(files: File[]): void {
+    const images = files.filter((file) => file.type.startsWith('image/'));
+    if (!images.length) {
+      attachmentError = 'That file is not a supported image.';
+      return;
+    }
+    attachmentError = '';
+    stagedImages = [...stagedImages, ...images.map((file) => ({
+      file,
+      attachment: {
+        id: crypto.randomUUID(), name: file.name, mimeType: file.type,
+        path: '', previewUrl: URL.createObjectURL(file), byteLength: file.size
+      }
+    }))];
+  }
+
+  function removeStagedImage(id: string): void {
+    const found = stagedImages.find((item) => item.attachment.id === id);
+    if (found) URL.revokeObjectURL(found.attachment.previewUrl);
+    stagedImages = stagedImages.filter((item) => item.attachment.id !== id);
+  }
+
   function selectEnvironment(
     environment: ExecutionEnvironment,
     profile: RemoteAssemblyProfile | null = null
@@ -305,6 +350,7 @@
         branch: '',
         branchesAvailable: false
       });
+      if (!cwd) void selectNoProject();
       checkSelectedMachine();
       return;
     }
@@ -364,7 +410,7 @@
 
   async function send(): Promise<void> {
     if (submitting || stopSignal.aborted) return;
-    let request = buildThreadStartRequest(draft);
+    let request = buildThreadStartRequest(draft, stagedImages.length > 0);
     if (!request) {
       submitError = problems[0]?.message ?? 'This draft is not ready to send.';
       return;
@@ -378,7 +424,7 @@
     submitting = true;
     submitError = '';
     try {
-      if (draft.executionEnvironment === 'local' && !draft.branchesAvailable) {
+      if (draft.executionEnvironment === 'local' && request.projectPath && !draft.branchesAvailable) {
         if (stopSignal.aborted) return;
         const made = await initProjectRepository(draft.projectPath);
         if (stopSignal.aborted) return;
@@ -389,14 +435,14 @@
         if (stopSignal.aborted) return;
         await loadRefs(draft.projectPath);
         if (stopSignal.aborted) return;
-        request = buildThreadStartRequest(draft);
+        request = buildThreadStartRequest(draft, stagedImages.length > 0);
         if (!request) {
           submitError = problems[0]?.message ?? 'This draft is not ready to send.';
           return;
         }
       }
       if (stopSignal.aborted) return;
-      await onSend(request);
+      await onSend(request, stagedImages.map((item) => item.file));
       if (stopSignal.aborted) return;
     } catch (error) {
       if (!stopSignal.aborted) submitError = describeError(error);
@@ -414,6 +460,7 @@
     return () => {
       owner.active = false;
       loadSequence += 1;
+      stagedImages.forEach((item) => URL.revokeObjectURL(item.attachment.previewUrl));
     };
   });
 
@@ -435,6 +482,7 @@
       draft = { ...draft, executionEnvironment: 'remote', remoteProfileId: remote.profileId };
     } else if (projectPath) void loadRefs(projectPath);
     hydrated = true;
+    if (!projectPath && !remote) void selectNoProject();
     checkSelectedMachine();
     composer?.focus();
   }
@@ -529,6 +577,9 @@
   </DropdownMenu.Root>
 
   {#if draft.executionEnvironment === 'remote' && selectedRemoteProfile}
+    <Button data-testid="draft-session-no-project" variant="ghost" size="xs" class="draft-control" onclick={() => void selectNoProject()}>
+      No project {#if !draft.projectPath}<Check aria-hidden="true" class="size-3.5" />{/if}
+    </Button>
     <RemoteDirectoryPicker label="working folder" profileId={selectedRemoteProfile.id} sshTarget={selectedRemoteProfile.sshTarget} value={draft.cwd}
       onChange={(path) => updateDraft({ projectPath: path, cwd: path, branch: '', branchesAvailable: false })} />
   {:else}
@@ -536,7 +587,7 @@
     <DropdownMenu.Trigger>
       {#snippet child({ props })}
         <Button {...props} data-testid="draft-session-project" variant="ghost" size="xs" class="draft-control">
-          {projectName || 'Choose a project'}
+          {projectName || 'No project'}
           <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
         </Button>
       {/snippet}
@@ -550,6 +601,11 @@
       class="w-[300px]"
     >
       <DropdownMenu.Label>Project workspace</DropdownMenu.Label>
+      <DropdownMenu.Item data-testid="draft-session-no-project" onSelect={() => void selectNoProject()}>
+        <span class="draft-check">{#if !draft.projectPath}<Check aria-hidden="true" class="size-3.5" />{/if}</span>
+        <span>No project</span>
+      </DropdownMenu.Item>
+      <DropdownMenu.Separator />
       {#each roots as root (root.path)}
         <DropdownMenu.Item
           data-testid={`draft-session-project-${root.id}`}
@@ -580,7 +636,7 @@
   <DropdownMenu.Root onOpenChange={(open) => { if (!open) refSearch = ''; }}>
     <DropdownMenu.Trigger>
       {#snippet child({ props })}
-        <Button {...props} disabled={draft.executionEnvironment === 'remote'} data-testid="draft-session-branch" variant="ghost" size="xs" class="draft-control draft-branch">
+        <Button {...props} disabled={draft.executionEnvironment === 'remote' || !draft.projectPath} data-testid="draft-session-branch" variant="ghost" size="xs" class="draft-control draft-branch">
           <GitBranch aria-hidden="true" class="size-3.5" />
           <span class="truncate">{(selectedRef?.name ?? draft.branch) || 'Choose a branch'}</span>
           <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
@@ -645,7 +701,7 @@
 <section class="draft-surface" data-testid="draft-session-surface" aria-label="New session">
   <div class="draft-topline">
     <span data-testid="draft-session-note">
-      New project folders get a local Git repository when selected. Your conversation starts when you send.
+      {draft.projectPath ? 'New project folders get a local Git repository when selected. ' : ''}Your conversation starts when you send.
     </span>
     <Button
       data-testid="draft-session-close"
@@ -709,7 +765,8 @@
     bind:this={composer}
     provider={draft.provider}
     draft={draft.prompt}
-    attachments={[]}
+    attachments={stagedImages.map((item) => item.attachment)}
+    {attachmentError}
     sending={submitting}
     {configState}
     pendingConfig={{}}
@@ -718,6 +775,16 @@
     leadingControls={draftControls}
     onDraftChange={(value) => updateDraft({ prompt: value })}
     onSend={send}
+    onPaste={(event) => {
+      const files = [...(event.clipboardData?.files ?? [])];
+      if (!files.length) files.push(...[...(event.clipboardData?.items ?? [])]
+        .filter((item) => item.kind === 'file')
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => file !== null));
+      if (files.length) { event.preventDefault(); stageImages(files); }
+    }}
+    onDropFiles={stageImages}
+    onRemoveAttachment={removeStagedImage}
     onConfigChange={changeConfig}
   />
 </section>

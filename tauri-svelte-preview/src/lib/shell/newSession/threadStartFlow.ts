@@ -67,7 +67,7 @@ export type ThreadStartRequest = {
   model: string | null;
   reasoningEffort: string | null;
   approvalPolicy: string | null;
-  projectPath: string;
+  projectPath: string | null;
   cwd: string;
   branch: string;
   createNewWorktree: boolean;
@@ -349,7 +349,8 @@ export function accessChoicesFor(
  * session from ever being given a better name after its first turn.
  */
 export function titleFromPrompt(prompt: string, projectPath: string): string {
-  const fallback = tidy(projectPath).split('/').filter(Boolean).at(-1) || 'project';
+  const fallback = tidy(projectPath).split('/').filter(Boolean).at(-1);
+  if (!fallback) return sessionTitleFromPrompt(tidy(prompt)) ?? 'New conversation';
   return sessionTitleFromPrompt(tidy(prompt)) ?? `Build in ${fallback}`;
 }
 
@@ -358,12 +359,12 @@ export function titleFromPrompt(prompt: string, projectPath: string): string {
  * is intentionally rejected because this build has no create-worktree command;
  * silently using the main checkout would violate the selected location.
  */
-export function validateThreadStart(state: ThreadStartPickerState): ThreadStartProblem[] {
+export function validateThreadStart(state: ThreadStartPickerState, hasAttachments = false): ThreadStartProblem[] {
   const problems: ThreadStartProblem[] = [];
-  if (!tidy(state.prompt)) {
-    problems.push({ field: 'prompt', message: 'Describe what you want to build.' });
+  if (!tidy(state.prompt) && !hasAttachments) {
+    problems.push({ field: 'prompt', message: 'Write a message or attach an image.' });
   }
-  if (!tidy(state.projectPath).startsWith('/')) {
+  if (tidy(state.projectPath) && !tidy(state.projectPath).startsWith('/')) {
     problems.push({ field: 'project', message: 'Choose a project workspace first.' });
   }
   if (!tidy(state.cwd).startsWith('/')) {
@@ -377,7 +378,7 @@ export function validateThreadStart(state: ThreadStartPickerState): ThreadStartP
   // the reader cannot satisfy it and cannot get past it. The agent makes the
   // repository itself and lands on its default branch, which is what the
   // folder being empty means in the first place.
-  if (state.branchesAvailable && !tidy(state.branch)) {
+  if (state.projectPath && state.branchesAvailable && !tidy(state.branch)) {
     problems.push({ field: 'branch', message: 'Choose an existing branch first.' });
   }
   if (state.createNewWorktree) {
@@ -391,9 +392,10 @@ export function validateThreadStart(state: ThreadStartPickerState): ThreadStartP
 
 /** Assemble the route-owned spawn request, or null while the draft is invalid. */
 export function buildThreadStartRequest(
-  state: ThreadStartPickerState
+  state: ThreadStartPickerState,
+  hasAttachments = false
 ): ThreadStartRequest | null {
-  if (validateThreadStart(state).length > 0) return null;
+  if (validateThreadStart(state, hasAttachments).length > 0) return null;
   return {
     prompt: tidy(state.prompt),
     executionEnvironment: state.executionEnvironment,
@@ -405,7 +407,7 @@ export function buildThreadStartRequest(
     // approval control, and a session asked to change one refuses the message
     // that carried the request.
     approvalPolicy: state.provider === 'antigravity' ? null : (tidy(state.access) || null),
-    projectPath: tidy(state.projectPath),
+    projectPath: tidy(state.projectPath) || null,
     cwd: tidy(state.cwd),
     branch: tidy(state.branch),
     createNewWorktree: state.createNewWorktree,

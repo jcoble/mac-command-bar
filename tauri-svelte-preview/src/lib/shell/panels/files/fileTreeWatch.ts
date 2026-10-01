@@ -26,7 +26,7 @@ export async function watchFileTree(
 		const registered = await watch(
 			[...directories],
 			(event: WatchEvent) => {
-				if (!signal.aborted) onChange(event.paths);
+				if (!signal.aborted && !(typeof event.type === "object" && "access" in event.type)) onChange(event.paths);
 			},
 			{ recursive: false, delayMs: 350 },
 		);

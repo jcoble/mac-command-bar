@@ -159,6 +159,7 @@ export function setEditorFilePreview(
       && file?.dirty
       && retainedDraft !== null
       && retainedDraft !== preview.content
+      && (file.conflict !== null || file.preview?.content !== preview.content)
       ? file.conflict
         ?? 'File changed on disk while this draft has unsaved edits.'
       : null;

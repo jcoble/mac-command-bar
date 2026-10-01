@@ -12,7 +12,7 @@
   } from '$lib/shell/providerUpdateService.svelte';
 
   let { profileId, machineName }: { profileId?: string; machineName?: string } = $props();
-  const remoteState = $state<ProviderUpdateState>({ phase: 'idle', generation: 0, message: '', status: null });
+  const remoteState = $state<ProviderUpdateState>({ phase: 'idle', generation: 0, installingProvider: null, message: '', status: null });
   const updateState = $derived(profileId ? remoteState : providerUpdateState);
   const owner = new AbortController();
   onMount(() => { if (profileId) void checkForProviderUpdates(owner.signal, updateState, profileId); });
@@ -22,7 +22,6 @@
 <div class="flex flex-col items-end gap-1.5">
   {#if profileId}<span class="text-[12px]">Provider adapters · {machineName}</span>{/if}
   <div class="flex items-center gap-2">
-    {#if updateState.phase === 'installing'}<LoaderCircle aria-label="Downloading adapter" class="size-4 animate-spin" />{/if}
     <Button
       variant="secondary"
       size="sm"
@@ -40,10 +39,11 @@
   {#if updateState.status}
     {#each updateState.status.providers as provider (provider.provider)}
       <div class="flex items-center gap-2 text-[12px]">
+        {#if updateState.installingProvider === provider.provider}<LoaderCircle aria-label={`Downloading ${provider.provider} adapter`} class="size-4 animate-spin" />{/if}
         <span>{provider.provider === 'antigravity' ? 'Antigravity' : provider.provider}: {provider.currentVersion ?? 'Not installed'} → {provider.availableVersion}</span>
         {#if provider.updateAvailable}
           <Button variant="secondary" size="sm" disabled={updateState.phase === 'installing'} onclick={() => void installProviderUpdates(provider.provider, owner.signal, updateState, profileId)}>
-            {updateState.phase === 'installing' ? 'Installing…' : provider.currentVersion ? 'Update' : 'Install'}
+            {updateState.installingProvider === provider.provider ? 'Installing…' : provider.currentVersion ? 'Update' : 'Install'}
           </Button>
         {/if}
       </div>

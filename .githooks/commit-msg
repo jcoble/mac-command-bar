@@ -1,26 +1,46 @@
 #!/bin/sh
-# Every commit either updates the architecture guide or says it did not need to.
-#
-# main-architecture-explained.html at the repository root is the single
-# description of how the app works. A commit that changes anything it describes
-# stages an update to it. A commit that changes nothing it describes carries the
-# line "Architecture: unchanged" in its message body. A commit that does neither
-# is refused here. Set up once per clone: git config core.hooksPath .githooks
+# Keep task commits traceable and preserve the architecture-guide check.
 
 message_file="$1"
 guide="main-architecture-explained.html"
 
-# A merge commit's message is not the place to answer the question.
+# Git creates merge messages itself; regular task commits carry the record.
 if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
   exit 0
 fi
 
-# The guide is staged (changed or newly added): the question is answered.
+message=$(git stripspace --strip-comments < "$message_file")
+
+if printf '%s\n' "$message" | grep -Eiq '^Co-Authored-By:'; then
+  echo 'commit stopped: remove the Co-Authored-By trailer.' >&2
+  exit 1
+fi
+
+last_line=$(printf '%s\n' "$message" | tail -n 1)
+case "$last_line" in
+  'Committed-by: '?*) ;;
+  *)
+    echo 'commit stopped: the final message line must be Committed-by: <actual committer>.' >&2
+    exit 1
+    ;;
+esac
+
+branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+case "$branch" in
+  tsk-[0-9]*)
+    task_id=$(printf '%s\n' "$branch" | sed -n 's/^tsk-\([0-9][0-9]*\).*$/\1/p')
+    if ! printf '%s\n' "$message" | grep -Eq "^Task: TSK-$task_id https://app[.]notion[.]com/p/[0-9a-fA-F]{32}([?].*)?$"; then
+      echo "commit stopped: add Task: TSK-$task_id https://app.notion.com/p/<task-page-id>." >&2
+      exit 1
+    fi
+    ;;
+esac
+
 if ! git diff --cached --quiet -- "$guide"; then
   exit 0
 fi
 
-if grep -qi '^Architecture: unchanged' "$message_file"; then
+if printf '%s\n' "$message" | grep -qi '^Architecture: unchanged'; then
   exit 0
 fi
 

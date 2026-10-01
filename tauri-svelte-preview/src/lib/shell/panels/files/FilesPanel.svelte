@@ -78,7 +78,7 @@
 		ownedId: string | null;
 		onRootUnavailable?(root: string): void | Promise<void>;
 		expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
-		onExpandedPathsChange?(root: string, paths: readonly string[]): void;
+		onExpandedPathsChange?(ownedId: string, root: string, paths: readonly string[]): void;
 		inspectionRoot?: string | null;
 		onInspectionRootChange?(root: string | null): void;
 		checkoutDiscoveryRoots?: readonly string[];
@@ -173,6 +173,7 @@
 	let hydratedExpansionKey = "";
 	let expansionRestoreGeneration = 0;
 	let scopedRoot = "";
+	let scopedOwnedId: string | null = null;
 	let inspectionGeneration = 0;
 	let checkoutGeneration = 0;
 	let checkoutBusy = $state(false);
@@ -291,14 +292,16 @@
 
 	$effect(() => {
 		const nextRoot = canonicalPath(sessionRoot);
+		const nextOwnedId = ownedId;
 		const discoveryRoots = checkoutRoots;
 		const shouldActivate = visible && nextRoot !== "";
 		const controller = new AbortController();
 		filesOwnerSignal = controller.signal;
 		untrack(() => {
-			const rootChanged = nextRoot !== scopedRoot;
+			const rootChanged = nextRoot !== scopedRoot || nextOwnedId !== scopedOwnedId;
 			if (rootChanged) {
 				scopedRoot = nextRoot;
+				scopedOwnedId = nextOwnedId;
 				inspectionGeneration += 1;
 				inspectedRoot = "";
 				checkouts = [];
@@ -349,6 +352,10 @@
 		try {
 			const grouped = await listRepositoryCheckoutsFromTauri(roots);
 			if (signal.aborted || generation !== checkoutGeneration) return;
+			if (!grouped) {
+				checkouts = [];
+				return;
+			}
 			const unique = new Map<string, RepositoryCheckout>();
 			for (const checkout of Object.values(grouped).flat()) {
 				const path = canonicalPath(checkout.path);
@@ -417,11 +424,12 @@
 	});
 
 	$effect(() => {
+		const sessionOwner = ownedId;
 		const requestedRoot = canonicalPath(projectRoot);
 		const activeRoot = canonicalPath(explorer.root ?? "");
 		const savedPaths = activeRoot ? canonicalExpandedPaths(activeRoot, expandedPathsByRoot?.[activeRoot] ?? []) : [];
 		const savedKey = expansionKey(savedPaths);
-		if (!listed || !explorer.activated || !requestedRoot || requestedRoot !== activeRoot) {
+		if (!sessionOwner || sessionOwner !== scopedOwnedId || !listed || !explorer.activated || !requestedRoot || requestedRoot !== activeRoot) {
 			if (activeRoot !== hydratedRoot) {
 				hydratedRoot = activeRoot;
 				hydratedExpansionKey = "";
@@ -621,8 +629,8 @@
 
 	function persistExpandedPaths(): void {
 		const projectRoot = canonicalPath(explorer.root ?? "");
-		if (!projectRoot || projectRoot !== hydratedRoot || !listed) return;
-		onExpandedPathsChange?.(projectRoot, canonicalExpandedPaths(projectRoot, [...expanded]));
+		if (!scopedOwnedId || scopedOwnedId !== ownedId || !projectRoot || projectRoot !== hydratedRoot || !listed) return;
+		onExpandedPathsChange?.(scopedOwnedId, projectRoot, canonicalExpandedPaths(projectRoot, [...expanded]));
 	}
 
 	async function restoreExpandedDirectories(

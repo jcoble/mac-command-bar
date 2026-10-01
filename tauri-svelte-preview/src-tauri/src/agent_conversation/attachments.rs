@@ -278,7 +278,7 @@ pub fn read_original_at(
 
 /// The folder that holds every session's attachments, and the root that stored
 /// relative paths are measured against.
-fn vault_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+pub(super) fn vault_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     #[cfg(test)]
     {
         let _ = app;
@@ -503,7 +503,7 @@ fn validate_delete_row(
     Ok(())
 }
 
-fn safe_segment<'a>(value: &'a str, label: &str) -> Result<&'a str, String> {
+pub(super) fn safe_segment<'a>(value: &'a str, label: &str) -> Result<&'a str, String> {
     let value = value.trim();
     if value.is_empty()
         || value.contains('/')

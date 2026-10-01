@@ -58,3 +58,12 @@ owner said. The controller:
 - Commits end with `Committed-by: <name>`; never Co-Authored-By. The
   commit-msg hook wants the architecture page staged or
   `Architecture: unchanged` in the body.
+
+## Notion task delivery record
+
+For implementation of a Notion-tracked task, use the shared `work-tasks` skill at
+`.claude/skills/work-tasks/SKILL.md` (also exposed at `.codex/skills/work-tasks`).
+Keep the small plan, Eastern-dated owner/location and commit updates, direct proof,
+and one combined code/spec review in the task page. Review the plan before editing.
+Link that task and its proof from the PR. The commit hook checks the task link on
+`tsk-*` branches, a final `Committed-by:` line, and no `Co-Authored-By` trailer.

@@ -1897,7 +1897,7 @@ export type RepositoryCheckout = {
  * appears. Deleted checkouts are left out by the backend.
  */
 export async function listRepositoryCheckoutsFromTauri(
-  roots: string[]
+  roots: readonly string[]
 ): Promise<Record<string, RepositoryCheckout[]> | null> {
   if (!isTauriRuntime() || roots.length === 0) {
     return null;

@@ -177,6 +177,6 @@ assert.deepEqual(trace, ['right:browser', 'url:https://notion.test/setup']);
 releaseBrowser();
 
 assert.equal(RIGHT_TAB_IDS.length, 9);
-assert.equal(CENTER_TAB_IDS.length, 4);
+assert.equal(CENTER_TAB_IDS.length, 5);
 
 console.log('workbenchNavigation: no-op safety, partial registration, call order, and clearing passed');

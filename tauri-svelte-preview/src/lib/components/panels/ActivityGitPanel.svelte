@@ -42,8 +42,8 @@
     Terminal,
     Trash2
   } from '@lucide/svelte';
-  import type { ProjectGitFileStatus, GitBranchHealthSummary } from '$lib/sourceData';
-  import type { GitCommitHistoryEntry } from '$lib/tauriSource';
+  import type { GitBranchHealthSummary } from '$lib/sourceData';
+  import type { GitCommitHistoryEntry, ProjectGitFileStatus } from '$lib/tauriSource';
   import type {
     GitGraphViewModel,
     GitGraphCommitRow,

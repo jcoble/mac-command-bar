@@ -6142,11 +6142,7 @@ fn payload_from_session_update_for_turn(
             let details = tool_details(update);
             Some(AgentConversationPayload::Tool {
                 item_id: tool_item_id(update, turn_id),
-                name: update
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Tool")
-                    .to_string(),
+                name: details.name,
                 state: ToolState::Started,
                 summary: details.summary,
                 output: details.output,
@@ -6169,11 +6165,7 @@ fn payload_from_session_update_for_turn(
             let details = tool_details(update);
             Some(AgentConversationPayload::Tool {
                 item_id: tool_item_id(update, turn_id),
-                name: update
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Tool")
-                    .to_string(),
+                name: details.name,
                 state,
                 summary: details.summary,
                 output: details.output,
@@ -6332,7 +6324,8 @@ fn tool_item_id(update: &Value, turn_id: &str) -> String {
 /// The parts of an ACP tool call a transcript row can draw.
 #[derive(Debug, Default)]
 struct ToolDetails {
-    /// The one line a collapsed row shows.
+    name: String,
+    /// Input detail; commands stay whole for the shell box and copy action.
     summary: Option<String>,
     /// What the call produced, kept whole.
     output: Option<String>,
@@ -6351,15 +6344,17 @@ struct ToolDetails {
 fn tool_details(update: &Value) -> ToolDetails {
     let mut output = Vec::new();
     let mut diff = Vec::new();
-    let mut path = None;
+    let mut paths = Vec::new();
 
     match update.get("content") {
         Some(Value::Array(blocks)) => {
             for block in blocks {
                 if block.get("type").and_then(Value::as_str) == Some("diff") {
                     let block_path = block.get("path").and_then(Value::as_str);
-                    if path.is_none() {
-                        path = block_path.map(str::to_owned);
+                    if let Some(block_path) = block_path {
+                        if !paths.contains(&block_path.to_owned()) {
+                            paths.push(block_path.to_owned());
+                        }
                     }
                     let patch = unified_diff(
                         block
@@ -6377,8 +6372,10 @@ fn tool_details(update: &Value) -> ToolDetails {
                 } else if let Some(text) = text_from_value(block) {
                     match patch_in_text(&text) {
                         Some(patch) => {
-                            if path.is_none() {
-                                path = patch_target_path(&text);
+                            if let Some(target) = patch_target_path(&text) {
+                                if !paths.contains(&target) {
+                                    paths.push(target);
+                                }
                             }
                             diff.push(patch);
                         }
@@ -6391,8 +6388,10 @@ fn tool_details(update: &Value) -> ToolDetails {
             if let Some(text) = text_from_value(content) {
                 match patch_in_text(&text) {
                     Some(patch) => {
-                        if path.is_none() {
-                            path = patch_target_path(&text);
+                        if let Some(target) = patch_target_path(&text) {
+                            if !paths.contains(&target) {
+                                paths.push(target);
+                            }
                         }
                         diff.push(patch);
                     }
@@ -6413,41 +6412,74 @@ fn tool_details(update: &Value) -> ToolDetails {
         }
     }
 
-    if path.is_none() {
-        path = update.get("locations").and_then(text_from_value);
+    if let Some(location) = update.get("locations").and_then(text_from_value) {
+        if !paths.contains(&location) {
+            paths.push(location);
+        }
+    } else {
+        for key in ["file_path", "path"] {
+            if let Some(target) = update.get("rawInput").and_then(|input| input.get(key))
+                .and_then(Value::as_str).filter(|target| !target.is_empty())
+            {
+                if !paths.contains(&target.to_owned()) {
+                    paths.push(target.to_owned());
+                }
+            }
+        }
+    }
+    if let Some(file) = update
+        .pointer("/rawInput/command")
+        .or_else(|| update.pointer("/rawInput/cmd"))
+        .or_else(|| update.get("title"))
+        .and_then(Value::as_str)
+        .and_then(transcript::simple_shell_file_path)
+    {
+        if !paths.contains(&file) {
+            paths.push(file);
+        }
     }
 
-    let output = (!output.is_empty()).then(|| output.join("\n"));
-    // The preview is the first line of what came back, which for a shell call
-    // is the command itself. The body is everything.
-    let summary = output
-        .as_deref()
-        .and_then(|text| text.lines().find(|line| !line.trim().is_empty()))
-        .map(str::to_owned)
-        .or_else(|| path.clone())
-        .or_else(|| {
-            update
-                .get("title")
-                .and_then(Value::as_str)
-                .map(|raw| {
-                    raw.lines()
-                        .map(str::trim)
-                        .filter(|line| !line.starts_with("```") && !line.is_empty())
-                        .collect::<Vec<_>>()
-                        .first()
-                        .copied()
-                        .unwrap_or("")
-                        .to_string()
-                })
-                .filter(|line| !line.is_empty() && line != "Tool")
-        });
+    // Completion titles may contain the result, not the tool or its input.
+    let title = if update.get("sessionUpdate").and_then(Value::as_str) == Some("tool_call_update") {
+        ""
+    } else {
+        update.get("title").and_then(Value::as_str).unwrap_or("")
+    };
+    let name = update.pointer("/_meta/claudeCode/toolName")
+        .and_then(Value::as_str)
+        .or_else(|| match update.get("kind").and_then(Value::as_str) {
+            Some("execute" | "command") => Some("command"),
+            Some("read") => Some("Read"),
+            Some("edit" | "file_change") => Some("Edit"),
+            Some("search") => Some("Search"),
+            _ => None,
+        })
+        .unwrap_or_else(|| title.split("```").next().unwrap_or("").trim())
+        .to_string();
+    let input = update.get("rawInput");
+    let summary = ["command", "cmd", "description", "query", "pattern", "file_path", "path", "id"]
+        .iter()
+        .find_map(|key| input.and_then(|input| input.get(key)).and_then(Value::as_str))
+        .or_else(|| (matches!(update.get("kind").and_then(Value::as_str), Some("execute" | "command"))
+            && !title.is_empty() && title != name && title != "Tool").then_some(title))
+        .map(|text| unwrap_console_block(text).to_string());
+    let output = (!output.is_empty()).then(|| output.iter()
+        .map(|text| unwrap_console_block(text)).collect::<Vec<_>>().join("\n"));
 
     ToolDetails {
+        name,
         summary,
         output,
-        path,
+        path: (!paths.is_empty()).then(|| paths.join("\n")),
         diff: (!diff.is_empty()).then(|| diff.join("\n")),
     }
+}
+
+/// Remove only the provider's complete console wrapper, preserving its body.
+fn unwrap_console_block(text: &str) -> &str {
+    text.strip_prefix("```console\n")
+        .and_then(|body| body.strip_suffix("\n```"))
+        .unwrap_or(text)
 }
 
 /// The patch inside a tool's text output, when the text is one.
@@ -12206,7 +12238,7 @@ mod tests {
                 diff,
                 ..
             }) => {
-                assert_eq!(summary.as_deref(), Some("running 3 tests"));
+                assert_eq!(summary, None, "output must not become input detail");
                 assert_eq!(output.as_deref(), Some("running 3 tests\nall passed"));
                 assert_eq!(path.as_deref(), Some("core/src/lib.rs"));
                 assert_eq!(diff, None);
@@ -12234,6 +12266,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn tool_input_identity_and_output_stay_separate() {
+        let command = "printf 'first\\n'\nprintf 'second\\n'";
+        let start = json!({ "update": {
+            "sessionUpdate": "tool_call", "toolCallId": "bash-1",
+            "title": command, "kind": "execute",
+            "_meta": { "claudeCode": { "toolName": "Bash" } },
+            "rawInput": { "command": command, "description": "Print two lines" }
+        }});
+        match payload_from_session_update_for_turn(&start, None).unwrap() {
+            AgentConversationPayload::Tool { name, summary, output, .. } => {
+                assert_eq!(name, "Bash");
+                assert_eq!(summary.as_deref(), Some(command));
+                assert_eq!(output, None);
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+        let completion = json!({ "update": {
+            "sessionUpdate": "tool_call_update", "toolCallId": "bash-1",
+            "status": "completed",
+            "title": "{\"results\":[{\"id\":\"result-1\"}]}",
+            "content": [{ "type": "text", "text": "```console\nfirst `literal`\nsecond\n```" }]
+        }});
+        match payload_from_session_update_for_turn(&completion, None).unwrap() {
+            AgentConversationPayload::Tool { name, summary, output, .. } => {
+                assert!(name.is_empty(), "an output-only update retains the start identity");
+                assert_eq!(summary, None);
+                assert_eq!(output.as_deref(), Some("first `literal`\nsecond"));
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+        let mcp = tool_details(&json!({
+            "title": "Fetch", "_meta": { "claudeCode": { "toolName": "mcp__notion__fetch" } },
+            "rawInput": { "id": "3eb394b0689d812fa681d4495db06438" },
+            "content": [{ "type": "text", "text": "{\"results\":[]}" }]
+        }));
+        assert_eq!(mcp.name, "mcp__notion__fetch");
+        assert_eq!(mcp.summary.as_deref(), Some("3eb394b0689d812fa681d4495db06438"));
+        assert_eq!(mcp.output.as_deref(), Some("{\"results\":[]}"));
+        let completed = tool_details(&json!({
+            "sessionUpdate": "tool_call_update", "status": "completed",
+            "title": "{\"metadata\":{\"type\":\"page\"}}",
+            "_meta": { "claudeCode": { "toolName": "mcp__notion__fetch" } }
+        }));
+        assert_eq!(completed.name, mcp.name);
+        assert_eq!(completed.summary, None, "JSON result title must not replace the fetch input");
+        assert_eq!(unwrap_console_block("```console\nliteral"), "```console\nliteral");
+    }
+
     /// ACP hands over a file before and after rather than a patch, so the row
     /// had nothing a diff view could read.
     #[test]
@@ -12258,6 +12339,36 @@ mod tests {
                     diff,
                     "@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"one\");\n+    println!(\"two\");\n }\n\\ No newline at end of file\n"
                 );
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn live_tool_paths_include_raw_input_reads_and_every_edited_file() {
+        for (field, target) in [("file_path", "src/read.rs"), ("path", "src/other.rs")] {
+            let update = json!({ "update": {
+                "sessionUpdate": "tool_call_update", "toolCallId": "read-1",
+                "kind": "read", "rawInput": { field: target }
+            } });
+            match payload_from_session_update_for_turn(&update, None) {
+                Some(AgentConversationPayload::Tool { path, .. }) => {
+                    assert_eq!(path.as_deref(), Some(target));
+                }
+                other => panic!("expected Tool, got {other:?}"),
+            }
+        }
+
+        let update = json!({ "update": {
+            "sessionUpdate": "tool_call_update", "toolCallId": "edit-1",
+            "kind": "edit", "content": [
+                { "type": "diff", "path": "src/first.rs", "oldText": "old\n", "newText": "new\n" },
+                { "type": "diff", "path": "src/second.rs", "oldText": "old\n", "newText": "new\n" }
+            ]
+        } });
+        match payload_from_session_update_for_turn(&update, None) {
+            Some(AgentConversationPayload::Tool { path, .. }) => {
+                assert_eq!(path.as_deref(), Some("src/first.rs\nsrc/second.rs"));
             }
             other => panic!("expected Tool, got {other:?}"),
         }

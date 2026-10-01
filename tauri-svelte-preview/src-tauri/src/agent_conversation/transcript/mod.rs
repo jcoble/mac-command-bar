@@ -314,6 +314,44 @@ pub fn tool_summary(arguments: &Value) -> Option<String> {
 /// and the record that would say a call failed — the result — is written under
 /// a different id with no tool name on it, so there is nothing here to read a
 /// failure from without inventing one.
+pub(crate) fn simple_shell_file_path(command: &str) -> Option<String> {
+    let command = command.trim().strip_prefix("$ ").unwrap_or(command.trim());
+    let command = command
+        .strip_prefix("/bin/bash -lc \"")
+        .and_then(|script| script.strip_suffix('"'))
+        .unwrap_or(command);
+    // The observed ACP title wraps simple reads in bash and joins them with
+    // `&&`. Skip other shell syntax rather than guessing from command output.
+    if command.chars().any(|ch| ['\n', ';', '|', '>', '<', '$', '`'].contains(&ch)) {
+        return None;
+    }
+    let paths: Vec<&str> = command
+        .split(" && ")
+        .filter_map(|part| {
+            let words: Vec<&str> = part.split_whitespace().collect();
+            match words.as_slice() {
+                ["cat" | "head" | "tail", path] => Some(*path),
+                ["sed", "-n", _, path] => Some(*path),
+                _ => None,
+            }
+        })
+        .map(|path| path.trim_matches(['\'', '"']))
+        .filter(|path| !path.is_empty() && !path.starts_with('-'))
+        .collect();
+    (!paths.is_empty()).then(|| paths.join("\n"))
+}
+
+fn patch_file_paths(patch: &str) -> Option<String> {
+    let paths: Vec<&str> = patch.lines().filter_map(|line| {
+        ["*** Update File: ", "*** Add File: ", "*** Delete File: "]
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix))
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+    }).collect();
+    (!paths.is_empty()).then(|| paths.join("\n"))
+}
+
 pub fn tool_record(
     item_id: &str,
     name: &str,
@@ -327,7 +365,16 @@ pub fn tool_record(
         .or_else(|| input.get("TargetFile"))
         .or_else(|| input.get("AbsolutePath"))
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(str::to_string)
+        .or_else(|| input.as_str().and_then(patch_file_paths))
+        .or_else(|| input.get("patch").and_then(Value::as_str).and_then(patch_file_paths))
+        .or_else(|| {
+            input
+                .get("command")
+                .or_else(|| input.get("cmd"))
+                .and_then(Value::as_str)
+                .and_then(simple_shell_file_path)
+        });
     let diff = input
         .get("diff")
         .or_else(|| input.get("patch"))
@@ -508,6 +555,33 @@ fn file_identity(metadata: &Metadata) -> FileIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_codex_raw_patch_keeps_every_edited_file() {
+        let line = serde_json::json!({
+            "timestamp": "2026-08-01T12:00:00.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "call_id": "patch_1",
+                "name": "apply_patch",
+                "input": "*** Begin Patch\n*** Update File: src/one.ts\n@@\n+change\n*** Add File: src/two.ts\n+new\n*** End Patch"
+            }
+        }).to_string();
+        let records = parse_durable_line(AgentConversationProvider::Codex, "session-1", line.as_bytes());
+        match records[0].native.as_ref().expect("tool event") {
+            AgentConversationPayload::Tool { path, .. } => {
+                assert_eq!(path.as_deref(), Some("src/one.ts\nsrc/two.ts"));
+            }
+            other => panic!("expected Tool, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_wrapped_compound_read_keeps_its_file_operands() {
+        let command = "/bin/bash -lc \"sed -n '1,120p' read.txt && printf '--- edit.txt ---' && sed -n '1,120p' edit.txt\"";
+        assert_eq!(simple_shell_file_path(command).as_deref(), Some("read.txt\nedit.txt"));
+    }
 
     /// A tool row opens onto what the tool answered. Both providers write that
     /// answer on its own line, under the id of the call and with no tool name,

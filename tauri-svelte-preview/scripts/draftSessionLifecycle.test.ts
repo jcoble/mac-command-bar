@@ -123,7 +123,7 @@ assert.match(page, /await selection\.newSession\.start\(/);
 
 // After the session exists, the panels are pointed at its folder deliberately,
 // rather than being left to whatever start-up had already allowed.
-assert.match(controller, /shellPanels\.allowSessionLoads\(\);\s*\n\s*\n?\s*try \{/);
+assert.match(controller, /shellPanels\.allowSessionLoads\(\);\s*\n\s*let promptAccepted = false;\s*\n\s*try \{/);
 assert.match(controller, /await selectSession\(owned\.ownedId\)/);
 assert.match(selectionController, /shellPanels\.sessionPicked\(this\.activeRootAvailable\)/);
 assert.match(page, /selectCenterTab\("session"\);\s*\n\s*selectRightTab\("files"\);/);

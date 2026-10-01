@@ -33,6 +33,15 @@ use protocol::{
     StopAgentConversationTurnRequest, UpdateAgentConversationSessionMetaRequest,
 };
 use remote::RemoteConnectionManager;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+static ATTACHMENT_DOWNLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
+static ORIGINAL_READS: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+
+fn original_reads() -> &'static Mutex<HashMap<String, bool>> {
+    ORIGINAL_READS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -811,18 +820,22 @@ pub async fn save_agent_conversation_attachment(
     remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     mime_type: String,
-    bytes: Vec<u8>,
+    bytes: String,
 ) -> CommandResult<attachments::SavedConversationAttachment> {
+    let bytes = match tokio::task::spawn_blocking(move || {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.decode(bytes).map_err(|error| error.to_string())
+    }).await {
+        Ok(result) => result.map_err(protocol::CommandError::from)?,
+        Err(error) => return command_result(Err(error.to_string())),
+    };
     if remote.owns(&owned_id) {
         return command_result(remote.save_attachment(owned_id, mime_type, bytes).await);
     }
-    command_result(attachments::save(
-        &app,
-        manager.store(),
-        &owned_id,
-        &mime_type,
-        &bytes,
-    ))
+    let store = manager.store_handle();
+    command_result(tokio::task::spawn_blocking(move ||
+        attachments::save(&app, &store, &owned_id, &mime_type, &bytes)
+    ).await.map_err(|error| error.to_string())?)
 }
 
 #[tauri::command]
@@ -836,18 +849,109 @@ pub async fn read_agent_conversation_attachments(
     if remote.owns(&owned_id) {
         return command_result(remote.read_attachments(owned_id).await);
     }
-    command_result(attachments::read(&app, manager.store(), &owned_id))
+    let store = manager.store_handle();
+    command_result(tokio::task::spawn_blocking(move ||
+        attachments::read(&app, &store, &owned_id)
+    ).await.map_err(|error| error.to_string())?)
 }
 
 #[tauri::command]
-pub async fn read_agent_conversation_attachment_chunk(
+/// Fetches a remote thumbnail once, or a clicked original for one lightbox open.
+pub async fn read_agent_conversation_attachment_file(
+    app: tauri::AppHandle,
     remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     attachment_id: String,
     thumbnail: bool,
-    offset: u64,
-) -> CommandResult<Vec<u8>> {
-    command_result(remote.read_attachment_chunk(owned_id, attachment_id, thumbnail, offset).await)
+    byte_length: usize,
+    mime_type: String,
+    transfer_id: String,
+) -> CommandResult<String> {
+    let owned = command_result(attachments::safe_segment(&owned_id, "Owned session id").map(str::to_owned))?;
+    let id = command_result(uuid::Uuid::parse_str(&attachment_id).map_err(|_| "Attachment id is invalid".to_string()))?;
+    let transfer = command_result(uuid::Uuid::parse_str(&transfer_id).map_err(|_| "Transfer id is invalid".to_string()))?;
+    if byte_length == 0 || byte_length > attachments::MAX_ATTACHMENT_BYTES {
+        return command_result(Err("Attachment read is outside the 20 MB limit".to_string()));
+    }
+    let extension = if thumbnail { "webp" } else {
+        match mime_type.as_str() {
+            "image/png" => "png", "image/jpeg" => "jpg", "image/gif" => "gif", "image/webp" => "webp",
+            _ => return command_result(Err("Unsupported image type".to_string())),
+        }
+    };
+    let root = command_result(attachments::vault_root(&app))?.join(owned);
+    let name = if thumbnail { format!("remote-{id}-thumb.{extension}") }
+        else { format!("remote-{id}-{transfer}.{extension}") };
+    let path = root.join(name);
+    if thumbnail && tokio::task::spawn_blocking({ let path = path.clone(); move || path.is_file() })
+        .await.map_err(|error| error.to_string()).map_err(protocol::CommandError::from)? {
+        return command_result(Ok(path.display().to_string()));
+    }
+    if !thumbnail {
+        original_reads().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(transfer_id.clone(), false);
+    }
+    let result = async {
+        let _permit = ATTACHMENT_DOWNLOADS.acquire().await.map_err(|error| error.to_string())?;
+        let mut bytes = Vec::with_capacity(byte_length);
+        while bytes.len() < byte_length {
+            if !thumbnail && original_reads().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&transfer_id).copied() != Some(false) { return Err("Attachment read cancelled".into()); }
+            let chunk = remote.read_attachment_chunk(owned_id.clone(), attachment_id.clone(), thumbnail, bytes.len() as u64).await?;
+            if chunk.is_empty() || chunk.len() > 128 * 1024 || bytes.len() + chunk.len() > byte_length {
+                return Err("Remote attachment read is incomplete".into());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let transfer_for_write = transfer_id.clone();
+        tokio::task::spawn_blocking(move || {
+            if thumbnail {
+                std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+                let pending = root.join(format!(".remote-{id}-{transfer_for_write}.tmp"));
+                std::fs::write(&pending, bytes).map_err(|error| error.to_string())?;
+                if let Err(error) = std::fs::rename(&pending, &path) {
+                    let _ = std::fs::remove_file(&pending);
+                    return Err(error.to_string());
+                }
+            } else {
+                let reads = original_reads();
+                let active = reads.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if active.get(&transfer_for_write).copied() != Some(false) { return Err("Attachment read cancelled".into()); }
+                std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+                std::fs::write(&path, bytes).map_err(|error| error.to_string())?;
+            }
+            Ok::<_, String>(path.display().to_string())
+        }).await.map_err(|error| error.to_string())?
+    }.await;
+    if !thumbnail { original_reads().lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&transfer_id); }
+    command_result(result)
+}
+
+#[tauri::command]
+pub async fn discard_agent_conversation_original(
+    app: tauri::AppHandle,
+    owned_id: String,
+    attachment_id: String,
+    mime_type: String,
+    transfer_id: String,
+) -> CommandResult<()> {
+    let owned = command_result(attachments::safe_segment(&owned_id, "Owned session id").map(str::to_owned))?;
+    let id = command_result(uuid::Uuid::parse_str(&attachment_id).map_err(|_| "Attachment id is invalid".to_string()))?;
+    let transfer = command_result(uuid::Uuid::parse_str(&transfer_id).map_err(|_| "Transfer id is invalid".to_string()))?;
+    let extension = match mime_type.as_str() {
+        "image/png" => "png", "image/jpeg" => "jpg", "image/gif" => "gif", "image/webp" => "webp",
+        _ => return command_result(Err("Unsupported image type".to_string())),
+    };
+    let path = command_result(attachments::vault_root(&app))?.join(owned).join(format!("remote-{id}-{transfer}.{extension}"));
+    command_result(tokio::task::spawn_blocking(move || {
+        let mut reads = original_reads().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(active) = reads.get_mut(&transfer_id) { *active = true; }
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }).await.map_err(|error| error.to_string())?)
 }
 
 #[tauri::command]
@@ -861,7 +965,10 @@ pub async fn delete_agent_conversation_attachment(
     if remote.owns(&request.owned_id) {
         return command_result(remote.delete_attachment(request).await);
     }
-    command_result(attachments::delete(&app, manager.store(), request))
+    let store = manager.store_handle();
+    command_result(tokio::task::spawn_blocking(move ||
+        attachments::delete(&app, &store, request)
+    ).await.map_err(|error| error.to_string())?)
 }
 
 /// Rejects blank request identifiers before manager work begins.

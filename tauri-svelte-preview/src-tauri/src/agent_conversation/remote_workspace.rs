@@ -94,6 +94,8 @@ pub(super) async fn execute(operation: String, mut args: Value) -> Result<Value,
             "list_source_directory" => json(crate::list_source_directory_sync_with_cancellation(path(&args, "root")?, path(&args, "directory")?, arg::<Option<bool>>(&args, "includeExcluded")?.unwrap_or(false), cancellation)?),
             "list_source_files" => json(crate::list_source_files_sync_with_cancellation(path(&args, "root")?, arg::<Option<usize>>(&args, "limit")?.unwrap_or(crate::DEFAULT_SOURCE_LIST_LIMIT), arg(&args, "query")?, cancellation)?),
             "search_source_tree" => json(crate::search_source_tree_sync(path(&args, "root")?, arg(&args, "query")?, arg(&args, "pageSize")?, arg(&args, "cursor")?, arg::<Option<bool>>(&args, "includeExcluded")?.unwrap_or(false), cancellation)?),
+            "find_source_definitions_in_root" => json(crate::find_source_definitions_in_root_sync(path(&args, "root")?, arg(&args, "symbolName")?, arg(&args, "limit")?)?),
+            "find_source_references_in_root" => json(crate::find_source_references_in_root_sync(path(&args, "root")?, arg(&args, "symbolName")?, arg(&args, "limit")?)?),
             "read_source_file" => json(Some(crate::read_source_file_sync(path(&args, "path")?)?)),
             "read_source_image" => json(crate::read_source_image_sync(path(&args, "path")?)?),
             "write_source_file" => json(crate::write_source_file_sync(path(&args, "path")?, arg(&args, "content")?, arg(&args, "expectedRevision")?)?),
@@ -118,6 +120,30 @@ pub(super) async fn execute(operation: String, mut args: Value) -> Result<Value,
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn remote_workspace_plain_text_definitions_and_references() {
+        let root = std::env::temp_dir().join(format!("assembly-lookup-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("Widget.cs"), "public class Widget {}\n").unwrap();
+        std::fs::write(root.join("Usage.cs"), "public class Usage {\n    Widget value;\n}\n").unwrap();
+        let args = serde_json::json!({"root": root, "symbolName": "Widget", "limit": 10});
+        let definitions = execute("find_source_definitions_in_root".into(), args.clone()).await.unwrap();
+        let references = execute("find_source_references_in_root".into(), args.clone()).await.unwrap();
+        assert_eq!(definitions.as_array().unwrap().len(), 1);
+        assert_eq!(definitions[0]["path"], root.join("Widget.cs").to_string_lossy().as_ref());
+        assert_eq!(definitions[0]["line"], 1);
+        let references = references.as_array().unwrap();
+        assert_eq!(references.len(), 2);
+        assert!(references.iter().any(|target| target["path"] == root.join("Usage.cs").to_string_lossy().as_ref() && target["line"] == 2));
+        for operation in ["find_source_definitions_in_root", "find_source_references_in_root"] {
+            for limit in [0, 1] {
+                let mut bounded = args.clone();
+                bounded["limit"] = serde_json::json!(limit);
+                assert_eq!(execute(operation.into(), bounded).await.unwrap().as_array().unwrap().len(), limit);
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[tokio::test]
     async fn remote_workspace_reads_writes_and_git_use_requested_root() {
         let root = std::env::temp_dir().join(format!("assembly-workspace-{}", uuid::Uuid::new_v4()));

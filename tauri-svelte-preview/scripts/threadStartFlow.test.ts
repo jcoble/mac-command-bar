@@ -215,7 +215,7 @@ const providerConfigs = [
   assert.equal(state.access, 'on-request');
   assert.equal(state.createNewWorktree, false);
   assert.deepEqual(validateThreadStart(state), [
-    { field: 'prompt', message: 'Describe what you want to build.' }
+    { field: 'prompt', message: 'Write a message or attach an image.' }
   ]);
 
   const claudeState = defaultThreadStartState({
@@ -334,6 +334,17 @@ assert.equal(
   const request = buildThreadStartRequest({ ...remote, remoteProfileId: 'workbox' });
   assert.equal(request?.executionEnvironment, 'remote');
   assert.equal(request?.remoteProfileId, 'workbox');
+}
+
+// A plain conversation uses a real cwd without claiming it as a project.
+{
+  const plain = { ...defaultThreadStartState({ projectPath: '', cwd: '/home/user' }), prompt: 'Help me remember this' };
+  assert.deepEqual(validateThreadStart(plain), []);
+  assert.equal(buildThreadStartRequest(plain)?.projectPath, null);
+  assert.equal(buildThreadStartRequest(plain)?.cwd, '/home/user');
+  assert.equal(buildThreadStartRequest({ ...plain, executionEnvironment: 'remote', remoteProfileId: 'workbox' })?.projectPath, null);
+  assert.deepEqual(validateThreadStart({ ...plain, cwd: '' }).map((problem) => problem.field), ['branch']);
+  assert.equal(buildThreadStartRequest({ ...plain, prompt: '' }, true)?.title, 'New conversation');
 }
 
 console.log('threadStartFlow.test.ts passed');
