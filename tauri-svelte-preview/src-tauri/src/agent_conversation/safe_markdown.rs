@@ -235,8 +235,13 @@ fn collect_blocks<'a>(nodes: impl Iterator<Item = &'a AstNode<'a>>) -> Vec<SafeM
             }
             NodeValue::CodeBlock(code) => {
                 let language = code.info.trim().split_whitespace().next().unwrap_or("").to_string();
-                let value = code.literal.clone();
-                let complete = !code.fenced || value.ends_with('\n');
+                let complete = !code.fenced || code.literal.ends_with('\n');
+                // A fence's contents end with the line break before the
+                // closing fence, which is not part of the code.
+                let value = match code.literal.strip_suffix('\n') {
+                    Some(code_only) if code.fenced => code_only.to_string(),
+                    _ => code.literal.clone(),
+                };
                 blocks.push(SafeMarkdownBlock::Code {
                     language,
                     value,
@@ -461,6 +466,23 @@ mod tests {
                     ],
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn fenced_code_does_not_keep_the_newline_before_its_closing_fence() {
+        let code = |language: &str, value: &str| SafeMarkdownBlock::Code {
+            language: language.to_string(),
+            value: value.to_string(),
+            complete: true,
+        };
+        assert_eq!(
+            parse_safe_markdown("```ts\nconst a = 1;\n```\n"),
+            vec![code("ts", "const a = 1;")]
+        );
+        assert_eq!(
+            parse_safe_markdown("```js\nlet b = 2;\n\n```\n"),
+            vec![code("js", "let b = 2;\n")]
         );
     }
 
