@@ -217,10 +217,10 @@ fn collect_inline_parts<'a>(node: &'a AstNode<'a>) -> Vec<SafeInlinePart> {
     }
 }
 
-fn collect_blocks<'a>(root: &'a AstNode<'a>) -> Vec<SafeMarkdownBlock> {
+fn collect_blocks<'a>(nodes: impl Iterator<Item = &'a AstNode<'a>>) -> Vec<SafeMarkdownBlock> {
     let mut blocks = Vec::new();
 
-    for child in root.children() {
+    for child in nodes {
         match &child.data.borrow().value {
             NodeValue::Paragraph => {
                 let parts = collect_inline_parts(child);
@@ -244,7 +244,7 @@ fn collect_blocks<'a>(root: &'a AstNode<'a>) -> Vec<SafeMarkdownBlock> {
                 });
             }
             NodeValue::BlockQuote => {
-                let inner = collect_blocks(child);
+                let inner = collect_blocks(child.children());
                 blocks.push(SafeMarkdownBlock::Quote { blocks: inner });
             }
             NodeValue::List(list) => {
@@ -272,7 +272,9 @@ fn collect_blocks<'a>(root: &'a AstNode<'a>) -> Vec<SafeMarkdownBlock> {
                                 }
                             }
                             _ => {
-                                let sub_blocks = collect_blocks(item_node);
+                                // This child and the ones after it; the
+                                // paragraphs before it are already taken.
+                                let sub_blocks = collect_blocks(sub.following_siblings());
                                 item_blocks.extend(sub_blocks);
                                 break;
                             }
@@ -337,7 +339,7 @@ pub fn parse_safe_markdown(markdown: &str) -> Vec<SafeMarkdownBlock> {
     options.extension.tasklist = true;
 
     let root = parse_document(&arena, markdown, &options);
-    collect_blocks(root)
+    collect_blocks(root.children())
 }
 
 #[cfg(test)]
@@ -394,5 +396,71 @@ mod tests {
         } else {
             panic!("Expected paragraph block");
         }
+    }
+
+    #[test]
+    fn nested_lists_and_quotes_keep_each_item_text_once() {
+        // A list three levels deep with a quote in an item, then a quote
+        // holding a quote and a list.
+        let md = "1. First\n   - nested a\n     - deeper **b**\n       > quoted in a list\n   - nested c\n2. Second\n\n> Outer quote\n> > Inner quote with `code`\n> - list in quote\n";
+        let text = |value: &str| SafeInlinePart::Text {
+            value: value.to_string(),
+        };
+        let paragraph = |parts: Vec<SafeInlinePart>| SafeMarkdownBlock::Paragraph { parts };
+        let item = |parts: Vec<SafeInlinePart>, blocks: Vec<SafeMarkdownBlock>| SafeListItem {
+            task: false,
+            checked: false,
+            parts,
+            blocks,
+        };
+        let bullets = |items: Vec<SafeListItem>| SafeMarkdownBlock::List {
+            ordered: false,
+            items,
+        };
+        assert_eq!(
+            parse_safe_markdown(md),
+            vec![
+                SafeMarkdownBlock::List {
+                    ordered: true,
+                    items: vec![
+                        item(
+                            vec![text("First")],
+                            vec![bullets(vec![
+                                item(
+                                    vec![text("nested a")],
+                                    vec![bullets(vec![item(
+                                        vec![
+                                            text("deeper "),
+                                            SafeInlinePart::Strong {
+                                                parts: vec![text("b")],
+                                            },
+                                        ],
+                                        vec![SafeMarkdownBlock::Quote {
+                                            blocks: vec![paragraph(vec![text("quoted in a list")])],
+                                        }],
+                                    )])],
+                                ),
+                                item(vec![text("nested c")], vec![]),
+                            ])],
+                        ),
+                        item(vec![text("Second")], vec![]),
+                    ],
+                },
+                SafeMarkdownBlock::Quote {
+                    blocks: vec![
+                        paragraph(vec![text("Outer quote")]),
+                        SafeMarkdownBlock::Quote {
+                            blocks: vec![paragraph(vec![
+                                text("Inner quote with "),
+                                SafeInlinePart::Code {
+                                    value: "code".to_string(),
+                                },
+                            ])],
+                        },
+                        bullets(vec![item(vec![text("list in quote")], vec![])]),
+                    ],
+                },
+            ]
+        );
     }
 }
