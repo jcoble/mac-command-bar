@@ -9,6 +9,7 @@ import {
   formatWorkedFor,
   latestPlan,
   mergeAgentItem,
+  toolFilePath,
   turnActivityLabel,
   turnFileChanges,
   USER_MESSAGE_FOLD_LINES,
@@ -485,6 +486,34 @@ const blankFenceTool = displayItemFromAgentItem({
 });
 assert.equal(blankFenceTool.title, 'Tool', 'an empty fence falls back to a plain title');
 assert.equal(blankFenceTool.summary, undefined, 'an empty fence is not rendered as summary text');
+
+// ── A tool row links only to a path the call carried (TSK-1325) ──────────
+// A summary is the call's description or command text. Opening it as a file
+// joined it onto the session folder and landed on a tab that cannot exist.
+const toolWithoutPath = (name: string, summary: string, output = '') => {
+  const item = displayItemFromAgentItem({
+    id: `tool-${name}`,
+    type: 'mcp-tool',
+    content: output ? [{ channel: 'command-output', text: output }] : [],
+    providerMetadata: { name, summary }
+  });
+  if (item.kind !== 'tool') throw new Error('expected tool');
+  return item;
+};
+assert.equal(toolFilePath(toolWithoutPath('Read', 'Read slot 4 API log')), '', 'a description is not a path');
+assert.equal(
+  toolFilePath(toolWithoutPath('command', '```console\ngit diff', '@@ -1 +1 @@\n-a\n+b')),
+  '',
+  'command text is not a path'
+);
+const readWithPath = displayItemFromAgentItem({
+  id: 'tool-read-path',
+  type: 'mcp-tool',
+  content: [],
+  providerMetadata: { name: 'Read', summary: 'Read slot 4 API log', path: 'logs/slot4-api.log' }
+});
+if (readWithPath.kind !== 'tool') throw new Error('expected tool');
+assert.equal(toolFilePath(readWithPath), 'logs/slot4-api.log', 'the call\'s own path is what the row opens');
 
 // Output-only completion must preserve identity and full input in both projections.
 for (const [name, summary, output, toolKind] of [

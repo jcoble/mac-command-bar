@@ -154,6 +154,27 @@ export function conversationFileLinkProvenance(
   return path ? { path } : undefined;
 }
 
+/**
+ * The file a tool row may open. Only a path the call carried counts: its
+ * summary is a description ("Read slot 4 API log") or the command text, and
+ * opening that as a file joins it onto the session folder and lands on a file
+ * that does not exist.
+ */
+export function toolFilePath(item: Extract<ConversationDisplayItem, { kind: 'tool' }>): string {
+  const meta = item.metadata as Record<string, unknown> | undefined;
+  const fallback = item.path ?? '';
+  if (!meta) return fallback;
+  const rawArgs = (meta.args || meta.arguments || meta.parameters || meta.input || meta.rawInput) as Record<string, unknown> | undefined;
+  const direct = meta.AbsolutePath || meta.TargetFile || meta.filePath || meta.file_path || meta.path || meta.file || meta.target;
+  if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  if (rawArgs) {
+    const fromArgs = rawArgs.AbsolutePath || rawArgs.TargetFile || rawArgs.filePath || rawArgs.file_path || rawArgs.path || rawArgs.file || rawArgs.target;
+    if (typeof fromArgs === 'string' && fromArgs.trim()) return fromArgs.trim();
+  }
+  if (typeof meta.path === 'string' && meta.path.trim()) return meta.path.trim();
+  return fallback;
+}
+
 const FOLDABLE_TURN_KINDS = new Set<ConversationDisplayItem['kind']>([
   'reasoning',
   'fileEdits',
