@@ -30,12 +30,15 @@
   } from '$lib/shell/notionTasks.ts';
   import { connectNotion } from '$lib/shell/notionOAuth.ts';
   import { matchNotionProject } from '$lib/shell/notionProjectMatch.ts';
+  import { readAssemblySettingFromTauri, writeAssemblySettingFromTauri } from '$lib/tauriSource';
   import { cn } from '$lib/utils.js';
   import NotionTaskViewer from './NotionTaskViewer.svelte';
 
   const PAGE_SIZE = 25;
   const TASK_ROW_HEIGHT = 48;
   const TASK_ROW_OVERSCAN = 5;
+  /** The pills' selection, saved under its own key as the Sessions rail saves its pills. */
+  const TASK_FILTERS_SETTING_KEY = 'tasks.filters';
   /* The Sessions rail's header buttons: quiet glyphs that turn to the text colour on hover. */
   const ACTION_CLASS =
     'text-[var(--color-text-2)] hover:text-foreground hover:bg-[var(--pill-surface-hover)]';
@@ -130,6 +133,21 @@
       sortDirection
     );
     if (owner !== generation || readOwner !== readGeneration) return;
+    if (!append) {
+      // A value the snapshot no longer offers has no pill to show or clear it, so it stops filtering.
+      const kept = {
+        status: page.statuses.filter((value) => filters.status?.includes(value)),
+        priority: page.priorities.filter((value) => filters.priority?.includes(value))
+      };
+      if (
+        kept.status.length !== (filters.status?.length ?? 0) ||
+        kept.priority.length !== (filters.priority?.length ?? 0)
+      ) {
+        setFilters(kept);
+        await loadCached(owner);
+        return;
+      }
+    }
     tasks = append ? [...tasks, ...page.tasks] : page.tasks;
     projects = page.projects;
     statuses = page.statuses;
@@ -148,6 +166,29 @@
     } finally {
       if (owner === generation) loading = false;
     }
+  }
+
+  function storedChoices(stored: unknown, groupId: string): string[] {
+    const chosen = stored && typeof stored === 'object' ? (stored as Record<string, unknown>)[groupId] : null;
+    return Array.isArray(chosen) ? chosen.filter((value): value is string => typeof value === 'string') : [];
+  }
+
+  async function restoreFilters(): Promise<void> {
+    try {
+      const stored = await readAssemblySettingFromTauri(TASK_FILTERS_SETTING_KEY);
+      filters = { status: storedChoices(stored, 'status'), priority: storedChoices(stored, 'priority') };
+    } catch {
+      // Filters fall back to none when local settings are unavailable.
+    }
+  }
+
+  /** A new selection starts the list again from its first row and is saved. */
+  function setFilters(next: Record<string, string[]>): void {
+    filters = next;
+    if (taskViewport) taskViewport.scrollTop = 0;
+    void writeAssemblySettingFromTauri(TASK_FILTERS_SETTING_KEY, next).catch(() => {
+      // The selection stays in memory when local settings are unavailable.
+    });
   }
 
   function applySearch(event: SubmitEvent): void {
@@ -184,6 +225,8 @@
 
   async function initialize(owner: number): Promise<void> {
     try {
+      await restoreFilters();
+      if (owner !== generation) return;
       settings = await readNotionTaskSettings();
       if (owner !== generation) return;
       dataSourceId = settings.dataSourceId;
@@ -300,7 +343,13 @@
     };
     onScroll();
     viewport.addEventListener('scroll', onScroll, { passive: true });
-    return () => viewport.removeEventListener('scroll', onScroll);
+    // The panel can mount while it is still opening and has no height yet.
+    const resize = new ResizeObserver(onScroll);
+    resize.observe(viewport);
+    return () => {
+      viewport.removeEventListener('scroll', onScroll);
+      resize.disconnect();
+    };
   });
   $effect(() => {
     const root = taskViewport;
@@ -452,7 +501,7 @@
         groups={filterGroups}
         value={filters}
         onChange={(next) => {
-          filters = next;
+          setFilters(next);
           void reloadCached();
         }}
       />
@@ -533,14 +582,14 @@
         {#each visibleTasks as task, index (task.sourceTaskId)}
           <button
             type="button"
-            class="absolute inset-x-0 grid h-[44px] w-full grid-cols-[1rem_minmax(0,1fr)] items-center gap-(--space-3) rounded-(--radius-md) px-(--space-2) text-left hover:bg-[var(--menu-row-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            class="absolute inset-x-0 grid h-[44px] w-full grid-cols-[16px_minmax(0,1fr)] items-center gap-(--space-3) rounded-(--radius-md) px-(--space-2) text-left hover:bg-[var(--menu-row-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             style={`transform: translateY(${(firstTaskIndex + index) * TASK_ROW_HEIGHT}px)`}
             onclick={() => (selectedTask = task)}
           >
-            <FileText class={`size-4 stroke-[1.8] ${taskStatusIconClass(task.status)}`} aria-hidden="true" />
+            <FileText class={`size-[16px] stroke-[1.8] ${taskStatusIconClass(task.status)}`} aria-hidden="true" />
             <span class="min-w-0">
               <span class="block truncate text-[13px] leading-[18px] font-medium text-foreground">{task.title}</span>
-              <span class="block truncate text-sm leading-4 text-muted-foreground">{[task.project || 'Unspecified project', task.status || 'Unspecified', task.priority].filter(Boolean).join(' · ')}</span>
+              <span class="block truncate text-[12px] leading-[16px] text-muted-foreground">{[task.project || 'Unspecified project', task.status || 'Unspecified', task.priority].filter(Boolean).join(' · ')}</span>
             </span>
           </button>
         {/each}
@@ -598,5 +647,9 @@
     height: 29px;
     padding: 0;
     border-radius: var(--radius-pill);
+  }
+  .tasks-actions :global(button svg) {
+    width: 16px;
+    height: 16px;
   }
 </style>

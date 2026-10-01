@@ -1430,7 +1430,8 @@ impl SessionStore {
                    AND (json_array_length(?3) > 0 OR lower(status) <> 'future')
                    AND (json_array_length(?3) = 0 OR
                         COALESCE(NULLIF(status, ''), 'Unspecified') IN (SELECT value FROM json_each(?3)))
-                   AND (json_array_length(?8) = 0 OR priority IN (SELECT value FROM json_each(?8)))
+                   AND (json_array_length(?8) = 0 OR
+                        COALESCE(NULLIF(priority, ''), 'Unspecified') IN (SELECT value FROM json_each(?8)))
                  ORDER BY CASE WHEN ?4 = 'taskNumber' AND ?5 = 'asc' THEN
                               CASE
                                 WHEN upper(title) GLOB '[[]TSK-[0-9]*[]]*' THEN
@@ -1555,13 +1556,13 @@ impl SessionStore {
 
         let mut priority_statement = connection
             .prepare(
-                "SELECT DISTINCT priority
+                "SELECT DISTINCT COALESCE(NULLIF(priority, ''), 'Unspecified') AS choice
                  FROM notion_task_projections
-                 WHERE priority IS NOT NULL AND priority <> ''
-                 ORDER BY CASE lower(priority)
-                            WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3
+                 ORDER BY CASE lower(choice)
+                            WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2
+                            WHEN 'unspecified' THEN 4 ELSE 3
                           END,
-                          priority COLLATE NOCASE ASC",
+                          choice COLLATE NOCASE ASC",
             )
             .map_err(|error| {
                 StoreError::sqlite("could not prepare Notion task priority filters", error)
@@ -3542,7 +3543,7 @@ mod tests {
         assert_eq!(page.tasks.len(), 4);
         assert_eq!(page.projects, ["Assembly", "Rental Command"]);
         assert_eq!(page.statuses, ["Doing", "Done", "Todo"]);
-        assert_eq!(page.priorities, ["High", "Medium", "Low"]);
+        assert_eq!(page.priorities, ["High", "Medium", "Low", "Unspecified"]);
 
         let statuses = ["Doing".to_owned(), "Todo".to_owned()];
         let page = store
@@ -3582,6 +3583,38 @@ mod tests {
             .expect("filter missing status");
         assert_eq!(page.tasks, [task]);
         assert_eq!(page.statuses, ["Unspecified"]);
+    }
+
+    #[test]
+    fn notion_task_projection_keeps_missing_priority_explicit() {
+        let (_directory, _path, store) = open_temp_store();
+        let mut blank = fixture_notion_task("task-blank", "Assembly", "Doing", "Blank", None);
+        blank.priority = Some(String::new());
+        let mut missing = fixture_notion_task("task-missing", "Assembly", "Doing", "Missing", None);
+        missing.priority = None;
+        let high = fixture_notion_task("task-high", "Assembly", "Doing", "High", None);
+        store
+            .replace_notion_task_projections(&[blank, missing, high])
+            .expect("write Notion task snapshot");
+
+        let unspecified = ["Unspecified".to_owned()];
+        let page = store
+            .query_notion_task_projections(0, 10, "", "", &[], &unspecified, "title", "asc")
+            .expect("filter missing priority");
+        assert_eq!(
+            page.tasks
+                .iter()
+                .map(|task| task.source_task_id.as_str())
+                .collect::<Vec<_>>(),
+            ["task-blank", "task-missing"]
+        );
+        assert_eq!(page.priorities, ["High", "Unspecified"]);
+
+        let every = ["High".to_owned(), "Unspecified".to_owned()];
+        let page = store
+            .query_notion_task_projections(0, 10, "", "", &[], &every, "title", "asc")
+            .expect("filter every priority");
+        assert_eq!(page.tasks.len(), 3);
     }
 
     #[test]
