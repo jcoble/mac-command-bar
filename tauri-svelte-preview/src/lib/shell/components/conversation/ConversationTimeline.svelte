@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
@@ -343,12 +343,18 @@
       : null;
   }
 
+  // The window and revision an older page was asked from. A page that lands
+  // with the view still at the top added no visible height, so the next one is
+  // asked for at once instead of waiting for another wheel event.
+  let olderRequest: { windowId: string; revision: number } | null = null;
+
   function requestOlderHistory(): void {
     if (!host || !hasOlder || loadingOlder || !onLoadOlder || scrollState.openingToLatest) return;
     if (host.scrollTop > 80) return;
     follow = false;
     newerPagingAllowed = false;
     captureViewportAnchor();
+    olderRequest = { windowId: renderWindowId, revision: timelineRevision };
     onLoadOlder();
   }
 
@@ -379,6 +385,14 @@
     if (revision <= anchor.timelineRevision) return;
     pageAnchor = null;
     restoreViewportAnchor(anchor);
+  });
+
+  $effect(() => {
+    if (loadingOlder || !olderRequest) return;
+    // A failed read leaves the revision unchanged; a switch changes the window.
+    const landed = olderRequest.windowId === renderWindowId && timelineRevision > olderRequest.revision;
+    olderRequest = null;
+    if (landed) untrack(requestOlderHistory);
   });
 
   function handleScroll(): void {

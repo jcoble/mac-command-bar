@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { compileModule } from 'svelte/compiler';
 import { get } from 'svelte/store';
+import { StreamProcessor } from '@tanstack/ai/client';
 import { applyConversationEvent, createConversationState, shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
 import { conversationDisplayItems } from '../src/lib/shell/conversation/conversationMessages.ts';
 import type { ConversationSessionState } from '../src/lib/shell/conversation/conversationTypes.ts';
@@ -2082,4 +2083,167 @@ await test('prepending an older page trims newest only down to the trim target',
   );
   assert.ok(session.newestLoadedSequence < newest, 'the far end was trimmed');
   store.evictConversationSession(ownedId);
+});
+
+await test('prepend matches full replay', () => {
+  const strip = (value: unknown) => value === undefined ? value
+    : JSON.parse(JSON.stringify(value, (key, field) => key === 'createdAt' ? undefined : field));
+  const history = (ownedId: string) => {
+    const events: AgentConversationEvent[] = [];
+    const add = (payload: Record<string, unknown>, generation = 1, sequence = events.length + 1) => {
+      events.push({ ownedId, provider: 'codex', generation, sequence, timestampMs: 1_000 + events.length, payload });
+    };
+    return { events, add };
+  };
+  // The oracle: a mirror session that gets the same window through the
+  // whole-window replay (a window snapshot with no prebuilt transcript).
+  const mirrored = (events: AgentConversationEvent[], ownedId: string) => events.map((event) => ({ ...event, ownedId: `${ownedId}-replay` }));
+  const assertReplayed = (ownedId: string, label: string) => {
+    const paged = store.getConversationSession(ownedId);
+    const mirror = store.getConversationSession(`${ownedId}-replay`);
+    store.applyAgentConversationSnapshot({
+      connection: { ownedId: mirror.ownedId, provider: 'codex', generation: mirror.generation, state: mirror.connectionState },
+      lastSequence: mirror.lastSequence,
+      events: []
+    }, { events: mirrored(paged.loadedEvents, ownedId), reachedStart: paged.reachedTranscriptStart, reachedEnd: paged.reachedTranscriptEnd });
+    const replay = store.getConversationSession(mirror.ownedId);
+    assert.deepEqual(strip(paged.transcript.getMessages()), strip(replay.transcript.getMessages()), label);
+    for (const key of ['desynchronized', 'generation', 'usage', 'pendingApprovals']) {
+      assert.deepEqual(strip(paged[key]), strip(replay[key]), `${label}: ${key}`);
+    }
+  };
+  const open = (ownedId: string, events: AgentConversationEvent[]) => {
+    for (const [id, opened] of [[ownedId, events], [`${ownedId}-replay`, mirrored(events, ownedId)]] as const) {
+      store.applyAgentConversationSnapshot({
+        connection: { ownedId: id, provider: 'codex', generation: events.at(-1)!.generation, state: 'connected' },
+        lastSequence: events.at(-1)!.sequence,
+        events: opened
+      });
+    }
+  };
+  const evict = (ownedId: string) => {
+    store.evictConversationSession(ownedId);
+    store.evictConversationSession(`${ownedId}-replay`);
+  };
+  let chunks = 0;
+  const processChunk = StreamProcessor.prototype.processChunk;
+  StreamProcessor.prototype.processChunk = function (this: StreamProcessor, ...args: Parameters<typeof processChunk>) {
+    chunks += 1;
+    return processChunk.apply(this, args);
+  };
+  try {
+    // A: items straddling page boundaries, two compaction-sized drops in a
+    // row at a boundary, and live text continuing a message after prepends.
+    const a = history('owned-oracle-a');
+    a.add({ kind: 'userMessage', itemId: 'a-u1', text: 'First question' });
+    a.add({ kind: 'tool', itemId: 'a-t1', name: 'Run tests', state: 'started' });
+    a.add({ kind: 'toolCallUpdate', itemId: 'a-t1', output: 'line 1\n' });
+    a.add({ kind: 'assistantDelta', itemId: 'a-s1', delta: 'Stre' });
+    a.add({ kind: 'usage', usedTokens: 100_000 });
+    a.add({ kind: 'approval', requestId: 'a-r1', title: 'Allow tests?' });
+    a.add({ kind: 'agentThoughtChunk', itemId: 'a-th1', text: 'Thinking' });
+    a.add({ kind: 'assistantDelta', itemId: 'a-s1', delta: 'aming ' });
+    a.add({ kind: 'tool', itemId: 'a-t1', name: 'Run tests', state: 'completed' });
+    a.add({ kind: 'assistantMessage', itemId: 'a-a1', text: 'Answer one', completed: true });
+    a.add({ kind: 'approval', requestId: 'a-r1', state: 'approved' });
+    a.add({ kind: 'usage', usedTokens: 50_000 });
+    a.add({ kind: 'usage', usedTokens: 20_000 });
+    a.add({ kind: 'userMessage', itemId: 'a-u2', text: 'Second question' });
+    a.add({ kind: 'assistantDelta', itemId: 'a-s1', delta: 'text' });
+    a.add({ kind: 'usage', usedTokens: 90_000 });
+    a.add({ kind: 'assistantMessage', itemId: 'a-a2', text: 'Answer two', completed: true });
+    for (let index = 0; index < 200; index++) a.add({ kind: 'assistantDelta', itemId: 'a-filler', delta: 'x' });
+    open('owned-oracle-a', a.events.slice(12));
+    const live = (delta: string) => {
+      const sequence = store.getConversationSession('owned-oracle-a').lastSequence + 1;
+      const event: AgentConversationEvent = { ownedId: 'owned-oracle-a', provider: 'codex', generation: 1,
+        sequence, timestampMs: 5_000 + sequence, payload: { kind: 'assistantDelta', itemId: 'a-s1', delta } };
+      for (const each of [event, ...mirrored([event], 'owned-oracle-a')]) store.applyAgentConversationEvent(each);
+    };
+    for (let end = 12; end > 0; end -= 3) {
+      chunks = 0;
+      store.prependOlderConversationEvents('owned-oracle-a', { events: a.events.slice(end - 3, end), hasMore: end > 3 });
+      const window = store.getConversationSession('owned-oracle-a').loadedEvents.length;
+      assert.ok(chunks < window, `prepending ${end - 3}-${end} replayed ${chunks} chunks for ${window} events`);
+      assertReplayed('owned-oracle-a', `A after prepending events ${end - 3}-${end}`);
+      if (end === 12) live(' live');
+    }
+    live('!');
+    assertReplayed('owned-oracle-a', 'A after a live delta');
+    assert.equal(store.getConversationSession('owned-oracle-a').transcript.getMessages()
+      .find((message: { id: string }) => message.id === 'a-s1').parts[0].content, 'Streaming text live!');
+    evict('owned-oracle-a');
+
+    // B: a gap inside the window, a generation restarting at 1 (continuing a
+    // message written before the gap), and one that does not restart at 1.
+    const b = history('owned-oracle-b');
+    b.add({ kind: 'userMessage', itemId: 'b-u1', text: 'one' }, 1, 1);
+    b.add({ kind: 'assistantMessage', itemId: 'b-a1', text: 'two', completed: true }, 1, 2);
+    b.add({ kind: 'userMessage', itemId: 'b-u2', text: 'three' }, 1, 3);
+    b.add({ kind: 'assistantDelta', itemId: 'b-s', delta: 'five ' }, 1, 5);
+    b.add({ kind: 'userMessage', itemId: 'b-u3', text: 'six' }, 1, 6);
+    b.add({ kind: 'assistantDelta', itemId: 'b-s', delta: 'restart' }, 2, 1);
+    b.add({ kind: 'userMessage', itemId: 'b-u4', text: 'restart two' }, 2, 2);
+    b.add({ kind: 'assistantMessage', itemId: 'b-a4', text: 'late generation', completed: true }, 3, 5);
+    b.add({ kind: 'userMessage', itemId: 'b-u5', text: 'late two' }, 3, 6);
+    open('owned-oracle-b', b.events.slice(7));
+    for (let end = 7; end > 0; end -= 2) {
+      store.prependOlderConversationEvents('owned-oracle-b', { events: b.events.slice(Math.max(0, end - 2), end), hasMore: end > 2 });
+      assertReplayed('owned-oracle-b', `B after prepending events ${end - 2}-${end}`);
+    }
+    evict('owned-oracle-b');
+
+    // C: byte-cap trims that cut streamed text and a tool's output and
+    // completion, then paging alternately down and up after the trims.
+    const c = history('owned-oracle-c');
+    const big = (letter: string) => letter.repeat(700_000);
+    c.add({ kind: 'userMessage', itemId: 'c-u1', text: 'Question' });
+    c.add({ kind: 'tool', itemId: 'c-t1', name: 'Build', state: 'started' });
+    c.add({ kind: 'toolCallUpdate', itemId: 'c-t1', output: big('o') });
+    c.add({ kind: 'assistantDelta', itemId: 'c-s1', delta: big('a') });
+    c.add({ kind: 'assistantDelta', itemId: 'c-s2', delta: big('b') });
+    c.add({ kind: 'assistantDelta', itemId: 'c-s2', delta: big('c') });
+    c.add({ kind: 'toolCallUpdate', itemId: 'c-t1', output: big('p') });
+    c.add({ kind: 'tool', itemId: 'c-t1', name: 'Build', state: 'completed' });
+    c.add({ kind: 'assistantDelta', itemId: 'c-s1', delta: big('d') });
+    c.add({ kind: 'assistantMessage', itemId: 'c-a1', text: 'Done', completed: true });
+    open('owned-oracle-c', c.events.slice(5));
+    const pageC = (from: number, to: number) => ({ events: c.events.slice(from, to), hasMore: true });
+    store.prependOlderConversationEvents('owned-oracle-c', pageC(3, 5));
+    assertReplayed('owned-oracle-c', 'C after prepending 3-5');
+    store.prependOlderConversationEvents('owned-oracle-c', pageC(1, 3));
+    assert.equal(store.getConversationSession('owned-oracle-c').newestLoadedSequence, 6, 'C trimmed its newest end');
+    assertReplayed('owned-oracle-c', 'C after a byte-cap trim');
+    store.appendNewerConversationEvents('owned-oracle-c', pageC(6, 8));
+    assertReplayed('owned-oracle-c', 'C after appending 6-8');
+    store.prependOlderConversationEvents('owned-oracle-c', pageC(0, 1));
+    assertReplayed('owned-oracle-c', 'C after prepending 0-1');
+    store.appendNewerConversationEvents('owned-oracle-c', { events: c.events.slice(8), hasMore: false });
+    assertReplayed('owned-oracle-c', 'C after appending to the end');
+    store.prependOlderConversationEvents('owned-oracle-c', pageC(2, 4));
+    assertReplayed('owned-oracle-c', 'C after prepending past an oldest-end trim');
+    evict('owned-oracle-c');
+
+    // D: an event-cap trim that cuts a tool's completion and the answer that
+    // closes a reasoning item already in the window.
+    const d = history('owned-oracle-d');
+    d.add({ kind: 'userMessage', itemId: 'd-u1', text: 'Question' });
+    d.add({ kind: 'tool', itemId: 'd-t1', name: 'Search', state: 'started' });
+    d.add({ kind: 'usage', inputTokens: 1 });
+    d.add({ kind: 'agentThoughtChunk', itemId: 'd-r1', text: 'Thinking' });
+    for (let index = 0; index < 14_999; index++) d.add({ kind: 'usage', inputTokens: index });
+    d.add({ kind: 'tool', itemId: 'd-t1', name: 'Search', state: 'completed' });
+    d.add({ kind: 'assistantMessage', itemId: 'd-a1', text: 'Answer', completed: true });
+    for (let index = 0; index < 4_997; index++) d.add({ kind: 'usage', inputTokens: index });
+    d.add({ kind: 'userMessage', itemId: 'd-u2', text: 'Next' });
+    open('owned-oracle-d', d.events.slice(3));
+    store.prependOlderConversationEvents('owned-oracle-d', { events: d.events.slice(0, 3), hasMore: true });
+    assert.equal(store.getConversationSession('owned-oracle-d').loadedEvents.length, store.ACTIVE_EVENT_WINDOW_TRIM_EVENTS);
+    assertReplayed('owned-oracle-d', 'D after an event-cap trim');
+    store.prependOlderConversationEvents('owned-oracle-d', { events: [], hasMore: false });
+    assertReplayed('owned-oracle-d', 'D after an empty last page');
+    evict('owned-oracle-d');
+  } finally {
+    StreamProcessor.prototype.processChunk = processChunk;
+  }
 });

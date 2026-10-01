@@ -60,9 +60,11 @@ export function conversationHasRunningTool(messages: readonly UIMessage[]): bool
     && part.state !== 'complete' && part.state !== 'error'));
 }
 
-function restoreProcessor(processor: StreamProcessor, messages: readonly UIMessage[]): void {
+export function restoreProcessor(processor: StreamProcessor, messages: readonly UIMessage[]): void {
   processor.reset();
   for (const message of messages) {
+    // Seed each message on its own so every chunk scans one message, not all.
+    processor.setMessages([]);
     processor.processChunk({ type: EventType.TEXT_MESSAGE_START, messageId: message.id, role: message.role, metadata: message.metadata });
     for (const part of message.parts) {
       if (part.type === 'text') {
@@ -71,15 +73,11 @@ function restoreProcessor(processor: StreamProcessor, messages: readonly UIMessa
         processor.processChunk({ type: EventType.TOOL_CALL_START, toolCallId: part.id, parentMessageId: message.id, toolCallName: part.name, metadata: part.metadata as Record<string, unknown> | undefined });
         processor.processChunk({ type: EventType.TOOL_CALL_ARGS, toolCallId: part.id, delta: part.arguments });
         processor.processChunk({ type: EventType.TOOL_CALL_END, toolCallId: part.id });
-        if (part.state === 'complete' || part.state === 'error') {
-          processor.processChunk({ type: EventType.TOOL_CALL_RESULT, toolCallId: part.id, messageId: message.id,
-            content: JSON.stringify(part.output), role: 'tool',
-            metadata: part.state === 'error' ? { tanstack: { state: 'output-error' } } : undefined });
-        }
       }
     }
   }
-  // Preserve the exact canonical parts, including running native tool output.
+  // Preserve the exact canonical parts, including running native tool output
+  // and results (a result chunk changes only the parts, so none is replayed).
   // The event replay above seeds the processor's internal segment state.
   processor.setMessages([...messages]);
 }
