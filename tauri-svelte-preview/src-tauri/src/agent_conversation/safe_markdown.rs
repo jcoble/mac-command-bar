@@ -217,10 +217,10 @@ fn collect_inline_parts<'a>(node: &'a AstNode<'a>) -> Vec<SafeInlinePart> {
     }
 }
 
-fn collect_blocks<'a>(root: &'a AstNode<'a>) -> Vec<SafeMarkdownBlock> {
+fn collect_blocks<'a>(nodes: impl Iterator<Item = &'a AstNode<'a>>) -> Vec<SafeMarkdownBlock> {
     let mut blocks = Vec::new();
 
-    for child in root.children() {
+    for child in nodes {
         match &child.data.borrow().value {
             NodeValue::Paragraph => {
                 let parts = collect_inline_parts(child);
@@ -235,8 +235,13 @@ fn collect_blocks<'a>(root: &'a AstNode<'a>) -> Vec<SafeMarkdownBlock> {
             }
             NodeValue::CodeBlock(code) => {
                 let language = code.info.trim().split_whitespace().next().unwrap_or("").to_string();
-                let value = code.literal.clone();
-                let complete = !code.fenced || value.ends_with('\n');
+                let complete = !code.fenced || code.literal.ends_with('\n');
+                // A fence's contents end with the line break before the
+                // closing fence, which is not part of the code.
+                let value = match code.literal.strip_suffix('\n') {
+                    Some(code_only) if code.fenced => code_only.to_string(),
+                    _ => code.literal.clone(),
+                };
                 blocks.push(SafeMarkdownBlock::Code {
                     language,
                     value,
@@ -244,7 +249,7 @@ fn collect_blocks<'a>(root: &'a AstNode<'a>) -> Vec<SafeMarkdownBlock> {
                 });
             }
             NodeValue::BlockQuote => {
-                let inner = collect_blocks(child);
+                let inner = collect_blocks(child.children());
                 blocks.push(SafeMarkdownBlock::Quote { blocks: inner });
             }
             NodeValue::List(list) => {
@@ -253,15 +258,15 @@ fn collect_blocks<'a>(root: &'a AstNode<'a>) -> Vec<SafeMarkdownBlock> {
                 for item_node in child.children() {
                     let mut item_parts = Vec::new();
                     let mut item_blocks = Vec::new();
-                    let mut task = false;
-                    let mut checked = false;
+                    // comrak marks a task by turning the item itself into a
+                    // task item, with its box already taken off the text.
+                    let (task, checked) = match &item_node.data.borrow().value {
+                        NodeValue::TaskItem(status) => (true, status.is_some()),
+                        _ => (false, false),
+                    };
 
                     for sub in item_node.children() {
                         match &sub.data.borrow().value {
-                            NodeValue::TaskItem(status) => {
-                                task = true;
-                                checked = status.is_some();
-                            }
                             NodeValue::Paragraph => {
                                 if item_parts.is_empty() {
                                     item_parts = collect_inline_parts(sub);
@@ -272,7 +277,9 @@ fn collect_blocks<'a>(root: &'a AstNode<'a>) -> Vec<SafeMarkdownBlock> {
                                 }
                             }
                             _ => {
-                                let sub_blocks = collect_blocks(item_node);
+                                // This child and the ones after it; the
+                                // paragraphs before it are already taken.
+                                let sub_blocks = collect_blocks(sub.following_siblings());
                                 item_blocks.extend(sub_blocks);
                                 break;
                             }
@@ -337,7 +344,7 @@ pub fn parse_safe_markdown(markdown: &str) -> Vec<SafeMarkdownBlock> {
     options.extension.tasklist = true;
 
     let root = parse_document(&arena, markdown, &options);
-    collect_blocks(root)
+    collect_blocks(root.children())
 }
 
 #[cfg(test)]
@@ -394,5 +401,124 @@ mod tests {
         } else {
             panic!("Expected paragraph block");
         }
+    }
+
+    #[test]
+    fn nested_lists_and_quotes_keep_each_item_text_once() {
+        // A list three levels deep with a quote in an item, then a quote
+        // holding a quote and a list.
+        let md = "1. First\n   - nested a\n     - deeper **b**\n       > quoted in a list\n   - nested c\n2. Second\n\n> Outer quote\n> > Inner quote with `code`\n> - list in quote\n";
+        let text = |value: &str| SafeInlinePart::Text {
+            value: value.to_string(),
+        };
+        let paragraph = |parts: Vec<SafeInlinePart>| SafeMarkdownBlock::Paragraph { parts };
+        let item = |parts: Vec<SafeInlinePart>, blocks: Vec<SafeMarkdownBlock>| SafeListItem {
+            task: false,
+            checked: false,
+            parts,
+            blocks,
+        };
+        let bullets = |items: Vec<SafeListItem>| SafeMarkdownBlock::List {
+            ordered: false,
+            items,
+        };
+        assert_eq!(
+            parse_safe_markdown(md),
+            vec![
+                SafeMarkdownBlock::List {
+                    ordered: true,
+                    items: vec![
+                        item(
+                            vec![text("First")],
+                            vec![bullets(vec![
+                                item(
+                                    vec![text("nested a")],
+                                    vec![bullets(vec![item(
+                                        vec![
+                                            text("deeper "),
+                                            SafeInlinePart::Strong {
+                                                parts: vec![text("b")],
+                                            },
+                                        ],
+                                        vec![SafeMarkdownBlock::Quote {
+                                            blocks: vec![paragraph(vec![text("quoted in a list")])],
+                                        }],
+                                    )])],
+                                ),
+                                item(vec![text("nested c")], vec![]),
+                            ])],
+                        ),
+                        item(vec![text("Second")], vec![]),
+                    ],
+                },
+                SafeMarkdownBlock::Quote {
+                    blocks: vec![
+                        paragraph(vec![text("Outer quote")]),
+                        SafeMarkdownBlock::Quote {
+                            blocks: vec![paragraph(vec![
+                                text("Inner quote with "),
+                                SafeInlinePart::Code {
+                                    value: "code".to_string(),
+                                },
+                            ])],
+                        },
+                        bullets(vec![item(vec![text("list in quote")], vec![])]),
+                    ],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn fenced_code_does_not_keep_the_newline_before_its_closing_fence() {
+        let code = |language: &str, value: &str| SafeMarkdownBlock::Code {
+            language: language.to_string(),
+            value: value.to_string(),
+            complete: true,
+        };
+        assert_eq!(
+            parse_safe_markdown("```ts\nconst a = 1;\n```\n"),
+            vec![code("ts", "const a = 1;")]
+        );
+        assert_eq!(
+            parse_safe_markdown("```js\nlet b = 2;\n\n```\n"),
+            vec![code("js", "let b = 2;\n")]
+        );
+    }
+
+    #[test]
+    fn task_items_keep_their_box_and_state() {
+        let md = "- [x] Eta done\n- [ ] Theta open\n  - nested under theta\n";
+        let text = |value: &str| SafeInlinePart::Text {
+            value: value.to_string(),
+        };
+        assert_eq!(
+            parse_safe_markdown(md),
+            vec![SafeMarkdownBlock::List {
+                ordered: false,
+                items: vec![
+                    SafeListItem {
+                        task: true,
+                        checked: true,
+                        parts: vec![text("Eta done")],
+                        blocks: vec![],
+                    },
+                    SafeListItem {
+                        task: true,
+                        checked: false,
+                        parts: vec![text("Theta open")],
+                        blocks: vec![SafeMarkdownBlock::List {
+                            ordered: false,
+                            items: vec![SafeListItem {
+                                task: false,
+                                checked: false,
+                                parts: vec![text("nested under theta")],
+                                blocks: vec![],
+                            }],
+                        }],
+                    },
+                ],
+            }]
+        );
     }
 }

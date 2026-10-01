@@ -37,9 +37,10 @@ CREATE TABLE IF NOT EXISTS app_settings (
 /// is read back byte for byte the same.
 ///
 /// `content.delta` is deliberately not here. It looks like the same kind of
-/// noise and is not: on a live session the assistant's own words are only ever
-/// stored as deltas, so deleting them would delete half the conversation. Those
-/// are worth merging one day, which is a rewrite rather than a delete.
+/// noise and is not: replies streamed before each one also ended as a whole
+/// message are stored only as deltas, so deleting them would delete half of
+/// those conversations. Those are worth merging one day, which is a rewrite
+/// rather than a delete.
 const SUPERSEDED_BY_NEWER: [&str; 2] = ["usage.updated", "session.config.updated"];
 
 /// Tool updates cannot join `SUPERSEDED_BY_NEWER` because they share one event

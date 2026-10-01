@@ -1591,6 +1591,9 @@ while IFS= read -r line; do
         fi
       elif [ "$fixture" = "dies_midturn" ]; then
         exit 0
+      elif [ "$fixture" = "reply_then_dies" ]; then
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"cut-off","content":{{"type":"text","text":"partial"}}}}}}}}\n'
+        exit 0
       elif [ "$fixture" = "pending_drop" ]; then
         sleep 1
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
@@ -1660,6 +1663,12 @@ while IFS= read -r line; do
         while IFS= read -r response; do
           printf '%s\n' "$response" >> "$log"
         done
+      elif [ "$fixture" = "two_replies" ]; then
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"reply-a","content":{{"type":"text","text":"**Bold** "}}}}}}}}\n'
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"reply-a","content":{{"type":"text","text":"start"}}}}}}}}\n'
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"tool_call","toolCallId":"t1","title":"Read file","status":"in_progress"}}}}}}\n'
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"reply-b","content":{{"type":"text","text":"`code`"}}}}}}}}\n'
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"%s","stopReason":"end_turn"}}}}\n' "$id" "$turn"
       else
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","content":{{"type":"text","text":"generated text"}},"turnId":"%s"}}}}}}\n' "$turn"
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"%s","stopReason":"end_turn"}}}}\n' "$id" "$turn"
