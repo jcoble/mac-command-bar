@@ -399,6 +399,7 @@ pub struct NotionTaskProjectionPage {
     pub tasks: Vec<NotionTaskProjection>,
     pub projects: Vec<String>,
     pub statuses: Vec<String>,
+    pub priorities: Vec<String>,
     pub has_more: bool,
 }
 
@@ -1404,10 +1405,15 @@ impl SessionStore {
         limit: u32,
         search: &str,
         project: &str,
-        status: &str,
+        statuses: &[String],
+        priorities: &[String],
         sort_by: &str,
         sort_direction: &str,
     ) -> Result<NotionTaskProjectionPage> {
+        let statuses_json = serde_json::to_string(statuses)
+            .map_err(|_| StoreError::message("could not encode Notion status filters"))?;
+        let priorities_json = serde_json::to_string(priorities)
+            .map_err(|_| StoreError::message("could not encode Notion priority filters"))?;
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
@@ -1421,8 +1427,10 @@ impl SessionStore {
                         instr(lower(COALESCE(priority, '')), lower(?1)) > 0 OR
                         instr(lower(COALESCE(assignee, '')), lower(?1)) > 0)
                    AND (?2 = '' OR project = ?2)
-                   AND (?3 <> '' OR lower(status) <> 'future')
-                   AND (?3 = '' OR COALESCE(NULLIF(status, ''), 'Unspecified') = ?3)
+                   AND (json_array_length(?3) > 0 OR lower(status) <> 'future')
+                   AND (json_array_length(?3) = 0 OR
+                        COALESCE(NULLIF(status, ''), 'Unspecified') IN (SELECT value FROM json_each(?3)))
+                   AND (json_array_length(?8) = 0 OR priority IN (SELECT value FROM json_each(?8)))
                  ORDER BY CASE WHEN ?4 = 'taskNumber' AND ?5 = 'asc' THEN
                               CASE
                                 WHEN upper(title) GLOB '[[]TSK-[0-9]*[]]*' THEN
@@ -1474,11 +1482,12 @@ impl SessionStore {
                 params![
                     search.trim(),
                     project.trim(),
-                    status.trim(),
+                    statuses_json,
                     sort_by.trim(),
                     sort_direction.trim(),
                     i64::from(lookahead_limit),
-                    i64::from(offset)
+                    i64::from(offset),
+                    priorities_json
                 ],
                 |row| {
                     Ok(NotionTaskProjection {
@@ -1544,10 +1553,34 @@ impl SessionStore {
                 StoreError::sqlite("could not read Notion task status filters", error)
             })?;
 
+        let mut priority_statement = connection
+            .prepare(
+                "SELECT DISTINCT priority
+                 FROM notion_task_projections
+                 WHERE priority IS NOT NULL AND priority <> ''
+                 ORDER BY CASE lower(priority)
+                            WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3
+                          END,
+                          priority COLLATE NOCASE ASC",
+            )
+            .map_err(|error| {
+                StoreError::sqlite("could not prepare Notion task priority filters", error)
+            })?;
+        let priorities = priority_statement
+            .query_map([], |row| row.get(0))
+            .map_err(|error| {
+                StoreError::sqlite("could not list Notion task priority filters", error)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| {
+                StoreError::sqlite("could not read Notion task priority filters", error)
+            })?;
+
         Ok(NotionTaskProjectionPage {
             tasks,
             projects,
             statuses,
+            priorities,
             has_more,
         })
     }
@@ -3338,12 +3371,13 @@ mod tests {
 
         assert_eq!(
             store
-                .query_notion_task_projections(0, 10, "", "", "", "", "")
+                .query_notion_task_projections(0, 10, "", "", &[], &[], "", "")
                 .expect("read Notion task snapshot"),
             super::NotionTaskProjectionPage {
                 tasks: second.to_vec(),
                 projects: vec!["Rental Command".to_string()],
                 statuses: vec!["Doing".to_string()],
+                priorities: vec!["High".to_string()],
                 has_more: false,
             }
         );
@@ -3367,7 +3401,7 @@ mod tests {
         let reopened = SessionStore::open(&path).expect("reopen session store offline");
         assert_eq!(
             reopened
-                .query_notion_task_projections(0, 10, "", "", "", "", "")
+                .query_notion_task_projections(0, 10, "", "", &[], &[], "", "")
                 .expect("read offline Notion task snapshot")
                 .tasks,
             tasks
@@ -3388,7 +3422,7 @@ mod tests {
             .expect("write Notion task snapshot");
 
         let first_page = store
-            .query_notion_task_projections(0, 2, "", "", "", "", "")
+            .query_notion_task_projections(0, 2, "", "", &[], &[], "", "")
             .expect("read first Notion task page");
         assert_eq!(
             first_page
@@ -3400,7 +3434,7 @@ mod tests {
         );
 
         let second_page = store
-            .query_notion_task_projections(2, 2, "", "", "", "", "")
+            .query_notion_task_projections(2, 2, "", "", &[], &[], "", "")
             .expect("read second Notion task page");
         assert_eq!(
             second_page
@@ -3427,7 +3461,7 @@ mod tests {
             .expect("write sortable Notion task snapshot");
 
         let by_number = store
-            .query_notion_task_projections(0, 10, "", "", "", "taskNumber", "asc")
+            .query_notion_task_projections(0, 10, "", "", &[], &[], "taskNumber", "asc")
             .expect("sort Notion tasks by task number");
         assert_eq!(
             by_number
@@ -3439,7 +3473,7 @@ mod tests {
         );
 
         let by_title = store
-            .query_notion_task_projections(0, 10, "", "", "", "title", "asc")
+            .query_notion_task_projections(0, 10, "", "", &[], &[], "title", "asc")
             .expect("sort Notion tasks by title");
         assert_eq!(
             by_title
@@ -3451,7 +3485,7 @@ mod tests {
         );
 
         let number_descending = store
-            .query_notion_task_projections(0, 10, "", "", "", "taskNumber", "desc")
+            .query_notion_task_projections(0, 10, "", "", &[], &[], "taskNumber", "desc")
             .expect("sort Notion tasks by descending task number");
         assert_eq!(
             number_descending
@@ -3463,7 +3497,7 @@ mod tests {
         );
 
         let title_descending = store
-            .query_notion_task_projections(0, 10, "", "", "", "title", "desc")
+            .query_notion_task_projections(0, 10, "", "", &[], &[], "title", "desc")
             .expect("sort Notion tasks by descending title");
         assert_eq!(
             title_descending
@@ -3478,20 +3512,61 @@ mod tests {
     #[test]
     fn notion_task_projection_filters_run_in_sql() {
         let (_directory, _path, store) = open_temp_store();
+        let with_priority = |mut task: NotionTaskProjection, priority: Option<&str>| {
+            task.priority = priority.map(str::to_owned);
+            task
+        };
         let tasks = [
             fixture_notion_task("task-1", "Assembly", "Doing", "Workbench", None),
             fixture_notion_task("task-2", "Rental Command", "Todo", "Billing", None),
+            with_priority(
+                fixture_notion_task("task-3", "Assembly", "Todo", "Work queue", None),
+                Some("Low"),
+            ),
+            with_priority(
+                fixture_notion_task("task-4", "Assembly", "Done", "Workflow", None),
+                Some("Medium"),
+            ),
+            with_priority(
+                fixture_notion_task("task-5", "Assembly", "Doing", "Work notes", None),
+                None,
+            ),
         ];
         store
             .replace_notion_task_projections(&tasks)
             .expect("write Notion task snapshot");
 
         let page = store
-            .query_notion_task_projections(0, 10, "work", "Assembly", "Doing", "", "")
-            .expect("filter Notion task snapshot");
-        assert_eq!(page.tasks, tasks[..1]);
+            .query_notion_task_projections(0, 10, "work", "Assembly", &[], &[], "title", "asc")
+            .expect("filter Notion task snapshot by search and project");
+        assert_eq!(page.tasks.len(), 4);
         assert_eq!(page.projects, ["Assembly", "Rental Command"]);
-        assert_eq!(page.statuses, ["Doing", "Todo"]);
+        assert_eq!(page.statuses, ["Doing", "Done", "Todo"]);
+        assert_eq!(page.priorities, ["High", "Medium", "Low"]);
+
+        let statuses = ["Doing".to_owned(), "Todo".to_owned()];
+        let page = store
+            .query_notion_task_projections(0, 10, "", "Assembly", &statuses, &[], "title", "asc")
+            .expect("filter Notion task snapshot by several statuses");
+        assert_eq!(
+            page.tasks
+                .iter()
+                .map(|task| task.source_task_id.as_str())
+                .collect::<Vec<_>>(),
+            ["task-5", "task-3", "task-1"]
+        );
+
+        let priorities = ["High".to_owned(), "Low".to_owned()];
+        let page = store
+            .query_notion_task_projections(0, 10, "", "", &statuses, &priorities, "title", "asc")
+            .expect("filter Notion task snapshot by statuses and priorities");
+        assert_eq!(
+            page.tasks
+                .iter()
+                .map(|task| task.source_task_id.as_str())
+                .collect::<Vec<_>>(),
+            ["task-2", "task-3", "task-1"]
+        );
     }
 
     #[test]
@@ -3503,7 +3578,7 @@ mod tests {
             .expect("write Notion task snapshot");
 
         let page = store
-            .query_notion_task_projections(0, 10, "", "", "Unspecified", "", "")
+            .query_notion_task_projections(0, 10, "", "", &["Unspecified".to_owned()], &[], "", "")
             .expect("filter missing status");
         assert_eq!(page.tasks, [task]);
         assert_eq!(page.statuses, ["Unspecified"]);
@@ -3521,12 +3596,12 @@ mod tests {
             .expect("write Notion task snapshot");
 
         let default_page = store
-            .query_notion_task_projections(0, 10, "", "", "", "", "")
+            .query_notion_task_projections(0, 10, "", "", &[], &[], "", "")
             .expect("read default Notion task page");
         assert_eq!(default_page.tasks, tasks[..1]);
 
         let future_page = store
-            .query_notion_task_projections(0, 10, "", "", "Future", "", "")
+            .query_notion_task_projections(0, 10, "", "", &["Future".to_owned()], &[], "", "")
             .expect("read future Notion task page");
         assert_eq!(future_page.tasks, tasks[1..]);
     }

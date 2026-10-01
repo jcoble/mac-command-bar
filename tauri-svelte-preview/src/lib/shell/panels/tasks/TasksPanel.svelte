@@ -1,6 +1,5 @@
 <script lang="ts">
   import ExternalLink from '@lucide/svelte/icons/external-link';
-  import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import FileText from '@lucide/svelte/icons/file-text';
   import List from '@lucide/svelte/icons/list';
   import ListTodo from '@lucide/svelte/icons/list-todo';
@@ -13,6 +12,7 @@
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
+  import { FilterPills } from '$lib/components/ui/filter-pills/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
@@ -34,8 +34,11 @@
   import NotionTaskViewer from './NotionTaskViewer.svelte';
 
   const PAGE_SIZE = 25;
-  const TASK_ROW_HEIGHT = 84;
+  const TASK_ROW_HEIGHT = 48;
   const TASK_ROW_OVERSCAN = 5;
+  /* The Sessions rail's header buttons: quiet glyphs that turn to the text colour on hover. */
+  const ACTION_CLASS =
+    'text-[var(--color-text-2)] hover:text-foreground hover:bg-[var(--pill-surface-hover)]';
 
   function taskStatusIconClass(status: string): string {
     switch (status.trim().toLowerCase()) {
@@ -65,9 +68,11 @@
   let tasks = $state<NotionTaskRow[]>([]);
   let projects = $state<string[]>([]);
   let statuses = $state<string[]>([]);
+  let priorities = $state<string[]>([]);
+  /** Selected pill values per group id: `status` and `priority`. Empty means unfiltered. */
+  let filters = $state<Record<string, string[]>>({});
   let searchDraft = $state('');
   let search = $state('');
-  let statusFilter = $state('');
   let projectFilter = $state('');
   let sortBy = $state('taskNumber');
   let sortDirection = $state('desc');
@@ -101,6 +106,15 @@
   );
   const visibleTasks = $derived(tasks.slice(firstTaskIndex, lastTaskIndex));
   const sessionProject = $derived(matchNotionProject(root, projects));
+  const filterGroups = $derived(
+    [
+      { id: 'status', label: 'Status', options: statuses.map((value) => ({ value, label: value })) },
+      { id: 'priority', label: 'Priority', options: priorities.map((value) => ({ value, label: value })) }
+    ].filter((group) => group.options.length > 0)
+  );
+  const filtered = $derived(
+    Boolean(search || projectFilter || filters.status?.length || filters.priority?.length)
+  );
 
   async function loadCached(owner: number, append = false): Promise<void> {
     const readOwner = append ? readGeneration : ++readGeneration;
@@ -110,7 +124,8 @@
       PAGE_SIZE,
       search,
       projectFilter,
-      statusFilter,
+      filters.status ?? [],
+      filters.priority ?? [],
       sortBy,
       sortDirection
     );
@@ -118,6 +133,7 @@
     tasks = append ? [...tasks, ...page.tasks] : page.tasks;
     projects = page.projects;
     statuses = page.statuses;
+    priorities = page.priorities;
     hasMore = page.hasMore;
   }
 
@@ -307,6 +323,7 @@
     tasks = [];
     projects = [];
     statuses = [];
+    priorities = [];
     token = '';
     selectedTask = null;
     taskViewport = null;
@@ -323,9 +340,9 @@
 >
   <PanelHeader title="Tasks" count={tasks.length}>
     {#snippet actions()}
-      <div class="flex items-center rounded-full bg-[var(--color-elevated)] p-0.5">
-        <IconButton label="Search tasks" tooltip={false} onclick={() => void toggleSearch()}>
-          <Search />
+      <div class="tasks-actions flex items-center">
+        <IconButton label="Search tasks" size="xs" side="bottom" class={ACTION_CLASS} onclick={() => void toggleSearch()}>
+          <Search class="size-4" aria-hidden="true" />
         </IconButton>
         <DropdownMenu.Root>
           <Tooltip.Root>
@@ -335,12 +352,12 @@
                   {...props}
                   class={cn(
                     buttonVariants({ variant: 'ghost', size: 'icon-sm' }),
-                    'rounded-full text-[var(--color-text-3)]',
-                    (projectFilter || statusFilter) && 'text-[var(--color-accent)]'
+                    ACTION_CLASS,
+                    projectFilter && 'text-[var(--color-accent)]'
                   )}
                   aria-label="View task options"
                 >
-                  <List aria-hidden="true" />
+                  <List class="size-4" aria-hidden="true" />
                 </DropdownMenu.Trigger>
               {/snippet}
             </Tooltip.Trigger>
@@ -408,42 +425,39 @@
                 </Select.Content>
               </Select.Root>
             </div>
-            <div class="flex min-h-8 items-center justify-between gap-3">
-              <span class="text-[13px] text-foreground">Status</span>
-              <Select.Root
-                type="single"
-                value={statusFilter || 'all'}
-                onValueChange={(value) => {
-                  statusFilter = value === 'all' ? '' : value;
-                  void reloadCached();
-                }}
-              >
-                <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Filter tasks by status">
-                  {statusFilter || 'All statuses'}
-                </Select.Trigger>
-                <Select.Content>
-                  <Select.Item value="all" label="All statuses" />
-                  {#each statuses as status}<Select.Item value={status} label={status} />{/each}
-                </Select.Content>
-              </Select.Root>
-            </div>
           </DropdownMenu.Content>
         </DropdownMenu.Root>
-        <IconButton label="Task settings" tooltip={false} onclick={() => (showSetup = !showSetup)}>
-          <Settings2 />
+        <IconButton label="Task settings" size="xs" side="bottom" class={ACTION_CLASS} onclick={() => (showSetup = !showSetup)}>
+          <Settings2 class="size-4" aria-hidden="true" />
         </IconButton>
         <IconButton
           label="Refresh tasks"
-          tooltip={false}
+          size="xs"
+          side="bottom"
+          class={ACTION_CLASS}
           disabled={refreshing || showSetup}
           onclick={() => void refresh()}
         >
-          <RefreshCw />
+          <RefreshCw class="size-4" aria-hidden="true" />
         </IconButton>
       </div>
     {/snippet}
     {projectFilter || 'All projects'} · Latest successful Notion snapshot
   </PanelHeader>
+
+  {#if filterGroups.length > 0}
+    <div class="tasks-pills px-(--space-4) pb-(--space-2)">
+      <FilterPills
+        label="Filter tasks"
+        groups={filterGroups}
+        value={filters}
+        onChange={(next) => {
+          filters = next;
+          void reloadCached();
+        }}
+      />
+    </div>
+  {/if}
 
   {#if projects.length > 0 && root && !sessionProject && !projectFilter}
     <p class="mx-3 mb-2 text-xs text-muted-foreground">No Notion project matches this session. Showing all projects.</p>
@@ -491,9 +505,8 @@
   {/if}
 
   {#if searchOpen}
-    <form class="flex gap-2 px-3 pb-3" onsubmit={applySearch}>
+    <form class="px-(--space-4) pb-(--space-2)" onsubmit={applySearch}>
       <Input bind:ref={searchInput} bind:value={searchDraft} placeholder="Search tasks" aria-label="Search tasks" />
-      <Button type="submit" variant="ghost" disabled={loading}>Search</Button>
     </form>
   {/if}
 
@@ -504,12 +517,12 @@
       <EmptyState
         title={showSetup
           ? 'Connect Notion to see tasks'
-          : search || projectFilter || statusFilter
+          : filtered
             ? 'No matching tasks'
             : 'No tasks in the snapshot'}
         body={showSetup
           ? 'Configuration stays local to this Mac.'
-          : search || projectFilter || statusFilter
+          : filtered
             ? 'Try a different search or filter.'
             : 'Refresh to ask Notion for the latest task list.'}
       >
@@ -520,18 +533,15 @@
         {#each visibleTasks as task, index (task.sourceTaskId)}
           <button
             type="button"
-            class="group absolute inset-x-0 grid h-20 w-full grid-cols-[3rem_minmax(0,1fr)_auto] items-center gap-(--space-3) rounded-(--radius-md) px-(--space-2) text-left hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            class="absolute inset-x-0 grid h-[44px] w-full grid-cols-[1rem_minmax(0,1fr)] items-center gap-(--space-3) rounded-(--radius-md) px-(--space-2) text-left hover:bg-[var(--menu-row-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             style={`transform: translateY(${(firstTaskIndex + index) * TASK_ROW_HEIGHT}px)`}
             onclick={() => (selectedTask = task)}
           >
-            <div class={`grid size-12 place-items-center ${taskStatusIconClass(task.status)}`}>
-              <FileText class="size-7 stroke-[1.7]" aria-hidden="true" />
-            </div>
-            <div class="min-w-0">
-              <p class="truncate text-(length:--text-heading) leading-snug font-(--text-heading-weight) text-foreground">{task.title}</p>
-              <p class="mt-(--space-1) truncate text-(length:--text-body) text-muted-foreground">{[task.project || 'Unspecified project', task.status || 'Unspecified', task.priority].filter(Boolean).join(' · ')}</p>
-            </div>
-            <ChevronRight class="size-5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+            <FileText class={`size-4 stroke-[1.8] ${taskStatusIconClass(task.status)}`} aria-hidden="true" />
+            <span class="min-w-0">
+              <span class="block truncate text-[13px] leading-[18px] font-medium text-foreground">{task.title}</span>
+              <span class="block truncate text-sm leading-4 text-muted-foreground">{[task.project || 'Unspecified project', task.status || 'Unspecified', task.priority].filter(Boolean).join(' · ')}</span>
+            </span>
           </button>
         {/each}
         <span bind:this={taskLoadSentinel} class="absolute right-0 bottom-0 size-px" aria-hidden="true"></span>
@@ -560,3 +570,27 @@
   {/if}
 </section>
 </div>
+
+<style>
+  /* This panel sits on the elevated card, the same layer the kit's secondary and
+     accent slots name, so a pill filled with either would vanish into it. Both
+     controls take the shell's pill surface instead, one step above the card. */
+  .tasks-pills {
+    --secondary: var(--pill-surface);
+    --accent: var(--pill-surface-hover);
+  }
+
+  /* The Sessions rail's header group: 29px round buttons in one pill. */
+  .tasks-actions {
+    gap: 1px;
+    padding: 3px;
+    border-radius: var(--radius-pill);
+    background: var(--pill-surface);
+  }
+  .tasks-actions :global(button) {
+    width: 29px;
+    height: 29px;
+    padding: 0;
+    border-radius: var(--radius-pill);
+  }
+</style>

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TSK-1316 — Tasks tab: filter pills, shorter rows, Sessions-style controls</title>
+<style>
+  :root { --bg:#000; --surface:#121212; --elev:#1c1c1c; --text:#f1f3f5; --text2:#b3b7bf; --text3:#8b919b; --accent:#6ed8be; --live:#74b6d8; --good:#85c79a; --attention:#d7b77e; --border:rgba(241,243,245,.07); }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:32px 40px 60px; background:#0b0b0b; color:var(--text); font:14px/1.5 -apple-system, "SF Pro Text", "Segoe UI", sans-serif; }
+  h1 { font-size:22px; margin:0 0 4px; } p.lead { color:var(--text2); margin:0 0 24px; max-width:900px; }
+  .pair { display:grid; grid-template-columns:repeat(2, 300px); gap:40px; }
+  .label { font-size:12px; letter-spacing:.04em; text-transform:uppercase; margin-bottom:8px; }
+  .label.before { color:#d88; } .label.after { color:#8d8; }
+  .panel { height:520px; overflow:hidden; background:var(--surface); border-radius:16px; }
+  .head { display:flex; align-items:center; gap:8px; padding:12px 16px 2px; }
+  .head h2 { flex:1; margin:0; font-size:16px; font-weight:600; }
+  .chip { font-size:11px; color:var(--text2); }
+  .actions { display:flex; gap:1px; padding:3px; border-radius:999px; background:var(--elev); }
+  .actions i { width:29px; height:29px; display:grid; place-items:center; color:var(--text2); font-style:normal; font-size:15px; border-radius:999px; }
+  .before .actions i { width:22px; height:22px; font-size:9px; color:var(--text3); }
+  .sub { padding:0 16px 8px; color:var(--text2); font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .pills { display:flex; gap:8px; padding:0 16px 8px; }
+  .pill { height:28px; padding:0 12px; border-radius:999px; background:#2a2a2a; font-size:13px; display:inline-flex; align-items:center; }
+  .pill.on { background:var(--text); color:#111; }
+  .rows { padding:0 8px; }
+  .row { display:grid; align-items:center; border-radius:8px; padding:0 8px; }
+  .before .row { height:80px; margin-bottom:4px; grid-template-columns:48px 1fr 20px; gap:12px; }
+  .before .row b { font-size:16px; } .before .row small { font-size:14px; }
+  .after .row { height:44px; margin-bottom:4px; grid-template-columns:16px 1fr; gap:12px; }
+  .after .row b { font-size:13px; font-weight:500; line-height:18px; } .after .row small { font-size:12px; line-height:16px; }
+  .row b, .row small { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row small { color:var(--text3); }
+  .icon { width:16px; height:18px; border:1.6px solid currentColor; border-radius:3px; }
+  .before .icon { width:24px; height:28px; justify-self:center; }
+  .doing { color:var(--live); } .todo { color:var(--attention); } .done { color:var(--good); }
+  .chev { color:var(--text3); }
+  ul { color:var(--text2); max-width:900px; margin-top:28px; } li { margin-bottom:6px; }
+</style>
+</head>
+<body>
+<h1>TSK-1316 · Tasks tab, first slice</h1>
+<p class="lead">Status and Priority filter pills (the Sessions rail's <code>FilterPills</code>), rows cut from 84px to 48px, and header buttons sized like the Sessions rail. A static drawing; the native screenshots are the proof.</p>
+<div class="pair">
+  <div class="before"><div class="label before">Before</div><div class="panel">
+    <div class="head"><h2>Tasks</h2><span class="chip">25</span><span class="actions"><i>⌕</i><i>☰</i><i>⚙</i><i>↻</i></span></div>
+    <div class="sub">All projects · Latest successful Notion sn…</div>
+    <div class="rows">
+      <div class="row"><span class="icon doing"></span><div><b>[TSK-1316] Tasks (N…</b><small>MacCommandBar · Doin…</small></div><span class="chev">›</span></div>
+      <div class="row"><span class="icon todo"></span><div><b>[TSK-1315] Summari…</b><small>MacCommandBar · To D…</small></div><span class="chev">›</span></div>
+      <div class="row"><span class="icon todo"></span><div><b>[TSK-1313] Right pa…</b><small>MacCommandBar · To D…</small></div><span class="chev">›</span></div>
+      <div class="row"><span class="icon todo"></span><div><b>[TSK-1312] Top bar t…</b><small>MacCommandBar · To D…</small></div><span class="chev">›</span></div>
+      <div class="row"><span class="icon done"></span><div><b>[TSK-1311] Syntax hi…</b><small>MacCommandBar · Don…</small></div><span class="chev">›</span></div>
+    </div></div></div>
+  <div class="after"><div class="label after">After</div><div class="panel">
+    <div class="head"><h2>Tasks</h2><span class="chip">25</span><span class="actions"><i>⌕</i><i>☰</i><i>⚙</i><i>↻</i></span></div>
+    <div class="sub">All projects · Latest successful Notion snapshot</div>
+    <div class="pills"><span class="pill on">To Do/Doing</span><span class="pill">Priority</span></div>
+    <div class="rows">
+      <div class="row"><span class="icon doing"></span><div><b>[TSK-1316] Tasks (Notion) tab: Spotify/M3 re…</b><small>MacCommandBar · Doing · Medium</small></div></div>
+      <div class="row"><span class="icon todo"></span><div><b>[TSK-1315] Summarise tool calls into one-l…</b><small>MacCommandBar · To Do · High</small></div></div>
+      <div class="row"><span class="icon todo"></span><div><b>[TSK-1313] Right panel becomes a drawer</b><small>MacCommandBar · To Do · Medium</small></div></div>
+      <div class="row"><span class="icon todo"></span><div><b>[TSK-1312] Top bar tabs with a permanent C…</b><small>MacCommandBar · To Do · High</small></div></div>
+      <div class="row"><span class="icon doing"></span><div><b>[TSK-1309] Tree view state restored per se…</b><small>MacCommandBar · Doing · High</small></div></div>
+      <div class="row"><span class="icon todo"></span><div><b>[TSK-1307] Screenshot appears instantly o…</b><small>MacCommandBar · To Do · Medium</small></div></div>
+      <div class="row"><span class="icon todo"></span><div><b>[TSK-1306] Smooth send motion in the tran…</b><small>MacCommandBar · To Do · Low</small></div></div>
+      <div class="row"><span class="icon doing"></span><div><b>[TSK-1304] Scrolling reads only the Mac c…</b><small>MacCommandBar · Doing · High</small></div></div>
+    </div></div></div>
+</div>
+<ul>
+  <li>Pressing <b>Status</b> or <b>Priority</b> opens that group: an All pill, then one pill per value, several at once. SQLite filters the list, and a closed group shows its choice filled (“To Do/Doing”).</li>
+  <li>The Status row leaves the view menu; Sort, Direction and Project stay. Search keeps Enter to submit and loses its separate “Search” button.</li>
+  <li>Later slices: editing status and priority in the task viewer, and the task body drawn by the chat's markdown renderer.</li>
+</ul>
+</body>
+</html>
