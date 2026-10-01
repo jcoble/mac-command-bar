@@ -15,7 +15,7 @@
   import FileChangeItem from './FileChangeItem.svelte';
   import FileEditsItem from './FileEditsItem.svelte';
   import ToolRunItem from './ToolRunItem.svelte';
-  import ToolItem from './ToolItem.svelte';
+  import ConversationToolUI from './ConversationToolUI.svelte';
   import SubagentSection from './SubagentSection.svelte';
   import ApprovalItem from './ApprovalItem.svelte';
   import UserInputItem from './UserInputItem.svelte';
@@ -54,7 +54,7 @@
     {:else if item.kind === 'command'}<CommandItem {item} onFileLink={openFileLink} />
     {:else if item.kind === 'file'}<FileChangeItem {item} onFileLink={openFileLink} />
     {:else if item.kind === 'fileEdits'}<FileEditsItem {item} onFileLink={openFileLink} />
-    {:else if item.kind === 'tool'}<ToolItem {item} onFileLink={openFileLink} />
+    {:else if item.kind === 'tool'}<ConversationToolUI itemId={item.itemId} onFileLink={openFileLink} />
     {:else if item.kind === 'subagent'}<SubagentSection {item} />
     {:else if item.kind === 'approval'}<ApprovalItem {item} onDecision={onApprovalDecision} />
     {:else if item.kind === 'input'}<UserInputItem {item} onSubmit={onInputSubmit} />

@@ -26,6 +26,7 @@ export interface NotionTaskPage {
   tasks: NotionTaskRow[];
   projects: string[];
   statuses: string[];
+  priorities: string[];
   hasMore: boolean;
 }
 
@@ -55,7 +56,8 @@ export async function listNotionTasks(
   limit = 100,
   search = '',
   project = '',
-  status = '',
+  statuses: string[] = [],
+  priorities: string[] = [],
   sortBy = 'taskNumber',
   sortDirection = 'desc'
 ): Promise<NotionTaskPage> {
@@ -64,7 +66,8 @@ export async function listNotionTasks(
     limit,
     search,
     project,
-    status,
+    statuses,
+    priorities,
     sortBy,
     sortDirection
   });
