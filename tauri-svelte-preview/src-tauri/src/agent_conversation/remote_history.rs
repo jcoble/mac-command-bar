@@ -114,6 +114,22 @@ mod tests {
     }
 
     #[test]
+    fn a_session_first_opened_empty_pages_its_live_events_locally() {
+        let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
+        // A session created here opens before its first event, then streams 1..=3.
+        history.snapshot("a", 0, None, &snapshot(1, 0)).unwrap();
+        history.live_batch("a", 0, &[event(1), event(2), event(3)]).unwrap();
+        let older = history.read_page("a", "same-session-id", 3, 1024, true).unwrap().unwrap();
+        assert_eq!(older.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), vec![1, 2]);
+        // The copy confirms the empty start once; then the top needs no request.
+        assert_eq!(history.unsaved_older("a", "same-session-id").unwrap(), Some(1));
+        let start = AgentConversationEventPage { events: vec![], has_more: false };
+        history.page("a", 0, "same-session-id", 1, true, &start).unwrap();
+        assert_eq!(history.unsaved_older("a", "same-session-id").unwrap(), None);
+        assert!(!history.read_page("a", "same-session-id", 3, 1024, true).unwrap().unwrap().has_more);
+    }
+
+    #[test]
     fn remote_history_fills_gaps_without_claiming_unfetched_events() {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
         history.snapshot("a", 0, None, &snapshot(10, 12)).unwrap();
@@ -401,6 +417,9 @@ impl RemoteHistory {
             .map(|event| event.sequence)
             .or(previous)
             .unwrap_or(snapshot.last_sequence);
+        // A session saved before its first event starts its copy just past
+        // that head, so its live events page locally and the copy checks the start.
+        coverage.oldest.get_or_insert(end.saturating_add(1));
         // Only a page that reaches the advertised head may confirm the head.
         coverage.through = Some(coverage.through.map_or(end, |old| old.max(end)));
         self.write(profile, owned, &coverage, &snapshot.events)?;
