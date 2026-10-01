@@ -20,7 +20,7 @@
   }
 
   let { text, role, itemId = 'message', completed = true, blocks: incomingBlocks, showImages = false, onFileLink }: Props = $props();
-  const blocks = $derived(incomingBlocks?.length ? incomingBlocks : parseSafeMarkdown(text));
+  const blocks = $derived(incomingBlocks ?? parseSafeMarkdown(text));
 
   /* A pasted log or a long brief is worth keeping, but not worth scrolling
      past every time the conversation is reopened. A sent message shows its
