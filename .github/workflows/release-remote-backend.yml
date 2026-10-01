@@ -1,12 +1,29 @@
 name: Release Assembly Remote Backend
 
 on:
+  workflow_dispatch:
   push:
+    branches: [main]
+    paths:
+      - 'tauri-svelte-preview/src-tauri/**'
+      - 'core/**'
+      - 'tauri-svelte-preview/scripts/remoteBackendPackage*'
+      - 'tauri-svelte-preview/scripts/backendReleaseVersion*'
+      - 'tauri-svelte-preview/package.json'
+      - 'tauri-svelte-preview/pnpm-lock.yaml'
+      - 'tauri-svelte-preview/svelte.config.*'
+      - 'tauri-svelte-preview/vite.config.*'
+      - '.github/workflows/release-remote-backend.yml'
     tags:
       - 'assembly-backend-v*'
 
+concurrency:
+  group: assembly-remote-backend-release
+  cancel-in-progress: false
+
 jobs:
   release:
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/assembly-backend-v'))
     permissions:
       contents: write
     runs-on: ubuntu-24.04
@@ -41,12 +58,21 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: tauri-svelte-preview
 
-      - name: Build remote backend package
+      - name: Select backend version
+        id: release
+        run: node --experimental-strip-types tauri-svelte-preview/scripts/backendReleaseVersion.ts
+
+      - name: Verify package contracts
         working-directory: tauri-svelte-preview
         run: |
-          VERSION="${GITHUB_REF_NAME#assembly-backend-v}"
-          test -n "$VERSION"
-          test "$VERSION" != "$GITHUB_REF_NAME"
+          node --experimental-strip-types --test scripts/backendReleaseVersion.test.ts
+          pnpm test:remote-backend-package
+
+      - name: Build remote backend package
+        working-directory: tauri-svelte-preview
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
           pnpm build
           cargo build --locked --release --manifest-path src-tauri/Cargo.toml --bin mac-command-bar-webview-preview
           pnpm prepare:remote-backend-package "$VERSION"
@@ -55,15 +81,17 @@ jobs:
         working-directory: tauri-svelte-preview
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          VERSION="${GITHUB_REF_NAME#assembly-backend-v}"
           ARCHIVE=$(find remote-backend-release -type f -name '*.tar.gz' -print -quit)
           test -n "$ARCHIVE"
           pnpm exec tauri signer sign "$ARCHIVE"
           pnpm exec tauri signer sign "$ARCHIVE.download.json"
-          gh release create "$GITHUB_REF_NAME" --latest=false \
+          gh release create "$RELEASE_TAG" --draft --latest=false --target "$GITHUB_SHA" \
             --title "Assembly Remote Backend v$VERSION" \
             --notes "Download the signed Assembly remote backend package for Linux x86-64."
-          gh release upload "$GITHUB_REF_NAME" remote-backend-release/*
+          gh release upload "$RELEASE_TAG" remote-backend-release/*
+          gh release edit "$RELEASE_TAG" --draft=false --latest=false
