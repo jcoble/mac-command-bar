@@ -381,20 +381,13 @@
     restoreViewportAnchor(anchor);
   });
 
-  let paging = false;
-  $effect(() => {
-    const now = loadingOlder || loadingNewer;
-    if (paging && !now) pageAnchor = null;
-    paging = now;
-  });
-
   function handleScroll(): void {
     if (!host) return;
     const maxScroll = Math.max(0, host.scrollHeight - host.clientHeight);
     if (host.scrollTop > maxScroll) {
       host.scrollTop = maxScroll;
     }
-    follow = anchoredUserItemId === null && distanceBelowReader() <= 80;
+    follow = !hasNewer && newerPagingAllowed && anchoredUserItemId === null && distanceBelowReader() <= 80;
     // Keep the anchor fresh while reading so a live append that trims the top
     // can restore the same visible item instead of moving the reader.
     if (follow) pageAnchor = null;
@@ -405,6 +398,7 @@
   let jumpingToLatest = false;
   async function jumpToLatest(): Promise<void> {
     if (jumpingToLatest) return;
+    newerPagingAllowed = true;
     anchoredUserItemId = null;
     if (hasNewer && onJumpToLatest) {
       jumpingToLatest = true;
@@ -495,6 +489,7 @@
 
 
   function handleUserInput(): void {
+    if (!newerPagingAllowed) follow = false; // Upward intent wins before the browser scrolls.
     anchoredUserItemId = null;
     const decision = decideConversationScroll(scrollState, { type: 'user-input' });
     scrollState = decision.state;
@@ -518,8 +513,8 @@
       if (!(event.target instanceof Element && event.target.closest('input, textarea, [contenteditable]'))) {
         newerPagingAllowed = ['ArrowDown', 'PageDown', 'End', ' '].includes(event.key);
       }
-      handleUserInput();
       if ((event.target as HTMLElement | null)?.closest('input, textarea, [contenteditable]')) return;
+      handleUserInput();
       const older = ['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey);
       const windowId = renderWindowId;
       requestAnimationFrame(() => {

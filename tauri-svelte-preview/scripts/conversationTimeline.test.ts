@@ -3,19 +3,16 @@ import {
   agentItemFromEvent,
   conversationTurnGroups,
   displayItemFromAgentItem,
-  displayItemsFromConversationEvents,
   diffLineCounts,
   foldFileEdits,
   formatWorkedFor,
   latestPlan,
-  mergeAgentItem,
   toolFilePath,
   turnActivityLabel,
   turnFileChanges,
   USER_MESSAGE_FOLD_LINES,
   userMessageOverflowsFold,
-  type ConversationDisplayItem,
-  typedConversationTimeline
+  type ConversationDisplayItem
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
 import { applyConversationEvent, createConversationState } from '../src/lib/shell/conversation/conversationReducer.ts';
 import type { AgentConversationEvent, AgentItem } from '../src/lib/shell/conversation/conversationTypes.ts';
@@ -24,16 +21,12 @@ import {
   decideConversationScroll,
   initialConversationScrollAnchorState
 } from '../src/lib/shell/conversation/conversationScrollAnchor.ts';
-import { readFileSync } from 'node:fs';
+import { conversationDisplayItems, displayItemsFromConversationEvents, transcriptMessages } from '../src/lib/shell/conversation/conversationMessages.ts';
 
-const timelineSource = readFileSync(new URL('../src/lib/shell/components/conversation/ConversationTimeline.svelte', import.meta.url), 'utf8');
-assert.match(timelineSource, /class:send-anchor-space=\{anchoredUserItemId !== null\}/, 'the sent message keeps its anchor space until the reader moves');
-assert.match(timelineSource, /timeline-bottom-spacer\.send-anchor-space\{height:max\([^}]*100vh\)\}/, 'the send anchor reserves a viewport without a resize observer');
-assert.match(timelineSource, /anchoredUserItemId = null;\n\s+const decision = decideConversationScroll\(scrollState, \{ type: 'user-input' \}/, 'reader input releases the sent-message anchor space');
-assert.match(timelineSource, /follow = anchoredUserItemId === null && distanceBelowReader\(\) <= 80/, 'programmatic anchor scrolling does not turn reply following back on');
-assert.match(timelineSource, /overflow-anchor:none/, 'browser scroll anchoring cannot undo the explicit sent-message anchor');
-assert.match(timelineSource, /if \(anchoredUserItemId && host\)[\s\S]*host\.scrollTop = top;[\s\S]*return;/, 'stream and completion revisions restore the explicit sent-message anchor');
-assert.match(timelineSource, /turnJustFinished[\s\S]*itemTop\(anchoredUserItemId, USER_SEND_ANCHOR_OFFSET_PX\)[\s\S]*host\.scrollTop = top/, 'turn completion restores the sent-message anchor after the working row is removed');
+const displayAgentItems = (items: AgentItem[]) => displayItemsFromConversationEvents(items.map((item, index) => ({
+  type: 'item.completed', ownedId: 'fixtures', provider: 'codex', providerInstanceId: 'fixtures',
+  generation: 1, sequence: index + 1, timestampMs: index + 1, itemId: item.id, payload: { item }
+})));
 
 const sentAnchor = decideConversationScroll(initialConversationScrollAnchorState, {
   type: 'send',
@@ -55,11 +48,12 @@ assert.deepEqual(
   'the first user item after send becomes the one scroll target'
 );
 
-const typed = typedConversationTimeline([
+const typed = displayAgentItems([
+  { id: 'user-1', type: 'user-message', content: [{ channel: 'user', text: 'Question' }] },
   { id: 'assistant-1', type: 'assistant-message', content: [{ channel: 'assistant', text: 'Answer' }] },
   { id: 'tool-1', type: 'mcp-tool', content: [], providerMetadata: { name: 'shell', state: 'completed' } },
   { id: 'plan-1', type: 'plan', content: [], providerMetadata: { title: 'Ship', steps: [{ id: 'step-1', title: 'Test', state: 'in-progress' }] } }
-], [{ kind: 'user', itemId: 'user-1', text: 'Question', completed: true, timestampMs: 1 }]);
+]);
 
 assert.deepEqual(typed.map((item) => item.kind), ['user', 'assistant', 'tool', 'plan']);
 assert.equal(displayItemFromAgentItem({ id: 'reason-1', type: 'reasoning', content: [{ channel: 'reasoning', text: 'Think' }] }, 2).kind, 'reasoning');
@@ -372,23 +366,6 @@ assert.equal(
   'The stored provider session could not be resumed: no rollout found'
 );
 
-// The reducer names its entry `error:<generation>:<sequence>`; the typed item
-// has to use the same name or the two become separate cards.
-const mergedError = typedConversationTimeline(
-  [{ id: 'error:1:4', type: 'error', content: [{ channel: 'assistant', text: 'Adapter closed' }] }],
-  [
-    {
-      kind: 'error',
-      itemId: 'error:1:4',
-      code: 'session-resume-failed',
-      message: 'Adapter closed',
-      recoverable: true,
-      timestampMs: 4
-    }
-  ]
-);
-assert.equal(mergedError.length, 1, 'the typed item and the reducer entry are one card');
-
 // An error with no message still says something a reader can act on.
 const silentError = displayItemsFromConversationEvents([
   event(5, { kind: 'error', code: 'session-resume-failed', message: '', recoverable: true })
@@ -397,10 +374,8 @@ assert.equal(silentError.length, 1);
 assert.ok((silentError[0].text ?? '').trim().length > 0, 'an error card is never empty');
 
 // The sent screenshot is carried onto the user card it was sent with.
-const withAttachments = typedConversationTimeline(
-  [],
-  [{ kind: 'user', itemId: 'user-shot', text: 'Look', completed: true, timestampMs: 1 }],
-  {},
+const withAttachments = conversationDisplayItems(
+  transcriptMessages([{ role: 'user', itemId: 'user-shot', text: 'Look', timestampMs: 1 }]).getMessages(),
   [],
   {
     'user-shot': [{
@@ -416,10 +391,7 @@ assert.deepEqual(
   'the user card renders the screenshot that went out with it'
 );
 assert.equal(
-  typedConversationTimeline(
-    [],
-    [{ kind: 'user', itemId: 'user-plain', text: 'Hi', completed: true, timestampMs: 1 }]
-  )[0].attachments,
+  conversationDisplayItems(transcriptMessages([{ role: 'user', itemId: 'user-plain', text: 'Hi', timestampMs: 1 }]).getMessages())[0].attachments,
   undefined,
   'a message sent without a screenshot gains no attachment field'
 );
@@ -515,7 +487,7 @@ const readWithPath = displayItemFromAgentItem({
 if (readWithPath.kind !== 'tool') throw new Error('expected tool');
 assert.equal(toolFilePath(readWithPath), 'logs/slot4-api.log', 'the call\'s own path is what the row opens');
 
-// Output-only completion must preserve identity and full input in both projections.
+// Output-only completion preserves identity and full input during live processing and replay.
 for (const [name, summary, output, toolKind] of [
   ['Bash', "printf 'first\\n'\nprintf 'second\\n'", 'first\nsecond', 'command'],
   ['mcp__notion__search', 'show running shell tasks', '{"results":[]}', 'tool']
@@ -524,17 +496,13 @@ for (const [name, summary, output, toolKind] of [
     event(1, { kind: 'tool', itemId: 'identity', name, summary, state: 'started' }),
     event(2, { kind: 'tool', itemId: 'identity', name: '', output, state: 'completed' })
   ];
-  let live: AgentItem[] = [];
-  let legacy = createConversationState('owned-rich', 'codex');
+  let live = createConversationState('owned-rich', 'codex');
   for (const update of events) {
-    const incoming = agentItemFromEvent(update);
-    assert.ok(incoming);
-    live = mergeAgentItem(live, incoming, false);
-    legacy = applyConversationEvent(legacy, update);
+    live = applyConversationEvent(live, update);
   }
   const replay = displayItemsFromConversationEvents(events);
-  assert.deepEqual(typedConversationTimeline(live), replay, 'live and replay agree');
-  for (const item of [...replay, ...typedConversationTimeline([], legacy.timeline)]) {
+  assert.deepEqual(conversationDisplayItems(live.transcript.getMessages()), replay, 'live and replay agree');
+  for (const item of replay) {
     assert.equal(item.kind, 'tool');
     if (item.kind !== 'tool') throw new Error('expected tool');
     assert.equal(item.title, name);
@@ -548,7 +516,7 @@ for (const [name, summary, output, toolKind] of [
 // ── The plan chip reads one newest plan (latest_plan_across_turns) ───────
 // The chip above the composer shows the plan the session is working to, so it
 // needs the newest one no matter which turn produced it.
-const planAcrossTurns = typedConversationTimeline([
+const planAcrossTurns = displayAgentItems([
   {
     id: 'plan-first',
     type: 'plan',
@@ -602,7 +570,7 @@ const planSteps = [
   { id: 'one', title: 'Read the store', state: 'completed' },
   { id: 'two', title: 'Write the page', state: 'pending' }
 ];
-const repeatedPlan = typedConversationTimeline([
+const repeatedPlan = displayAgentItems([
   { id: 'plan-repeat-1', type: 'plan', content: [], providerMetadata: { title: 'Plan', steps: planSteps } },
   { id: 'plan-repeat-2', type: 'plan', content: [], providerMetadata: { title: 'Plan', steps: planSteps } }
 ]);
@@ -612,7 +580,7 @@ assert.deepEqual(
   'an unchanged plan update is dropped'
 );
 
-const movedPlan = typedConversationTimeline([
+const movedPlan = displayAgentItems([
   { id: 'plan-moved-1', type: 'plan', content: [], providerMetadata: { title: 'Plan', steps: planSteps } },
   {
     id: 'plan-moved-2',

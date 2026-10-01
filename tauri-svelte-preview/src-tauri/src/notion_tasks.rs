@@ -57,6 +57,7 @@ pub struct NotionTaskPage {
     tasks: Vec<NotionTaskRow>,
     projects: Vec<String>,
     statuses: Vec<String>,
+    priorities: Vec<String>,
     has_more: bool,
 }
 
@@ -109,6 +110,7 @@ impl From<NotionTaskProjectionPage> for NotionTaskPage {
             tasks: page.tasks.into_iter().map(NotionTaskRow::from).collect(),
             projects: page.projects,
             statuses: page.statuses,
+            priorities: page.priorities,
             has_more: page.has_more,
         }
     }
@@ -336,7 +338,8 @@ pub async fn list_notion_tasks(
     limit: u32,
     search: String,
     project: String,
-    status: String,
+    statuses: Vec<String>,
+    priorities: Vec<String>,
     sort_by: String,
     sort_direction: String,
 ) -> Result<NotionTaskPage, String> {
@@ -348,7 +351,8 @@ pub async fn list_notion_tasks(
                 limit.min(100),
                 &search,
                 &project,
-                &status,
+                &statuses,
+                &priorities,
                 &sort_by,
                 &sort_direction,
             )

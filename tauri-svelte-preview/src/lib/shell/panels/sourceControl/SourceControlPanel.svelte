@@ -35,6 +35,7 @@
    * open on a repository must not be able to commit it by accident.
    */
   import { untrack } from 'svelte';
+  import { conversationHasRunningTool } from '$lib/shell/conversation/conversationMessages.ts';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
@@ -162,11 +163,11 @@
     ownedId === null ? null : rail.owned.find((session) => session.ownedId === ownedId) ?? null
   );
   const conversation = $derived(ownedId === null ? null : getConversationSession(ownedId));
-  const activeTool = $derived(
-    conversation?.timeline.some(
-      (entry) => entry.kind === 'tool' && (entry.state === 'started' || entry.state === 'updated')
-    ) ?? false
-  );
+  const activeTool = $derived.by(() => {
+    if (!conversation) return false;
+    conversation.timelineRevision;
+    return conversationHasRunningTool(conversation.transcript.getMessages());
+  });
   let checkoutBusy = $state(false);
   const checkoutDisabledReason = $derived.by(() => {
     if (!readOnlyScope) return null;

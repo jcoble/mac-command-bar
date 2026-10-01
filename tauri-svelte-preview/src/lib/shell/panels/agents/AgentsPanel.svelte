@@ -21,10 +21,8 @@
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
-  import type {
-    AgentConversationProvider,
-    ConversationTimelineEntry
-  } from '$lib/shell/conversation/conversationTypes.ts';
+  import type { UIMessage } from '@tanstack/ai/client';
+  import type { AgentConversationProvider } from '$lib/shell/conversation/conversationTypes.ts';
   import {
     getConversationSession,
     setConversationSelectedChild
@@ -63,8 +61,8 @@
    * The store keeps a transcript for the selected child alone, so this map has
    * at most one entry. Everything else in the list has no count and says so.
    */
-  const timelineByChild = $derived<Record<string, readonly ConversationTimelineEntry[]>>(
-    selectedChildId ? { [selectedChildId]: conversation?.childTimeline ?? [] } : {}
+  const timelineByChild = $derived<Record<string, readonly UIMessage[]>>(
+    selectedChildId ? { [selectedChildId]: conversation?.childTranscript.getMessages() ?? [] } : {}
   );
 
   const rows = $derived(agentActivityRows(conversation?.children ?? [], timelineByChild));

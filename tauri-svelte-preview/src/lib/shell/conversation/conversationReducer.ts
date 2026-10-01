@@ -1,9 +1,10 @@
+import { StreamProcessor } from '@tanstack/ai/client';
+import { applyMessageEvent, displayEventFrom, finishMessageReasoning } from './conversationMessages.ts';
 import type {
   AgentEvent,
   AgentConversationEvent,
   AgentConversationProvider,
-  ConversationSessionState,
-  ConversationTimelineEntry
+  ConversationSessionState
 } from './conversationTypes.ts';
 
 /** Below this the window is not full enough for a fall to mean a compaction;
@@ -52,316 +53,54 @@ export function createConversationState(
     connectionState: 'disconnected',
     suspended: false,
     timelineRevision: 0,
-    timeline: []
+    transcript: new StreamProcessor()
   };
-}
-
-function recordOf(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-/**
- * The message a projected record is carrying, or null when it is not carrying
- * one.
- *
- * A projection is the raw shape an adapter reported, kept as it arrived. The
- * ones worth a row in the transcript hold a completed item: who spoke, and what
- * they said across one or more content blocks. Everything else a transcript
- * holds — configuration, token counts, the adapter's own bookkeeping — has no
- * message in it and returns null rather than an empty row.
- */
-function projectedTimelineEntry(
-  payload: { itemId: string | null; payload: Record<string, unknown>; timestampMs: number | null },
-  eventTimestampMs: number
-): ConversationTimelineEntry | null {
-  const item = recordOf(payload.payload.item);
-  if (!item) return null;
-  const itemId = typeof item.id === 'string' && item.id ? item.id : payload.itemId;
-  if (!itemId) return null;
-  const kind = item.type === 'user-message'
-    ? 'user'
-    : item.type === 'assistant-message'
-      ? 'assistant'
-      : null;
-  if (!kind) return null;
-  const text = Array.isArray(item.content)
-    ? item.content
-      .map((block) => {
-        const row = recordOf(block);
-        return row && typeof row.text === 'string' ? row.text : '';
-      })
-      .join('')
-    : '';
-  if (!text.trim()) return null;
-  return {
-    kind,
-    itemId,
-    text,
-    completed: true,
-    timestampMs: payload.timestampMs ?? eventTimestampMs
-  };
-}
-
-function replaceOrAppend(
-  timeline: ConversationTimelineEntry[],
-  itemId: string,
-  create: (current: ConversationTimelineEntry | undefined) => ConversationTimelineEntry
-): ConversationTimelineEntry[] {
-  const index = timeline.findIndex((entry) => entry.itemId === itemId);
-  if (index < 0) return [...timeline, create(undefined)];
-  const next = timeline.slice();
-  next[index] = create(timeline[index]);
-  return next;
-}
-
-export function importConversationHistory(
-  state: ConversationSessionState,
-  history: readonly ConversationTimelineEntry[]
-): ConversationSessionState {
-  if (history.length === 0) return state;
-
-  const existingIds = new Set(state.timeline.map((entry) => entry.itemId));
-  const additions = history.filter((entry) => !existingIds.has(entry.itemId));
-  if (additions.length === 0) return state;
-  return { ...state, timeline: [...state.timeline, ...additions] };
 }
 
 export function applyConversationEvent(
   state: ConversationSessionState,
   event: AgentConversationEvent
 ): ConversationSessionState {
-  if (event.ownedId !== state.ownedId || event.provider !== state.provider) return state;
-  if (event.generation < state.generation) return state;
-
-  const isNewGeneration = event.generation > state.generation;
-  const priorSequence = isNewGeneration ? 0 : state.lastSequence;
-  if (!isNewGeneration && event.sequence <= priorSequence) return state;
-
-  const hasGap = event.sequence !== priorSequence + 1;
-  let next: ConversationSessionState = {
-    ...state,
-    generation: event.generation,
-    lastSequence: event.sequence,
-    desynchronized: isNewGeneration ? hasGap : state.desynchronized || hasGap
+  if (event.ownedId !== state.ownedId || event.provider !== state.provider || event.generation < state.generation) return state;
+  const newGeneration = event.generation > state.generation;
+  const previousSequence = newGeneration ? 0 : state.lastSequence;
+  if (!newGeneration && event.sequence <= previousSequence) return state;
+  const gap = event.sequence !== previousSequence + 1;
+  const next: ConversationSessionState = {
+    ownedId: state.ownedId, provider: state.provider,
+    generation: event.generation, lastSequence: event.sequence,
+    desynchronized: newGeneration ? gap : state.desynchronized || gap,
+    connectionState: state.connectionState, suspended: state.suspended,
+    timelineRevision: state.timelineRevision, nativeSessionId: state.nativeSessionId,
+    activeTurnId: state.activeTurnId, usage: state.usage, transcript: state.transcript
   };
-
-  // Applying a delta after a missing event would fabricate a transcript. Keep
-  // the acknowledged position so duplicates remain rejected, preserve every
-  // valid item already rendered, and let the service request a fresh snapshot.
-  if (hasGap) return next;
-
-  const { payload } = event;
-  switch (payload.kind) {
-    case 'connection':
-      return {
-        ...next,
-        connectionState: payload.state,
-        nativeSessionId: payload.nativeSessionId ?? next.nativeSessionId
-      };
-
-    case 'userMessage':
-      return {
-        ...next,
-        timeline: replaceOrAppend(next.timeline, payload.itemId, () => ({
-          kind: 'user',
-          itemId: payload.itemId,
-          text: payload.text,
-          completed: payload.completed,
-          timestampMs: event.timestampMs
-        }))
-      };
-
-    case 'assistantDelta':
-      return {
-        ...next,
-        timeline: replaceOrAppend(next.timeline, payload.itemId, (current) => ({
-          kind: 'assistant',
-          itemId: payload.itemId,
-          text: current?.kind === 'assistant' ? `${current.text}${payload.delta}` : payload.delta,
-          completed: false,
-          timestampMs: current?.timestampMs ?? event.timestampMs
-        }))
-      };
-
-    case 'assistantMessage':
-      return {
-        ...next,
-        timeline: replaceOrAppend(next.timeline, payload.itemId, (current) => ({
-          kind: 'assistant',
-          itemId: payload.itemId,
-          text: payload.text,
-          completed: true,
-          timestampMs: current?.timestampMs ?? event.timestampMs
-        }))
-      };
-
-    case 'tool':
-      return {
-        ...next,
-        timeline: replaceOrAppend(next.timeline, payload.itemId, (current) => ({
-          kind: 'tool',
-          itemId: payload.itemId,
-          name: payload.name || (current?.kind === 'tool' ? current.name : 'Tool'),
-          state: payload.state,
-          summary: payload.summary || (current?.kind === 'tool' ? current.summary : undefined),
-          path: payload.path || (current?.kind === 'tool' ? current.path : undefined),
-          diff: payload.diff || (current?.kind === 'tool' ? current.diff : undefined),
-          output: payload.output || (current?.kind === 'tool' ? current.output : undefined),
-          timestampMs: current?.timestampMs ?? event.timestampMs
-        }))
-      };
-
-    case 'approval': {
-      const itemId = `approval:${payload.requestId}`;
-      return {
-        ...next,
-        timeline: replaceOrAppend(next.timeline, itemId, (current) => ({
-          kind: 'approval',
-          itemId,
-          requestId: payload.requestId,
-          state: payload.state,
-          summary: payload.summary,
-          timestampMs: current?.timestampMs ?? event.timestampMs
-        }))
-      };
+  if (next.desynchronized) return next;
+  const payload = event.payload;
+  if (payload.kind === 'connection') {
+    next.connectionState = payload.state;
+    next.nativeSessionId = payload.nativeSessionId ?? next.nativeSessionId;
+  } else if (payload.kind === 'turn') {
+    next.activeTurnId = payload.state === 'started' ? payload.turnId : undefined;
+  } else if (payload.kind === 'error') {
+    next.activeTurnId = undefined;
+    if (!payload.recoverable) next.connectionState = 'failed';
+  } else if (payload.kind === 'usage') {
+    const previous = next.usage?.usedTokens;
+    const last = next.transcript.getMessages().at(-1);
+    if (usageDropIsCompaction(previous, payload.usedTokens) && last?.metadata?.itemType !== 'context-compaction') {
+      applyMessageEvent(next.transcript, { ...event, payload: { kind: 'contextCompaction', preTokens: previous, postTokens: payload.usedTokens } });
+      next.timelineRevision += 1;
     }
-
-    case 'plan': {
-      const itemId = 'plan:' + event.generation;
-      const items = payload.items ?? (payload.entries ?? []).map((entry) => ({
-        text: entry.title ?? entry.text ?? entry.content ?? '',
-        status: entry.status ?? 'pending'
-      }));
-      return {
-        ...next,
-        timeline: replaceOrAppend(next.timeline, itemId, (current) => ({
-          kind: 'plan',
-          itemId,
-          items,
-          timestampMs: current?.timestampMs ?? event.timestampMs
-        }))
-      };
-    }
-
-    case 'turn': {
-      const itemId = `turn:${payload.turnId}`;
-      return {
-        ...next,
-        activeTurnId: payload.state === 'started' ? payload.turnId : undefined,
-        timeline: replaceOrAppend(next.timeline, itemId, (current) => ({
-          kind: 'turn',
-          itemId,
-          turnId: payload.turnId,
-          state: payload.state,
-          timestampMs: current?.timestampMs ?? event.timestampMs
-        }))
-      };
-    }
-
-    case 'contextCompaction': {
-      const itemId = `compaction:${event.sequence}`;
-      return {
-        ...next,
-        timeline: replaceOrAppend(next.timeline, itemId, () => ({
-          kind: 'compaction',
-          itemId,
-          trigger: payload.trigger ?? undefined,
-          preTokens: payload.preTokens ?? undefined,
-          postTokens: payload.postTokens ?? undefined,
-          timestampMs: event.timestampMs
-        }))
-      };
-    }
-
-    case 'checkoutChanged': {
-      const itemId = `checkout:${event.sequence}`;
-      return {
-        ...next,
-        timeline: replaceOrAppend(next.timeline, itemId, () => ({
-          kind: 'checkoutChanged',
-          itemId,
-          fromCwd: payload.fromCwd,
-          toCwd: payload.toCwd,
-          timestampMs: event.timestampMs
-        }))
-      };
-    }
-
-    case 'usage': {
-      const previous = next.usage?.usedTokens;
-      // A drop already announced by the provider is not announced twice.
-      const marked = usageDropIsCompaction(previous, payload.usedTokens)
-        && next.timeline[next.timeline.length - 1]?.kind !== 'compaction';
-      return {
-        ...next,
-        timeline: marked
-          ? [
-            ...next.timeline,
-            {
-              kind: 'compaction',
-              itemId: `compaction:${event.sequence}`,
-              preTokens: previous,
-              postTokens: payload.usedTokens,
-              timestampMs: event.timestampMs
-            }
-          ]
-          : next.timeline,
-        usage: {
-          inputTokens: payload.inputTokens ?? next.usage?.inputTokens,
-          outputTokens: payload.outputTokens ?? next.usage?.outputTokens,
-          usedTokens: payload.usedTokens ?? next.usage?.usedTokens,
-          contextWindow: payload.contextWindow ?? next.usage?.contextWindow,
-          totalTokens: payload.totalTokens ?? next.usage?.totalTokens
-        }
-      };
-    }
-
-    case 'terminalProjection': {
-      // History replayed from the database arrives this way, so it cannot be
-      // dropped here. A conversation imported from a past transcript is written
-      // entirely as projections, and this case returning untouched is what left
-      // a resumed session showing an empty transcript: the events were read,
-      // counted, and then thrown away before anything could be drawn from them.
-      const entry = projectedTimelineEntry(payload, event.timestampMs);
-      return entry
-        ? { ...next, timeline: replaceOrAppend(next.timeline, entry.itemId, () => entry) }
-        : next;
-    }
-
-    case 'childUpdate':
-      return next;
-
-    case 'error':
-      return {
-        ...next,
-        activeTurnId: undefined,
-        connectionState: payload.recoverable ? next.connectionState : 'failed',
-        timeline: [
-          ...next.timeline,
-          {
-            kind: 'error',
-            itemId: `error:${event.generation}:${event.sequence}`,
-            code: payload.code,
-            message: payload.message,
-            recoverable: payload.recoverable,
-            timestampMs: event.timestampMs
-          }
-        ]
-      };
-
-    // Rich ACP bridge items are projected by conversationTimeline.ts. The
-    // reducer still advances the generation/sequence checkpoint so live and
-    // replayed streams share the same ordering and resync behavior.
-    case 'agentThoughtChunk':
-    case 'toolCall':
-    case 'toolCallUpdate':
-    case 'turnDiff':
-    case 'permissionRequest':
-    case 'availableCommandsUpdate':
-    case 'agentMessageChunk':
-    case 'userMessageChunk':
-      return next;
+    next.usage = {
+      inputTokens: payload.inputTokens ?? next.usage?.inputTokens,
+      outputTokens: payload.outputTokens ?? next.usage?.outputTokens,
+      usedTokens: payload.usedTokens ?? next.usage?.usedTokens,
+      contextWindow: payload.contextWindow ?? next.usage?.contextWindow,
+      totalTokens: payload.totalTokens ?? next.usage?.totalTokens
+    };
   }
+  const normalized = displayEventFrom(event);
+  if (applyMessageEvent(next.transcript, normalized)) next.timelineRevision += 1;
+  if (finishMessageReasoning(next.transcript, normalized)) next.timelineRevision += 1;
+  return next;
 }

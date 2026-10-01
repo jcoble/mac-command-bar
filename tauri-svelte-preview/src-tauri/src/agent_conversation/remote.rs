@@ -39,8 +39,9 @@ use super::protocol::{
     UpdateAgentConversationSessionMetaRequest,
 };
 use super::providers::ProviderRegistry;
+use super::transcript::TranscriptSnapshot;
 
-pub(super) const PROTOCOL_VERSION: u16 = 7;
+pub(super) const PROTOCOL_VERSION: u16 = 8;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -80,6 +81,10 @@ enum RemoteCommand {
         after_sequence: Option<i64>,
     },
     ExtendImport { owned_id: String },
+    ReadTranscript {
+        owned_id: String,
+        child_session_id: Option<String>,
+    },
     EventsBefore {
         owned_id: String,
         before_sequence: i64,
@@ -161,6 +166,7 @@ enum RemoteResponse {
     Restarting,
     Connection(AgentConversationConnection),
     Snapshot(#[serde(deserialize_with = "deserialize_wire_payload")] Option<AgentConversationSnapshot>),
+    Transcript(TranscriptSnapshot),
     EventPage(#[serde(deserialize_with = "deserialize_wire_payload")] AgentConversationEventPage),
     Capabilities(AgentCapabilities),
     Config(AgentConversationConfigState),
@@ -1672,6 +1678,26 @@ impl RemoteConnectionManager {
         Ok(rows)
     }
 
+    pub async fn read_transcript(
+        &self,
+        owned_id: String,
+        child_session_id: Option<String>,
+    ) -> Result<TranscriptSnapshot, String> {
+        let RemoteResponse::Transcript(snapshot) = self
+            .request_for_owned(
+                &owned_id,
+                RemoteCommand::ReadTranscript {
+                    owned_id: owned_id.clone(),
+                    child_session_id,
+                },
+            )
+            .await?
+        else {
+            return Err("Remote Assembly returned the wrong transcript response".into());
+        };
+        Ok(snapshot)
+    }
+
     pub async fn read_attachment_chunk(&self, owned_id: String, attachment_id: String, thumbnail: bool, offset: u64) -> Result<Vec<u8>, String> {
         let RemoteResponse::Bytes(bytes) = self.request_for_owned(&owned_id, RemoteCommand::ReadAttachmentChunk {
             owned_id: owned_id.clone(), attachment_id, thumbnail, offset,
@@ -2731,6 +2757,25 @@ async fn execute_remote_command(
         RemoteCommand::ExtendImport { owned_id } => {
             let progress = manager.extend_imported_session(&owned_id, super::IMPORT_MAX_BYTES, super::IMPORT_MAX_RECORDS)?;
             Ok(RemoteResponse::ImportProgress { added: progress.added, reached_start: progress.reached_start })
+        }
+        RemoteCommand::ReadTranscript {
+            owned_id,
+            child_session_id,
+        } => {
+            let row = manager
+                .store()
+                .get_session(&owned_id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("Conversation session {owned_id} was not found"))?;
+            let native_session_id = row
+                .native_session_id
+                .ok_or_else(|| format!("Conversation session {owned_id} has no provider session"))?;
+            super::transcript::read(
+                &row.provider,
+                &native_session_id,
+                child_session_id.as_deref(),
+            )
+            .map(RemoteResponse::Transcript)
         }
         RemoteCommand::EventsBefore {
             owned_id,
