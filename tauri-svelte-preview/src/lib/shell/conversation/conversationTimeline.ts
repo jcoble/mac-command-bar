@@ -216,17 +216,26 @@ function turnItemSettled(item: ConversationDisplayItem): boolean {
   return true;
 }
 
+/** A message the reader sent while the turn was running. The backend records
+ * every steering correction under a `user-steer-` id; it folds with the work
+ * so a collapsed turn shows only the prompt that started it and the reply. The
+ * id, not the position, says so: a bounded window can open on a steer. */
+function midTurnMessage(item: ConversationDisplayItem): boolean {
+  return item.kind === 'user' && item.itemId.startsWith('user-steer-');
+}
+
 function turnGroup(turnId: string | null, items: readonly ConversationDisplayItem[], running: boolean): ConversationTurnGroup {
   let tailStart = items.length;
-  while (tailStart > 0 && items[tailStart - 1].kind === 'assistant') tailStart -= 1;
+  while (tailStart > 0 && ['assistant', 'compaction'].includes(items[tailStart - 1].kind)) tailStart -= 1;
   const hasFoldableWork = items.some((item) => FOLDABLE_TURN_KINDS.has(item.kind));
   const workItemIds = hasFoldableWork
     ? items
-      .filter((item, index) => FOLDABLE_TURN_KINDS.has(item.kind) || (item.kind === 'assistant' && index < tailStart))
+      .filter((item, index) => FOLDABLE_TURN_KINDS.has(item.kind) || item.kind === 'compaction' || midTurnMessage(item)
+        || (item.kind === 'assistant' && index < tailStart))
       .map((item) => item.itemId)
     : [];
   const tailItemIds = items
-    .filter((item, index) => item.kind === 'user' || (item.kind === 'assistant' && index >= tailStart))
+    .filter((item, index) => (item.kind === 'user' && !midTurnMessage(item)) || (item.kind === 'assistant' && index >= tailStart))
     .map((item) => item.itemId);
   const firstTimestamp = items[0]?.timestampMs;
   const lastTimestamp = items[items.length - 1]?.timestampMs;

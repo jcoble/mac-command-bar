@@ -243,17 +243,29 @@ const running = conversationTurnGroups([
 assert.equal(running[0].completed, false, 'a turn remains incomplete while any item runs');
 
 // A steer sent during a running turn carries that turn's id. It stays in the
-// turn's group, and both prompts stay visible rather than folding as work.
+// turn's group and folds with the work: a collapsed turn shows only the prompt
+// that started it and the reply.
 const steered = conversationTurnGroups([
   textItem('user', 'steer-initial', 'steer-turn', 1),
   toolItem('steer-tool', 'steer-turn', 2),
-  textItem('user', 'steer-correction', 'steer-turn', 3),
+  textItem('user', 'user-steer-correction', 'steer-turn', 3),
   toolItem('steer-tool-b', 'steer-turn', 4),
   textItem('assistant', 'steer-tail', 'steer-turn', 5)
 ]);
 assert.equal(steered.length, 1, 'a steer does not split its turn');
-assert.deepEqual(steered[0].tailItemIds, ['steer-initial', 'steer-correction', 'steer-tail'], 'both prompts and the reply stay visible');
-assert.deepEqual(steered[0].workItemIds, ['steer-tool', 'steer-tool-b'], 'only the work folds');
+assert.deepEqual(steered[0].tailItemIds, ['steer-initial', 'steer-tail'], 'only the prompt and the reply stay visible');
+assert.deepEqual(steered[0].workItemIds, ['steer-tool', 'user-steer-correction', 'steer-tool-b'], 'the steer folds with the work');
+
+// A bounded window can open partway through a long turn, on a steer rather
+// than the prompt, and a compaction marker can land after the reply.
+const trimmed = conversationTurnGroups([
+  textItem('user', 'user-steer-first', 'trimmed-turn', 1),
+  toolItem('trimmed-tool', 'trimmed-turn', 2),
+  textItem('assistant', 'trimmed-reply', 'trimmed-turn', 3),
+  { kind: 'compaction', itemId: 'trimmed-marker', turnId: 'trimmed-turn', timestampMs: 4 }
+]);
+assert.deepEqual(trimmed[0].tailItemIds, ['trimmed-reply'], 'the reply stays visible past a trailing marker');
+assert.deepEqual(trimmed[0].workItemIds, ['user-steer-first', 'trimmed-tool', 'trimmed-marker'], 'a leading steer and the marker fold');
 
 // A transcript read back out of the store carries no turn ids, because the
 // provider's own file never wrote any. Its turns are read off the prompts: one
@@ -324,8 +336,8 @@ assert.equal(compacted.length, 1, 'a compaction marker stays inside the turn it 
 assert.equal(compacted[0].completed, true, 'the turn still folds around the marker');
 assert.deepEqual(
   compacted[0].workItemIds,
-  ['compacted-tool-a', 'compacted-tool-b'],
-  'both halves of the interrupted turn fold together'
+  ['compacted-tool-a', 'compacted-marker', 'compacted-tool-b'],
+  'both halves of the interrupted turn fold together, marker included'
 );
 
 // Nothing folds while the agent is still writing. Most providers put no turn id
