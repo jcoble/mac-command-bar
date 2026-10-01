@@ -1703,9 +1703,9 @@
     {#if activeFile && breadcrumbParts.length > 0}
       <div class="editor-breadcrumb-row">
         <Breadcrumb.Root>
-          <Breadcrumb.List class="flex-nowrap gap-1 text-[13px]">
+          <Breadcrumb.List class="m-0 list-none flex-nowrap gap-1 p-0 text-[13px]">
             {#each breadcrumbParts as part, index (part)}
-              {#if index > 0}<Breadcrumb.Separator class="shrink-0" />{/if}
+              {#if index > 0}<Breadcrumb.Separator class="flex shrink-0 items-center" />{/if}
               <Breadcrumb.Item class="min-w-0 shrink-0">
                 <DropdownMenu.Root onOpenChange={(open) => { if (open) void openBreadcrumbMenu(part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part); }}>
                   <DropdownMenu.Trigger class="breadcrumb-trigger" aria-label={`Browse ${part.split('/').at(-1)}`}>
