@@ -14,7 +14,7 @@
   import FileChangeItem from './FileChangeItem.svelte';
   import ReasoningItem from './ReasoningItem.svelte';
   import SubagentSection from './SubagentSection.svelte';
-  import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { toolFilePath, type ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import { sanitizeConversationHref } from '$lib/shell/conversation/conversationMessageSafety.ts';
   import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
 
@@ -70,19 +70,6 @@
     return cleaned.split(/[/\\]/).pop() || cleaned;
   }
 
-  function extractFilePath(meta: Record<string, unknown> | undefined, fallback = ''): string {
-    if (!meta) return fallback;
-    const rawArgs = (meta.args || meta.arguments || meta.parameters || meta.input || meta.rawInput) as Record<string, unknown> | undefined;
-    const direct = meta.AbsolutePath || meta.TargetFile || meta.filePath || meta.file_path || meta.path || meta.file || meta.target;
-    if (typeof direct === 'string' && direct.trim()) return direct.trim();
-    if (rawArgs) {
-      const fromArgs = rawArgs.AbsolutePath || rawArgs.TargetFile || rawArgs.filePath || rawArgs.file_path || rawArgs.path || rawArgs.file || rawArgs.target;
-      if (typeof fromArgs === 'string' && fromArgs.trim()) return fromArgs.trim();
-    }
-    if (typeof meta.path === 'string' && meta.path.trim()) return meta.path.trim();
-    return fallback;
-  }
-
   function isWebSearchTool(subItem: ConversationDisplayItem): boolean {
     if (subItem.kind !== 'tool') return false;
     const title = (subItem.title || '').toLowerCase();
@@ -123,7 +110,7 @@
     const name = String(meta?.name || meta?.toolName || meta?.tool || '').toLowerCase();
     if (title === 'read' || title.startsWith('read ') || title === 'view' || title.startsWith('view ') || title === 'view_file' || title === 'read_file'
       || name === 'read' || name.startsWith('read ') || name === 'view' || name.startsWith('view ') || name === 'view_file' || name === 'read_file') return true;
-    const path = extractFilePath(meta, subItem.path || '');
+    const path = toolFilePath(subItem);
     if (path && (path.includes('.') || path.includes('/')) && !path.includes(' ') && !path.includes('&') && !path.includes('|') && path !== '...') return true;
     return false;
   }
@@ -137,11 +124,10 @@
       return { path: p, fileName: getFileName(p) };
     }
     if (actionItem.kind === 'tool') {
-      const meta = actionItem.metadata as Record<string, unknown> | undefined;
-      const rawPath = extractFilePath(meta, actionItem.path || actionItem.summary || '');
-      const cleaned = cleanToolTitle(rawPath);
+      const cleaned = cleanToolTitle(toolFilePath(actionItem));
       const fileName = (cleaned && cleaned !== '...') ? getFileName(cleaned) : '';
-      const fallbackTitle = cleanToolTitle(actionItem.title);
+      // With no path the row says what the call said it was doing, as plain text.
+      const fallbackTitle = cleanToolTitle(actionItem.summary ?? '') || cleanToolTitle(actionItem.title);
       return {
         path: cleaned,
         fileName: fileName || (fallbackTitle && fallbackTitle !== 'Tool' ? fallbackTitle : 'file')
@@ -314,7 +300,7 @@
     if (actionItem.kind === 'tool') {
       const meta = actionItem.metadata as Record<string, unknown> | undefined;
       const rawArgs = (meta?.args || meta?.arguments || meta?.parameters || meta?.input || meta?.rawInput) as Record<string, unknown> | undefined;
-      let p = extractFilePath(meta, actionItem.path || actionItem.summary || '');
+      let p = toolFilePath(actionItem);
       const toolName = String(meta?.name || meta?.toolName || meta?.tool || actionItem.title || '').toLowerCase();
       const isCreated = toolName.includes('write_to_file') || toolName === 'write' || toolName.includes('create') || Boolean(rawArgs?.CodeContent || meta?.CodeContent);
 
@@ -335,7 +321,7 @@
       }
 
       if (!p || p === '[object Object]' || p.includes('[object Object]')) {
-        const pathMatch = (d || actionItem.output || actionItem.summary || '').match(/(?:\+\+\+\s+(?:b\/)?|---\s+(?:a\/)?|path:\s*|[a-z0-9_.-]+:\s*)([^\s\n]+\.[a-zA-Z0-9_-]+)/i);
+        const pathMatch = (d || actionItem.output || '').match(/(?:\+\+\+\s+(?:b\/)?|---\s+(?:a\/)?|path:\s*|[a-z0-9_.-]+:\s*)([^\s\n]+\.[a-zA-Z0-9_-]+)/i);
         if (pathMatch) p = pathMatch[1].trim();
         else p = '';
       }
@@ -454,7 +440,12 @@
             >
               <Pencil size={13} class="item-icon" />
               <span class="item-label">
-                {info.action} <button class="link-name" type="button" onclick={(e) => { e.stopPropagation(); onFileLink?.(info.path); }}>{info.fileName}</button>
+                {info.action}
+                {#if info.path && onFileLink}
+                  <button class="link-name" type="button" onclick={(e) => { e.stopPropagation(); onFileLink?.(info.path); }}>{info.fileName}</button>
+                {:else}
+                  <span>{info.fileName}</span>
+                {/if}
                 {#if info.added > 0 || info.removed > 0}
                   <span class="diff-chip">
                     {#if info.added > 0}<span class="added">+{info.added}</span>{/if}
@@ -555,7 +546,7 @@
                     onclick={() => onFileLink?.(info.path)}
                   >{info.fileName}</button>
                 {:else}
-                  <span class="link-name">{info.fileName || 'file'}</span>
+                  <span>{info.fileName || 'file'}</span>
                 {/if}
               </span>
             </div>
