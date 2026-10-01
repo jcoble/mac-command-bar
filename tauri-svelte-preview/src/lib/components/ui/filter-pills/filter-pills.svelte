@@ -3,11 +3,13 @@
   manner of Spotify's Your Library filters.
 
   At rest the row shows one pill per group. Pressing a group opens it: the row
-  shows an "All" pill, which clears that group and closes it, then the group's
-  options, which toggle on and off. A press anywhere outside the row, or ten
+  shows a Back button, which closes the group without changing its selection,
+  then the group's options, which toggle on and off. Deselecting every option
+  clears the group. A press anywhere outside the row, or ten
   seconds with no press, closes the group and keeps its selection. A closed
   group with a selection shows the chosen labels joined ("Claude/Codex") as a
-  filled pill. The X at the far left of the resting row clears every group.
+  filled pill, or "All" when every option is selected. The X at the far left
+  of the resting row clears every group.
 
   Plain config in, selected values per group id out. The caller owns what the
   values mean and whether they are saved. Needs only Tailwind and the shadcn
@@ -90,11 +92,6 @@
     restartTimer();
   }
 
-  function clearGroup(group: FilterPillGroup): void {
-    onChange({ ...value, [group.id]: [] });
-    close();
-  }
-
   function clearAll(): void {
     onChange(Object.fromEntries(groups.map((group) => [group.id, []])));
     close();
@@ -102,6 +99,7 @@
 
   function pillLabel(group: FilterPillGroup): string {
     const chosen = group.options.filter((option) => selected(group.id).includes(option.value));
+    if (chosen.length > 0 && chosen.length === group.options.length) return 'All';
     return chosen.length > 0 ? chosen.map((option) => option.label).join('/') : group.label;
   }
 
@@ -132,13 +130,12 @@
 <div bind:this={row} role="group" aria-label={label} class="flex flex-nowrap items-center gap-2 overflow-x-auto">
   {#if openGroup}
     {@const group = openGroup}
-    {@const all = selected(group.id).length === 0}
     <button
       type="button"
-      class="{PILL} px-3 {all ? CHOSEN : REST}"
-      aria-pressed={all}
-      onclick={() => clearGroup(group)}
-    >All</button>
+      class="{PILL} px-3 {REST}"
+      aria-label="Back to filters"
+      onclick={close}
+    >← Back</button>
     {#each group.options as option (option.value)}
       {@const pressed = selected(group.id).includes(option.value)}
       <button
