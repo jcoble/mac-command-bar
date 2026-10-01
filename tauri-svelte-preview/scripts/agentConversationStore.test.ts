@@ -1162,7 +1162,7 @@ await test('a background top-up fills an open transcript the rail already saw pa
   assert.equal(service.resyncing.size, 0);
 });
 
-await test('start-up starts the event stream before it opens the remembered session', async () => {
+await test('start-up registers the event stream before it opens the remembered session', async () => {
   // A remote open shows the Mac's copy at once and its background top-up is
   // published moments later; a stream registered after the open would miss it.
   const source = readFileSync(new URL('../src/lib/shell/controllers/shellStartup.ts', import.meta.url), 'utf8');
@@ -1177,14 +1177,17 @@ await test('start-up starts the event stream before it opens the remembered sess
     readAssemblySettingFromTauri: async () => 'remembered', ACTIVE_OWNED_SESSION_SETTING_KEY: 'active',
     ownedSessionFromBackend: (session: unknown) => session, hydrateOwned: () => undefined,
     shellPanels: { allowSessionLoads: () => undefined }, rail: { error: null },
-    startConversationEventsForOwner: async () => { calls.push('event stream'); }
+    startConversationEventsForOwner: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      calls.push('event stream registered');
+    }
   };
   const shell = Function(...Object.keys(dependencies), stripTypeScriptTypes(`
     let shellAbort = null; let shellGeneration = 0;
     ${startShell.replace('export async function', 'async function')}
   `, { mode: 'strip' }) + '\nreturn { startShell };')(...Object.values(dependencies));
   await shell.startShell({ onSelectInitial: async (ownedId: string) => { calls.push('open ' + ownedId); } });
-  assert.deepEqual(calls, ['event stream', 'open remembered']);
+  assert.deepEqual(calls, ['event stream registered', 'open remembered']);
 });
 
 await test('sendStructuredMessage resolves the terminal from the owned session, not a passed argument', async () => {

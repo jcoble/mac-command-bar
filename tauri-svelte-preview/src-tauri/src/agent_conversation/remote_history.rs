@@ -441,6 +441,7 @@ impl RemoteHistory {
                 &Self::key(profile, owned),
                 through.saturating_add(1),
                 512 * 1024,
+                i64::MIN,
             )
             .map_err(|e| e.to_string())?;
         Ok(AgentConversationSnapshot {
@@ -499,20 +500,16 @@ impl RemoteHistory {
             return Ok(None);
         }
         let key = Self::key(profile, owned);
+        // Rows saved past a gap are not confirmed: the page stops at the edge.
         let page = if before {
-            self.store.list_events_before(&key, cursor, bytes)
+            self.store.list_events_before(&key, cursor, bytes, oldest)
         } else {
-            self.store.list_events_after(&key, cursor, bytes)
+            self.store.list_events_after(&key, cursor, bytes, through)
         }
         .map_err(|e| e.to_string())?;
-        // Rows saved past a gap are not confirmed: the page stops at the edge.
-        let mut events = page.events;
-        let count = events.len();
-        events.retain(|event| (oldest..=through).contains(&event.seq));
-        let at_edge = events.len() < count;
         Ok(Some(AgentConversationEventPage {
-            events: Self::decode(events)?,
-            has_more: (page.has_more && !at_edge) || (before && !coverage.start_complete),
+            events: Self::decode(page.events)?,
+            has_more: page.has_more || (before && !coverage.start_complete),
         }))
     }
 

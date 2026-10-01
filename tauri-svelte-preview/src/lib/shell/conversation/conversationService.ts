@@ -1138,7 +1138,9 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
       if (remoteConnectionEventsSeen.has(profile.id)) continue;
       setRemoteConnection(profile.id, readyRemoteProfiles.has(profile.id) ? 'connected' : 'disconnected');
     }
-    await refreshRemoteSessionActivity(streamGeneration);
+    // Start-up waits for this setup before it opens a session, so the remote
+    // read runs on its own.
+    void refreshRemoteSessionActivity(streamGeneration);
     if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !registration) {
       await registration?.unregister();
       stopTitles();

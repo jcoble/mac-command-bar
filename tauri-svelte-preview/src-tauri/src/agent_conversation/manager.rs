@@ -2914,7 +2914,7 @@ impl AgentRuntimeManager {
     ) -> Result<AgentConversationEventPage, String> {
         let page = self
             .store
-            .list_events_before(owned_id, before_sequence, max_bytes)
+            .list_events_before(owned_id, before_sequence, max_bytes, i64::MIN)
             .map_err(|error| error.to_string())?;
         let events = page
             .events
@@ -2936,7 +2936,7 @@ impl AgentRuntimeManager {
     ) -> Result<AgentConversationEventPage, String> {
         let page = self
             .store
-            .list_events_after(owned_id, after_sequence, max_bytes)
+            .list_events_after(owned_id, after_sequence, max_bytes, i64::MAX)
             .map_err(|error| error.to_string())?;
         let events = page
             .events

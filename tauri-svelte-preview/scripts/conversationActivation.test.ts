@@ -184,4 +184,4 @@ assert.match(
 );
 assert.doesNotMatch(page, /Open conversation|Conversation paused/, 'conversation activation has no manual workaround gate');
 
-console.log('conversationActivation.test.mjs passed');
+console.log('conversationActivation.test.ts passed');
