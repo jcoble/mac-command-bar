@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
@@ -51,6 +51,9 @@
     hasNewer?: boolean;
     loadingNewer?: boolean;
     onLoadNewer?(): void;
+    /** The oldest and newest loaded sequences; only a page that lands moves them outward. */
+    oldestSequence?: number;
+    newestSequence?: number;
     onJumpToLatest?(): void | Promise<void>;
     onScroll?(scrollTop: number): void;
     onApprovalDecision?(requestId: string, decision: string): void;
@@ -79,6 +82,8 @@
     hasNewer = false,
     loadingNewer = false,
     onLoadNewer,
+    oldestSequence = 0,
+    newestSequence = 0,
     onJumpToLatest,
     onScroll,
     onApprovalDecision,
@@ -343,12 +348,19 @@
       : null;
   }
 
+  // The window, edge, direction and content height a page was asked from. A
+  // page that lands without changing the content height added nothing visible
+  // (a collapsed turn hides it), so the next one is asked for at once instead
+  // of waiting for another wheel event.
+  let pageRequest: { windowId: string; edge: number; older: boolean; height: number } | null = null;
+
   function requestOlderHistory(): void {
     if (!host || !hasOlder || loadingOlder || !onLoadOlder || scrollState.openingToLatest) return;
     if (host.scrollTop > 80) return;
     follow = false;
     newerPagingAllowed = false;
     captureViewportAnchor();
+    pageRequest = { windowId: renderWindowId, edge: oldestSequence, older: true, height: host.scrollHeight };
     onLoadOlder();
   }
 
@@ -357,6 +369,7 @@
     if (!force && !newerPagingAllowed) return;
     if (!force && distanceBelowReader() > 80) return;
     captureViewportAnchor();
+    pageRequest = { windowId: renderWindowId, edge: newestSequence, older: false, height: host.scrollHeight };
     onLoadNewer();
   }
 
@@ -379,6 +392,23 @@
     if (revision <= anchor.timelineRevision) return;
     pageAnchor = null;
     restoreViewportAnchor(anchor);
+  });
+
+  $effect(() => {
+    if (loadingOlder || loadingNewer || !pageRequest) return;
+    // A failed read leaves the edge where it was and a switch changes the window.
+    // Live output cannot pass for a page: it bumps the revision, and trimming
+    // only moves the oldest edge forward.
+    const landed = pageRequest.windowId === renderWindowId
+      && (pageRequest.older ? oldestSequence < pageRequest.edge : newestSequence > pageRequest.edge);
+    // A height change stops the chain even when the view stayed at the edge,
+    // which happens when the viewport anchor cannot find its row after the page.
+    // It counts both ways: a page that also trimmed the far end can add rows
+    // here and still leave the content shorter.
+    const changed = !host || Math.abs(host.scrollHeight - pageRequest.height) > 80;
+    const older = pageRequest.older;
+    pageRequest = null;
+    if (landed && !changed) untrack(() => (older ? requestOlderHistory() : requestNewerHistory()));
   });
 
   function handleScroll(): void {
@@ -634,7 +664,9 @@
 
 <style>
   .timeline-wrap{position:relative;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow:hidden}
-  .older-loading{position:absolute;top:calc(var(--center-head-height, 0px) + 6px);left:0;right:0;z-index:2;display:flex;align-items:center;justify-content:center;gap:6px;margin:0;font-size:12px;color:var(--color-text-2);pointer-events:none}
+  .older-loading{position:absolute;top:calc(var(--center-head-height, 0px) + 6px);left:0;right:0;z-index:2;display:flex;align-items:center;justify-content:center;gap:6px;margin:0;font-size:12px;color:var(--color-text-2);pointer-events:none;animation:older-appear 1ms 300ms backwards}
+  /* A page read from the local copy lands well inside 300 ms; only a slow one shows this. */
+  @keyframes older-appear{from{opacity:0}}
   .older-spinner{width:11px;height:11px;border:1.5px solid color-mix(in srgb,var(--color-text-3) 45%,transparent);border-top-color:var(--color-text-2);border-radius:50%;animation:older-spin 700ms linear infinite}
   @keyframes older-spin{to{transform:rotate(360deg)}}
   @media (prefers-reduced-motion: reduce){.older-spinner{animation:none;border-top-color:color-mix(in srgb,var(--color-text-3) 45%,transparent)}}

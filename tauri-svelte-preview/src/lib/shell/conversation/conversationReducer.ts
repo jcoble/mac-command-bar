@@ -57,7 +57,9 @@ export function createConversationState(
   };
 }
 
-export function applyConversationEvent(
+/** One event's sequence, connection, turn and usage bookkeeping, without the
+ * transcript. A dropped event returns `state` itself. */
+export function reduceConversationEvent(
   state: ConversationSessionState,
   event: AgentConversationEvent
 ): ConversationSessionState {
@@ -85,12 +87,6 @@ export function applyConversationEvent(
     next.activeTurnId = undefined;
     if (!payload.recoverable) next.connectionState = 'failed';
   } else if (payload.kind === 'usage') {
-    const previous = next.usage?.usedTokens;
-    const last = next.transcript.getMessages().at(-1);
-    if (usageDropIsCompaction(previous, payload.usedTokens) && last?.metadata?.itemType !== 'context-compaction') {
-      applyMessageEvent(next.transcript, { ...event, payload: { kind: 'contextCompaction', preTokens: previous, postTokens: payload.usedTokens } });
-      next.timelineRevision += 1;
-    }
     next.usage = {
       inputTokens: payload.inputTokens ?? next.usage?.inputTokens,
       outputTokens: payload.outputTokens ?? next.usage?.outputTokens,
@@ -98,6 +94,24 @@ export function applyConversationEvent(
       contextWindow: payload.contextWindow ?? next.usage?.contextWindow,
       totalTokens: payload.totalTokens ?? next.usage?.totalTokens
     };
+  }
+  return next;
+}
+
+export function applyConversationEvent(
+  state: ConversationSessionState,
+  event: AgentConversationEvent
+): ConversationSessionState {
+  const next = reduceConversationEvent(state, event);
+  if (next === state || next.desynchronized) return next;
+  const payload = event.payload;
+  if (payload.kind === 'usage') {
+    const previous = state.usage?.usedTokens;
+    const last = next.transcript.getMessages().at(-1);
+    if (usageDropIsCompaction(previous, payload.usedTokens) && last?.metadata?.itemType !== 'context-compaction') {
+      applyMessageEvent(next.transcript, { ...event, payload: { kind: 'contextCompaction', preTokens: previous, postTokens: payload.usedTokens } });
+      next.timelineRevision += 1;
+    }
   }
   const normalized = displayEventFrom(event);
   if (applyMessageEvent(next.transcript, normalized)) next.timelineRevision += 1;
