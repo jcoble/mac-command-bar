@@ -94,9 +94,12 @@ export function applyMessageEvent(processor: StreamProcessor, event: AgentConver
   if (!item) return false;
   const existing = processor.getMessages().find((message) => message.id === item.id);
   const prior = metadataOf(existing);
+  // A row belongs to the turn it was first written in, since it keeps that
+  // place. A background task can finish during a later turn (or start between
+  // turns); taking that turn's id cut both turns in two around the row.
   const metadata: Record<string, AgentConfigValue> = {
     ...prior, ...item.providerMetadata, itemType: item.type,
-    turnId: item.turnId ?? prior.turnId ?? null,
+    turnId: existing ? prior.turnId ?? null : item.turnId ?? null,
     startedAtMs: prior.startedAtMs ?? item.providerMetadata?.startedAtMs ?? event.timestampMs
   };
   // Tool output has one owner: the paired canonical tool-call/result parts.

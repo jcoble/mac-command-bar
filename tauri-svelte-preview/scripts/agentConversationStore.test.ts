@@ -10,6 +10,7 @@ import { get } from 'svelte/store';
 import { StreamProcessor } from '@tanstack/ai/client';
 import { applyConversationEvent, createConversationState, shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
 import { conversationDisplayItems } from '../src/lib/shell/conversation/conversationMessages.ts';
+import { conversationTurnGroups } from '../src/lib/shell/conversation/conversationTimeline.ts';
 import type { ConversationSessionState } from '../src/lib/shell/conversation/conversationTypes.ts';
 const display = (state: ConversationSessionState) => conversationDisplayItems(state.transcript.getMessages());
 import { sessionPresenceHistory, sessionPresenceEventFromConversation, synchronizeSessionPresenceWork, deriveSessionPresence, EMPTY_SESSION_PRESENCE_HISTORY } from '../src/lib/shell/conversation/sessionPresence.ts';
@@ -1834,6 +1835,34 @@ await test('release builds enforce the UTF-8 history byte limit in both paging d
   assert.equal(store.getConversationSession(ownedId).reachedTranscriptStart, false);
   store.applyAgentConversationEvent(live);
   assertWindow(3);
+  store.evictConversationSession(ownedId);
+});
+
+await test('a background task finishing in a later turn stays in the turn that started it when an older page loads', () => {
+  // The task's row sits where it started. Taking the later turn's id from its
+  // completion split both turns, and each piece drew that turn's reply.
+  const ownedId = 'owned-cross-turn-task';
+  const event = (sequence: number, turnId: string, payload: Record<string, unknown>) => ({
+    ownedId, provider: 'claude' as const, generation: 1, sequence, timestampMs: sequence, turnId, payload
+  });
+  const message = (sequence: number, turnId: string, kind: string, itemId: string) =>
+    event(sequence, turnId, { kind, itemId, text: itemId, completed: true });
+  const task = (sequence: number, turnId: string, state: string) =>
+    event(sequence, turnId, { kind: 'tool', itemId: 'background-task:wait', name: 'Wait', state });
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'claude', generation: 1, state: 'connected' },
+    lastSequence: 6,
+    events: [message(4, 'turn-b', 'userMessage', 'prompt-b'), task(5, 'turn-b', 'completed'), message(6, 'turn-b', 'assistantMessage', 'reply-b')]
+  });
+  store.prependOlderConversationEvents(ownedId, {
+    events: [message(1, 'turn-a', 'userMessage', 'prompt-a'), task(2, 'turn-a', 'started'), message(3, 'turn-a', 'assistantMessage', 'reply-a')],
+    hasMore: false
+  });
+  const groups = conversationTurnGroups(display(store.getConversationSession(ownedId)));
+  assert.deepEqual(groups.map((group) => [group.turnId, group.items.map((item) => item.itemId)]), [
+    ['turn-a', ['prompt-a', 'background-task:wait', 'reply-a']],
+    ['turn-b', ['prompt-b', 'reply-b']]
+  ]);
   store.evictConversationSession(ownedId);
 });
 
