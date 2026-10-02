@@ -362,6 +362,11 @@ const writing = conversationTurnGroups([
 assert.equal(writing.length, 2);
 assert.equal(writing[0].completed, true, 'an earlier turn folds while a later one runs');
 assert.equal(writing[1].completed, false, 'the turn being written never folds');
+const live = conversationTurnGroups([
+  textItem('user', 'live-user', 'live-turn', 1_000),
+  toolItem('live-tool', 'live-turn', 4_000)
+], 'live-turn', new Map([['live-turn', { turnId: 'live-turn', startedAtMs: 0, endedAtMs: 99_000, replyItemId: null, replyText: null, replyBlocks: null }]]));
+assert.equal(live[0].elapsedMs, 3_000, 'a running turn has no SQL span yet and keeps its live elapsed time');
 
 // A long turn is far bigger than the window, so its length and its final reply
 // come from SQL. Whatever part of it is loaded, the collapsed turn shows the

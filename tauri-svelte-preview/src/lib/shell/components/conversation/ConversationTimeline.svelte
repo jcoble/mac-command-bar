@@ -109,14 +109,16 @@
   const effectiveActiveTurnId = $derived(activeTurnId ?? (localTurnActive
     ? renderedItems.findLast((item) => item.turnId)?.turnId ?? null
     : null));
+  // A remote session's store does not name its running turn; the live status line says one runs.
+  const runningTurnId = $derived(effectiveActiveTurnId ?? (activityLabel ? renderedItems.at(-1)?.turnId ?? null : null));
   let turnSummaries = $state.raw<ReadonlyMap<string, ConversationTurnSummary>>(new Map());
-  const renderedGroups = $derived(conversationTurnGroups(renderedItems, effectiveActiveTurnId, turnSummaries));
+  const renderedGroups = $derived(conversationTurnGroups(renderedItems, runningTurnId, turnSummaries));
   /** The finished journal turns on screen, each with its newest loaded row, as
    * one key: their summaries are read again when a turn comes into the window
    * or the copy brings a turn newer rows, never while the running turn streams. */
   const summaryKey = $derived(renderedGroups.flatMap((group, index) => (
     group.turnId && !group.turnId.startsWith('stored-turn:')
-      && (effectiveActiveTurnId === null || index < renderedGroups.length - 1)
+      && (runningTurnId === null || index < renderedGroups.length - 1)
       ? [`${group.turnId}\t${group.items[group.items.length - 1]?.itemId}`]
       : []
   )).join('\n'));

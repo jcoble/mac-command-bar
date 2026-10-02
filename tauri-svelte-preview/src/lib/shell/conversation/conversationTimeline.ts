@@ -284,9 +284,10 @@ function turnGroup(
     ? Math.max(0, lastTimestamp - firstTimestamp)
     : 0;
   // A journal turn's length is its span in SQL; until that arrives the fold
-  // shows no figure rather than the span of whichever part is loaded. A turn
-  // read off the prompts has no id to look up and keeps the span of its rows.
-  const length = summary ? summary.endedAtMs - summary.startedAtMs : turnId?.startsWith('stored-turn:') ? span : 0;
+  // shows no figure rather than the span of whichever part is loaded. The
+  // running turn, and a turn read off the prompts (no id to look up), keep the
+  // span of their rows.
+  const length = summary ? summary.endedAtMs - summary.startedAtMs : running || turnId?.startsWith('stored-turn:') ? span : 0;
   // Zero is not a length of time anyone worked for. Every row of an older
   // import carries the moment the import ran rather than the moment the work
   // happened, so the whole turn reads as one instant; the fold says "Worked"
