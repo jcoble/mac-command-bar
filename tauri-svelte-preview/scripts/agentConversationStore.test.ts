@@ -2165,6 +2165,39 @@ await test('prepending an older page trims newest only down to the trim target',
   store.evictConversationSession(ownedId);
 });
 
+await test('stored history with deleted rows and a continuing generation draws every turn', () => {
+  // Rows as the journal keeps them: appending a tool update deletes the one it
+  // replaces (seq 2 and 6 are gone), and generation 2 continues the sequence.
+  const stored = (ownedId: string): AgentConversationEvent[] => ([
+    [1, 1, { kind: 'userMessage', itemId: 'u1', text: 'First question' }],
+    [1, 3, { kind: 'tool', itemId: 't1', name: 'Read', state: 'completed' }],
+    [1, 4, { kind: 'assistantMessage', itemId: 'a1', text: 'First answer', completed: true }],
+    [2, 5, { kind: 'userMessage', itemId: 'u2', text: 'Second question' }],
+    [2, 7, { kind: 'tool', itemId: 't2', name: 'Read', state: 'completed' }],
+    [2, 8, { kind: 'assistantMessage', itemId: 'a2', text: 'x'.repeat(2_900_000), completed: true }]
+  ] as const).map(([generation, sequence, payload]) => ({ ownedId, provider: 'codex', generation, sequence, timestampMs: sequence, payload }));
+  const open = (ownedId: string, events: AgentConversationEvent[]) => store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'codex', generation: 2, state: 'connected' }, lastSequence: 8, events
+  });
+  const ids = (ownedId: string) => store.getConversationSession(ownedId).transcript.getMessages()
+    .map((message: { id: string }) => message.id);
+
+  const paged = stored('owned-stored-paged');
+  open('owned-stored-paged', paged.slice(-1));
+  store.prependOlderConversationEvents('owned-stored-paged', { events: paged.slice(0, -1), hasMore: false });
+  const session = store.getConversationSession('owned-stored-paged');
+  assert.deepEqual(ids('owned-stored-paged'), ['u1', 't1', 'a1', 'u2', 't2', 'a2'], 'both turns are drawn');
+  assert.equal(session.loadedEvents.length, 6, 'every stored row is kept');
+  assert.ok(session.reachedTranscriptStart && session.reachedTranscriptEnd);
+  assert.equal(session.desynchronized, false);
+
+  open('owned-stored-hole', stored('owned-stored-hole').slice(3));
+  assert.deepEqual(ids('owned-stored-hole'), ['u2', 't2', 'a2'], 'an opened window draws past a deleted row');
+  assert.equal(store.getConversationSession('owned-stored-hole').desynchronized, false);
+  store.evictConversationSession('owned-stored-paged');
+  store.evictConversationSession('owned-stored-hole');
+});
+
 await test('prepend matches full replay', () => {
   const strip = (value: unknown) => value === undefined ? value
     : JSON.parse(JSON.stringify(value, (key, field) => key === 'createdAt' ? undefined : field));
@@ -2254,18 +2287,19 @@ await test('prepend matches full replay', () => {
       .find((message: { id: string }) => message.id === 'a-s1').parts[0].content, 'Streaming text live!');
     evict('owned-oracle-a');
 
-    // B: a gap inside the window, a generation restarting at 1 (continuing a
-    // message written before the gap), and one that does not restart at 1.
+    // B: a gap inside the window, a generation continuing the sequence (and a
+    // message written before the gap), and one that starts after a gap, as the
+    // backend numbers them.
     const b = history('owned-oracle-b');
     b.add({ kind: 'userMessage', itemId: 'b-u1', text: 'one' }, 1, 1);
     b.add({ kind: 'assistantMessage', itemId: 'b-a1', text: 'two', completed: true }, 1, 2);
     b.add({ kind: 'userMessage', itemId: 'b-u2', text: 'three' }, 1, 3);
     b.add({ kind: 'assistantDelta', itemId: 'b-s', delta: 'five ' }, 1, 5);
     b.add({ kind: 'userMessage', itemId: 'b-u3', text: 'six' }, 1, 6);
-    b.add({ kind: 'assistantDelta', itemId: 'b-s', delta: 'restart' }, 2, 1);
-    b.add({ kind: 'userMessage', itemId: 'b-u4', text: 'restart two' }, 2, 2);
-    b.add({ kind: 'assistantMessage', itemId: 'b-a4', text: 'late generation', completed: true }, 3, 5);
-    b.add({ kind: 'userMessage', itemId: 'b-u5', text: 'late two' }, 3, 6);
+    b.add({ kind: 'assistantDelta', itemId: 'b-s', delta: 'restart' }, 2, 7);
+    b.add({ kind: 'userMessage', itemId: 'b-u4', text: 'restart two' }, 2, 8);
+    b.add({ kind: 'assistantMessage', itemId: 'b-a4', text: 'late generation', completed: true }, 3, 11);
+    b.add({ kind: 'userMessage', itemId: 'b-u5', text: 'late two' }, 3, 12);
     open('owned-oracle-b', b.events.slice(7));
     for (let end = 7; end > 0; end -= 2) {
       store.prependOlderConversationEvents('owned-oracle-b', { events: b.events.slice(Math.max(0, end - 2), end), hasMore: end > 2 });

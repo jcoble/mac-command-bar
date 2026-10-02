@@ -574,6 +574,16 @@ function projectionSnapshot(current: ConversationWorkspaceState): AgentConversat
   };
 }
 
+/** Puts a replay in step with the next stored event. The journal deletes a row
+ * when a newer one replaces it (`append_event` in core/src/session_store.rs),
+ * and a new generation continues the sequence, so a jump between stored rows is
+ * not a missed event. Only live events can go missing; the reducer checks those. */
+function inStepWith<T extends ConversationSessionState>(state: T, event: AgentConversationEvent): T {
+  state.generation = event.generation;
+  state.lastSequence = event.sequence - 1;
+  return state;
+}
+
 export function applyAgentConversationSnapshot(
   snapshot: AgentConversationSnapshot,
   window?: ProjectionWindowState,
@@ -729,6 +739,7 @@ export function applyAgentConversationSnapshot(
     loadedChildTranscriptBytes: keepChildProjection ? current.loadedChildTranscriptBytes : 0
   };
   for (const event of events) {
+    inStepWith(restored, event);
     const reduced = window?.transcript ? reduceConversationEvent(restored, event) : applyConversationEvent(restored, event);
     if (reduced !== restored) Object.assign(restored, reduced);
     applyTypedEventPayload(restored, displayEventFrom(event));
@@ -784,18 +795,9 @@ function prependPageTranscript(
   events: readonly AgentConversationEvent[]
 ): StreamProcessor {
   const state = createConversationState(current.ownedId, current.provider);
-  state.generation = events[0]?.generation ?? 0;
-  state.lastSequence = events[0] ? events[0].sequence - 1 : 0;
-  for (const event of events.slice(0, pageLength)) Object.assign(state, applyConversationEvent(state, event));
+  for (const event of events.slice(0, pageLength)) Object.assign(state, applyConversationEvent(inStepWith(state, event), event));
   const transcript = state.transcript;
   const kept = events.slice(pageLength);
-  const joined = kept.length ? reduceConversationEvent(state, kept[0]) : state;
-  if (joined === state || joined.desynchronized) {
-    // Out of step at the join, a full replay does no message work until a
-    // generation restarts at 1, so the reducer itself is cheap here.
-    for (const event of kept) Object.assign(state, applyConversationEvent(state, event));
-    return transcript;
-  }
   const pageMessages = transcript.getMessages().length;
   const pageIds = new Set(transcript.getMessages().map((message) => message.id));
   const currentById = new Map(current.transcript.getMessages().map((message) => [message.id, message]));
@@ -815,7 +817,7 @@ function prependPageTranscript(
   let fromCurrent = 0;
   let lastIsCompaction = transcript.getMessages().at(-1)?.metadata?.itemType === 'context-compaction';
   for (const event of kept) {
-    const reduced = reduceConversationEvent(state, event);
+    const reduced = reduceConversationEvent(inStepWith(state, event), event);
     if (reduced === state) continue;
     const previous = state.usage?.usedTokens;
     Object.assign(state, reduced);
