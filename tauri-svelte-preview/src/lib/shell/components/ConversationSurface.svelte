@@ -781,6 +781,7 @@
         anchorRequest={sendAnchorRequest}
         activeTurnId={conversation.activeTurnId ?? null}
         {localTurnActive}
+        turnRunning={turnActive}
         {activityLabel}
         {composerHeight}
         assistantLabel={selectedChild?.title ?? active.agent}

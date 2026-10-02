@@ -39,6 +39,7 @@
     anchorRequest?: ConversationSendAnchorRequest | null;
     activeTurnId?: string | null;
     localTurnActive?: boolean;
+    turnRunning?: boolean;
     /** What the running turn is doing, or null when no turn runs here. */
     activityLabel?: string | null;
     composerHeight?: number;
@@ -70,6 +71,7 @@
     anchorRequest = null,
     activeTurnId = null,
     localTurnActive = false,
+    turnRunning = false,
     activityLabel = null,
     composerHeight = 0,
     assistantLabel = 'Assistant',
@@ -109,8 +111,8 @@
   const effectiveActiveTurnId = $derived(activeTurnId ?? (localTurnActive
     ? renderedItems.findLast((item) => item.turnId)?.turnId ?? null
     : null));
-  // A remote session's store does not name its running turn; the live status line says one runs.
-  const runningTurnId = $derived(effectiveActiveTurnId ?? (activityLabel ? renderedItems.at(-1)?.turnId ?? null : null));
+  // A remote session's store does not name its running turn; the session's presence says one runs.
+  const runningTurnId = $derived(effectiveActiveTurnId ?? (turnRunning && !hasNewer ? renderedItems.at(-1)?.turnId ?? null : null));
   let turnSummaries = $state.raw<ReadonlyMap<string, ConversationTurnSummary>>(new Map());
   const renderedGroups = $derived(conversationTurnGroups(renderedItems, runningTurnId, turnSummaries));
   /** The finished journal turns on screen, each with its newest loaded row, as

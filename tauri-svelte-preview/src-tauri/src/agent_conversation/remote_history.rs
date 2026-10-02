@@ -494,8 +494,8 @@ impl RemoteHistory {
         -> Result<Vec<TurnSummaryRow>, String> {
         let coverage = self.coverage(profile, owned)?;
         let Some(oldest) = coverage.oldest else { return Ok(Vec::new()) };
-        let rows = self.store.turn_summaries(&Self::key(profile, owned), turn_ids).map_err(|e| e.to_string())?;
-        Ok(rows.into_iter().filter(|row| coverage.start_complete || row.first_seq > oldest).collect())
+        let after = (!coverage.start_complete).then_some(oldest);
+        self.store.turn_summaries(&Self::key(profile, owned), turn_ids, after).map_err(|e| e.to_string())
     }
 
     /// Where the next older page must end, until the session's start is saved.

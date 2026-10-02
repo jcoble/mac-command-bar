@@ -702,7 +702,7 @@ pub async fn list_agent_conversation_turn_summaries(
     let rows = if remote.owns(&owned_id) {
         remote.turn_summaries(owned_id, turn_ids).await
     } else {
-        manager.store().turn_summaries(&owned_id, &turn_ids).map_err(|error| error.to_string())
+        manager.store().turn_summaries(&owned_id, &turn_ids, None).map_err(|error| error.to_string())
     };
     command_result(rows.and_then(|rows| rows.into_iter().map(|row| {
         // A finished reply has blocks prepared when it was saved; a reply that

@@ -229,7 +229,6 @@ pub struct EventRow {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TurnSummaryRow {
     pub turn_id: String,
-    pub first_seq: i64,
     pub started_at_ms: i64,
     pub ended_at_ms: i64,
     pub reply_item_id: Option<String>,
@@ -1784,8 +1783,9 @@ impl SessionStore {
     /// long turn is far bigger than the transcript window, so neither its
     /// length nor its last reply can be read off the rows on screen. The reply
     /// is the turn's last assistant row; a reply that only ever streamed is
-    /// its deltas joined in order.
-    pub fn turn_summaries(&self, owned_id: &str, turn_ids: &[String]) -> Result<Vec<TurnSummaryRow>> {
+    /// its deltas joined in order. With `after_seq`, a turn that starts at or
+    /// before that row has no row.
+    pub fn turn_summaries(&self, owned_id: &str, turn_ids: &[String], after_seq: Option<i64>) -> Result<Vec<TurnSummaryRow>> {
         if turn_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -1800,6 +1800,7 @@ impl SessionStore {
                      FROM events
                      WHERE owned_id = ?1 AND turn_id IN (SELECT value FROM json_each(?2))
                      GROUP BY turn_id
+                     HAVING ?3 IS NULL OR MIN(seq) > ?3
                  ), replies AS (
                      SELECT bounds.*, (
                          SELECT seq FROM events
@@ -1810,7 +1811,7 @@ impl SessionStore {
                      ) AS reply_seq
                      FROM bounds
                  )
-                 SELECT replies.turn_id, replies.first_seq, replies.started_at, replies.ended_at, reply.item_id,
+                 SELECT replies.turn_id, replies.started_at, replies.ended_at, reply.item_id,
                      CASE json_extract(reply.payload, '$.payload.kind')
                          WHEN 'assistantMessage' THEN json_extract(reply.payload, '$.payload.text')
                          ELSE (SELECT group_concat(json_extract(delta.payload, '$.payload.delta'), '' ORDER BY delta.seq)
@@ -1824,15 +1825,14 @@ impl SessionStore {
             )
             .map_err(|error| StoreError::sqlite("could not prepare turn summaries", error))?;
         let rows = statement
-            .query_map(params![owned_id, turn_ids], |row| {
+            .query_map(params![owned_id, turn_ids, after_seq], |row| {
                 Ok(TurnSummaryRow {
                     turn_id: row.get(0)?,
-                    first_seq: row.get(1)?,
-                    started_at_ms: row.get(2)?,
-                    ended_at_ms: row.get(3)?,
-                    reply_item_id: row.get(4)?,
-                    reply_text: row.get(5)?,
-                    reply_blocks_json: row.get(6)?,
+                    started_at_ms: row.get(1)?,
+                    ended_at_ms: row.get(2)?,
+                    reply_item_id: row.get(3)?,
+                    reply_text: row.get(4)?,
+                    reply_blocks_json: row.get(5)?,
                 })
             })
             .map_err(|error| StoreError::sqlite("could not read turn summaries", error))?;
@@ -4580,24 +4580,28 @@ mod tests {
         store.cache_remote_events("workbox", &fixture_session(remote, 2), &cached).expect("cache remote rows");
 
         let asked = ["turn-a", "turn-b", "turn-missing"].map(String::from);
-        let mut summaries = store.turn_summaries("local", &asked).expect("read local summaries");
+        let mut summaries = store.turn_summaries("local", &asked, None).expect("read local summaries");
         summaries.sort_by(|left, right| left.turn_id.cmp(&right.turn_id));
         assert_eq!(summaries, vec![
             TurnSummaryRow {
-                turn_id: "turn-a".into(), first_seq: 1, started_at_ms: 1_000, ended_at_ms: 5_000,
+                turn_id: "turn-a".into(), started_at_ms: 1_000, ended_at_ms: 5_000,
                 reply_item_id: Some("reply-a".into()), reply_text: Some("Hello".into()), reply_blocks_json: None,
             },
             TurnSummaryRow {
-                turn_id: "turn-b".into(), first_seq: 6, started_at_ms: 6_000, ended_at_ms: 9_000,
+                turn_id: "turn-b".into(), started_at_ms: 6_000, ended_at_ms: 9_000,
                 reply_item_id: Some("reply-b".into()), reply_text: Some("Done".into()),
                 reply_blocks_json: Some(r#"[{"type":"paragraph"}]"#.into()),
             },
         ], "turn-c was not asked for and an unknown turn has no row");
-        assert_eq!(store.turn_summaries(remote, &["turn-r".into()]).expect("read remote summary"), vec![TurnSummaryRow {
-            turn_id: "turn-r".into(), first_seq: 40, started_at_ms: 40_000, ended_at_ms: 43_000,
+        assert_eq!(store.turn_summaries(remote, &["turn-r".into()], None).expect("read remote summary"), vec![TurnSummaryRow {
+            turn_id: "turn-r".into(), started_at_ms: 40_000, ended_at_ms: 43_000,
             reply_item_id: Some("reply-r".into()), reply_text: Some("Finished".into()), reply_blocks_json: None,
         }]);
-        assert!(store.turn_summaries("local", &[]).expect("no turns asked").is_empty());
+        assert!(store.turn_summaries("local", &[], None).expect("no turns asked").is_empty());
+        // A copy whose start is unconfirmed names its oldest row: a turn that
+        // starts there or earlier may begin before the copy, so it has no row.
+        let after_edge = store.turn_summaries("local", &asked, Some(5)).expect("read past the edge");
+        assert_eq!(after_edge.into_iter().map(|row| row.turn_id).collect::<Vec<_>>(), vec!["turn-b"]);
     }
 
     /// Scrolling up asks for the window just older than what is on screen, and
