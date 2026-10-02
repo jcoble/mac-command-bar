@@ -343,10 +343,11 @@
       : null;
   }
 
-  // The window and revision an older page was asked from. A page that lands
-  // with the view still at the top added no visible height, so the next one is
-  // asked for at once instead of waiting for another wheel event.
-  let olderRequest: { windowId: string; revision: number } | null = null;
+  // The window, revision and direction a page was asked from. A page that
+  // lands with the view still at that edge added no visible height (a collapsed
+  // turn hides it), so the next one is asked for at once instead of waiting for
+  // another wheel event.
+  let pageRequest: { windowId: string; revision: number; older: boolean } | null = null;
 
   function requestOlderHistory(): void {
     if (!host || !hasOlder || loadingOlder || !onLoadOlder || scrollState.openingToLatest) return;
@@ -354,7 +355,7 @@
     follow = false;
     newerPagingAllowed = false;
     captureViewportAnchor();
-    olderRequest = { windowId: renderWindowId, revision: timelineRevision };
+    pageRequest = { windowId: renderWindowId, revision: timelineRevision, older: true };
     onLoadOlder();
   }
 
@@ -363,6 +364,7 @@
     if (!force && !newerPagingAllowed) return;
     if (!force && distanceBelowReader() > 80) return;
     captureViewportAnchor();
+    pageRequest = { windowId: renderWindowId, revision: timelineRevision, older: false };
     onLoadNewer();
   }
 
@@ -388,11 +390,12 @@
   });
 
   $effect(() => {
-    if (loadingOlder || !olderRequest) return;
+    if (loadingOlder || loadingNewer || !pageRequest) return;
     // A failed read leaves the revision unchanged; a switch changes the window.
-    const landed = olderRequest.windowId === renderWindowId && timelineRevision > olderRequest.revision;
-    olderRequest = null;
-    if (landed) untrack(requestOlderHistory);
+    const landed = pageRequest.windowId === renderWindowId && timelineRevision > pageRequest.revision;
+    const older = pageRequest.older;
+    pageRequest = null;
+    if (landed) untrack(() => (older ? requestOlderHistory() : requestNewerHistory()));
   });
 
   function handleScroll(): void {
