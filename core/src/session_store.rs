@@ -1875,7 +1875,8 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the recent event list", error))
     }
 
-    /// The window of events just older than `before_seq`, bounded by bytes.
+    /// The window of events just older than `before_seq` and no older than
+    /// `lowest_seq`, bounded by bytes.
     ///
     /// This is what scrolling up asks for. The budget is spent before a row is
     /// counted rather than after, so the oldest row always fits: a single event
@@ -1886,6 +1887,7 @@ impl SessionStore {
         owned_id: &str,
         before_seq: i64,
         max_bytes: u32,
+        lowest_seq: i64,
     ) -> Result<OlderEvents> {
         let connection = self.lock()?;
         let mut statement = connection
@@ -1900,7 +1902,7 @@ impl SessionStore {
                      FROM (
                          SELECT owned_id, seq, turn_id, kind, payload, created_at
                          FROM events
-                         WHERE owned_id = ? AND seq < ?
+                         WHERE owned_id = ? AND seq < ? AND seq >= ?
                          ORDER BY seq DESC
                          LIMIT ?
                      )
@@ -1914,6 +1916,7 @@ impl SessionStore {
                 params![
                     owned_id,
                     before_seq,
+                    lowest_seq,
                     i64::from(Self::HISTORY_PAGE_ROW_CEILING),
                     i64::from(max_bytes)
                 ],
@@ -1928,20 +1931,22 @@ impl SessionStore {
         let oldest = events.first().map_or(before_seq, |event| event.seq);
         let has_more: bool = connection
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM events WHERE owned_id = ? AND seq < ?)",
-                params![owned_id, oldest],
+                "SELECT EXISTS(SELECT 1 FROM events WHERE owned_id = ? AND seq < ? AND seq >= ?)",
+                params![owned_id, oldest, lowest_seq],
                 |row| row.get(0),
             )
             .map_err(|error| StoreError::sqlite("could not look past the older window", error))?;
         Ok(OlderEvents { events, has_more })
     }
 
-    /// The window of events just newer than `after_seq`, bounded by bytes.
+    /// The window of events just newer than `after_seq` and no newer than
+    /// `highest_seq`, bounded by bytes.
     pub fn list_events_after(
         &self,
         owned_id: &str,
         after_seq: i64,
         max_bytes: u32,
+        highest_seq: i64,
     ) -> Result<OlderEvents> {
         let connection = self.lock()?;
         let mut statement = connection
@@ -1956,7 +1961,7 @@ impl SessionStore {
                      FROM (
                          SELECT owned_id, seq, turn_id, kind, payload, created_at
                          FROM events
-                         WHERE owned_id = ? AND seq > ?
+                         WHERE owned_id = ? AND seq > ? AND seq <= ?
                          ORDER BY seq ASC
                          LIMIT ?
                      )
@@ -1970,6 +1975,7 @@ impl SessionStore {
                 params![
                     owned_id,
                     after_seq,
+                    highest_seq,
                     i64::from(Self::HISTORY_PAGE_ROW_CEILING),
                     i64::from(max_bytes)
                 ],
@@ -1982,8 +1988,8 @@ impl SessionStore {
         let newest = events.last().map_or(after_seq, |event| event.seq);
         let has_more: bool = connection
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM events WHERE owned_id = ? AND seq > ?)",
-                params![owned_id, newest],
+                "SELECT EXISTS(SELECT 1 FROM events WHERE owned_id = ? AND seq > ? AND seq <= ?)",
+                params![owned_id, newest, highest_seq],
                 |row| row.get(0),
             )
             .map_err(|error| StoreError::sqlite("could not look past the newer window", error))?;
@@ -2802,7 +2808,7 @@ mod tests {
             let events = [fixture_event(key, -1), fixture_event(key, 1)];
             store.cache_remote_events(profile, &row, &events).unwrap();
             store.cache_remote_events(profile, &row, &events).unwrap();
-            assert_eq!(store.list_events_before(key, 2, 1024).unwrap().events.len(), 2);
+            assert_eq!(store.list_events_before(key, 2, 1024, i64::MIN).unwrap().events.len(), 2);
         }
         assert_eq!(store.count_sessions().unwrap(), 1);
         assert_eq!(store.list_sessions().unwrap()[0].owned_id, "local");
@@ -4471,7 +4477,7 @@ mod tests {
         }
 
         let page = store
-            .list_events_before(&session.owned_id, 400, 1_024)
+            .list_events_before(&session.owned_id, 400, 1_024, i64::MIN)
             .expect("list the page before the cursor");
         let seqs: Vec<i64> = page.events.iter().map(|event| event.seq).collect();
         assert_eq!(
@@ -4493,7 +4499,7 @@ mod tests {
         assert!(page.has_more, "there is more behind a bounded window");
 
         let start = store
-            .list_events_before(&session.owned_id, 1, 1_024)
+            .list_events_before(&session.owned_id, 1, 1_024, i64::MIN)
             .expect("list the page before the first event");
         assert!(start.events.is_empty());
         assert!(!start.has_more);
@@ -4511,7 +4517,7 @@ mod tests {
         }
 
         let page = store
-            .list_events_before(&session.owned_id, 2_101, 4 * 1024 * 1024)
+            .list_events_before(&session.owned_id, 2_101, 4 * 1024 * 1024, i64::MIN)
             .expect("read the larger history page");
         assert_eq!(page.events.len(), 2_100);
         assert!(!page.has_more);
@@ -4532,7 +4538,7 @@ mod tests {
         }
 
         let page = store
-            .list_events_before("owned-left", 8, FIXTURE_PAYLOAD_BYTES * 4)
+            .list_events_before("owned-left", 8, FIXTURE_PAYLOAD_BYTES * 4, i64::MIN)
             .expect("list the page before the cursor");
         assert!(page
             .events
