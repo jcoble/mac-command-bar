@@ -715,6 +715,18 @@ pub struct AgentConversationEventPage {
     pub has_more: bool,
 }
 
+/// A finished turn's first and last event times and its final reply.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationTurnSummary {
+    pub turn_id: String,
+    pub started_at_ms: i64,
+    pub ended_at_ms: i64,
+    pub reply_item_id: Option<String>,
+    pub reply_text: Option<String>,
+    pub reply_blocks: Option<Vec<crate::agent_conversation::safe_markdown::SafeMarkdownBlock>>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConversationSnapshot {

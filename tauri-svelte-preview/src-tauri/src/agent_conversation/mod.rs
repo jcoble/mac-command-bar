@@ -26,7 +26,7 @@ use protocol::{
     AgentCapabilities, AgentConversationConfigState, AgentConversationConnection,
     AgentConversationProvider, ExecutionEnvironment,
     AgentConversationEvent, AgentConversationEventPage, AgentConversationSessionRecord,
-    AgentConversationSnapshot, ChangeAgentConversationCheckoutRequest, CommandResult,
+    AgentConversationSnapshot, AgentConversationTurnSummary, ChangeAgentConversationCheckoutRequest, CommandResult,
     EnsureAgentConversationRequest, RespondAgentConversationApprovalRequest,
     RespondAgentConversationInputRequest, RespondAgentConversationPermissionRequest,
     SendAgentConversationMessageRequest, SetAgentConversationConfigRequest,
@@ -688,6 +688,39 @@ pub async fn list_agent_conversation_events_before(
         return command_result(remote.events_before(owned_id, before_sequence, max_bytes).await);
     }
     command_result(manager.list_events_before(&owned_id, before_sequence, max_bytes))
+}
+
+#[tauri::command]
+/// Reads the length and final reply of finished turns from SQL, which the
+/// loaded window cannot hold for a long turn.
+pub async fn list_agent_conversation_turn_summaries(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    owned_id: String,
+    turn_ids: Vec<String>,
+) -> CommandResult<Vec<AgentConversationTurnSummary>> {
+    let rows = if remote.owns(&owned_id) {
+        remote.turn_summaries(owned_id, turn_ids).await
+    } else {
+        manager.store().turn_summaries(&owned_id, &turn_ids).map_err(|error| error.to_string())
+    };
+    command_result(rows.and_then(|rows| rows.into_iter().map(|row| {
+        // A finished reply has blocks prepared when it was saved; a reply that
+        // only streamed has none, so it is converted here as stored rows are.
+        let reply_blocks = match (&row.reply_blocks_json, &row.reply_text) {
+            (Some(json), _) => Some(serde_json::from_str(json).map_err(|error| error.to_string())?),
+            (None, Some(text)) => Some(safe_markdown::parse_safe_markdown(text)),
+            (None, None) => None,
+        };
+        Ok(AgentConversationTurnSummary {
+            turn_id: row.turn_id,
+            started_at_ms: row.started_at_ms,
+            ended_at_ms: row.ended_at_ms,
+            reply_item_id: row.reply_item_id,
+            reply_text: row.reply_text,
+            reply_blocks,
+        })
+    }).collect()))
 }
 
 #[tauri::command]

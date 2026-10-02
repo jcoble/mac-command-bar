@@ -1,6 +1,7 @@
 import { parseRemoteWorkspacePath, remoteWorkspacePath, mapWorkspaceSnapshotPaths } from './workspacePaths.ts';
 import type { AgentConversationConfigState } from './shell/conversation/conversationConfig.ts';
 import type { AgentConversationProvider } from './shell/conversation/conversationTypes.ts';
+import type { ConversationTurnSummary } from './shell/conversation/conversationTimeline.ts';
 import { Channel } from '@tauri-apps/api/core';
 import type {
   ProjectRoot,
@@ -2195,6 +2196,16 @@ export async function listAgentConversationEventsBeforeFromTauri(
     if (signal?.aborted) return null;
     throw error;
   }
+}
+
+/** The length and final reply of finished turns, read from SQL in one statement. */
+export async function listAgentConversationTurnSummariesFromTauri(
+  ownedId: string,
+  turnIds: readonly string[]
+): Promise<ConversationTurnSummary[] | null> {
+  if (!isTauriRuntime() || !ownedId.trim() || turnIds.length === 0) return null;
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<ConversationTurnSummary[]>('list_agent_conversation_turn_summaries', { ownedId, turnIds });
 }
 
 /** The page of stored events just newer than `afterSequence`, for scrolling down. */

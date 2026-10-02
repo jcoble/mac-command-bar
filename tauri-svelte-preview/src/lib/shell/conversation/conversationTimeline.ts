@@ -116,6 +116,22 @@ export interface ConversationTurnGroup {
   readonly tailItemIds: readonly string[];
   readonly completed: boolean;
   readonly elapsedMs: number | null;
+  /** Whether the turn has work to fold, loaded or not. */
+  readonly folds: boolean;
+  /** The final reply to draw under a collapsed turn when the window does not hold all of it. */
+  readonly reply: ConversationDisplayItem | null;
+}
+
+/** A finished turn as SQL reads it: the times of its first and last events and
+ * its final reply. A long turn is far bigger than the transcript window, so
+ * neither can be read off the rows that happen to be loaded. */
+export interface ConversationTurnSummary {
+  readonly turnId: string;
+  readonly startedAtMs: number;
+  readonly endedAtMs: number;
+  readonly replyItemId: string | null;
+  readonly replyText: string | null;
+  readonly replyBlocks: readonly SafeMarkdownBlock[] | null;
 }
 
 /**
@@ -224,36 +240,67 @@ function midTurnMessage(item: ConversationDisplayItem): boolean {
   return item.kind === 'user' && item.itemId.startsWith('user-steer-');
 }
 
-function turnGroup(turnId: string | null, items: readonly ConversationDisplayItem[], running: boolean): ConversationTurnGroup {
+function turnGroup(
+  turnId: string | null,
+  items: readonly ConversationDisplayItem[],
+  running: boolean,
+  summary?: ConversationTurnSummary
+): ConversationTurnGroup {
+  // With a summary the final reply is known by id. The window shows it only
+  // when it holds all of it, since a page can end partway through its rows;
+  // every other assistant row is work.
+  const replyId = summary?.replyItemId ?? null;
+  const loadedReply = replyId ? items.find((item) => item.itemId === replyId) : undefined;
+  const shownReplyId = loadedReply?.kind === 'assistant' && loadedReply.text === summary?.replyText ? replyId : null;
   let tailStart = items.length;
-  while (tailStart > 0 && ['assistant', 'compaction'].includes(items[tailStart - 1].kind)) tailStart -= 1;
-  const hasFoldableWork = items.some((item) => FOLDABLE_TURN_KINDS.has(item.kind));
-  const workItemIds = hasFoldableWork
+  while (!replyId && tailStart > 0 && ['assistant', 'compaction'].includes(items[tailStart - 1].kind)) tailStart -= 1;
+  const inTail = (item: ConversationDisplayItem, index: number): boolean => (item.kind === 'user' && !midTurnMessage(item))
+    || (item.kind === 'assistant' && (replyId ? item.itemId === shownReplyId : index >= tailStart));
+  const reply: ConversationDisplayItem | null = replyId && !shownReplyId
+    ? {
+      kind: 'assistant',
+      itemId: replyId,
+      turnId,
+      text: summary?.replyText ?? '',
+      blocks: summary?.replyBlocks ?? undefined,
+      timestampMs: summary?.endedAtMs ?? 0,
+      completed: true
+    }
+    : null;
+  // A summarized turn whose prompt or reply is outside the window has work out
+  // of sight as well, so it folds even when none of that work is loaded.
+  const folds = items.some((item) => FOLDABLE_TURN_KINDS.has(item.kind))
+    || (summary !== undefined && (reply !== null || !items.some((item) => item.kind === 'user' && !midTurnMessage(item))));
+  const workItemIds = folds
     ? items
-      .filter((item, index) => FOLDABLE_TURN_KINDS.has(item.kind) || item.kind === 'compaction' || midTurnMessage(item)
-        || (item.kind === 'assistant' && index < tailStart))
+      .filter((item, index) => !inTail(item, index)
+        && (FOLDABLE_TURN_KINDS.has(item.kind) || ['compaction', 'user', 'assistant'].includes(item.kind)))
       .map((item) => item.itemId)
     : [];
-  const tailItemIds = items
-    .filter((item, index) => (item.kind === 'user' && !midTurnMessage(item)) || (item.kind === 'assistant' && index >= tailStart))
-    .map((item) => item.itemId);
+  const tailItemIds = items.filter(inTail).map((item) => item.itemId);
   const firstTimestamp = items[0]?.timestampMs;
   const lastTimestamp = items[items.length - 1]?.timestampMs;
   const span = Number.isFinite(firstTimestamp) && Number.isFinite(lastTimestamp)
     ? Math.max(0, lastTimestamp - firstTimestamp)
     : 0;
+  // A journal turn's length is its span in SQL; until that arrives the fold
+  // shows no figure rather than the span of whichever part is loaded. A turn
+  // read off the prompts has no id to look up and keeps the span of its rows.
+  const length = summary ? summary.endedAtMs - summary.startedAtMs : turnId?.startsWith('stored-turn:') ? span : 0;
   // Zero is not a length of time anyone worked for. Every row of an older
   // import carries the moment the import ran rather than the moment the work
   // happened, so the whole turn reads as one instant; the fold says "Worked"
   // in that case instead of claiming "Worked for 0.0s".
-  const elapsedMs = span > 0 ? span : null;
+  const elapsedMs = length > 0 ? length : null;
   return {
     turnId,
     items,
     workItemIds,
     tailItemIds,
     completed: !running && items.every(turnItemSettled),
-    elapsedMs
+    elapsedMs,
+    folds,
+    reply
   };
 }
 
@@ -493,7 +540,8 @@ export function foldToolRuns(
  * last group. */
 export function conversationTurnGroups(
   items: readonly ConversationDisplayItem[],
-  activeTurnId: string | null = null
+  activeTurnId: string | null = null,
+  summaries: ReadonlyMap<string, ConversationTurnSummary> = new Map()
 ): readonly ConversationTurnGroup[] {
   const turnIds = turnIdsOf(items);
   const partitions: { turnId: string | null; items: ConversationDisplayItem[] }[] = [];
@@ -502,11 +550,11 @@ export function conversationTurnGroups(
     if (open && turnIds[index] === open.turnId) open.items.push(item);
     else partitions.push({ turnId: turnIds[index], items: [item] });
   });
-  return partitions.map((partition, index) => turnGroup(
-    partition.turnId,
-    partition.items,
-    activeTurnId !== null && index === partitions.length - 1
-  ));
+  return partitions.map((partition, index) => {
+    const running = activeTurnId !== null && index === partitions.length - 1;
+    const summary = running || !partition.turnId ? undefined : summaries.get(partition.turnId);
+    return turnGroup(partition.turnId, partition.items, running, summary);
+  });
 }
 
 export function formatWorkedFor(elapsedMs: number): string {

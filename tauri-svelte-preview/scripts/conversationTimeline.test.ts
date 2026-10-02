@@ -12,7 +12,8 @@ import {
   turnFileChanges,
   USER_MESSAGE_FOLD_LINES,
   userMessageOverflowsFold,
-  type ConversationDisplayItem
+  type ConversationDisplayItem,
+  type ConversationTurnSummary
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
 import { applyConversationEvent, createConversationState } from '../src/lib/shell/conversation/conversationReducer.ts';
 import type { AgentConversationEvent, AgentItem } from '../src/lib/shell/conversation/conversationTypes.ts';
@@ -203,7 +204,7 @@ assert.equal(partitioned.length, 1, 'one contiguous turn becomes one group');
 assert.deepEqual(partitioned[0].workItemIds, ['partition-reasoning', 'partition-tool'], 'foldable work is partitioned from visible messages');
 assert.deepEqual(partitioned[0].tailItemIds, ['partition-user', 'partition-tail'], 'user and final assistant messages remain visible');
 assert.equal(partitioned[0].completed, true);
-assert.equal(partitioned[0].elapsedMs, 500);
+assert.equal(partitioned[0].elapsedMs, null, 'a journal turn shows no figure until its SQL span arrives');
 
 const interleaved = conversationTurnGroups([
   textItem('user', 'interleaved-user', 'interleaved-turn', 1),
@@ -286,6 +287,7 @@ assert.deepEqual(
 );
 assert.equal(stored[0].turnId, 'stored-turn:stored-user-a', 'a derived turn is named after the prompt that opened it');
 assert.deepEqual(stored[0].workItemIds, ['stored-tool'], 'a derived turn folds its work like any other');
+assert.equal(stored[0].elapsedMs, 2, 'a derived turn has no id to look up and keeps the span of its rows');
 
 // Every row of an older import carries the moment the import ran, so the turn
 // spans no time at all. That is not something to report as a duration.
@@ -300,12 +302,18 @@ assert.equal(instant[0].elapsedMs, null, 'a turn that spans no time reports no e
 // row in a finished transcript still reads as unfinished. A turn is finished
 // when nothing in it is still waiting, not when every row says it stopped
 // writing.
+const summary = (
+  turnId: string,
+  endedAtMs: number,
+  replyItemId: string | null,
+  replyText = replyItemId
+): ConversationTurnSummary => ({ turnId, startedAtMs: 0, endedAtMs, replyItemId, replyText, replyBlocks: replyItemId ? [] : null });
 const streamedReply = conversationTurnGroups([
   textItem('user', 'streamed-user', 'streamed-turn', 0),
   toolItem('streamed-tool-a', 'streamed-turn', 60_000),
   toolItem('streamed-tool-b', 'streamed-turn', 120_000),
-  textItem('assistant', 'streamed-answer', 'streamed-turn', 840_000, false)
-]);
+  textItem('assistant', 'streamed-answer', 'streamed-turn', 700_000, false)
+], null, new Map([['streamed-turn', summary('streamed-turn', 840_000, 'streamed-answer')]]));
 assert.equal(streamedReply.length, 1, 'a finished turn is one group');
 assert.equal(streamedReply[0].completed, true, 'a finished turn folds even though its reply still reads as streaming');
 assert.equal(streamedReply[0].elapsedMs, 840_000);
@@ -354,6 +362,50 @@ const writing = conversationTurnGroups([
 assert.equal(writing.length, 2);
 assert.equal(writing[0].completed, true, 'an earlier turn folds while a later one runs');
 assert.equal(writing[1].completed, false, 'the turn being written never folds');
+
+// A long turn is far bigger than the window, so its length and its final reply
+// come from SQL. Whatever part of it is loaded, the collapsed turn shows the
+// real figure and the reply, and the reply is drawn once.
+const longTurn = new Map([['long-turn', summary('long-turn', 23_348_000, 'long-reply', 'The final answer')]]);
+const reply = { ...textItem('assistant', 'long-reply', 'long-turn', 9_000), text: 'The final answer' };
+const opening = conversationTurnGroups([
+  textItem('user', 'long-prompt', 'long-turn', 0),
+  toolItem('long-tool', 'long-turn', 1_000),
+  textItem('assistant', 'long-commentary', 'long-turn', 2_000)
+], null, longTurn);
+assert.equal(opening[0].elapsedMs, 23_348_000, 'the figure is the SQL span, not the loaded rows');
+assert.deepEqual(opening[0].tailItemIds, ['long-prompt']);
+assert.deepEqual(opening[0].workItemIds, ['long-tool', 'long-commentary'], 'loaded commentary is not the reply and folds');
+assert.equal(opening[0].reply?.kind, 'assistant');
+assert.equal(opening[0].reply?.itemId, 'long-reply', 'the reply outside the window comes from SQL');
+assert.equal(opening[0].reply?.kind === 'assistant' && opening[0].reply.text, 'The final answer');
+const closing = conversationTurnGroups([
+  toolItem('long-tool-late', 'long-turn', 3_000),
+  textItem('assistant', 'long-aside', 'long-turn', 4_000),
+  reply
+], null, longTurn);
+assert.equal(closing[0].reply, null, 'a loaded reply is drawn once, from the window');
+assert.deepEqual(closing[0].tailItemIds, ['long-reply']);
+assert.deepEqual(closing[0].workItemIds, ['long-tool-late', 'long-aside'], 'only the final reply stays beside the header');
+const split = conversationTurnGroups([
+  toolItem('long-tool-late', 'long-turn', 3_000),
+  { ...reply, text: 'The final' }
+], null, longTurn);
+assert.equal(split[0].reply?.kind === 'assistant' && split[0].reply.text, 'The final answer', 'a reply cut by a page edge shows whole');
+assert.deepEqual(split[0].workItemIds, ['long-tool-late', 'long-reply'], 'the partial copy folds');
+const promptOnly = conversationTurnGroups([textItem('user', 'long-prompt', 'long-turn', 0)], null, longTurn);
+assert.equal(promptOnly[0].folds, true, 'a turn whose work is all below the window still folds');
+assert.equal(promptOnly[0].reply?.itemId, 'long-reply');
+const replyOnly = conversationTurnGroups([reply], null, longTurn);
+assert.equal(replyOnly[0].folds, true, 'a turn whose prompt is above the window still shows its header');
+assert.equal(replyOnly[0].reply, null);
+const chat = conversationTurnGroups([textItem('user', 'chat-user', 'chat-turn', 0), textItem('assistant', 'chat-reply', 'chat-turn', 1)],
+  null, new Map([['chat-turn', summary('chat-turn', 2_000, 'chat-reply')]]));
+assert.equal(chat[0].folds, false, 'plain chat with its prompt and reply loaded has nothing to fold');
+assert.equal(chat[0].elapsedMs, 2_000);
+const instantSummary = conversationTurnGroups([textItem('user', 'instant-user', 'instant-turn', 7)],
+  null, new Map([['instant-turn', summary('instant-turn', 0, null)]]));
+assert.equal(instantSummary[0].elapsedMs, null, 'an SQL span of zero is still no figure');
 
 assert.equal(formatWorkedFor(800), '0.8s');
 assert.equal(formatWorkedFor(5_540), '5.5s');

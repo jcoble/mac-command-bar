@@ -5637,6 +5637,7 @@ fn main() {
             agent_conversation::list_remote_agent_conversation_sessions,
             agent_conversation::list_agent_conversation_events,
             agent_conversation::list_agent_conversation_events_before,
+            agent_conversation::list_agent_conversation_turn_summaries,
             agent_conversation::list_agent_conversation_events_after,
             agent_conversation::update_agent_conversation_session_meta,
             agent_conversation::read_agent_conversation_transcript,

@@ -1335,6 +1335,25 @@ impl RemoteConnectionManager {
         }
     }
 
+    /// Turn summaries come from the Mac's saved copy once its background copy
+    /// has finished, so a copy that has not caught up cannot answer with a
+    /// partial start, end or reply.
+    pub async fn turn_summaries(&self, owned_id: String, turn_ids: Vec<String>)
+        -> Result<Vec<mcb_core::session_store::TurnSummaryRow>, String> {
+        let profile = self.profile_for_owned_id(&owned_id)?;
+        loop {
+            let copied = self.history_copied.notified();
+            tokio::pin!(copied);
+            copied.as_mut().enable();
+            if !self.history_copies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&owned_id) {
+                break;
+            }
+            copied.await;
+        }
+        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .turn_summaries(&profile, &owned_id, &turn_ids)
+    }
+
     pub async fn extend_import(&self, owned_id: String) -> Result<super::transcript_import::ExtendedImport, String> {
         let profile = self.profile_for_owned_id(&owned_id)?;
         let epoch = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).epoch(&profile);

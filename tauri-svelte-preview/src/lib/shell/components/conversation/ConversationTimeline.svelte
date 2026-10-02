@@ -9,9 +9,11 @@
     foldToolRuns,
     formatWorkedFor,
     type ConversationTurnGroup,
+    type ConversationTurnSummary,
     type ConversationDisplayItem,
     type ConversationFileLinkProvenance
   } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { listAgentConversationTurnSummariesFromTauri } from '$lib/tauriSource';
   import {
     decideConversationScroll,
     initialConversationScrollAnchorState,
@@ -107,7 +109,27 @@
   const effectiveActiveTurnId = $derived(activeTurnId ?? (localTurnActive
     ? renderedItems.findLast((item) => item.turnId)?.turnId ?? null
     : null));
-  const renderedGroups = $derived(conversationTurnGroups(renderedItems, effectiveActiveTurnId));
+  let turnSummaries = $state.raw<ReadonlyMap<string, ConversationTurnSummary>>(new Map());
+  const renderedGroups = $derived(conversationTurnGroups(renderedItems, effectiveActiveTurnId, turnSummaries));
+  /** The finished journal turns on screen, each with its newest loaded row, as
+   * one key: their summaries are read again when a turn comes into the window
+   * or the copy brings a turn newer rows, never while the running turn streams. */
+  const summaryKey = $derived(renderedGroups.flatMap((group, index) => (
+    group.turnId && !group.turnId.startsWith('stored-turn:')
+      && (effectiveActiveTurnId === null || index < renderedGroups.length - 1)
+      ? [`${group.turnId}\t${group.items[group.items.length - 1]?.itemId}`]
+      : []
+  )).join('\n'));
+  let summaryRequest = 0;
+  $effect(() => {
+    const request = ++summaryRequest;
+    const turnIds = summaryKey ? summaryKey.split('\n').map((entry) => entry.split('\t')[0]) : [];
+    listAgentConversationTurnSummariesFromTauri(conversationId, turnIds)
+      .then((rows) => {
+        if (request === summaryRequest) turnSummaries = new Map((rows ?? []).map((row) => [row.turnId, row]));
+      })
+      .catch((error: unknown) => console.warn('Could not read the turn summaries.', error));
+  });
 
   function countDiffLines(diffText: string): { added: number; removed: number } {
     let added = 0;
@@ -497,7 +519,7 @@
   }
 
   function turnExpanded(group: ConversationTurnGroup): boolean {
-    if (!group.turnId || group.workItemIds.length === 0) return true;
+    if (!group.turnId || !group.folds) return true;
     return expandedTurns.get(group.turnId) ?? group.turnId === effectiveActiveTurnId;
   }
 
@@ -591,10 +613,18 @@
       data-testid="conversation-timeline-list"
       bind:this={list}
     >
+      <!-- A turn's header goes above its first work or reply row; a turn with only its prompt loaded puts it after the prompt. -->
+      {#snippet turnFold(group: ConversationTurnGroup, expanded: boolean)}
+        <button class="turn-fold" data-testid="conversation-turn-fold" type="button" aria-expanded={expanded} onclick={() => toggleTurn(group)}>
+          <span>{group.elapsedMs === null ? 'Worked' : `Worked for ${formatWorkedFor(group.elapsedMs)}`}</span>
+          <span class="turn-fold-chevron" class:open={expanded} aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
+        </button>
+      {/snippet}
       {#each renderedGroups as group, index (rowKey(group, index))}
         {@const expanded = turnExpanded(group)}
         {@const foldedItems = foldToolRuns(foldFileEdits(group.items))}
-        {@const firstWorkItemId = foldedItems.find((item) => item.kind === 'toolRun' || item.kind === 'fileEdits' || group.workItemIds.includes(item.itemId))?.itemId}
+        {@const foldShown = group.folds && group.turnId !== effectiveActiveTurnId}
+        {@const firstWorkItemId = foldedItems.find((item) => item.kind === 'toolRun' || item.kind === 'fileEdits' || item.kind === 'assistant' || group.workItemIds.includes(item.itemId))?.itemId}
         <div
           class="turn-row"
           data-index={index}
@@ -603,16 +633,19 @@
         >
           {#each foldedItems as item (item.itemId)}
             {@const workItem = item.kind === 'toolRun' || item.kind === 'fileEdits' || group.workItemIds.includes(item.itemId)}
-            {#if group.turnId !== effectiveActiveTurnId && item.itemId === firstWorkItemId}
-              <button class="turn-fold" data-testid="conversation-turn-fold" type="button" aria-expanded={expanded} onclick={() => toggleTurn(group)}>
-                <span>{group.elapsedMs === null ? 'Worked' : `Worked for ${formatWorkedFor(group.elapsedMs)}`}</span>
-                <span class="turn-fold-chevron" class:open={expanded} aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
-              </button>
+            {#if foldShown && item.itemId === firstWorkItemId}
+              {@render turnFold(group, expanded)}
             {/if}
             {#if !workItem || expanded}
               <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} {onPlanOpen} />
             {/if}
           {/each}
+          {#if foldShown && firstWorkItemId === undefined}
+            {@render turnFold(group, expanded)}
+          {/if}
+          {#if group.reply && !expanded}
+            <TimelineItem item={group.reply} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} {onPlanOpen} />
+          {/if}
           {#if group.completed && expanded}
             {#each getTurnFileEdits(group) as edit (edit.path)}
               <TurnFileCard path={edit.path} added={edit.added} removed={edit.removed} onReview={onFileLink} />

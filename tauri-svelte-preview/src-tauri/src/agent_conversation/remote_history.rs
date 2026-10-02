@@ -4,7 +4,7 @@ use super::protocol::{
     AgentConversationConnection, AgentConversationEvent, AgentConversationEventPage,
     AgentConversationSnapshot,
 };
-use mcb_core::session_store::{EventRow, SessionRow, SessionStore};
+use mcb_core::session_store::{EventRow, SessionRow, SessionStore, TurnSummaryRow};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -255,6 +255,27 @@ mod tests {
         assert_eq!(page.events.last().unwrap().sequence, 10);
         assert!(page.has_more);
     }
+
+    #[test]
+    fn a_turn_at_an_unconfirmed_older_edge_has_no_summary_yet() {
+        let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
+        let in_turn = |sequence: i64, turn: &str| AgentConversationEvent { turn_id: Some(turn.into()), ..event(sequence) };
+        let mut copy = snapshot(10, 12);
+        copy.events = vec![in_turn(10, "edge"), in_turn(11, "edge"), in_turn(12, "whole")];
+        history.snapshot("a", 0, None, &copy).unwrap();
+        let ids = ["edge".to_string(), "whole".to_string()];
+        let summarized = |history: &RemoteHistory| {
+            let mut turns = history.turn_summaries("a", "same-session-id", &ids).unwrap()
+                .into_iter().map(|row| row.turn_id).collect::<Vec<_>>();
+            turns.sort();
+            turns
+        };
+        // The edge turn may start before the copy does, so its start is unknown.
+        assert_eq!(summarized(&history), vec!["whole"]);
+        let start = AgentConversationEventPage { events: vec![], has_more: false };
+        history.page("a", 0, "same-session-id", 10, true, &start).unwrap();
+        assert_eq!(summarized(&history), vec!["edge", "whole"]);
+    }
 }
 
 pub(super) struct RemoteHistory {
@@ -465,6 +486,16 @@ impl RemoteHistory {
             return Ok(None);
         }
         self.read_snapshot(profile, self.epoch(profile), owned).map(Some)
+    }
+
+    /// While the copy's start is unconfirmed, the turn at its older edge may
+    /// begin before the copy does, so that turn has no summary yet.
+    pub fn turn_summaries(&self, profile: &str, owned: &str, turn_ids: &[String])
+        -> Result<Vec<TurnSummaryRow>, String> {
+        let coverage = self.coverage(profile, owned)?;
+        let Some(oldest) = coverage.oldest else { return Ok(Vec::new()) };
+        let rows = self.store.turn_summaries(&Self::key(profile, owned), turn_ids).map_err(|e| e.to_string())?;
+        Ok(rows.into_iter().filter(|row| coverage.start_complete || row.first_seq > oldest).collect())
     }
 
     /// Where the next older page must end, until the session's start is saved.

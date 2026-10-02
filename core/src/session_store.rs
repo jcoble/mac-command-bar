@@ -225,6 +225,18 @@ pub struct EventRow {
     pub created_at_ms: i64,
 }
 
+/// A turn's first and last event times and its final reply, as SQL reads them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TurnSummaryRow {
+    pub turn_id: String,
+    pub first_seq: i64,
+    pub started_at_ms: i64,
+    pub ended_at_ms: i64,
+    pub reply_item_id: Option<String>,
+    pub reply_text: Option<String>,
+    pub reply_blocks_json: Option<String>,
+}
+
 /// One directional page of events, with whether more history remains in that
 /// direction.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1768,6 +1780,66 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the assistant text", error))
     }
 
+    /// The bounds and final reply of each named turn, in one statement. A
+    /// long turn is far bigger than the transcript window, so neither its
+    /// length nor its last reply can be read off the rows on screen. The reply
+    /// is the turn's last assistant row; a reply that only ever streamed is
+    /// its deltas joined in order.
+    pub fn turn_summaries(&self, owned_id: &str, turn_ids: &[String]) -> Result<Vec<TurnSummaryRow>> {
+        if turn_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let turn_ids = serde_json::to_string(turn_ids)
+            .map_err(|_| StoreError::message("could not encode turn ids"))?;
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare_cached(
+                "WITH bounds AS (
+                     SELECT turn_id, MIN(seq) AS first_seq, MAX(seq) AS last_seq,
+                            MIN(created_at) AS started_at, MAX(created_at) AS ended_at
+                     FROM events
+                     WHERE owned_id = ?1 AND turn_id IN (SELECT value FROM json_each(?2))
+                     GROUP BY turn_id
+                 ), replies AS (
+                     SELECT bounds.*, (
+                         SELECT seq FROM events
+                         WHERE owned_id = ?1 AND seq BETWEEN bounds.first_seq AND bounds.last_seq
+                           AND turn_id = bounds.turn_id
+                           AND json_extract(payload, '$.payload.kind') IN ('assistantMessage', 'assistantDelta')
+                         ORDER BY seq DESC LIMIT 1
+                     ) AS reply_seq
+                     FROM bounds
+                 )
+                 SELECT replies.turn_id, replies.first_seq, replies.started_at, replies.ended_at, reply.item_id,
+                     CASE json_extract(reply.payload, '$.payload.kind')
+                         WHEN 'assistantMessage' THEN json_extract(reply.payload, '$.payload.text')
+                         ELSE (SELECT group_concat(json_extract(delta.payload, '$.payload.delta'), '' ORDER BY delta.seq)
+                               FROM events AS delta
+                               WHERE delta.owned_id = ?1 AND delta.kind = reply.kind
+                                 AND delta.item_id = reply.item_id AND delta.turn_id = replies.turn_id)
+                     END,
+                     json_extract(reply.payload, '$.payload.blocks')
+                 FROM replies
+                 LEFT JOIN events AS reply ON reply.owned_id = ?1 AND reply.seq = replies.reply_seq",
+            )
+            .map_err(|error| StoreError::sqlite("could not prepare turn summaries", error))?;
+        let rows = statement
+            .query_map(params![owned_id, turn_ids], |row| {
+                Ok(TurnSummaryRow {
+                    turn_id: row.get(0)?,
+                    first_seq: row.get(1)?,
+                    started_at_ms: row.get(2)?,
+                    ended_at_ms: row.get(3)?,
+                    reply_item_id: row.get(4)?,
+                    reply_text: row.get(5)?,
+                    reply_blocks_json: row.get(6)?,
+                })
+            })
+            .map_err(|error| StoreError::sqlite("could not read turn summaries", error))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| StoreError::sqlite("could not read a turn summary", error))
+    }
+
     pub fn first_user_message_payload(&self, owned_id: &str) -> Result<Option<String>> {
         let connection = self.lock()?;
         connection
@@ -2697,7 +2769,7 @@ mod tests {
 
     use super::{
         EventRow, EvidenceArtifact, EvidenceArtifactQuery, EvidenceDiskUsage, EvidenceRunDiskUsage,
-        NotionTaskProjection, SessionRow, SessionStore,
+        NotionTaskProjection, SessionRow, SessionStore, TurnSummaryRow,
     };
 
     fn fixture_session(owned_id: &str, activity_ms: i64) -> SessionRow {
@@ -4460,6 +4532,72 @@ mod tests {
                 .as_deref(),
             Some("{\"orderedSteps\":[]}")
         );
+    }
+
+    /// A collapsed turn shows its whole length and its final reply however
+    /// little of it is loaded, so both come from SQL for a batch of turns.
+    #[test]
+    fn turn_summaries_read_bounds_and_final_reply_in_one_statement() {
+        let store = SessionStore::open_in_memory().expect("open store");
+        let row = |owned_id: &str, seq: i64, turn_id: &str, kind: &str, payload: serde_json::Value| EventRow {
+            owned_id: owned_id.into(),
+            seq,
+            turn_id: Some(turn_id.into()),
+            kind: kind.into(),
+            payload_json: serde_json::json!({ "payload": payload }).to_string(),
+            created_at_ms: seq * 1_000,
+        };
+        let user = |id: &str| serde_json::json!({"kind": "userMessage", "itemId": id, "text": "ask"});
+        let tool = |id: &str| serde_json::json!({"kind": "tool", "itemId": id, "status": "completed"});
+        let delta = |id: &str, text: &str| serde_json::json!({"kind": "assistantDelta", "itemId": id, "delta": text});
+        store.upsert_session(&fixture_session("local", 1)).expect("insert session");
+        let local = [
+            // A reply that only ever streamed, after commentary and a tool.
+            row("local", 1, "turn-a", "item.completed", user("prompt-a")),
+            row("local", 2, "turn-a", "content.delta", delta("note", "looking")),
+            row("local", 3, "turn-a", "item.completed", tool("tool-a")),
+            row("local", 4, "turn-a", "content.delta", delta("reply-a", "Hel")),
+            row("local", 5, "turn-a", "content.delta", delta("reply-a", "lo")),
+            // A finished reply carries the blocks prepared when it was recorded.
+            row("local", 6, "turn-b", "item.completed", user("prompt-b")),
+            row("local", 7, "turn-b", "item.completed", tool("tool-b")),
+            row("local", 8, "turn-b", "item.completed", serde_json::json!({
+                "kind": "assistantMessage", "itemId": "reply-b", "text": "Done", "blocks": [{"type": "paragraph"}]
+            })),
+            row("local", 9, "turn-b", "item.completed", tool("tool-b2")),
+            row("local", 10, "turn-c", "item.completed", user("prompt-c")),
+        ];
+        for event in &local {
+            store.append_event(event).expect("append event");
+        }
+        // The Mac's copy of a remote session keeps the server's turn ids under its own key.
+        let remote = r#"["workbox","remote"]"#;
+        let cached = [
+            row(remote, 40, "turn-r", "remote.cached", user("prompt-r")),
+            row(remote, 41, "turn-r", "remote.cached", delta("reply-r", "Fin")),
+            row(remote, 43, "turn-r", "remote.cached", delta("reply-r", "ished")),
+        ];
+        store.cache_remote_events("workbox", &fixture_session(remote, 2), &cached).expect("cache remote rows");
+
+        let asked = ["turn-a", "turn-b", "turn-missing"].map(String::from);
+        let mut summaries = store.turn_summaries("local", &asked).expect("read local summaries");
+        summaries.sort_by(|left, right| left.turn_id.cmp(&right.turn_id));
+        assert_eq!(summaries, vec![
+            TurnSummaryRow {
+                turn_id: "turn-a".into(), first_seq: 1, started_at_ms: 1_000, ended_at_ms: 5_000,
+                reply_item_id: Some("reply-a".into()), reply_text: Some("Hello".into()), reply_blocks_json: None,
+            },
+            TurnSummaryRow {
+                turn_id: "turn-b".into(), first_seq: 6, started_at_ms: 6_000, ended_at_ms: 9_000,
+                reply_item_id: Some("reply-b".into()), reply_text: Some("Done".into()),
+                reply_blocks_json: Some(r#"[{"type":"paragraph"}]"#.into()),
+            },
+        ], "turn-c was not asked for and an unknown turn has no row");
+        assert_eq!(store.turn_summaries(remote, &["turn-r".into()]).expect("read remote summary"), vec![TurnSummaryRow {
+            turn_id: "turn-r".into(), first_seq: 40, started_at_ms: 40_000, ended_at_ms: 43_000,
+            reply_item_id: Some("reply-r".into()), reply_text: Some("Finished".into()), reply_blocks_json: None,
+        }]);
+        assert!(store.turn_summaries("local", &[]).expect("no turns asked").is_empty());
     }
 
     /// Scrolling up asks for the window just older than what is on screen, and
