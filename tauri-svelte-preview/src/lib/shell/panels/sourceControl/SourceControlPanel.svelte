@@ -666,8 +666,8 @@
     </EmptyState>
   {:else if notARepository}
     <EmptyState
-      title="This folder is not a git repository"
-      body="There is no repository here to read, so there is nothing to show."
+      title="This folder is not a git work tree"
+      body="It is a plain folder or a bare repository, so there are no changes to show."
     >
       {#snippet icon()}<GitBranch />{/snippet}
     </EmptyState>
