@@ -51,6 +51,9 @@
     hasNewer?: boolean;
     loadingNewer?: boolean;
     onLoadNewer?(): void;
+    /** The oldest and newest loaded sequences; only a page that lands moves them outward. */
+    oldestSequence?: number;
+    newestSequence?: number;
     onJumpToLatest?(): void | Promise<void>;
     onScroll?(scrollTop: number): void;
     onApprovalDecision?(requestId: string, decision: string): void;
@@ -79,6 +82,8 @@
     hasNewer = false,
     loadingNewer = false,
     onLoadNewer,
+    oldestSequence = 0,
+    newestSequence = 0,
     onJumpToLatest,
     onScroll,
     onApprovalDecision,
@@ -347,7 +352,7 @@
   // lands with the view still at that edge added no visible height (a collapsed
   // turn hides it), so the next one is asked for at once instead of waiting for
   // another wheel event.
-  let pageRequest: { windowId: string; revision: number; older: boolean } | null = null;
+  let pageRequest: { windowId: string; edge: number; older: boolean } | null = null;
 
   function requestOlderHistory(): void {
     if (!host || !hasOlder || loadingOlder || !onLoadOlder || scrollState.openingToLatest) return;
@@ -355,7 +360,7 @@
     follow = false;
     newerPagingAllowed = false;
     captureViewportAnchor();
-    pageRequest = { windowId: renderWindowId, revision: timelineRevision, older: true };
+    pageRequest = { windowId: renderWindowId, edge: oldestSequence, older: true };
     onLoadOlder();
   }
 
@@ -364,7 +369,7 @@
     if (!force && !newerPagingAllowed) return;
     if (!force && distanceBelowReader() > 80) return;
     captureViewportAnchor();
-    pageRequest = { windowId: renderWindowId, revision: timelineRevision, older: false };
+    pageRequest = { windowId: renderWindowId, edge: newestSequence, older: false };
     onLoadNewer();
   }
 
@@ -391,8 +396,11 @@
 
   $effect(() => {
     if (loadingOlder || loadingNewer || !pageRequest) return;
-    // A failed read leaves the revision unchanged; a switch changes the window.
-    const landed = pageRequest.windowId === renderWindowId && timelineRevision > pageRequest.revision;
+    // A failed read leaves the edge where it was and a switch changes the window.
+    // Live output cannot pass for a page: it bumps the revision, and trimming
+    // only moves the oldest edge forward.
+    const landed = pageRequest.windowId === renderWindowId
+      && (pageRequest.older ? oldestSequence < pageRequest.edge : newestSequence > pageRequest.edge);
     const older = pageRequest.older;
     pageRequest = null;
     if (landed) untrack(() => (older ? requestOlderHistory() : requestNewerHistory()));
