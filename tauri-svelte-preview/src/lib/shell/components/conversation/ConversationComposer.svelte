@@ -485,13 +485,15 @@
             </DropdownMenu.Root>
           </div>
           <div class="footer-right">
-            <!-- How full the context window is, as a ring: the arc is what has
-                 been used, so a fresh session shows an empty circle and a
-                 session near its limit shows a full one. A window barely
-                 touched still paints a small sliver rather than nothing. The
-                 exact numbers are one hover away and the remaining percent is
-                 in the hint line below; the ring is for the glance. Nothing is
-                 shown when the usage isn't trustworthy enough to turn into a
+            <!-- How full the context window is, as a small pie gauge: a slice
+                 inside a faint outline grows clockwise from 12 o'clock as the
+                 window is used, so a fresh session shows a thin slice and a
+                 session near its limit a nearly full disc. (A thin ring with one
+                 bright arc read as a loading spinner.) A window barely touched
+                 still paints a small slice rather than nothing. The exact
+                 numbers are one hover away and the remaining percent is in the
+                 hint line below; the gauge is for the glance. Nothing is shown
+                 when the usage isn't trustworthy enough to turn into a
                  percentage. -->
             {#if contextMeter?.kind === 'percent' && meterPopover}
               <Tooltip.Provider delayDuration={0}>
@@ -507,7 +509,7 @@
                         role="img"
                         aria-label={`${contextMeter.remaining}% context left`}
                         style={`--arc:${ringDash(contextMeter.arc, 100)}`}
-                      ><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="ring-track" cx="10" cy="10" r="7.5" /><circle class="ring-fill" cx="10" cy="10" r="7.5" pathLength="100" /></svg></span>
+                      ><svg viewBox="0 0 20 20" aria-hidden="true"><circle class="ring-track" cx="10" cy="10" r="9" /><circle class="ring-fill" cx="10" cy="10" r="3.5" pathLength="100" /></svg></span>
                     {/snippet}
                   </Tooltip.Trigger>
                   <Tooltip.Content side="top" sideOffset={6} class="p-0!">
@@ -645,17 +647,18 @@
   .send.stop { background: var(--color-bad); }
   .send.stop:hover:not(:disabled) { background: var(--color-bad); }
 
-  /* The ring is the size of the icons beside it and drawn in the same quiet
+  /* The gauge is the size of the icons beside it and drawn in the same quiet
      colour, warming as the window empties so the last stretch is noticed
-     without being read. `pathLength` makes the circle 100 units round, so the
-     dash is the remaining percentage itself — the ring empties as the window
-     fills, agreeing with the "N% left" text beside it. The margin is the space
-     the meter keeps ahead of the control group beside it. */
+     without being read. The fill circle's stroke is as wide as its diameter,
+     so its dash paints a pie slice; `pathLength` makes the circle 100 units
+     round, so the dash is the used percentage itself. The default flat ends keep
+     the slice edges straight. It never animates: a moving arc is a spinner. The
+     margin is the space the meter keeps ahead of the control group beside it. */
   .context-ring { display: grid; place-items: center; flex: none; margin-inline-end: 6px; width: var(--composer-control-size); height: var(--composer-control-size); color: var(--color-text-2); }
   .context-ring svg { width: 18px; height: 18px; transform: rotate(-90deg); }
-  .context-ring circle { fill: none; stroke-width: 2.2; }
-  .ring-track { stroke: color-mix(in srgb, currentColor 22%, transparent); }
-  .ring-fill { stroke: currentColor; stroke-linecap: round; stroke-dasharray: var(--arc) 100; }
+  .context-ring circle { fill: none; }
+  .ring-track { stroke: color-mix(in srgb, currentColor 45%, transparent); stroke-width: 1.5; }
+  .ring-fill { stroke: currentColor; stroke-width: 7; stroke-dasharray: var(--arc) 100; }
   /* The popup the ring opens on hover. It says the numbers the ring can only
      gesture at, in the shell's own type sizes rather than the tooltip's. */
   .context-popover { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-3); text-align: left; }
@@ -701,8 +704,6 @@
   @keyframes send-pop { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
   @media (prefers-reduced-motion: no-preference) {
     .composer-box { transition: border-color .14s ease, border-radius .18s ease, background-color .14s ease, box-shadow .14s ease; }
-    .ring-fill { transition: stroke-dasharray .4s ease; }
-    .context-ring { transition: color .3s ease; }
     /* Commented out while we chase a UI freeze. Height is a layout property, so
        animating it makes the ResizeObserver on the composer fire every frame for
        160ms; each fire republishes `--composer-height`, which is the transcript's
