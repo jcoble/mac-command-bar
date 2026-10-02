@@ -17,4 +17,7 @@ assert.equal(formatRailElapsed(86_399_999), '23h');
 assert.equal(formatRailElapsed(86_400_000), '1d', 'from 24 hours the age is shown in days');
 assert.equal(formatRailElapsed(180_000_000), '2d');
 
+// The rail refreshes nowMs every 15 s, so one session's age reads 0s, 15s, 30s, 1m, 2m as the clock advances.
+assert.deepEqual([0, 15_000, 30_000, 60_000, 120_000].map(formatRailElapsed), ['0s', '15s', '30s', '1m', '2m']);
+
 console.log('railElapsedTicker: ok');

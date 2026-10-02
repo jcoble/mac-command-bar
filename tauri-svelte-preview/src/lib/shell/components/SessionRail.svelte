@@ -8,6 +8,7 @@
 	 * from the view options, which is also how a person groups by project instead.
 	 */
 	import ChevronRight from "@lucide/svelte/icons/chevron-right";
+	import { onMount } from "svelte";
 
 	import type { OwnedSession } from "$lib/shell/ownedSessions";
 	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
@@ -44,7 +45,14 @@
 	const groups = $derived(buildMyWorkGroups(sessions, options));
 	let collapsedGroups = $state<Record<string, boolean>>({});
 	let visualActiveOwnedId = $state<string | null>(null);
-	const nowMs = Date.now();
+	// One clock for every row's age label, refreshed coarsely; a hidden window skips the write.
+	let nowMs = $state(Date.now());
+	onMount(() => {
+		const tick = window.setInterval(() => {
+			if (!document.hidden) nowMs = Date.now();
+		}, 15_000);
+		return () => window.clearInterval(tick);
+	});
 	let contextMenu = $state<{ session: OwnedSession; x: number; y: number } | null>(null);
 	const contextMenuItems = $derived(
 		contextMenu
