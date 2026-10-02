@@ -135,6 +135,9 @@
   const ROW_HEIGHT = 24;
   const LANE_SPACING = 12;
   const LANE_OFFSET = 10;
+  /** The graph column is never narrower than its "Graph" header, so with few
+   * lanes or none the label cannot run into "Message". */
+  const GRAPH_MIN_WIDTH = 52;
   /** Past this the graph would eat the message column; extra columns fold in. */
   const MAX_DRAWN_LANES = 8;
 
@@ -184,7 +187,7 @@
   const filtering = $derived(isGitHistoryFilterActive(filter));
   const drawnLanes = $derived(Math.min(layout.laneCount, MAX_DRAWN_LANES));
   const graphWidth = $derived(
-    Math.max(gitGraphLaneWidth(drawnLanes, LANE_SPACING, LANE_OFFSET), LANE_OFFSET * 2)
+    Math.max(gitGraphLaneWidth(drawnLanes, LANE_SPACING, LANE_OFFSET), GRAPH_MIN_WIDTH)
   );
 
   function laneColor(lane: number): string {
