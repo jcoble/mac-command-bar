@@ -780,6 +780,7 @@
         anchorRequest={sendAnchorRequest}
         activeTurnId={conversation.activeTurnId ?? null}
         {localTurnActive}
+        {turnActive}
         {activityLabel}
         {composerHeight}
         assistantLabel={selectedChild?.title ?? active.agent}

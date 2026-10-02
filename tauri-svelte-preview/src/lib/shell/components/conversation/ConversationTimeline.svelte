@@ -37,6 +37,9 @@
     anchorRequest?: ConversationSendAnchorRequest | null;
     activeTurnId?: string | null;
     localTurnActive?: boolean;
+    /** A turn runs here, as the session's presence reports it; a remote turn
+     * keeps no active turn id on the conversation itself. */
+    turnActive?: boolean;
     /** What the running turn is doing, or null when no turn runs here. */
     activityLabel?: string | null;
     composerHeight?: number;
@@ -68,6 +71,7 @@
     anchorRequest = null,
     activeTurnId = null,
     localTurnActive = false,
+    turnActive = false,
     activityLabel = null,
     composerHeight = 0,
     assistantLabel = 'Assistant',
@@ -462,6 +466,13 @@
     // the bottom of something they had not read the beginning of. Jump to
     // latest is how following starts again.
     follow = false;
+    // A send heads for the newest writing, as Jump to latest does. An older
+    // page never receives live writing, so read the newest history back first.
+    newerPagingAllowed = true;
+    if (hasNewer && onJumpToLatest) {
+      pageAnchor = null;
+      void onJumpToLatest();
+    }
   });
 
   $effect(() => {
@@ -498,9 +509,10 @@
   });
 
   $effect(() => {
-    // The same signal that folds the turn: a first message sent from the
-    // new-session view runs a turn without ever setting localTurnActive.
-    const turnIsActive = localTurnActive || Boolean(activeTurnId);
+    // A first message sent from the new-session view runs a turn without ever
+    // setting localTurnActive, and a remote send drops activeTurnId as soon as
+    // the send returns; presence covers the whole turn.
+    const turnIsActive = turnActive || localTurnActive || Boolean(activeTurnId);
     const turnJustFinished = turnWasActive && !turnIsActive;
     turnWasActive = turnIsActive;
     if (!turnJustFinished || !anchoredUserItemId || !host) return;
