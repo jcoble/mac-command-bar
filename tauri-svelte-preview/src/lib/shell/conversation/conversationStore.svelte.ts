@@ -574,10 +574,11 @@ function projectionSnapshot(current: ConversationWorkspaceState): AgentConversat
   };
 }
 
-/** Puts a replay in step with the next stored event. The journal deletes a row
- * when a newer one replaces it (`append_event` in core/src/session_store.rs),
- * and a new generation continues the sequence, so a jump between stored rows is
- * not a missed event. Only live events can go missing; the reducer checks those. */
+/** Puts a replay in step with the next stored event. The store drops rows a newer
+ * one supersedes (`clear_superseded_events` and `append_event` in
+ * core/src/session_store.rs), and a new generation continues the sequence, so a
+ * jump between stored rows is not a missed event. Only live events can go
+ * missing; the reducer checks those. */
 function inStepWith<T extends ConversationSessionState>(state: T, event: AgentConversationEvent): T {
   state.generation = event.generation;
   state.lastSequence = event.sequence - 1;
