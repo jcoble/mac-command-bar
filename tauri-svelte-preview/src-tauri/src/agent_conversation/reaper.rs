@@ -6,7 +6,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+#[cfg(target_os = "macos")]
+use sysinfo::{ProcessRefreshKind, UpdateKind};
+use sysinfo::{ProcessesToUpdate, System};
 
 use crate::debug_log::stderr_log;
 
@@ -29,6 +31,7 @@ impl InstanceIdentity {
         format!("{}:{}", self.pid, self.start_time_micros)
     }
 
+    #[cfg(target_os = "macos")]
     fn from_marker(value: &str) -> Option<Self> {
         let (pid, start_time_micros) = value.split_once(':')?;
         Some(Self {
@@ -407,6 +410,7 @@ fn read_adapter_marker(_pid: u32) -> Option<AdapterMarker> {
     None
 }
 
+#[cfg(target_os = "macos")]
 fn parse_visible_process_marker(value: &str) -> Option<AdapterMarker> {
     let value = value.strip_prefix(VISIBLE_MARKER_PREFIX)?;
     let (pid, remainder) = value.split_once(':')?;
@@ -436,6 +440,7 @@ fn encode_hex(bytes: &[u8]) -> String {
     encoded
 }
 
+#[cfg(target_os = "macos")]
 fn decode_hex(value: &str) -> Option<Vec<u8>> {
     if !value.len().is_multiple_of(2) {
         return None;
