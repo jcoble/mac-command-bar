@@ -291,6 +291,38 @@ function makeBackend(overrides = {}) {
   ]);
 }
 
+// ── a failed history read is not repeated until refresh or a new folder ─────
+// The visible surfaces call ensureHistorySurface() every time their effect
+// re-runs, and a failed read re-runs it. Reading again there looped about 33
+// times a second on a folder with no repository (TSK-1366).
+{
+  const backend = makeBackend({
+    async readHistory(root, cursor, relativePath) {
+      backend.calls.push(['readHistory', root, cursor, relativePath]);
+      throw new Error('fatal: not a git repository (or any of the parent directories): .git');
+    }
+  });
+  const state = createGitPanelState();
+  const git = createGitService({ backend, state });
+  const historyReads = () => backend.calls.filter((call) => call[0] === 'readHistory').length;
+
+  git.activate('/plain');
+  for (let run = 0; run < 3; run += 1) {
+    git.ensureHistorySurface();
+    await settle();
+  }
+  assert.equal(historyReads(), 1, 'the failed read is not repeated while the surface stays open');
+  assert.match(state.historyError, /not a git repository/);
+
+  await git.refreshHistory();
+  assert.equal(historyReads(), 2, 'asking to refresh reads again');
+
+  git.activate('/other');
+  git.ensureHistorySurface();
+  await settle();
+  assert.equal(historyReads(), 3, 'a different folder reads again');
+}
+
 // ── a superseded status read never overwrites the newer one ─────────────────
 {
   const resolvers = [];
@@ -669,7 +701,9 @@ function makeBackend(overrides = {}) {
     'fatal: not a git repository (or any of the parent directories): .git',
     'fatal: Not a Git repository',
     'Could not read the repository status.\nfatal: not a git repository',
-    'NOT A GIT REPOSITORY'
+    'NOT A GIT REPOSITORY',
+    // A bare repository has no working copy to show either.
+    'fatal: this operation must be run in a work tree'
   ];
   for (const message of notRepos) {
     assert.equal(isNotARepositoryError(message), true, `"${message}" means no repository`);
