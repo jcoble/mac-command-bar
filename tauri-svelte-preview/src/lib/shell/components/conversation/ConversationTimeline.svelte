@@ -272,8 +272,7 @@
     const startTop = host ? target() : null;
     if (!host || startTop === null) return done();
     const run = ++glideRun;
-    // Glide the last screen at most; a farther start jumps the rest first.
-    const distance = Math.max(-host.clientHeight, Math.min(host.clientHeight, startTop - host.scrollTop));
+    const distance = startTop - host.scrollTop;
     const instant = prefersReducedMotion();
     let startedAt: number | null = null;
     gliding = true;
@@ -522,11 +521,14 @@
     const turnJustFinished = turnWasActive && !turnIsActive;
     turnWasActive = turnIsActive;
     if (!turnJustFinished || !anchoredUserItemId || !host) return;
-    // The fold just shrank the turn. Put the sent message back where it was, or
-    // the newest line if the message folded away, so the view is never blank.
-    host.scrollTop = itemTop(anchoredUserItemId, USER_SEND_ANCHOR_OFFSET_PX) ?? latestWritingScrollTop();
-    // A reply shorter than the screen comes down to rest above the prompt box;
-    // then the view is the reader's again and the arrow follows where they are.
+    // The fold just shrank the turn. Put the sent message back where it was. If it
+    // folded away or a long reply pushed it out of the window, the reader keeps
+    // their place in the reply.
+    const sentTop = itemTop(anchoredUserItemId, USER_SEND_ANCHOR_OFFSET_PX);
+    if (sentTop !== null) host.scrollTop = sentTop;
+    // A reply shorter than the screen, or a view left below the writing, comes
+    // down to rest above the prompt box, so the view is never blank. Then the
+    // view is the reader's again and the arrow follows where they are.
     if (latestWritingScrollTop() < host.scrollTop) glideTo(latestWritingScrollTop, releaseSendAnchor);
     else releaseSendAnchor();
   });
