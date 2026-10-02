@@ -257,7 +257,6 @@
     if (localTurnStarted) {
       localTurnActive = false;
       localTurnStarted = false;
-      sendAnchorRequest = null;
     }
   });
 

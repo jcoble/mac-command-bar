@@ -101,7 +101,7 @@
   let anchoredUserItemId = $state<string | null>(null);
   let lastContentRevision = -1;
   let lastComposerHeight = -1;
-  let lastItemCount = -1;
+  let lastItemsKey = '';
   let turnWasActive = false;
   let userItemIds = $state<string[]>([]);
   let openedConversationId = $state('');
@@ -205,6 +205,8 @@
   $effect(() => {
     if (openedConversationId === renderWindowId) return;
     openedConversationId = renderWindowId;
+    // A transcript opened afresh never replays a send that was already made.
+    if (anchorRequest) seenAnchorRequest = `${anchorRequest.conversationId}:${anchorRequest.requestId}`;
     pageAnchor = null;
     anchoredUserItemId = null;
     stopGlide();
@@ -239,9 +241,10 @@
   });
 
   $effect(() => {
-    const itemCount = renderedItems.length;
-    if (itemCount === lastItemCount) return;
-    lastItemCount = itemCount;
+    // Paging swaps rows at both ends while the count can stay the same.
+    const itemsKey = `${renderedItems.length}:${renderedItems[0]?.itemId}:${renderedItems.at(-1)?.itemId}`;
+    if (itemsKey === lastItemsKey) return;
+    lastItemsKey = itemsKey;
     userItemIds = renderedItems.filter((item) => item.kind === 'user').map((item) => item.itemId);
   });
 
@@ -269,7 +272,8 @@
     const startTop = host ? target() : null;
     if (!host || startTop === null) return done();
     const run = ++glideRun;
-    const distance = startTop - host.scrollTop;
+    // Glide the last screen at most; a farther start jumps the rest first.
+    const distance = Math.max(-host.clientHeight, Math.min(host.clientHeight, startTop - host.scrollTop));
     const instant = prefersReducedMotion();
     let startedAt: number | null = null;
     gliding = true;
@@ -457,7 +461,9 @@
     seenAnchorRequest = key;
     scrollState = decideConversationScroll(scrollState, {
       type: 'send',
-      previousUserItemId: anchorRequest.previousUserItemId,
+      // On an older page the last message shown is not the newest one, so only
+      // the id the send returns can name the prompt.
+      previousUserItemId: hasNewer ? '' : anchorRequest.previousUserItemId,
       reducedMotion: prefersReducedMotion()
     }).state;
     // The message just sent goes to the top and stays there. Following the
