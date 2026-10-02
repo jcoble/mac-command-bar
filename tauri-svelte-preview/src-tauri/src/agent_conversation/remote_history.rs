@@ -114,15 +114,33 @@ mod tests {
     }
 
     #[test]
+    fn a_session_first_opened_empty_pages_its_live_events_locally() {
+        let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
+        // A session created here opens before its first event, then streams 1..=3.
+        history.snapshot("a", 0, None, &snapshot(1, 0)).unwrap();
+        history.live_batch("a", 0, &[event(1), event(2), event(3)]).unwrap();
+        let older = history.read_page("a", "same-session-id", 3, 1024, true).unwrap().unwrap();
+        assert_eq!(older.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), vec![1, 2]);
+        // The copy confirms the empty start once; then the top needs no request.
+        assert_eq!(history.unsaved_older("a", "same-session-id").unwrap(), Some(1));
+        let start = AgentConversationEventPage { events: vec![], has_more: false };
+        history.page("a", 0, "same-session-id", 1, true, &start).unwrap();
+        assert_eq!(history.unsaved_older("a", "same-session-id").unwrap(), None);
+        assert!(!history.read_page("a", "same-session-id", 3, 1024, true).unwrap().unwrap().has_more);
+    }
+
+    #[test]
     fn remote_history_fills_gaps_without_claiming_unfetched_events() {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
         history.snapshot("a", 0, None, &snapshot(10, 12)).unwrap();
         history.live_batch("a", 0, &[event(15)]).unwrap();
         assert_eq!(history.through("a", "same-session-id").unwrap(), Some(12));
-        assert!(history
-            .read_page("a", "same-session-id", 12, 1024, false)
-            .unwrap()
-            .is_none());
+        // The saved row past the gap is not confirmed, so the Mac's copy ends at 12.
+        for cursor in [11, 12] {
+            let newer = history.read_page("a", "same-session-id", cursor, 1024, false).unwrap().unwrap();
+            assert_eq!(newer.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), (cursor + 1..=12).collect::<Vec<_>>());
+            assert!(!newer.has_more);
+        }
         history
             .snapshot("a", 0, Some(12), &snapshot(13, 15))
             .unwrap();
@@ -399,6 +417,9 @@ impl RemoteHistory {
             .map(|event| event.sequence)
             .or(previous)
             .unwrap_or(snapshot.last_sequence);
+        // A session saved before its first event starts its copy just past
+        // that head, so its live events page locally and the copy checks the start.
+        coverage.oldest.get_or_insert(end.saturating_add(1));
         // Only a page that reaches the advertised head may confirm the head.
         coverage.through = Some(coverage.through.map_or(end, |old| old.max(end)));
         self.write(profile, owned, &coverage, &snapshot.events)?;
@@ -420,6 +441,7 @@ impl RemoteHistory {
                 &Self::key(profile, owned),
                 through.saturating_add(1),
                 512 * 1024,
+                i64::MIN,
             )
             .map_err(|e| e.to_string())?;
         Ok(AgentConversationSnapshot {
@@ -430,6 +452,25 @@ impl RemoteHistory {
             last_sequence: through,
             events: Self::decode(page.events)?,
         })
+    }
+
+    /// The confirmed tail of a session opened here before, or None when the
+    /// Mac has never saved its connection details. Rows past a gap stay out.
+    pub fn cached_snapshot(
+        &self,
+        profile: &str,
+        owned: &str,
+    ) -> Result<Option<AgentConversationSnapshot>, String> {
+        if self.coverage(profile, owned)?.connection.is_none() {
+            return Ok(None);
+        }
+        self.read_snapshot(profile, self.epoch(profile), owned).map(Some)
+    }
+
+    /// Where the next older page must end, until the session's start is saved.
+    pub fn unsaved_older(&self, profile: &str, owned: &str) -> Result<Option<i64>, String> {
+        let coverage = self.coverage(profile, owned)?;
+        Ok(coverage.oldest.filter(|_| !coverage.start_complete))
     }
 
     fn decode(rows: Vec<EventRow>) -> Result<Vec<AgentConversationEvent>, String> {
@@ -454,23 +495,18 @@ impl RemoteHistory {
         if before
             && (cursor > through.saturating_add(1)
                 || (cursor <= oldest && !coverage.start_complete))
-            || !before && (cursor < oldest || cursor >= through)
+            || !before && cursor < oldest
         {
             return Ok(None);
         }
         let key = Self::key(profile, owned);
+        // Rows saved past a gap are not confirmed: the page stops at the edge.
         let page = if before {
-            self.store.list_events_before(&key, cursor, bytes)
+            self.store.list_events_before(&key, cursor, bytes, oldest)
         } else {
-            self.store.list_events_after(&key, cursor, bytes)
+            self.store.list_events_after(&key, cursor, bytes, through)
         }
         .map_err(|e| e.to_string())?;
-        // Live rows beyond a gap must not leak into a supposedly complete page.
-        if page.events.first().is_some_and(|event| event.seq < oldest)
-            || page.events.last().is_some_and(|event| event.seq > through)
-        {
-            return Ok(None);
-        }
         Ok(Some(AgentConversationEventPage {
             events: Self::decode(page.events)?,
             has_more: page.has_more || (before && !coverage.start_complete),

@@ -159,16 +159,6 @@ assert.match(
 );
 assert.match(
   tauriSource,
-  /listAgentConversationEventsBeforeFromTauri\([\s\S]*?requestId[\s\S]*?signal\?\.addEventListener\('abort', cancel, \{ once: true \}\)[\s\S]*?list_agent_conversation_events_before[\s\S]*?finally \{[\s\S]*?signal\?\.removeEventListener\('abort', cancel\)/,
-  'older event page reads are owned by the surface abort signal'
-);
-assert.match(
-  tauriSource,
-  /listAgentConversationEventsAfterFromTauri\([\s\S]*?requestId[\s\S]*?signal\?\.addEventListener\('abort', cancel, \{ once: true \}\)[\s\S]*?list_agent_conversation_events_after[\s\S]*?finally \{[\s\S]*?signal\?\.removeEventListener\('abort', cancel\)/,
-  'newer event page reads are owned by the surface abort signal'
-);
-assert.match(
-  tauriSource,
   /readAgentConversationWorkspaceExpandedPathsFromTauri\([\s\S]*?requestId[\s\S]*?signal\?\.addEventListener\('abort', cancel, \{ once: true \}\)[\s\S]*?read_agent_conversation_workspace_expanded_paths[\s\S]*?finally \{[\s\S]*?signal\?\.removeEventListener\('abort', cancel\)/,
   'expanded-path reads are owned by the selection abort signal'
 );
@@ -194,4 +184,4 @@ assert.match(
 );
 assert.doesNotMatch(page, /Open conversation|Conversation paused/, 'conversation activation has no manual workaround gate');
 
-console.log('conversationActivation.test.mjs passed');
+console.log('conversationActivation.test.ts passed');

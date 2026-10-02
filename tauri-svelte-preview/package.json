@@ -25,7 +25,7 @@
     "test:conversation-send-recovery": "node --experimental-strip-types scripts/conversationSendRecovery.test.ts",
     "test:conversation-timeline": "node --experimental-strip-types scripts/conversationTimeline.test.ts",
     "test:conversation-message-safety": "node --experimental-strip-types scripts/conversationMessageSafety.test.ts",
-    "test:conversation-activation": "node --experimental-strip-types scripts/conversationActivation.test.mjs",
+    "test:conversation-activation": "node --experimental-strip-types scripts/conversationActivation.test.ts",
     "test:conversation-session-isolation": "node --experimental-strip-types scripts/conversationSessionIsolation.test.ts",
     "test:composer-slash-commands": "node --experimental-strip-types scripts/composerSlashCommands.test.ts",
     "test:git-graph-view-model": "node --experimental-strip-types scripts/gitGraphViewModel.test.mjs",

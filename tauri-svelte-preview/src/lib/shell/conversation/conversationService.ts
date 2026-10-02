@@ -1139,7 +1139,9 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
       if (remoteConnectionEventsSeen.has(profile.id)) continue;
       setRemoteConnection(profile.id, readyRemoteProfiles.has(profile.id) ? 'connected' : 'disconnected');
     }
-    await refreshRemoteSessionActivity(streamGeneration);
+    // Start-up waits for this setup before it opens a session, so the remote
+    // read runs on its own.
+    void refreshRemoteSessionActivity(streamGeneration);
     if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !registration) {
       await registration?.unregister();
       stopTitles();
@@ -1203,9 +1205,20 @@ async function handleConversationStreamEnvelope(
   if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
   const payload = envelope.chunk;
   const previous = railActivityEvents.get(payload.ownedId);
-  if (previous && (payload.generation < previous.generation
-    || (payload.generation === previous.generation && payload.sequence <= previous.sequence))) return;
   const active = rail.activeOwnedId === payload.ownedId;
+  if (previous && (payload.generation < previous.generation
+    || (payload.generation === previous.generation && payload.sequence <= previous.sequence))) {
+    // The rail has seen this event, but a transcript opened from the Mac's copy
+    // can still lack it: the background top-up repeats it. Skip rail presence only.
+    if (active && payload.generation === previous.generation) {
+      const read = resyncing.get(payload.ownedId);
+      const view = getConversationSession(payload.ownedId);
+      if (read) bufferConversationEvent(read, payload);
+      else if (view?.reachedTranscriptEnd && payload.sequence > view.lastSequence) applyAgentConversationEvent(payload);
+      if (!read && getConversationSession(payload.ownedId)?.desynchronized) await resyncConversation(payload.ownedId);
+    }
+    return;
+  }
   const displayEvent = displayEventFrom(payload);
   const terminal = shouldClearConversationSending(displayEvent);
   const current = getConversationSession(payload.ownedId);

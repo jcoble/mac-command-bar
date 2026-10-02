@@ -2183,29 +2183,17 @@ export async function listAgentConversationEventsBeforeFromTauri(
   signal?: AbortSignal
 ): Promise<AgentConversationEventPage | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
-  const requestId = createAgentConversationRequestId();
   const { invoke } = await import('./workspaceInvoke');
-  const cancel = (): void => {
-    void cancelAgentConversationRequestFromTauri(requestId);
-  };
-  signal?.addEventListener('abort', cancel, { once: true });
   try {
-    if (signal?.aborted) {
-      await cancelAgentConversationRequestFromTauri(requestId);
-      return null;
-    }
     const page = await invoke<AgentConversationEventPage>('list_agent_conversation_events_before', {
       ownedId,
       beforeSequence,
-      maxBytes,
-      requestId
+      maxBytes
     });
     return signal?.aborted ? null : page;
   } catch (error) {
     if (signal?.aborted) return null;
     throw error;
-  } finally {
-    signal?.removeEventListener('abort', cancel);
   }
 }
 
@@ -2217,29 +2205,17 @@ export async function listAgentConversationEventsAfterFromTauri(
   signal?: AbortSignal
 ): Promise<AgentConversationEventPage | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
-  const requestId = createAgentConversationRequestId();
   const { invoke } = await import('./workspaceInvoke');
-  const cancel = (): void => {
-    void cancelAgentConversationRequestFromTauri(requestId);
-  };
-  signal?.addEventListener('abort', cancel, { once: true });
   try {
-    if (signal?.aborted) {
-      await cancelAgentConversationRequestFromTauri(requestId);
-      return null;
-    }
     const page = await invoke<AgentConversationEventPage>('list_agent_conversation_events_after', {
       ownedId,
       afterSequence,
-      maxBytes,
-      requestId
+      maxBytes
     });
     return signal?.aborted ? null : page;
   } catch (error) {
     if (signal?.aborted) return null;
     throw error;
-  } finally {
-    signal?.removeEventListener('abort', cancel);
   }
 }
 
