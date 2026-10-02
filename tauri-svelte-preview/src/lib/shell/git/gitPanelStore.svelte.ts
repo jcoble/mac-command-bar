@@ -356,6 +356,7 @@ export function hasStagedChanges(status: ProjectGitStatus | null): boolean {
 export function isNotARepositoryError(message: string): boolean {
   // Deliberately narrow. A phrase matched too eagerly here would HIDE a real
   // failure behind a calm empty state, which is worse than showing a message
-  // that is hard to read — so only git's own wording for this counts.
-  return /not a git repository/i.test(message);
+  // that is hard to read — so only git's own wording for this counts. A bare
+  // repository answers status with "must be run in a work tree".
+  return /not a git repository|must be run in a work tree/i.test(message);
 }
