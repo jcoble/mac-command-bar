@@ -111,9 +111,11 @@
   const effectiveActiveTurnId = $derived(activeTurnId ?? (localTurnActive
     ? renderedItems.findLast((item) => item.turnId)?.turnId ?? null
     : null));
-  // A remote session's store does not name its running turn; the session's presence says one runs.
-  const runningTurnId = $derived(effectiveActiveTurnId ?? (turnRunning && !hasNewer ? renderedItems.at(-1)?.turnId ?? null : null));
   let turnSummaries = $state.raw<ReadonlyMap<string, ConversationTurnSummary>>(new Map());
+  // A remote session's store does not name its running turn; the session's presence says one runs,
+  // and it is the newest. A turn with a summary has ended: just after a send it is still the newest.
+  const runningCandidate = $derived(effectiveActiveTurnId ?? (turnRunning && !hasNewer ? renderedItems.at(-1)?.turnId ?? null : null));
+  const runningTurnId = $derived(runningCandidate && !turnSummaries.has(runningCandidate) ? runningCandidate : null);
   const renderedGroups = $derived(conversationTurnGroups(renderedItems, runningTurnId, turnSummaries));
   /** The finished journal turns on screen, each with its newest loaded row, as
    * one key: their summaries are read again when a turn comes into the window
