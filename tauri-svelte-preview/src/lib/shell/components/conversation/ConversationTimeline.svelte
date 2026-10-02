@@ -501,6 +501,10 @@
     // the bottom of something they had not read the beginning of. Jump to
     // latest is how following starts again.
     follow = false;
+    // Hold what is on screen until the sent message shows. A reader resting at
+    // the end held no anchor, so a window read back shorter after the send
+    // dropped them to its new end, moving the chat before the message appeared.
+    captureViewportAnchor();
     // A send heads for the newest writing, as Jump to latest does. An older
     // page never receives live writing, so read the newest history back first.
     newerPagingAllowed = true;
