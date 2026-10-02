@@ -474,6 +474,27 @@ export function foldToolRuns(
   return folded;
 }
 
+/** The raw items a row was folded from, in order. A nested file edit is its own
+ * item; a row that folds nothing is its one member. */
+export function foldedRowMembers(row: ConversationDisplayItem): string[] {
+  if (row.kind === 'fileEdits') return row.edits.map((edit) => edit.itemId);
+  if (row.kind === 'toolRun') return row.items.flatMap(foldedRowMembers);
+  return [row.itemId];
+}
+
+/** The row the reader's viewport anchor is on now. A folded row is keyed by its
+ * first member, so a page that joins its front, or trims it, renames it; the
+ * member saved with the anchor still finds it. */
+export function anchorRowId(
+  rows: readonly ConversationDisplayItem[],
+  rowId: string,
+  memberId: string | undefined
+): string | undefined {
+  if (rows.some((row) => row.itemId === rowId)) return rowId;
+  if (memberId === undefined) return undefined;
+  return rows.find((row) => foldedRowMembers(row).includes(memberId))?.itemId;
+}
+
 /** Groups adjacent display rows without changing their transcript order.
  *
  * The turn the agent is still writing into is the newest one. It cannot be

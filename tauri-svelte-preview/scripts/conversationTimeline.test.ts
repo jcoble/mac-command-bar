@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import {
   agentItemFromEvent,
+  anchorRowId,
   conversationTurnGroups,
   displayItemFromAgentItem,
   diffLineCounts,
+  foldedRowMembers,
   foldFileEdits,
+  foldToolRuns,
   formatWorkedFor,
   latestPlan,
   toolFilePath,
@@ -731,6 +734,38 @@ assert.equal(
 }
 
 console.log('conversationTimeline: file-edit grouping passed');
+
+{
+  // A folded run is keyed by its first member, so a page joining its front, or
+  // trimming it, renames the row the reader was looking at. The member saved
+  // with the viewport anchor still finds it.
+  const row = (itemId: string, extra: Record<string, unknown>): ConversationDisplayItem =>
+    ({ itemId, timestampMs: 1, ...extra }) as ConversationDisplayItem;
+  const cmd = (itemId: string) => row(itemId, { kind: 'command', text: itemId });
+  const edit = (itemId: string) => row(itemId, { kind: 'file', text: '+x', metadata: { path: `${itemId}.ts`, diff: '+x' } });
+  const said = row('said', { kind: 'assistant', text: 'Done', completed: true });
+  const rows = (...items: ConversationDisplayItem[]) => foldToolRuns(foldFileEdits(items));
+
+  const [run] = rows(cmd('b'), cmd('c'), said);
+  const member = foldedRowMembers(run).at(-1);
+  assert.equal(run.itemId, 'tool-run:b');
+  assert.equal(anchorRowId(rows(cmd('a'), cmd('b'), cmd('c'), said), run.itemId, member), 'tool-run:a', 'an older member joined the front');
+  assert.equal(anchorRowId(rows(cmd('b'), cmd('c'), cmd('d')), run.itemId, member), 'tool-run:b', 'a live member joined the end');
+  assert.equal(anchorRowId(rows(cmd('c'), said), run.itemId, member), 'tool-run:c', 'the first member was trimmed');
+
+  const [edits] = rows(edit('e2'), edit('e3'), said);
+  const editMember = foldedRowMembers(edits).at(-1);
+  assert.equal(edits.itemId, 'tool-run:file-edits:e2');
+  assert.equal(editMember, 'e3', 'a nested edit is saved by its own row id');
+  assert.equal(anchorRowId(rows(edit('e1'), edit('e2'), edit('e3'), said), edits.itemId, editMember), 'tool-run:file-edits:e1');
+  assert.equal(anchorRowId(rows(edit('e2'), edit('e3'), edit('e4')), edits.itemId, editMember), 'tool-run:file-edits:e2');
+
+  assert.equal(anchorRowId(rows(cmd('b'), said, cmd('c')), 'tool-run:b', 'c'), 'tool-run:b', 'the exact row wins');
+  assert.equal(anchorRowId(rows(cmd('x'), cmd('y'), said), run.itemId, member), undefined, 'an unrelated run is not the anchor');
+  assert.equal(anchorRowId(rows(cmd('a'), cmd('b'), said), run.itemId, member), undefined, 'the saved member is gone');
+}
+
+console.log('conversationTimeline: folded-run anchor passed');
 
 {
   const row = (itemId: string, extra: Record<string, unknown>): ConversationDisplayItem =>

@@ -4,7 +4,9 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
   import {
+    anchorRowId,
     conversationTurnGroups,
+    foldedRowMembers,
     foldFileEdits,
     foldToolRuns,
     formatWorkedFor,
@@ -113,6 +115,8 @@
     ? renderedItems.findLast((item) => item.turnId)?.turnId ?? null
     : null));
   const renderedGroups = $derived(conversationTurnGroups(renderedItems, effectiveActiveTurnId));
+  /** Each turn's rows as drawn, with tool runs and file edits folded. */
+  const foldedGroups = $derived(renderedGroups.map((group) => foldToolRuns(foldFileEdits(group.items))));
 
   function countDiffLines(diffText: string): { added: number; removed: number } {
     let added = 0;
@@ -328,7 +332,7 @@
    * first existing item and restore its viewport offset after replay; anchoring
    * an item rather than total height also survives the newest rows being trimmed.
    */
-  type PageAnchor = { viewportTop: number; itemId: string; timelineRevision: number; conversationId: string };
+  type PageAnchor = { viewportTop: number; itemId: string; memberId?: string; timelineRevision: number; conversationId: string };
 
   let pageAnchor: PageAnchor | null = null;
 
@@ -338,10 +342,13 @@
     const candidates = [...host.querySelectorAll<HTMLElement>('[data-item-id]')];
     const item = candidates.find((candidate) => candidate.getBoundingClientRect().bottom > hostTop)
       ?? candidates[0];
+    const row = item && foldedGroups.flat().find((candidate) => candidate.itemId === item.dataset.itemId);
     pageAnchor = item
       ? {
           viewportTop: item.getBoundingClientRect().top,
           itemId: item.dataset.itemId ?? '',
+          // The last member stays in a folded row when a page joins or trims its front.
+          memberId: row ? foldedRowMembers(row).at(-1) : undefined,
           timelineRevision,
           conversationId
         }
@@ -375,7 +382,8 @@
 
   function restoreViewportAnchor(anchor: PageAnchor): void {
     if (!host) return;
-    const item = host.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(anchor.itemId)}"]`);
+    const itemId = anchorRowId(foldedGroups.flat(), anchor.itemId, anchor.memberId);
+    const item = itemId === undefined ? null : host.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(itemId)}"]`);
     if (item) host.scrollTop += item.getBoundingClientRect().top - anchor.viewportTop;
     if (follow) pageAnchor = null;
     else captureViewportAnchor();
@@ -623,7 +631,7 @@
     >
       {#each renderedGroups as group, index (rowKey(group, index))}
         {@const expanded = turnExpanded(group)}
-        {@const foldedItems = foldToolRuns(foldFileEdits(group.items))}
+        {@const foldedItems = foldedGroups[index]}
         {@const firstWorkItemId = foldedItems.find((item) => item.kind === 'toolRun' || item.kind === 'fileEdits' || group.workItemIds.includes(item.itemId))?.itemId}
         <div
           class="turn-row"
