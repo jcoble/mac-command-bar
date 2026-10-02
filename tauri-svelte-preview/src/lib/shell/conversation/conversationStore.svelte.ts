@@ -1,5 +1,5 @@
-import { EventType, StreamProcessor } from '@tanstack/ai/client';
-import { conversationMessageDisplayItem, displayEventFrom, transcriptMessages } from './conversationMessages.ts';
+import { EventType, StreamProcessor, type UIMessage } from '@tanstack/ai/client';
+import { applyMessageEvent, conversationMessageDisplayItem, displayEventFrom, finishMessageReasoning, restoreProcessor, transcriptMessages } from './conversationMessages.ts';
 export { displayEventFrom } from './conversationMessages.ts';
 /**
  * Reactive conversation state keyed by Command Bar's stable `ownedId`.
@@ -7,7 +7,7 @@ export { displayEventFrom } from './conversationMessages.ts';
  * This module performs no IO. The conversation service owns Tauri calls and
  * feeds normalized events into `applyAgentConversationEvent`.
  */
-import { applyConversationEvent, createConversationState } from './conversationReducer.ts';
+import { applyConversationEvent, createConversationState, reduceConversationEvent, usageDropIsCompaction } from './conversationReducer.ts';
 import type {
   AgentApprovalRequest,
   AgentCapabilities,
@@ -32,7 +32,9 @@ import type {
   ConversationSessionState
 } from './conversationTypes.ts';
 import {
+  agentItemFromEvent,
   availableCommandsFromEvent,
+  displayItemFromApproval,
   permissionRequestFromEvent
 } from './conversationTimeline.ts';
 import {
@@ -551,6 +553,9 @@ interface ProjectionWindowState {
   loadingNewer?: boolean;
   oldestSequence?: number;
   newestSequence?: number;
+  /** Built by prepend for these events, so only the bookkeeping replays. */
+  transcript?: StreamProcessor;
+  bytes?: number;
 }
 
 function projectionSnapshot(current: ConversationWorkspaceState): AgentConversationSnapshot {
@@ -665,6 +670,7 @@ export function applyAgentConversationSnapshot(
   const keepChildProjection = generation === current.generation;
   const restored: ConversationWorkspaceState = {
     ...rebuilt,
+    transcript: window?.transcript ?? rebuilt.transcript,
     lastSequence: rebuilt.lastSequence,
     // Paging can trim the newest turn event. Its old start must not revive a
     // turn the live head has already completed (or hide one still running).
@@ -709,7 +715,7 @@ export function applyAgentConversationSnapshot(
     recentEvents: [],
     // Avoid a reactive proxy for every field of every retained journal event.
     get loadedEvents() { return events; },
-    loadedEventsBytes: serializedEventsBytes(events),
+    loadedEventsBytes: window?.bytes ?? serializedEventsBytes(events),
     // A snapshot is the newest window of a longer journal. Scrolling up asks
     // for what came before its first event.
     oldestLoadedSequence: window?.oldestSequence ?? firstEvent?.sequence ?? snapshot.lastSequence,
@@ -723,7 +729,7 @@ export function applyAgentConversationSnapshot(
     loadedChildTranscriptBytes: keepChildProjection ? current.loadedChildTranscriptBytes : 0
   };
   for (const event of events) {
-    const reduced = applyConversationEvent(restored, event);
+    const reduced = window?.transcript ? reduceConversationEvent(restored, event) : applyConversationEvent(restored, event);
     if (reduced !== restored) Object.assign(restored, reduced);
     applyTypedEventPayload(restored, displayEventFrom(event));
   }
@@ -753,12 +759,108 @@ export function applyAgentConversationSnapshot(
   return !restored.desynchronized;
 }
 
+/** The message an event writes, by the ids `applyMessageEvent` uses. A usage
+ * event can only write the compaction row it may create. */
+function eventMessageId(event: AgentConversationEvent): string | undefined {
+  const display = displayEventFrom(event);
+  const request = permissionRequestFromEvent(display);
+  if (request) return displayItemFromApproval(request).itemId;
+  return agentItemFromEvent(event.payload.kind === 'usage'
+    ? { ...event, payload: { kind: 'contextCompaction' } }
+    : display)?.id;
+}
+
+/**
+ * The transcript of `events` (an older page, then the kept part of the current
+ * window) without replaying the window. In step at the join, every kept event
+ * acts exactly as it did when the current transcript was built. So only the
+ * messages the page or a trimmed event wrote, reasoning a trimmed event may
+ * have closed, and compaction rows decided across the join are rebuilt; every
+ * other message is the current one.
+ */
+function prependPageTranscript(
+  current: ConversationWorkspaceState,
+  pageLength: number,
+  events: readonly AgentConversationEvent[]
+): StreamProcessor {
+  const state = createConversationState(current.ownedId, current.provider);
+  state.generation = events[0]?.generation ?? 0;
+  state.lastSequence = events[0] ? events[0].sequence - 1 : 0;
+  for (const event of events.slice(0, pageLength)) Object.assign(state, applyConversationEvent(state, event));
+  const transcript = state.transcript;
+  const kept = events.slice(pageLength);
+  const joined = kept.length ? reduceConversationEvent(state, kept[0]) : state;
+  if (joined === state || joined.desynchronized) {
+    // Out of step at the join, a full replay does no message work until a
+    // generation restarts at 1, so the reducer itself is cheap here.
+    for (const event of kept) Object.assign(state, applyConversationEvent(state, event));
+    return transcript;
+  }
+  const pageMessages = transcript.getMessages().length;
+  const pageIds = new Set(transcript.getMessages().map((message) => message.id));
+  const currentById = new Map(current.transcript.getMessages().map((message) => [message.id, message]));
+  const trimmed = current.loadedEvents.slice(kept.length);
+  const rebuild = new Set(pageIds);
+  for (const event of trimmed) {
+    const id = eventMessageId(event);
+    if (id && currentById.has(id)) rebuild.add(id);
+  }
+  for (const message of currentById.values()) {
+    if (trimmed.length && message.metadata?.itemType === 'reasoning') rebuild.add(message.id);
+  }
+  // Messages in creation order: the page's, then current ones as kept events
+  // first write them, with compaction rows the current window lacks inserted.
+  const created = new Set(pageIds);
+  const inserted: [number, string][] = [];
+  let fromCurrent = 0;
+  let lastIsCompaction = transcript.getMessages().at(-1)?.metadata?.itemType === 'context-compaction';
+  for (const event of kept) {
+    const reduced = reduceConversationEvent(state, event);
+    if (reduced === state) continue;
+    const previous = state.usage?.usedTokens;
+    Object.assign(state, reduced);
+    if (state.desynchronized) continue;
+    const payload = event.payload;
+    const id = eventMessageId(event);
+    if (!id) {
+      finishMessageReasoning(transcript, displayEventFrom(event));
+    } else if (payload.kind === 'usage') {
+      // The reducer's compaction rule, against the rows this replay created.
+      if (!usageDropIsCompaction(previous, payload.usedTokens) || lastIsCompaction) continue;
+      if (currentById.has(id)) fromCurrent += 1;
+      else {
+        applyMessageEvent(transcript, { ...event, payload: { kind: 'contextCompaction', preTokens: previous, postTokens: payload.usedTokens } });
+        inserted.push([fromCurrent + inserted.length, id]);
+      }
+      created.add(id);
+      lastIsCompaction = true;
+    } else {
+      const display = displayEventFrom(event);
+      if (rebuild.has(id)) applyMessageEvent(transcript, display);
+      if (!created.has(id)) {
+        created.add(id);
+        fromCurrent += 1;
+        lastIsCompaction = currentById.get(id)?.metadata?.itemType === 'context-compaction';
+      }
+      finishMessageReasoning(transcript, display);
+    }
+  }
+  const rebuilt = new Map(transcript.getMessages().map((message) => [message.id, message]));
+  const newer: UIMessage[] = [];
+  for (const message of currentById.values()) {
+    if (created.has(message.id) && !pageIds.has(message.id)) newer.push(rebuilt.get(message.id) ?? message);
+  }
+  for (const [at, id] of inserted) newer.splice(at, 0, rebuilt.get(id)!);
+  restoreProcessor(transcript, [...transcript.getMessages().slice(0, pageMessages), ...newer]);
+  return transcript;
+}
+
 /**
  * Puts the page of stored events just older than the transcript in front of it.
  *
- * The one retained event window is replayed through the same message mapper.
- * The processor owns the complete display content. Once the
- * event ceiling is reached, the newest end is removed and remains refetchable.
+ * Only the page is replayed through the message mapper; the window's messages
+ * are kept (see `prependPageTranscript`). Once the event ceiling is reached,
+ * the newest end is removed and remains refetchable.
  */
 export function prependOlderConversationEvents(
   ownedId: string,
@@ -790,7 +892,9 @@ export function prependOlderConversationEvents(
     reachedStart: !page.hasMore,
     reachedEnd: current.reachedTranscriptEnd && !trimmedNewest,
     oldestSequence: events[0]?.sequence ?? oldestSequence,
-    newestSequence: events[events.length - 1]?.sequence ?? oldestSequence - 1
+    newestSequence: events[events.length - 1]?.sequence ?? oldestSequence - 1,
+    transcript: prependPageTranscript(current, Math.min(page.events.length, events.length), events),
+    bytes
   });
 }
 

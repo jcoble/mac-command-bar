@@ -253,7 +253,7 @@ export interface GitService {
   refreshHistory(): Promise<void>;
   /** Ask for another page of older commits. Does nothing once the list is whole. */
   loadMoreHistory(): Promise<void>;
-  /** Read the first history page if a visible graph has no rows yet. */
+  /** Read the first history page if a visible graph has no rows yet. A failed read waits for Refresh or another folder: callers run this on every effect pass. */
   ensureHistorySurface(): void;
   /** Release commit rows when no graph surface owns them. */
   releaseHistorySurface(): void;
@@ -449,7 +449,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   function ensureHistorySurface(): void {
     historySurfaceVisible = true;
     if (!state.root || state.historyLoading || state.historyLoadingMore) return;
-    if (state.history.length > 0 || state.historyComplete) return;
+    if (state.history.length > 0 || state.historyComplete || state.historyError) return;
     void loadHistory(null, false);
   }
 
