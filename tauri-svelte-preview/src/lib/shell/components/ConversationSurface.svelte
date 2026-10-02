@@ -790,6 +790,8 @@
         hasNewer={!conversation.selectedChildId && !conversation.reachedTranscriptEnd}
         loadingNewer={!conversation.selectedChildId && conversation.loadingNewer}
         onLoadNewer={() => void loadNewerConversationEvents(active.ownedId, surfaceController.signal)}
+        oldestSequence={conversation.oldestLoadedSequence}
+        newestSequence={conversation.newestLoadedSequence}
         onJumpToLatest={() => loadConversationForRead(active.ownedId, true, surfaceController.signal)}
         onScroll={(scrollTop) => {
           if (conversation.selectedChildId) conversation.childScrollTopById[conversation.selectedChildId] = scrollTop;
