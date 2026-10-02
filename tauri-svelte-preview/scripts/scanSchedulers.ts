@@ -23,6 +23,8 @@ const anonymousAsyncIifePattern =
 const allowedHits = new Set([
   'src/lib/shell/components/UtilityStrip.svelte:setInterval:const refreshInterval = window.setInterval(() => {',
   'src/lib/shell/components/UtilityStrip.svelte:clearInterval:window.clearInterval(refreshInterval);',
+  // One fifteen-second interval for every rail row's age label; it skips hidden windows and unmounting clears it.
+  'src/lib/shell/components/SessionRail.svelte:setInterval:const tick = window.setInterval(() => {',
   // Svelte tick is awaited only after mounting a user-requested lazy surface.
   "src/lib/shell/components/DockPanel.svelte:tick:import { tick } from 'svelte';",
   'src/lib/shell/components/DockPanel.svelte:tick:await tick();',
