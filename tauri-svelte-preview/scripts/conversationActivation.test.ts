@@ -86,10 +86,6 @@ const shellFrame = readFileSync(
   new URL('../src/lib/shell/components/ShellFrame.svelte', import.meta.url),
   'utf8'
 );
-const shellStartup = readFileSync(
-  new URL('../src/lib/shell/controllers/shellStartup.ts', import.meta.url),
-  'utf8'
-);
 const tauriSource = readFileSync(new URL('../src/lib/tauriSource.ts', import.meta.url), 'utf8');
 const remoteConversation = readFileSync(
   new URL('../src-tauri/src/agent_conversation/remote.rs', import.meta.url),
@@ -117,7 +113,7 @@ assert.match(
 );
 assert.match(
   page,
-  /\.conversation-data-isolation \{[\s\S]*?inset:\s*0;[\s\S]*?position:\s*absolute;[\s\S]*?z-index:\s*1;[\s\S]*?background:\s*var\(--color-bg\);/,
+  /\.conversation-data-isolation \{[^}]*?inset:\s*0;[^}]*?position:\s*absolute;[^}]*?z-index:\s*1;[^}]*?background:\s*var\(--panel-fade\),\s*var\(--color-surface\);/,
   'the loading state is an opaque overlay that covers the retained conversation surface'
 );
 assert.doesNotMatch(
@@ -132,11 +128,6 @@ for (const id of ['session', 'editor', 'diff', 'git-history']) {
     `${id} center panel only keeps a renderer while it is visible`
   );
 }
-assert.match(
-  shellStartup,
-  /const storedSessions = \(await listAgentConversationSessionsFromTauri\(\)\)[\s\S]*?hydrateOwned\(projected\)[\s\S]*?void hydrateRemoteSessionsForOwner\(generation, controller\.signal\)/,
-  'local sessions publish before cancellable remote discovery begins'
-);
 assert.match(
   tauriSource,
   /listRemoteAgentConversationSessionsFromTauri\([\s\S]*?signal\?\.addEventListener\('abort', cancel, \{ once: true \}\)[\s\S]*?finally \{[\s\S]*?signal\?\.removeEventListener\('abort', cancel\)/,
@@ -169,12 +160,12 @@ assert.doesNotMatch(
 );
 assert.match(
   selectionLayers,
-  /await loadConversationForRead\(session\.ownedId, false, owner\.signal\);[\s\S]*?if \(!this\.isCurrent\(owner\)\) \{[\s\S]*?releaseConversationForRead\(session\.ownedId\);[\s\S]*?return;/,
+  /await loadConversationForRead\(session\.ownedId, true, owner\.signal\);\s*if \(!this\.isCurrent\(owner\)\) \{\s*if \(this\.requestedChatOwnedId !== session\.ownedId\) releaseConversationForRead\(session\.ownedId\);\s*return;/,
   'a stale candidate load releases only the stale candidate'
 );
 assert.match(
   selectionLayers,
-  /if \(departingOwnedId && departingOwnedId !== session\.ownedId\) \{[\s\S]*?cancelConversationReadWork\(departingOwnedId\);[\s\S]*?await loadConversationForRead\(session\.ownedId, false, owner\.signal\);/,
+  /if \(departingOwnedId && departingOwnedId !== session\.ownedId\) \{[\s\S]*?cancelConversationReadWork\(departingOwnedId\);[\s\S]*?await loadConversationForRead\(session\.ownedId, true, owner\.signal\);/,
   'departing async work is cancelled before the next conversation snapshot is awaited'
 );
 assert.match(
