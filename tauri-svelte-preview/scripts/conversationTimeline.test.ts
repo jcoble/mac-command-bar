@@ -348,17 +348,16 @@ assert.deepEqual(
   'both halves of the interrupted turn fold together, marker included'
 );
 
-// Nothing folds while the agent is still writing. Most providers put no turn id
-// on the rows they send, so the running turn cannot be found by matching ids —
-// it is the newest turn, and there is a running turn only while one is named.
+// Nothing folds while the agent is still writing. The journal files every row
+// of a live turn under the id the session names, so that id finds the turn.
 const writing = conversationTurnGroups([
-  textItem('user', 'writing-user-a', null, 0),
-  toolItem('writing-tool-a', null, 1_000),
-  textItem('assistant', 'writing-answer-a', null, 2_000, false),
-  textItem('user', 'writing-user-b', null, 3_000),
-  toolItem('writing-tool-b', null, 4_000),
-  textItem('assistant', 'writing-answer-b', null, 5_000, false)
-], 'turn-the-agent-is-writing');
+  textItem('user', 'writing-user-a', 'writing-turn-a', 0),
+  toolItem('writing-tool-a', 'writing-turn-a', 1_000),
+  textItem('assistant', 'writing-answer-a', 'writing-turn-a', 2_000, false),
+  textItem('user', 'writing-user-b', 'writing-turn-b', 3_000),
+  toolItem('writing-tool-b', 'writing-turn-b', 4_000),
+  textItem('assistant', 'writing-answer-b', 'writing-turn-b', 5_000, false)
+], 'writing-turn-b');
 assert.equal(writing.length, 2);
 assert.equal(writing[0].completed, true, 'an earlier turn folds while a later one runs');
 assert.equal(writing[1].completed, false, 'the turn being written never folds');
@@ -367,6 +366,14 @@ const live = conversationTurnGroups([
   toolItem('live-tool', 'live-turn', 4_000)
 ], 'live-turn', new Map([['live-turn', { turnId: 'live-turn', startedAtMs: 0, endedAtMs: 99_000, replyItemId: null, replyText: null, replyBlocks: null }]]));
 assert.equal(live[0].elapsedMs, 3_000, 'a running turn has no SQL span yet and keeps its live elapsed time');
+// Scrolled up while a turn runs: the running turn is newer than the window, so
+// the turns on screen have ended and keep their SQL figure and reply.
+const scrolledUp = conversationTurnGroups([
+  textItem('user', 'older-user', 'older-turn', 1_000),
+  toolItem('older-tool', 'older-turn', 2_000)
+], 'live-turn', new Map([['older-turn', summary('older-turn', 100_000, 'older-reply')]]));
+assert.equal(scrolledUp[0].elapsedMs, 100_000, 'an older turn keeps its SQL figure while a newer one runs');
+assert.equal(scrolledUp[0].reply?.itemId, 'older-reply', 'an older turn keeps its SQL reply while a newer one runs');
 
 // A long turn is far bigger than the window, so its length and its final reply
 // come from SQL. Whatever part of it is loaded, the collapsed turn shows the

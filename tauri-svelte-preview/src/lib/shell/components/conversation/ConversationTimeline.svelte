@@ -113,16 +113,16 @@
     : null));
   let turnSummaries = $state.raw<ReadonlyMap<string, ConversationTurnSummary>>(new Map());
   // A remote session's store does not name its running turn; the session's presence says one runs,
-  // and it is the newest. A turn with a summary has ended: just after a send it is still the newest.
-  const runningCandidate = $derived(effectiveActiveTurnId ?? (turnRunning && !hasNewer ? renderedItems.at(-1)?.turnId ?? null : null));
+  // and it is the newest. That guess, like the one for a send not yet named, holds only while the
+  // window reaches the newest rows. A turn with a summary has ended: just after a send it is still the newest.
+  const runningCandidate = $derived(hasNewer ? activeTurnId : effectiveActiveTurnId ?? (turnRunning ? renderedItems.at(-1)?.turnId ?? null : null));
   const runningTurnId = $derived(runningCandidate && !turnSummaries.has(runningCandidate) ? runningCandidate : null);
   const renderedGroups = $derived(conversationTurnGroups(renderedItems, runningTurnId, turnSummaries));
   /** The finished journal turns on screen, each with its newest loaded row, as
    * one key: their summaries are read again when a turn comes into the window
    * or the copy brings a turn newer rows, never while the running turn streams. */
-  const summaryKey = $derived(renderedGroups.flatMap((group, index) => (
-    group.turnId && !group.turnId.startsWith('stored-turn:')
-      && (runningTurnId === null || index < renderedGroups.length - 1)
+  const summaryKey = $derived(renderedGroups.flatMap((group) => (
+    group.turnId && !group.turnId.startsWith('stored-turn:') && group.turnId !== runningTurnId
       ? [`${group.turnId}\t${group.items[group.items.length - 1]?.itemId}`]
       : []
   )).join('\n'));

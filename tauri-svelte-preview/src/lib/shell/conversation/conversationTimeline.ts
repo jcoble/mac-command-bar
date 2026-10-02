@@ -533,12 +533,10 @@ export function foldToolRuns(
 
 /** Groups adjacent display rows without changing their transcript order.
  *
- * The turn the agent is still writing into is the newest one. It cannot be
- * found by matching `activeTurnId` against the rows: most providers put no turn
- * id on what they send, so the rows of a live turn carry an id read off the
- * prompt that opened it, which is never the id the session reports. There is a
- * turn running only while the session names one, and while one runs it is the
- * last group. */
+ * The turn the agent is still writing into is the one named by `activeTurnId`:
+ * the journal files every row of a live turn under that id. It is never simply
+ * the last group, because the window can be scrolled up into older turns while
+ * a newer one runs. */
 export function conversationTurnGroups(
   items: readonly ConversationDisplayItem[],
   activeTurnId: string | null = null,
@@ -551,8 +549,8 @@ export function conversationTurnGroups(
     if (open && turnIds[index] === open.turnId) open.items.push(item);
     else partitions.push({ turnId: turnIds[index], items: [item] });
   });
-  return partitions.map((partition, index) => {
-    const running = activeTurnId !== null && index === partitions.length - 1;
+  return partitions.map((partition) => {
+    const running = activeTurnId !== null && partition.turnId === activeTurnId;
     const summary = running || !partition.turnId ? undefined : summaries.get(partition.turnId);
     return turnGroup(partition.turnId, partition.items, running, summary);
   });
