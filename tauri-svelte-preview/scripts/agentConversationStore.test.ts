@@ -1539,6 +1539,41 @@ assert.ok(store.getConversationSession('owned-b'));
   store.evictConversationSession(ownedId);
 }
 
+// A send that ends without a turn clears the send's placeholder presence, even
+// when a suspended snapshot already cleared `sending` or the session was released.
+{
+  const ownedId = 'owned-cancelled-revive';
+  const connection = { ownedId, provider: 'claude' as const, generation: 1, state: 'connected' as const };
+  store.applyAgentConversationSnapshot({ connection, lastSequence: 0, events: [] });
+  store.setConversationSending(ownedId, true);
+  assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, 'sending');
+  store.applyAgentConversationSnapshot({ connection, suspended: true, lastSequence: 0, events: [] });
+  store.setConversationSending(ownedId, false);
+  assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, null, 'a send cancelled during a revive must not keep Working');
+  store.setConversationSending(ownedId, true);
+  store.evictConversationSession(ownedId);
+  store.setConversationSending(ownedId, false);
+  assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, null, 'a send that ends after its session was released must not keep Working');
+}
+
+// A completion buffered during a read clears presence first. Ending the send
+// afterwards must not bring that finished turn back from the stale projection.
+{
+  const ownedId = 'owned-buffered-completion';
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 3_000,
+    payload: { kind: 'turn', turnId: 'done-turn', state: 'started' }
+  });
+  store.recordAgentConversationPresenceEvent({
+    ownedId, provider: 'claude', generation: 1, sequence: 2, timestampMs: 3_010,
+    payload: { kind: 'turn', turnId: 'done-turn', state: 'completed' }
+  });
+  assert.equal(store.getConversationSession(ownedId).activeTurnId, 'done-turn');
+  store.setConversationSending(ownedId, false);
+  assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, null, 'a finished turn must not come back');
+  store.evictConversationSession(ownedId);
+}
+
 // An older page can end before the turn-completed event at the live head.
 // Replaying that page must not turn the composer back into a Stop button.
 {

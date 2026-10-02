@@ -1,4 +1,5 @@
 import { EventType, StreamProcessor } from '@tanstack/ai/client';
+import { get } from 'svelte/store';
 import { conversationMessageDisplayItem, displayEventFrom, transcriptMessages } from './conversationMessages.ts';
 export { displayEventFrom } from './conversationMessages.ts';
 /**
@@ -45,6 +46,7 @@ import type { AgentExecutionOwner } from '../ownedSessions.ts';
 import { publishWorkspaceFileChange } from '../workspaceFileChangeBus.ts';
 import {
   clearSessionPresence,
+  sessionPresenceHistory,
   synchronizeSessionPresenceWork
 } from './sessionPresence.ts';
 import { recordConversationPresenceEvent } from './sessionNotifications.ts';
@@ -1498,6 +1500,11 @@ export function setConversationMode(ownedId: string, mode: ConversationViewMode)
 }
 
 export function setConversationSending(ownedId: string, sending: boolean): void {
+  // A suspended snapshot or a released session can end a send without this
+  // flag changing, so the send's placeholder turn is cleared here as well.
+  if (!sending && get(sessionPresenceHistory)[ownedId]?.activeTurnId === 'sending') {
+    synchronizeSessionPresenceWork(ownedId, null, false);
+  }
   const current = conversationSessions[ownedId];
   if (!current || current.sending === sending) return;
   current.sending = sending;
