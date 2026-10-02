@@ -1431,10 +1431,10 @@ export async function sendStructuredMessage(
     model?: string | null;
     approvalPolicy?: string | null;
   }
-): Promise<void> {
+): Promise<string | null> {
   let state = getConversationSession(ownedId);
-  if (!state) return;
-  if (!text.trim() && state.attachments.length === 0) return;
+  if (!state) return null;
+  if (!text.trim() && state.attachments.length === 0) return null;
   const presence = get(sessionPresenceHistory)[ownedId];
   const turnWasAlreadyActive = state.sending || Boolean(
     presence ? presence.activeTurnId : (state.activeTurnId ?? rail.owned.find((session) => session.ownedId === ownedId)?.activeTurnId)
@@ -1520,7 +1520,7 @@ export async function sendStructuredMessage(
       state.attachments.forEach(cleanupConversationAttachmentPreview);
       setConversationAttachments(ownedId, []);
       if (rail.activeOwnedId !== ownedId) releaseConversationForRead(ownedId);
-      return;
+      return null;
     }
     if (state.generation < 1) throw new Error('The structured conversation is not connected');
     // An unread or stale capability snapshot is not a refusal. Blocking the
@@ -1569,7 +1569,8 @@ export async function sendStructuredMessage(
     if (preparingSends.get(ownedId) === preparation) preparingSends.delete(ownedId);
     const requestedModel = startConfig?.model ?? null;
     const requestedApprovalPolicy = startConfig?.approvalPolicy ?? null;
-    await invoke('send_agent_conversation_message', {
+    // The id of the recorded prompt, so the transcript can anchor exactly it.
+    const sentUserItemId = await invoke<string | null>('send_agent_conversation_message', {
       request: {
         ownedId,
         generation: validatedGeneration,
@@ -1603,6 +1604,7 @@ export async function sendStructuredMessage(
       await resyncConversation(ownedId);
     }
     if (rail.activeOwnedId !== ownedId) releaseConversationForRead(ownedId);
+    return sentUserItemId ?? null;
   } catch (error) {
     // A send that never went out leaves its screenshots in the composer, so
     // nothing is left waiting to be hung on a later message.

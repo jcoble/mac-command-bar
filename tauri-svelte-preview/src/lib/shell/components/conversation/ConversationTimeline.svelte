@@ -203,6 +203,7 @@
     openedConversationId = renderWindowId;
     pageAnchor = null;
     anchoredUserItemId = null;
+    stopGlide();
     expandedTurns = new Map();
     // Every open starts at the newest message; the reader controls scrolling
     // after that, including while new writing arrives.
@@ -248,16 +249,45 @@
     scrollState = decideConversationScroll(scrollState, { type: 'animation-finished' }).state;
   }
 
-  function animateTo(top: number, motion: ConversationScrollMotion, settleItemId?: string, settleOffsetPx?: number): void {
+  function animateTo(top: number, motion: ConversationScrollMotion): void {
     if (!host) return;
-    const target = Math.max(0, top);
     void motion;
-    host.scrollTop = target;
-    if (settleItemId) {
-      const settledTop = itemTop(settleItemId, settleOffsetPx ?? 0);
-      if (settledTop !== null) host.scrollTop = settledTop;
-    }
+    host.scrollTop = Math.max(0, top);
     finishAnimation();
+  }
+
+  let glideRun = 0;
+  let gliding = false;
+  /** One short eased scroll. The target is measured again every frame, so the
+   * moving message keeps to its curve even when a reload replaces what is above
+   * it. Reader input, opening a session or Jump to latest stops it. */
+  function glideTo(target: () => number | null, done: () => void): void {
+    const startTop = host ? target() : null;
+    if (!host || startTop === null) return done();
+    const run = ++glideRun;
+    const distance = startTop - host.scrollTop;
+    const instant = prefersReducedMotion();
+    let startedAt: number | null = null;
+    gliding = true;
+    const step = (now: number): void => {
+      if (run !== glideRun || !host) return;
+      const top = target();
+      startedAt ??= now;
+      const progress = instant || top === null ? 1 : Math.min(1, (now - startedAt) / 280);
+      if (top !== null) host.scrollTop = top - distance * Math.pow(1 - progress, 3);
+      if (progress < 1) {
+        requestAnimationFrame(step);
+        return;
+      }
+      gliding = false;
+      done();
+    };
+    requestAnimationFrame(step);
+  }
+
+  function stopGlide(): void {
+    glideRun += 1;
+    gliding = false;
   }
 
   function itemTop(itemId: string, offsetPx: number): number | null {
@@ -298,13 +328,8 @@
     return host ? latestWritingScrollTop() - host.scrollTop : 0;
   }
 
-  function anchorUser(itemId: string, motion: ConversationScrollMotion, offsetPx: number): void {
-    const top = itemTop(itemId, offsetPx);
-    if (top !== null) {
-      animateTo(top, motion, itemId, offsetPx);
-      return;
-    }
-    finishAnimation();
+  function anchorUser(itemId: string, offsetPx: number): void {
+    glideTo(() => itemTop(itemId, offsetPx), finishAnimation);
   }
 
   function perform(action: ConversationScrollAction): void {
@@ -315,7 +340,7 @@
       return;
     }
     anchoredUserItemId = action.itemId;
-    anchorUser(action.itemId, action.motion, action.offsetPx);
+    anchorUser(action.itemId, action.offsetPx);
   }
 
   /*
@@ -400,6 +425,7 @@
     if (jumpingToLatest) return;
     newerPagingAllowed = true;
     anchoredUserItemId = null;
+    stopGlide();
     if (hasNewer && onJumpToLatest) {
       jumpingToLatest = true;
       // A direct tail reload replaces the paging operation. Do not let its
@@ -441,7 +467,8 @@
   $effect(() => {
     const decision = decideConversationScroll(scrollState, {
       type: 'user-items-changed',
-      userItemIds
+      userItemIds,
+      sentUserItemId: anchorRequest?.conversationId === conversationId ? anchorRequest.sentUserItemId : null
     });
     scrollState = decision.state;
     if (decision.action.type !== 'none') perform(decision.action);
@@ -451,6 +478,7 @@
     if (timelineRevision === lastContentRevision) return;
     lastContentRevision = timelineRevision;
     if (anchoredUserItemId && host) {
+      if (gliding) return;
       const top = itemTop(anchoredUserItemId, USER_SEND_ANCHOR_OFFSET_PX);
       if (top !== null) host.scrollTop = top;
       return;
@@ -470,13 +498,25 @@
   });
 
   $effect(() => {
-    const turnIsActive = localTurnActive;
+    // The same signal that folds the turn: a first message sent from the
+    // new-session view runs a turn without ever setting localTurnActive.
+    const turnIsActive = localTurnActive || Boolean(activeTurnId);
     const turnJustFinished = turnWasActive && !turnIsActive;
     turnWasActive = turnIsActive;
     if (!turnJustFinished || !anchoredUserItemId || !host) return;
-    const top = itemTop(anchoredUserItemId, USER_SEND_ANCHOR_OFFSET_PX);
-    if (top !== null) host.scrollTop = top;
+    // The fold just shrank the turn. Put the sent message back where it was, or
+    // the newest line if the message folded away, so the view is never blank.
+    host.scrollTop = itemTop(anchoredUserItemId, USER_SEND_ANCHOR_OFFSET_PX) ?? latestWritingScrollTop();
+    // A reply shorter than the screen comes down to rest above the prompt box;
+    // then the view is the reader's again and the arrow follows where they are.
+    if (latestWritingScrollTop() < host.scrollTop) glideTo(latestWritingScrollTop, releaseSendAnchor);
+    else releaseSendAnchor();
   });
+
+  function releaseSendAnchor(): void {
+    anchoredUserItemId = null;
+    handleScroll();
+  }
 
   $effect(() => {
     if (composerHeight === lastComposerHeight) return;
@@ -491,6 +531,7 @@
   function handleUserInput(): void {
     if (!newerPagingAllowed) follow = false; // Upward intent wins before the browser scrolls.
     anchoredUserItemId = null;
+    stopGlide();
     const decision = decideConversationScroll(scrollState, { type: 'user-input' });
     scrollState = decision.state;
     perform(decision.action);

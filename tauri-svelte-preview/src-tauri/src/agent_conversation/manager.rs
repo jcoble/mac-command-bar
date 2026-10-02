@@ -844,7 +844,7 @@ impl AgentRuntimeManager {
                 },
             )
             .map_err(|error| error.to_string())?;
-        result.map(|()| true)
+        result.map(|_| true)
     }
 
     pub fn set_session_namer(&self, namer: SessionNamer) {
@@ -1775,7 +1775,7 @@ impl AgentRuntimeManager {
         input: AgentPrompt,
         model: Option<String>,
         approval_policy: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         // Activation, configuration, and durable prompt acceptance are one
         // lifecycle operation. Checkout switching uses this same guard, so it
         // cannot detach the runtime between any of those steps. The guard is
@@ -1837,7 +1837,7 @@ impl AgentRuntimeManager {
         owned_id: &str,
         generation: u64,
         input: AgentPrompt,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         let runtime = self.runtime(owned_id, generation)?;
         let transport = {
             let runtime = runtime.lock().await;
@@ -1890,19 +1890,22 @@ impl AgentRuntimeManager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session_mut(&mut sessions, owned_id, generation)?;
+            // The id is returned so the transcript can anchor this exact prompt.
+            let item_id = format!("user-steer-{}", uuid::Uuid::new_v4());
             record_payload_for_session_and_dispatch(
                 session,
                 &self.emitter,
                 AgentConversationPayload::UserMessage {
-                    item_id: format!("user-steer-{}", uuid::Uuid::new_v4()),
+                    item_id: item_id.clone(),
                     text,
                     completed: true,
                     attachment_ids,
                 },
             )?;
-            return Ok(());
+            return Ok(item_id);
         }
         let turn_id = format!("turn-{}", uuid::Uuid::new_v4());
+        let user_item_id = format!("user-{turn_id}");
         let (native_session_id, ordered_events) = {
             let mut sessions = self
                 .sessions
@@ -1960,7 +1963,7 @@ impl AgentRuntimeManager {
                 session,
                 &self.emitter,
                 AgentConversationPayload::UserMessage {
-                    item_id: format!("user-{turn_id}"),
+                    item_id: user_item_id.clone(),
                     text: input.text.clone(),
                     completed: true,
                     attachment_ids: input.attachment_ids.clone(),
@@ -1972,7 +1975,7 @@ impl AgentRuntimeManager {
         self.start_child_rollout_scan(owned_id, generation)?;
         let params = prompt_params(native_session_id, input);
         spawn_prompt_completion(transport, ordered_events, turn_id, params);
-        Ok(())
+        Ok(user_item_id)
     }
 
     fn start_child_rollout_scan(&self, owned_id: &str, generation: u64) -> Result<(), String> {

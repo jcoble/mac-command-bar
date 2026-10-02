@@ -484,11 +484,8 @@
     const deliveredIds = new Set(conversation.attachments.map((attachment) => attachment.id));
     const retainedIds = conversation.attachmentIds.filter((id) => !deliveredIds.has(id));
     const previousUserItemId = visibleTimeline.findLast((item) => item.kind === 'user')?.itemId ?? null;
-    sendAnchorRequest = {
-      requestId: ++sendAnchorRequestId,
-      conversationId: ownedId,
-      previousUserItemId
-    };
+    const requestId = ++sendAnchorRequestId;
+    sendAnchorRequest = { requestId, conversationId: ownedId, previousUserItemId };
     if (!steering) {
       localTurnActive = true;
       localTurnStarted = false;
@@ -497,7 +494,9 @@
     setConversationSendError(ownedId, '');
     try {
       await clearConversationSessionDraft(ownedId);
-      await sendStructuredMessage(ownedId, text);
+      const sentUserItemId = await sendStructuredMessage(ownedId, text);
+      // Name the exact prompt for the transcript; a reloaded window may no longer hold the previous one.
+      if (sentUserItemId && sendAnchorRequest?.requestId === requestId) sendAnchorRequest = { ...sendAnchorRequest, sentUserItemId };
     } catch (error) {
       // Restore the draft. The service intentionally leaves attachments in the
       // store on every failure, so the user can retry without data loss. The

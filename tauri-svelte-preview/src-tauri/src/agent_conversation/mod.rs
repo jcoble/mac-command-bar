@@ -145,7 +145,7 @@ pub async fn send_agent_conversation_message(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     request: SendAgentConversationMessageRequest,
-) -> CommandResult<()> {
+) -> CommandResult<Option<String>> {
     let owned_id = request.owned_id.clone();
     if remote.owns(&owned_id) {
         return command_result(remote.send(request).await);
@@ -164,6 +164,7 @@ pub async fn send_agent_conversation_message(
                 request.approval_policy,
             )
             .await
+            .map(Some)
     }
     .await;
     log_command_error("send_agent_conversation_message", &owned_id, result)

@@ -9,6 +9,8 @@ export interface ConversationSendAnchorRequest {
   requestId: number;
   conversationId: string;
   previousUserItemId: string | null;
+  /** The id the send returned for its prompt, once the send has gone out. */
+  sentUserItemId?: string | null;
 }
 
 interface PendingAnchor {
@@ -29,7 +31,7 @@ export interface ConversationScrollAnchorState {
 export type ConversationScrollAnchorEvent =
   | { type: 'opened' }
   | { type: 'send'; previousUserItemId: string | null; reducedMotion: boolean }
-  | { type: 'user-items-changed'; userItemIds: readonly string[] }
+  | { type: 'user-items-changed'; userItemIds: readonly string[]; sentUserItemId?: string | null }
   | { type: 'stream-growth' }
   | { type: 'user-input' }
   | { type: 'jump-to-latest'; reducedMotion: boolean }
@@ -106,7 +108,11 @@ export function decideConversationScroll(
   }
 
   if (event.type === 'user-items-changed' && state.pendingAnchor) {
-    const itemId = nextUserItemId(event.userItemIds, state.pendingAnchor.previousUserItemId);
+    // A reloaded window can lose the previous message (a long reply, an older
+    // page); the id the send returned still names the right prompt.
+    const itemId = event.sentUserItemId
+      ? (event.userItemIds.includes(event.sentUserItemId) ? event.sentUserItemId : null)
+      : nextUserItemId(event.userItemIds, state.pendingAnchor.previousUserItemId);
     if (!itemId) return { state, action: { type: 'none' } };
     const motion = state.pendingAnchor.motion;
     return {

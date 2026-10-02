@@ -41,7 +41,7 @@ use super::protocol::{
 use super::providers::ProviderRegistry;
 use super::transcript::TranscriptSnapshot;
 
-pub(super) const PROTOCOL_VERSION: u16 = 8;
+pub(super) const PROTOCOL_VERSION: u16 = 9;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -1634,10 +1634,12 @@ impl RemoteConnectionManager {
         }
     }
 
-    pub async fn send(&self, request: SendAgentConversationMessageRequest) -> Result<(), String> {
+    pub async fn send(&self, request: SendAgentConversationMessageRequest) -> Result<Option<String>, String> {
         let owned_id = request.owned_id.clone();
-        self.empty_for_owned(&owned_id, RemoteCommand::Send(request))
-            .await
+        match self.request_for_owned(&owned_id, RemoteCommand::Send(request)).await? {
+            RemoteResponse::OptionalString(item_id) => Ok(item_id),
+            _ => Err("Remote Assembly returned the wrong command response".to_string()),
+        }
     }
 
     pub async fn save_attachment(&self, owned_id: String, mime_type: String, bytes: Vec<u8>) -> Result<SavedConversationAttachment, String> {
@@ -2915,7 +2917,7 @@ async fn execute_remote_command(
                 }).await.map_err(|error| error.to_string())??;
             }
             prompt.attachment_ids = request.attachment_ids;
-            manager
+            let item_id = manager
                 .send_message(
                     &request.owned_id,
                     request.generation,
@@ -2924,7 +2926,7 @@ async fn execute_remote_command(
                     request.approval_policy,
                 )
                 .await?;
-            Ok(RemoteResponse::Empty)
+            Ok(RemoteResponse::OptionalString(Some(item_id)))
         }
         RemoteCommand::RespondApproval(request) => {
             manager

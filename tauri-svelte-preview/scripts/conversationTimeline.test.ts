@@ -47,6 +47,23 @@ assert.deepEqual(
   { type: 'anchor-user', itemId: 'user-after-send', motion: 'smooth', offsetPx: 12 },
   'the first user item after send becomes the one scroll target'
 );
+// A send from an older page, or after a long reply, reloads the window without
+// the previous message; the id the send returned picks the right prompt.
+const reloadedAnchor = decideConversationScroll(sentAnchor.state, {
+  type: 'user-items-changed',
+  userItemIds: ['older-prompt', 'newest-old-prompt'],
+  sentUserItemId: 'user-sent'
+});
+assert.equal(reloadedAnchor.action.type, 'none', 'a reloaded window never anchors a message that was not sent');
+assert.deepEqual(
+  decideConversationScroll(reloadedAnchor.state, {
+    type: 'user-items-changed',
+    userItemIds: ['older-prompt', 'newest-old-prompt', 'user-sent'],
+    sentUserItemId: 'user-sent'
+  }).action,
+  { type: 'anchor-user', itemId: 'user-sent', motion: 'smooth', offsetPx: 12 },
+  'the prompt the send returned is anchored even when the previous message left the window'
+);
 
 const typed = displayAgentItems([
   { id: 'user-1', type: 'user-message', content: [{ channel: 'user', text: 'Question' }] },
