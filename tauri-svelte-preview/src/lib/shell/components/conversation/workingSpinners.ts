@@ -1,5 +1,5 @@
 /**
- * The ten marks that stand for "the agent is working".
+ * The three marks that stand for "the agent is working".
  *
  * One is chosen per turn from the turn's own id, so a person watching the app
  * sees a different small figure each time rather than the same blinking dot for
@@ -21,16 +21,9 @@ export interface WorkingSpinner {
 }
 
 export const SPINNERS: WorkingSpinner[] = [
-  { id: 'arc', kind: 'flat', parts: 1 },
-  { id: 'orbit', kind: 'flat', parts: 2 },
-  { id: 'wave', kind: 'flat', parts: 3 },
-  { id: 'bars', kind: 'flat', parts: 3 },
-  { id: 'halo', kind: 'flat', parts: 2 },
-  { id: 'diamond', kind: 'flat', parts: 1 },
-  { id: 'comet', kind: 'flat', parts: 3 },
   { id: 'cube', kind: '3d', parts: 6 },
-  { id: 'disc', kind: '3d', parts: 1 },
-  { id: 'gyro', kind: '3d', parts: 2 }
+  { id: 'facet', kind: '3d', parts: 4 },
+  { id: 'ribbon', kind: '3d', parts: 8 }
 ];
 
 /**
