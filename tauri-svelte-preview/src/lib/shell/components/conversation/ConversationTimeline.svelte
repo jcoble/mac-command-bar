@@ -348,11 +348,11 @@
       : null;
   }
 
-  // The window, revision and direction a page was asked from. A page that
-  // lands with the view still at that edge added no visible height (a collapsed
-  // turn hides it), so the next one is asked for at once instead of waiting for
-  // another wheel event.
-  let pageRequest: { windowId: string; edge: number; older: boolean } | null = null;
+  // The window, edge, direction and content height a page was asked from. A
+  // page that lands without changing the content height added nothing visible
+  // (a collapsed turn hides it), so the next one is asked for at once instead
+  // of waiting for another wheel event.
+  let pageRequest: { windowId: string; edge: number; older: boolean; height: number } | null = null;
 
   function requestOlderHistory(): void {
     if (!host || !hasOlder || loadingOlder || !onLoadOlder || scrollState.openingToLatest) return;
@@ -360,7 +360,7 @@
     follow = false;
     newerPagingAllowed = false;
     captureViewportAnchor();
-    pageRequest = { windowId: renderWindowId, edge: oldestSequence, older: true };
+    pageRequest = { windowId: renderWindowId, edge: oldestSequence, older: true, height: host.scrollHeight };
     onLoadOlder();
   }
 
@@ -369,7 +369,7 @@
     if (!force && !newerPagingAllowed) return;
     if (!force && distanceBelowReader() > 80) return;
     captureViewportAnchor();
-    pageRequest = { windowId: renderWindowId, edge: newestSequence, older: false };
+    pageRequest = { windowId: renderWindowId, edge: newestSequence, older: false, height: host.scrollHeight };
     onLoadNewer();
   }
 
@@ -401,9 +401,14 @@
     // only moves the oldest edge forward.
     const landed = pageRequest.windowId === renderWindowId
       && (pageRequest.older ? oldestSequence < pageRequest.edge : newestSequence > pageRequest.edge);
+    // A height change stops the chain even when the view stayed at the edge,
+    // which happens when the viewport anchor cannot find its row after the page.
+    // It counts both ways: a page that also trimmed the far end can add rows
+    // here and still leave the content shorter.
+    const changed = !host || Math.abs(host.scrollHeight - pageRequest.height) > 80;
     const older = pageRequest.older;
     pageRequest = null;
-    if (landed) untrack(() => (older ? requestOlderHistory() : requestNewerHistory()));
+    if (landed && !changed) untrack(() => (older ? requestOlderHistory() : requestNewerHistory()));
   });
 
   function handleScroll(): void {
