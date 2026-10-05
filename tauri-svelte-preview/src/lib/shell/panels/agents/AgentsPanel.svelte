@@ -91,7 +91,6 @@
     });
     return () => {
       controller.abort();
-      cancelChildConversationTranscriptRead(ownedId);
     };
   });
 
