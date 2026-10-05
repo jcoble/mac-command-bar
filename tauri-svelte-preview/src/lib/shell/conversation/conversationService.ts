@@ -80,6 +80,7 @@ import type {
   AgentConversationHandoffReceipt,
   AgentConversationHandoffRequest,
   AgentConversationProvider,
+  AgentConversationSendReceipt,
   AgentUserInputResponse,
   AgentWriterLeaseOwner,
   AgentWriterLeaseTransition,
@@ -1431,7 +1432,7 @@ export async function sendStructuredMessage(
     model?: string | null;
     approvalPolicy?: string | null;
   }
-): Promise<void> {
+): Promise<AgentConversationSendReceipt | undefined> {
   let state = getConversationSession(ownedId);
   if (!state) return;
   if (!text.trim() && state.attachments.length === 0) return;
@@ -1569,7 +1570,7 @@ export async function sendStructuredMessage(
     if (preparingSends.get(ownedId) === preparation) preparingSends.delete(ownedId);
     const requestedModel = startConfig?.model ?? null;
     const requestedApprovalPolicy = startConfig?.approvalPolicy ?? null;
-    await invoke('send_agent_conversation_message', {
+    const receipt: AgentConversationSendReceipt = await invoke('send_agent_conversation_message', {
       request: {
         ownedId,
         generation: validatedGeneration,
@@ -1587,11 +1588,11 @@ export async function sendStructuredMessage(
       }
     });
     setConversationAttachments(ownedId, []);
-    if (remoteSend && rail.activeOwnedId === ownedId) {
+    if ((remoteSend && rail.activeOwnedId === ownedId) || (!remoteSend && !liveConversationEvents)) {
       try {
         // A read started before the send can be stale even after it finishes.
-        await resyncing.get(ownedId)?.work.catch(() => undefined);
-        if (rail.activeOwnedId === ownedId) await resyncConversation(ownedId);
+        if (remoteSend) await resyncing.get(ownedId)?.work.catch(() => undefined);
+        if (!remoteSend || rail.activeOwnedId === ownedId) await resyncConversation(ownedId);
       } catch (_error) {
         // The backend already accepted the prompt. Do not restore it as a
         // failed send and invite an accidental duplicate.
@@ -1599,10 +1600,9 @@ export async function sendStructuredMessage(
           setConversationProviderNotice(ownedId, 'Message sent, but the conversation could not refresh. Switch conversations to reload it.');
         }
       }
-    } else if (!remoteSend && !liveConversationEvents) {
-      await resyncConversation(ownedId);
     }
     if (rail.activeOwnedId !== ownedId) releaseConversationForRead(ownedId);
+    return receipt;
   } catch (error) {
     // A send that never went out leaves its screenshots in the composer, so
     // nothing is left waiting to be hung on a later message.

@@ -622,6 +622,17 @@ pub struct SendAgentConversationMessageRequest {
     pub approval_policy: Option<String>,
 }
 
+/// Identifies the durable user item admitted by one normal send or steering request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationSendReceipt {
+    pub owned_id: String,
+    pub generation: u64,
+    pub turn_id: String,
+    pub user_item_id: String,
+    pub admitted_sequence: i64,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApprovalDecision {

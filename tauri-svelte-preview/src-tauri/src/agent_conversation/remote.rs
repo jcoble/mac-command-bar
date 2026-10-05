@@ -30,7 +30,7 @@ use super::prompt_content::prompt_from_blocks;
 use super::protocol::{
     AgentCapabilities, AgentConfigOption, AgentConversationConfigState,
     AgentConversationConnection, AgentConversationEvent, AgentConversationEventPage,
-    AgentConversationProvider,
+    AgentConversationProvider, AgentConversationSendReceipt,
     AgentConversationSessionRecord, AgentConversationSnapshot,
     ChangeAgentConversationCheckoutRequest, EnsureAgentConversationRequest, ExecutionEnvironment,
     RespondAgentConversationApprovalRequest, RespondAgentConversationInputRequest,
@@ -41,7 +41,7 @@ use super::protocol::{
 use super::providers::ProviderRegistry;
 use super::transcript::TranscriptSnapshot;
 
-pub(super) const PROTOCOL_VERSION: u16 = 8;
+pub(super) const PROTOCOL_VERSION: u16 = 9;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -179,6 +179,7 @@ enum RemoteResponse {
     Strings(Vec<String>),
     Bool(bool),
     ImportProgress { added: usize, reached_start: bool },
+    SendReceipt(AgentConversationSendReceipt),
     Empty,
 }
 
@@ -1634,10 +1635,12 @@ impl RemoteConnectionManager {
         }
     }
 
-    pub async fn send(&self, request: SendAgentConversationMessageRequest) -> Result<(), String> {
+    pub async fn send(&self, request: SendAgentConversationMessageRequest) -> Result<AgentConversationSendReceipt, String> {
         let owned_id = request.owned_id.clone();
-        self.empty_for_owned(&owned_id, RemoteCommand::Send(request))
-            .await
+        match self.request_for_owned(&owned_id, RemoteCommand::Send(request)).await? {
+            RemoteResponse::SendReceipt(receipt) => Ok(receipt),
+            _ => Err("Remote Assembly returned the wrong command response".to_string()),
+        }
     }
 
     pub async fn save_attachment(&self, owned_id: String, mime_type: String, bytes: Vec<u8>) -> Result<SavedConversationAttachment, String> {
@@ -2915,7 +2918,7 @@ async fn execute_remote_command(
                 }).await.map_err(|error| error.to_string())??;
             }
             prompt.attachment_ids = request.attachment_ids;
-            manager
+            let receipt = manager
                 .send_message(
                     &request.owned_id,
                     request.generation,
@@ -2924,7 +2927,7 @@ async fn execute_remote_command(
                     request.approval_policy,
                 )
                 .await?;
-            Ok(RemoteResponse::Empty)
+            Ok(RemoteResponse::SendReceipt(receipt))
         }
         RemoteCommand::RespondApproval(request) => {
             manager
@@ -3005,6 +3008,29 @@ mod connection_tests {
         };
         assert_eq!(BASE64.decode(upload).unwrap(), bytes);
         assert_eq!(BASE64.decode(download).unwrap(), bytes);
+    }
+
+    #[test]
+    fn send_admission_receipt_crosses_the_remote_response_boundary() {
+        let receipt = AgentConversationSendReceipt {
+            owned_id: "owned-remote".into(),
+            generation: 7,
+            turn_id: "turn-admitted".into(),
+            user_item_id: "user-turn-admitted".into(),
+            admitted_sequence: 42,
+        };
+        let frame = ServerFrame::Response {
+            id: 17,
+            response: RemoteResponse::SendReceipt(receipt.clone()),
+        };
+        let json = encode_server_frame(&frame).unwrap();
+        let wire: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(wire["response"]["result"], "sendReceipt");
+        assert_eq!(wire["response"]["value"]["admittedSequence"], 42);
+        let decoded = parse_server_frame(TungsteniteMessage::Text(json.into())).unwrap().unwrap();
+        assert!(matches!(decoded, ServerFrame::Response {
+            id: 17, response: RemoteResponse::SendReceipt(received),
+        } if received == receipt));
     }
 
     #[test]

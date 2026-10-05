@@ -24,6 +24,7 @@ use mcb_core::session_store::AnnotationRow;
 use prompt_content::prompt_from_blocks;
 use protocol::{
     AgentCapabilities, AgentConversationConfigState, AgentConversationConnection,
+    AgentConversationSendReceipt,
     AgentConversationProvider, ExecutionEnvironment,
     AgentConversationEvent, AgentConversationEventPage, AgentConversationSessionRecord,
     AgentConversationSnapshot, ChangeAgentConversationCheckoutRequest, CommandResult,
@@ -145,7 +146,7 @@ pub async fn send_agent_conversation_message(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     request: SendAgentConversationMessageRequest,
-) -> CommandResult<()> {
+) -> CommandResult<AgentConversationSendReceipt> {
     let owned_id = request.owned_id.clone();
     if remote.owns(&owned_id) {
         return command_result(remote.send(request).await);

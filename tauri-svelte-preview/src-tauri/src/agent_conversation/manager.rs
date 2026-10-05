@@ -20,7 +20,8 @@ use super::protocol::{
     AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities, AgentCommandDescriptor,
     AgentConversationConfigState, AgentConversationConnection, AgentConversationEvent,
     AgentConversationEventPage, AgentConversationPayload, AgentConversationProvider,
-    AgentConversationSessionMeta, AgentConversationSessionRecord, AgentConversationSnapshot,
+    AgentConversationSendReceipt, AgentConversationSessionMeta, AgentConversationSessionRecord,
+    AgentConversationSnapshot,
     AgentEvent, AgentEventType, AgentExecutionOwner, AgentImplementation,
     AgentInteractionCapabilities, AgentNativeSessionMode, AgentPromptCapabilities,
     AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities, AgentUserInputResponse,
@@ -844,7 +845,7 @@ impl AgentRuntimeManager {
                 },
             )
             .map_err(|error| error.to_string())?;
-        result.map(|()| true)
+        result.map(|_| true)
     }
 
     pub fn set_session_namer(&self, namer: SessionNamer) {
@@ -1775,7 +1776,7 @@ impl AgentRuntimeManager {
         input: AgentPrompt,
         model: Option<String>,
         approval_policy: Option<String>,
-    ) -> Result<(), String> {
+    ) -> Result<AgentConversationSendReceipt, String> {
         // Activation, configuration, and durable prompt acceptance are one
         // lifecycle operation. Checkout switching uses this same guard, so it
         // cannot detach the runtime between any of those steps. The guard is
@@ -1837,7 +1838,7 @@ impl AgentRuntimeManager {
         owned_id: &str,
         generation: u64,
         input: AgentPrompt,
-    ) -> Result<(), String> {
+    ) -> Result<AgentConversationSendReceipt, String> {
         let runtime = self.runtime(owned_id, generation)?;
         let transport = {
             let runtime = runtime.lock().await;
@@ -1849,9 +1850,7 @@ impl AgentRuntimeManager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session(&sessions, owned_id, generation)?;
-            if session.active_turn_id.is_none() {
-                None
-            } else {
+            if let Some(turn_id) = &session.active_turn_id {
                 if !session.capabilities.session.steering {
                     return Err(
                         "This provider does not support steering an active turn".to_string()
@@ -1860,15 +1859,18 @@ impl AgentRuntimeManager {
                 if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
                     return Err("The structured writer is not the current owner".to_string());
                 }
-                Some(
+                Some((
                     session
                         .native_session_id
                         .clone()
                         .ok_or_else(|| "Structured provider session has not started".to_string())?,
-                )
+                    turn_id.clone(),
+                ))
+            } else {
+                None
             }
         };
-        if let Some(native_session_id) = steer_target {
+        if let Some((native_session_id, turn_id)) = steer_target {
             let attachment_ids = input.attachment_ids.clone();
             let text = input.text.clone();
             let mut params = prompt_params(native_session_id, input);
@@ -1890,20 +1892,30 @@ impl AgentRuntimeManager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session_mut(&mut sessions, owned_id, generation)?;
-            record_payload_for_session_and_dispatch(
+            let user_item_id = format!("user-steer-{}", uuid::Uuid::new_v4());
+            let admitted = record_payload_for_session_with_lifecycle(
                 session,
-                &self.emitter,
                 AgentConversationPayload::UserMessage {
-                    item_id: format!("user-steer-{}", uuid::Uuid::new_v4()),
+                    item_id: user_item_id.clone(),
                     text,
                     completed: true,
                     attachment_ids,
                 },
+                None,
+                Some(turn_id.clone()),
             )?;
-            return Ok(());
+            dispatch_event(&self.emitter, &admitted);
+            return Ok(AgentConversationSendReceipt {
+                owned_id: owned_id.to_string(),
+                generation,
+                turn_id,
+                user_item_id,
+                admitted_sequence: admitted.sequence,
+            });
         }
         let turn_id = format!("turn-{}", uuid::Uuid::new_v4());
-        let (native_session_id, ordered_events) = {
+        let user_item_id = format!("user-{turn_id}");
+        let (native_session_id, ordered_events, admitted_sequence) = {
             let mut sessions = self
                 .sessions
                 .lock()
@@ -1956,23 +1968,29 @@ impl AgentRuntimeManager {
             )?;
             // Agents are not required to echo the prompt back as a
             // user_message_chunk, so the app records its own copy.
-            record_payload_for_session_and_dispatch(
+            let admitted = record_payload_for_session_and_dispatch(
                 session,
                 &self.emitter,
                 AgentConversationPayload::UserMessage {
-                    item_id: format!("user-{turn_id}"),
+                    item_id: user_item_id.clone(),
                     text: input.text.clone(),
                     completed: true,
                     attachment_ids: input.attachment_ids.clone(),
                 },
             )?;
-            (native_session_id, ordered_events)
+            (native_session_id, ordered_events, admitted.sequence)
         };
 
         self.start_child_rollout_scan(owned_id, generation)?;
         let params = prompt_params(native_session_id, input);
-        spawn_prompt_completion(transport, ordered_events, turn_id, params);
-        Ok(())
+        spawn_prompt_completion(transport, ordered_events, turn_id.clone(), params);
+        Ok(AgentConversationSendReceipt {
+            owned_id: owned_id.to_string(),
+            generation,
+            turn_id,
+            user_item_id,
+            admitted_sequence,
+        })
     }
 
     fn start_child_rollout_scan(&self, owned_id: &str, generation: u64) -> Result<(), String> {
@@ -4342,7 +4360,7 @@ fn record_payload_for_session(
     session: &mut ManagedAgentSession,
     payload: AgentConversationPayload,
 ) -> Result<AgentConversationEvent, String> {
-    record_payload_for_session_with_lifecycle(session, payload, None)
+    record_payload_for_session_with_lifecycle(session, payload, None, None)
 }
 
 /// Whether the provider still holds anything for this session to resume.
@@ -4366,6 +4384,7 @@ fn record_payload_for_session_with_lifecycle(
     session: &mut ManagedAgentSession,
     mut payload: AgentConversationPayload,
     lifecycle: Option<SessionLifecycleUpdate>,
+    event_turn_id: Option<String>,
 ) -> Result<AgentConversationEvent, String> {
     if let AgentConversationPayload::AssistantMessage {
         ref text,
@@ -4407,13 +4426,16 @@ fn record_payload_for_session_with_lifecycle(
     }
     let timestamp_ms = timestamp_millis();
     candidate.last_activity_ms = timestamp_ms;
-    let canonical = canonical_event(
+    let mut canonical = canonical_event(
         session,
         candidate.native_session_id.clone(),
         sequence,
         timestamp_ms,
         &payload,
     )?;
+    if let Some(turn_id) = event_turn_id {
+        canonical.turn_id = Some(turn_id);
+    }
     let frontend_event = AgentConversationEvent {
         owned_id: session.owned_id.clone(),
         provider: session.provider,
@@ -4520,7 +4542,7 @@ fn record_payload_for_session_and_dispatch_with_lifecycle(
     payload: AgentConversationPayload,
     lifecycle: SessionLifecycleUpdate,
 ) -> Result<AgentConversationEvent, String> {
-    let event = record_payload_for_session_with_lifecycle(session, payload, Some(lifecycle))?;
+    let event = record_payload_for_session_with_lifecycle(session, payload, Some(lifecycle), None)?;
     dispatch_event(emitter, &event);
     Ok(event)
 }
@@ -7810,9 +7832,9 @@ mod tests {
             .manager
             .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
 
-        fixture
+        let receipt = fixture
             .manager
-            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .send_message(&fixture.owned_id, fixture.generation, test_prompt("hello"), None, None)
             .await
             .expect("prompt");
         wait_until(|| {
@@ -7859,6 +7881,16 @@ mod tests {
                 "app-minted id correlates Started and Completed"
             );
             assert!(turn_ids[0].starts_with("turn-"));
+            assert_eq!(receipt.owned_id, fixture.owned_id);
+            assert_eq!(receipt.generation, fixture.generation);
+            assert_eq!(receipt.turn_id, turn_ids[0]);
+            assert_eq!(receipt.user_item_id, format!("user-{}", receipt.turn_id));
+            let admitted = seen.iter().find(|event| event.sequence == receipt.admitted_sequence).unwrap();
+            assert!(matches!(&admitted.payload,
+                AgentConversationPayload::UserMessage { item_id, text, .. }
+                    if item_id == &receipt.user_item_id && text == "hello"));
+            let stored = fixture.manager.list_events(&fixture.owned_id, receipt.admitted_sequence).unwrap();
+            assert_eq!(stored.first(), Some(admitted));
             let assistant_item_id = seen.iter().find_map(|event| match &event.payload {
                 AgentConversationPayload::AssistantDelta { item_id, .. } => Some(item_id),
                 _ => None,
@@ -7888,7 +7920,7 @@ mod tests {
             session.state = AgentRuntimeState::Working;
         }
 
-        fixture
+        let receipt = fixture
             .manager
             .prompt(
                 &fixture.owned_id,
@@ -7899,10 +7931,15 @@ mod tests {
             .expect("steer active turn");
 
         let events = fixture.manager.list_events(&fixture.owned_id, 0).unwrap();
-        assert!(events.iter().any(|event| matches!(
-            &event.payload,
-            AgentConversationPayload::UserMessage { text, .. } if text == "change direction"
-        )));
+        assert_eq!(receipt.owned_id, fixture.owned_id);
+        assert_eq!(receipt.generation, fixture.generation);
+        assert_eq!(receipt.turn_id, "turn-running");
+        assert!(receipt.user_item_id.starts_with("user-steer-"));
+        let admitted = events.iter().find(|event| event.sequence == receipt.admitted_sequence).unwrap();
+        assert_eq!(admitted.turn_id.as_deref(), Some(receipt.turn_id.as_str()));
+        assert!(matches!(&admitted.payload,
+            AgentConversationPayload::UserMessage { item_id, text, .. }
+                if item_id == &receipt.user_item_id && text == "change direction"));
         assert!(!events
             .iter()
             .any(|event| matches!(event.payload, AgentConversationPayload::Turn { .. })));
@@ -7916,6 +7953,55 @@ mod tests {
             .await
             .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn steering_receipt_keeps_the_original_turn_after_completion() {
+        let root = temp_root();
+        let log = root.join("steering.jsonl");
+        let mut manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&log, "steering");
+        manifest.args[1] = manifest.args[1].replace("outcome=injected",
+            "outcome=injected\n      while [ ! -f \"$log.steer-ack\" ]; do sleep 0.01; done");
+        let manager = AgentRuntimeManager::new(ProviderRegistry::new([
+            (AgentConversationProvider::Codex, manifest),
+        ]).unwrap());
+        let owned_id = "owned-steering-completed";
+        let generation = manager.ensure_inner(request(root.to_str().unwrap(), owned_id,
+            AgentConversationProvider::Codex)).unwrap().0.generation;
+        manager.activate(owned_id, generation).await.unwrap();
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(owned_id).unwrap();
+            session.active_turn_id = Some("turn-original".into());
+            session.state = AgentRuntimeState::Working;
+        }
+        let sender = manager.clone();
+        let pending = tokio::spawn(async move {
+            sender.prompt(owned_id, generation, test_prompt("late steering ack")).await
+        });
+        wait_until(|| fs::read_to_string(&log).unwrap_or_default().contains("_session/steering")).await;
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(owned_id).unwrap();
+            record_payload_for_session_and_dispatch(session, &manager.emitter,
+                AgentConversationPayload::Turn {
+                    turn_id: "turn-original".into(),
+                    state: super::super::protocol::TurnState::Completed,
+                }).unwrap();
+            session.active_turn_id = None;
+            session.state = AgentRuntimeState::Ready;
+        }
+        fs::write(root.join("steering.jsonl.steer-ack"), "release").unwrap();
+        let receipt = tokio::time::timeout(Duration::from_secs(5), pending).await.unwrap().unwrap().unwrap();
+        assert_eq!(receipt.turn_id, "turn-original");
+        let stored = manager.list_events(owned_id, receipt.admitted_sequence).unwrap();
+        let admitted = stored.first().unwrap();
+        assert_eq!(admitted.turn_id.as_deref(), Some("turn-original"));
+        assert!(matches!(&admitted.payload, AgentConversationPayload::UserMessage { item_id, .. }
+            if item_id == &receipt.user_item_id));
+        assert_eq!(manager.sessions.lock().unwrap().get(owned_id).unwrap().active_turn_id, None);
+        manager.close(owned_id, generation).await.unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]

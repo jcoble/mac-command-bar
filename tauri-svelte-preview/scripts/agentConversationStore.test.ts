@@ -1281,6 +1281,47 @@ await test('a remote send releases its transcript when the reader switched away 
   assert.deepEqual(evicted, [ownedId]);
 });
 
+await test('an admitted send returns its receipt even when history refresh fails', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const block = source.match(/export async function sendStructuredMessage\([\s\S]*?\n\}\n\n\/\*\* Stops the active turn/);
+  assert.ok(block);
+  const code = stripTypeScriptTypes(block[0].replace(/\n\n\/\*\* Stops the active turn$/, '').replace('export async function', 'async function'), { mode: 'strip' });
+  for (const executionEnvironment of ['local', 'remote']) {
+    const ownedId = `accepted-${executionEnvironment}`;
+    const receipt = { ownedId, generation: 1, turnId: 'turn-accepted', userItemId: 'user-accepted', admittedSequence: 4 };
+    const state = { sending: false, generation: 1, attachments: [], capabilities: null, connectionState: 'connected', agentConfig: { availableApprovalPolicies: [] } };
+    const notices: string[] = [];
+    let sends = 0;
+    let refreshes = 0;
+    const dependencies = {
+      getConversationSession: () => state,
+      setConversationSending: (_id: string, sending: boolean) => { state.sending = sending; },
+      rail: { activeOwnedId: ownedId, owned: [{ ownedId, agent: 'codex', state: 'live', origin: 'app', executionEnvironment }] },
+      get, sessionPresenceHistory,
+      shouldReviveBeforeSend: () => false,
+      sendSupportsImages: () => false,
+      buildConversationPrompt: (text: string) => ({ text, content: [] }),
+      hasBackendCapability: async () => false,
+      ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY: 'test',
+      sendTargetGeneration: () => 1,
+      updateOwnedSession: () => undefined,
+      recordSentConversationAttachments: () => undefined,
+      attachmentDisplayMetadata: () => undefined,
+      invoke: async () => { sends++; return receipt; },
+      setConversationAttachments: () => undefined,
+      resyncing: new Map(),
+      resyncConversation: async () => { refreshes++; throw new Error('history unavailable'); },
+      setConversationProviderNotice: (_id: string, text: string) => notices.push(text)
+    };
+    const send = Function(...Object.keys(dependencies), `const preparingSends = new Map();\n${code}\nreturn sendStructuredMessage;`)(...Object.values(dependencies)) as (id: string, text: string) => Promise<unknown>;
+    assert.deepEqual(await send(ownedId, 'Continue'), receipt);
+    assert.equal(sends, 1);
+    assert.equal(refreshes, 1);
+    assert.equal(notices.length, 1);
+    assert.equal(state.sending, true, 'refresh failure must not settle the admitted turn');
+  }
+});
+
 // A permission request without provider options must answer through the
 // decision command, not send the fabricated option id back to the provider.
 {

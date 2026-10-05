@@ -640,6 +640,15 @@ export interface AgentConversationConnection {
   config?: import('./conversationConfig').AgentConversationConfigState;
 }
 
+/** Identity of the user item durably admitted by the native send command. */
+export interface AgentConversationSendReceipt {
+  ownedId: string;
+  generation: number;
+  turnId: string;
+  userItemId: string;
+  admittedSequence: number;
+}
+
 /** One backward page of transcript events, with whether older history remains. */
 export interface AgentConversationEventPage {
   events: AgentConversationEvent[];
