@@ -82,6 +82,7 @@
   }
   type Row = {
     key: string;
+    anchorItemId?: string;
     item?: ConversationDisplayItem;
     group?: ConversationTurnGroup;
     heading?: boolean;
@@ -98,7 +99,9 @@
         const work = workIds.has(item.itemId);
         const heading = item === firstWork && !!group.turnId;
         if (!work || expanded || heading) result.push({
-          key: item.itemId, item: !work || expanded ? item : undefined, group, heading
+          key: heading && !expanded ? `turn-heading:${group.turnId}` : item.itemId,
+          anchorItemId: item.itemId,
+          item: !work || expanded ? item : undefined, group, heading
         });
       }
       if (group.completed && expanded) for (const edit of getTurnFileEdits(group)) {
@@ -110,7 +113,7 @@
   });
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: 0, getScrollElement: () => host, estimateSize: () => 90, overscan: 3,
-    anchorTo: 'end', followOnAppend: false, scrollEndThreshold: -1, gap: 12
+    anchorTo: 'end', followOnAppend: false, scrollEndThreshold: -1, gap: 0
   });
   const virtualRows = $derived($virtualizer.getVirtualItems());
   const totalSize = $derived($virtualizer.getTotalSize());
@@ -258,7 +261,8 @@
   });
 
   function restoreAnchor(anchor: NonNullable<ConversationViewState['anchor']>): boolean {
-    const index = rows.findIndex((row) => row.key === anchor.itemId);
+    const index = rows.findIndex((row) => row.anchorItemId === anchor.itemId
+      || (row.heading && !row.item && row.group?.workItemIds.includes(anchor.itemId)));
     if (index < 0) return false;
     const item = $virtualizer.getMeasurements()[index];
     if (!item) return false;
@@ -298,7 +302,7 @@
     const windowId = renderWindowId;
     void tick().then(() => {
       if (windowId !== renderWindowId) return;
-      const index = rows.findIndex((row) => row.key === itemId);
+      const index = rows.findIndex((row) => row.anchorItemId === itemId);
       const measurement = $virtualizer.getMeasurements()[index];
       if (measurement && offsetPx !== null) $virtualizer.scrollToOffset(measurement.start - offsetPx);
       saveView();
@@ -458,7 +462,7 @@
       {#each virtualRows as virtualRow (virtualRow.key)}
         {@const row = rows[virtualRow.index]}
         {#if row}
-          <div class="turn-row" data-index={virtualRow.index} data-anchor-item-id={row.group && !row.edit ? row.key : undefined} data-turn-id={row.group?.turnId} data-testid="conversation-timeline-row" style:transform={`translateY(${virtualRow.start}px)`} use:measureRow>
+          <div class="turn-row" class:compact-tool={row.item?.kind === 'tool'} data-index={virtualRow.index} data-anchor-item-id={row.anchorItemId} data-turn-id={row.group?.turnId} data-testid="conversation-timeline-row" style:transform={`translateY(${virtualRow.start}px)`} use:measureRow>
             {#if row.heading && row.group}
               <button class="turn-fold" data-testid="conversation-turn-fold" type="button" aria-expanded={turnExpanded(row.group)} onclick={() => toggleTurn(row.group!)}>
                 <ConversationTurnElapsed running={row.group.running} completed={row.group.completed} startedAtMs={row.group.startedAtMs} elapsedMs={row.group.elapsedMs} />
@@ -486,7 +490,8 @@
   @media (prefers-reduced-motion: reduce){.older-spinner{animation:none;border-top-color:color-mix(in srgb,var(--color-text-3) 45%,transparent)}}
   .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:none;padding:0 28px;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
   .timeline-list{flex:none;position:relative;width:min(820px,100%);min-height:1px;margin:0 auto}
-  .turn-row{position:absolute;top:0;left:0;display:flex;flex-direction:column;gap:12px;width:100%}
+  .turn-row{position:absolute;top:0;left:0;display:flex;flex-direction:column;gap:12px;width:100%;padding-bottom:12px}
+  .turn-row.compact-tool{padding-bottom:0}
   .turn-fold{display:flex;width:100%;align-items:center;gap:5px;min-height:28px;padding:0 0 7px;border:0;border-bottom:1px solid var(--color-border);background:transparent;color:var(--color-text-2);font:inherit;font-size:13px;text-align:left;cursor:pointer}
   .turn-fold:hover{color:var(--color-text)}
   .turn-fold:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}

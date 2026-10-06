@@ -142,7 +142,7 @@
      is opened and its output needs a container. */
   .tool-item{border:1px solid transparent;border-radius:10px}
   .tool-item[open]{border-color:color-mix(in srgb,var(--color-border) 62%,transparent);background:color-mix(in srgb,var(--color-surface) 45%,var(--color-bg) 55%)}
-  summary{display:flex;align-items:center;gap:9px;min-height:32px;padding:4px 8px;border-radius:10px;cursor:pointer;list-style:none}
+  summary{display:flex;align-items:center;gap:9px;min-height:24px;padding:0 8px;border-radius:10px;cursor:pointer;list-style:none}
   summary::-webkit-details-marker{display:none}
   summary:hover{background:color-mix(in srgb,var(--color-hover) 55%,transparent)}
   summary:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:-2px}
