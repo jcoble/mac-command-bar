@@ -1,5 +1,5 @@
 /**
- * The ten marks that stand for "the agent is working".
+ * The eleven marks that stand for "the agent is working".
  *
  * One is chosen per turn from the turn's own id, so a person watching the app
  * sees a different small figure each time rather than the same blinking dot for
@@ -7,8 +7,10 @@
  * same spinner across a re-render, a scroll, or a reload, and nothing here
  * reaches for a random number that would change under the reader's eyes.
  *
- * `parts` is how many elements the drawing needs; the component renders that
- * many empty spans and the stylesheet shapes and moves them by name.
+ * `parts` is how many elements the drawing needs. Most designs are drawn from
+ * empty spans: the component renders that many and the stylesheet shapes and
+ * moves them by name. Tide, ribbon and bloom are each one inline SVG drawing,
+ * so they count one.
  */
 
 export type WorkingSpinnerKind = 'flat' | '3d';
@@ -21,14 +23,15 @@ export interface WorkingSpinner {
 }
 
 export const SPINNERS: WorkingSpinner[] = [
-  { id: 'arc', kind: 'flat', parts: 1 },
-  { id: 'orbit', kind: 'flat', parts: 2 },
+  { id: 'cube', kind: '3d', parts: 6 },
+  { id: 'facet', kind: '3d', parts: 4 },
+  { id: 'tide', kind: 'flat', parts: 1 },
+  { id: 'ribbon', kind: 'flat', parts: 1 },
+  { id: 'bloom', kind: 'flat', parts: 1 },
   { id: 'wave', kind: 'flat', parts: 3 },
   { id: 'bars', kind: 'flat', parts: 3 },
   { id: 'halo', kind: 'flat', parts: 2 },
   { id: 'diamond', kind: 'flat', parts: 1 },
-  { id: 'comet', kind: 'flat', parts: 3 },
-  { id: 'cube', kind: '3d', parts: 6 },
   { id: 'disc', kind: '3d', parts: 1 },
   { id: 'gyro', kind: '3d', parts: 2 }
 ];
