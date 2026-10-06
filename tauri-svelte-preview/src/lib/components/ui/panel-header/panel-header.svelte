@@ -49,7 +49,7 @@
     data-slot="panel-header"
     data-testid={dataTestId}
     aria-label={title}
-    class={cn('flex min-h-[32px] min-w-0 flex-none items-center gap-1 px-3 pt-3 pb-2', className)}
+    class={cn('flex min-h-[32px] min-w-0 flex-none items-center gap-1 px-2 pt-1.5 pb-2', className)}
   >
     <div class="min-w-0 flex-1 truncate text-[13px] leading-tight text-muted-foreground">
       {@render children?.()}
@@ -64,5 +64,5 @@
     {/if}
   </header>
 {:else}
-  <div data-slot="panel-header" data-testid={dataTestId} class={cn('flex-none pt-3', className)}></div>
+  <div data-slot="panel-header" data-testid={dataTestId} class={cn('flex-none pt-1.5', className)}></div>
 {/if}

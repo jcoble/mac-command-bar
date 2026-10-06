@@ -264,7 +264,7 @@
       </IconButton>
     </div>
   {:else}
-    <div class="relative shrink-0 px-3 pb-2">
+    <div class="relative shrink-0 px-2 pb-2">
       <Search class="pointer-events-none absolute top-1/2 left-5.5 size-4 -translate-y-[calc(50%+4px)] text-muted-foreground" aria-hidden="true" />
       <Input
         class="h-8 pl-8 text-(length:--text-body)"

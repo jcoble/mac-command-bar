@@ -1024,7 +1024,7 @@
 <div class="files-panel flex h-full min-h-0 w-full flex-col text-foreground">
 	<!-- The header follows the Codex file pane: a row of pill controls, then the
 	     filter field, then the tree. -->
-	<header class="flex flex-none flex-col gap-2 px-3 pt-3 pb-2" aria-label="Files">
+	<header class="flex flex-none flex-col gap-2 px-2 pt-1.5 pb-2" aria-label="Files">
 		<div class="flex min-w-0 items-center gap-1">
 			{#if scopeOptions.length > 0}
 				<Select.Root

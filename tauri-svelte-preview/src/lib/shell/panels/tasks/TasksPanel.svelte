@@ -389,7 +389,7 @@
   inert={selectedTask !== null}
 >
   <!-- The Codex file-pane header: a row of pill controls, then the search. -->
-  <header class="flex flex-none flex-col gap-2 px-3 pt-3 pb-2" aria-label="Tasks">
+  <header class="flex flex-none flex-col gap-2 px-2 pt-1.5 pb-2" aria-label="Tasks">
     <div class="flex min-w-0 items-center gap-1">
       <DropdownMenu.Root>
         <DropdownMenu.Trigger
@@ -490,7 +490,7 @@
   </header>
 
   {#if filterGroups.length > 0}
-    <div class="tasks-pills px-(--space-4) pb-(--space-2)">
+    <div class="tasks-pills px-2 pb-(--space-2)">
       <FilterPills
         label="Filter tasks"
         groups={filterGroups}
@@ -504,11 +504,11 @@
   {/if}
 
   {#if projects.length > 0 && root && !sessionProject && !projectFilter}
-    <p class="mx-3 mb-2 text-xs text-muted-foreground">No Notion project matches this session. Showing all projects.</p>
+    <p class="mx-2 mb-2 text-xs text-muted-foreground">No Notion project matches this session. Showing all projects.</p>
   {/if}
 
   {#if showSetup}
-    <div class="mx-3 mb-3 grid gap-2 rounded-lg border border-border bg-card p-3">
+    <div class="mx-2 mb-3 grid gap-2 rounded-lg border border-border bg-card p-3">
       <p class="text-sm font-medium text-foreground">Notion workspace</p>
       <p class="text-xs leading-snug text-muted-foreground">
         Sign in through your default browser, choose the pages Assembly can read, then return here.
@@ -545,7 +545,7 @@
   {/if}
 
   {#if error}
-    <p class="mx-3 mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p>
+    <p class="mx-2 mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p>
   {/if}
 
   <ScrollArea class="min-h-0 flex-1" bind:viewportRef={taskViewport}>

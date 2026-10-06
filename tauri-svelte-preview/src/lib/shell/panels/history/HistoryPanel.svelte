@@ -637,7 +637,7 @@
       <span data-testid="session-history-host" class="truncate">{summaryViewModel.totalCount} {summaryViewModel.totalCount === 1 ? 'session' : 'sessions'} from Local Mac</span>
     </span>
   </PanelHeader>
-  <div data-testid="session-history-scope" class="px-3 py-1">
+  <div data-testid="session-history-scope" class="px-2 py-1">
     <SegmentedControl
       items={SCOPE_OPTIONS}
       value={sessionLibraryState.scope}
@@ -646,7 +646,7 @@
       onValueChange={setScope}
     />
   </div>
-  <div class="relative px-3 py-2">
+  <div class="relative px-2 py-2">
     <Search class="pointer-events-none absolute top-1/2 left-6 size-[16px] -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
     <Input
       class="h-[36px] pl-9 text-[13px]"
