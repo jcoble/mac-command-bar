@@ -553,49 +553,37 @@
      the ramp holds off before it converges, so lines thin out over the length
      of it instead of meeting an edge. It is opaque by the time it reaches the
      box, or the transcript would read through beside the capsule. */
-  .composer-area { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; padding: var(--composer-fade) 0 6px; container-type: inline-size; container-name: composer; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--color-surface) 45%, transparent) calc(var(--composer-fade) * 0.55), var(--color-surface) var(--composer-fade)); }
+  .composer-area { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; padding: var(--composer-fade) 0 var(--space-3); container-type: inline-size; container-name: composer; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--color-surface) 45%, transparent) calc(var(--composer-fade) * 0.55), var(--color-surface) var(--composer-fade)); }
   .composer-form { width: min(820px, calc(100% - 44px)); margin: 0 auto; }
   /* The chip is centred on the capsule and takes the same width, so its
      panel opens inside the composer's own column rather than the panel's. */
   .plan-chip-slot { width: min(820px, calc(100% - 44px)); margin: 0 auto; }
 
-  /* The box is one grid in two shapes.
-     Empty, it is a single capsule line — add button, message, controls.
-     Carrying something, the message takes the whole width on its own line and
-     the two control groups sit on the line below it. Only the named areas
-     change between the two; nothing moves in the markup. */
+  /* The box is a raised card with two rows: the message takes the whole first
+     row on its own, so the placeholder always has the full width, and the two
+     control groups sit on the row below it. */
   .composer-box {
+    --composer-control-size: 28px;
     position: relative;
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
-    grid-template-areas: 'panels panels panels' 'lead prompt trail' 'hint hint hint';
+    grid-template-areas: 'panels panels panels' 'prompt prompt prompt' 'lead . trail' 'hint hint hint';
+    row-gap: var(--space-2);
     align-items: center;
     overflow: visible;
-    padding: var(--composer-inset);
-    /* No outline at rest: the surface and its shadow are what separate the box
-       from the page. The width stays so that dragging and a locked composer can
+    padding: var(--space-3) var(--space-3) var(--space-2) var(--space-4);
+    /* No outline at rest: the surface tone is what separates the box from the
+       panel. The width stays so that focus, dragging and a locked composer can
        colour it without the box changing size underneath them. */
     border: 1px solid transparent;
-    border-radius: var(--composer-radius-capsule);
-    /* A step lighter again than the sheet colour the token names. The box floats
-       on the backdrop's own near-black, where a drop shadow has nothing to fall
-       on, so the fill is the whole of what lifts it — and at the token's value
-       the difference was small enough that the capsule read as a hole rather
-       than a control. */
-    background: color-mix(in srgb, var(--color-text) 3%, var(--composer-surface));
-    box-shadow: var(--shadow-md);
+    border-radius: 12px;
+    background: var(--muted);
   }
-  /* Shut, the box is as tall as the controls sitting in it and no taller, which
-     came out shorter than the thing it is: the one place a conversation starts.
-     A floor gives it presence without changing the shape. */
-  .composer-box:not(.relaxed) { min-height: 70px; }
-  .composer-box.relaxed { grid-template-areas: 'panels panels panels' 'prompt prompt prompt' 'lead . trail' 'hint hint hint'; border-radius: var(--composer-radius-relaxed); }
-  .composer-box:focus-within { border-color: var(--composer-border-focus); box-shadow: var(--shadow-lg); }
+  .composer-box:focus-within { border-color: var(--composer-border-focus); }
   .composer-box.dragging { border-color: var(--color-accent); background: var(--composer-surface-drop); }
   .composer-box.locked { border-color: var(--composer-border-locked); }
   .composer-panels { grid-area: panels; }
-  .composer-input-zone { grid-area: prompt; position: relative; padding: var(--composer-prompt-inset-capsule); }
-  .composer-box.relaxed .composer-input-zone { padding: var(--composer-prompt-inset); }
+  .composer-input-zone { grid-area: prompt; position: relative; min-width: 0; }
   /* Three lines of room once the box is open. The height a textarea is given
      follows what is typed into it, which at one line left a box barely taller
      than the capsule it just grew out of — opening that looked like nothing
@@ -608,24 +596,14 @@
      three competing pieces of writing; quieter, the capsule reads as one thing
      with a waiting cursor in it. */
   textarea::placeholder { color: color-mix(in srgb, var(--color-text-3) 70%, transparent); }
-  /* Shut, the message shares its row with the + button and the setting pills,
-     so the box is as tall as they are while the text in it is one line. The
-     line was landing against the top of that box and reading as floating above
-     the controls beside it.
-
-     `align-content` centres the text block inside the box it already has. It is
-     not only a flex and grid property any more — it aligns the contents of a
-     block container too, which is what a textarea is. Stretching the line height
-     to fill the box was the old way of faking this, and it lied about the
-     leading: a second line would have inherited it. */
-  .composer-box:not(.relaxed) textarea { padding: 0; align-content: center; }
   textarea:disabled { cursor: not-allowed; opacity: .6; }
 
   /* The footer is only a bracket around the two control groups: it hands them
      to the grid above so each can take its own cell in either shape. */
   .composer-footer { display: contents; }
   .footer-left, .footer-right { display: flex; min-width: 0; align-items: center; gap: var(--composer-row-gap); }
-  .footer-left { grid-area: lead; }
+  /* Pulled left so the + glyph lines up under the message text. */
+  .footer-left { grid-area: lead; margin-left: calc(-1 * var(--space-2)); }
   /* The right of the row is one cluster, not four separate controls: the pills
      already carry their own padding, so the gap between them only has to keep
      them from touching. The meter is the one thing there that is read rather
@@ -642,10 +620,10 @@
   .round-control:focus-visible { outline: 2px solid var(--color-focus-solid); outline-offset: 2px; }
   .add-control.open { background: var(--composer-pill-surface-open); color: var(--composer-pill-text-open); }
   .mic:disabled { cursor: default; opacity: .55; }
-  .send { background: var(--color-accent); color: var(--color-on-accent); box-shadow: var(--shadow-sm); }
-  .send:hover:not(:disabled) { background: var(--color-accent); color: var(--color-on-accent); filter: brightness(1.06); transform: translateY(-1px); }
-  .send.stop { background: var(--color-bad); }
-  .send.stop:hover:not(:disabled) { background: var(--color-bad); }
+  .send { width: 32px; height: 32px; margin-left: var(--space-1); background: var(--primary); color: var(--primary-foreground); }
+  .send:hover:not(:disabled) { background: var(--primary); color: var(--primary-foreground); filter: brightness(1.08); }
+  .send.stop { background: var(--destructive); }
+  .send.stop:hover:not(:disabled) { background: var(--destructive); }
 
   /* The gauge is the size of the icons beside it and drawn in the same quiet
      colour, warming as the window empties so the last stretch is noticed
@@ -689,7 +667,7 @@
      the ring above already draws. It stays because it is where a newcomer finds
      the slash menu, but at the weight of the message it was competing with the
      one line in the box that matters. */
-  .composer-hint { display: flex; justify-content: flex-end; gap: 8px; width: min(820px, calc(100% - 44px)); margin: 5px auto 0; color: color-mix(in srgb, var(--color-text-3) 78%, transparent); font-size: 12px; }
+  .composer-hint { display: flex; justify-content: flex-end; gap: 8px; width: min(820px, calc(100% - 44px)); margin: 0 auto; padding: 6px var(--space-1) 0; color: color-mix(in srgb, var(--color-text-3) 78%, transparent); font-size: 11px; }
   /* The settings row is a fixed 211px — approval on the left, the model pill on
      the right — and the add button beside it needs about 80px more. Measured in
      the browser, the pair still sits unclipped in a 438px composer, so
@@ -698,12 +676,12 @@
      genuinely stop fitting. */
   @container composer (max-width: 440px) { .wide-controls { display: none; } .compact-controls { display: flex; } }
 
-  /* Short, one-shot transitions. The box eases between its two corners as the
-     message grows, and the message box itself eases its own height; the send
-     button pops in the moment there is something to send. */
+  /* Short, one-shot transitions. The box eases its border and fill as focus
+     and dragging change; the send button pops in the moment there is
+     something to send. */
   @keyframes send-pop { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
   @media (prefers-reduced-motion: no-preference) {
-    .composer-box { transition: border-color .14s ease, border-radius .18s ease, background-color .14s ease, box-shadow .14s ease; }
+    .composer-box { transition: border-color .14s ease, background-color .14s ease; }
     /* Commented out while we chase a UI freeze. Height is a layout property, so
        animating it makes the ResizeObserver on the composer fire every frame for
        160ms; each fire republishes `--composer-height`, which is the transcript's
