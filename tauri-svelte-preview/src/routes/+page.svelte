@@ -413,8 +413,6 @@
 		filesOwnedId={selection.filesProjectionOwnedId}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
 		onExpandedPathsChange={(ownedId, root, paths) => selection.rememberExpandedPaths(ownedId, root, paths)}
-		filesScrollTop={selection.activeWorkspaceSnapshot?.scrollTop ?? 0}
-		onFilesScrollTopChange={(ownedId, scrollTop) => selection.persistWorkspaceState(ownedId, { scrollTop })}
 		filesInspectionRoot={selection.activeWorkspaceSnapshot?.filesInspectionRoot ?? null}
 		sourceControlInspectionRoot={selection.activeWorkspaceSnapshot?.sourceControlInspectionRoot ?? null}
 		onFilesInspectionRootChange={(root) => selection.rememberWorkspaceState({ filesInspectionRoot: root })}
@@ -593,19 +591,19 @@
 				onReady={(controls) => workbench.onFrameReady(controls)}
 			/>
 		</div>
-		{#if workbench.rightPanelOpen}
-			<aside class="right-drawer" aria-label="Tools">
-				<RightPanelTabs
-					activeId={workbench.rightTab}
-					extraId={workbench.rightExtraTab}
-					onSelect={selectRightTab}
-					onClose={() => workbench.setRightPanelOpen(false)}
-				/>
-				<div class="right-drawer-body">
-					{@render drawerArea()}
-				</div>
-			</aside>
-		{/if}
+		<!-- Closing hides the drawer rather than unmounting it (measured: unmounting
+		     saved no memory and made reopening slower). Hidden, it takes no width. -->
+		<aside class="right-drawer" class:open={workbench.rightPanelOpen} aria-label="Tools" aria-hidden={!workbench.rightPanelOpen}>
+			<RightPanelTabs
+				activeId={workbench.rightTab}
+				extraId={workbench.rightExtraTab}
+				onSelect={selectRightTab}
+				onClose={() => workbench.setRightPanelOpen(false)}
+			/>
+			<div class="right-drawer-body">
+				{@render drawerArea()}
+			</div>
+		</aside>
 	</div>
 
 	<UtilityStrip
@@ -655,9 +653,9 @@
 	   320px plus the 6px gutter is the --drawer-width the chrome row adds. The
 	   column takes its full width at once (an animated width would lay the
 	   whole frame out again every frame); only the card slides in, and the
-	   animation ends. */
+	   animation ends. Closed, it is display:none and releases its width. */
 	.right-drawer {
-		display: flex;
+		display: none;
 		flex: 0 0 320px;
 		flex-direction: column;
 		min-height: 0;
@@ -666,6 +664,10 @@
 		overflow: hidden;
 		background: var(--panel-fade), var(--color-surface);
 		background-repeat: no-repeat;
+	}
+
+	.right-drawer.open {
+		display: flex;
 		animation: right-drawer-in 160ms ease-out;
 	}
 
@@ -677,7 +679,7 @@
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.right-drawer {
+		.right-drawer.open {
 			animation: none;
 		}
 	}

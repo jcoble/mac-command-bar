@@ -448,12 +448,6 @@ test('junk in a stored tasks view becomes its default', () => {
   assert.equal(normalizeWorkspaceSnapshot({ ...BASE_RECORD, tasksView: 'all' })?.tasksView, undefined);
 });
 
-test('the file tree scroll offset round-trips through a stored record', () => {
-  const snapshot = normalizeWorkspaceSnapshot(JSON.parse(JSON.stringify({ ...BASE_RECORD, scrollTop: 336 })));
-
-  assert.equal(snapshot?.scrollTop, 336);
-});
-
 test('an old history panel record disappears on normalize', () => {
   const snapshot = normalizeWorkspaceSnapshot({
     ...BASE_RECORD,

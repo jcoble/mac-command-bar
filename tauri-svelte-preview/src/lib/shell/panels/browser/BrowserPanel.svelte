@@ -8,8 +8,8 @@
    * its effort measuring: it hands over the rectangle it wants filled every
    * time that rectangle could have moved — mounting, the pane being resized,
    * the window being resized, and the tab being switched away from and back.
-   * When no browser tab is in front the view is released entirely, or it would
-   * sit over whichever tab replaced it.
+   * When another tab is in front the view is hidden, so the same live page
+   * comes back; it is released only when the pane closes or the session changes.
    *
    * The page has no width of its own. It is the tab pane's content, so the
    * pane's width IS the page's width: dragging the seam between the chat and
@@ -731,15 +731,16 @@
     });
   });
 
-  // A hidden Browser must not leave its pages running offscreen. Keep only the
-  // compact tab metadata; returning recreates the native views from it.
+  // A closed pane must not leave its pages running offscreen. Keep only the
+  // compact tab metadata; reopening recreates the native views from it. While
+  // another tab is merely in front, the placement effect only hides the views.
   // The release runs in the effect body, not its teardown: a teardown reads
   // state as it was before the change that re-ran it, so closing the page in
   // front put that page straight back into the remembered tabs, and its × had
   // to be clicked twice.
   let owningResources = false;
   $effect(() => {
-    const ownsResources = panelOpen && visible;
+    const ownsResources = panelOpen;
     ownedId;
     root;
     untrack(() => {

@@ -3,9 +3,10 @@
    * RightPanel.svelte — the body of the right drawer.
    *
    * One panel body fills the drawer under its tab row. The browser is not
-   * here: it is a tab of the top row, in the tab pane. The whole drawer
-   * unmounts when it closes; while it is open Files keeps one bounded panel
-   * instance, and every other panel mounts only while it is visible.
+   * here: it is a tab of the top row, in the tab pane. Closing the drawer
+   * hides it without unmounting: Files keeps one bounded panel instance (so
+   * its scroll and expansion survive in the DOM), and every other panel
+   * mounts only while it is visible.
    *
    * No backend IO and no state of its own beyond the layout. Which tab is open
    * is decided by the page (it is remembered per session) and handed in; every
@@ -46,9 +47,6 @@
     onRootUnavailable?(root: string): void | Promise<void>;
     expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
     onExpandedPathsChange?(ownedId: string, root: string, paths: readonly string[]): void;
-    /** The Files tree's stored scroll offset, applied once when it mounts. */
-    filesScrollTop?: number;
-    onFilesScrollTopChange?(ownedId: string, scrollTop: number): void;
     filesInspectionRoot?: string | null;
     checkoutDiscoveryRoots?: readonly string[];
     sourceControlInspectionRoot?: string | null;
@@ -72,8 +70,6 @@
     onRootUnavailable,
     expandedPathsByRoot,
     onExpandedPathsChange,
-    filesScrollTop,
-    onFilesScrollTopChange,
     filesInspectionRoot,
     checkoutDiscoveryRoots,
     sourceControlInspectionRoot,
@@ -101,8 +97,6 @@
         {onRootUnavailable}
         {expandedPathsByRoot}
         {onExpandedPathsChange}
-        initialScrollTop={filesScrollTop}
-        onScrollTopChange={onFilesScrollTopChange}
         inspectionRoot={filesInspectionRoot}
         onInspectionRootChange={onFilesInspectionRootChange}
         {checkoutDiscoveryRoots}

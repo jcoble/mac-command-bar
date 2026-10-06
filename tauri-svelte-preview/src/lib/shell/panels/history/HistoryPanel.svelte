@@ -57,7 +57,7 @@
     type SessionLibraryRecord
   } from '$lib/shell/sessionLibrary/sessionLibraryModel.ts';
   import { sessionLibraryHost } from '$lib/shell/sessionLibrary/sessionLibraryService.ts';
-  import { sessionLibraryState, setSessionLibraryQuery } from '$lib/shell/sessionLibrary/sessionLibraryStore.svelte.ts';
+  import { resetSessionLibraryState, sessionLibraryState, setSessionLibraryQuery } from '$lib/shell/sessionLibrary/sessionLibraryStore.svelte.ts';
   import {
     ensureStructuredConversation,
     loadConversationForRead
@@ -106,6 +106,9 @@
   // Read once, at init: the page registers its actions in its own component
   // body, which runs before this panel is created.
   const host = sessionLibraryHost();
+  // The search and scope live in a shared singleton; clear them so each
+  // opening starts fresh.
+  resetSessionLibraryState();
 
   const query = $derived(sessionLibraryState.query);
   let expandedKey = $state<string | null>(null);

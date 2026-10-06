@@ -20,6 +20,7 @@
   import SquareDashedMousePointer from '@lucide/svelte/icons/square-dashed-mouse-pointer';
   import type { Resource } from '@tauri-apps/api/core';
   import { CheckMenuItem, Menu } from '@tauri-apps/api/menu';
+  import { onDestroy } from 'svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
@@ -65,13 +66,20 @@
 
   /** The last native menu, closed when the next one opens so they never pile up. */
   let lastMenu: Resource[] = [];
+  let destroyed = false;
+
+  async function closeAll(resources: Resource[]): Promise<void> {
+    await Promise.all(resources.map((item) => item.close()));
+  }
 
   function choose(next: BrowserPanelTool): void {
     onToolChange(next === tool ? 'browse' : next);
   }
 
   async function openMore(): Promise<void> {
-    await Promise.all(lastMenu.map((item) => item.close()));
+    const previous = lastMenu;
+    lastMenu = [];
+    await closeAll(previous);
     const region = await CheckMenuItem.new({
       text: 'Draw a region',
       checked: tool === 'region',
@@ -83,9 +91,20 @@
       action: () => choose('drawing')
     });
     const menu = await Menu.new({ items: [region, marker] });
+    // The toolbar may have gone while the menu was being built.
+    if (destroyed) {
+      await closeAll([menu, region, marker]);
+      return;
+    }
     lastMenu = [menu, region, marker];
     await menu.popup();
   }
+
+  onDestroy(() => {
+    destroyed = true;
+    void closeAll(lastMenu);
+    lastMenu = [];
+  });
 </script>
 
 <div class="@container flex h-[52px] items-center gap-2 border-b border-border px-2" data-testid="browser-toolbar">

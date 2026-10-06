@@ -77,10 +77,6 @@
 		onInspectionRootChange?(root: string | null): void;
 		checkoutDiscoveryRoots?: readonly string[];
 		onUseSessionCheckout?(root: string): void | Promise<void>;
-		/** The tree's stored scroll offset, put back once the tree is tall enough. */
-		initialScrollTop?: number;
-		/** Told the tree's scroll offset as the panel goes away. */
-		onScrollTopChange?(ownedId: string, scrollTop: number): void;
 	}
 
 	type PendingEntry = {
@@ -116,15 +112,8 @@
 		onInspectionRootChange,
 		checkoutDiscoveryRoots = [],
 		onUseSessionCheckout,
-		initialScrollTop = 0,
-		onScrollTopChange,
 	}: Props = $props();
 
-	/** The session this panel opened for: its scroll offset is saved to it alone. */
-	const mountedOwnedId = untrack(() => ownedId);
-	const storedScrollTop = untrack(() => initialScrollTop);
-	/** The stored offset still to put back; cleared once applied or the user scrolls. */
-	let pendingScrollTop: number | null = storedScrollTop > 0 ? storedScrollTop : null;
 	let inspectedRoot = $state("");
 	let checkouts = $state<RepositoryCheckout[]>([]);
 	let expanded = $state.raw<Set<string>>(new Set());
@@ -1021,22 +1010,7 @@
 		}
 	}
 
-	// Put the stored offset back once the tree is on screen and tall enough to
-	// hold it, and only for the session it was stored for.
-	$effect(() => {
-		if (pendingScrollTop === null || !visible || !treeVisible || !treeScroll || ownedId !== mountedOwnedId) return;
-		if (visibleRows.length * FILE_TREE_ROW_HEIGHT < pendingScrollTop) return;
-		const top = pendingScrollTop;
-		pendingScrollTop = null;
-		treeScroll.scrollTop = top;
-		treeScrollTop = treeScroll.scrollTop;
-	});
-
 	onDestroy(() => {
-		// The caller drops the write unless this is still the selected session. An
-		// offset never put back (the tree was not shown) stays as it was stored.
-		const scrollTop = pendingScrollTop ?? treeScrollTop;
-		if (mountedOwnedId && scrollTop !== storedScrollTop) onScrollTopChange?.(mountedOwnedId, scrollTop);
 		stopWorkspaceFileChanges();
 		inspectionGeneration += 1;
 		searchGeneration += 1;
@@ -1223,10 +1197,7 @@
 			tabindex={treeVisible ? 0 : -1}
 			aria-label="Project files"
 			bind:this={treeScroll}
-			onscroll={(event) => {
-				pendingScrollTop = null;
-				treeScrollTop = event.currentTarget.scrollTop;
-			}}
+			onscroll={(event) => (treeScrollTop = event.currentTarget.scrollTop)}
 		>
 				{#if renderedRows.length === 0}
 					<p class="tree-empty">{searchLoading ? "Searching files…" : "Nothing matches that search."}</p>
