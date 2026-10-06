@@ -2,11 +2,12 @@
   /**
    * The small figure that means "the agent is working".
    *
-   * Which of the three it is comes from the seed, so one turn keeps one spinner
-   * for its whole life and the next turn brings a different one. The drawing is
-   * a handful of empty spans that the stylesheet below shapes and moves; only
-   * transform and opacity are animated, so a frame costs the compositor a
-   * matrix and nothing else.
+   * Which of the eleven it is comes from the seed, so one turn keeps one spinner
+   * for its whole life and the next turn brings a different one. Most drawings
+   * are a handful of empty spans that the stylesheet below shapes and moves;
+   * tide, ribbon and bloom are one small inline SVG each, moved by the same
+   * stylesheet. Only transform and opacity are animated (plus the ribbon's
+   * dash running along its own outline), so a frame stays cheap.
    *
    * Nothing here loops at rest. The caller mounts this only while a turn is
    * running, so a finished turn removes the element and its animations with it,
@@ -63,9 +64,38 @@
   style={`--size:${size}px`}
   aria-hidden="true"
 >
-  {#each { length: spinner.parts } as _, index (index)}
-    <i style={`--i:${index}`}></i>
-  {/each}
+  {#if spinner.id === 'tide'}
+    <svg viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+      <circle class="as-ring" cx="24" cy="24" r="13" />
+      <circle class="as-drop" cx="24" cy="24" r="5" />
+      <circle class="as-drop" cx="24" cy="24" r="5" />
+      <circle class="as-drop" cx="24" cy="24" r="5" />
+    </svg>
+  {:else if spinner.id === 'ribbon'}
+    <svg viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+      <g class="as-twist">
+        <path class="as-track" pathLength="100" d="M24 24C30 13 43 13 43 24C43 35 30 35 24 24C18 13 5 13 5 24C5 35 18 35 24 24Z" />
+        <path class="as-strand" pathLength="100" d="M24 24C30 13 43 13 43 24C43 35 30 35 24 24C18 13 5 13 5 24C5 35 18 35 24 24Z" />
+        <path class="as-strand as-strand-trail" pathLength="100" d="M24 24C30 13 43 13 43 24C43 35 30 35 24 24C18 13 5 13 5 24C5 35 18 35 24 24Z" />
+      </g>
+    </svg>
+  {:else if spinner.id === 'bloom'}
+    <svg viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+      <g class="as-spin">
+        <path class="as-petal" d="M24 24C18.5 18 19.5 9 24 4.5C28.5 9 29.5 18 24 24Z" />
+        <path class="as-petal" d="M24 24C18.5 18 19.5 9 24 4.5C28.5 9 29.5 18 24 24Z" />
+        <path class="as-petal" d="M24 24C18.5 18 19.5 9 24 4.5C28.5 9 29.5 18 24 24Z" />
+        <path class="as-petal" d="M24 24C18.5 18 19.5 9 24 4.5C28.5 9 29.5 18 24 24Z" />
+        <path class="as-petal" d="M24 24C18.5 18 19.5 9 24 4.5C28.5 9 29.5 18 24 24Z" />
+        <path class="as-petal" d="M24 24C18.5 18 19.5 9 24 4.5C28.5 9 29.5 18 24 24Z" />
+        <circle class="as-core" cx="24" cy="24" r="2.5" />
+      </g>
+    </svg>
+  {:else}
+    {#each { length: spinner.parts } as _, index (index)}
+      <i style={`--i:${index}`}></i>
+    {/each}
+  {/if}
   <b class="static-mark"></b>
 </span>
 
@@ -125,20 +155,218 @@
     animation: ws-facet 4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
   }
 
-  /* ribbon — eight plates ringed into a Möbius band, seen from above. Each
-     plate turns half over about the band's own direction, a step behind its
-     neighbour, so the twist travels round the loop while the loop stays put.
-     A half turn of a plate looks like no turn at all, which is the seam. */
-  .working-spinner[data-spinner='ribbon'] {
-    transform-style: preserve-3d;
-    perspective: var(--p);
-    --r: calc(var(--size) * 0.28);
+  /* wave — three dots riding the same swell a beat apart. */
+  .working-spinner[data-spinner='wave'] i {
+    top: 50%;
+    width: calc(var(--size) * 0.22);
+    height: calc(var(--size) * 0.22);
+    margin-top: calc(var(--size) * -0.11);
+    border-radius: 50%;
+    background: currentColor;
+    animation: ws-wave 1.22s ease-in-out infinite;
+    animation-delay: calc(var(--i) * 0.18s);
   }
-  .working-spinner[data-spinner='ribbon'] i {
-    inset: calc(var(--size) * 0.35) calc(var(--size) * 0.38);
-    border: 1px solid currentColor;
-    background: color-mix(in srgb, currentColor 30%, transparent);
-    animation: ws-ribbon 5.4s linear infinite;
+  .working-spinner[data-spinner='wave'] i:nth-child(1) { left: 0; }
+  .working-spinner[data-spinner='wave'] i:nth-child(2) {
+    left: 50%;
+    margin-left: calc(var(--size) * -0.11);
+  }
+  .working-spinner[data-spinner='wave'] i:nth-child(3) { right: 0; }
+
+  /* bars — three columns growing off the floor. */
+  .working-spinner[data-spinner='bars'] i {
+    bottom: 0;
+    width: calc(var(--size) * 0.2);
+    height: 100%;
+    border-radius: calc(var(--size) * 0.1);
+    background: currentColor;
+    transform-origin: 50% 100%;
+    animation: ws-bars 1.05s ease-in-out infinite;
+    animation-delay: calc(var(--i) * 0.15s);
+  }
+  .working-spinner[data-spinner='bars'] i:nth-child(1) { left: 0; }
+  .working-spinner[data-spinner='bars'] i:nth-child(2) {
+    left: 50%;
+    margin-left: calc(var(--size) * -0.1);
+  }
+  .working-spinner[data-spinner='bars'] i:nth-child(3) { right: 0; }
+
+  /* halo — rings leaving the centre, the second half a beat behind. */
+  .working-spinner[data-spinner='halo'] i {
+    inset: 0;
+    border: 1.5px solid currentColor;
+    border-radius: 50%;
+    animation: ws-halo 1.89s ease-out infinite;
+    animation-delay: calc(var(--i) * 0.95s);
+  }
+
+  /* diamond — a square that turns and breathes. */
+  .working-spinner[data-spinner='diamond'] i {
+    inset: calc(var(--size) * 0.16);
+    border: 2px solid currentColor;
+    border-radius: 2px;
+    animation: ws-diamond 1.49s ease-in-out infinite;
+  }
+
+  /* disc — a coin turning edge-on and back. */
+  .working-spinner[data-spinner='disc'] { transform-style: preserve-3d; }
+  .working-spinner[data-spinner='disc'] i {
+    inset: calc(var(--size) * 0.06);
+    border: 2px solid currentColor;
+    border-radius: 50%;
+    background: color-mix(in srgb, currentColor 14%, transparent);
+    animation: ws-flip 2.03s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+  }
+
+  /* gyro — two tilted rings turning about axes at right angles. */
+  .working-spinner[data-spinner='gyro'] { transform-style: preserve-3d; }
+  .working-spinner[data-spinner='gyro'] i {
+    inset: 0;
+    border: 1.5px solid currentColor;
+    border-radius: 50%;
+  }
+  .working-spinner[data-spinner='gyro'] i:nth-child(1) { animation: ws-gyro-x 1.76s linear infinite; }
+  .working-spinner[data-spinner='gyro'] i:nth-child(2) {
+    inset: calc(var(--size) * 0.18);
+    border-color: color-mix(in srgb, currentColor 55%, transparent);
+    animation: ws-gyro-y 1.49s linear infinite;
+  }
+
+  @keyframes ws-wave {
+    0%, 100% { transform: translateY(calc(var(--size) * 0.16)); opacity: 0.45; }
+    50% { transform: translateY(calc(var(--size) * -0.16)); opacity: 1; }
+  }
+  @keyframes ws-bars {
+    0%, 100% { transform: scaleY(0.32); opacity: 0.5; }
+    50% { transform: scaleY(1); opacity: 1; }
+  }
+  @keyframes ws-halo {
+    0% { transform: scale(0.28); opacity: 1; }
+    100% { transform: scale(1); opacity: 0; }
+  }
+  @keyframes ws-diamond {
+    0% { transform: rotate(0) scale(0.72); }
+    50% { transform: rotate(180deg) scale(1); }
+    100% { transform: rotate(360deg) scale(0.72); }
+  }
+  @keyframes ws-flip {
+    0% { transform: perspective(var(--p)) rotateX(8deg) rotateY(0); }
+    100% { transform: perspective(var(--p)) rotateX(8deg) rotateY(360deg); }
+  }
+  @keyframes ws-gyro-x {
+    0% { transform: perspective(var(--p)) rotateY(24deg) rotateX(0); }
+    100% { transform: perspective(var(--p)) rotateY(24deg) rotateX(360deg); }
+  }
+  @keyframes ws-gyro-y {
+    0% { transform: perspective(var(--p)) rotateX(-18deg) rotateY(0); }
+    100% { transform: perspective(var(--p)) rotateX(-18deg) rotateY(360deg); }
+  }
+
+  /* ── The three drawn in SVG ──────────────────────────────────────────── */
+
+  /* One 48-unit drawing filling the box; every shape turns about its centre. */
+  .working-spinner svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+  }
+  .working-spinner svg * {
+    transform-box: view-box;
+    transform-origin: 24px 24px;
+  }
+
+  /* tide — three drops pool into one bead, then swell out onto a ring. */
+  .working-spinner[data-spinner='tide'] .as-ring {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.25;
+    opacity: 0.3;
+    animation: as-tide-ring 2.8s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  }
+  .working-spinner[data-spinner='tide'] .as-drop {
+    --a: 0deg;
+    fill: currentColor;
+    transform: rotate(var(--a)) translateY(-13px) scale(0.72);
+    animation: as-tide 2.8s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  }
+  .working-spinner[data-spinner='tide'] .as-drop:nth-child(3) {
+    --a: 120deg;
+    animation-delay: -0.16s;
+  }
+  .working-spinner[data-spinner='tide'] .as-drop:nth-child(4) {
+    --a: 240deg;
+    animation-delay: -0.32s;
+  }
+
+  /* ribbon — a figure-eight that twists edge-on into a line and back. */
+  .working-spinner[data-spinner='ribbon'] .as-twist {
+    animation: as-ribbon-twist 6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  }
+  .working-spinner[data-spinner='ribbon'] path {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .working-spinner[data-spinner='ribbon'] .as-track {
+    opacity: 0.16;
+  }
+  .working-spinner[data-spinner='ribbon'] .as-strand {
+    stroke-dasharray: 28 72;
+    animation: as-ribbon-run 2.4s linear infinite;
+  }
+  .working-spinner[data-spinner='ribbon'] .as-strand-trail {
+    opacity: 0.45;
+    stroke-dasharray: 14 86;
+    animation-delay: -1.2s;
+  }
+
+  /* bloom — petals fan open into a flower, then fold around into a bud. */
+  .working-spinner[data-spinner='bloom'] .as-spin {
+    animation: as-turn 14s linear infinite;
+  }
+  .working-spinner[data-spinner='bloom'] .as-petal {
+    --a: 0deg;
+    fill: currentColor;
+    opacity: 0.42;
+    transform: rotate(var(--a));
+    animation: as-bloom 5s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  }
+  .working-spinner[data-spinner='bloom'] .as-petal:nth-child(2) { --a: 60deg; }
+  .working-spinner[data-spinner='bloom'] .as-petal:nth-child(3) { --a: 120deg; }
+  .working-spinner[data-spinner='bloom'] .as-petal:nth-child(4) { --a: 180deg; }
+  .working-spinner[data-spinner='bloom'] .as-petal:nth-child(5) { --a: 240deg; }
+  .working-spinner[data-spinner='bloom'] .as-petal:nth-child(6) { --a: 300deg; }
+  .working-spinner[data-spinner='bloom'] .as-core {
+    fill: currentColor;
+  }
+
+  @keyframes as-tide {
+    0% { transform: rotate(var(--a)) translateY(0) scale(1.45); }
+    50% { transform: rotate(calc(var(--a) + 180deg)) translateY(-13px) scale(0.72); }
+    100% { transform: rotate(calc(var(--a) + 360deg)) translateY(0) scale(1.45); }
+  }
+  @keyframes as-tide-ring {
+    0%, 100% { transform: scale(0.4); opacity: 0; }
+    50% { transform: scale(1); opacity: 0.32; }
+  }
+  @keyframes as-ribbon-twist {
+    0% { transform: rotate(0deg) scaleX(1); }
+    50% { transform: rotate(90deg) scaleX(-1); }
+    100% { transform: rotate(180deg) scaleX(1); }
+  }
+  @keyframes as-ribbon-run {
+    to { stroke-dashoffset: -100; }
+  }
+  @keyframes as-bloom {
+    0% { transform: rotate(0deg) scale(0.62); }
+    50% { transform: rotate(var(--a)) scale(1); }
+    100% { transform: rotate(360deg) scale(0.62); }
+  }
+  @keyframes as-turn {
+    to { transform: rotate(360deg); }
   }
 
   @keyframes ws-tumble {
@@ -154,23 +382,16 @@
     0%, 100% { transform: rotateY(0deg) rotateZ(45deg) scale(0.78); }
     50% { transform: rotateY(calc((var(--i) - 1.5) * 45deg)) rotateZ(45deg) scale(1); }
   }
-  @keyframes ws-ribbon {
-    0% {
-      transform: rotateZ(-24deg) rotateX(52deg) rotateY(calc(var(--i) * 45deg))
-        translateZ(var(--r)) rotateX(calc(var(--i) * 22.5deg));
-    }
-    100% {
-      transform: rotateZ(-24deg) rotateX(52deg) rotateY(calc(var(--i) * 45deg))
-        translateZ(var(--r)) rotateX(calc(var(--i) * 22.5deg + 180deg));
-    }
-  }
 
-  /* Off screen is off. The attribute is the single switch: it stops the parts
-     and the tumbling body alike, and it costs nothing to leave paused. It sits
-     after every variant so their `animation` shorthands cannot reset it. */
+  /* Off screen is off. The attribute is the single switch: it stops the parts,
+     the SVG shapes and the tumbling body alike, and it costs nothing to leave
+     paused. It sits after every variant so their `animation` shorthands cannot
+     reset it; the SVG line also carries `[data-spinner]` to outrank the
+     `[data-spinner='…'] .as-…` selectors that animate those shapes. */
   .working-spinner i { animation-play-state: running; }
   .working-spinner[data-active='false'],
-  .working-spinner[data-active='false'] i { animation-play-state: paused; }
+  .working-spinner[data-spinner][data-active='false'] i,
+  .working-spinner[data-spinner][data-active='false'] svg * { animation-play-state: paused; }
 
   /* Asked for stillness, the spinner becomes a mark: the moving parts are gone
      and one quiet ring says the same thing. */
@@ -180,7 +401,8 @@
     /* The attribute is carried so this outranks the tumbling body above it,
        which names the same element and would otherwise keep turning. */
     .working-spinner[data-spinner] { animation: none; }
-    .working-spinner i { display: none; }
+    .working-spinner i,
+    .working-spinner svg { display: none; }
     .static-mark {
       display: block;
       inset: calc(var(--size) * 0.2);
