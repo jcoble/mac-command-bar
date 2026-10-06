@@ -704,6 +704,7 @@ mod tests {
             line.as_bytes(),
         );
         assert_eq!(records.len(), 1, "one record, and it is the compaction");
+        assert_eq!(records[0].payload.get("kind"), Some(&serde_json::json!("contextCompaction")));
         match records[0]
             .native
             .as_ref()
@@ -736,6 +737,7 @@ mod tests {
             line.as_bytes(),
         );
         assert_eq!(records.len(), 1);
+        assert_eq!(records[0].payload.get("kind"), Some(&serde_json::json!("contextCompaction")));
         assert_eq!(
             records[0].native,
             Some(AgentConversationPayload::ContextCompaction {

@@ -390,7 +390,10 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
                 event_type: AgentEventType::ItemCompleted,
                 timestamp_ms: timestamp(value),
                 item_id: None,
-                payload: BTreeMap::from([("historical".into(), json!(true))]),
+                payload: BTreeMap::from([
+                    ("kind".into(), json!("contextCompaction")),
+                    ("historical".into(), json!(true)),
+                ]),
                 native: Some(AgentConversationPayload::ContextCompaction {
                     trigger: None,
                     pre_tokens: None,

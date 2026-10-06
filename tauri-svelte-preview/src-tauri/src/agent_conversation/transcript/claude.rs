@@ -129,6 +129,7 @@ pub(super) fn project(value: &Value, line: &[u8], session_id: &str) -> Vec<Proje
             timestamp_ms: timestamp(value),
             item_id: None,
             payload: BTreeMap::from([
+                ("kind".into(), json!("contextCompaction")),
                 ("historical".into(), json!(true)),
                 ("trigger".into(), json!(trigger)),
                 ("preTokens".into(), json!(pre_tokens)),
