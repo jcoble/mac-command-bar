@@ -34,7 +34,8 @@ import {
   restoreSelectedConversationAttachments,
   setConversationAttachmentError,
   setConversationSendError,
-  setSelectedConversationPageLoading
+  setSelectedConversationPageLoading,
+  setSelectedConversationPageError
 } from './conversationStore.svelte.ts';
 import type {
   AgentConversationEvent,
@@ -867,11 +868,12 @@ export async function pageSelectedConversation(direction: Direction, historyOwne
       await selection.ready;
       return;
     }
-    if (direction === 'older' && !page.hasBefore && page.hasEarlierTranscript) {
+    if (direction === 'older' && page.items.length === 0 && !page.hasBefore && page.hasEarlierTranscript) {
       const extended = await extendAgentConversationImportFromTauri(
         selection.historyOwnedId,
         selection.controller.signal
       );
+      if (!isCurrent(selection)) return;
       if (extended && (extended.added > 0 || !extended.reachedStart)) {
         page = await readOlderSelectedConversationItems(
           selection.historyOwnedId, cursor, PAGE_BYTES, selection.controller.signal
@@ -911,6 +913,13 @@ export async function pageSelectedConversation(direction: Direction, historyOwne
       generation,
       messages.map((message) => message.id)
     );
+  } catch (error) {
+    if (isCurrent(selection)) {
+      const detail = typeof error === 'string' ? error
+        : error && typeof error === 'object' && 'message' in error && typeof error.message === 'string'
+          ? error.message : 'The history request failed.';
+      setSelectedConversationPageError(selection.historyOwnedId, `Could not load ${direction} messages: ${detail}`);
+    }
   } finally {
     if (isCurrent(selection)) {
       setSelectedConversationPageLoading(selection.historyOwnedId, direction, false);

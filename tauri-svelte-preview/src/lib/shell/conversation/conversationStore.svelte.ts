@@ -126,6 +126,7 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   selectedHasAfter: boolean;
   selectedLoadingOlder: boolean;
   selectedLoadingNewer: boolean;
+  selectedPageError: string;
   selectedWatermark: number;
   selectedTransferBytes: number;
   selectedOversized: boolean;
@@ -217,6 +218,7 @@ function freshState(
     selectedHasAfter: false,
     selectedLoadingOlder: false,
     selectedLoadingNewer: false,
+    selectedPageError: '',
     selectedWatermark: 0,
     selectedTransferBytes: 0,
     selectedOversized: false,
@@ -289,6 +291,7 @@ export function applySelectedConversationSnapshotState(
     current.generation = snapshot.connection.generation;
     current.activeTurnId = snapshot.suspended ? undefined : snapshot.activeTurnId;
   }
+  current.selectedPageError = '';
   applySelectedPageState(current, snapshot.page, 'snapshot', window);
 }
 
@@ -405,6 +408,11 @@ export function applySelectedConversationPageState(
   if (current) applySelectedPageState(current, page, direction, window);
 }
 
+export function setSelectedConversationPageError(ownedId: string, message: string): void {
+  const current = conversationSessions[ownedId];
+  if (current) current.selectedPageError = message;
+}
+
 export function setSelectedConversationPageLoading(
   ownedId: string,
   direction: 'older' | 'newer',
@@ -419,6 +427,7 @@ export function setSelectedConversationPageLoading(
     if (loading && (current.selectedLoadingNewer || !current.selectedHasAfter)) return false;
     current.selectedLoadingNewer = loading;
   }
+  if (loading) current.selectedPageError = '';
   return true;
 }
 

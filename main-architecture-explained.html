@@ -664,6 +664,7 @@
         <table class="changelog">
           <thead><tr><th>Commit</th><th>What changed</th><th>Sections</th></tr></thead>
           <tbody>
+            <tr><td>2026-10-06 · TSK-1344 / TSK-1389 · History page errors</td><td>Nonempty saved pages render before any provider import. Import runs only at an empty earlier boundary; failed page requests retain the visible history, clear loading, and show a per-history error in the shared timeline.</td><td>13</td></tr>
             <tr><td>2026-10-06 · TSK-1344 / TSK-1389 · Bound retained message count</td><td>The existing selected chat window now retains at most 256 canonical messages as well as its four-MiB soft byte bound. Paging evicts the opposite edge; snapshot admission publishes the retained native cursors and byte count so removed history remains pageable.</td><td>13</td></tr>
             <tr><td>2026-10-06 · TSK-1344 / TSK-1389 · History page query</td><td>Materialize the single page-facts row once per SQLite item query. Prevent repeated boundary checks for every returned descriptor; selected records, byte bounds and cursors are unchanged.</td><td>13</td></tr>
             <tr><td>2026-10-06 · TSK-1344 / TSK-1389 · Remove turn summaries</td><td>Owner comparison removes Worked for headings and whole-turn collapse. All admitted turn items render in chronological order; contiguous tool disclosures remain. SQLite window bounds and native item reading anchors remain unchanged.</td><td>13</td></tr>
@@ -1673,7 +1674,7 @@
         <details>
           <summary>Why scrolling loads history instead of hiding turns</summary>
           <div class="details-body">
-            <p>SQLite owns durable history. The selected client retains at most 256 canonical messages within a four-MiB soft item window, rendered in normal document flow without virtualization or whole-turn summaries. Older and newer pages replace the opposite edge of this bounded window. SQLite materializes the single page-facts row once, so boundary checks do not repeat per returned item. Individual tool and contiguous tool-run disclosures remain. Saved native item anchors, offsets and follow intent restore the selected history; Jump to latest explicitly restores following. Native interaction and memory acceptance are recorded in the task.</p>
+            <p>SQLite owns durable history. The selected client retains at most 256 canonical messages within a four-MiB soft item window, rendered in normal document flow without virtualization or whole-turn summaries. Older and newer pages replace the opposite edge of this bounded window. SQLite materializes the single page-facts row once, so boundary checks do not repeat per returned item. A nonempty saved page renders immediately; provider import only extends an empty earlier boundary. Page failures preserve displayed history and appear in the shared timeline. Individual tool and contiguous tool-run disclosures remain. Saved native item anchors, offsets and follow intent restore the selected history; Jump to latest explicitly restores following. Native interaction and memory acceptance are recorded in the task.</p>
             <span class="source"><code>ConversationTimeline.svelte</code> · <code>conversationStore.svelte.ts</code> · <code>agent_conversation/manager.rs</code> · <code>session_store.rs</code></span>
           </div>
         </details>

@@ -630,6 +630,74 @@ test('older windows withhold live content and the live graph stays byte bounded'
   await iterator.return?.();
 });
 
+test('history paging publishes saved rows before import and handles failed or stale reads', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const body = source.slice(source.indexOf('export async function pageSelectedConversation('),
+    source.indexOf('export function selectedConversationHistoryOwnedId(')).replace('export async function', 'async function');
+  const saved = { id: 'saved', metadata: { firstSequence: 1 } };
+  const selection = { historyOwnedId: 'history', beforeCursor: 2, afterCursor: 2,
+    controller: new AbortController(), chat: { messages: [saved] }, push: () => undefined };
+  let page = { items: [{ itemId: 'saved' }], events: [], hasBefore: false,
+    hasAfter: true, hasEarlierTranscript: true, beforeCursor: 1, afterCursor: 1 };
+  let current = true;
+  let loading = false;
+  let pageError = '';
+  let imports = 0;
+  let published = 0;
+  let readFailure = false;
+  let importFailure = false;
+  let staleImport = false;
+  const read = async () => {
+    if (readFailure) throw { message: 'Saved page could not be read' };
+    return page;
+  };
+  const paging = Function('active', 'childActive', 'PAGE_BYTES', 'setSelectedConversationPageLoading',
+    'readOlderSelectedConversationItems', 'readNewerSelectedConversationItems', 'isCurrent',
+    'extendAgentConversationImportFromTauri', 'messagesFromPage', 'mergeMessages', 'pushMessagesSnapshot',
+    'historyPosition', 'hasOlderHistory', 'applySelectedConversationPageState', 'messageBytes',
+    'getConversationSession', 'restorePageAttachments', 'pageAttachments', 'setSelectedConversationPageError',
+    `${stripTypeScriptTypes(body, { mode: 'strip' })}\nreturn pageSelectedConversation;`
+  )(selection, null, 512 * 1024, (_id: string, _direction: string, value: boolean) => {
+    loading = value; if (value) pageError = ''; return true;
+  }, read, read, () => current, async () => {
+    imports += 1;
+    if (importFailure) throw { message: 'Remote machine is not connected' };
+    if (staleImport) { current = false; return { added: 0, reachedStart: true }; }
+    page = { ...page, items: [{ itemId: 'saved' }] };
+    return { added: 1, reachedStart: true };
+  }, () => [saved], (_existing: unknown, incoming: unknown) => incoming,
+  () => { published += 1; }, () => 1, () => true, () => undefined, () => 10,
+  () => ({ generation: 1 }), async () => undefined, () => new Map(),
+  (_id: string, message: string) => { pageError = message; });
+
+  await paging('older');
+  assert.equal(imports, 0, 'saved local messages do not wait for provider import');
+  assert.equal(published, 1);
+  assert.equal(loading, false);
+  page = { ...page, items: [] };
+  await paging('older');
+  assert.equal(imports, 1, 'empty earlier boundary still imports');
+  assert.equal(published, 2);
+  readFailure = true;
+  await paging('older');
+  assert.match(pageError, /Could not load older messages: Saved page could not be read/);
+  assert.equal(loading, false);
+  assert.equal(published, 2, 'read failure preserves the existing history');
+  assert.deepEqual(selection.chat.messages, [saved]);
+  readFailure = false;
+  importFailure = true;
+  page = { ...page, items: [] };
+  await paging('older');
+  assert.match(pageError, /Remote machine is not connected/);
+  assert.equal(loading, false);
+  assert.equal(published, 2, 'failed import does not replace visible history');
+  importFailure = false;
+  staleImport = true;
+  await paging('older');
+  assert.equal(published, 2, 'an old selection cannot publish an import completion');
+  assert.equal(pageError, '');
+});
+
 test('saved anchor admission keeps current authority and ignores a stale Jump failure', async () => {
   const source = readFileSync(
     new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url),

@@ -719,6 +719,7 @@
         emptyText="Start the conversation below."
         hasOlder={conversation.selectedHasBefore}
         loadingOlder={conversation.selectedLoadingOlder}
+        pageError={conversation.selectedPageError}
         onLoadOlder={() => void pageSelectedConversation('older')}
         hasNewer={conversation.selectedHasAfter}
         loadingNewer={conversation.selectedLoadingNewer}

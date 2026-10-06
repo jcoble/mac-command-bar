@@ -223,6 +223,7 @@
         emptyText="This agent’s transcript is empty."
         hasOlder={childConversation.selectedHasBefore}
         loadingOlder={childConversation.selectedLoadingOlder}
+        pageError={childConversation.selectedPageError}
         onLoadOlder={() => void pageSelectedConversation('older', historyOwnedId)}
         hasNewer={childConversation.selectedHasAfter}
         loadingNewer={childConversation.selectedLoadingNewer}

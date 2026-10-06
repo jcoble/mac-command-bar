@@ -39,6 +39,7 @@
     pendingFirstMessage?: string | null;
     hasOlder?: boolean;
     loadingOlder?: boolean;
+    pageError?: string;
     onLoadOlder?(): void;
     hasNewer?: boolean;
     loadingNewer?: boolean;
@@ -55,7 +56,7 @@
     viewState, onViewChange, itemFirstSequence, anchorRequest = null, activeTurnId = null,
     turnFacts = [], localTurnActive = false, activityLabel = null, composerHeight = 0,
     assistantLabel = 'Assistant', emptyText = 'Start the conversation below.', pendingFirstMessage = null,
-    hasOlder = false, loadingOlder = false, onLoadOlder, hasNewer = false, loadingNewer = false,
+    hasOlder = false, loadingOlder = false, pageError = '', onLoadOlder, hasNewer = false, loadingNewer = false,
     onLoadNewer, oldestSequence = 0, newestSequence = 0, onJumpToLatest, onApprovalDecision,
     onFileLink, onPlanOpen
   }: Props = $props();
@@ -474,6 +475,7 @@
 </script>
 
 <div class="timeline-wrap" data-testid="conversation-timeline-wrap" style={`--composer-height:${composerHeight}px`}>
+  {#if pageError}<p role="alert" class="px-2 py-2 text-sm text-muted-foreground">{pageError}</p>{/if}
   {#if loadingOlder}<p class="older-loading" data-testid="conversation-older-loading" role="status"><span class="older-spinner" aria-hidden="true"></span>Loading earlier messages</p>{/if}
   <div class="timeline-scroll" tabindex="0" data-testid="conversation-timeline-scroll" bind:this={host} onscroll={handleScroll} onwheel={handleWheel} use:readerInput>
     {#if renderedItems.length === 0}
