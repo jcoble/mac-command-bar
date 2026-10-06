@@ -234,10 +234,11 @@
 		z-index: 3;
 		display: flex;
 		width: 100%;
-		min-height: 32px;
+		min-height: 28px;
 		align-items: center;
 		gap: 6px;
 		padding: 8px 16px 4px;
+		line-height: 16px;
 		border: 0;
 		background: var(--card);
 		color: var(--muted-foreground);
@@ -313,8 +314,12 @@
 		border-top: 1px solid var(--color-border);
 	}
 
+	/* Rows sit 2px apart, so two highlighted rows never touch. */
 	.rows {
+		display: flex;
 		min-width: 0;
+		flex-direction: column;
+		gap: 2px;
 		margin: 0;
 		padding: 0;
 		list-style: none;

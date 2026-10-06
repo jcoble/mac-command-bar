@@ -85,7 +85,7 @@
 	let editorPanel = $state<EditorPanel | null>(null);
 	let overlays = $state<ShellOverlays | null>(null);
 	let openUtility = $state<UtilityId | null>(null);
-	let sessionsRailWidth = $state(360);
+	let sessionsRailWidth = $state(326);
 	// Zero until the frame reports the pane's laid-out width: the browser may
 	// place its native view only once the pane really has a size.
 	let toolsRailWidth = $state(0);

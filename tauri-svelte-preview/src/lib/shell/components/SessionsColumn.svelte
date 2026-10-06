@@ -10,7 +10,7 @@
   import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
   import Plus from '@lucide/svelte/icons/plus';
   import Search from '@lucide/svelte/icons/search';
-  import List from '@lucide/svelte/icons/list';
+  import ListFilter from '@lucide/svelte/icons/list-filter';
   import { onMount } from 'svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
@@ -273,7 +273,7 @@
                     class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), ACTION_CLASS)}
                     aria-label="View session options"
                   >
-                    <List aria-hidden="true" />
+                    <ListFilter aria-hidden="true" />
                   </DropdownMenu.Trigger>
                 {/snippet}
               </Tooltip.Trigger>
@@ -432,10 +432,11 @@
     line-height: 19.5px;
   }
 
-  /* The 44px header band every panel shares. */
+  /* The 44px header band every panel shares, set 4px down from the card's top. */
   .sessions-header {
     display: flex;
     flex: 0 0 44px;
+    margin-top: 4px;
     align-items: center;
     gap: 4px;
     padding: 0 12px 0 16px;

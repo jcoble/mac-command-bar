@@ -171,14 +171,6 @@
 			{#if presence === "working" || presence === "attention" || presence === "failed"}
 				<span class="status-dot" data-presence={presence} role="img" aria-label={presenceLabel}></span>
 			{/if}
-			<!-- The machine, in the mark's corner rather than in a third line: a
-                 remote session is told apart at a glance and the row keeps its
-                 two lines and its height. The label above carries it in words. -->
-			{#if remote}
-				<span class="remote-mark" data-state={remoteState} aria-hidden="true">
-					<Server />
-				</span>
-			{/if}
 		</span>
 
 		<span class="lines">
@@ -195,6 +187,14 @@
 			</span>
 
 			<span class="line line-meta">
+				<!-- The machine, as a small glyph ahead of the project rather than a
+                   badge on the tile: a remote session is told apart at a glance
+                   and the tile stays clean. The tile's label carries it in words. -->
+				{#if remote}
+					<span class="remote-mark" data-state={remoteState} aria-hidden="true">
+						<Server />
+					</span>
+				{/if}
 				<span data-testid="worktree-agent-meta" class="project">{project}</span>
 				{#if session.branch}
 					<span class="sep" aria-hidden="true">·</span>
@@ -259,8 +259,8 @@
 	}
 
 	:global(.thumb-mark) {
-		width: 16px;
-		height: 16px;
+		width: 15px;
+		height: 15px;
 		flex: 0 0 auto;
 	}
 
@@ -294,33 +294,18 @@
 		border-color: var(--secondary);
 	}
 
-	/* The remote badge sits in the tile's top corner, clear of the status dot.
+	/* The remote glyph leads the second line, bare, at the line's text size.
      Static: its colour changes only when the machine's state does, and it
      never animates. */
 	.remote-mark {
-		position: absolute;
-		top: -3px;
-		right: -3px;
-		display: grid;
-		width: 13px;
-		height: 13px;
-		place-items: center;
-		border-radius: 50%;
-		background: var(--card);
+		display: inline-flex;
+		flex: 0 0 auto;
 		color: var(--muted-foreground);
 	}
 
-	.row:hover .remote-mark {
-		background: var(--accent);
-	}
-
-	.row.selected .remote-mark {
-		background: var(--secondary);
-	}
-
 	.remote-mark :global(svg) {
-		width: 9px;
-		height: 9px;
+		width: 11px;
+		height: 11px;
 	}
 
 	/* One state, told in colour as well as in the label and tooltip above. */
