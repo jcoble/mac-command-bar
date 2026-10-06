@@ -115,6 +115,16 @@
     activeKey;
     untrack(() => revealTab(track, track?.querySelector('[data-active="true"]') ?? null));
   });
+
+  // The row also narrows without a new selection (layout settling at launch,
+  // the drawer opening), which can push the active tab out of view.
+  $effect(() => {
+    const strip = track;
+    if (!strip) return;
+    const observer = new ResizeObserver(() => revealTab(strip, strip.querySelector('[data-active="true"]')));
+    observer.observe(strip);
+    return () => observer.disconnect();
+  });
 </script>
 
 {#snippet tabChip(tab: TopTabView, props: Record<string, unknown>, index: number)}
