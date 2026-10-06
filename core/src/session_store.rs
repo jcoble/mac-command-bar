@@ -12,7 +12,7 @@ use serde::Serialize;
 
 mod evidence;
 
-const SCHEMA_VERSION: i64 = 17;
+const SCHEMA_VERSION: i64 = 18;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 static SESSION_STORE_ACTIVE_READS: AtomicUsize = AtomicUsize::new(0);
@@ -77,7 +77,9 @@ CREATE INDEX IF NOT EXISTS events_assistant_page_idx ON events(owned_id,seq)
     OR (kind='item.completed' AND json_extract(payload,'$.payload.kind')='assistantMessage'));
 CREATE INDEX IF NOT EXISTS events_user_command_page_idx ON events(owned_id,json_extract(payload,'$.payload.kind'),seq)
   WHERE json_extract(payload,'$.payload.kind')='userMessage' OR json_extract(payload,'$.payload.kind')='availableCommandsUpdate';
-CREATE INDEX IF NOT EXISTS events_replay_page_idx ON events(owned_id,seq)
+CREATE INDEX IF NOT EXISTS events_replay_page_idx ON events(owned_id,CASE WHEN kind='remote.cached'
+    AND json_extract(payload,'$.payload.kind')='tool' AND json_type(payload,'$.payload.firstSequence')='integer' AND json_type(payload,'$.payload.firstTimestampMs')='integer'
+    THEN json_extract(payload,'$.payload.firstSequence') ELSE seq END,seq)
   WHERE item_id IS NOT NULL AND (kind='remote.cached' OR json_extract(payload,'$.payload.kind')='terminalProjection');
 CREATE INDEX IF NOT EXISTS events_side_page_idx ON events(owned_id,CASE
   WHEN kind IN ('usage.updated','session.config.updated') THEN kind
@@ -140,7 +142,10 @@ WITH assistant_starts AS (
 ), native_tool_selected AS (
   SELECT e.item_id,e.seq,e.turn_id,COALESCE(json_extract(e.payload,'$.payload.firstSequence'),e.seq) AS first_seq,
     COALESCE(json_extract(e.payload,'$.payload.firstTimestampMs'),e.created_at) AS first_timestamp_ms,
-    json_extract(e.payload,'$.payload.state') IN ('completed','failed') AS completed,LENGTH(CAST(e.payload AS BLOB)) AS required_bytes
+    json_extract(e.payload,'$.payload.state') IN ('completed','failed') AS completed,
+    COALESCE(:start_complete OR (json_type(e.payload,'$.payload.firstSequence')='integer'
+      AND json_type(e.payload,'$.payload.firstTimestampMs')='integer'),0) AS position_known,
+    LENGTH(CAST(e.payload AS BLOB)) AS required_bytes
   FROM events e INDEXED BY events_tool_position_idx
   WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.kind='item.updated' AND json_extract(e.payload,'$.payload.kind')='tool'
     AND COALESCE(json_extract(e.payload,'$.payload.firstSequence'),e.seq) < :cursor
@@ -149,20 +154,53 @@ WITH assistant_starts AS (
         AND json_extract(p.payload,'$.payload.kind')='tool')
   ORDER BY COALESCE(json_extract(e.payload,'$.payload.firstSequence'),e.seq) DESC LIMIT :item_ceiling
 ), replay_starts AS (
-  SELECT e.item_id FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.item_id IS NOT NULL
+  SELECT e.item_id,
+    CASE WHEN e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='tool'
+      AND json_type(e.payload,'$.payload.firstSequence')='integer' AND json_type(e.payload,'$.payload.firstTimestampMs')='integer'
+      THEN json_extract(e.payload,'$.payload.firstSequence') ELSE e.seq END AS display_first_seq,
+    e.created_at AS anchor_timestamp_ms
+  FROM events e INDEXED BY events_replay_page_idx
+  WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.item_id IS NOT NULL
     AND (e.kind='remote.cached' OR json_extract(e.payload,'$.payload.kind')='terminalProjection')
+    AND (CASE WHEN e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='tool'
+      AND json_type(e.payload,'$.payload.firstSequence')='integer' AND json_type(e.payload,'$.payload.firstTimestampMs')='integer'
+      THEN json_extract(e.payload,'$.payload.firstSequence') ELSE e.seq END) < :cursor
     AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_owned_item_seq_idx
-      WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id AND p.seq<e.seq
-        AND (p.kind='remote.cached' OR json_extract(p.payload,'$.payload.kind')='terminalProjection'))
-    AND e.seq < :cursor
-  ORDER BY e.seq DESC LIMIT :item_ceiling
+      WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id
+        AND (p.kind='remote.cached' OR json_extract(p.payload,'$.payload.kind')='terminalProjection')
+        AND ((CASE WHEN p.kind='remote.cached' AND json_extract(p.payload,'$.payload.kind')='tool'
+          AND json_type(p.payload,'$.payload.firstSequence')='integer' AND json_type(p.payload,'$.payload.firstTimestampMs')='integer'
+          THEN json_extract(p.payload,'$.payload.firstSequence') ELSE p.seq END)
+          < (CASE WHEN e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='tool'
+            AND json_type(e.payload,'$.payload.firstSequence')='integer' AND json_type(e.payload,'$.payload.firstTimestampMs')='integer'
+            THEN json_extract(e.payload,'$.payload.firstSequence') ELSE e.seq END)
+          OR ((CASE WHEN p.kind='remote.cached' AND json_extract(p.payload,'$.payload.kind')='tool'
+            AND json_type(p.payload,'$.payload.firstSequence')='integer' AND json_type(p.payload,'$.payload.firstTimestampMs')='integer'
+            THEN json_extract(p.payload,'$.payload.firstSequence') ELSE p.seq END)
+            = (CASE WHEN e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='tool'
+              AND json_type(e.payload,'$.payload.firstSequence')='integer' AND json_type(e.payload,'$.payload.firstTimestampMs')='integer'
+              THEN json_extract(e.payload,'$.payload.firstSequence') ELSE e.seq END) AND p.seq<e.seq)))
+  ORDER BY (CASE WHEN e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='tool'
+    AND json_type(e.payload,'$.payload.firstSequence')='integer' AND json_type(e.payload,'$.payload.firstTimestampMs')='integer'
+    THEN json_extract(e.payload,'$.payload.firstSequence') ELSE e.seq END) DESC,e.seq DESC LIMIT :item_ceiling
 ), replay_rows AS (
-  SELECT e.item_id,e.seq,e.created_at,e.turn_id,LENGTH(CAST(e.payload AS BLOB)) AS required_bytes FROM replay_starts s CROSS JOIN events e INDEXED BY events_owned_item_seq_idx
+  SELECT e.item_id,e.seq,e.turn_id,s.display_first_seq,s.anchor_timestamp_ms,
+    CASE WHEN e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='tool'
+      AND json_type(e.payload,'$.payload.firstSequence')='integer' AND json_type(e.payload,'$.payload.firstTimestampMs')='integer'
+      AND json_extract(e.payload,'$.payload.firstSequence')=s.display_first_seq
+      THEN json_extract(e.payload,'$.payload.firstTimestampMs') END AS persisted_first_timestamp_ms,
+    (e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='tool'
+      AND json_type(e.payload,'$.payload.firstSequence')='integer' AND json_type(e.payload,'$.payload.firstTimestampMs')='integer'
+      AND json_extract(e.payload,'$.payload.firstSequence')=s.display_first_seq) AS has_position,
+    json_extract(e.payload,'$.payload.kind') IN ('assistantMessage','userMessage') AS has_authority,
+    LENGTH(CAST(e.payload AS BLOB)) AS required_bytes FROM replay_starts s CROSS JOIN events e INDEXED BY events_owned_item_seq_idx
   ON e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.item_id=s.item_id WHERE e.item_id IS NOT NULL
     AND (e.kind='remote.cached' OR json_extract(e.payload,'$.payload.kind')='terminalProjection')
 ), replay_items AS (
-  SELECT item_id,MIN(seq) AS first_seq,MIN(created_at) AS first_timestamp_ms,MAX(seq) AS last_seq,
-         MIN(turn_id) AS turn_id,SUM(required_bytes) AS required_bytes
+  SELECT item_id,MIN(display_first_seq) AS first_seq,
+         COALESCE(MIN(persisted_first_timestamp_ms),MIN(anchor_timestamp_ms)) AS first_timestamp_ms,
+         MAX(seq) AS last_seq,MIN(turn_id) AS turn_id,COALESCE(:start_complete OR MAX(has_authority),0) AS prefix_complete,
+         COALESCE(:start_complete OR MAX(has_position),0) AS position_known,SUM(required_bytes) AS required_bytes
   FROM replay_rows GROUP BY item_id
 ), command_starts AS MATERIALIZED (
   SELECT e.seq AS first_seq,e.created_at AS first_timestamp_ms,json_extract(e.payload,'$.generation') AS generation
@@ -207,24 +245,30 @@ WITH assistant_starts AS (
          MIN(first_seq) AS first_seq,MIN(first_timestamp_ms) AS first_timestamp_ms,MAX(seq) AS last_seq,
          MAX(authority_seq) AS authority_seq,MIN(turn_id) AS turn_id,
          CASE WHEN MAX(seq)=MAX(authority_seq) THEN MAX(completed) ELSE 0 END AS completed,
+         (:start_complete OR MAX(authority_seq) IS NOT NULL) AS prefix_complete,
+         :start_complete AS position_known,
          SUM(required_bytes) AS required_bytes
   FROM assistant_rows GROUP BY item_id
   UNION ALL
   SELECT 'user:'||item_id,item_id,'native-user',first_seq,first_timestamp_ms,seq,seq,turn_id,
-         completed,required_bytes
+         completed,1,:start_complete,required_bytes
   FROM native_user_selected
   UNION ALL
-  SELECT 'tool:'||item_id,item_id,'native-tool',first_seq,first_timestamp_ms,seq,seq,turn_id,completed,required_bytes
+  SELECT 'tool:'||item_id,item_id,'native-tool',first_seq,first_timestamp_ms,seq,seq,turn_id,
+         completed,1,position_known,required_bytes
   FROM native_tool_selected
   UNION ALL
-  SELECT 'replay:'||item_id,item_id,'replay',first_seq,first_timestamp_ms,last_seq,NULL,turn_id,0,required_bytes
+  SELECT 'replay:'||item_id,item_id,'replay',first_seq,first_timestamp_ms,last_seq,NULL,turn_id,
+         0,prefix_complete,position_known,required_bytes
   FROM replay_items
   UNION ALL
-  SELECT 'commands:'||generation,'commands:'||generation,'exact',first_seq,first_timestamp_ms,seq,seq,turn_id,1,required_bytes FROM command_items
+  SELECT 'commands:'||generation,'commands:'||generation,'exact',first_seq,first_timestamp_ms,seq,seq,turn_id,
+         1,1,:start_complete,required_bytes FROM command_items
   UNION ALL
-  SELECT 'event:'||seq,'event:'||seq,'exact',seq,created_at,seq,seq,turn_id,1,required_bytes FROM exact_rows
+  SELECT 'event:'||seq,'event:'||seq,'exact',seq,created_at,seq,seq,turn_id,1,1,1,required_bytes FROM exact_rows
   UNION ALL
-  SELECT 'side:'||side_kind,'side:'||side_kind,'side',seq,created_at,seq,seq,turn_id,1,required_bytes FROM side_selected
+  SELECT 'side:'||side_kind,'side:'||side_kind,'side',seq,created_at,seq,seq,turn_id,
+         1,1,:start_complete,required_bytes FROM side_selected
 ), candidates AS (
   SELECT *,-first_seq AS page_order FROM descriptors
   WHERE first_seq < :cursor
@@ -247,10 +291,15 @@ WITH assistant_starts AS (
            AND e.kind='item.completed' AND json_extract(e.payload,'$.payload.kind')='userMessage'
            AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_owned_item_seq_idx
              WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id AND p.seq<e.seq))
-         OR EXISTS(SELECT 1 FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND MIN(:high,b.before_cursor) AND e.seq<b.before_cursor
-           AND e.item_id IS NOT NULL AND (e.kind='remote.cached' OR json_extract(e.payload,'$.payload.kind')='terminalProjection')
-           AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_owned_item_seq_idx
-             WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id AND p.seq<e.seq))
+         OR EXISTS(SELECT 1 FROM events e INDEXED BY events_replay_page_idx
+           WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.item_id IS NOT NULL
+             AND (e.kind='remote.cached' OR json_extract(e.payload,'$.payload.kind')='terminalProjection')
+             AND (CASE WHEN e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='tool' AND json_type(e.payload,'$.payload.firstSequence')='integer' AND json_type(e.payload,'$.payload.firstTimestampMs')='integer' THEN json_extract(e.payload,'$.payload.firstSequence') ELSE e.seq END)<b.before_cursor
+             AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_owned_item_seq_idx
+               WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id
+                 AND (p.kind='remote.cached' OR json_extract(p.payload,'$.payload.kind')='terminalProjection')
+                 AND ((CASE WHEN p.kind='remote.cached' AND json_extract(p.payload,'$.payload.kind')='tool' AND json_type(p.payload,'$.payload.firstSequence')='integer' AND json_type(p.payload,'$.payload.firstTimestampMs')='integer' THEN json_extract(p.payload,'$.payload.firstSequence') ELSE p.seq END)<(CASE WHEN e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='tool' AND json_type(e.payload,'$.payload.firstSequence')='integer' AND json_type(e.payload,'$.payload.firstTimestampMs')='integer' THEN json_extract(e.payload,'$.payload.firstSequence') ELSE e.seq END)
+                   OR ((CASE WHEN p.kind='remote.cached' AND json_extract(p.payload,'$.payload.kind')='tool' AND json_type(p.payload,'$.payload.firstSequence')='integer' AND json_type(p.payload,'$.payload.firstTimestampMs')='integer' THEN json_extract(p.payload,'$.payload.firstSequence') ELSE p.seq END)=(CASE WHEN e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='tool' AND json_type(e.payload,'$.payload.firstSequence')='integer' AND json_type(e.payload,'$.payload.firstTimestampMs')='integer' THEN json_extract(e.payload,'$.payload.firstSequence') ELSE e.seq END) AND p.seq<e.seq))))
          OR EXISTS(SELECT 1 FROM events e INDEXED BY events_tool_position_idx
            WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.kind='item.updated' AND json_extract(e.payload,'$.payload.kind')='tool'
              AND COALESCE(json_extract(e.payload,'$.payload.firstSequence'),e.seq) < b.before_cursor
@@ -275,10 +324,15 @@ WITH assistant_starts AS (
            AND e.kind='item.completed' AND json_extract(e.payload,'$.payload.kind')='userMessage'
            AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_owned_item_seq_idx
              WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id AND p.seq<e.seq))
-         OR EXISTS(SELECT 1 FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN MAX(:low,b.after_cursor) AND :high AND e.seq>b.after_cursor
-           AND e.item_id IS NOT NULL AND (e.kind='remote.cached' OR json_extract(e.payload,'$.payload.kind')='terminalProjection')
-           AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_owned_item_seq_idx
-             WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id AND p.seq<e.seq))
+         OR EXISTS(SELECT 1 FROM events e INDEXED BY events_replay_page_idx
+           WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.item_id IS NOT NULL
+             AND (e.kind='remote.cached' OR json_extract(e.payload,'$.payload.kind')='terminalProjection')
+             AND (CASE WHEN e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='tool' AND json_type(e.payload,'$.payload.firstSequence')='integer' AND json_type(e.payload,'$.payload.firstTimestampMs')='integer' THEN json_extract(e.payload,'$.payload.firstSequence') ELSE e.seq END)>b.after_cursor
+             AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_owned_item_seq_idx
+               WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id
+                 AND (p.kind='remote.cached' OR json_extract(p.payload,'$.payload.kind')='terminalProjection')
+                 AND ((CASE WHEN p.kind='remote.cached' AND json_extract(p.payload,'$.payload.kind')='tool' AND json_type(p.payload,'$.payload.firstSequence')='integer' AND json_type(p.payload,'$.payload.firstTimestampMs')='integer' THEN json_extract(p.payload,'$.payload.firstSequence') ELSE p.seq END)<(CASE WHEN e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='tool' AND json_type(e.payload,'$.payload.firstSequence')='integer' AND json_type(e.payload,'$.payload.firstTimestampMs')='integer' THEN json_extract(e.payload,'$.payload.firstSequence') ELSE e.seq END)
+                   OR ((CASE WHEN p.kind='remote.cached' AND json_extract(p.payload,'$.payload.kind')='tool' AND json_type(p.payload,'$.payload.firstSequence')='integer' AND json_type(p.payload,'$.payload.firstTimestampMs')='integer' THEN json_extract(p.payload,'$.payload.firstSequence') ELSE p.seq END)=(CASE WHEN e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='tool' AND json_type(e.payload,'$.payload.firstSequence')='integer' AND json_type(e.payload,'$.payload.firstTimestampMs')='integer' THEN json_extract(e.payload,'$.payload.firstSequence') ELSE e.seq END) AND p.seq<e.seq))))
          OR EXISTS(SELECT 1 FROM events e INDEXED BY events_tool_position_idx
            WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.kind='item.updated' AND json_extract(e.payload,'$.payload.kind')='tool'
              AND COALESCE(json_extract(e.payload,'$.payload.firstSequence'),e.seq) > b.after_cursor
@@ -298,7 +352,8 @@ WITH assistant_starts AS (
   FROM bounds b
 )
 SELECT s.item_id,s.page_key,s.selection_mode,s.first_seq,s.first_timestamp_ms,s.last_seq,
-       s.authority_seq,s.turn_id,s.completed,s.required_bytes,b.before_cursor,b.after_cursor,b.transfer_bytes,
+       s.authority_seq,s.turn_id,s.completed,s.prefix_complete,s.position_known,s.required_bytes,
+       b.before_cursor,b.after_cursor,b.transfer_bytes,
        (SELECT COALESCE(MAX(seq),0) FROM events WHERE owned_id=:owned_id AND seq BETWEEN :low AND :high) AS watermark,
        b.has_before,b.has_after
 FROM page_facts b LEFT JOIN selected s ON TRUE ORDER BY s.first_seq ASC,s.page_key ASC;
@@ -694,6 +749,7 @@ pub struct OlderEvents {
 pub struct EventCoverage {
     pub low: i64,
     pub high: i64,
+    pub start_complete: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -710,6 +766,8 @@ pub struct ItemPageDescriptor {
     pub authority_sequence: Option<i64>,
     pub turn_id: Option<String>,
     pub completed: bool,
+    pub prefix_complete: bool,
+    pub position_known: bool,
     pub required_bytes: u64,
 }
 
@@ -734,6 +792,7 @@ pub struct ItemPage {
     pub watermark: i64,
     pub transfer_bytes: u64,
     pub oversized: bool,
+    pub coverage: Option<EventCoverage>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1480,12 +1539,22 @@ impl SessionStore {
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(|error| StoreError::sqlite("could not begin the child session upgrade", error))?;
                 add_child_session_schema(&transaction)?;
+                replace_replay_page_index(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| StoreError::sqlite("could not record the child session upgrade", error))?;
                 transaction
                     .commit()
                     .map_err(|error| StoreError::sqlite("could not finish the child session upgrade", error))?;
+            }
+            17 => {
+                let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| StoreError::sqlite("could not begin the replay position upgrade", error))?;
+                replace_replay_page_index(&transaction)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| StoreError::sqlite("could not record the replay position upgrade", error))?;
+                transaction.commit()
+                    .map_err(|error| StoreError::sqlite("could not finish the replay position upgrade", error))?;
             }
             SCHEMA_VERSION => {}
             _ => {
@@ -2593,6 +2662,7 @@ impl SessionStore {
     ) -> Result<ItemPage> {
         let low = coverage.map_or(i64::MIN, |range| range.low);
         let requested_high = coverage.map_or(i64::MAX, |range| range.high);
+        let start_complete = coverage.map_or(true, |range| range.start_complete);
         if low > requested_high {
             return Err(StoreError::message("the event coverage range is invalid"));
         }
@@ -2606,6 +2676,7 @@ impl SessionStore {
             std::borrow::Cow::Borrowed(ITEM_PAGE_DESCRIPTOR_SQL)
         } else {
             std::borrow::Cow::Owned(ITEM_PAGE_DESCRIPTOR_SQL.replace(" < :cursor", " > :cursor")
+                .replace("DESC,e.seq DESC LIMIT :item_ceiling", "ASC,e.seq ASC LIMIT :item_ceiling")
                 .replace(" DESC LIMIT :item_ceiling", " ASC LIMIT :item_ceiling")
                 .replace("SELECT *,-first_seq AS page_order", "SELECT *,first_seq AS page_order"))
         };
@@ -2620,6 +2691,7 @@ impl SessionStore {
                 ":item_ceiling": Self::ITEM_PAGE_CANDIDATE_CEILING,
                 ":low": low,
                 ":high": requested_high,
+                ":start_complete": start_complete,
             },
             item_page_descriptor_from_row,
         ).map_err(|error| StoreError::sqlite("could not query the item page descriptors", error))?;
@@ -2676,6 +2748,7 @@ impl SessionStore {
             has_after: facts.has_after,
             watermark,
             transfer_bytes: facts.transfer_bytes,
+            coverage,
         })
     }
 
@@ -3070,6 +3143,13 @@ fn add_tool_item_schema(connection: &Connection) -> Result<()> {
         .map_err(|error| StoreError::sqlite("could not add the item page indexes", error))
 }
 
+fn replace_replay_page_index(connection: &Connection) -> Result<()> {
+    connection.execute_batch("DROP INDEX IF EXISTS events_replay_page_idx;")
+        .map_err(|error| StoreError::sqlite("could not replace the replay page index", error))?;
+    connection.execute_batch(ITEM_PAGE_INDEX_SCHEMA)
+        .map_err(|error| StoreError::sqlite("could not add the replay position index", error))
+}
+
 fn upgrade_tool_events(connection: &Connection) -> Result<()> {
     add_tool_item_schema(connection)?;
     connection
@@ -3376,18 +3456,20 @@ fn item_page_descriptor_from_row(row: &Row<'_>) -> rusqlite::Result<ItemPageDesc
             authority_sequence: row.get(6)?,
             turn_id: row.get(7)?,
             completed: row.get(8)?,
-            required_bytes: row.get(9)?,
+            prefix_complete: row.get(9)?,
+            position_known: row.get(10)?,
+            required_bytes: row.get(11)?,
         }),
         None => None,
     };
     Ok(ItemPageDescriptorRow {
         item,
-        before_cursor: row.get(10)?,
-        after_cursor: row.get(11)?,
-        transfer_bytes: row.get(12)?,
-        watermark: row.get(13)?,
-        has_before: row.get(14)?,
-        has_after: row.get(15)?,
+        before_cursor: row.get(12)?,
+        after_cursor: row.get(13)?,
+        transfer_bytes: row.get(14)?,
+        watermark: row.get(15)?,
+        has_before: row.get(16)?,
+        has_after: row.get(17)?,
     })
 }
 
@@ -3650,6 +3732,9 @@ mod tests {
         assert_eq!(page.items[0].first_timestamp_ms, 10);
         assert_eq!(page.items[0].authority_sequence, Some(2));
         assert!(!page.items[0].completed, "a later delta reopens the authority");
+        assert!(page.items[0].prefix_complete);
+        assert!(page.items[0].position_known);
+        assert_eq!(page.coverage, None);
         assert_eq!(page.events.iter().map(|event| event.seq).collect::<Vec<_>>(), [2, 3]);
         assert_eq!(page.turns, [RepresentedTurnFacts {
             turn_id: "turn-a".into(), started_at_ms: Some(0), ended_at_ms: Some(40),
@@ -3697,13 +3782,69 @@ mod tests {
             store.append_event(&item_page_event("covered", seq, Some("turn-a"), "plan.updated", 1,
                 serde_json::json!({"kind":"plan","items":[{"content":seq}]}))).unwrap();
         }
-        let page = store.list_items_before("covered", i64::MAX, 1, Some(EventCoverage { low: 2, high: 4 })).unwrap();
+        let coverage = EventCoverage { low: 2, high: 4, start_complete: false };
+        let page = store.list_items_before("covered", i64::MAX, 1, Some(coverage)).unwrap();
         assert_eq!(page.watermark, 4);
         assert_eq!(page.items.iter().map(|item| item.first_sequence).collect::<Vec<_>>(), [4]);
         assert_eq!(page.events.iter().map(|event| event.seq).collect::<Vec<_>>(), [4]);
         assert!(page.oversized);
         assert!(page.has_before);
         assert!(!page.has_after);
+        assert_eq!(page.coverage, Some(coverage));
+    }
+
+    #[test]
+    fn clipped_page_distinguishes_authority_from_delta_only_prefixes() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&fixture_session("clipped", 0)).unwrap();
+        for event in [
+            item_page_event("clipped", 2, Some("turn-a"), "item.completed", 1,
+                serde_json::json!({"kind":"assistantMessage","itemId":"native-full","text":"full"})),
+            item_page_event("clipped", 3, Some("turn-a"), "content.delta", 1,
+                serde_json::json!({"kind":"assistantDelta","itemId":"native-delta","delta":"tail"})),
+            item_page_event("clipped", 4, Some("turn-b"), "remote.cached", 1,
+                serde_json::json!({"kind":"assistantMessage","itemId":"replay-full","text":"full"})),
+            item_page_event("clipped", 5, Some("turn-b"), "remote.cached", 1,
+                serde_json::json!({"kind":"assistantDelta","itemId":"replay-delta","delta":"tail"})),
+            item_page_event("clipped", 6, Some("turn-b"), "remote.cached", 1,
+                serde_json::json!({"kind":"tool","itemId":"sparse-tool","state":"completed"})),
+        ] {
+            store.append_event(&event).unwrap();
+        }
+
+        let page = store.list_items_before("clipped", i64::MAX, 512 * 1024,
+            Some(EventCoverage { low: 2, high: 6, start_complete: false })).unwrap();
+        assert_eq!(page.items.iter().map(|item| (item.stable_id.as_str(), item.prefix_complete,
+            item.position_known)).collect::<Vec<_>>(), [
+            ("assistant:native-full", true, false), ("assistant:native-delta", false, false),
+            ("replay:replay-full", true, false), ("replay:replay-delta", false, false),
+            ("replay:sparse-tool", false, false),
+        ]);
+    }
+
+    #[test]
+    fn remote_tool_uses_persisted_position_for_paging_and_keeps_raw_records() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&fixture_session("remote-tools", 0)).unwrap();
+        store.append_event(&item_page_event("remote-tools", 100, Some("turn-a"), "remote.cached", 1,
+            serde_json::json!({"kind":"tool","itemId":"early","state":"running"}))).unwrap();
+        for (seq, item_id, first_sequence) in [(101, "early", 10), (102, "later", 80)] {
+            store.append_event(&item_page_event("remote-tools", seq, Some("turn-a"), "remote.cached", 1,
+                serde_json::json!({"kind":"tool","itemId":item_id,"state":"completed",
+                    "firstSequence":first_sequence,"firstTimestampMs":first_sequence * 10}))).unwrap();
+        }
+        let coverage = Some(EventCoverage { low: 100, high: 102, start_complete: false });
+        let older = store.list_items_before("remote-tools", 50, 512 * 1024, coverage).unwrap();
+        assert_eq!(older.items.iter().map(|item| (item.item_id.as_str(), item.first_sequence,
+            item.position_known, item.prefix_complete)).collect::<Vec<_>>(), [("early", 10, true, false)]);
+        assert_eq!(older.events.iter().map(|event| event.seq).collect::<Vec<_>>(), [100, 101]);
+        assert!(older.has_after);
+
+        let newer = store.list_items_after("remote-tools", 50, 512 * 1024, coverage).unwrap();
+        assert_eq!(newer.items.iter().map(|item| (item.item_id.as_str(), item.first_sequence,
+            item.position_known)).collect::<Vec<_>>(), [("later", 80, true)]);
+        assert_eq!(newer.events.iter().map(|event| event.seq).collect::<Vec<_>>(), [102]);
+        assert!(newer.has_before);
     }
 
     #[test]
@@ -3799,6 +3940,8 @@ mod tests {
         connection.execute_batch(
             "DROP INDEX sessions_parent_owned_idx;
              ALTER TABLE sessions DROP COLUMN parent_owned_id;
+             DROP INDEX events_replay_page_idx;
+             CREATE INDEX events_replay_page_idx ON events(owned_id,seq) WHERE item_id IS NOT NULL;
              PRAGMA user_version = 16;",
         ).unwrap();
         drop(connection);
@@ -3818,9 +3961,19 @@ mod tests {
                 WHERE type = 'index' AND name = 'sessions_parent_owned_idx')",
             [], |row| row.get(0),
         ).unwrap();
+        let replay_index: String = connection.query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'events_replay_page_idx'", [], |row| row.get(0),
+        ).unwrap();
         assert_eq!(version, super::SCHEMA_VERSION);
         assert!(column_exists);
         assert!(index_exists);
+        assert!(replay_index.contains("$.payload.firstSequence"));
+        connection.execute_batch("DROP INDEX events_replay_page_idx; CREATE INDEX events_replay_page_idx ON events(owned_id,seq) WHERE item_id IS NOT NULL; PRAGMA user_version = 17;").unwrap();
+        drop(connection);
+        drop(SessionStore::open(&path).unwrap());
+        let connection = Connection::open(&path).unwrap();
+        let replay_index: String = connection.query_row("SELECT sql FROM sqlite_master WHERE name = 'events_replay_page_idx'", [], |row| row.get(0)).unwrap();
+        assert!(replay_index.contains("$.payload.firstSequence"));
     }
 
     #[test]
