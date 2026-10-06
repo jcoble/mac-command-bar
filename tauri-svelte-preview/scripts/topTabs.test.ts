@@ -160,13 +160,15 @@ test('failed remote selection releases outgoing tabs and preserves its active fi
     isCurrent: () => true, activeWorkspaceSnapshot: null,
     newSession: { abandonDraftForSessionSwitch: () => {} },
     sessionSelectionLayers: { selectSession: async () => { throw new Error('remote machine is not connected'); }, treeRoot: '/repo' },
-    editorSessions: { restoreEditorWorkspaceForSession: restore }
+    editorSessions: { restoreEditorWorkspaceForSession: restore, releaseOwnership: () => { released += 1; } }
   };
+  let released = 0;
   const select = new Function('captureConversationWorkspace', 'shellPanels', `${methodCode}; return materializeSelection;`)(
     () => null, { sessionPicked: () => {} }
   ) as (this: typeof state, session: typeof remote, root: string, owner: { signal: AbortSignal }, displayedId: string) => Promise<void>;
   await assert.rejects(select.call(state, remote, remote.root, owner, 'hello'), /remote machine is not connected/);
   assert.deepEqual(restores, [['remote', remote.root, false, owner.signal]]);
+  assert.equal(released, 1, 'the failed selection does not own the editor it emptied');
   assert.deepEqual(topTabRow([], { editorPaths: editor.openFiles.map((file) => file.path), browserTabIds: [] }), []);
   assert.equal(state.activeWorkspaceSnapshot, saved.get('remote'));
   await restore('hello', '/repo', true, owner.signal);
@@ -228,6 +230,7 @@ test('an unreadable remote workspace releases editor ownership before returning 
   interface EditorController {
     restoreEditorWorkspaceForSession(id: string, root: string, available: boolean, signal: AbortSignal): Promise<unknown>;
     rememberWorkspaceState(patch: object): unknown;
+    releaseOwnership(): void;
   }
   const Controller = new Function(...Object.keys(dependencies), `${code}; return EditorSessionController;`)(...Object.values(dependencies)) as new () => EditorController;
   const controller = new Controller();
@@ -239,4 +242,12 @@ test('an unreadable remote workspace releases editor ownership before returning 
   await controller.restoreEditorWorkspaceForSession('hello', '/repo', true, signal);
   assert.equal(editor.activePath, readme);
   assert.deepEqual(writes, ['hello'], 'returning must not checkpoint the remote or overwrite hello from empty editor state');
+
+  // A projection can fail while the saved workspace is still readable. The
+  // failed selection shows it without its files and must not save over it.
+  saved.set('flaky', { openPaths: ['/flaky/a.ts'], activePath: '/flaky/a.ts' });
+  await controller.restoreEditorWorkspaceForSession('flaky', '/flaky', false, signal);
+  controller.releaseOwnership();
+  await controller.restoreEditorWorkspaceForSession('hello', '/repo', true, signal);
+  assert.deepEqual(saved.get('flaky'), { openPaths: ['/flaky/a.ts'], activePath: '/flaky/a.ts' }, 'leaving a failed selection keeps its saved tabs');
 });

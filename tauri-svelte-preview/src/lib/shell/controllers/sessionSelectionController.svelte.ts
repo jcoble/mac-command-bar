@@ -376,6 +376,7 @@ export class SessionSelectionController {
 				session.ownedId, root, false, owner.signal,
 			);
 			if (!this.isCurrent(owner)) return;
+			this.editorSessions.releaseOwnership();
 			this.activeWorkspaceSnapshot = snapshot;
 			throw error;
 		}

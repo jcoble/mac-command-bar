@@ -166,6 +166,13 @@ export class EditorSessionController {
 		return true;
 	}
 
+	/** Stop owning a session whose files couldn't be shown, so leaving it can't
+	 *  save its empty editor over the tabs it had. */
+	releaseOwnership(): void {
+		this.activeOwnedId = null;
+		this.activeSnapshot = null;
+	}
+
 	/** Drops file-backed editor state after the session moves to another checkout. */
 	async resetForCheckoutChange(stopSignal: AbortSignal): Promise<void> {
 		if (stopSignal.aborted) return;
