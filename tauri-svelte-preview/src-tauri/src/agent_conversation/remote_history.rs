@@ -281,8 +281,12 @@ impl RemoteHistory {
         Ok(())
     }
 
-    pub fn purge(&mut self, profile: &str) -> Result<(), String> {
+    pub fn disconnect(&mut self, profile: &str) {
         *self.epochs.entry(profile.into()).or_default() += 1;
+    }
+
+    pub fn purge(&mut self, profile: &str) -> Result<(), String> {
+        self.disconnect(profile);
         self.store
             .purge_remote_history(profile)
             .map_err(|e| e.to_string())

@@ -931,7 +931,8 @@ impl RemoteConnectionManager {
 
     pub fn disconnect_profile(&self, profile_id: &str) -> Result<(), String> {
         self.stop_profile(profile_id);
-        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(profile_id)
+        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).disconnect(profile_id);
+        Ok(())
     }
 
     fn history_event_sink(&self, profile_id: &str) -> RemoteEventSink {
@@ -3081,11 +3082,15 @@ mod connection_tests {
     async fn cached_open_tops_up_once_and_pages_from_the_mac_copy() {
         let published = Arc::new(Mutex::new(Vec::new()));
         let captured = published.clone();
+        let shared = store();
         let manager = RemoteConnectionManager::from_environment(
             Arc::new(move |event: AgentConversationEvent| captured.lock().unwrap().push(event.sequence)),
-            Arc::new(|_| {}), store(),
+            Arc::new(|_| {}), shared.clone(),
         ).unwrap();
-        manager.remember("large-history", "cache-test");
+        manager.replace_cached_profile_sessions(
+            "cache-test",
+            &[session("large-history", "cache-test", 1)],
+        ).unwrap();
         // An earlier run saved 2..=3; live event 5 then arrived after a missed 4.
         manager.history.lock().unwrap()
             .snapshot("cache-test", 0, None, &history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
@@ -3138,7 +3143,19 @@ mod connection_tests {
         let late_sink = manager.history_event_sink("cache-test");
         manager.disconnect_profile("cache-test").unwrap();
         assert!(late_sink(vec![large_history_event(32)]).is_err());
-        assert!(manager.history.lock().unwrap().through("cache-test", "large-history").unwrap().is_none());
+        assert_eq!(manager.history.lock().unwrap().through("cache-test", "large-history").unwrap(), Some(6));
+
+        let restarted = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared,
+        ).unwrap();
+        assert_eq!(
+            sequences(&restarted.snapshot("large-history".into(), 4).await.unwrap().unwrap().events),
+            (1..=6).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            sequences(&restarted.events_before("large-history".into(), 4, 1 << 20).await.unwrap().events),
+            vec![1, 2, 3],
+        );
     }
 
     fn connect(manager: &RemoteConnectionManager) -> mpsc::Receiver<ClientRequest> {
