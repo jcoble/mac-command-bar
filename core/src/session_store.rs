@@ -11,7 +11,7 @@ use rusqlite::{
 
 mod evidence;
 
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 static SESSION_STORE_ACTIVE_READS: AtomicUsize = AtomicUsize::new(0);
@@ -49,6 +49,162 @@ const TOOL_ITEM_COLUMN_SCHEMA: &str = "ALTER TABLE events ADD COLUMN item_id TEX
     GENERATED ALWAYS AS (json_extract(payload, '$.payload.itemId')) VIRTUAL;";
 const TOOL_ITEM_INDEX_SCHEMA: &str =
     "CREATE INDEX IF NOT EXISTS events_item_idx ON events(owned_id, kind, item_id, seq);";
+const TOOL_ITEM_SEQUENCE_INDEX_SCHEMA: &str =
+    "CREATE INDEX IF NOT EXISTS events_owned_item_seq_idx ON events(owned_id, item_id, seq);
+     CREATE INDEX IF NOT EXISTS events_tool_name_idx ON events(owned_id, item_id, seq)
+       WHERE json_extract(payload,'$.payload.kind')='tool'
+         AND NULLIF(json_extract(payload,'$.payload.name'),'') IS NOT NULL;
+     CREATE INDEX IF NOT EXISTS events_tool_summary_idx ON events(owned_id, item_id, seq)
+       WHERE json_extract(payload,'$.payload.kind')='tool'
+         AND json_type(payload,'$.payload.summary') NOT IN ('null');
+     CREATE INDEX IF NOT EXISTS events_tool_output_idx ON events(owned_id, item_id, seq)
+       WHERE json_extract(payload,'$.payload.kind')='tool'
+         AND json_type(payload,'$.payload.output') NOT IN ('null');
+     CREATE INDEX IF NOT EXISTS events_tool_path_idx ON events(owned_id, item_id, seq)
+       WHERE json_extract(payload,'$.payload.kind')='tool'
+         AND json_type(payload,'$.payload.path') NOT IN ('null');
+     CREATE INDEX IF NOT EXISTS events_tool_diff_idx ON events(owned_id, item_id, seq)
+       WHERE json_extract(payload,'$.payload.kind')='tool'
+         AND json_type(payload,'$.payload.diff') NOT IN ('null');";
+
+const NORMALIZE_TOOL_EVENTS: &str = "WITH latest AS MATERIALIZED (
+  SELECT e.rowid, e.owned_id, e.item_id, e.seq, e.created_at, e.payload
+  FROM events e
+  WHERE e.kind='item.updated' AND e.item_id IS NOT NULL
+    AND json_extract(e.payload,'$.payload.kind')='tool'
+    AND NOT EXISTS (SELECT 1 FROM events n
+      WHERE n.owned_id=e.owned_id AND n.item_id=e.item_id AND n.kind='item.updated' AND n.seq>e.seq
+        AND json_extract(n.payload,'$.payload.kind')='tool')
+), facts AS MATERIALIZED (
+  SELECT l.*,
+    COALESCE((SELECT json_extract(e.payload,'$.payload.name') FROM events e
+      WHERE e.owned_id=l.owned_id AND e.item_id=l.item_id AND json_extract(e.payload,'$.payload.kind')='tool'
+        AND e.seq<=l.seq
+        AND NULLIF(json_extract(e.payload,'$.payload.name'),'') IS NOT NULL
+      ORDER BY e.seq DESC LIMIT 1),'') name,
+    json_extract(l.payload,'$.payload.state') state,
+    (SELECT json_extract(e.payload,'$.payload.summary') FROM events e
+      WHERE e.owned_id=l.owned_id AND e.item_id=l.item_id AND json_extract(e.payload,'$.payload.kind')='tool'
+        AND e.seq<=l.seq
+        AND json_type(e.payload,'$.payload.summary') NOT IN ('null') ORDER BY e.seq DESC LIMIT 1) summary,
+    (SELECT json_extract(e.payload,'$.payload.output') FROM events e
+      WHERE e.owned_id=l.owned_id AND e.item_id=l.item_id AND json_extract(e.payload,'$.payload.kind')='tool'
+        AND e.seq<=l.seq
+        AND json_type(e.payload,'$.payload.output') NOT IN ('null') ORDER BY e.seq DESC LIMIT 1) output,
+    (SELECT json_extract(e.payload,'$.payload.path') FROM events e
+      WHERE e.owned_id=l.owned_id AND e.item_id=l.item_id AND json_extract(e.payload,'$.payload.kind')='tool'
+        AND e.seq<=l.seq
+        AND json_type(e.payload,'$.payload.path') NOT IN ('null') ORDER BY e.seq DESC LIMIT 1) path,
+    (SELECT json_extract(e.payload,'$.payload.diff') FROM events e
+      WHERE e.owned_id=l.owned_id AND e.item_id=l.item_id AND json_extract(e.payload,'$.payload.kind')='tool'
+        AND e.seq<=l.seq
+        AND json_type(e.payload,'$.payload.diff') NOT IN ('null') ORDER BY e.seq DESC LIMIT 1) diff,
+    (SELECT json_extract(e.payload,'$.payload.firstSequence') FROM events e
+      WHERE e.owned_id=l.owned_id AND e.item_id=l.item_id AND json_extract(e.payload,'$.payload.kind')='tool'
+        AND e.seq<=l.seq
+        AND json_type(e.payload,'$.payload.firstSequence')='integer' ORDER BY e.seq DESC LIMIT 1) stored_first_seq,
+    (SELECT json_extract(e.payload,'$.payload.firstTimestampMs') FROM events e
+      WHERE e.owned_id=l.owned_id AND e.item_id=l.item_id AND json_extract(e.payload,'$.payload.kind')='tool'
+        AND e.seq<=l.seq
+        AND json_type(e.payload,'$.payload.firstTimestampMs')='integer' ORDER BY e.seq DESC LIMIT 1) stored_first_time,
+    (SELECT e.seq FROM events e WHERE e.owned_id=l.owned_id AND e.item_id=l.item_id
+      AND json_extract(e.payload,'$.payload.kind')='tool' ORDER BY e.seq ASC LIMIT 1) surviving_first_seq,
+    (SELECT e.created_at FROM events e WHERE e.owned_id=l.owned_id AND e.item_id=l.item_id
+      AND json_extract(e.payload,'$.payload.kind')='tool' ORDER BY e.seq ASC LIMIT 1) surviving_first_time
+  FROM latest l
+), merged AS MATERIALIZED (
+  SELECT *,
+    CASE WHEN stored_first_seq IS NOT NULL AND stored_first_time IS NOT NULL
+                   AND stored_first_seq<=surviving_first_seq
+         THEN stored_first_seq ELSE surviving_first_seq END first_seq,
+    CASE WHEN stored_first_seq IS NOT NULL AND stored_first_time IS NOT NULL
+                   AND stored_first_seq<=surviving_first_seq
+         THEN stored_first_time ELSE surviving_first_time END first_time
+  FROM facts
+), payloads AS MATERIALIZED (
+  SELECT rowid, payload, json_patch(json_patch(json_patch(json_patch(
+    json_object('kind','tool','itemId',item_id,'name',name,'state',state,
+      'firstSequence',first_seq,'firstTimestampMs',first_time),
+    CASE WHEN summary IS NULL THEN '{}' ELSE json_object('summary',summary) END),
+    CASE WHEN output IS NULL THEN '{}' ELSE json_object('output',output) END),
+    CASE WHEN path IS NULL THEN '{}' ELSE json_object('path',path) END),
+    CASE WHEN diff IS NULL THEN '{}' ELSE json_object('diff',diff) END) tool
+  FROM merged
+)
+UPDATE events AS e
+SET payload=json_set(p.payload,'$.payload',json(p.tool))
+FROM payloads AS p
+WHERE e.rowid=p.rowid;";
+
+const INSERT_NORMALIZED_TOOL_EVENT: &str = "WITH incoming(owned_id,seq,turn_id,kind,raw,created_at,item_id) AS (
+  VALUES (?1,?2,?3,?4,json(?5),?6,json_extract(?5,'$.payload.itemId'))
+), facts AS MATERIALIZED (
+  SELECT i.*,
+    COALESCE(NULLIF(json_extract(i.raw,'$.payload.name'),''),
+      (SELECT json_extract(e.payload,'$.payload.name') FROM events e
+       WHERE e.owned_id=i.owned_id AND e.item_id=i.item_id
+         AND json_extract(e.payload,'$.payload.kind')='tool'
+         AND NULLIF(json_extract(e.payload,'$.payload.name'),'') IS NOT NULL
+       ORDER BY e.seq DESC LIMIT 1),'') name,
+    json_extract(i.raw,'$.payload.state') state,
+    COALESCE(json_extract(i.raw,'$.payload.summary'),
+      (SELECT json_extract(e.payload,'$.payload.summary') FROM events e
+       WHERE e.owned_id=i.owned_id AND e.item_id=i.item_id
+         AND json_extract(e.payload,'$.payload.kind')='tool'
+         AND json_type(e.payload,'$.payload.summary') NOT IN ('null') ORDER BY e.seq DESC LIMIT 1)) summary,
+    COALESCE(json_extract(i.raw,'$.payload.output'),
+      (SELECT json_extract(e.payload,'$.payload.output') FROM events e
+       WHERE e.owned_id=i.owned_id AND e.item_id=i.item_id
+         AND json_extract(e.payload,'$.payload.kind')='tool'
+         AND json_type(e.payload,'$.payload.output') NOT IN ('null') ORDER BY e.seq DESC LIMIT 1)) output,
+    COALESCE(json_extract(i.raw,'$.payload.path'),
+      (SELECT json_extract(e.payload,'$.payload.path') FROM events e
+       WHERE e.owned_id=i.owned_id AND e.item_id=i.item_id
+         AND json_extract(e.payload,'$.payload.kind')='tool'
+         AND json_type(e.payload,'$.payload.path') NOT IN ('null') ORDER BY e.seq DESC LIMIT 1)) path,
+    COALESCE(json_extract(i.raw,'$.payload.diff'),
+      (SELECT json_extract(e.payload,'$.payload.diff') FROM events e
+       WHERE e.owned_id=i.owned_id AND e.item_id=i.item_id
+         AND json_extract(e.payload,'$.payload.kind')='tool'
+         AND json_type(e.payload,'$.payload.diff') NOT IN ('null') ORDER BY e.seq DESC LIMIT 1)) diff,
+    (SELECT json_extract(e.payload,'$.payload.firstSequence') FROM events e
+     WHERE e.owned_id=i.owned_id AND e.item_id=i.item_id
+       AND json_extract(e.payload,'$.payload.kind')='tool'
+       AND json_type(e.payload,'$.payload.firstSequence')='integer' ORDER BY e.seq DESC LIMIT 1) stored_first_seq,
+    (SELECT json_extract(e.payload,'$.payload.firstTimestampMs') FROM events e
+     WHERE e.owned_id=i.owned_id AND e.item_id=i.item_id
+       AND json_extract(e.payload,'$.payload.kind')='tool'
+       AND json_type(e.payload,'$.payload.firstTimestampMs')='integer' ORDER BY e.seq DESC LIMIT 1) stored_first_time,
+    (SELECT e.seq FROM events e WHERE e.owned_id=i.owned_id AND e.item_id=i.item_id
+     AND json_extract(e.payload,'$.payload.kind')='tool'
+     ORDER BY e.seq ASC LIMIT 1) surviving_first_seq,
+    (SELECT e.created_at FROM events e WHERE e.owned_id=i.owned_id AND e.item_id=i.item_id
+     AND json_extract(e.payload,'$.payload.kind')='tool'
+     ORDER BY e.seq ASC LIMIT 1) surviving_first_time
+  FROM incoming i
+), merged AS MATERIALIZED (
+  SELECT *,
+    CASE WHEN stored_first_seq IS NOT NULL AND stored_first_time IS NOT NULL
+                   AND stored_first_seq<=surviving_first_seq
+         THEN stored_first_seq ELSE COALESCE(surviving_first_seq,seq) END first_seq,
+    CASE WHEN stored_first_seq IS NOT NULL AND stored_first_time IS NOT NULL
+                   AND stored_first_seq<=surviving_first_seq
+         THEN stored_first_time ELSE COALESCE(surviving_first_time,created_at) END first_time
+  FROM facts
+), payloads AS (
+  SELECT *,json_patch(json_patch(json_patch(json_patch(
+    json_object('kind','tool','itemId',item_id,'name',name,'state',state,
+      'firstSequence',first_seq,'firstTimestampMs',first_time),
+    CASE WHEN summary IS NULL THEN '{}' ELSE json_object('summary',summary) END),
+    CASE WHEN output IS NULL THEN '{}' ELSE json_object('output',output) END),
+    CASE WHEN path IS NULL THEN '{}' ELSE json_object('path',path) END),
+    CASE WHEN diff IS NULL THEN '{}' ELSE json_object('diff',diff) END) tool
+  FROM merged
+)
+INSERT INTO events(owned_id,seq,turn_id,kind,payload,created_at)
+SELECT owned_id,seq,turn_id,kind,
+  json_set(raw,'$.sequence',seq,'$.timestampMs',created_at,'$.payload',json(tool)),created_at
+FROM payloads;";
 
 /// The attachment index, created by both the first-run schema and the upgrade
 /// from version one. The row names the file and the application names the root,
@@ -574,7 +730,7 @@ impl SessionStore {
                     .map_err(|error| {
                         StoreError::sqlite("could not create the attachment table", error)
                     })?;
-                add_tool_item_schema(&transaction)?;
+                upgrade_tool_events(&transaction)?;
                 // A version one database has the same superseded rows a version
                 // two one does, and goes straight to the current version, so it
                 // is cleared here rather than falling through to that upgrade.
@@ -611,7 +767,7 @@ impl SessionStore {
                         StoreError::sqlite("could not begin the event cleanup", error)
                     })?;
                 add_attachment_thumbnail_schema(&transaction)?;
-                add_tool_item_schema(&transaction)?;
+                upgrade_tool_events(&transaction)?;
                 clear_superseded_events(&transaction)?;
                 add_title_source_column(&transaction)?;
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
@@ -646,7 +802,7 @@ impl SessionStore {
                     })?;
                 add_attachment_thumbnail_schema(&transaction)?;
                 add_title_source_column(&transaction)?;
-                add_tool_item_schema(&transaction)?;
+                upgrade_tool_events(&transaction)?;
                 clear_superseded_events(&transaction)?;
                 transaction.execute_batch(BROKER_SCHEMA).map_err(|error| {
                     StoreError::sqlite("could not create the broker tables", error)
@@ -687,7 +843,7 @@ impl SessionStore {
                     .map_err(|error| {
                         StoreError::sqlite("could not create the durable UI tables", error)
                     })?;
-                add_tool_item_schema(&transaction)?;
+                upgrade_tool_events(&transaction)?;
                 clear_superseded_events(&transaction)?;
                 transaction
                     .execute_batch(ORCHESTRATION_SCHEMA)
@@ -712,7 +868,7 @@ impl SessionStore {
                         StoreError::sqlite("could not begin the tool event upgrade", error)
                     })?;
                 add_attachment_thumbnail_schema(&transaction)?;
-                add_tool_item_schema(&transaction)?;
+                upgrade_tool_events(&transaction)?;
                 clear_superseded_events(&transaction)?;
                 transaction
                     .execute_batch(DURABLE_UI_SCHEMA)
@@ -754,6 +910,7 @@ impl SessionStore {
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
                 add_notion_task_projection_schema(&transaction)?;
+                upgrade_tool_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -782,6 +939,7 @@ impl SessionStore {
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
                 add_notion_task_projection_schema(&transaction)?;
+                upgrade_tool_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -805,6 +963,7 @@ impl SessionStore {
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
                 add_notion_task_projection_schema(&transaction)?;
+                upgrade_tool_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -826,6 +985,7 @@ impl SessionStore {
                 add_attachment_thumbnail_schema(&transaction)?;
                 add_evidence_artifact_schema(&transaction)?;
                 add_notion_task_projection_schema(&transaction)?;
+                upgrade_tool_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -843,6 +1003,7 @@ impl SessionStore {
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
                 add_notion_task_projection_schema(&transaction)?;
+                upgrade_tool_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -863,6 +1024,7 @@ impl SessionStore {
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
                 add_notion_task_projection_schema(&transaction)?;
+                upgrade_tool_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -879,6 +1041,7 @@ impl SessionStore {
                         StoreError::sqlite("could not begin the evidence disk usage upgrade", error)
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
+                upgrade_tool_events(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -892,9 +1055,19 @@ impl SessionStore {
                 let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(|error| StoreError::sqlite("could not begin remote history upgrade", error))?;
                 add_remote_history_column(&transaction)?;
+                upgrade_tool_events(&transaction)?;
                 transaction.pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| StoreError::sqlite("could not record remote history upgrade", error))?;
                 transaction.commit().map_err(|error| StoreError::sqlite("could not finish remote history upgrade", error))?;
+            }
+            14 => {
+                let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| StoreError::sqlite("could not begin the tool normalization upgrade", error))?;
+                upgrade_tool_events(&transaction)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| StoreError::sqlite("could not record the tool normalization upgrade", error))?;
+                transaction.commit()
+                    .map_err(|error| StoreError::sqlite("could not finish the tool normalization upgrade", error))?;
             }
             SCHEMA_VERSION => {}
             _ => {
@@ -951,20 +1124,7 @@ impl SessionStore {
             })?;
         upsert_session_on(&transaction, session)?;
         if let Some(event) = event {
-            transaction
-                .execute(
-                    "INSERT INTO events (owned_id, seq, turn_id, kind, payload, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?)",
-                    params![
-                        event.owned_id,
-                        event.seq,
-                        event.turn_id,
-                        event.kind,
-                        event.payload_json,
-                        event.created_at_ms
-                    ],
-                )
-                .map_err(|error| StoreError::sqlite("could not append the event", error))?;
+            insert_chronological_event(&transaction, event)?;
         }
         transaction
             .commit()
@@ -984,20 +1144,7 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not begin the checkout change", error))?;
         upsert_session_on(&transaction, session)?;
         if let Some(event) = event {
-            transaction
-                .execute(
-                    "INSERT INTO events (owned_id, seq, turn_id, kind, payload, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?)",
-                    params![
-                        event.owned_id,
-                        event.seq,
-                        event.turn_id,
-                        event.kind,
-                        event.payload_json,
-                        event.created_at_ms
-                    ],
-                )
-                .map_err(|error| StoreError::sqlite("could not append the event", error))?;
+            insert_chronological_event(&transaction, event)?;
         }
         transaction
             .execute(
@@ -2287,6 +2434,39 @@ impl Drop for SessionStore {
     }
 }
 
+fn insert_chronological_event(connection: &Connection, row: &EventRow) -> Result<()> {
+    let is_tool_update = if row.kind == "item.updated" {
+        let payload = serde_json::from_str::<serde_json::Value>(&row.payload_json).ok();
+        payload
+            .as_ref()
+            .and_then(|payload| payload.pointer("/payload/kind"))
+            .and_then(serde_json::Value::as_str)
+            == Some("tool")
+    } else {
+        false
+    };
+    let sql = if is_tool_update {
+        INSERT_NORMALIZED_TOOL_EVENT
+    } else {
+        "INSERT INTO events (owned_id, seq, turn_id, kind, payload, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)"
+    };
+    connection
+        .execute(
+            sql,
+            params![
+                row.owned_id,
+                row.seq,
+                row.turn_id,
+                row.kind,
+                row.payload_json,
+                row.created_at_ms
+            ],
+        )
+        .map_err(|error| StoreError::sqlite("could not append the event", error))?;
+    Ok(())
+}
+
 /// Keeps only the newest row of each superseded kind, per session.
 ///
 /// Runs on the caller's connection or transaction, so an upgrade can do it as
@@ -2345,7 +2525,17 @@ fn add_tool_item_schema(connection: &Connection) -> Result<()> {
     }
     connection
         .execute_batch(TOOL_ITEM_INDEX_SCHEMA)
-        .map_err(|error| StoreError::sqlite("could not add the tool item index", error))
+        .map_err(|error| StoreError::sqlite("could not add the tool item index", error))?;
+    connection
+        .execute_batch(TOOL_ITEM_SEQUENCE_INDEX_SCHEMA)
+        .map_err(|error| StoreError::sqlite("could not add the tool sequence index", error))
+}
+
+fn upgrade_tool_events(connection: &Connection) -> Result<()> {
+    add_tool_item_schema(connection)?;
+    connection
+        .execute_batch(NORMALIZE_TOOL_EVENTS)
+        .map_err(|error| StoreError::sqlite("could not normalize tool events", error))
 }
 
 fn add_attachment_thumbnail_schema(connection: &Connection) -> Result<()> {
@@ -2914,6 +3104,89 @@ mod tests {
     }
 
     #[test]
+    fn chronological_tool_completion_keeps_sparse_fields_and_actual_position() {
+        let store = SessionStore::open_in_memory().expect("open store");
+        let session = fixture_session("session-a", 10_000);
+        let started = EventRow {
+            payload_json: r#"{"sequence":999,"timestampMs":999,"payload":{"kind":"tool","itemId":"tool-a","name":"shell","state":"running","output":"partial","path":"/tmp/a"}}"#.into(),
+            ..fixture_event_of_kind("session-a", 7, "item.updated")
+        };
+        store
+            .upsert_session_with_event(&session, Some(&started))
+            .expect("write tool start");
+        let completed = EventRow {
+            payload_json: r#"{"sequence":998,"timestampMs":998,"payload":{"kind":"tool","itemId":"tool-a","state":"completed","summary":"done"}}"#.into(),
+            created_at_ms: 20_009,
+            ..fixture_event_of_kind("session-a", 9, "item.updated")
+        };
+        store
+            .upsert_session_with_event(&session, Some(&completed))
+            .expect("write sparse tool completion");
+
+        let events = store
+            .list_events("session-a", i64::MIN, 10)
+            .expect("read tool history");
+        let payload: serde_json::Value = serde_json::from_str(&events[1].payload_json).expect("parse completion");
+        assert_eq!(events.iter().map(|event| event.seq).collect::<Vec<_>>(), [7, 9]);
+        assert_eq!(payload["sequence"], 9);
+        assert_eq!(payload["timestampMs"], 20_009);
+        assert_eq!(payload["payload"]["name"], "shell");
+        assert_eq!(payload["payload"]["state"], "completed");
+        assert_eq!(payload["payload"]["summary"], "done");
+        assert_eq!(payload["payload"]["output"], "partial");
+        assert_eq!(payload["payload"]["path"], "/tmp/a");
+        assert_eq!(payload["payload"]["firstSequence"], 7);
+        assert_eq!(payload["payload"]["firstTimestampMs"], started.created_at_ms);
+        assert!(payload["payload"].get("input").is_none());
+    }
+
+    #[test]
+    fn historical_prepend_stays_raw_until_a_native_tool_update_merges_the_item() {
+        let store = SessionStore::open_in_memory().expect("open store");
+        let session = fixture_session("session-a", 10_000);
+        let imported_output = EventRow {
+            payload_json: r#"{"payload":{"kind":"tool","itemId":"tool-a","state":"running","output":"result"}}"#.into(),
+            created_at_ms: 20_020,
+            ..fixture_event_of_kind("session-a", 20, "item.completed")
+        };
+        store.upsert_session(&session).expect("write session");
+        store.append_event(&imported_output).expect("import output tail");
+        let earlier_call = EventRow {
+            payload_json: r#"{"payload":{"kind":"tool","itemId":"tool-a","name":"shell","state":"running"}}"#.into(),
+            created_at_ms: 20_010,
+            ..fixture_event_of_kind("session-a", 10, "item.completed")
+        };
+        store.append_event(&earlier_call).expect("prepend earlier call");
+
+        let before = store
+            .list_events("session-a", i64::MIN, 10)
+            .expect("read imported history");
+        let raw_call: serde_json::Value =
+            serde_json::from_str(&before[0].payload_json).expect("parse raw call");
+        assert!(raw_call["payload"].get("output").is_none());
+        assert!(raw_call["payload"].get("firstSequence").is_none());
+
+        let completed = EventRow {
+            payload_json: r#"{"payload":{"kind":"tool","itemId":"tool-a","state":"completed","summary":"done"}}"#.into(),
+            created_at_ms: 20_030,
+            ..fixture_event_of_kind("session-a", 30, "item.updated")
+        };
+        store
+            .upsert_session_with_event_and_clear_workspace(&session, Some(&completed))
+            .expect("write native completion");
+
+        let events = store
+            .list_events("session-a", i64::MIN, 10)
+            .expect("read merged history");
+        let merged: serde_json::Value = serde_json::from_str(&events[2].payload_json).expect("parse merged completion");
+        assert_eq!(events.iter().map(|event| event.seq).collect::<Vec<_>>(), [10, 20, 30]);
+        assert_eq!(merged["payload"]["name"], "shell");
+        assert_eq!(merged["payload"]["output"], "result");
+        assert_eq!(merged["payload"]["firstSequence"], 10);
+        assert_eq!(merged["payload"]["firstTimestampMs"], 20_010);
+    }
+
+    #[test]
     fn a_tool_update_replaces_the_one_before_it() {
         let (_directory, _path, store) = open_temp_store();
         store
@@ -3030,6 +3303,53 @@ mod tests {
     }
 
     #[test]
+    fn schema_v14_open_repairs_latest_tools_without_compacting_history() {
+        let (_directory, path, store) = open_temp_store();
+        store
+            .upsert_session(&fixture_session("session-a", 10_000))
+            .expect("write session");
+        drop(store);
+        let connection = Connection::open(&path).expect("open version fourteen database");
+        for (seq, kind, payload) in [
+            (1, "item.updated", r#"{"payload":{"kind":"tool","itemId":"tool-a","name":"shell","state":"running","output":"partial"}}"#),
+            (2, "item.updated", r#"{"payload":{"kind":"tool","itemId":"tool-a","state":"completed"}}"#),
+            (3, "item.completed", r#"{"payload":{"kind":"tool","itemId":"tool-a","state":"completed","output":"later import"}}"#),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO events (owned_id, seq, turn_id, kind, payload, created_at)
+                     VALUES ('session-a', ?, NULL, ?, ?, ?)",
+                    rusqlite::params![seq, kind, payload, 10_000 + seq],
+                )
+                .expect("insert legacy tool event");
+        }
+        connection
+            .execute_batch(
+                "DROP INDEX events_owned_item_seq_idx;
+                 PRAGMA user_version = 14;",
+            )
+            .expect("restore version fourteen schema");
+        drop(connection);
+
+        let store = SessionStore::open(&path).expect("upgrade database");
+        let events = store
+            .list_events("session-a", i64::MIN, 10)
+            .expect("read repaired tools");
+        let latest: serde_json::Value = serde_json::from_str(&events[1].payload_json).expect("parse repaired tool");
+        let imported: serde_json::Value =
+            serde_json::from_str(&events[2].payload_json).expect("parse imported tool");
+        assert_eq!(events.iter().map(|event| event.seq).collect::<Vec<_>>(), [1, 2, 3]);
+        assert_eq!(latest["payload"]["name"], "shell");
+        assert_eq!(latest["payload"]["output"], "partial");
+        assert_eq!(latest["payload"]["firstSequence"], 1);
+        assert_eq!(latest["payload"]["firstTimestampMs"], 10_001);
+        assert_eq!(imported["payload"]["output"], "later import");
+        assert!(imported["payload"].get("firstSequence").is_none());
+        let version: i64 = store.lock().expect("lock store").pragma_query_value(None, "user_version", |row| row.get(0)).expect("read schema version");
+        assert_eq!(version, super::SCHEMA_VERSION);
+    }
+
+    #[test]
     fn an_upgraded_database_loses_only_the_duplicates() {
         let directory = TempDir::new().expect("create temporary directory");
         let path = directory.path().join("sessions.db");
@@ -3049,16 +3369,15 @@ mod tests {
                 PRAGMA user_version = 5;",
             )
             .expect("create version five schema");
-        for (seq, status) in [(1, "started"), (2, "running"), (3, "finished")] {
+        for (seq, payload) in [
+            (1, r#"{"payload":{"kind":"tool","itemId":"tool-a","name":"shell","state":"running","output":"partial"}}"#),
+            (2, r#"{"payload":{"kind":"tool","itemId":"tool-a","state":"running","summary":"working"}}"#),
+            (3, r#"{"payload":{"kind":"tool","itemId":"tool-a","state":"completed"}}"#),
+        ] {
             connection
                 .execute(
                     "INSERT INTO events VALUES (?, ?, NULL, 'item.updated', ?, ?)",
-                    rusqlite::params![
-                        "session-a",
-                        seq,
-                        tool_event("session-a", seq, "item.updated", "tool-a", status).payload_json,
-                        10_000 + seq
-                    ],
+                    rusqlite::params!["session-a", seq, payload, 10_000 + seq],
                 )
                 .expect("insert duplicate tool update");
         }
@@ -3078,6 +3397,14 @@ mod tests {
             events.iter().map(|event| event.seq).collect::<Vec<_>>(),
             [3, 4]
         );
+        let tool: serde_json::Value =
+            serde_json::from_str(&events[0].payload_json).expect("parse compacted tool");
+        assert_eq!(tool["payload"]["name"], "shell");
+        assert_eq!(tool["payload"]["state"], "completed");
+        assert_eq!(tool["payload"]["summary"], "working");
+        assert_eq!(tool["payload"]["output"], "partial");
+        assert_eq!(tool["payload"]["firstSequence"], 1);
+        assert_eq!(tool["payload"]["firstTimestampMs"], 10_001);
         drop(store);
 
         let connection = Connection::open(&path).expect("inspect upgraded database");
@@ -3242,7 +3569,7 @@ mod tests {
         let directory = TempDir::new().expect("create temporary directory");
         let path = directory.path().join("sessions.db");
         let connection = Connection::open(&path).expect("create version twelve database");
-        connection.execute_batch("CREATE TABLE sessions (owned_id TEXT PRIMARY KEY);").unwrap();
+        connection.execute_batch("CREATE TABLE sessions (owned_id TEXT PRIMARY KEY); CREATE TABLE events (owned_id TEXT NOT NULL, seq INTEGER NOT NULL, turn_id TEXT, kind TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (owned_id, seq));").unwrap();
         connection
             .execute_batch(super::EVIDENCE_ARTIFACT_SCHEMA)
             .expect("create current evidence schema");
@@ -3287,7 +3614,7 @@ mod tests {
         let directory = TempDir::new().expect("create temporary directory");
         let path = directory.path().join("sessions.db");
         let connection = Connection::open(&path).expect("create version eleven database");
-        connection.execute_batch("CREATE TABLE sessions (owned_id TEXT PRIMARY KEY);").unwrap();
+        connection.execute_batch("CREATE TABLE sessions (owned_id TEXT PRIMARY KEY); CREATE TABLE events (owned_id TEXT NOT NULL, seq INTEGER NOT NULL, turn_id TEXT, kind TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (owned_id, seq));").unwrap();
         connection
             .execute_batch(super::EVIDENCE_ARTIFACT_SCHEMA)
             .expect("create evidence artifact schema");
