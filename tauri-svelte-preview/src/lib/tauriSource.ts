@@ -169,6 +169,9 @@ export type ProjectGitStatus = {
   behind: number;
   hasUpstream: boolean;
   files: ProjectGitFileStatus[];
+  /** Working-tree lines added/removed against HEAD; null without a HEAD. */
+  additions?: number | null;
+  deletions?: number | null;
 };
 
 export type GitActionResult = {

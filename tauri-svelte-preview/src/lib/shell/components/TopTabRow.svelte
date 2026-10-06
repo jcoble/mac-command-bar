@@ -13,6 +13,9 @@
     dirty?: boolean;
     /** Editor tabs only: a preview file, replaced by the next one opened. */
     preview?: boolean;
+    /** Changes tab only: working-tree lines added and removed. */
+    additions?: number;
+    deletions?: number;
   }
 </script>
 
@@ -157,6 +160,12 @@
         <Icon class="size-[16px] shrink-0" aria-hidden="true" />
       {/if}
       <span class={cn('min-w-0 truncate', tab.preview && 'italic')}>{tab.label}</span>
+      {#if tab.additions || tab.deletions}
+        <span class="shrink-0 text-[11px] tabular-nums">
+          <span class="text-(--color-good)">+{tab.additions}</span>
+          <span class="text-(--color-bad)">−{tab.deletions}</span>
+        </span>
+      {/if}
     </button>
     <Button
       variant="ghost"

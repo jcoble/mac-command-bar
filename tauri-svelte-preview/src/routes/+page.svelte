@@ -139,7 +139,7 @@
 				const label = tab?.title || "New browser tab";
 				return [{ key, kind: "browser", label, detail: [label, tab?.url ?? ""].filter(Boolean).join("\n") }];
 			}
-			if (ref.kind === "diff") return [{ key, kind: "diff", label: "Changes", detail: gitPanel.selectedPath || "Working tree changes" }];
+			if (ref.kind === "diff") return [{ key, kind: "diff", label: "Changes", detail: gitPanel.selectedPath || "Working tree changes", additions: gitPanel.status?.additions ?? 0, deletions: gitPanel.status?.deletions ?? 0 }];
 			if (ref.kind === "git-history") return [{ key, kind: "git-history", label: "History", detail: gitPanel.historyPath || "Whole repository" }];
 			const pullRequest = pullRequestSelection.selected;
 			return [
