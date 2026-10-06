@@ -137,7 +137,15 @@ export function applyMessageEvent(processor: StreamProcessor, event: AgentConver
   }
   const previousText = textOf(existing);
   if (append) {
-    if (!(item.providerMetadata?.replay === true && previousText.endsWith(text))) {
+    if (text && !(item.providerMetadata?.replay === true && previousText.endsWith(text))) {
+      if (item.type === 'assistant-message' && existing?.metadata && 'blocks' in existing.metadata) {
+        processor.setMessages(processor.getMessages().map((message) => {
+          if (message.id !== item.id || !message.metadata) return message;
+          const metadata = { ...message.metadata };
+          delete metadata.blocks;
+          return { ...message, metadata };
+        }));
+      }
       processor.processChunk({ type: EventType.TEXT_MESSAGE_CONTENT, messageId: item.id, delta: text });
     }
   } else if (text.startsWith(previousText)) {

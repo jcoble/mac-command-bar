@@ -616,6 +616,58 @@ assert.equal(store.getConversationSession('owned-a').desynchronized, false);
   assert.equal(after.timelineRevision, revision + 1);
 }
 
+// Saved Markdown is valid for an unchanged authority. Once genuine text is
+// appended, the raw text becomes authoritative and must be parsed again.
+{
+  const ownedId = 'owned-appended-markdown';
+  const itemId = 'assistant-markdown';
+  const savedBlocks = [{ kind: 'paragraph', parts: [{ kind: 'text', value: 'Saved' }] }];
+  store.applyAgentConversationSnapshot({
+    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
+    lastSequence: 1,
+    events: [{
+      ownedId, provider: 'codex', generation: 1, sequence: 1, timestampMs: 800,
+      payload: { kind: 'assistantMessage', itemId, text: 'Saved', completed: true, blocks: savedBlocks }
+    }]
+  });
+  const message = () => store.getConversationSession(ownedId).transcript.getMessages()[0];
+  assert.deepEqual(message().metadata.blocks, savedBlocks);
+
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'codex', generation: 1, sequence: 2, timestampMs: 810,
+    payload: { kind: 'assistantDelta', itemId, delta: '' }
+  });
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'codex', generation: 1, sequence: 3, timestampMs: 820,
+    payload: { kind: 'assistantDelta', itemId, delta: 'Saved', _meta: { replay: true } }
+  });
+  assert.equal(message().parts[0].content, 'Saved');
+  assert.deepEqual(message().metadata.blocks, savedBlocks);
+
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'codex', generation: 1, sequence: 4, timestampMs: 830,
+    payload: { kind: 'assistantDelta', itemId, delta: ' live' }
+  });
+  assert.equal(message().parts[0].content, 'Saved live');
+  assert.equal(message().metadata.completed, false);
+  assert.equal(message().metadata.blocks, undefined);
+  assert.equal(display(store.getConversationSession(ownedId))[0].blocks, undefined);
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'codex', generation: 1, sequence: 5, timestampMs: 840,
+    payload: { kind: 'assistantDelta', itemId, delta: ' later' }
+  });
+  assert.equal(message().parts[0].content, 'Saved live later');
+  assert.equal(message().metadata.blocks, undefined);
+  const finalBlocks = [{ kind: 'paragraph', parts: [{ kind: 'text', value: 'Saved live later' }] }];
+  store.applyAgentConversationEvent({
+    ownedId, provider: 'codex', generation: 1, sequence: 6, timestampMs: 850,
+    payload: { kind: 'assistantMessage', itemId, text: 'Saved live later', completed: true, blocks: finalBlocks }
+  });
+  assert.equal(message().metadata.completed, true);
+  assert.deepEqual(message().metadata.blocks, finalBlocks);
+  assert.deepEqual(display(store.getConversationSession(ownedId))[0].blocks, finalBlocks);
+}
+
 // A bounded tail snapshot begins after omitted journal rows without marking
 // itself desynchronized, and replaying stored turn events cannot mutate the
 // live-only presence history.
