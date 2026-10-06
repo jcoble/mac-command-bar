@@ -134,9 +134,9 @@
     {...props}
     title={tab.detail}
     class={cn(
-      'group relative flex h-[32px] min-w-[88px] items-center gap-1.5 rounded-[8px] pl-2.5 text-[13px] font-medium transition-colors [flex:0_1_160px]',
-      active || tab.dirty ? 'pr-1' : 'pr-2.5',
-      active ? 'min-w-[120px] bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+      'group relative flex h-[30px] min-w-[88px] max-w-[180px] items-center gap-2 rounded-[6px] pl-3 text-[13px] font-medium transition-colors [flex:0_1_160px]',
+      active || tab.dirty ? 'pr-1' : 'pr-3',
+      active ? 'min-w-[120px] bg-card text-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
       // The line on this tab's left edge goes while either neighbour is hovered.
       parted &&
         'before:absolute before:top-1/2 before:left-[-2.5px] before:h-[16px] before:w-px before:-translate-y-1/2 before:bg-border hover:before:opacity-0 [.group:hover+&]:before:opacity-0'
@@ -162,7 +162,7 @@
       variant="ghost"
       aria-label={`Close ${tab.label}${tab.dirty ? ' (unsaved)' : ''}`}
       class={cn(
-        'size-[24px] shrink-0 rounded-[6px] p-0',
+        'size-[20px] shrink-0 rounded-full p-0',
         // A resting tab's hidden × takes no room, so its label keeps the full
         // width; on hover the × sits over the label's end.
         active || tab.dirty
@@ -191,8 +191,8 @@
     <button
       type="button"
       class={cn(
-        'flex h-[32px] min-w-0 items-center gap-1.5 rounded-[8px] px-2.5 text-[13px] font-medium transition-colors',
-        expanded ? 'max-w-[224px] text-foreground hover:bg-accent/50' : 'bg-accent text-accent-foreground'
+        'flex h-[30px] min-w-0 items-center gap-2 rounded-[6px] px-3 text-[13px] font-medium transition-colors',
+        expanded ? 'max-w-[224px] text-foreground hover:bg-accent/50' : 'bg-card text-foreground'
       )}
       title={chatTitle}
       aria-label={expanded ? `Chat: ${chatTitle}. Collapse the pane` : `Chat: ${chatTitle}`}
@@ -204,10 +204,7 @@
     {#if expanded}<Separator orientation="vertical" class="h-4" />{/if}
   </div>
 
-  <div
-    class={cn('flex h-full min-w-0 items-center gap-1 px-2', paneOpen && !expanded && 'border-l border-border')}
-    data-tauri-drag-region
-  >
+  <div class="flex h-full min-w-0 items-center gap-1 px-2" data-tauri-drag-region>
     <div
       bind:this={track}
       class="flex min-w-0 flex-1 items-center gap-[4px] overflow-x-auto [scrollbar-width:none]"
@@ -260,6 +257,7 @@
         </Tooltip.Trigger>
         <Tooltip.Content side="bottom">New browser tab</Tooltip.Content>
       </Tooltip.Root>
+      <Separator orientation="vertical" class="mx-1 h-[14px]" />
       {#if paneOpen}
         <Tooltip.Root>
           <Tooltip.Trigger

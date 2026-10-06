@@ -1596,8 +1596,46 @@
     </div>
   {:else}
     <div class="editor-header">
-      <!-- Only the open file's own controls belong here. The language-server
-           switch sits in this editor's status bar. -->
+      <!-- The open file's path on the left, its own controls on the right. The
+           language-server switch sits in this editor's status bar. -->
+      {#if activeFile && breadcrumbParts.length > 0}
+        <div class="editor-breadcrumb-row">
+          <Breadcrumb.Root>
+            <Breadcrumb.List class="m-0 list-none flex-nowrap gap-1 p-0 text-[13px]">
+              {#each breadcrumbParts as part, index (part)}
+                {#if index > 0}<Breadcrumb.Separator class="flex shrink-0 items-center" />{/if}
+                <Breadcrumb.Item class="min-w-0 shrink-0">
+                  <DropdownMenu.Root onOpenChange={(open) => { if (open) void openBreadcrumbMenu(part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part); }}>
+                    <DropdownMenu.Trigger class="breadcrumb-trigger" aria-label={`Browse ${part.split('/').at(-1)}`}>
+                      {part.split('/').at(-1)}
+                    </DropdownMenu.Trigger>
+                    <DropdownMenu.Content class="max-h-80 min-w-48 max-w-80" align="start">
+                      {#if breadcrumbMenu?.file === activeFile.path && breadcrumbMenu.root === breadcrumbRoot && breadcrumbMenu.directory === (part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part)}
+                        {#if breadcrumbMenu.error}
+                          <DropdownMenu.Item disabled>{breadcrumbMenu.error}</DropdownMenu.Item>
+                        {:else if breadcrumbMenu.entries === null}
+                          <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
+                        {:else if breadcrumbMenu.entries.filter((entry) => !entry.excluded && (part !== activeFile.path || !entry.isDirectory)).length === 0}
+                          <DropdownMenu.Item disabled>No files or folders</DropdownMenu.Item>
+                        {:else}
+                          {#each breadcrumbMenu.entries.filter((entry) => !entry.excluded && (part !== activeFile.path || !entry.isDirectory)) as entry (entry.path)}
+                            <DropdownMenu.Item onSelect={() => chooseBreadcrumbEntry(entry)}>
+                              {#if entry.isDirectory}<Folder class="size-3.5" />{:else}<FileIcon fileName={entry.name} size={13} />{/if}
+                              <span class="truncate">{entry.name}{entry.isDirectory ? '/' : ''}</span>
+                            </DropdownMenu.Item>
+                          {/each}
+                        {/if}
+                      {:else}
+                        <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
+                      {/if}
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Root>
+                </Breadcrumb.Item>
+              {/each}
+            </Breadcrumb.List>
+          </Breadcrumb.Root>
+        </div>
+      {/if}
       <div class="editor-controls">
         <IconButton
           label="Save active file"
@@ -1626,45 +1664,6 @@
         {/if}
       </div>
     </div>
-
-    {#if activeFile && breadcrumbParts.length > 0}
-      <div class="editor-breadcrumb-row">
-        <Breadcrumb.Root>
-          <Breadcrumb.List class="m-0 list-none flex-nowrap gap-1 p-0 text-[13px]">
-            {#each breadcrumbParts as part, index (part)}
-              {#if index > 0}<Breadcrumb.Separator class="flex shrink-0 items-center" />{/if}
-              <Breadcrumb.Item class="min-w-0 shrink-0">
-                <DropdownMenu.Root onOpenChange={(open) => { if (open) void openBreadcrumbMenu(part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part); }}>
-                  <DropdownMenu.Trigger class="breadcrumb-trigger" aria-label={`Browse ${part.split('/').at(-1)}`}>
-                    {part.split('/').at(-1)}
-                  </DropdownMenu.Trigger>
-                  <DropdownMenu.Content class="max-h-80 min-w-48 max-w-80" align="start">
-                    {#if breadcrumbMenu?.file === activeFile.path && breadcrumbMenu.root === breadcrumbRoot && breadcrumbMenu.directory === (part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part)}
-                      {#if breadcrumbMenu.error}
-                        <DropdownMenu.Item disabled>{breadcrumbMenu.error}</DropdownMenu.Item>
-                      {:else if breadcrumbMenu.entries === null}
-                        <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
-                      {:else if breadcrumbMenu.entries.filter((entry) => !entry.excluded && (part !== activeFile.path || !entry.isDirectory)).length === 0}
-                        <DropdownMenu.Item disabled>No files or folders</DropdownMenu.Item>
-                      {:else}
-                        {#each breadcrumbMenu.entries.filter((entry) => !entry.excluded && (part !== activeFile.path || !entry.isDirectory)) as entry (entry.path)}
-                          <DropdownMenu.Item onSelect={() => chooseBreadcrumbEntry(entry)}>
-                            {#if entry.isDirectory}<Folder class="size-3.5" />{:else}<FileIcon fileName={entry.name} size={13} />{/if}
-                            <span class="truncate">{entry.name}{entry.isDirectory ? '/' : ''}</span>
-                          </DropdownMenu.Item>
-                        {/each}
-                      {/if}
-                    {:else}
-                      <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
-                    {/if}
-                  </DropdownMenu.Content>
-                </DropdownMenu.Root>
-              </Breadcrumb.Item>
-            {/each}
-          </Breadcrumb.List>
-        </Breadcrumb.Root>
-      </div>
-    {/if}
 
     <div class="editor-canvas">
       {#if activeFile?.conflict}
@@ -1762,7 +1761,7 @@
     </div>
 
     <div class="editor-status">
-      <span class="status-path">{activeFile?.relativePath ?? ''}</span>
+      <span class="status-path" title={activeFile?.relativePath}><bdi dir="ltr">{activeFile?.relativePath ?? ''}</bdi></span>
       <div class="status-right">
         <LanguageIntelligenceControls />
         <span class="status-detail" title={activeFile?.conflict ?? undefined}>
@@ -1856,12 +1855,10 @@
     font-size: 12px;
   }
 
-  /* The controls that belong to the open file, pinned to the right. The open
-   * files themselves are tabs in the top row.
-   *
-   * The height is stated rather than left to the tallest child: it is what the
-   * row already measured — a 28px close button between 3px of padding, over a
-   * hairline — so nothing moves. */
+  /* The editor's header band: the open file's path on the left, its own
+   * controls pinned to the right. The open files themselves are tabs in the top
+   * row. 44px, the same band as the rail and drawer headers; no rule under it,
+   * the panel surface carries on into the body. */
   .editor-header {
     display: flex;
     align-items: center;
@@ -1871,20 +1868,17 @@
     box-sizing: border-box;
     width: 100%;
     min-width: 0;
-    height: var(--editor-tab-row-height);
+    height: 44px;
     overflow: hidden;
     background: var(--color-surface);
-    border-bottom: 1px solid var(--color-border);
-    padding: 3px 8px 3px 4px;
+    padding: 0 8px 0 10px;
   }
 
   .editor-breadcrumb-row {
-    flex: 0 0 auto;
+    flex: 1 1 auto;
     min-width: 0;
     overflow-x: auto;
-    padding: 2px 8px;
-    background: var(--color-surface);
-    border-bottom: 1px solid var(--color-border);
+    scrollbar-width: none;
   }
 
   .editor-breadcrumb-row :global(.breadcrumb-trigger) {
@@ -1893,10 +1887,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    border-radius: 8px;
+    border-radius: 9999px;
     padding: 0 6px;
     color: var(--color-text-2);
     font-size: 13px;
+  }
+
+  .editor-breadcrumb-row :global(li:last-child .breadcrumb-trigger) {
+    color: var(--color-text);
+    font-weight: 500;
   }
 
   .editor-breadcrumb-row :global(.breadcrumb-trigger:hover),
@@ -2009,25 +2008,31 @@
     background: var(--color-hover);
   }
 
+  /* The footer's segments keep their size. Only the path gives way, and it
+   * gives way from its start, so the file name at its end stays readable. */
   .editor-status {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
     flex: 0 0 auto;
+    box-sizing: border-box;
+    height: 32px;
     background: var(--color-surface);
-    border-top: 1px solid var(--color-border);
     color: var(--color-text-2);
     font-family: var(--font-mono);
     font-size: 12px;
-    padding: 3px 8px;
+    padding: 0 16px;
   }
 
   .status-path {
-    min-width: 0;
+    flex: 0 1 auto;
+    min-width: min(16ch, 40%);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    direction: rtl;
+    text-align: left;
   }
 
   .status-right {
