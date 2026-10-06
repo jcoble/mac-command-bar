@@ -124,7 +124,8 @@
     {...props}
     title={tab.detail}
     class={cn(
-      'group relative flex h-[32px] min-w-[72px] items-center gap-1.5 rounded-[8px] pr-1 pl-2.5 text-[13px] font-medium transition-colors [flex:0_1_160px]',
+      'group relative flex h-[32px] min-w-[88px] items-center gap-1.5 rounded-[8px] pl-2.5 text-[13px] font-medium transition-colors [flex:0_1_160px]',
+      active || tab.dirty ? 'pr-1' : 'pr-2.5',
       active ? 'min-w-[120px] bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
       // The line on this tab's left edge goes while either neighbour is hovered.
       parted &&
@@ -152,7 +153,11 @@
       aria-label={`Close ${tab.label}${tab.dirty ? ' (unsaved)' : ''}`}
       class={cn(
         'size-[24px] shrink-0 rounded-[6px] p-0',
-        active || tab.dirty ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
+        // A resting tab's hidden × takes no room, so its label keeps the full
+        // width; on hover the × sits over the label's end.
+        active || tab.dirty
+          ? 'opacity-100'
+          : 'absolute right-1 bg-accent opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
       )}
       onclick={() => onClose(tab.key)}
     >
