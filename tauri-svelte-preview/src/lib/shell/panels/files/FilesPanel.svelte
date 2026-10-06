@@ -61,6 +61,7 @@
 	import FolderOpen from "@lucide/svelte/icons/folder-open";
 	import FolderTree from "@lucide/svelte/icons/folder-tree";
 	import RefreshCw from "@lucide/svelte/icons/refresh-cw";
+	import Rows3 from "@lucide/svelte/icons/rows-3";
 	import Search from "@lucide/svelte/icons/search";
 	import Square from "@lucide/svelte/icons/square";
 	import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
@@ -196,7 +197,12 @@
 				],
 	);
 	const scopeValue = $derived(projectRoot || sessionRoot);
-	const listedCount = $derived(loadedNodes.length);
+	/** The picker shows the session's own folder by its bare name; the list still marks it "(session)". */
+	const scopeLabel = $derived.by(() => {
+		const option = scopeOptions.find((candidate) => canonicalPath(candidate.path) === canonicalPath(scopeValue));
+		if (!option) return "Session folder";
+		return canonicalPath(option.path) === canonicalPath(sessionRoot) ? folderName(option.path) : option.label;
+	});
 	const listed = $derived(explorer.lastScanFinishedAt !== null);
 	const watchedDirectoryKey = $derived.by(() => {
 		loadedNodes.length;
@@ -1024,8 +1030,8 @@
 <div class="files-panel flex h-full min-h-0 w-full flex-col text-foreground">
 	<!-- The header follows the Codex file pane: a row of pill controls, then the
 	     filter field, then the tree. -->
-	<header class="flex flex-none flex-col gap-2 px-2 pt-1.5 pb-2" aria-label="Files">
-		<div class="flex min-w-0 items-center gap-1">
+	<header class="flex flex-none flex-col gap-2 px-3 pt-1 pb-2" aria-label="Files">
+		<div class="-mr-1 flex min-w-0 items-center gap-1">
 			{#if scopeOptions.length > 0}
 				<Select.Root
 					type="single"
@@ -1033,11 +1039,9 @@
 					value={scopeValue}
 					onValueChange={selectInspectionRoot}
 				>
-					<Select.Trigger size="sm" class="min-w-0 border-transparent bg-secondary px-3 text-[13px] hover:bg-secondary/80 data-[size=sm]:h-7 data-[size=sm]:rounded-full dark:bg-secondary dark:hover:bg-secondary/80" aria-label="Folder this panel reads">
-						<span class="min-w-0 truncate">
-							{scopeOptions.find((option) => canonicalPath(option.path) === canonicalPath(scopeValue))?.label ??
-								"Session folder"}{#if readOnlyInspection} · read-only{/if}
-						</span>
+					<Select.Trigger size="sm" class="min-w-0 border-transparent bg-secondary pr-2 pl-3 text-[13px] hover:bg-secondary/80 data-[size=sm]:h-7 data-[size=sm]:rounded-full dark:bg-secondary dark:hover:bg-secondary/80 [&>svg:last-child]:size-3" aria-label="Folder this panel reads">
+						<Folder class="size-3.5 text-muted-foreground" strokeWidth={2} aria-hidden="true" />
+						<span class="min-w-0 truncate">{scopeLabel}{#if readOnlyInspection} · read-only{/if}</span>
 					</Select.Trigger>
 					<Select.Content>
 						{#each scopeOptions as option (option.path)}
@@ -1048,16 +1052,19 @@
 			{/if}
 			<span class="flex-1"></span>
 			{#if explorer.activated && explorer.unavailable === null}
+				<!-- Developer diagnostic, dev builds only: compares the windowed tree with
+				     every row rendered. Icon-sized so the folder picker keeps its room. -->
 				{#if dev}
 					<Button
-						size="sm"
+						size="icon-sm"
 						variant={virtualized ? "secondary" : "ghost"}
-						class="h-7 rounded-full px-3 text-[13px]"
+						class="size-7 rounded-full text-muted-foreground [&_svg]:size-3.5"
 						aria-pressed={virtualized}
 						aria-label="Compare virtualized and all file-tree rows"
+						title="Virtualized rows (dev only)"
 						onclick={() => (virtualized = !virtualized)}
 					>
-						Virtualized
+						<Rows3 strokeWidth={2} aria-hidden="true" />
 					</Button>
 				{/if}
 				<IconButton
@@ -1065,20 +1072,20 @@
 					label={sortDirection === "ascending" ? "Sort Z to A" : "Sort A to Z"}
 					onclick={() => (sortDirection = sortDirection === "ascending" ? "descending" : "ascending")}
 				>
-					{#if sortDirection === "ascending"}<ArrowDownAZ class="size-[16px]" />{:else}<ArrowUpZA class="size-[16px]" />{/if}
+					{#if sortDirection === "ascending"}<ArrowDownAZ class="size-3.5" />{:else}<ArrowUpZA class="size-3.5" />{/if}
 				</IconButton>
 				<IconButton
 					class="size-7"
 					label={explorer.includeExcluded ? "Hide excluded files" : "Show excluded files"}
 					onclick={() => void toggleExcludedFiles()}
 				>
-					{#if explorer.includeExcluded}<EyeOff class="size-[16px]" />{:else}<Eye class="size-[16px]" />{/if}
+					{#if explorer.includeExcluded}<EyeOff class="size-3.5" />{:else}<Eye class="size-3.5" />{/if}
 				</IconButton>
 				{#if explorer.scanning}
-					<IconButton class="size-7" label="Stop listing files" onclick={() => stopScan()}><Square class="size-[16px]" /></IconButton>
+					<IconButton class="size-7" label="Stop listing files" onclick={() => stopScan()}><Square class="size-3.5" /></IconButton>
 				{:else}
 					<IconButton class="size-7" label="List this project's files again" disabled={!explorer.root} onclick={refreshFiles}>
-						<RefreshCw class="size-[16px]" />
+						<RefreshCw class="size-3.5" />
 					</IconButton>
 				{/if}
 			{/if}
@@ -1097,11 +1104,11 @@
 		{/if}
 		{#if explorer.activated && explorer.unavailable === null}
 			<div class="relative">
-				<Search class="pointer-events-none absolute top-1/2 left-3 size-[16px] -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+				<Search class="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
 				<Input
 					type="search"
-					class="h-8 w-full rounded-full border-transparent bg-muted dark:bg-muted pr-12 pl-9 text-[13px]"
-					placeholder="Filter files…"
+					class="h-8 w-full rounded-[var(--radius-md)] border-transparent bg-muted dark:bg-muted pr-3 pl-[34px] text-[13px]"
+					placeholder="Filter files"
 					aria-label="Search project files"
 					autocomplete="off"
 					autocapitalize="none"
@@ -1109,7 +1116,6 @@
 					value={searchText}
 					oninput={onFilterInput}
 				/>
-				<span class="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-[12px] text-muted-foreground tabular-nums">{listedCount}</span>
 			</div>
 		{/if}
 	</header>
@@ -1217,7 +1223,7 @@
 					<div
 							class="tree-node"
 							class:selected={node.path === explorer.selectedPath}
-							style={`padding-left: ${node.depth * 12}px; transform: translateY(${(virtualized ? treeWindow.topSpacerHeight : 0) + rowIndex * FILE_TREE_ROW_HEIGHT}px)`}
+							style={`padding-left: ${node.depth * 16}px; transform: translateY(${(virtualized ? treeWindow.topSpacerHeight : 0) + rowIndex * FILE_TREE_ROW_HEIGHT}px)`}
 						onclick={() => onTreeNodeClicked(node)}
 						ondblclick={(event) => pinTreeNodeOpen(node, event)}
 						oncontextmenu={() => selectContextMenuNode(node)}
@@ -1225,9 +1231,9 @@
 						<span class="tree-toggle" aria-hidden="true">
 							{#if node.isDirectory}
 								{#if expanded.has(node.path)}
-									<ChevronDown size={13} strokeWidth={2} />
+									<ChevronDown size={12} strokeWidth={2} />
 								{:else}
-									<ChevronRight size={13} strokeWidth={2} />
+									<ChevronRight size={12} strokeWidth={2} />
 								{/if}
 							{/if}
 						</span>
@@ -1308,13 +1314,13 @@
 
 <style>
 	.tree-host {
-		--tree-node-indent-per-level: 12px;
+		--tree-node-indent-per-level: 16px;
 		display: flex;
 		height: 0;
 		min-height: 0;
 		flex: 1;
 		overflow: hidden;
-		padding: 0 4px 4px;
+		padding: 0 8px 4px;
 	}
 	.tree-host.hidden {
 		display: none;
@@ -1345,7 +1351,7 @@
 		flex: 0 0 14px;
 		align-items: center;
 		justify-content: center;
-		color: var(--color-text-3);
+		color: var(--muted-foreground);
 	}
 	.tree-name {
 		min-width: 0;
@@ -1388,18 +1394,25 @@
 		height: 28px;
 		min-width: 0;
 		align-items: center;
+		gap: 6px;
+		padding-right: 8px;
 		border-radius: 4px;
+		font-size: 13px;
 		user-select: none;
 		cursor: pointer;
 	}
+	.tree-node:hover {
+		background: var(--accent);
+	}
+	/* Neutral, like the rail's selected session: the brand colour stays off the tree. */
 	.tree-node.selected {
-		background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+		background: var(--secondary);
 	}
 	.tree-toggle {
 		display: flex;
-		width: 16px;
+		width: 14px;
 		height: 28px;
-		flex: 0 0 16px;
+		flex: 0 0 14px;
 		align-items: center;
 		justify-content: center;
 		color: var(--color-text-3);

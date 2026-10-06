@@ -10,10 +10,10 @@
    * PRESENTATIONAL ONLY: the selected tab is handed in and every click is
    * handed back out.
    */
-  import BotMessageSquare from '@lucide/svelte/icons/bot-message-square';
+  import Bot from '@lucide/svelte/icons/bot';
   import CirclePlay from '@lucide/svelte/icons/circle-play';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
-  import FolderTree from '@lucide/svelte/icons/folder-tree';
+  import Files from '@lucide/svelte/icons/files';
   import Gauge from '@lucide/svelte/icons/gauge';
   import GitBranch from '@lucide/svelte/icons/git-branch';
   import GitFork from '@lucide/svelte/icons/git-fork';
@@ -38,9 +38,9 @@
   let { activeId, extraId, onSelect, onClose }: Props = $props();
 
   const PERMANENT = [
-    { id: 'files', label: 'Files', icon: FolderTree },
+    { id: 'files', label: 'Files', icon: Files },
     { id: 'source-control', label: 'Source control', icon: GitBranch },
-    { id: 'agents', label: 'Agents', icon: BotMessageSquare },
+    { id: 'agents', label: 'Agents', icon: Bot },
     { id: 'tasks', label: 'Tasks', icon: ListChecks }
   ] as const;
 
@@ -51,11 +51,11 @@
     { id: 'history', label: 'History', icon: History }
   ] as const;
 
-  const ROUND = 'size-7 rounded-full p-0 text-muted-foreground [&_svg]:size-4';
-  // A 24px pill in the --muted track; the active one is a white-16% fill with
-  // no border, shadow or underline.
+  const ROUND = 'size-7 rounded-full p-0 text-muted-foreground [&_svg]:size-3.5';
+  // A 24px pill with a 14px glyph in the --muted track; the active one is a
+  // white-16% fill with no border, shadow or underline.
   const PILL =
-    'h-6 w-7 flex-none rounded-full border-transparent p-0 text-muted-foreground hover:bg-foreground/6 [&_svg]:size-4 group-data-[variant=default]/tabs-list:data-active:shadow-none data-active:bg-foreground/16 dark:data-active:border-transparent dark:data-active:bg-foreground/16';
+    'h-6 w-7 flex-none rounded-full border-transparent p-0 text-muted-foreground hover:bg-foreground/6 [&_svg]:size-3.5 group-data-[variant=default]/tabs-list:data-active:shadow-none data-active:bg-foreground/16 dark:data-active:border-transparent dark:data-active:bg-foreground/16';
 
   const shown = $derived([...PERMANENT, ...EXTRA.filter((tab) => tab.id === extraId)]);
 </script>
@@ -69,7 +69,7 @@
           <Tooltip.Trigger>
             {#snippet child({ props })}
               <Tabs.Trigger {...props} value={tab.id} aria-label={tab.label} class={PILL}>
-                <tab.icon strokeWidth={1.75} aria-hidden="true" />
+                <tab.icon strokeWidth={2} aria-hidden="true" />
               </Tabs.Trigger>
             {/snippet}
           </Tooltip.Trigger>
@@ -83,7 +83,7 @@
        past its edge would sit under the live browser page beside it. -->
   <DropdownMenu.Root>
     <DropdownMenu.Trigger class={cn(buttonVariants({ variant: 'ghost' }), ROUND)} aria-label="More panels">
-      <Ellipsis strokeWidth={1.75} aria-hidden="true" />
+      <Ellipsis strokeWidth={2} aria-hidden="true" />
     </DropdownMenu.Trigger>
     <DropdownMenu.Content side="bottom" align="end" class="w-44">
       {#each EXTRA as tab (tab.id)}
@@ -95,6 +95,6 @@
     </DropdownMenu.Content>
   </DropdownMenu.Root>
   <Button variant="ghost" class={ROUND} aria-label="Close side panel" onclick={onClose}>
-    <X strokeWidth={1.75} aria-hidden="true" />
+    <X strokeWidth={2} aria-hidden="true" />
   </Button>
 </div>
