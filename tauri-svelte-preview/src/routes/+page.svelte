@@ -49,6 +49,7 @@
 	import SessionsColumn from "$lib/shell/components/SessionsColumn.svelte";
 	import ShellFrame from "$lib/shell/components/ShellFrame.svelte";
 	import ShellOverlays from "$lib/shell/components/ShellOverlays.svelte";
+	import { parseRemoteWorkspacePath } from "$lib/workspacePaths";
 	import UtilityStrip from "$lib/shell/components/UtilityStrip.svelte";
 	import type { UtilityId } from "$lib/shell/components/utilityStrip";
 
@@ -611,6 +612,7 @@
 		{openUtility}
 		onOpenUtility={(id, anchor) => overlays?.openUtility(id, anchor)}
 		onOpenSettings={() => overlays?.openSettings()}
+		location={browserRoot ? (parseRemoteWorkspacePath(browserRoot) ? "Remote" : "Local Mac") : null}
 	/>
 
 	<ShellOverlays

@@ -44,8 +44,10 @@
     onOpenUtility(id: UtilityId, anchor: ReturnType<typeof utilityAnchorFor>): void;
     /** Open the settings dialog. The gear sits at the left end of this bar. */
     onOpenSettings(): void;
+    /** Where the active session runs ("Local Mac" or "Remote"); none when no session is open. */
+    location?: string | null;
   }
-  let { openUtility = null, onOpenUtility, onOpenSettings }: Props = $props();
+  let { openUtility = null, onOpenUtility, onOpenSettings, location = null }: Props = $props();
 
   function open(id: UtilityId, event: MouseEvent): void {
     if (!(event.currentTarget instanceof HTMLElement)) return;
@@ -154,6 +156,11 @@
     value={shownThemeId}
     onValueChange={(id) => applyTheme(id)}
   />
+  {#if location}
+    <span class="location" data-testid="utility-location">
+      <span class="location-dot" aria-hidden="true"></span>{location}
+    </span>
+  {/if}
   <button
     type="button"
     class="utility usage"
@@ -257,6 +264,22 @@
 
   .label {
     flex: 0 0 auto;
+  }
+
+  .location {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 6px;
+    color: var(--muted-foreground);
+    white-space: nowrap;
+  }
+
+  .location-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--primary);
   }
 
   .values {
