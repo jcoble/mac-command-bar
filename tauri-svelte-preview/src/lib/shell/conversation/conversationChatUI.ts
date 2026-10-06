@@ -13,3 +13,9 @@ export type ConversationToolContext = {
   openFile(path: string): void;
   readonly renderTool?: Snippet<[Extract<ConversationDisplayItem, { kind: 'tool' }>]>;
 };
+
+export const conversationDisclosureContext = Symbol('conversation-disclosures');
+export type ConversationDisclosureContext = {
+  get(key: string): boolean | undefined;
+  set(key: string, open: boolean): void;
+};

@@ -457,3 +457,24 @@ test('an old history panel record disappears on normalize', () => {
   assert.ok(snapshot);
   assert.equal('history' in snapshot, false);
 });
+
+test('conversation_reading_location_retains_only_small_view_fields', () => {
+  const view = {
+    followLatest: false,
+    anchor: { itemId: 'tool-a', firstSequence: -20, offsetPx: -14.5 },
+    expandedTurns: { active: true, completed: false },
+    disclosures: { "tool-a:output": true }
+  };
+  const snapshot = captureWorkspace({
+    openFiles: [], activePath: null, selectedPath: null, scrollTop: 0,
+    conversation: { mode: 'structured', viewByHistoryId: {
+      parent: { ...view, messages: [{ text: 'must not be retained' }] },
+      child: { followLatest: true, expandedTurns: {} }
+    } }
+  });
+  const restored = normalizeWorkspaceSnapshot(JSON.parse(JSON.stringify(snapshot)));
+  assert.deepEqual(restored?.conversation?.viewByHistoryId, {
+    parent: view, child: { followLatest: true, expandedTurns: {} }
+  });
+  assert.doesNotMatch(JSON.stringify(restored?.conversation?.viewByHistoryId), /must not be retained/);
+});

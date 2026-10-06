@@ -59,9 +59,9 @@
   import { sessionLibraryHost } from '$lib/shell/sessionLibrary/sessionLibraryService.ts';
   import { resetSessionLibraryState, sessionLibraryState, setSessionLibraryQuery } from '$lib/shell/sessionLibrary/sessionLibraryStore.svelte.ts';
   import {
-    ensureStructuredConversation,
-    loadConversationForRead
+    ensureStructuredConversation
   } from '$lib/shell/conversation/conversationService.ts';
+  import { refreshSelectedConversationChat } from '$lib/shell/conversation/conversationConnection';
   import { warmAgentConversationConfig } from '$lib/shell/conversation/conversationConfig.ts';
   import { setConversationAgentConfigState } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import { ownedSessionFromBackend } from '$lib/shell/ownedSessions.ts';
@@ -499,7 +499,7 @@
       // and when that read wins the race it happens before the records exist.
       // Reading it once more, after both are done, is what makes the transcript
       // appear rather than an empty session under a correct title.
-      await loadConversationForRead(ownedId);
+      await refreshSelectedConversationChat(ownedId);
       // Either half can fail on its own and the other still has value. A
       // transcript that would not load is a failed resume and is said so. An
       // agent that would not start is not: the conversation is imported, on

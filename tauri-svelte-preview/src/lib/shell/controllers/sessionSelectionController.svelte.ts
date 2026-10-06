@@ -396,7 +396,8 @@ export class SessionSelectionController {
 		if (snapshot?.conversation?.attachmentIds && getConversationSession(session.ownedId)) {
 			restoreConversationAttachmentIds(session.ownedId, snapshot.conversation.attachmentIds);
 		}
-		if (!root) return;
+		if (!root || (session.executionEnvironment === 'remote'
+			&& rail.remoteConnections[session.remoteProfileId ?? ''] !== 'connected')) return;
 		await this.loadExpandedPaths(session.ownedId, root, owner);
 	}
 

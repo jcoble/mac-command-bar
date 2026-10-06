@@ -1,14 +1,15 @@
 <script lang="ts">
   import Check from '@lucide/svelte/icons/check';
-  import type { AgentConfigValue, AgentUserInputField, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
+  import type { AgentConfigValue, AgentUserInputAction, AgentUserInputField, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
 
   interface Props {
     requests: readonly AgentUserInputRequest[];
     responding?: boolean;
-    onSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void | Promise<void>;
+    disabled?: boolean;
+    onSubmit?(requestId: string, action: AgentUserInputAction, content: Record<string, AgentConfigValue>): void | Promise<void>;
   }
 
-  let { requests, responding = false, onSubmit }: Props = $props();
+  let { requests, responding = false, disabled = false, onSubmit }: Props = $props();
   let values = $state<Record<string, AgentConfigValue>>({});
   let activeRequestId = $state('');
 
@@ -18,20 +19,41 @@
     const requestId = activeRequest?.requestId ?? '';
     if (requestId === activeRequestId) return;
     activeRequestId = requestId;
-    values = {};
+    values = Object.fromEntries((activeRequest?.fields ?? []).filter((field) => !(activeRequest?.canDecline && field.kind === 'select' && !field.required)).map((field) => [
+      field.id,
+      field.kind === 'boolean'
+        ? false
+        : field.kind === 'multi-select'
+          ? []
+          : field.kind === 'select' && (!activeRequest?.canDecline || field.required)
+            ? field.choices?.[0]?.value ?? ''
+            : ''
+    ]));
   });
 
   function valueFor(field: AgentUserInputField): AgentConfigValue {
-    return values[field.id] ?? (field.kind === 'boolean' ? false : field.choices?.[0]?.value ?? '');
+    return values[field.id] ?? '';
   }
 
   function setValue(field: AgentUserInputField, value: AgentConfigValue): void {
     values[field.id] = value;
   }
 
-  function submit(cancelled = false): void {
+  function toggleChoice(field: AgentUserInputField, value: AgentConfigValue): void {
+    if (field.kind === 'multi-select') {
+      const selected = Array.isArray(values[field.id]) ? values[field.id] as AgentConfigValue[] : [];
+      values[field.id] = selected.includes(value) ? selected.filter((entry) => entry !== value) : [...selected, value];
+    } else if (activeRequest?.canDecline && !field.required && values[field.id] === value) {
+      delete values[field.id];
+    } else {
+      setValue(field, value);
+    }
+  }
+
+  function submit(action: AgentUserInputAction = 'accept'): void {
     if (!activeRequest) return;
-    onSubmit?.(activeRequest.requestId, { ...values }, cancelled);
+    if (responding || disabled) return;
+    onSubmit?.(activeRequest.requestId, action, action === 'accept' ? { ...values } : {});
   }
 </script>
 
@@ -57,24 +79,35 @@
                   type="button"
                   role="radio"
                   aria-checked={selected}
-                  disabled={responding}
-                  onclick={() => setValue(field, choice.value)}
+                  disabled={responding || disabled}
+                  onclick={() => toggleChoice(field, choice.value)}
                 >
                   <span class="choice-copy"><strong>{choice.label}</strong>{#if choice.description}<small>{choice.description}</small>{/if}</span>
                   {#if selected}<Check size={14} aria-hidden="true" />{/if}
                 </button>
               {/each}
             </div>
+          {:else if field.kind === 'multi-select'}
+            <div class="choice-list">
+              {#each field.choices ?? [] as choice (JSON.stringify(choice.value))}
+                {@const selected = Array.isArray(valueFor(field)) && (valueFor(field) as AgentConfigValue[]).includes(choice.value)}
+                <label class="multiple-choice" class:selected>
+                  <input type="checkbox" checked={selected} disabled={responding || disabled} onchange={() => toggleChoice(field, choice.value)} />
+                  <span class="choice-copy"><strong>{choice.label}</strong>{#if choice.description}<small>{choice.description}</small>{/if}</span>
+                </label>
+              {/each}
+            </div>
           {:else if field.kind === 'boolean'}
-            <label class="boolean-field"><input type="checkbox" checked={valueFor(field) === true} disabled={responding} onchange={(event) => setValue(field, event.currentTarget.checked)} /><span>Yes</span></label>
+            <label class="boolean-field"><input type="checkbox" checked={valueFor(field) === true} disabled={responding || disabled} onchange={(event) => setValue(field, event.currentTarget.checked)} /><span>Yes</span></label>
           {:else}
-            <input class="text-field" required={field.required} type={field.kind === 'password' ? 'password' : 'text'} value={String(valueFor(field))} disabled={responding} oninput={(event) => setValue(field, event.currentTarget.value)} />
+            <input class="text-field" required={field.required} type={field.kind === 'password' ? 'password' : 'text'} value={String(valueFor(field))} disabled={responding || disabled} oninput={(event) => setValue(field, event.currentTarget.value)} />
           {/if}
         </fieldset>
       {/each}
       <div class="input-actions">
-        <button class="cancel" type="button" disabled={responding} onclick={() => submit(true)}>Cancel</button>
-        <button class="continue" type="submit" disabled={responding}>{responding ? 'Submitting…' : 'Continue'}</button>
+        <button class="cancel" type="button" disabled={responding || disabled} onclick={() => submit('cancel')}>Cancel</button>
+        {#if activeRequest.canDecline}<button class="cancel" type="button" disabled={responding || disabled} onclick={() => submit('decline')}>Skip</button>{/if}
+        <button class="continue" type="submit" disabled={responding || disabled}>{responding ? 'Submitting…' : 'Continue'}</button>
       </div>
     </form>
   </section>
@@ -92,10 +125,11 @@
   legend { color: var(--color-text); font-size: 13px; font-weight: 600; }
   .field-description { margin: 3px 0 6px; color: var(--color-text-2); font-size: 12px; }
   .choice-list { display: grid; gap: 5px; margin-top: 6px; }
-  .choice-list button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 32px; padding: 6px 9px; border: 1px solid transparent; border-radius: 9px; background: color-mix(in srgb, var(--color-surface) 55%, transparent); color: var(--color-text); text-align: left; cursor: pointer; }
+  .choice-list button, .multiple-choice { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 32px; padding: 6px 9px; border: 1px solid transparent; border-radius: 9px; background: color-mix(in srgb, var(--color-surface) 55%, transparent); color: var(--color-text); text-align: left; cursor: pointer; }
   .choice-list button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--color-border) 65%, transparent); background: var(--color-hover); }
-  .choice-list button.selected { border-color: color-mix(in srgb, var(--color-accent) 36%, var(--color-border)); background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface)); }
+  .choice-list button.selected, .multiple-choice.selected { border-color: color-mix(in srgb, var(--color-accent) 36%, var(--color-border)); background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface)); }
   .choice-list button:focus-visible { outline: 2px solid var(--color-focus-solid); outline-offset: 2px; }
+  .multiple-choice input { accent-color: var(--color-accent); }
   .choice-copy { display: grid; min-width: 0; gap: 2px; }
   .choice-copy strong { font-size: 13px; font-weight: 600; }
   .choice-copy small { color: var(--color-text-2); font-size: 12px; }

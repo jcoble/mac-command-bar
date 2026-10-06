@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
+  import { onMount, getContext } from 'svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import FileText from '@lucide/svelte/icons/file-text';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -19,6 +20,8 @@
     onFileLink?(path: string): void;
   }
 
+  const disclosure = getContext<ConversationDisclosureContext>(conversationDisclosureContext);
+
   let { text, role, itemId = 'message', completed = true, blocks: incomingBlocks, showImages = false, onFileLink }: Props = $props();
   const blocks = $derived(incomingBlocks ?? parseSafeMarkdown(text));
 
@@ -27,7 +30,7 @@
      first ten lines and offers the rest; a reply is never folded, because the
      reply is the thing being read. */
   let bodyHost = $state<HTMLElement | null>(null);
-  let expanded = $state(false);
+  const expanded = $derived(disclosure?.get(`${itemId}:message`) ?? false);
   let folded = $state(false);
   onMount(trackConversationMessageRenderer);
 
@@ -66,7 +69,7 @@
         class="text-[13px] text-muted-foreground"
         data-testid="conversation-message-fold"
         aria-expanded={expanded}
-        onclick={() => (expanded = !expanded)}
+        onclick={() => disclosure?.set(`${itemId}:message`, !expanded)}
       >
         <span class="fold-chevron" class:open={expanded} aria-hidden="true"><ChevronRight size={13} strokeWidth={1.8} /></span>
         {expanded ? 'Show less' : 'Show more'}

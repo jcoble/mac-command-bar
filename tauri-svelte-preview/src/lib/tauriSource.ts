@@ -117,8 +117,10 @@ export type UsageDailyRow = import('./shell/usage/usageTypes.ts').UsageDailyRow;
 export type UsageDailyTotalsRow = import('./shell/usage/usageTypes.ts').UsageDailyTotalsRow;
 export type AgentConversationCapabilities = import('./shell/conversation/conversationTypes.ts').AgentCapabilities;
 export type AgentConversationEvent = import('./shell/conversation/conversationTypes.ts').AgentConversationEvent;
-export type AgentConversationSnapshot = import('./shell/conversation/conversationTypes.ts').AgentConversationSnapshot;
 export type AgentConversationEventPage = import('./shell/conversation/conversationTypes.ts').AgentConversationEventPage;
+export type AgentConversationItemPage = import('./shell/conversation/conversationTypes.ts').AgentConversationItemPage;
+export type AgentConversationSelectionSnapshot = import('./shell/conversation/conversationTypes.ts').AgentConversationSelectionSnapshot;
+export type AgentConversationChildHistory = import('./shell/conversation/conversationTypes.ts').AgentConversationChildHistory;
 
 export type TerminalOutputPayload = {
   sessionId: string;
@@ -1983,41 +1985,56 @@ export async function probeAgentProviderConfigFromTauri(
   }
 }
 
-export async function readAgentConversationSnapshotFromTauri(
+export async function readAgentConversationSelectionFromTauri(
   ownedId: string,
+  maxBytes: number,
+  minimumGeneration?: number,
   signal?: AbortSignal
-): Promise<AgentConversationSnapshot | null> {
-  if (!isTauriRuntime() || !ownedId.trim()) return null;
-  if (signal?.aborted) return null;
+): Promise<AgentConversationSelectionSnapshot | null> {
+  if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
   const requestId = createAgentConversationRequestId();
-  const { invoke } = await import('./workspaceInvoke');
-  const cancel = (): void => {
-    void cancelAgentConversationRequestFromTauri(requestId);
-  };
+  const cancel = (): void => { void cancelAgentConversationRequestFromTauri(requestId); };
   signal?.addEventListener('abort', cancel, { once: true });
   try {
-    if (signal?.aborted) {
-      await cancelAgentConversationRequestFromTauri(requestId);
-      return null;
-    }
-    try {
-      const snapshot = await invoke<AgentConversationSnapshot | null>('read_agent_conversation_snapshot', {
-        ownedId,
-        requestId
-      });
-      return signal?.aborted ? null : snapshot;
-    } catch (error) {
-      if (signal?.aborted) return null;
-      throw error;
-    }
+    if (signal?.aborted) return null;
+    const { invoke } = await import('./workspaceInvoke');
+    const snapshot = await invoke<AgentConversationSelectionSnapshot | null>(
+      'read_agent_conversation_selection',
+      { ownedId, requestId, maxBytes, minimumGeneration }
+    );
+    if (signal?.aborted || !snapshot) return null;
+    return {
+      ...snapshot,
+      page: {
+        ...snapshot.page,
+        beforeCursor: snapshot.page.beforeCursor ?? undefined,
+        afterCursor: snapshot.page.afterCursor ?? undefined
+      }
+    };
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
   } finally {
     signal?.removeEventListener('abort', cancel);
   }
 }
 
-export async function cancelAgentConversationSnapshotFromTauri(requestId?: number): Promise<void> {
-  const cancelRequestId = requestId ?? createAgentConversationRequestId();
-  await cancelAgentConversationRequestFromTauri(cancelRequestId);
+export async function readAgentConversationChildHistoryFromTauri(input: {
+  parentOwnedId: string;
+  childSessionId: string;
+  requestId: number;
+  maxBytes: number;
+}): Promise<AgentConversationChildHistory> {
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<AgentConversationChildHistory>('read_agent_conversation_child_history', input);
+}
+
+export async function stopAgentConversationChildHistoryFromTauri(
+  parentOwnedId: string,
+  requestId: number
+): Promise<boolean> {
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<boolean>('stop_agent_conversation_child_history', { parentOwnedId, requestId });
 }
 
 export async function listAgentConversationSessionsFromTauri(): Promise<AgentConversationSessionRecord[] | null> {
@@ -2200,22 +2217,46 @@ export async function listAgentConversationEventsBeforeFromTauri(
   }
 }
 
-/** The page of stored events just newer than `afterSequence`, for scrolling down. */
-export async function listAgentConversationEventsAfterFromTauri(
+export async function listAgentConversationItemsBeforeFromTauri(
+  ownedId: string,
+  beforeSequence: number,
+  maxBytes: number,
+  signal?: AbortSignal
+): Promise<AgentConversationItemPage | null> {
+  if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
+  const { invoke } = await import('./workspaceInvoke');
+  try {
+    const page = await invoke<AgentConversationItemPage>('list_agent_conversation_items_before', {
+      ownedId, beforeSequence, maxBytes
+    });
+    return signal?.aborted ? null : {
+      ...page,
+      beforeCursor: page.beforeCursor ?? undefined,
+      afterCursor: page.afterCursor ?? undefined
+    };
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
+  }
+}
+
+export async function listAgentConversationItemsAfterFromTauri(
   ownedId: string,
   afterSequence: number,
   maxBytes: number,
   signal?: AbortSignal
-): Promise<AgentConversationEventPage | null> {
+): Promise<AgentConversationItemPage | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
   const { invoke } = await import('./workspaceInvoke');
   try {
-    const page = await invoke<AgentConversationEventPage>('list_agent_conversation_events_after', {
-      ownedId,
-      afterSequence,
-      maxBytes
+    const page = await invoke<AgentConversationItemPage>('list_agent_conversation_items_after', {
+      ownedId, afterSequence, maxBytes
     });
-    return signal?.aborted ? null : page;
+    return signal?.aborted ? null : {
+      ...page,
+      beforeCursor: page.beforeCursor ?? undefined,
+      afterCursor: page.afterCursor ?? undefined
+    };
   } catch (error) {
     if (signal?.aborted) return null;
     throw error;

@@ -14,39 +14,14 @@ import {
   userMessageOverflowsFold,
   type ConversationDisplayItem
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
-import { applyConversationEvent, createConversationState } from '../src/lib/shell/conversation/conversationReducer.ts';
 import type { AgentConversationEvent, AgentItem } from '../src/lib/shell/conversation/conversationTypes.ts';
 import { conversationItemHasVisibleContent } from '../src/lib/shell/conversation/conversationItemVisibility.ts';
-import {
-  decideConversationScroll,
-  initialConversationScrollAnchorState
-} from '../src/lib/shell/conversation/conversationScrollAnchor.ts';
-import { conversationDisplayItems, displayItemsFromConversationEvents, transcriptMessages } from '../src/lib/shell/conversation/conversationMessages.ts';
+import { conversationDisplayItems, conversationMessagesFromEvents, displayItemsFromConversationEvents } from '../src/lib/shell/conversation/conversationMessages.ts';
 
 const displayAgentItems = (items: AgentItem[]) => displayItemsFromConversationEvents(items.map((item, index) => ({
   type: 'item.completed', ownedId: 'fixtures', provider: 'codex', providerInstanceId: 'fixtures',
   generation: 1, sequence: index + 1, timestampMs: index + 1, itemId: item.id, payload: { item }
 })));
-
-const sentAnchor = decideConversationScroll(initialConversationScrollAnchorState, {
-  type: 'send',
-  previousUserItemId: 'user-before-send',
-  reducedMotion: false
-});
-const waitingAnchor = decideConversationScroll(sentAnchor.state, {
-  type: 'user-items-changed',
-  userItemIds: ['user-before-send']
-});
-assert.equal(waitingAnchor.action.type, 'none', 'the anchor waits until the sent user item exists');
-const readyAnchor = decideConversationScroll(waitingAnchor.state, {
-  type: 'user-items-changed',
-  userItemIds: ['user-before-send', 'user-after-send']
-});
-assert.deepEqual(
-  readyAnchor.action,
-  { type: 'anchor-user', itemId: 'user-after-send', motion: 'smooth', offsetPx: 12 },
-  'the first user item after send becomes the one scroll target'
-);
 
 const typed = displayAgentItems([
   { id: 'user-1', type: 'user-message', content: [{ channel: 'user', text: 'Question' }] },
@@ -198,7 +173,7 @@ const partitioned = conversationTurnGroups([
   textItem('reasoning', 'partition-reasoning', 'partition-turn', 200),
   toolItem('partition-tool', 'partition-turn', 300),
   textItem('assistant', 'partition-tail', 'partition-turn', 600)
-]);
+], null, [{ turnId: 'partition-turn', startedAtMs: 100, endedAtMs: 600, terminalState: 'completed', finalAssistantItemId: 'partition-tail' }]);
 assert.equal(partitioned.length, 1, 'one contiguous turn becomes one group');
 assert.deepEqual(partitioned[0].workItemIds, ['partition-reasoning', 'partition-tool'], 'foldable work is partitioned from visible messages');
 assert.deepEqual(partitioned[0].tailItemIds, ['partition-user', 'partition-tail'], 'user and final assistant messages remain visible');
@@ -212,17 +187,23 @@ const interleaved = conversationTurnGroups([
   toolItem('interleaved-tool-b', 'interleaved-turn', 4),
   textItem('assistant', 'interleaved-tail-a', 'interleaved-turn', 5),
   textItem('assistant', 'interleaved-tail-b', 'interleaved-turn', 6)
-]);
+], null, [{ turnId: 'interleaved-turn', startedAtMs: 1, endedAtMs: 6, terminalState: 'completed', finalAssistantItemId: 'interleaved-tail-b' }]);
 assert.deepEqual(
   interleaved[0].workItemIds,
-  ['interleaved-tool-a', 'interleaved-commentary', 'interleaved-tool-b'],
+  ['interleaved-tool-a', 'interleaved-commentary', 'interleaved-tool-b', 'interleaved-tail-a'],
   'assistant commentary between work rows folds with the work'
 );
 assert.deepEqual(
   interleaved[0].tailItemIds,
-  ['interleaved-user', 'interleaved-tail-a', 'interleaved-tail-b'],
-  'only the contiguous assistant run at the end is tail prose'
+  ['interleaved-user', 'interleaved-tail-b'],
+  'the authoritative final reply remains outside the summary'
 );
+
+const commentaryOnly = conversationTurnGroups([
+  textItem('assistant', 'interleaved-commentary', 'interleaved-turn', 3)
+], null, [{ turnId: 'interleaved-turn', terminalState: 'completed', finalAssistantItemId: 'interleaved-tail-b' }]);
+assert.deepEqual(commentaryOnly[0].workItemIds, ['interleaved-commentary'],
+  'commentary stays summary work when tool rows and the final reply are outside the window');
 
 const noWork = conversationTurnGroups([
   textItem('user', 'plain-user', 'plain-turn', 1),
@@ -240,7 +221,7 @@ const running = conversationTurnGroups([
   textItem('user', 'running-user', 'running-turn', 1),
   toolItem('running-tool', 'running-turn', 2, 'running')
 ]);
-assert.equal(running[0].completed, false, 'a turn remains incomplete while any item runs');
+assert.equal(running[0].completed, false, 'loaded items alone cannot establish a terminal state');
 
 // A steer sent during a running turn carries that turn's id. It stays in the
 // turn's group, and both prompts stay visible rather than folding as work.
@@ -275,25 +256,20 @@ assert.deepEqual(
 assert.equal(stored[0].turnId, 'stored-turn:stored-user-a', 'a derived turn is named after the prompt that opened it');
 assert.deepEqual(stored[0].workItemIds, ['stored-tool'], 'a derived turn folds its work like any other');
 
-// Every row of an older import carries the moment the import ran, so the turn
-// spans no time at all. That is not something to report as a duration.
+// Imported rows without native bounds cannot establish a duration.
 const instant = conversationTurnGroups([
   textItem('user', 'instant-user', 'instant-turn', 7),
   textItem('assistant', 'instant-answer', 'instant-turn', 7)
 ]);
-assert.equal(instant[0].elapsedMs, null, 'a turn that spans no time reports no elapsed time');
+assert.equal(instant[0].elapsedMs, null, 'a turn without native bounds reports no elapsed time');
 
-// A streamed reply is opened and never closed: the provider sends the text in
-// chunks and no event afterwards says the message ended, so every assistant
-// row in a finished transcript still reads as unfinished. A turn is finished
-// when nothing in it is still waiting, not when every row says it stopped
-// writing.
+// Native terminal metadata wins over unfinished-looking display items.
 const streamedReply = conversationTurnGroups([
   textItem('user', 'streamed-user', 'streamed-turn', 0),
   toolItem('streamed-tool-a', 'streamed-turn', 60_000),
   toolItem('streamed-tool-b', 'streamed-turn', 120_000),
   textItem('assistant', 'streamed-answer', 'streamed-turn', 840_000, false)
-]);
+], null, [{ turnId: 'streamed-turn', startedAtMs: 0, endedAtMs: 840_000, terminalState: 'completed', finalAssistantItemId: 'streamed-answer' }]);
 assert.equal(streamedReply.length, 1, 'a finished turn is one group');
 assert.equal(streamedReply[0].completed, true, 'a finished turn folds even though its reply still reads as streaming');
 assert.equal(streamedReply[0].elapsedMs, 840_000);
@@ -319,7 +295,7 @@ const compacted = conversationTurnGroups([
   { kind: 'compaction', itemId: 'compacted-marker', turnId: null, timestampMs: 120_000 },
   toolItem('compacted-tool-b', 'compacted-turn', 180_000),
   textItem('assistant', 'compacted-answer', 'compacted-turn', 840_000, false)
-]);
+], null, [{ turnId: 'compacted-turn', startedAtMs: 0, endedAtMs: 840_000, terminalState: 'completed', finalAssistantItemId: 'compacted-answer' }]);
 assert.equal(compacted.length, 1, 'a compaction marker stays inside the turn it interrupts');
 assert.equal(compacted[0].completed, true, 'the turn still folds around the marker');
 assert.deepEqual(
@@ -328,20 +304,33 @@ assert.deepEqual(
   'both halves of the interrupted turn fold together'
 );
 
-// Nothing folds while the agent is still writing. Most providers put no turn id
-// on the rows they send, so the running turn cannot be found by matching ids —
-// it is the newest turn, and there is a running turn only while one is named.
+// The last row of a historical window is not the currently running turn.
+const nativeFacts = [{ turnId: 'older-turn', startedAtMs: 100, endedAtMs: 10_100,
+  terminalState: 'completed', finalAssistantItemId: 'older-answer' }];
+const historicalItems = [
+  textItem('user', 'older-user', 'older-turn', 100),
+  toolItem('older-tool', 'older-turn', 1_000, 'running'),
+  textItem('assistant', 'older-answer', 'older-turn', 9_000)
+];
+const historical = conversationTurnGroups(historicalItems, 'live-turn', nativeFacts)[0];
+const clipped = conversationTurnGroups(historicalItems.slice(1), 'live-turn', nativeFacts)[0];
+assert.equal(historical.running, false);
+assert.equal(historical.completed, true, 'native terminal wins over a historical running tool row');
+assert.equal(clipped.elapsedMs, historical.elapsedMs, 'paging cannot alter the duration');
+assert.equal(clipped.elapsedMs, 10_000, 'duration uses native bounds, not the visible row span');
+const unknownEnd = conversationTurnGroups(historicalItems, null, [
+  { ...nativeFacts[0], endedAtMs: null }
+])[0];
+assert.equal(unknownEnd.elapsedMs, null, 'native null bounds remain unknown instead of coercing to zero');
 const writing = conversationTurnGroups([
-  textItem('user', 'writing-user-a', null, 0),
-  toolItem('writing-tool-a', null, 1_000),
-  textItem('assistant', 'writing-answer-a', null, 2_000, false),
-  textItem('user', 'writing-user-b', null, 3_000),
-  toolItem('writing-tool-b', null, 4_000),
-  textItem('assistant', 'writing-answer-b', null, 5_000, false)
-], 'turn-the-agent-is-writing');
-assert.equal(writing.length, 2);
-assert.equal(writing[0].completed, true, 'an earlier turn folds while a later one runs');
-assert.equal(writing[1].completed, false, 'the turn being written never folds');
+  ...historicalItems,
+  toolItem('live-tool', 'live-turn', 20_000)
+], 'live-turn', [...nativeFacts, { turnId: 'live-turn', startedAtMs: 15_000 }]);
+assert.equal(writing[0].completed, true);
+assert.equal(writing[1].running, true);
+assert.equal(writing[1].completed, false);
+assert.equal(writing[1].startedAtMs, 15_000);
+assert.equal(writing[1].elapsedMs, null, 'live duration is not frozen by page contents');
 
 assert.equal(formatWorkedFor(800), '0.8s');
 assert.equal(formatWorkedFor(5_540), '5.5s');
@@ -375,7 +364,10 @@ assert.ok((silentError[0].text ?? '').trim().length > 0, 'an error card is never
 
 // The sent screenshot is carried onto the user card it was sent with.
 const withAttachments = conversationDisplayItems(
-  transcriptMessages([{ role: 'user', itemId: 'user-shot', text: 'Look', timestampMs: 1 }]).getMessages(),
+  [{
+    id: 'user-shot', role: 'user', parts: [{ type: 'text', content: 'Look' }],
+    metadata: { itemType: 'user-message', completed: true, startedAtMs: 1 }
+  }],
   [],
   {
     'user-shot': [{
@@ -391,7 +383,10 @@ assert.deepEqual(
   'the user card renders the screenshot that went out with it'
 );
 assert.equal(
-  conversationDisplayItems(transcriptMessages([{ role: 'user', itemId: 'user-plain', text: 'Hi', timestampMs: 1 }]).getMessages())[0].attachments,
+  conversationDisplayItems([{
+    id: 'user-plain', role: 'user', parts: [{ type: 'text', content: 'Hi' }],
+    metadata: { itemType: 'user-message', completed: true, startedAtMs: 1 }
+  }])[0].attachments,
   undefined,
   'a message sent without a screenshot gains no attachment field'
 );
@@ -496,12 +491,9 @@ for (const [name, summary, output, toolKind] of [
     event(1, { kind: 'tool', itemId: 'identity', name, summary, state: 'started' }),
     event(2, { kind: 'tool', itemId: 'identity', name: '', output, state: 'completed' })
   ];
-  let live = createConversationState('owned-rich', 'codex');
-  for (const update of events) {
-    live = applyConversationEvent(live, update);
-  }
+  const live = conversationMessagesFromEvents(events);
   const replay = displayItemsFromConversationEvents(events);
-  assert.deepEqual(conversationDisplayItems(live.transcript.getMessages()), replay, 'live and replay agree');
+  assert.deepEqual(conversationDisplayItems(live), replay, 'live and replay agree');
   for (const item of replay) {
     assert.equal(item.kind, 'tool');
     if (item.kind !== 'tool') throw new Error('expected tool');

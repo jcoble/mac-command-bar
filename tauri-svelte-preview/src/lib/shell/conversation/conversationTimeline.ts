@@ -7,6 +7,7 @@ import type {
   AgentItemType,
   AgentApprovalRequest,
   AgentConversationEvent,
+  AgentConversationTurnFacts,
   AgentPermissionOption,
   AgentPermissionRequest,
   AgentUserInputRequest,
@@ -116,6 +117,8 @@ export interface ConversationTurnGroup {
   readonly tailItemIds: readonly string[];
   readonly completed: boolean;
   readonly elapsedMs: number | null;
+  readonly startedAtMs: number | null;
+  readonly running: boolean;
 }
 
 /**
@@ -186,16 +189,7 @@ const FOLDABLE_TURN_KINDS = new Set<ConversationDisplayItem['kind']>([
   'tasks'
 ]);
 
-/** Whether a row has stopped waiting on anything.
- *
- * Only a row that waits can say its turn is unfinished: a tool that has not
- * returned, a sub-agent still working, a request sitting in front of the
- * reader. Writing is not waiting. This used to read the `completed` flag on
- * every row first, and a message is marked unfinished the moment its first
- * chunk arrives and is never marked finished afterwards — the provider streams
- * the text and sends nothing to say it ended. So every turn holding a reply
- * counted as unfinished for ever, and the fold that only a finished turn draws
- * never appeared again once a conversation had any writing in it. */
+/** Tool-run display state; native turn metadata separately owns turn completion. */
 function turnItemSettled(item: ConversationDisplayItem): boolean {
   if (item.kind === 'toolRun') return Boolean(item.completed && item.items.every(turnItemSettled));
   if (item.kind === 'tool') return item.state === 'completed' || item.state === 'failed';
@@ -216,35 +210,35 @@ function turnItemSettled(item: ConversationDisplayItem): boolean {
   return true;
 }
 
-function turnGroup(turnId: string | null, items: readonly ConversationDisplayItem[], running: boolean): ConversationTurnGroup {
-  let tailStart = items.length;
-  while (tailStart > 0 && items[tailStart - 1].kind === 'assistant') tailStart -= 1;
-  const hasFoldableWork = items.some((item) => FOLDABLE_TURN_KINDS.has(item.kind));
-  const workItemIds = hasFoldableWork
-    ? items
-      .filter((item, index) => FOLDABLE_TURN_KINDS.has(item.kind) || (item.kind === 'assistant' && index < tailStart))
-      .map((item) => item.itemId)
-    : [];
-  const tailItemIds = items
-    .filter((item, index) => item.kind === 'user' || (item.kind === 'assistant' && index >= tailStart))
+function turnGroup(
+  turnId: string | null,
+  items: readonly ConversationDisplayItem[],
+  running: boolean,
+  facts: AgentConversationTurnFacts | undefined
+): ConversationTurnGroup {
+  const finalItemId = facts?.finalAssistantItemId;
+  const workItemIds = items
+    .filter((item) => FOLDABLE_TURN_KINDS.has(item.kind)
+      || (item.kind === 'assistant' && !!finalItemId && item.itemId !== finalItemId))
     .map((item) => item.itemId);
-  const firstTimestamp = items[0]?.timestampMs;
-  const lastTimestamp = items[items.length - 1]?.timestampMs;
-  const span = Number.isFinite(firstTimestamp) && Number.isFinite(lastTimestamp)
-    ? Math.max(0, lastTimestamp - firstTimestamp)
-    : 0;
-  // Zero is not a length of time anyone worked for. Every row of an older
-  // import carries the moment the import ran rather than the moment the work
-  // happened, so the whole turn reads as one instant; the fold says "Worked"
-  // in that case instead of claiming "Worked for 0.0s".
-  const elapsedMs = span > 0 ? span : null;
+  const tailItemIds = items
+    .filter((item) => item.kind === 'user'
+      || (item.kind === 'assistant' && (!finalItemId || item.itemId === finalItemId)))
+    .map((item) => item.itemId);
+  const startedAtMs = facts?.startedAtMs ?? null;
+  const endedAtMs = facts?.endedAtMs;
+  const completed = !running && !!facts?.terminalState;
   return {
     turnId,
     items,
     workItemIds,
     tailItemIds,
-    completed: !running && items.every(turnItemSettled),
-    elapsedMs
+    running,
+    completed,
+    startedAtMs,
+    elapsedMs: completed && startedAtMs !== null && endedAtMs != null
+      ? Math.max(0, endedAtMs - startedAtMs)
+      : null
   };
 }
 
@@ -474,18 +468,14 @@ export function foldToolRuns(
   return folded;
 }
 
-/** Groups adjacent display rows without changing their transcript order.
- *
- * The turn the agent is still writing into is the newest one. It cannot be
- * found by matching `activeTurnId` against the rows: most providers put no turn
- * id on what they send, so the rows of a live turn carry an id read off the
- * prompt that opened it, which is never the id the session reports. There is a
- * turn running only while the session names one, and while one runs it is the
- * last group. */
+/** Group rows in transcript order; native facts own turn state and timing.
+ * A history window ending in an older turn never makes that turn active. */
 export function conversationTurnGroups(
   items: readonly ConversationDisplayItem[],
-  activeTurnId: string | null = null
+  activeTurnId: string | null = null,
+  turnFacts: readonly AgentConversationTurnFacts[] = []
 ): readonly ConversationTurnGroup[] {
+  const facts = new Map(turnFacts.map((turn) => [turn.turnId, turn]));
   const turnIds = turnIdsOf(items);
   const partitions: { turnId: string | null; items: ConversationDisplayItem[] }[] = [];
   items.forEach((item, index) => {
@@ -493,10 +483,11 @@ export function conversationTurnGroups(
     if (open && turnIds[index] === open.turnId) open.items.push(item);
     else partitions.push({ turnId: turnIds[index], items: [item] });
   });
-  return partitions.map((partition, index) => turnGroup(
+  return partitions.map((partition) => turnGroup(
     partition.turnId,
     partition.items,
-    activeTurnId !== null && index === partitions.length - 1
+    activeTurnId !== null && partition.turnId === activeTurnId,
+    partition.turnId ? facts.get(partition.turnId) : undefined
   ));
 }
 

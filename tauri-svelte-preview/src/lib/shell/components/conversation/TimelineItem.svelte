@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
   import {
     conversationFileLinkProvenance,
     type ConversationDisplayItem,
@@ -27,7 +26,6 @@
     item: ConversationDisplayItem;
     assistantLabel?: string;
     onApprovalDecision?(requestId: string, decision: string): void;
-    onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void;
     onFileLink?(path: string, provenance?: ConversationFileLinkProvenance): void;
     /** Opens the plan chip above the composer. The transcript only notes that
      * the plan moved; the plan itself lives in one place. */
@@ -36,7 +34,7 @@
   // `assistantLabel` is retired: nothing in the transcript carries a role
   // heading any more. It stays accepted only so the timeline that still passes
   // it keeps type-checking; the container drops it in its own pass.
-  let { item, onApprovalDecision, onInputSubmit, onFileLink, onPlanOpen }: Props = $props();
+  let { item, onApprovalDecision, onFileLink, onPlanOpen }: Props = $props();
   const visible = $derived(conversationItemHasVisibleContent(item));
   const fileLinkProvenance = $derived(conversationFileLinkProvenance(item));
   const openFileLink = (path: string): void => onFileLink?.(path, fileLinkProvenance);
@@ -57,7 +55,7 @@
     {:else if item.kind === 'tool'}<ConversationToolUI itemId={item.itemId} onFileLink={openFileLink} />
     {:else if item.kind === 'subagent'}<SubagentSection {item} />
     {:else if item.kind === 'approval'}<ApprovalItem {item} onDecision={onApprovalDecision} />
-    {:else if item.kind === 'input'}<UserInputItem {item} onSubmit={onInputSubmit} />
+    {:else if item.kind === 'input'}<UserInputItem {item} />
     {:else if item.kind === 'error'}<ErrorItem {item} />
     {:else if item.kind === 'compaction'}<CompactionItem {item} />
     {:else}<div class="unknown-item" data-testid="timeline-unknown-item">{item.text}</div>{/if}
