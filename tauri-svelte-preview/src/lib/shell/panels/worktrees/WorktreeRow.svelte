@@ -127,11 +127,9 @@
       aria-hidden="true"
     />
     <FolderGit2 class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-    <!-- The branch keeps a readable minimum; the chips beside it give way first. -->
-    <span class="min-w-16 flex-1 truncate font-medium" title={row.path}>{row.branch}</span>
-    <!-- The chips shrink as a group and clip, so a row with a lot to say still
-         ends at the panel edge instead of pushing past it. -->
-    <span class="flex min-w-0 shrink items-center gap-1.5 overflow-hidden">
+    <!-- The chips stay whole; the branch name truncates to make room for them. -->
+    <span class="min-w-0 flex-1 truncate font-medium" title={row.path}>{row.branch}</span>
+    <span class="flex shrink-0 items-center gap-1.5">
       {#if row.isPrimary}
         <Chip class={QUIET_CHIP}>main checkout</Chip>
       {/if}

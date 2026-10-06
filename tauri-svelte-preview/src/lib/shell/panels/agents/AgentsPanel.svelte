@@ -151,7 +151,7 @@
 
 <section class="flex h-full min-h-0 flex-col" data-testid="agents-panel">
   <PanelHeader title="Agents" count={view === 'session' && rows.length > 0 ? rows.length : null} />
-  <div class="border-b border-border px-2 pb-2">
+  <div class="px-2 pb-2">
     <SegmentedControl
       items={VIEW_OPTIONS}
       value={view}

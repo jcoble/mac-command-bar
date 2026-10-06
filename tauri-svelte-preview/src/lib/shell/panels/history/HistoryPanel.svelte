@@ -649,7 +649,7 @@
   <div class="relative px-2 py-2">
     <Search class="pointer-events-none absolute top-1/2 left-6 size-[16px] -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
     <Input
-      class="h-[36px] pl-9 text-[13px]"
+      class="h-8 rounded-full border-transparent bg-muted dark:bg-muted pl-9 text-[13px]"
       placeholder="Search sessions"
       autocomplete="off"
       spellcheck="false"

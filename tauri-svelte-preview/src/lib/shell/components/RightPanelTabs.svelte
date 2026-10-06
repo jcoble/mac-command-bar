@@ -52,16 +52,18 @@
   ] as const;
 
   const ROUND = 'size-7 rounded-full p-0 text-muted-foreground [&_svg]:size-4';
-  // The active tab is a lighter filled pill inside the island; no underline.
+  // A 24px pill in the --muted track; the active one is a white-16% fill with
+  // no border, shadow or underline.
   const PILL =
-    'size-7 flex-none rounded-full border-transparent p-0 text-muted-foreground hover:bg-foreground/6 [&_svg]:size-4 data-active:bg-foreground/12 data-active:shadow-sm dark:data-active:border-transparent dark:data-active:bg-foreground/12';
+    'h-6 w-7 flex-none rounded-full border-transparent p-0 text-muted-foreground hover:bg-foreground/6 [&_svg]:size-4 group-data-[variant=default]/tabs-list:data-active:shadow-none data-active:bg-foreground/16 dark:data-active:border-transparent dark:data-active:bg-foreground/16';
 
   const shown = $derived([...PERMANENT, ...EXTRA.filter((tab) => tab.id === extraId)]);
 </script>
 
-<div class="flex h-10 min-w-0 flex-none items-center gap-1 px-1.5">
+<!-- 44px: the header band the rail and editor headers share. -->
+<div class="flex h-11 min-w-0 flex-none items-center gap-1 px-2">
   <Tabs.Root value={activeId} onValueChange={(id) => onSelect(id as RightTabId)} class="min-w-0 flex-1">
-    <Tabs.List class="gap-0.5 rounded-full bg-foreground/7 p-1 group-data-[orientation=horizontal]/tabs:h-9" aria-label="Side panel">
+    <Tabs.List class="gap-0.5 rounded-full bg-muted p-[3px] group-data-[orientation=horizontal]/tabs:h-auto" aria-label="Side panel">
       {#each shown as tab (tab.id)}
         <Tooltip.Root>
           <Tooltip.Trigger>

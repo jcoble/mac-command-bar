@@ -1033,7 +1033,7 @@
 					value={scopeValue}
 					onValueChange={selectInspectionRoot}
 				>
-					<Select.Trigger size="sm" class="min-w-0 px-3 text-[13px] data-[size=sm]:h-[32px] data-[size=sm]:rounded-full" aria-label="Folder this panel reads">
+					<Select.Trigger size="sm" class="min-w-0 border-transparent bg-secondary px-3 text-[13px] hover:bg-secondary/80 data-[size=sm]:h-7 data-[size=sm]:rounded-full dark:bg-secondary dark:hover:bg-secondary/80" aria-label="Folder this panel reads">
 						<span class="min-w-0 truncate">
 							{scopeOptions.find((option) => canonicalPath(option.path) === canonicalPath(scopeValue))?.label ??
 								"Session folder"}{#if readOnlyInspection} · read-only{/if}
@@ -1052,7 +1052,7 @@
 					<Button
 						size="sm"
 						variant={virtualized ? "secondary" : "ghost"}
-						class="h-[32px] rounded-full px-3 text-[13px]"
+						class="h-7 rounded-full px-3 text-[13px]"
 						aria-pressed={virtualized}
 						aria-label="Compare virtualized and all file-tree rows"
 						onclick={() => (virtualized = !virtualized)}
@@ -1061,23 +1061,23 @@
 					</Button>
 				{/if}
 				<IconButton
-					class="size-[32px]"
+					class="size-7"
 					label={sortDirection === "ascending" ? "Sort Z to A" : "Sort A to Z"}
 					onclick={() => (sortDirection = sortDirection === "ascending" ? "descending" : "ascending")}
 				>
 					{#if sortDirection === "ascending"}<ArrowDownAZ class="size-[16px]" />{:else}<ArrowUpZA class="size-[16px]" />{/if}
 				</IconButton>
 				<IconButton
-					class="size-[32px]"
+					class="size-7"
 					label={explorer.includeExcluded ? "Hide excluded files" : "Show excluded files"}
 					onclick={() => void toggleExcludedFiles()}
 				>
 					{#if explorer.includeExcluded}<EyeOff class="size-[16px]" />{:else}<Eye class="size-[16px]" />{/if}
 				</IconButton>
 				{#if explorer.scanning}
-					<IconButton class="size-[32px]" label="Stop listing files" onclick={() => stopScan()}><Square class="size-[16px]" /></IconButton>
+					<IconButton class="size-7" label="Stop listing files" onclick={() => stopScan()}><Square class="size-[16px]" /></IconButton>
 				{:else}
-					<IconButton class="size-[32px]" label="List this project's files again" disabled={!explorer.root} onclick={refreshFiles}>
+					<IconButton class="size-7" label="List this project's files again" disabled={!explorer.root} onclick={refreshFiles}>
 						<RefreshCw class="size-[16px]" />
 					</IconButton>
 				{/if}
@@ -1087,7 +1087,7 @@
 			<Button
 				size="sm"
 				variant="outline"
-				class="h-[32px] self-start rounded-full px-3 text-[13px]"
+				class="h-7 self-start rounded-full px-3 text-[13px]"
 				disabled={checkoutBusy}
 				data-testid="files-use-session-checkout"
 				onclick={useSessionCheckout}
@@ -1100,7 +1100,7 @@
 				<Search class="pointer-events-none absolute top-1/2 left-3 size-[16px] -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
 				<Input
 					type="search"
-					class="h-[36px] w-full pr-12 pl-9 text-[13px]"
+					class="h-8 w-full rounded-full border-transparent bg-muted dark:bg-muted pr-12 pl-9 text-[13px]"
 					placeholder="Filter files…"
 					aria-label="Search project files"
 					autocomplete="off"
