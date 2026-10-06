@@ -41,6 +41,13 @@ export const buttonVariants = tv({
 			size: ["icon", "icon-xs", "icon-sm", "icon-lg"],
 			class: "text-muted-foreground aria-pressed:bg-secondary aria-pressed:text-foreground",
 		},
+		/* Its glyph is 16px in pixels: the root font follows the interface-font
+		   setting, so the rem-based size-4 would come out near 13px. */
+		{
+			variant: "ghost",
+			size: ["icon", "icon-sm", "icon-lg"],
+			class: "[&_svg:not([class*='size-'])]:size-[16px]",
+		},
 	],
 	defaultVariants: {
 		variant: "default",

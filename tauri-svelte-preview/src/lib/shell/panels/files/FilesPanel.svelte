@@ -1040,7 +1040,7 @@
 					onValueChange={selectInspectionRoot}
 				>
 					<Select.Trigger size="sm" class="min-w-0 border-transparent bg-secondary pr-2 pl-3 text-[13px] hover:bg-secondary/80 data-[size=sm]:h-7 data-[size=sm]:rounded-full dark:bg-secondary dark:hover:bg-secondary/80 [&>svg:last-child]:size-3" aria-label="Folder this panel reads">
-						<Folder class="size-3.5 text-muted-foreground" strokeWidth={2} aria-hidden="true" />
+						<Folder class="size-[14px] text-muted-foreground" strokeWidth={2} aria-hidden="true" />
 						<span class="min-w-0 truncate">{scopeLabel}{#if readOnlyInspection} · read-only{/if}</span>
 					</Select.Trigger>
 					<Select.Content>
@@ -1063,26 +1063,26 @@
 						title="Virtualized rows (dev only)"
 						onclick={() => (virtualized = !virtualized)}
 					>
-						<Rows3 class="size-3.5" strokeWidth={2} aria-hidden="true" />
+						<Rows3 class="size-[14px]" strokeWidth={2} aria-hidden="true" />
 					</Button>
 				{/if}
 				<IconButton
 					label={sortDirection === "ascending" ? "Sort Z to A" : "Sort A to Z"}
 					onclick={() => (sortDirection = sortDirection === "ascending" ? "descending" : "ascending")}
 				>
-					{#if sortDirection === "ascending"}<ArrowDownAZ class="size-3.5" />{:else}<ArrowUpZA class="size-3.5" />{/if}
+					{#if sortDirection === "ascending"}<ArrowDownAZ class="size-[14px]" />{:else}<ArrowUpZA class="size-[14px]" />{/if}
 				</IconButton>
 				<IconButton
 					label={explorer.includeExcluded ? "Hide excluded files" : "Show excluded files"}
 					onclick={() => void toggleExcludedFiles()}
 				>
-					{#if explorer.includeExcluded}<EyeOff class="size-3.5" />{:else}<Eye class="size-3.5" />{/if}
+					{#if explorer.includeExcluded}<EyeOff class="size-[14px]" />{:else}<Eye class="size-[14px]" />{/if}
 				</IconButton>
 				{#if explorer.scanning}
-					<IconButton label="Stop listing files" onclick={() => stopScan()}><Square class="size-3.5" /></IconButton>
+					<IconButton label="Stop listing files" onclick={() => stopScan()}><Square class="size-[14px]" /></IconButton>
 				{:else}
 					<IconButton label="List this project's files again" disabled={!explorer.root} onclick={refreshFiles}>
-						<RefreshCw class="size-3.5" />
+						<RefreshCw class="size-[14px]" />
 					</IconButton>
 				{/if}
 			{/if}
@@ -1101,7 +1101,7 @@
 		{/if}
 		{#if explorer.activated && explorer.unavailable === null}
 			<div class="relative">
-				<Search class="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+				<Search class="pointer-events-none absolute top-1/2 left-3 size-[14px] -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
 				<Input
 					type="search"
 					class="h-8 w-full rounded-[var(--radius-md)] border-transparent bg-muted dark:bg-muted pr-3 pl-[34px] text-[13px]"

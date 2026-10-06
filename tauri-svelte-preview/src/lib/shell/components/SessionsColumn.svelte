@@ -219,7 +219,7 @@
       run();
     }}
   >
-    <Icon class="size-4" aria-hidden="true" />
+    <Icon class="size-[16px]" aria-hidden="true" />
   </IconButton>
 {/snippet}
 
@@ -261,7 +261,7 @@
             class={ACTION_CLASS}
             onclick={showFilter}
           >
-            <Search class="size-4" aria-hidden="true" />
+            <Search class="size-[16px]" aria-hidden="true" />
           </IconButton>
           <DropdownMenu.Root>
             <Tooltip.Root>
@@ -303,13 +303,11 @@
                       class={cn(
                         'min-w-0 px-1 text-[13px] font-normal',
                         pressed
-                          ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)] hover:bg-[var(--color-accent)] hover:text-[var(--color-on-accent)]'
+                          ? 'bg-secondary text-foreground hover:bg-secondary'
                           : 'text-[var(--color-text-3)]'
                       )}
                       aria-pressed={pressed}
-                      style={pressed
-                        ? 'background-color: var(--color-accent); color: var(--color-on-accent)'
-                        : 'color: var(--color-text)'}
+                      style={pressed ? undefined : 'color: var(--color-text)'}
                       onclick={grouping.press}
                     >
                       <span class="truncate">{grouping.label}</span>

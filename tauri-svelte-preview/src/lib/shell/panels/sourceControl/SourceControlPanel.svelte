@@ -757,15 +757,18 @@
             <Button
               variant="secondary"
               size="sm"
-              class="flex-1"
+              class="flex-1 rounded-full"
               disabled={!canStageAll}
               title={stageHint}
               data-testid="source-control-stage-all"
               onclick={stageAll}>Stage All</Button
             >
+            <!-- A commit that cannot run yet is a plain grey button, not a
+                 dimmed green one. -->
             <Button
+              variant={(amend ? canAmend : canCommit) ? 'default' : 'secondary'}
               size="sm"
-              class="flex-1"
+              class="flex-1 rounded-full"
               disabled={amend ? !canAmend : !canCommit}
               title={commitHint}
               data-testid="source-control-commit"

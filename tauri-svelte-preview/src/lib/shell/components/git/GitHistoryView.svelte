@@ -534,11 +534,11 @@
           </svg>
 
           <span class="message">
-<!-- Kit `Chip`s, tones named for what they mean: the branch you are
-                 ON is `live`, a tag keeps the shell's amber, and everything
-                 else stays quiet so the subject is what you read. -->
+<!-- Kit `Chip`s, tones named for what they mean: a tag keeps the
+                 shell's amber, and everything else, the branch you are ON
+                 included, stays quiet so the subject is what you read. -->
             {#each commit.refs.headLabels as label (label)}
-              <Chip tone="live" class="max-w-[220px] truncate">{label}</Chip>
+              <Chip tone="neutral" class="max-w-[220px] truncate">{label}</Chip>
             {/each}
             {#each branchChips(commit.refs) as label (label)}
               <Chip tone="neutral" class="max-w-[220px] truncate">{label}</Chip>
@@ -737,7 +737,7 @@
   }
 
   .commit-row.open {
-    background: color-mix(in srgb, var(--color-accent) 14%, var(--color-elevated));
+    background: var(--color-selected);
   }
 
   .commit-row:focus-visible {
@@ -829,7 +829,7 @@
   }
 
   .file-row.chosen {
-    background: color-mix(in srgb, var(--color-accent) 14%, var(--color-elevated));
+    background: var(--color-selected);
   }
 
   .file-row.unreadable {

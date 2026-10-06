@@ -53,7 +53,7 @@
   // A 24px pill with a 14px glyph in the --muted track; the active one is a
   // white-16% fill with no border, shadow or underline.
   const PILL =
-    'h-6 w-7 flex-none rounded-full border-transparent p-0 text-muted-foreground hover:bg-foreground/6 [&_svg]:size-3.5 group-data-[variant=default]/tabs-list:data-active:shadow-none data-active:bg-foreground/16 dark:data-active:border-transparent dark:data-active:bg-foreground/16';
+    'h-6 w-7 flex-none rounded-full border-transparent p-0 text-muted-foreground hover:bg-foreground/6 [&_svg]:size-[14px] group-data-[variant=default]/tabs-list:data-active:shadow-none data-active:bg-foreground/16 dark:data-active:border-transparent dark:data-active:bg-foreground/16';
 
   const shown = $derived([...PERMANENT, ...EXTRA.filter((tab) => tab.id === extraId)]);
 </script>
@@ -67,7 +67,7 @@
           <Tooltip.Trigger>
             {#snippet child({ props })}
               <Tabs.Trigger {...props} value={tab.id} aria-label={tab.label} class={PILL}>
-                <tab.icon class="size-3.5" strokeWidth={2} aria-hidden="true" />
+                <tab.icon class="size-[14px]" strokeWidth={2} aria-hidden="true" />
               </Tabs.Trigger>
             {/snippet}
           </Tooltip.Trigger>
@@ -81,7 +81,7 @@
        past its edge would sit under the live browser page beside it. -->
   <DropdownMenu.Root>
     <DropdownMenu.Trigger class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })} aria-label="More panels">
-      <Ellipsis class="size-3.5" strokeWidth={2} aria-hidden="true" />
+      <Ellipsis class="size-[14px]" strokeWidth={2} aria-hidden="true" />
     </DropdownMenu.Trigger>
     <DropdownMenu.Content side="bottom" align="end" class="w-44">
       {#each EXTRA as tab (tab.id)}
@@ -93,6 +93,6 @@
     </DropdownMenu.Content>
   </DropdownMenu.Root>
   <Button variant="ghost" size="icon-sm" aria-label="Close side panel" onclick={onClose}>
-    <X class="size-3.5" strokeWidth={2} aria-hidden="true" />
+    <X class="size-[14px]" strokeWidth={2} aria-hidden="true" />
   </Button>
 </div>

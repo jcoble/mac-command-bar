@@ -1694,7 +1694,7 @@
             class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
             aria-label="More editor actions"
           >
-            <Ellipsis class="size-3.5" aria-hidden="true" />
+            <Ellipsis class="size-[14px]" aria-hidden="true" />
           </DropdownMenu.Trigger>
           <DropdownMenu.Content align="end">
             <DropdownMenu.Item

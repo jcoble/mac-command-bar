@@ -120,7 +120,7 @@ canvas {
  * Text selection — translucent accent, derived from the token.
  * ------------------------------------------------------------------ */
 ::selection {
-  background: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
   color: var(--color-text);
 }
 

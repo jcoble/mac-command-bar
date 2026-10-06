@@ -259,7 +259,7 @@
         disabled={!canOpenBrowser}
         onclick={onNewBrowserTab}
       >
-        <Plus class="size-3.5" aria-hidden="true" />
+        <Plus class="size-[14px]" aria-hidden="true" />
       </Tooltip.Trigger>
       <Tooltip.Content side="bottom">New browser tab</Tooltip.Content>
     </Tooltip.Root>
@@ -273,7 +273,7 @@
             aria-label={expanded ? 'Collapse the pane' : 'Expand the pane'}
             onclick={onToggleExpanded}
           >
-            {#if expanded}<Minimize2 class="size-3.5" aria-hidden="true" />{:else}<Maximize2 class="size-3.5" aria-hidden="true" />{/if}
+            {#if expanded}<Minimize2 class="size-[14px]" aria-hidden="true" />{:else}<Maximize2 class="size-[14px]" aria-hidden="true" />{/if}
           </Tooltip.Trigger>
           <Tooltip.Content side="bottom">{expanded ? 'Collapse' : 'Expand'}</Tooltip.Content>
         </Tooltip.Root>
@@ -285,7 +285,7 @@
           aria-pressed={drawerOpen}
           onclick={onToggleDrawer}
         >
-          <PanelRight class="size-3.5" aria-hidden="true" />
+          <PanelRight class="size-[14px]" aria-hidden="true" />
         </Tooltip.Trigger>
         <Tooltip.Content side="bottom">{drawerOpen ? 'Close side panel' : 'Open side panel'}</Tooltip.Content>
       </Tooltip.Root>

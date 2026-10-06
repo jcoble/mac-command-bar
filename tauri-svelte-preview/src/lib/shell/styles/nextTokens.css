@@ -197,7 +197,7 @@
   --menu-row-inset: 7px 10px;
   --menu-row-gap: 10px;
   --menu-row-hover: color-mix(in srgb, var(--color-text) 9%, transparent);
-  --menu-row-active: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  --menu-row-active: var(--color-hover);
   --menu-row-description-gap: 2px;
   --menu-separator-inset: 5px;
 
