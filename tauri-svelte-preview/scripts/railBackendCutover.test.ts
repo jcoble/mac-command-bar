@@ -16,7 +16,6 @@ const filesPanel = read('../src/lib/shell/panels/files/FilesPanel.svelte');
 const fileTreeWatch = read('../src/lib/shell/panels/files/fileTreeWatch.ts');
 const composer = read('../src/lib/shell/components/conversation/ConversationComposer.svelte');
 const conversationSurface = read('../src/lib/shell/components/ConversationSurface.svelte');
-const toolRun = read('../src/lib/shell/components/conversation/ToolRunItem.svelte');
 const elapsed = read('../src/lib/shell/components/railElapsedTicker.ts');
 const editorSessions = read('../src/lib/shell/controllers/editorSessionController.svelte.ts');
 const editorPanel = read('../src/lib/shell/components/EditorPanel.svelte');
@@ -104,7 +103,6 @@ assert.doesNotMatch(
   /conversation\.sending \|\|/,
   'the composer can submit steering text during an active turn'
 );
-assert.match(toolRun, /if \(runWasActive\)[\s\S]*?runOpen = false/);
 assert.match(elapsed, /if \(totalHours < 24\)/);
 assert.match(rowVisual, /\.row-visual:hover :global\(\.line-title\)/);
 assert.match(page, /visible=\{workbench\.rightPanelOpen\}/);

@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { createChatUI, UIProvider } from '@tanstack/ai-svelte/ui';
+  import ConversationMessageParts from '$lib/shell/components/conversation/ConversationMessageParts.svelte';
+  import ConversationToolPart from '$lib/shell/components/conversation/ConversationToolPart.svelte';
   import { setContext } from 'svelte';
   import { conversationMessagesContext, type ConversationMessagesContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import { readRemoteAssemblyEnvironmentFromTauri, type RemoteAssemblyProfile } from '$lib/tauriSource';
@@ -116,13 +119,30 @@
     return a === 'codex' || a === 'claude' || a === 'antigravity' || a === 'anthropic' || a === 'openai' || a === 'gemini' || a === 'agy';
   }
   const structured = $derived(!!active && isStructuredAgent(active.agent) && (appOwned || conversation?.mode !== 'raw'));
-  const transcriptMessages = $derived.by(() => {
-    if (!conversation) return [];
+  const transcriptChat = $derived.by(() => {
+    if (!conversation) return null;
     conversation.timelineRevision;
-    return selectedConversationChat(conversation.ownedId)?.messages ?? [];
+    return selectedConversationChat(conversation.ownedId);
   });
+  const transcriptMessages = $derived(transcriptChat?.messages ?? []);
   const transcriptMessagesById = $derived(new Map(transcriptMessages.map((message) => [message.id, message])));
+  const toolComponents = $state<Record<string, typeof ConversationToolPart>>({});
+  const ui = createChatUI({}, {
+    components: { layout: ConversationMessageParts, message: ConversationMessageParts },
+    partsComponents: {},
+    toolsComponents: toolComponents
+  });
+  $effect.pre(() => {
+    const names = new Set(transcriptMessages.flatMap((message) => message.parts.flatMap((part) =>
+      part.type === 'tool-call' ? [part.name] : []
+    )));
+    untrack(() => {
+      for (const name of Object.keys(toolComponents)) if (!names.has(name)) delete toolComponents[name];
+      for (const name of names) toolComponents[name] = ConversationToolPart;
+    });
+  });
   setContext<ConversationMessagesContext>(conversationMessagesContext, {
+    ui,
     get messages() { return transcriptMessagesById; }
   });
   let previousTimelineKey = '';
@@ -673,6 +693,9 @@
           </button>
         </div>
       {/if}
+      {#if transcriptChat}
+        {#key transcriptChat}
+          <UIProvider {ui} chat={transcriptChat}>
       <ConversationTimeline
         {pendingFirstMessage}
         items={visibleTimeline}
@@ -707,6 +730,9 @@
         onFileLink={openConversationFile}
         onPlanOpen={() => composer?.expandPlan()}
       />
+          </UIProvider>
+        {/key}
+      {/if}
         {#key active.ownedId}
         <ConversationComposer
           bind:this={composer}

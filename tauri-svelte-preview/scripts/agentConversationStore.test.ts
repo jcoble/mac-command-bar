@@ -1121,7 +1121,7 @@ test('native question controls survive live delivery and authoritative snapshot 
   store.setConversationConnection({ ownedId, provider: 'codex', generation: 1, state: 'connected' });
   store.applySelectedConversationEventState(ownedId, {
     ...permissionEvent('approval.requested', 1),
-    payload: { requestId, title: 'Approval needed', toolTitle: 'Read File' }
+    payload: { kind: 'approval', requestId, title: 'Approval needed', toolTitle: 'Read File' }
   });
   const pending = store.getConversationSession(ownedId).pendingApprovals[requestId];
   assert.ok(pending);
@@ -1142,9 +1142,10 @@ test('native question controls survive live delivery and authoritative snapshot 
     { mode: 'strip' }
   );
   const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+  let rejectOption = false;
   const invoke = async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
     calls.push({ command, args });
-    if (command === 'respond_agent_conversation_permission') throw new Error('ACP permission option is not part of the pending request');
+    if (rejectOption && command === 'respond_agent_conversation_permission') throw new Error('ACP permission option is not part of the pending request');
     return undefined;
   };
   const respondToStructuredApproval = async (responseOwnedId: string, responseRequestId: string, decision: 'accept' | 'decline' | 'cancel'): Promise<void> => {
@@ -1166,6 +1167,17 @@ test('native question controls survive live delivery and authoritative snapshot 
   assert.deepEqual(calls.map((call) => call.command), ['respond_agent_conversation_approval']);
   assert.equal(store.getConversationSession(ownedId).pendingApprovals[requestId], undefined);
   assert.equal((pending.options[0] as { synthetic?: boolean }).synthetic, true);
+  store.applySelectedConversationEventState(ownedId, {
+    ...permissionEvent('approval.requested', 3),
+    payload: { kind: 'permissionRequest', requestId, options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }] }
+  });
+  calls.length = 0;
+  await sendPermissionResponse(ownedId, requestId, 'allow-once');
+  assert.deepEqual(calls.map((call) => call.command), ['respond_agent_conversation_permission']);
+  calls.length = 0;
+  rejectOption = true;
+  await assert.rejects(() => sendPermissionResponse(ownedId, requestId, 'allow-once'), /not part of the pending request/);
+  assert.deepEqual(calls.map((call) => call.command), ['respond_agent_conversation_permission']);
 }
 
 store.removeConversationSession('owned-a');
@@ -1174,7 +1186,7 @@ assert.ok(store.getConversationSession('owned-b'));
 
 await test('Stop during revival prevents dispatch and releases the prepared runtime', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
-  const block = source.slice(source.indexOf('const preparingSends ='), source.indexOf('/** Answers one legacy approval'));
+  const block = source.slice(source.indexOf('const preparingSends ='), source.indexOf('/** Answers one summary-only approval'));
   const code = stripTypeScriptTypes(block.replaceAll('export async function', 'async function'), { mode: 'strip' });
   let finishRevival!: () => void;
   const revival = new Promise<void>((resolve) => { finishRevival = resolve; });
@@ -1219,7 +1231,7 @@ await test('Stop during revival prevents dispatch and releases the prepared runt
 await test('an observed active turn routes Stop to the backend', async () => {
   const ownedId = 'observed-steering';
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
-  const block = source.slice(source.indexOf('const preparingSends ='), source.indexOf('/** Answers one legacy approval'));
+  const block = source.slice(source.indexOf('const preparingSends ='), source.indexOf('/** Answers one summary-only approval'));
   const code = stripTypeScriptTypes(block.replaceAll('export async function', 'async function'), { mode: 'strip' });
   store.recordAgentConversationPresenceEvent({
     ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 3_000,

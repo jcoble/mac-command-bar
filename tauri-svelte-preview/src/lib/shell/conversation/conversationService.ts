@@ -1422,7 +1422,7 @@ export async function stopStructuredTurn(ownedId: string): Promise<void> {
   });
 }
 
-/** Answers one legacy approval request through the typed native boundary. */
+/** Answers one summary-only approval request through the typed native boundary. */
 export async function respondToStructuredApproval(
   ownedId: string,
   requestId: string,
@@ -1435,7 +1435,7 @@ export async function respondToStructuredApproval(
   });
 }
 
-/** Answers a provider permission request while retaining the existing legacy fallback. */
+/** Answers the explicit decision or provider-option contract for a permission request. */
 export async function sendPermissionResponse(
   ownedId: string,
   requestId: string,
@@ -1464,9 +1464,7 @@ export async function sendPermissionResponse(
       try { await refreshSelectedConversation(ownedId); } catch { /* A later selected snapshot can replay the recorded expiry. */ }
       throw error;
     }
-    if (!/not found|unknown command|not part of the pending request/i.test(message)) throw error;
-    const decision = /reject|deny|decline|cancel/i.test(optionId) ? 'decline' : 'accept';
-    await respondToStructuredApproval(ownedId, requestId, decision);
+    throw error;
   }
 }
 

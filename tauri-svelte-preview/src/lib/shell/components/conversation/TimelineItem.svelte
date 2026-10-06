@@ -13,7 +13,6 @@
   import CommandItem from './CommandItem.svelte';
   import FileChangeItem from './FileChangeItem.svelte';
   import FileEditsItem from './FileEditsItem.svelte';
-  import ToolRunItem from './ToolRunItem.svelte';
   import ConversationToolUI from './ConversationToolUI.svelte';
   import SubagentSection from './SubagentSection.svelte';
   import ApprovalItem from './ApprovalItem.svelte';
@@ -45,7 +44,6 @@
   <div class="timeline-item" data-testid="conversation-timeline-item" data-item-id={item.itemId} data-kind={item.kind}>
     {#if item.kind === 'user'}<UserMessageItem {item} onFileLink={openFileLink} />
     {:else if item.kind === 'assistant'}<AssistantMessageItem {item} onFileLink={openFileLink} />
-    {:else if item.kind === 'toolRun'}<ToolRunItem {item} onFileLink={openFileLink} />
     {:else if item.kind === 'reasoning'}<ReasoningItem {item} onFileLink={openFileLink} />
     {:else if item.kind === 'plan'}<button class="plan-line" data-testid="timeline-plan-item" type="button" onclick={() => onPlanOpen?.()}>Plan updated · {item.steps.length} {item.steps.length === 1 ? 'step' : 'steps'}</button>
     {:else if item.kind === 'tasks'}<TaskListItem {item} />

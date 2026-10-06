@@ -1,5 +1,8 @@
 <!-- Agents > Session owns the list and one bounded child transcript. -->
 <script lang="ts">
+  import { createChatUI, UIProvider } from '@tanstack/ai-svelte/ui';
+  import ConversationMessageParts from '$lib/shell/components/conversation/ConversationMessageParts.svelte';
+  import ConversationToolPart from '$lib/shell/components/conversation/ConversationToolPart.svelte';
   import { setContext, untrack } from 'svelte';
   import Bot from '@lucide/svelte/icons/bot';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -67,13 +70,30 @@
   const selectedRow = $derived(rows.find((row) => row.childId === selectedChildId) ?? null);
   const historyOwnedId = $derived(conversation?.selectedChildHistoryOwnedId ?? null);
   const childConversation = $derived(historyOwnedId ? getConversationSession(historyOwnedId) : null);
-  const messages = $derived.by(() => {
-    if (!ownedId || !historyOwnedId || !childConversation) return [];
+  const transcriptChat = $derived.by(() => {
+    if (!ownedId || !historyOwnedId || !childConversation) return null;
     childConversation.timelineRevision;
-    return selectedConversationChat(ownedId, historyOwnedId)?.messages ?? [];
+    return selectedConversationChat(ownedId, historyOwnedId);
   });
+  const messages = $derived(transcriptChat?.messages ?? []);
   const messagesById = $derived(new Map(messages.map((message) => [message.id, message])));
+  const toolComponents = $state<Record<string, typeof ConversationToolPart>>({});
+  const ui = createChatUI({}, {
+    components: { layout: ConversationMessageParts, message: ConversationMessageParts },
+    partsComponents: {},
+    toolsComponents: toolComponents
+  });
+  $effect.pre(() => {
+    const names = new Set(messages.flatMap((message) => message.parts.flatMap((part) =>
+      part.type === 'tool-call' ? [part.name] : []
+    )));
+    untrack(() => {
+      for (const name of Object.keys(toolComponents)) if (!names.has(name)) delete toolComponents[name];
+      for (const name of names) toolComponents[name] = ConversationToolPart;
+    });
+  });
   setContext<ConversationMessagesContext>(conversationMessagesContext, {
+    ui,
     get messages() { return messagesById; }
   });
   let previousHistoryId: string | null = null;
@@ -182,6 +202,9 @@
       <EmptyState title="Transcript unavailable" body="This agent’s transcript is not available yet." data-testid="agent-transcript-unavailable" />
     {:else if historyOwnedId && childConversation}
       {#if fileError}<p role="alert" class="px-2 pb-2 text-sm text-muted-foreground">{fileError}</p>{/if}
+      {#if transcriptChat}
+        {#key transcriptChat}
+          <UIProvider {ui} chat={transcriptChat}>
       <ConversationTimeline
         {items}
         conversationId={ownedId}
@@ -209,6 +232,9 @@
         onJumpToLatest={() => jumpSelectedConversationToLatest(ownedId!, historyOwnedId!)}
         onFileLink={openFile}
       />
+          </UIProvider>
+        {/key}
+      {/if}
     {/if}
   {:else if rows.length === 0}
     <EmptyState

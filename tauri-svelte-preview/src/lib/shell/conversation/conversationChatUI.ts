@@ -1,10 +1,12 @@
 import type { Snippet } from 'svelte';
 import type { ConversationDisplayItem } from './conversationTimeline.ts';
 import type { UIMessage } from '@tanstack/ai/client';
+import type { UIDescriptor } from '@tanstack/ai-svelte/ui';
 
-// The host exposes references to the selected processor's messages, not another store.
+// The host exposes references to the selected client's messages, not another store.
 export const conversationMessagesContext = Symbol('conversation-messages');
 export type ConversationMessagesContext = {
+  readonly ui: UIDescriptor;
   readonly messages: ReadonlyMap<string, UIMessage>;
 };
 export const conversationToolContext = Symbol('conversation-tool');

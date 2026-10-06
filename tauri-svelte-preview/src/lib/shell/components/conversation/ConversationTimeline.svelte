@@ -1,10 +1,14 @@
 <script lang="ts">
   import { tick, untrack, setContext } from 'svelte';
-  import { createVirtualizer } from '@tanstack/svelte-virtual';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import BookOpen from '@lucide/svelte/icons/book-open';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import Terminal from '@lucide/svelte/icons/terminal';
+  import Search from '@lucide/svelte/icons/search';
+  import Sparkles from '@lucide/svelte/icons/sparkles';
   import type { AgentConversationTurnFacts } from '$lib/shell/conversation/conversationTypes.ts';
-  import { conversationTurnGroups, type ConversationTurnGroup, type ConversationDisplayItem, type ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { conversationTurnGroups, foldToolRuns, type ConversationTurnGroup, type ConversationDisplayItem, type ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
   import { USER_SEND_ANCHOR_OFFSET_PX, type ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import type { ConversationViewState } from '$lib/shell/sessionWorkspaces.ts';
@@ -73,7 +77,7 @@
   let dragging = false;
   let lastScrollTop = 0;
   let pendingSendAnchor = $state<ConversationSendAnchorRequest | null>(null);
-  let pageRequest: { older: boolean; edge: number; windowId: string } | null = null;
+  let pageRequest: { older: boolean; edge: number; windowId: string; visibleKeys: string } | null = null;
   const renderedItems = $derived(items.filter(conversationItemHasVisibleContent));
   const groups = $derived(conversationTurnGroups(renderedItems, activeTurnId, turnFacts));
 
@@ -86,41 +90,98 @@
     item?: ConversationDisplayItem;
     group?: ConversationTurnGroup;
     heading?: boolean;
+    run?: Extract<ConversationDisplayItem, { kind: 'toolRun' }>;
     edit?: { path: string; added: number; removed: number };
     activity?: boolean;
   };
+  // Only the preceding bounded window's native IDs are needed to retain run identity.
+  let previousRunWindow = '';
+  let previousRuns: { id: string; nativeItemIds: readonly string[] }[] = [];
+  function runOpen(run: Extract<ConversationDisplayItem, { kind: 'toolRun' }>): boolean {
+    return disclosures[`${run.itemId}:run`]
+      ?? disclosures[`tool-run:${run.items[0]?.itemId}:run`] ?? !run.completed;
+  }
   const rows = $derived.by((): Row[] => {
+    if (previousRunWindow !== renderWindowId) {
+      previousRunWindow = renderWindowId;
+      previousRuns = [];
+    }
     const result: Row[] = [];
-    for (const group of groups) {
+    const nextRuns: typeof previousRuns = [];
+    const claimed = new Set<string>();
+    const foldedGroups = groups.map((group) => ({ group, items: foldToolRuns(group.items) }));
+    const seeds = new Set(foldedGroups.flatMap(({ items }) =>
+      items.filter((item) => item.kind === 'toolRun').map((item) => item.itemId)));
+    for (const { group, items: groupedItems } of foldedGroups) {
       const expanded = turnExpanded(group);
       const workIds = new Set(group.workItemIds);
-      const firstWork = group.items.find((item) => workIds.has(item.itemId));
-      for (const item of group.items) {
-        const work = workIds.has(item.itemId);
-        const heading = item === firstWork && !!group.turnId;
-        if (!work || expanded || heading) result.push({
-          key: heading && !expanded ? `turn-heading:${group.turnId}` : item.itemId,
-          anchorItemId: item.itemId,
-          item: !work || expanded ? item : undefined, group, heading
-        });
+      let headingAdded = false;
+      for (const item of groupedItems) {
+        const work = item.kind === 'toolRun' || workIds.has(item.itemId);
+        let run: Row['run'];
+        if (item.kind === 'toolRun') {
+          const nativeItemIds = item.items.map((child) => child.itemId);
+          const nativeIds = new Set(nativeItemIds);
+          const previous = previousRuns.find((candidate) => !claimed.has(candidate.id)
+            && (candidate.id === item.itemId || !seeds.has(candidate.id))
+            && candidate.nativeItemIds.some((id) => nativeIds.has(id)));
+          const id = previous?.id ?? item.itemId;
+          claimed.add(id);
+          nextRuns.push({ id, nativeItemIds });
+          run = { ...item, itemId: id };
+        }
+        if (work && !headingAdded && group.turnId) {
+          headingAdded = true;
+          result.push({ key: `turn-heading:${group.turnId}`, group, heading: true,
+            anchorItemId: expanded ? undefined : group.workItemIds[0] });
+        }
+        if (work && !expanded) continue;
+        if (run) {
+          const open = runOpen(run);
+          result.push({ key: run.itemId, group, run,
+            anchorItemId: open ? undefined : run.items[0]?.itemId });
+          if (open) for (const child of run.items) {
+            result.push({ key: child.itemId, anchorItemId: child.itemId, group, item: child });
+          }
+        } else {
+          result.push({ key: item.itemId, anchorItemId: item.itemId, group, item });
+        }
       }
       if (group.completed && expanded) for (const edit of getTurnFileEdits(group)) {
         result.push({ key: `turn-file:${group.turnId}:${edit.path}`, group, edit });
       }
     }
+    previousRuns = nextRuns;
     if (activityLabel) result.push({ key: 'activity', activity: true });
     return result;
   });
-  const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
-    count: 0, getScrollElement: () => host, estimateSize: () => 90, overscan: 3,
-    anchorTo: 'end', followOnAppend: false, scrollEndThreshold: -1, gap: 0
-  });
-  const virtualRows = $derived($virtualizer.getVirtualItems());
-  const totalSize = $derived($virtualizer.getTotalSize());
+  let viewportHeight = $state(0);
+  const footer = $derived(Math.max(composerHeight, 120) + 60);
+  function atEnd(): boolean {
+    return !!host && host.scrollHeight - host.scrollTop - host.clientHeight <= 80;
+  }
+  function scrollToEnd(): void {
+    host?.scrollTo({ top: host.scrollHeight });
+  }
+  function positionRow(key: string, offsetPx: number): boolean {
+    const node = host?.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(key)}"]`);
+    if (!host || !node) return false;
+    host.scrollTo({ top: host.scrollTop + node.getBoundingClientRect().top - host.getBoundingClientRect().top - offsetPx });
+    return true;
+  }
+  function observeContent(node: HTMLDivElement) {
+    const observer = new ResizeObserver(() => {
+      viewportHeight = host?.clientHeight ?? 0;
+      if (follow && !hasNewer && !restoring && !jumping) scrollToEnd();
+    });
+    observer.observe(node);
+    if (host) observer.observe(host);
+    return { destroy() { observer.disconnect(); } };
+  }
 
   setContext<ConversationDisclosureContext>(conversationDisclosureContext, {
     get(key) { return disclosures[key]; },
-    set(key, open) { disclosures = { ...disclosures, [key]: open }; saveView(); }
+    set(key, open) { follow = false; disclosures = { ...disclosures, [key]: open }; saveView(); }
   });
 
   function countDiffLines(diffText: string): { added: number; removed: number } {
@@ -215,6 +276,9 @@
     openedWindow = windowId;
     openedOwnedId = conversationId;
     openedHistoryId = historyOwnedId;
+    userDirection = null;
+    dragging = false;
+    lastScrollTop = 0;
     const saved = untrack(() => viewState);
     follow = saved.followLatest;
     expandedTurns = { ...saved.expandedTurns };
@@ -226,29 +290,6 @@
     pageRequest = null;
     jumping = false;
     seenSendRequest = anchorRequest?.requestId ?? 0;
-    $virtualizer.measure();
-  });
-
-  $effect(() => {
-    const currentRows = rows;
-    const element = host;
-    const following = follow && !hasNewer && !restoring;
-    const topInset = element ? Number.parseFloat(getComputedStyle(element).getPropertyValue('--center-head-height')) || 0 : 0;
-    const footer = Math.max(composerHeight, 120) + 60;
-    const paddingEnd = anchoredSendItemId ? Math.max(element?.clientHeight ?? 0, footer) : footer;
-    untrack(() => $virtualizer.setOptions({
-      count: currentRows.length,
-      // Each options snapshot retains its own key list for prepend/trim comparison.
-      getItemKey: (index) => currentRows[index]?.key ?? index,
-      paddingStart: topInset, paddingEnd,
-      scrollPaddingStart: topInset + (anchoredSendItemId ? USER_SEND_ANCHOR_OFFSET_PX : 0),
-      followOnAppend: following, scrollEndThreshold: following ? 80 : -1
-    }));
-    // Measurements belong to this bounded selected window, not every visited page.
-    const keys = new Set(currentRows.map((row) => row.key));
-    untrack(() => {
-      for (const key of $virtualizer.itemSizeCache.keys()) if (!keys.has(String(key))) $virtualizer.itemSizeCache.delete(key);
-    });
   });
 
   $effect(() => {
@@ -256,18 +297,16 @@
     if (!follow || restoring || !host) return;
     const windowId = renderWindowId;
     void tick().then(() => {
-      if (windowId === renderWindowId && follow && !hasNewer && !restoring) $virtualizer.scrollToEnd();
+      if (windowId === renderWindowId && follow && !hasNewer && !restoring) scrollToEnd();
     });
   });
 
   function restoreAnchor(anchor: NonNullable<ConversationViewState['anchor']>): boolean {
     const index = rows.findIndex((row) => row.anchorItemId === anchor.itemId
-      || (row.heading && !row.item && row.group?.workItemIds.includes(anchor.itemId)));
+      || (row.heading && row.group && !turnExpanded(row.group) && row.group.workItemIds.includes(anchor.itemId))
+      || (row.run && !runOpen(row.run) && row.run.items.some((item) => item.itemId === anchor.itemId)));
     if (index < 0) return false;
-    const item = $virtualizer.getMeasurements()[index];
-    if (!item) return false;
-    $virtualizer.scrollToOffset(item.start - anchor.offsetPx);
-    return true;
+    return positionRow(rows[index].key, anchor.offsetPx);
   }
 
   $effect(() => {
@@ -275,12 +314,12 @@
     const windowId = renderWindowId;
     void tick().then(() => {
       if (windowId !== renderWindowId || !restoring) return;
-      if (follow) $virtualizer.scrollToEnd();
+      if (follow) scrollToEnd();
       else if (savedAnchor && !restoreAnchor(savedAnchor)) return;
-      // Measure the admitted row before the final saved item-offset correction.
+      // Restore after the admitted content has mounted.
       void tick().then(() => {
         if (windowId !== renderWindowId || !restoring) return;
-        if (follow) $virtualizer.scrollToEnd();
+        if (follow) scrollToEnd();
         else if (savedAnchor) restoreAnchor(savedAnchor);
         restoring = false;
         saveView();
@@ -288,23 +327,17 @@
     });
   });
 
-  function measureRow(node: HTMLDivElement) {
-    $virtualizer.measureElement(node);
-    return { destroy() { $virtualizer.measureElement(null); } };
-  }
-
   function toggleTurn(group: ConversationTurnGroup): void {
     if (!group.turnId) return;
-    const itemId = group.workItemIds[0];
-    const node = itemId && host?.querySelector<HTMLElement>(`[data-anchor-item-id="${CSS.escape(itemId)}"]`);
+    const node = host?.querySelector<HTMLElement>(`[data-turn-id="${CSS.escape(group.turnId)}"] [data-testid="conversation-turn-fold"]`);
     const offsetPx = node && host ? node.getBoundingClientRect().top - host.getBoundingClientRect().top : null;
+    follow = false;
     expandedTurns = { ...expandedTurns, [group.turnId]: !turnExpanded(group) };
     const windowId = renderWindowId;
     void tick().then(() => {
       if (windowId !== renderWindowId) return;
-      const index = rows.findIndex((row) => row.anchorItemId === itemId);
-      const measurement = $virtualizer.getMeasurements()[index];
-      if (measurement && offsetPx !== null) $virtualizer.scrollToOffset(measurement.start - offsetPx);
+      const index = rows.findIndex((row) => row.heading && row.group?.turnId === group.turnId);
+      if (index >= 0 && offsetPx !== null) positionRow(rows[index].key, offsetPx);
       saveView();
     });
   }
@@ -314,10 +347,36 @@
     if (running.length) expandedTurns = { ...expandedTurns, ...Object.fromEntries(running.map((group) => [group.turnId!, true])) };
   });
 
+  function toggleRun(run: NonNullable<Row['run']>): void {
+    const key = run.itemId;
+    const node = host?.querySelector<HTMLElement>(`[data-run-id="${CSS.escape(key)}"]`);
+    const offsetPx = node && host ? node.getBoundingClientRect().top - host.getBoundingClientRect().top : null;
+    follow = false;
+    disclosures = { ...disclosures, [`${key}:run`]: !runOpen(run) };
+    const windowId = renderWindowId;
+    void tick().then(() => {
+      if (windowId !== renderWindowId) return;
+      const index = rows.findIndex((row) => row.key === key);
+      if (index >= 0 && offsetPx !== null) positionRow(rows[index].key, offsetPx);
+      saveView();
+    });
+  }
+
+  $effect(() => {
+    const initial = rows.flatMap((row) => {
+      if (!row.run) return [];
+      const open = runOpen(row.run);
+      return [`${row.run.itemId}:run`, `tool-run:${row.run.items[0]?.itemId}:run`]
+        .filter((key) => disclosures[key] !== open).map((key) => [key, open] as const);
+    });
+    if (initial.length) disclosures = { ...disclosures, ...Object.fromEntries(initial) };
+  });
+
   function requestPage(older: boolean): void {
     if (!host || restoring || jumping || pageRequest) return;
-    if (older ? !hasOlder || loadingOlder || host.scrollTop > 80 : !hasNewer || loadingNewer || !$virtualizer.isAtEnd(80)) return;
-    pageRequest = { older, edge: older ? oldestSequence : newestSequence, windowId: renderWindowId };
+    if (older ? !hasOlder || loadingOlder || host.scrollTop > 80 : !hasNewer || loadingNewer || !atEnd()) return;
+    pageRequest = { older, edge: older ? oldestSequence : newestSequence, windowId: renderWindowId,
+      visibleKeys: rows.map((row) => row.key).join('\0') };
     if (older) onLoadOlder?.(); else onLoadNewer?.();
   }
 
@@ -328,7 +387,8 @@
     pageRequest = null;
     // Collapsed work can add no visible height: keep reading until a visible page arrives.
     if (landed) void tick().then(() => {
-      if (request.windowId === renderWindowId) requestPage(request.older);
+      if (request.windowId === renderWindowId
+        && request.visibleKeys === rows.map((row) => row.key).join('\0')) requestPage(request.older);
     });
   });
 
@@ -337,7 +397,7 @@
     const direction = dragging ? (host.scrollTop < lastScrollTop ? 'older' : 'newer') : userDirection;
     lastScrollTop = host.scrollTop;
     if (direction === 'older') follow = false;
-    else if (direction === 'newer' && !hasNewer && $virtualizer.isAtEnd(80)) follow = true;
+    else if (direction === 'newer' && !hasNewer && atEnd()) follow = true;
     userDirection = null;
     saveView();
     if (direction) requestPage(direction === 'older');
@@ -350,7 +410,7 @@
       saveView();
       requestPage(true);
     } else if (event.deltaY > 0) {
-      if (!hasNewer && $virtualizer.isAtEnd(80)) follow = true;
+      if (!hasNewer && atEnd()) follow = true;
       saveView();
       requestPage(false);
     }
@@ -413,7 +473,7 @@
       savedAnchor = undefined;
       await tick();
       if (windowId !== renderWindowId) return;
-      $virtualizer.scrollToEnd();
+      scrollToEnd();
     } finally {
       if (windowId === renderWindowId) { jumping = false; saveView(); }
     }
@@ -437,7 +497,8 @@
       if (windowId !== renderWindowId || anchoredSendItemId !== itemId) return;
       const index = rows.findIndex((row) => row.key === itemId);
       if (index < 0) return;
-      $virtualizer.scrollToIndex(index, { align: 'start' });
+      const topInset = host ? Number.parseFloat(getComputedStyle(host).getPropertyValue('--center-head-height')) || 0 : 0;
+      positionRow(itemId, topInset + USER_SEND_ANCHOR_OFFSET_PX);
       saveView();
     });
   });
@@ -447,7 +508,7 @@
     if (!restoring) untrack(saveView);
   });
   $effect(() => {
-    setConversationTimelineDiagnostics(rows.length, virtualRows.length, $virtualizer.elementsCache.size, $virtualizer.itemSizeCache.size);
+    setConversationTimelineDiagnostics(rows.length, rows.length, 0, 0);
     return () => setConversationTimelineDiagnostics(0, 0, 0, 0);
   });
 </script>
@@ -458,22 +519,32 @@
     {#if renderedItems.length === 0}
       {#if pendingFirstMessage}<PendingFirstMessage text={pendingFirstMessage} />{:else}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
     {/if}
-    <div class="timeline-list" data-testid="conversation-timeline-list" style:height={`${totalSize}px`}>
-      {#each virtualRows as virtualRow (virtualRow.key)}
-        {@const row = rows[virtualRow.index]}
-        {#if row}
-          <div class="turn-row" class:compact-tool={row.item?.kind === 'tool'} data-index={virtualRow.index} data-anchor-item-id={row.anchorItemId} data-turn-id={row.group?.turnId} data-testid="conversation-timeline-row" style:transform={`translateY(${virtualRow.start}px)`} use:measureRow>
+    <div class="timeline-list" data-testid="conversation-timeline-list" style:padding-bottom={`${anchoredSendItemId ? Math.max(viewportHeight, footer) : footer}px`} use:observeContent>
+      {#each rows as row (row.key)}
+          <div class="turn-row" class:compact-tool={row.item?.kind === 'tool' || !!row.run} data-row-key={row.key} data-anchor-item-id={row.anchorItemId} data-turn-id={row.group?.turnId} data-testid="conversation-timeline-row">
             {#if row.heading && row.group}
               <button class="turn-fold" data-testid="conversation-turn-fold" type="button" aria-expanded={turnExpanded(row.group)} onclick={() => toggleTurn(row.group!)}>
                 <ConversationTurnElapsed running={row.group.running} completed={row.group.completed} startedAtMs={row.group.startedAtMs} elapsedMs={row.group.elapsedMs} />
                 <span class="turn-fold-chevron" class:open={turnExpanded(row.group)} aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
               </button>
             {/if}
+            {#if row.run}
+              <button class="run-header" data-run-id={row.run.itemId} type="button" aria-expanded={runOpen(row.run)} onclick={() => toggleRun(row.run!)}>
+                <span class="run-icon" aria-hidden="true">
+                  {#if row.run.icon === 'pencil'}<Pencil size={13} />
+                  {:else if row.run.icon === 'book'}<BookOpen size={13} />
+                  {:else if row.run.icon === 'terminal'}<Terminal size={13} />
+                  {:else if row.run.icon === 'search'}<Search size={13} />
+                  {:else}<Sparkles size={13} />{/if}
+                </span>
+                <span class="run-summary">{row.run.summary}</span>
+                <span class="turn-fold-chevron" class:open={runOpen(row.run)} aria-hidden="true"><ChevronRight size={13} /></span>
+              </button>
+            {/if}
             {#if row.item}<TimelineItem item={row.item} {assistantLabel} {onApprovalDecision} {onFileLink} {onPlanOpen} />{/if}
             {#if row.edit}<TurnFileCard path={row.edit.path} added={row.edit.added} removed={row.edit.removed} onReview={onFileLink} />{/if}
             {#if row.activity}<div class="working-row" data-testid="conversation-working-indicator" role="status"><WorkingSpinner seed={activeTurnId ?? renderWindowId} /><span>{activityLabel}…</span></div>{/if}
           </div>
-        {/if}
       {/each}
     </div>
   </div>
@@ -488,15 +559,20 @@
   .older-spinner{width:11px;height:11px;border:1.5px solid color-mix(in srgb,var(--color-text-3) 45%,transparent);border-top-color:var(--color-text-2);border-radius:50%;animation:older-spin 700ms linear infinite}
   @keyframes older-spin{to{transform:rotate(360deg)}}
   @media (prefers-reduced-motion: reduce){.older-spinner{animation:none;border-top-color:color-mix(in srgb,var(--color-text-3) 45%,transparent)}}
-  .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:none;padding:0 28px;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
-  .timeline-list{flex:none;position:relative;width:min(820px,100%);min-height:1px;margin:0 auto}
-  .turn-row{position:absolute;top:0;left:0;display:flex;flex-direction:column;gap:12px;width:100%;padding-bottom:12px}
+  .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:auto;padding:0 28px;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
+  .timeline-list{flex:none;position:relative;width:min(820px,100%);min-height:1px;margin:0 auto;padding-top:var(--center-head-height,0px)}
+  .turn-row{display:flex;flex-direction:column;gap:12px;width:100%;padding-bottom:12px}
   .turn-row.compact-tool{padding-bottom:0}
   .turn-fold{display:flex;width:100%;align-items:center;gap:5px;min-height:28px;padding:0 0 7px;border:0;border-bottom:1px solid var(--color-border);background:transparent;color:var(--color-text-2);font:inherit;font-size:13px;text-align:left;cursor:pointer}
   .turn-fold:hover{color:var(--color-text)}
   .turn-fold:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
   .turn-fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
   .turn-fold-chevron.open{transform:rotate(90deg)}
+  .run-header{display:flex;align-items:center;gap:8px;min-height:30px;padding:3px 6px;border:0;border-radius:8px;background:transparent;color:var(--color-text-2);font-size:13px;text-align:left;cursor:pointer}
+  .run-header:hover{background:color-mix(in srgb,var(--color-hover) 50%,transparent)}
+  .run-header:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
+  .run-icon{display:grid;place-items:center;flex:none;color:var(--color-text-3)}
+  .run-summary{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .working-row{flex:none;display:flex;align-items:center;gap:8px;height:24px;overflow:hidden;white-space:nowrap;color:var(--color-text-3);font-size:13px}
   /* A disc under the middle of the transcript, holding one arrow. It sits over
