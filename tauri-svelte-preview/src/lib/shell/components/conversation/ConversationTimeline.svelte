@@ -18,7 +18,6 @@
   import TurnFileCard from './TurnFileCard.svelte';
   import PendingFirstMessage from './PendingFirstMessage.svelte';
   import WorkingSpinner from './WorkingSpinner.svelte';
-  import ConversationTurnElapsed from './ConversationTurnElapsed.svelte';
 
   interface Props {
     items: readonly ConversationDisplayItem[];
@@ -63,7 +62,6 @@
 
   let host = $state<HTMLDivElement | null>(null);
   let follow = $state(true);
-  let expandedTurns = $state<Record<string, boolean>>({});
   let disclosures = $state<Record<string, boolean>>({});
   let openedWindow = '';
   let openedOwnedId = '';
@@ -81,15 +79,11 @@
   const renderedItems = $derived(items.filter(conversationItemHasVisibleContent));
   const groups = $derived(conversationTurnGroups(renderedItems, activeTurnId, turnFacts));
 
-  function turnExpanded(group: ConversationTurnGroup): boolean {
-    return !group.turnId || (expandedTurns[group.turnId] ?? group.running);
-  }
   type Row = {
     key: string;
     anchorItemId?: string;
     item?: ConversationDisplayItem;
     group?: ConversationTurnGroup;
-    heading?: boolean;
     run?: Extract<ConversationDisplayItem, { kind: 'toolRun' }>;
     edit?: { path: string; added: number; removed: number };
     activity?: boolean;
@@ -113,11 +107,7 @@
     const seeds = new Set(foldedGroups.flatMap(({ items }) =>
       items.filter((item) => item.kind === 'toolRun').map((item) => item.itemId)));
     for (const { group, items: groupedItems } of foldedGroups) {
-      const expanded = turnExpanded(group);
-      const workIds = new Set(group.workItemIds);
-      let headingAdded = false;
       for (const item of groupedItems) {
-        const work = item.kind === 'toolRun' || workIds.has(item.itemId);
         let run: Row['run'];
         if (item.kind === 'toolRun') {
           const nativeItemIds = item.items.map((child) => child.itemId);
@@ -130,12 +120,6 @@
           nextRuns.push({ id, nativeItemIds });
           run = { ...item, itemId: id };
         }
-        if (work && !headingAdded && group.turnId) {
-          headingAdded = true;
-          result.push({ key: `turn-heading:${group.turnId}`, group, heading: true,
-            anchorItemId: expanded ? undefined : group.workItemIds[0] });
-        }
-        if (work && !expanded) continue;
         if (run) {
           const open = runOpen(run);
           result.push({ key: run.itemId, group, run,
@@ -147,7 +131,7 @@
           result.push({ key: item.itemId, anchorItemId: item.itemId, group, item });
         }
       }
-      if (group.completed && expanded) for (const edit of getTurnFileEdits(group)) {
+      if (group.completed) for (const edit of getTurnFileEdits(group)) {
         result.push({ key: `turn-file:${group.turnId}:${edit.path}`, group, edit });
       }
     }
@@ -262,11 +246,9 @@
   function saveView(): void {
     if (restoring || !openedOwnedId || openedWindow !== renderWindowId) return;
     savedAnchor = captureAnchor();
-    const effective = { ...expandedTurns };
-    for (const group of groups) if (group.turnId && group.running) effective[group.turnId] = turnExpanded(group);
     onViewChange(openedOwnedId, openedHistoryId, {
       followLatest: follow, ...(savedAnchor ? { anchor: savedAnchor } : {}),
-      expandedTurns: effective, ...(Object.keys(disclosures).length ? { disclosures: { ...disclosures } } : {})
+      expandedTurns: {}, ...(Object.keys(disclosures).length ? { disclosures: { ...disclosures } } : {})
     });
   }
 
@@ -281,7 +263,6 @@
     lastScrollTop = 0;
     const saved = untrack(() => viewState);
     follow = saved.followLatest;
-    expandedTurns = { ...saved.expandedTurns };
     disclosures = { ...saved.disclosures };
     savedAnchor = saved.anchor;
     restoring = true;
@@ -303,7 +284,6 @@
 
   function restoreAnchor(anchor: NonNullable<ConversationViewState['anchor']>): boolean {
     const index = rows.findIndex((row) => row.anchorItemId === anchor.itemId
-      || (row.heading && row.group && !turnExpanded(row.group) && row.group.workItemIds.includes(anchor.itemId))
       || (row.run && !runOpen(row.run) && row.run.items.some((item) => item.itemId === anchor.itemId)));
     if (index < 0) return false;
     return positionRow(rows[index].key, anchor.offsetPx);
@@ -325,26 +305,6 @@
         saveView();
       });
     });
-  });
-
-  function toggleTurn(group: ConversationTurnGroup): void {
-    if (!group.turnId) return;
-    const node = host?.querySelector<HTMLElement>(`[data-turn-id="${CSS.escape(group.turnId)}"] [data-testid="conversation-turn-fold"]`);
-    const offsetPx = node && host ? node.getBoundingClientRect().top - host.getBoundingClientRect().top : null;
-    follow = false;
-    expandedTurns = { ...expandedTurns, [group.turnId]: !turnExpanded(group) };
-    const windowId = renderWindowId;
-    void tick().then(() => {
-      if (windowId !== renderWindowId) return;
-      const index = rows.findIndex((row) => row.heading && row.group?.turnId === group.turnId);
-      if (index >= 0 && offsetPx !== null) positionRow(rows[index].key, offsetPx);
-      saveView();
-    });
-  }
-
-  $effect(() => {
-    const running = groups.filter((group) => group.running && group.turnId && expandedTurns[group.turnId] === undefined);
-    if (running.length) expandedTurns = { ...expandedTurns, ...Object.fromEntries(running.map((group) => [group.turnId!, true])) };
   });
 
   function toggleRun(run: NonNullable<Row['run']>): void {
@@ -522,12 +482,6 @@
     <div class="timeline-list" data-testid="conversation-timeline-list" style:padding-bottom={`${anchoredSendItemId ? Math.max(viewportHeight, footer) : footer}px`} use:observeContent>
       {#each rows as row (row.key)}
           <div class="turn-row" class:compact-tool={row.item?.kind === 'tool' || !!row.run} data-row-key={row.key} data-anchor-item-id={row.anchorItemId} data-turn-id={row.group?.turnId} data-testid="conversation-timeline-row">
-            {#if row.heading && row.group}
-              <button class="turn-fold" data-testid="conversation-turn-fold" type="button" aria-expanded={turnExpanded(row.group)} onclick={() => toggleTurn(row.group!)}>
-                <ConversationTurnElapsed running={row.group.running} completed={row.group.completed} startedAtMs={row.group.startedAtMs} elapsedMs={row.group.elapsedMs} />
-                <span class="turn-fold-chevron" class:open={turnExpanded(row.group)} aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
-              </button>
-            {/if}
             {#if row.run}
               <button class="run-header" data-run-id={row.run.itemId} type="button" aria-expanded={runOpen(row.run)} onclick={() => toggleRun(row.run!)}>
                 <span class="run-icon" aria-hidden="true">
@@ -563,9 +517,6 @@
   .timeline-list{flex:none;position:relative;width:min(820px,100%);min-height:1px;margin:0 auto;padding-top:var(--center-head-height,0px)}
   .turn-row{display:flex;flex-direction:column;gap:12px;width:100%;padding-bottom:12px}
   .turn-row.compact-tool{padding-bottom:0}
-  .turn-fold{display:flex;width:100%;align-items:center;gap:5px;min-height:28px;padding:0 0 7px;border:0;border-bottom:1px solid var(--color-border);background:transparent;color:var(--color-text-2);font:inherit;font-size:13px;text-align:left;cursor:pointer}
-  .turn-fold:hover{color:var(--color-text)}
-  .turn-fold:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
   .turn-fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
   .turn-fold-chevron.open{transform:rotate(90deg)}
   .run-header{display:flex;align-items:center;gap:8px;min-height:30px;padding:3px 6px;border:0;border-radius:8px;background:transparent;color:var(--color-text-2);font-size:13px;text-align:left;cursor:pointer}
