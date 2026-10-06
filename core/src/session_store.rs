@@ -5,13 +5,14 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{
-    params, params_from_iter, Connection, InterruptHandle, OptionalExtension, Row,
+    named_params, params, params_from_iter, Connection, InterruptHandle, OptionalExtension, Row,
     TransactionBehavior,
 };
+use serde::Serialize;
 
 mod evidence;
 
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 static SESSION_STORE_ACTIVE_READS: AtomicUsize = AtomicUsize::new(0);
@@ -66,6 +67,306 @@ const TOOL_ITEM_SEQUENCE_INDEX_SCHEMA: &str =
      CREATE INDEX IF NOT EXISTS events_tool_diff_idx ON events(owned_id, item_id, seq)
        WHERE json_extract(payload,'$.payload.kind')='tool'
          AND json_type(payload,'$.payload.diff') NOT IN ('null');";
+
+const ITEM_PAGE_INDEX_SCHEMA: &str = "CREATE INDEX IF NOT EXISTS events_command_generation_idx
+  ON events(owned_id,json_extract(payload,'$.generation'),seq)
+  WHERE json_extract(payload,'$.payload.kind')='availableCommandsUpdate';
+CREATE INDEX IF NOT EXISTS events_turn_item_seq_idx ON events(owned_id,turn_id,item_id,seq);
+CREATE INDEX IF NOT EXISTS events_assistant_page_idx ON events(owned_id,seq)
+  WHERE item_id IS NOT NULL AND ((kind='content.delta' AND json_extract(payload,'$.payload.kind')='assistantDelta')
+    OR (kind='item.completed' AND json_extract(payload,'$.payload.kind')='assistantMessage'));
+CREATE INDEX IF NOT EXISTS events_user_command_page_idx ON events(owned_id,json_extract(payload,'$.payload.kind'),seq)
+  WHERE json_extract(payload,'$.payload.kind')='userMessage' OR json_extract(payload,'$.payload.kind')='availableCommandsUpdate';
+CREATE INDEX IF NOT EXISTS events_replay_page_idx ON events(owned_id,seq)
+  WHERE item_id IS NOT NULL AND (kind='remote.cached' OR json_extract(payload,'$.payload.kind')='terminalProjection');
+CREATE INDEX IF NOT EXISTS events_side_page_idx ON events(owned_id,CASE
+  WHEN kind IN ('usage.updated','session.config.updated') THEN kind
+  WHEN kind='remote.cached' AND json_extract(payload,'$.payload.kind')='usage' THEN 'usage.updated'
+  WHEN kind='remote.cached' AND json_extract(payload,'$.payload.kind')='terminalProjection'
+    THEN json_extract(payload,'$.payload.eventType') END,seq)
+  WHERE kind IN ('usage.updated','session.config.updated') OR (kind='remote.cached'
+    AND (json_extract(payload,'$.payload.kind')='usage' OR
+      (json_extract(payload,'$.payload.kind')='terminalProjection'
+        AND json_extract(payload,'$.payload.eventType') IN ('usage.updated','session.config.updated'))));
+CREATE INDEX IF NOT EXISTS events_tool_position_idx
+  ON events(owned_id,COALESCE(json_extract(payload,'$.payload.firstSequence'),seq),seq)
+  WHERE kind='item.updated' AND json_extract(payload,'$.payload.kind')='tool';";
+
+const ITEM_PAGE_DESCRIPTOR_SQL: &str = r#"-- READ 1: persisted item descriptors, byte-budgeted in either page direction.
+WITH assistant_starts AS (
+  SELECT e.item_id,e.seq AS first_seq,e.created_at AS first_timestamp_ms,e.turn_id
+  FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.item_id IS NOT NULL
+    AND ((e.kind='content.delta' AND json_extract(e.payload,'$.payload.kind')='assistantDelta')
+      OR (e.kind='item.completed' AND json_extract(e.payload,'$.payload.kind')='assistantMessage'))
+    AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_item_idx
+      WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.kind='content.delta' AND p.item_id=e.item_id AND p.seq<e.seq
+        AND json_extract(p.payload,'$.payload.kind')='assistantDelta')
+    AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_item_idx
+      WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.kind='item.completed' AND p.item_id=e.item_id AND p.seq<e.seq
+        AND json_extract(p.payload,'$.payload.kind')='assistantMessage')
+    AND e.seq < :cursor
+  ORDER BY e.seq DESC LIMIT :item_ceiling
+), assistant_items AS (
+  SELECT c.*,MAX(e.seq) AS authority_seq
+  FROM assistant_starts c LEFT JOIN events e INDEXED BY events_item_idx
+    ON e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.kind='item.completed' AND e.item_id=c.item_id
+      AND json_extract(e.payload,'$.payload.kind')='assistantMessage'
+  GROUP BY c.item_id
+), assistant_rows AS (
+  SELECT a.item_id,a.first_seq,a.first_timestamp_ms,a.authority_seq,a.turn_id,e.seq,LENGTH(CAST(e.payload AS BLOB)) AS required_bytes,COALESCE(json_extract(e.payload,'$.payload.completed'),0) AS completed
+  FROM assistant_items a CROSS JOIN events e INDEXED BY events_item_idx
+  ON e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.kind='content.delta' AND e.item_id=a.item_id
+  WHERE json_extract(e.payload,'$.payload.kind')='assistantDelta'
+    AND (a.authority_seq IS NULL OR e.seq>a.authority_seq)
+  UNION ALL
+  SELECT a.item_id,a.first_seq,a.first_timestamp_ms,a.authority_seq,a.turn_id,e.seq,LENGTH(CAST(e.payload AS BLOB)) AS required_bytes,COALESCE(json_extract(e.payload,'$.payload.completed'),0) AS completed
+  FROM assistant_items a CROSS JOIN events e INDEXED BY events_item_idx
+  ON e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.kind='item.completed' AND e.item_id=a.item_id AND e.seq=a.authority_seq
+  WHERE json_extract(e.payload,'$.payload.kind')='assistantMessage'
+), native_user_starts AS MATERIALIZED (
+  SELECT e.item_id,e.seq AS first_seq,e.created_at AS first_timestamp_ms
+  FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.kind='item.completed'
+    AND json_extract(e.payload,'$.payload.kind')='userMessage' AND e.seq < :cursor
+    AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_item_idx
+      WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.kind='item.completed' AND p.item_id=e.item_id AND p.seq<e.seq
+        AND json_extract(p.payload,'$.payload.kind')='userMessage')
+  ORDER BY e.seq DESC LIMIT :item_ceiling
+), native_user_selected AS (
+  SELECT e.item_id,e.seq,e.turn_id,s.first_seq,s.first_timestamp_ms,
+    COALESCE(json_extract(e.payload,'$.payload.completed'),0) AS completed,LENGTH(CAST(e.payload AS BLOB)) AS required_bytes FROM native_user_starts s CROSS JOIN events e
+  ON e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.seq=(SELECT p.seq FROM events p INDEXED BY events_item_idx
+    WHERE p.owned_id=:owned_id AND p.seq BETWEEN :low AND :high AND p.kind='item.completed' AND p.item_id=s.item_id
+      AND json_extract(p.payload,'$.payload.kind')='userMessage' ORDER BY p.seq DESC LIMIT 1)
+), native_tool_selected AS (
+  SELECT e.item_id,e.seq,e.turn_id,COALESCE(json_extract(e.payload,'$.payload.firstSequence'),e.seq) AS first_seq,
+    COALESCE(json_extract(e.payload,'$.payload.firstTimestampMs'),e.created_at) AS first_timestamp_ms,
+    json_extract(e.payload,'$.payload.state') IN ('completed','failed') AS completed,LENGTH(CAST(e.payload AS BLOB)) AS required_bytes
+  FROM events e INDEXED BY events_tool_position_idx
+  WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.kind='item.updated' AND json_extract(e.payload,'$.payload.kind')='tool'
+    AND COALESCE(json_extract(e.payload,'$.payload.firstSequence'),e.seq) < :cursor
+    AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_item_idx
+      WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.kind='item.updated' AND p.item_id=e.item_id AND p.seq>e.seq
+        AND json_extract(p.payload,'$.payload.kind')='tool')
+  ORDER BY COALESCE(json_extract(e.payload,'$.payload.firstSequence'),e.seq) DESC LIMIT :item_ceiling
+), replay_starts AS (
+  SELECT e.item_id FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.item_id IS NOT NULL
+    AND (e.kind='remote.cached' OR json_extract(e.payload,'$.payload.kind')='terminalProjection')
+    AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_owned_item_seq_idx
+      WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id AND p.seq<e.seq
+        AND (p.kind='remote.cached' OR json_extract(p.payload,'$.payload.kind')='terminalProjection'))
+    AND e.seq < :cursor
+  ORDER BY e.seq DESC LIMIT :item_ceiling
+), replay_rows AS (
+  SELECT e.item_id,e.seq,e.created_at,e.turn_id,LENGTH(CAST(e.payload AS BLOB)) AS required_bytes FROM replay_starts s CROSS JOIN events e INDEXED BY events_owned_item_seq_idx
+  ON e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.item_id=s.item_id WHERE e.item_id IS NOT NULL
+    AND (e.kind='remote.cached' OR json_extract(e.payload,'$.payload.kind')='terminalProjection')
+), replay_items AS (
+  SELECT item_id,MIN(seq) AS first_seq,MIN(created_at) AS first_timestamp_ms,MAX(seq) AS last_seq,
+         MIN(turn_id) AS turn_id,SUM(required_bytes) AS required_bytes
+  FROM replay_rows GROUP BY item_id
+), command_starts AS MATERIALIZED (
+  SELECT e.seq AS first_seq,e.created_at AS first_timestamp_ms,json_extract(e.payload,'$.generation') AS generation
+  FROM events e INDEXED BY events_user_command_page_idx WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high
+    AND json_extract(e.payload,'$.payload.kind')='availableCommandsUpdate' AND e.seq < :cursor
+    AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_command_generation_idx
+      WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND json_extract(p.payload,'$.payload.kind')='availableCommandsUpdate'
+        AND json_extract(p.payload,'$.generation')=json_extract(e.payload,'$.generation') AND p.seq<e.seq)
+  ORDER BY e.seq DESC LIMIT :item_ceiling
+), command_items AS (
+  SELECT s.*,e.seq,e.turn_id,LENGTH(CAST(e.payload AS BLOB)) AS required_bytes
+  FROM command_starts s CROSS JOIN events e ON e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.seq=(
+    SELECT p.seq FROM events p INDEXED BY events_command_generation_idx WHERE p.owned_id=:owned_id AND p.seq BETWEEN :low AND :high
+      AND json_extract(p.payload,'$.payload.kind')='availableCommandsUpdate'
+      AND json_extract(p.payload,'$.generation')=s.generation ORDER BY p.seq DESC LIMIT 1)
+), exact_rows AS (
+  SELECT e.seq,e.created_at,e.turn_id,LENGTH(CAST(e.payload AS BLOB)) AS required_bytes FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.item_id IS NULL
+    AND (json_extract(e.payload,'$.payload.kind') IN
+      ('plan','contextCompaction','checkoutChanged','error','approval','userInputRequested')
+      OR (json_extract(e.payload,'$.payload.kind')='terminalProjection' AND json_extract(e.payload,'$.payload.eventType')='item.completed'))
+    AND e.seq < :cursor
+  ORDER BY e.seq DESC LIMIT :item_ceiling
+), side_candidates AS NOT MATERIALIZED (
+  SELECT e.seq,e.created_at,e.turn_id,LENGTH(CAST(e.payload AS BLOB)) AS required_bytes,CASE
+    WHEN e.kind IN ('usage.updated','session.config.updated') THEN e.kind
+    WHEN e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='usage' THEN 'usage.updated'
+    WHEN e.kind='remote.cached' AND json_extract(e.payload,'$.payload.kind')='terminalProjection'
+      THEN json_extract(e.payload,'$.payload.eventType') END AS side_kind
+  FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high
+    AND (e.kind IN ('usage.updated','session.config.updated') OR (e.kind='remote.cached'
+      AND (json_extract(e.payload,'$.payload.kind')='usage' OR
+        (json_extract(e.payload,'$.payload.kind')='terminalProjection'
+          AND json_extract(e.payload,'$.payload.eventType') IN ('usage.updated','session.config.updated')))))
+), side_latest AS MATERIALIZED (
+  SELECT * FROM (SELECT * FROM side_candidates WHERE side_kind='usage.updated' ORDER BY seq DESC LIMIT 1)
+  UNION ALL
+  SELECT * FROM (SELECT * FROM side_candidates WHERE side_kind='session.config.updated' ORDER BY seq DESC LIMIT 1)
+), side_selected AS (
+  SELECT * FROM side_latest WHERE seq < :cursor
+), descriptors AS (
+  SELECT 'assistant:'||item_id AS page_key,item_id,'assistant' AS selection_mode,
+         MIN(first_seq) AS first_seq,MIN(first_timestamp_ms) AS first_timestamp_ms,MAX(seq) AS last_seq,
+         MAX(authority_seq) AS authority_seq,MIN(turn_id) AS turn_id,
+         CASE WHEN MAX(seq)=MAX(authority_seq) THEN MAX(completed) ELSE 0 END AS completed,
+         SUM(required_bytes) AS required_bytes
+  FROM assistant_rows GROUP BY item_id
+  UNION ALL
+  SELECT 'user:'||item_id,item_id,'native-user',first_seq,first_timestamp_ms,seq,seq,turn_id,
+         completed,required_bytes
+  FROM native_user_selected
+  UNION ALL
+  SELECT 'tool:'||item_id,item_id,'native-tool',first_seq,first_timestamp_ms,seq,seq,turn_id,completed,required_bytes
+  FROM native_tool_selected
+  UNION ALL
+  SELECT 'replay:'||item_id,item_id,'replay',first_seq,first_timestamp_ms,last_seq,NULL,turn_id,0,required_bytes
+  FROM replay_items
+  UNION ALL
+  SELECT 'commands:'||generation,'commands:'||generation,'exact',first_seq,first_timestamp_ms,seq,seq,turn_id,1,required_bytes FROM command_items
+  UNION ALL
+  SELECT 'event:'||seq,'event:'||seq,'exact',seq,created_at,seq,seq,turn_id,1,required_bytes FROM exact_rows
+  UNION ALL
+  SELECT 'side:'||side_kind,'side:'||side_kind,'side',seq,created_at,seq,seq,turn_id,1,required_bytes FROM side_selected
+), candidates AS (
+  SELECT *,-first_seq AS page_order FROM descriptors
+  WHERE first_seq < :cursor
+  ORDER BY page_order,page_key LIMIT :item_ceiling
+), spending AS (
+  SELECT *,COALESCE(SUM(required_bytes) OVER (ORDER BY page_order,page_key
+    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),0) AS spent_before FROM candidates
+), selected AS (
+  SELECT * FROM spending WHERE spent_before=0 OR spent_before+required_bytes<=:max_bytes
+), bounds AS (
+  SELECT MIN(first_seq) AS before_cursor,MAX(first_seq) AS after_cursor,
+         COALESCE(SUM(required_bytes),0) AS transfer_bytes FROM selected
+), page_facts AS (
+  SELECT b.*,
+         (EXISTS(SELECT 1 FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND MIN(:high,b.before_cursor) AND e.seq<b.before_cursor
+           AND e.item_id IS NOT NULL AND ((e.kind='content.delta' AND json_extract(e.payload,'$.payload.kind')='assistantDelta') OR (e.kind='item.completed' AND json_extract(e.payload,'$.payload.kind')='assistantMessage'))
+           AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_owned_item_seq_idx
+             WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id AND p.seq<e.seq))
+         OR EXISTS(SELECT 1 FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND MIN(:high,b.before_cursor) AND e.seq<b.before_cursor
+           AND e.kind='item.completed' AND json_extract(e.payload,'$.payload.kind')='userMessage'
+           AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_owned_item_seq_idx
+             WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id AND p.seq<e.seq))
+         OR EXISTS(SELECT 1 FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND MIN(:high,b.before_cursor) AND e.seq<b.before_cursor
+           AND e.item_id IS NOT NULL AND (e.kind='remote.cached' OR json_extract(e.payload,'$.payload.kind')='terminalProjection')
+           AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_owned_item_seq_idx
+             WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id AND p.seq<e.seq))
+         OR EXISTS(SELECT 1 FROM events e INDEXED BY events_tool_position_idx
+           WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.kind='item.updated' AND json_extract(e.payload,'$.payload.kind')='tool'
+             AND COALESCE(json_extract(e.payload,'$.payload.firstSequence'),e.seq) < b.before_cursor
+             AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_item_idx
+               WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.kind='item.updated' AND p.item_id=e.item_id AND p.seq>e.seq
+                 AND json_extract(p.payload,'$.payload.kind')='tool'))
+         OR EXISTS(SELECT 1 FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND MIN(:high,b.before_cursor) AND e.seq<b.before_cursor AND e.item_id IS NULL
+           AND (json_extract(e.payload,'$.payload.kind') IN
+             ('plan','contextCompaction','checkoutChanged','error','approval','userInputRequested')
+             OR (json_extract(e.payload,'$.payload.kind')='terminalProjection' AND json_extract(e.payload,'$.payload.eventType')='item.completed')))
+         OR EXISTS(SELECT 1 FROM events e INDEXED BY events_user_command_page_idx
+           WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND MIN(:high,b.before_cursor) AND e.seq<b.before_cursor AND json_extract(e.payload,'$.payload.kind')='availableCommandsUpdate'
+             AND NOT EXISTS(SELECT 1 FROM events p INDEXED BY events_command_generation_idx WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high
+               AND json_extract(p.payload,'$.payload.kind')='availableCommandsUpdate'
+               AND json_extract(p.payload,'$.generation')=json_extract(e.payload,'$.generation') AND p.seq<e.seq))
+         OR EXISTS(SELECT 1 FROM side_latest WHERE seq < b.before_cursor)) AS has_before,
+         (EXISTS(SELECT 1 FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN MAX(:low,b.after_cursor) AND :high AND e.seq>b.after_cursor
+           AND e.item_id IS NOT NULL AND ((e.kind='content.delta' AND json_extract(e.payload,'$.payload.kind')='assistantDelta') OR (e.kind='item.completed' AND json_extract(e.payload,'$.payload.kind')='assistantMessage'))
+           AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_owned_item_seq_idx
+             WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id AND p.seq<e.seq))
+         OR EXISTS(SELECT 1 FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN MAX(:low,b.after_cursor) AND :high AND e.seq>b.after_cursor
+           AND e.kind='item.completed' AND json_extract(e.payload,'$.payload.kind')='userMessage'
+           AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_owned_item_seq_idx
+             WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id AND p.seq<e.seq))
+         OR EXISTS(SELECT 1 FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN MAX(:low,b.after_cursor) AND :high AND e.seq>b.after_cursor
+           AND e.item_id IS NOT NULL AND (e.kind='remote.cached' OR json_extract(e.payload,'$.payload.kind')='terminalProjection')
+           AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_owned_item_seq_idx
+             WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.item_id=e.item_id AND p.seq<e.seq))
+         OR EXISTS(SELECT 1 FROM events e INDEXED BY events_tool_position_idx
+           WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.kind='item.updated' AND json_extract(e.payload,'$.payload.kind')='tool'
+             AND COALESCE(json_extract(e.payload,'$.payload.firstSequence'),e.seq) > b.after_cursor
+             AND NOT EXISTS (SELECT 1 FROM events p INDEXED BY events_item_idx
+               WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high AND p.kind='item.updated' AND p.item_id=e.item_id AND p.seq>e.seq
+                 AND json_extract(p.payload,'$.payload.kind')='tool'))
+         OR EXISTS(SELECT 1 FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN MAX(:low,b.after_cursor) AND :high AND e.seq>b.after_cursor AND e.item_id IS NULL
+           AND (json_extract(e.payload,'$.payload.kind') IN
+             ('plan','contextCompaction','checkoutChanged','error','approval','userInputRequested')
+             OR (json_extract(e.payload,'$.payload.kind')='terminalProjection' AND json_extract(e.payload,'$.payload.eventType')='item.completed')))
+         OR EXISTS(SELECT 1 FROM events e INDEXED BY events_user_command_page_idx
+           WHERE e.owned_id=:owned_id AND e.seq BETWEEN MAX(:low,b.after_cursor) AND :high AND e.seq>b.after_cursor AND json_extract(e.payload,'$.payload.kind')='availableCommandsUpdate'
+             AND NOT EXISTS(SELECT 1 FROM events p INDEXED BY events_command_generation_idx WHERE p.owned_id=e.owned_id AND p.seq BETWEEN :low AND :high
+               AND json_extract(p.payload,'$.payload.kind')='availableCommandsUpdate'
+               AND json_extract(p.payload,'$.generation')=json_extract(e.payload,'$.generation') AND p.seq<e.seq))
+         OR EXISTS(SELECT 1 FROM side_latest WHERE seq > b.after_cursor)) AS has_after
+  FROM bounds b
+)
+SELECT s.item_id,s.page_key,s.selection_mode,s.first_seq,s.first_timestamp_ms,s.last_seq,
+       s.authority_seq,s.turn_id,s.completed,s.required_bytes,b.before_cursor,b.after_cursor,b.transfer_bytes,
+       (SELECT COALESCE(MAX(seq),0) FROM events WHERE owned_id=:owned_id AND seq BETWEEN :low AND :high) AS watermark,
+       b.has_before,b.has_after
+FROM page_facts b LEFT JOIN selected s ON TRUE ORDER BY s.first_seq ASC,s.page_key ASC;
+"#;
+
+const ITEM_PAGE_RECORD_SQL: &str = r#"WITH selected AS MATERIALIZED (
+  SELECT json_extract(value,'$.itemId') AS item_id,json_extract(value,'$.selectionMode') AS selection_mode,
+         json_extract(value,'$.authoritySeq') AS authority_seq FROM json_each(:selected_descriptors)
+), assistant_selected AS MATERIALIZED (
+  SELECT item_id,authority_seq FROM selected WHERE selection_mode='assistant'
+), required AS (
+  SELECT e.owned_id,e.seq,e.turn_id,e.kind,e.payload,e.created_at
+  FROM assistant_selected s CROSS JOIN events e INDEXED BY events_item_idx
+  ON e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.kind='content.delta' AND e.item_id=s.item_id
+  WHERE json_extract(e.payload,'$.payload.kind')='assistantDelta'
+    AND (s.authority_seq IS NULL OR e.seq>s.authority_seq)
+  UNION ALL
+  SELECT e.owned_id,e.seq,e.turn_id,e.kind,e.payload,e.created_at
+  FROM assistant_selected s CROSS JOIN events e INDEXED BY events_item_idx
+  ON e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.kind='item.completed' AND e.item_id=s.item_id AND e.seq=s.authority_seq
+  WHERE json_extract(e.payload,'$.payload.kind')='assistantMessage'
+  UNION ALL
+  SELECT e.owned_id,e.seq,e.turn_id,e.kind,e.payload,e.created_at
+  FROM selected s CROSS JOIN events e
+  ON e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND s.selection_mode IN ('native-user','native-tool') AND e.seq=s.authority_seq
+  UNION ALL
+  SELECT e.owned_id,e.seq,e.turn_id,e.kind,e.payload,e.created_at
+  FROM selected s CROSS JOIN events e INDEXED BY events_owned_item_seq_idx
+  ON e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND s.selection_mode='replay' AND e.item_id=s.item_id
+  WHERE e.kind='remote.cached' OR json_extract(e.payload,'$.payload.kind')='terminalProjection'
+  UNION ALL
+  SELECT e.owned_id,e.seq,e.turn_id,e.kind,e.payload,e.created_at
+  FROM selected s CROSS JOIN events e
+  ON e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND s.selection_mode IN ('exact','side') AND e.seq=s.authority_seq
+)
+SELECT * FROM required ORDER BY seq ASC;
+"#;
+
+const ITEM_PAGE_TURN_SQL: &str = r#"WITH represented AS (
+  SELECT DISTINCT json_extract(value,'$.turnId') AS turn_id FROM json_each(:selected_descriptors)
+  WHERE json_extract(value,'$.turnId') IS NOT NULL
+), matched AS (
+  SELECT e.turn_id,e.seq,e.kind,e.item_id,e.payload,e.created_at
+  FROM represented r CROSS JOIN events e INDEXED BY events_turn_item_seq_idx
+    ON e.owned_id=:owned_id AND e.seq BETWEEN :low AND :high AND e.turn_id=r.turn_id
+), turn_rows AS (
+  SELECT *,json_extract(payload,'$.payload.state') AS state FROM matched
+  WHERE kind IN ('turn.started','turn.completed','turn.interrupted')
+    OR (kind='remote.cached' AND json_extract(payload,'$.payload.kind')='turn')
+), terminal_rows AS (
+  SELECT *,ROW_NUMBER() OVER (PARTITION BY turn_id ORDER BY seq DESC) AS rank FROM turn_rows WHERE state<>'started'
+), assistant_rows AS (
+  SELECT *,ROW_NUMBER() OVER (PARTITION BY turn_id ORDER BY first_seq DESC) AS rank FROM (
+    SELECT turn_id,item_id,MIN(seq) AS first_seq FROM matched WHERE item_id IS NOT NULL
+      AND ((kind='content.delta' AND json_extract(payload,'$.payload.kind')='assistantDelta')
+        OR (kind='item.completed' AND json_extract(payload,'$.payload.kind')='assistantMessage')
+        OR (kind='remote.cached' AND json_extract(payload,'$.payload.kind') IN ('assistantDelta','assistantMessage')))
+    GROUP BY turn_id,item_id
+  )
+), turn_bounds AS (
+  SELECT turn_id,MIN(CASE WHEN state='started' THEN created_at END) AS started_at_ms,
+         MAX(CASE WHEN state<>'started' THEN created_at END) AS ended_at_ms FROM turn_rows GROUP BY turn_id
+)
+SELECT r.turn_id,b.started_at_ms,b.ended_at_ms,x.state AS terminal_state,a.item_id AS final_assistant_item_id
+FROM represented r LEFT JOIN turn_bounds b ON b.turn_id=r.turn_id
+LEFT JOIN terminal_rows x ON x.turn_id=r.turn_id AND x.rank=1
+LEFT JOIN assistant_rows a ON a.turn_id=r.turn_id AND a.rank=1 ORDER BY r.turn_id;"#;
+
 
 const NORMALIZE_TOOL_EVENTS: &str = "WITH latest AS MATERIALIZED (
   SELECT e.rowid, e.owned_id, e.item_id, e.seq, e.created_at, e.payload
@@ -389,6 +690,52 @@ pub struct OlderEvents {
     pub has_more: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventCoverage {
+    pub low: i64,
+    pub high: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemPageDescriptor {
+    pub stable_id: String,
+    pub item_id: String,
+    #[serde(rename = "selectionMode")]
+    pub record_mode: String,
+    pub first_sequence: i64,
+    pub first_timestamp_ms: i64,
+    pub last_sequence: i64,
+    #[serde(rename = "authoritySeq")]
+    pub authority_sequence: Option<i64>,
+    pub turn_id: Option<String>,
+    pub completed: bool,
+    pub required_bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepresentedTurnFacts {
+    pub turn_id: String,
+    pub started_at_ms: Option<i64>,
+    pub ended_at_ms: Option<i64>,
+    pub terminal_state: Option<String>,
+    pub final_assistant_item_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemPage {
+    pub items: Vec<ItemPageDescriptor>,
+    pub events: Vec<EventRow>,
+    pub turns: Vec<RepresentedTurnFacts>,
+    pub before_cursor: Option<i64>,
+    pub after_cursor: Option<i64>,
+    pub has_before: bool,
+    pub has_after: bool,
+    pub watermark: i64,
+    pub transfer_bytes: u64,
+    pub oversized: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttachmentRow {
     pub id: String,
@@ -561,6 +908,7 @@ pub struct NotionTaskProjectionPage {
 }
 
 impl SessionStore {
+    const ITEM_PAGE_CANDIDATE_CEILING: i64 = 512;
     pub fn open(path: &Path) -> Result<Self> {
         let connection = Connection::open(path)
             .map_err(|error| StoreError::sqlite("could not open the session database", error))?;
@@ -1068,6 +1416,15 @@ impl SessionStore {
                     .map_err(|error| StoreError::sqlite("could not record the tool normalization upgrade", error))?;
                 transaction.commit()
                     .map_err(|error| StoreError::sqlite("could not finish the tool normalization upgrade", error))?;
+            }
+            15 => {
+                let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| StoreError::sqlite("could not begin the item page upgrade", error))?;
+                add_tool_item_schema(&transaction)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| StoreError::sqlite("could not record the item page upgrade", error))?;
+                transaction.commit()
+                    .map_err(|error| StoreError::sqlite("could not finish the item page upgrade", error))?;
             }
             SCHEMA_VERSION => {}
             _ => {
@@ -2143,6 +2500,122 @@ impl SessionStore {
         Ok(OlderEvents { events, has_more })
     }
 
+    pub fn list_items_before(
+        &self,
+        owned_id: &str,
+        before_sequence: i64,
+        max_bytes: u32,
+        coverage: Option<EventCoverage>,
+    ) -> Result<ItemPage> {
+        self.query_item_page(owned_id, before_sequence, max_bytes, coverage, true)
+    }
+
+    pub fn list_items_after(
+        &self,
+        owned_id: &str,
+        after_sequence: i64,
+        max_bytes: u32,
+        coverage: Option<EventCoverage>,
+    ) -> Result<ItemPage> {
+        self.query_item_page(owned_id, after_sequence, max_bytes, coverage, false)
+    }
+
+    fn query_item_page(
+        &self,
+        owned_id: &str,
+        cursor: i64,
+        max_bytes: u32,
+        coverage: Option<EventCoverage>,
+        before: bool,
+    ) -> Result<ItemPage> {
+        let low = coverage.map_or(i64::MIN, |range| range.low);
+        let requested_high = coverage.map_or(i64::MAX, |range| range.high);
+        if low > requested_high {
+            return Err(StoreError::message("the event coverage range is invalid"));
+        }
+        let connection = self.lock()?;
+        self.recent_events_read_active.store(true, Ordering::Release);
+        let _active_read = RecentEventsReadGuard(&self.recent_events_read_active);
+        let transaction = connection.unchecked_transaction().map_err(|error| {
+            StoreError::sqlite("could not begin the item page read", error)
+        })?;
+        let descriptor_sql = if before {
+            std::borrow::Cow::Borrowed(ITEM_PAGE_DESCRIPTOR_SQL)
+        } else {
+            std::borrow::Cow::Owned(ITEM_PAGE_DESCRIPTOR_SQL.replace(" < :cursor", " > :cursor")
+                .replace(" DESC LIMIT :item_ceiling", " ASC LIMIT :item_ceiling")
+                .replace("SELECT *,-first_seq AS page_order", "SELECT *,first_seq AS page_order"))
+        };
+        let mut statement = transaction.prepare(&descriptor_sql).map_err(|error| {
+            StoreError::sqlite("could not prepare the item page descriptors", error)
+        })?;
+        let rows = statement.query_map(
+            named_params! {
+                ":owned_id": owned_id,
+                ":cursor": cursor,
+                ":max_bytes": i64::from(max_bytes),
+                ":item_ceiling": Self::ITEM_PAGE_CANDIDATE_CEILING,
+                ":low": low,
+                ":high": requested_high,
+            },
+            item_page_descriptor_from_row,
+        ).map_err(|error| StoreError::sqlite("could not query the item page descriptors", error))?;
+        let descriptor_rows = rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| StoreError::sqlite("could not read the item page descriptors", error))?;
+        drop(statement);
+        let facts = descriptor_rows.first().ok_or_else(|| {
+            StoreError::message("the item page descriptor query returned no page facts")
+        })?;
+        let watermark = facts.watermark;
+        let items = descriptor_rows.iter().filter_map(|row| row.item.clone()).collect::<Vec<_>>();
+        let descriptor_json = serde_json::to_string(&items)
+            .map_err(|_| StoreError::message("could not encode the selected item descriptors"))?;
+        let mut record_statement = transaction.prepare(ITEM_PAGE_RECORD_SQL).map_err(|error| {
+            StoreError::sqlite("could not prepare the selected item records", error)
+        })?;
+        let records = record_statement.query_map(
+            named_params! {
+                ":owned_id": owned_id,
+                ":selected_descriptors": descriptor_json,
+                ":low": low,
+                ":high": watermark,
+            },
+            event_from_row,
+        ).map_err(|error| StoreError::sqlite("could not query the selected item records", error))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| StoreError::sqlite("could not read the selected item records", error))?;
+        drop(record_statement);
+        let mut turn_statement = transaction.prepare(ITEM_PAGE_TURN_SQL).map_err(|error| {
+            StoreError::sqlite("could not prepare the represented turn facts", error)
+        })?;
+        let turns = turn_statement.query_map(
+            named_params! {
+                ":owned_id": owned_id,
+                ":selected_descriptors": descriptor_json,
+                ":low": low,
+                ":high": watermark,
+            },
+            represented_turn_facts_from_row,
+        ).map_err(|error| StoreError::sqlite("could not query the represented turn facts", error))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| StoreError::sqlite("could not read the represented turn facts", error))?;
+        drop(turn_statement);
+        transaction.commit()
+            .map_err(|error| StoreError::sqlite("could not finish the item page read", error))?;
+        Ok(ItemPage {
+            oversized: facts.transfer_bytes > u64::from(max_bytes),
+            items,
+            events: records,
+            turns,
+            before_cursor: facts.before_cursor,
+            after_cursor: facts.after_cursor,
+            has_before: facts.has_before,
+            has_after: facts.has_after,
+            watermark,
+            transfer_bytes: facts.transfer_bytes,
+        })
+    }
+
     pub fn latest_seq(&self, owned_id: &str) -> Result<i64> {
         let connection = self.lock()?;
         connection
@@ -2528,7 +3001,10 @@ fn add_tool_item_schema(connection: &Connection) -> Result<()> {
         .map_err(|error| StoreError::sqlite("could not add the tool item index", error))?;
     connection
         .execute_batch(TOOL_ITEM_SEQUENCE_INDEX_SCHEMA)
-        .map_err(|error| StoreError::sqlite("could not add the tool sequence index", error))
+        .map_err(|error| StoreError::sqlite("could not add the tool sequence index", error))?;
+    connection
+        .execute_batch(ITEM_PAGE_INDEX_SCHEMA)
+        .map_err(|error| StoreError::sqlite("could not add the item page indexes", error))
 }
 
 fn upgrade_tool_events(connection: &Connection) -> Result<()> {
@@ -2791,6 +3267,54 @@ fn event_from_row(row: &Row<'_>) -> rusqlite::Result<EventRow> {
     })
 }
 
+struct ItemPageDescriptorRow {
+    item: Option<ItemPageDescriptor>,
+    before_cursor: Option<i64>,
+    after_cursor: Option<i64>,
+    transfer_bytes: u64,
+    watermark: i64,
+    has_before: bool,
+    has_after: bool,
+}
+
+fn item_page_descriptor_from_row(row: &Row<'_>) -> rusqlite::Result<ItemPageDescriptorRow> {
+    let item_id = row.get::<_, Option<String>>(0)?;
+    let item = match item_id {
+        Some(item_id) => Some(ItemPageDescriptor {
+            item_id,
+            stable_id: row.get(1)?,
+            record_mode: row.get(2)?,
+            first_sequence: row.get(3)?,
+            first_timestamp_ms: row.get(4)?,
+            last_sequence: row.get(5)?,
+            authority_sequence: row.get(6)?,
+            turn_id: row.get(7)?,
+            completed: row.get(8)?,
+            required_bytes: row.get(9)?,
+        }),
+        None => None,
+    };
+    Ok(ItemPageDescriptorRow {
+        item,
+        before_cursor: row.get(10)?,
+        after_cursor: row.get(11)?,
+        transfer_bytes: row.get(12)?,
+        watermark: row.get(13)?,
+        has_before: row.get(14)?,
+        has_after: row.get(15)?,
+    })
+}
+
+fn represented_turn_facts_from_row(row: &Row<'_>) -> rusqlite::Result<RepresentedTurnFacts> {
+    Ok(RepresentedTurnFacts {
+        turn_id: row.get(0)?,
+        started_at_ms: row.get(1)?,
+        ended_at_ms: row.get(2)?,
+        terminal_state: row.get(3)?,
+        final_assistant_item_id: row.get(4)?,
+    })
+}
+
 fn orchestration_event_from_row(row: &Row<'_>) -> rusqlite::Result<OrchestrationEventRow> {
     Ok(OrchestrationEventRow {
         id: row.get(0)?,
@@ -2886,8 +3410,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        EventRow, EvidenceArtifact, EvidenceArtifactQuery, EvidenceDiskUsage, EvidenceRunDiskUsage,
-        NotionTaskProjection, SessionRow, SessionStore,
+        EventCoverage, EventRow, EvidenceArtifact, EvidenceArtifactQuery, EvidenceDiskUsage,
+        EvidenceRunDiskUsage, NotionTaskProjection, RepresentedTurnFacts, SessionRow, SessionStore,
     };
 
     fn fixture_session(owned_id: &str, activity_ms: i64) -> SessionRow {
@@ -2986,6 +3510,114 @@ mod tests {
             payload_json: format!(r#"{{"seq":{seq}}}"#),
             created_at_ms: 10_000 + seq,
         }
+    }
+
+    fn item_page_event(
+        owned_id: &str,
+        seq: i64,
+        turn_id: Option<&str>,
+        kind: &str,
+        generation: i64,
+        payload: serde_json::Value,
+    ) -> EventRow {
+        EventRow {
+            owned_id: owned_id.to_owned(),
+            seq,
+            turn_id: turn_id.map(str::to_owned),
+            kind: kind.to_owned(),
+            payload_json: serde_json::json!({
+                "ownedId": owned_id,
+                "generation": generation,
+                "sequence": seq,
+                "timestampMs": seq * 10,
+                "turnId": turn_id,
+                "payload": payload,
+            }).to_string(),
+            created_at_ms: seq * 10,
+        }
+    }
+
+    #[test]
+    fn complete_item_page_keeps_authority_position_exact_records_and_turn_facts() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&fixture_session("page", 0)).unwrap();
+        for event in [
+            item_page_event("page", 0, Some("turn-a"), "turn.started", 1,
+                serde_json::json!({"kind":"turn","turnId":"turn-a","state":"started"})),
+            item_page_event("page", 1, Some("turn-a"), "content.delta", 1,
+                serde_json::json!({"kind":"assistantDelta","itemId":"answer","delta":"old"})),
+            item_page_event("page", 2, Some("turn-a"), "item.completed", 1,
+                serde_json::json!({"kind":"assistantMessage","itemId":"answer","text":"full","completed":true,"blocks":[]})),
+            item_page_event("page", 3, Some("turn-a"), "content.delta", 1,
+                serde_json::json!({"kind":"assistantDelta","itemId":"answer","delta":" tail"})),
+            item_page_event("page", 4, Some("turn-a"), "turn.completed", 1,
+                serde_json::json!({"kind":"turn","turnId":"turn-a","state":"completed"})),
+        ] {
+            store.append_event(&event).unwrap();
+        }
+
+        let page = store.list_items_before("page", i64::MAX, 512 * 1024, None).unwrap();
+        assert_eq!(page.watermark, 4);
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].stable_id, "assistant:answer");
+        assert_eq!(page.items[0].first_sequence, 1);
+        assert_eq!(page.items[0].first_timestamp_ms, 10);
+        assert_eq!(page.items[0].authority_sequence, Some(2));
+        assert!(!page.items[0].completed, "a later delta reopens the authority");
+        assert_eq!(page.events.iter().map(|event| event.seq).collect::<Vec<_>>(), [2, 3]);
+        assert_eq!(page.turns, [RepresentedTurnFacts {
+            turn_id: "turn-a".into(), started_at_ms: Some(0), ended_at_ms: Some(40),
+            terminal_state: Some("completed".into()), final_assistant_item_id: Some("answer".into()),
+        }]);
+    }
+
+    #[test]
+    fn item_pages_keep_logical_identities_and_directional_cursors() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&fixture_session("logical", 0)).unwrap();
+        for event in [
+            item_page_event("logical", 1, Some("turn-a"), "commands.updated", 1,
+                serde_json::json!({"kind":"availableCommandsUpdate","availableCommands":[]})),
+            item_page_event("logical", 2, Some("turn-a"), "plan.updated", 1,
+                serde_json::json!({"kind":"plan","items":[]})),
+            item_page_event("logical", 3, Some("turn-a"), "commands.updated", 1,
+                serde_json::json!({"kind":"availableCommandsUpdate","availableCommands":[{"name":"x"}]})),
+            item_page_event("logical", 4, Some("turn-b"), "commands.updated", 2,
+                serde_json::json!({"kind":"availableCommandsUpdate","availableCommands":[]})),
+            item_page_event("logical", 5, Some("turn-b"), "item.completed", 2,
+                serde_json::json!({"kind":"terminalProjection","eventType":"item.completed","payload":{"historical":true}})),
+        ] {
+            store.append_event(&event).unwrap();
+        }
+
+        let page = store.list_items_before("logical", i64::MAX, 512 * 1024, None).unwrap();
+        assert_eq!(page.items.iter().map(|item| item.stable_id.as_str()).collect::<Vec<_>>(),
+            ["commands:1", "event:2", "commands:2", "event:5"]);
+        assert_eq!(page.items[0].first_sequence, 1);
+        assert_eq!(page.items[0].authority_sequence, Some(3));
+        assert_eq!(page.events.iter().map(|event| event.seq).collect::<Vec<_>>(), [2, 3, 4, 5]);
+        let newer = store.list_items_after("logical", 2, 512 * 1024, None).unwrap();
+        assert_eq!(newer.items.iter().map(|item| item.stable_id.as_str()).collect::<Vec<_>>(),
+            ["commands:2", "event:5"]);
+        assert!(newer.has_before);
+        assert!(!newer.has_after);
+    }
+
+    #[test]
+    fn item_page_uses_the_confirmed_closed_coverage_for_every_read() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&fixture_session("covered", 0)).unwrap();
+        for seq in 1..=5 {
+            store.append_event(&item_page_event("covered", seq, Some("turn-a"), "plan.updated", 1,
+                serde_json::json!({"kind":"plan","items":[{"content":seq}]}))).unwrap();
+        }
+        let page = store.list_items_before("covered", i64::MAX, 1, Some(EventCoverage { low: 2, high: 4 })).unwrap();
+        assert_eq!(page.watermark, 4);
+        assert_eq!(page.items.iter().map(|item| item.first_sequence).collect::<Vec<_>>(), [4]);
+        assert_eq!(page.events.iter().map(|event| event.seq).collect::<Vec<_>>(), [4]);
+        assert!(page.oversized);
+        assert!(page.has_before);
+        assert!(!page.has_after);
     }
 
     #[test]
@@ -4488,6 +5120,13 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("read schema version");
         assert_eq!(version, super::SCHEMA_VERSION);
+        let page_indexes: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN
+             ('events_command_generation_idx','events_turn_item_seq_idx','events_assistant_page_idx',
+              'events_user_command_page_idx','events_replay_page_idx','events_side_page_idx','events_tool_position_idx')",
+            [], |row| row.get(0),
+        ).expect("read item page indexes");
+        assert_eq!(page_indexes, 7);
 
         let tables: Vec<String> = {
             let mut statement = connection
