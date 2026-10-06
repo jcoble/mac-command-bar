@@ -166,6 +166,7 @@
 	// The active top tab is the truth for what is showing. Whatever made it
 	// change (a click, a close, a restore), the owning store follows.
 	$effect(() => {
+		if (workbench.switching) return;
 		const ref = topTabs.activeKey ? parseTopTabKey(topTabs.activeKey) : null;
 		const panel = editorPanel;
 		if (!ref) return;

@@ -368,7 +368,17 @@ export class SessionSelectionController {
 			const conversation = captureConversationWorkspace(displayedChatOwnedId);
 			if (conversation) this.editorSessions.rememberWorkspaceState({ conversation });
 		}
-		await this.sessionSelectionLayers.selectSession(session, displayedChatOwnedId, owner);
+		try {
+			await this.sessionSelectionLayers.selectSession(session, displayedChatOwnedId, owner);
+		} catch (error) {
+			if (!this.isCurrent(owner)) return;
+			const snapshot = await this.editorSessions.restoreEditorWorkspaceForSession(
+				session.ownedId, root, false, owner.signal,
+			);
+			if (!this.isCurrent(owner)) return;
+			this.activeWorkspaceSnapshot = snapshot;
+			throw error;
+		}
 		if (!this.isCurrent(owner)) return;
 		this.activeRootAvailable = Boolean(this.sessionSelectionLayers.treeRoot);
 		shellPanels.sessionPicked(this.activeRootAvailable);
