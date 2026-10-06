@@ -1022,13 +1022,15 @@ function normalizedConversationChild(
   parentOwnedId: string,
   parentGeneration: number,
   timestampMs: number,
-  siblings: readonly ConversationChildAgent[]
+  siblings: readonly ConversationChildAgent[],
+  rootNativeSessionId?: string
 ): ConversationChildAgent | null {
   if (!isRecord(value) || isWorkflowChildRecord(value)) return null;
   const childId = asString(value.childId) ?? asString(value.childSessionId) ?? asString(value.id);
   if (!childId) return null;
   const parentToolCallId = asString(value.parentToolCallId) ?? existing?.parentToolCallId;
-  const parentId = asString(value.parentId) ?? parentToolCallId ?? existing?.parentId;
+  const rawParentId = asString(value.parentId) ?? parentToolCallId ?? existing?.parentId;
+  const parentId = rawParentId === rootNativeSessionId ? parentOwnedId : rawParentId;
   if (!parentId || childParentWouldCycle(siblings, childId, parentId)) return null;
   const childProvider = normalizeChildProvider(value.provider, existing?.provider ?? provider);
   return {
@@ -1037,6 +1039,9 @@ function normalizedConversationChild(
     parentGeneration,
     parentId,
     ...(parentToolCallId ? { parentToolCallId } : {}),
+    ...(asString(value.transcriptId) || existing?.transcriptId
+      ? { transcriptId: asString(value.transcriptId) ?? existing?.transcriptId }
+      : {}),
     provider: childProvider,
     title: asString(value.title) ?? asString(value.label) ?? existing?.title ?? 'Sub-agent',
     state: asString(value.state) ?? existing?.state ?? 'finished',
@@ -1056,7 +1061,8 @@ function normalizedConversationChildren(
   provider: AgentConversationProvider,
   parentOwnedId: string,
   parentGeneration: number,
-  timestampMs: number
+  timestampMs: number,
+  rootNativeSessionId?: string
 ): ConversationChildAgent[] {
   const children: ConversationChildAgent[] = [];
   for (const value of values) {
@@ -1074,7 +1080,8 @@ function normalizedConversationChildren(
       parentOwnedId,
       parentGeneration,
       timestampMs,
-      children
+      children,
+      rootNativeSessionId
     );
     if (!child) continue;
     const index = children.findIndex((entry) => entry.childId === child.childId);
@@ -1103,7 +1110,8 @@ function mergeConversationChild(
     current.ownedId,
     parentGeneration,
     timestampMs,
-    current.children
+    current.children,
+    current.nativeSessionId
   );
   if (!child) return;
   if (index >= 0) current.children[index] = child;
@@ -1259,7 +1267,8 @@ export function applyConversationTranscript(
       provider,
       ownedId,
       current.generation,
-      0
+      0,
+      current.nativeSessionId
     ),
     transcript: transcriptMessages(snapshot.messages),
     timelineRevision: current.timelineRevision + 1

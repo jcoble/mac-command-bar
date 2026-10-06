@@ -509,7 +509,7 @@ impl AcpClient {
         if provider == AgentConversationProvider::Claude {
             request.client_capabilities.meta = Some(serde_json::Map::from_iter([(
                 "jetbrains".to_string(),
-                json!({"air": {"version": 1, "capabilities": ["asyncTasks"]}}),
+                json!({"air": {"version": 1, "capabilities": ["asyncTasks", "nativeSubagentSessions"]}}),
             )]));
         }
         let result = self.request("initialize", &request).await?;
@@ -1591,6 +1591,10 @@ while IFS= read -r line; do
         fi
       elif [ "$fixture" = "dies_midturn" ]; then
         exit 0
+      elif [ "$fixture" = "child_then_dies" ]; then
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"new-session","update":{{"sessionUpdate":"subagent_spawned","subagentSessionId":"child-agent","name":"Reviewer"}}}}}}\n'
+        sleep 0.01
+        exit 0
       elif [ "$fixture" = "reply_then_dies" ]; then
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"agent_message_chunk","messageId":"cut-off","content":{{"type":"text","text":"partial"}}}}}}}}\n'
         exit 0
@@ -1638,6 +1642,19 @@ while IFS= read -r line; do
               else
                 printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32000,"message":"invalid permission option"}}}}\n' "$id"
               fi
+              break ;;
+          esac
+        done
+      elif [ "$fixture" = "child_permission_after_parent" ]; then
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"new-session","update":{{"sessionUpdate":"subagent_spawned","subagentSessionId":"child-agent","name":"Reviewer"}}}}}}\n'
+        printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"sessionId":"child-agent","options":[{{"optionId":"allow","name":"Allow","kind":"allow_once"}},{{"optionId":"reject","name":"Reject","kind":"reject_once"}}]}}}}\n'
+        sleep 0.05
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
+        while IFS= read -r response; do
+          printf '%s\n' "$response" >> "$log"
+          case "$response" in
+            *'"id":77'*)
+              printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"new-session","update":{{"sessionUpdate":"subagent_state_update","subagentSessionId":"child-agent","state":"completed"}}}}}}\n'
               break ;;
           esac
         done
@@ -2162,7 +2179,10 @@ done"#,
         let frames = std::fs::read_to_string(&log).unwrap();
         let initialize = frames.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
             .find(|frame| frame["method"] == "initialize").unwrap();
-        assert_eq!(initialize["params"]["clientCapabilities"]["_meta"]["jetbrains"]["air"]["capabilities"], json!(["asyncTasks"]));
+        assert_eq!(
+            initialize["params"]["clientCapabilities"]["_meta"]["jetbrains"]["air"]["capabilities"],
+            json!(["asyncTasks", "nativeSubagentSessions"])
+        );
         assert!(frames.contains(r#""method":"session/set_model""#));
         assert!(frames.contains(r#""modelId":"claude-fable-5""#));
         assert!(frames.contains(r#""method":"session/set_mode""#));

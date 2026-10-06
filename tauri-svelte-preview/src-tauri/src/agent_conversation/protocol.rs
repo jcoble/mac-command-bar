@@ -489,6 +489,11 @@ pub enum AgentConversationPayload {
     ChildUpdate {
         child_id: String,
         parent_tool_call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_id: Option<String>,
+        /// Provider-durable transcript identity, distinct from resumed ACP generations.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         label: Option<String>,
         state: String,

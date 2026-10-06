@@ -192,11 +192,14 @@ export async function readChildConversationTranscript(input: {
   childTranscriptReads.set(input.ownedId, readToken);
   let snapshot: ConversationTranscriptSnapshot;
   try {
+    const transcriptId = getConversationSession(input.ownedId)?.children
+      .find((child) => child.childId === input.childSessionId)?.transcriptId
+      ?? input.childSessionId;
     snapshot = await invoke<ConversationTranscriptSnapshot>('read_agent_conversation_transcript', {
       ownedId: input.ownedId,
       provider: input.provider,
       nativeSessionId: input.nativeSessionId,
-      childSessionId: input.childSessionId
+      childSessionId: transcriptId
     });
   } catch (error) {
     const ownsRead = childTranscriptReads.get(input.ownedId) === readToken;

@@ -431,6 +431,8 @@ export type AgentConversationPayload =
       kind: 'childUpdate';
       childId: string;
       parentToolCallId: string;
+      parentId?: string;
+      transcriptId?: string;
       label?: string;
       state: string;
       latestActivity?: string;
@@ -578,6 +580,7 @@ export interface ConversationChildAgent {
   parentGeneration: number;
   parentId: string;
   parentToolCallId?: string;
+  transcriptId?: string;
   provider: AgentConversationProvider;
   title: string;
   state: string;

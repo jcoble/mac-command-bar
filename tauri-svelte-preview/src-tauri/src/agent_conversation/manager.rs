@@ -104,6 +104,16 @@ struct PendingPermission {
     wire_id: Value,
     options: Vec<PermissionOption>,
     summary: String,
+    child_scoped: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeChildSession {
+    parent_id: String,
+    transcript_id: String,
+    label: Option<String>,
+    state: String,
 }
 
 #[derive(Clone, Debug)]
@@ -187,6 +197,7 @@ pub struct ManagedAgentSession {
     child_rollout_scan: Option<tokio::task::JoinHandle<()>>,
     child_rollout_parent_path: Option<PathBuf>,
     codex_children: HashMap<String, CodexChildRollout>,
+    claude_children: HashMap<String, ClaudeChildSession>,
     rail_meta: AgentConversationSessionMeta,
     /// Where the current name came from: the first prompt, the helper model, or
     /// the person. A session recovered from a row written before this was
@@ -541,12 +552,15 @@ impl AgentRuntimeManager {
         else {
             return Ok(false);
         };
-        let session = recovered_session_from_row(&self.store, row)?;
+        let mut session = recovered_session_from_row(&self.store, row)?;
         let mut sessions = self
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        sessions.entry(owned_id.to_string()).or_insert(session);
+        if !sessions.contains_key(owned_id) {
+            disconnect_claude_children(&mut session, &self.emitter);
+            sessions.insert(owned_id.to_string(), session);
+        }
         Ok(true)
     }
 
@@ -1281,7 +1295,10 @@ impl AgentRuntimeManager {
                 return Ok((current.connection.clone(), None));
             }
         }
-        let prior = sessions.remove(&owned_id);
+        let mut prior = sessions.remove(&owned_id);
+        if let Some(session) = prior.as_mut() {
+            disconnect_claude_children(session, &self.emitter);
+        }
         let generation = prior
             .as_ref()
             .map(|session| session.generation.saturating_add(1))
@@ -1354,6 +1371,10 @@ impl AgentRuntimeManager {
                 child_rollout_scan: None,
                 child_rollout_parent_path: None,
                 codex_children: HashMap::new(),
+                claude_children: prior
+                    .as_ref()
+                    .map(|session| session.claude_children.clone())
+                    .unwrap_or_default(),
                 // A replacement generation is the same conversation, so it keeps
                 // the name it was given and where that name came from. Starting
                 // these empty wrote a blank over the stored row.
@@ -1640,9 +1661,11 @@ impl AgentRuntimeManager {
         normalize_codex_composite_config_update(provider, &started.config, &mut requested);
         // An obsolete approval id must not prevent valid saved model/effort
         // choices from being restored. Keep the adapter's advertised mode.
-        if requested.approval_policy.as_ref().is_some_and(|policy| {
-            !started.config.available_approval_policies.contains(policy)
-        }) {
+        if requested
+            .approval_policy
+            .as_ref()
+            .is_some_and(|policy| !started.config.available_approval_policies.contains(policy))
+        {
             requested.approval_policy = None;
         }
         if requested != AgentConversationConfigUpdate::default() {
@@ -1654,8 +1677,17 @@ impl AgentRuntimeManager {
             match configured {
                 Ok(config) => started.config = config,
                 Err(error) if requested.model.is_some() || requested.reasoning_effort.is_some() => {
-                    let _ = self.release_pool_scope(&pool_key, owned_id, Some(&started.native_session_id), false).await;
-                    return Err(format!("The selected model or effort could not be applied: {error}"));
+                    let _ = self
+                        .release_pool_scope(
+                            &pool_key,
+                            owned_id,
+                            Some(&started.native_session_id),
+                            false,
+                        )
+                        .await;
+                    return Err(format!(
+                        "The selected model or effort could not be applied: {error}"
+                    ));
                 }
                 Err(error) => crate::debug_log::stderr_log!(
                     "{owned_id}: the approval setting was not applied: {error}"
@@ -2197,12 +2229,13 @@ impl AgentRuntimeManager {
                 .ok_or_else(|| "Approval request is no longer pending".to_string())?;
             (pending, ordered_events, session.active_turn_id.is_some())
         };
-        let terminal_state = if turn_active {
+        let may_answer = turn_active || pending.child_scoped;
+        let terminal_state = if may_answer {
             permission_state(&pending.options, &selection)
         } else {
             ApprovalState::Declined
         };
-        let response = match if turn_active {
+        let response = match if may_answer {
             permission_response_for_selection(&pending.options, &selection)
         } else {
             Ok(serde_json::json!({ "outcome": { "outcome": "cancelled" } }))
@@ -2619,9 +2652,10 @@ impl AgentRuntimeManager {
                         Some(AdapterPoolKey::Isolated(AgentConversationProvider::Antigravity, _))
                     );
                 (
-                    session.native_session_id.clone().ok_or_else(|| {
-                        "Structured provider session has not started".to_string()
-                    })?,
+                    session
+                        .native_session_id
+                        .clone()
+                        .ok_or_else(|| "Structured provider session has not started".to_string())?,
                     Some(turn_id),
                     bounded_cancel,
                 )
@@ -2706,7 +2740,11 @@ impl AgentRuntimeManager {
         self.snapshot_for_request(owned_id, None, None)
     }
 
-    pub fn snapshot_since(&self, owned_id: &str, after: Option<i64>) -> Result<Option<AgentConversationSnapshot>, String> {
+    pub fn snapshot_since(
+        &self,
+        owned_id: &str,
+        after: Option<i64>,
+    ) -> Result<Option<AgentConversationSnapshot>, String> {
         self.snapshot_for_request(owned_id, None, after)
     }
 
@@ -4022,6 +4060,8 @@ struct StoredSessionExtra {
     capabilities: AgentCapabilities,
     #[serde(default)]
     rail_meta: AgentConversationSessionMeta,
+    #[serde(default)]
+    claude_children: HashMap<String, ClaudeChildSession>,
 }
 
 /// The stored metadata an imported conversation starts life with.
@@ -4042,6 +4082,7 @@ pub(super) fn imported_session_extra(
         config: AgentConversationConfigState::default(),
         capabilities: empty_capabilities(provider),
         rail_meta: AgentConversationSessionMeta::default(),
+        claude_children: HashMap::new(),
     })
     .map_err(|error| format!("Could not encode imported session metadata: {error}"))
 }
@@ -4064,6 +4105,7 @@ fn persisted_session_row_for_candidate(
         config: session.config.clone(),
         capabilities: candidate.capabilities.clone(),
         rail_meta: session.rail_meta.clone(),
+        claude_children: session.claude_children.clone(),
     };
     Ok(SessionRow {
         owned_id: session.owned_id.clone(),
@@ -4219,6 +4261,7 @@ fn recovered_session_from_row(
         child_rollout_scan: None,
         child_rollout_parent_path: None,
         codex_children: HashMap::new(),
+        claude_children: stored.claude_children,
         rail_meta: stored.rail_meta,
         title_source: row.title_source,
         suspending: false,
@@ -4739,7 +4782,7 @@ async fn pump_inbound(
         let emitter = Arc::clone(&manager.emitter);
         match inbound {
             AcpInbound::SessionUpdate(params) => {
-                let runtime_error = raw_update_failed(&params);
+                let mut runtime_error = raw_update_failed(&params);
                 let reached_quiescence = 'update: {
                     let mut sessions = sessions
                         .lock()
@@ -4748,6 +4791,37 @@ async fn pump_inbound(
                     else {
                         return;
                     };
+                    let child_content = is_known_claude_child_inbound(session, &params);
+                    if child_content
+                        || matches!(
+                            session_update_kind(&params),
+                            Some("subagent_spawned" | "subagent_state_update")
+                        )
+                    {
+                        runtime_error = false;
+                    }
+                    if let Some(payload) = claude_native_child_payload(session, &params) {
+                        let reached_quiescence = session_is_quiescent(session);
+                        if session.writer_lease.owner == AgentWriterLeaseOwner::Structured {
+                            if let Err(error) =
+                                record_payload_for_session_and_dispatch(session, &emitter, payload)
+                            {
+                                crate::debug_log::stderr_log!(
+                                    "Could not record Claude child lifecycle: {error}"
+                                );
+                            }
+                        } else if let Err(error) = persist_session(session) {
+                            crate::debug_log::stderr_log!(
+                                "Could not persist Claude child lifecycle: {error}"
+                            );
+                        }
+                        break 'update reached_quiescence;
+                    }
+                    // Native child content belongs to the child's provider transcript.
+                    // The parent journal carries only spawn/state metadata.
+                    if child_content {
+                        break 'update false;
+                    }
                     let mut reached_quiescence = update_raw_liveness(session, &params);
                     if let Some(payload) = stopped_background_task_payload(&mut session.background_work, &params) {
                         reached_quiescence |= session_is_quiescent(session);
@@ -4949,12 +5023,14 @@ async fn pump_inbound(
                     continue;
                 }
                 let request_id = format!("perm-{}", uuid::Uuid::new_v4());
+                let child_scoped = is_known_claude_child_inbound(session, &params);
                 session.permission_requests.insert(
                     request_id.clone(),
                     PendingPermission {
                         wire_id,
                         options,
                         summary: summary.clone(),
+                        child_scoped,
                     },
                 );
                 let lifecycle = lifecycle_update_for_state(
@@ -5031,6 +5107,7 @@ async fn settle_closed_transport(
                     },
                 );
             }
+            disconnect_claude_children(session, &emitter);
             for item_id in session.background_work.drain().collect::<Vec<_>>() {
                 if item_id.starts_with("background-task:") {
                     let _ = record_payload_for_session_and_dispatch(
@@ -5040,7 +5117,9 @@ async fn settle_closed_transport(
                             item_id,
                             name: String::new(),
                             state: ToolState::Failed,
-                            summary: Some("Background command stopped when the adapter disconnected".into()),
+                            summary: Some(
+                                "Background command stopped when the adapter disconnected".into(),
+                            ),
                             output: None,
                             path: None,
                             diff: None,
@@ -5101,14 +5180,7 @@ fn routed_session_for_inbound(
         AcpInbound::SessionUpdate(params) | AcpInbound::AgentRequest { params, .. } => Some(params),
         AcpInbound::TransportClosed { .. } => None,
     };
-    let native_session_id = params.and_then(|params| {
-        params
-            .get("sessionId")
-            .or_else(|| params.get("session_id"))
-            .or_else(|| params.pointer("/update/sessionId"))
-            .or_else(|| params.pointer("/update/session_id"))
-            .and_then(Value::as_str)
-    });
+    let native_session_id = params.and_then(inbound_native_session_id);
     let matching_transport = |session: &&ManagedAgentSession| {
         session
             .transport
@@ -5119,7 +5191,11 @@ fn routed_session_for_inbound(
         return sessions
             .values()
             .filter(matching_transport)
-            .find(|session| session.native_session_id.as_deref() == Some(native_session_id))
+            .find(|session| {
+                session.native_session_id.as_deref() == Some(native_session_id)
+                    || session.claude_children.contains_key(native_session_id)
+                    || is_claude_replay_session_id(session, native_session_id)
+            })
             .map(|session| (session.owned_id.clone(), session.generation));
     }
     let matching = sessions
@@ -5137,6 +5213,153 @@ fn routed_session_for_inbound(
         .next()
         .is_none()
         .then(|| (session.owned_id.clone(), session.generation))
+}
+
+fn inbound_native_session_id(params: &Value) -> Option<&str> {
+    params
+        .get("sessionId")
+        .or_else(|| params.get("session_id"))
+        .or_else(|| params.pointer("/update/sessionId"))
+        .or_else(|| params.pointer("/update/session_id"))
+        .and_then(Value::as_str)
+}
+
+fn is_known_claude_child_inbound(session: &ManagedAgentSession, params: &Value) -> bool {
+    inbound_native_session_id(params)
+        .is_some_and(|session_id| {
+            session.claude_children.contains_key(session_id)
+                || is_claude_replay_session_id(session, session_id)
+        })
+}
+
+fn is_claude_replay_session_id(session: &ManagedAgentSession, session_id: &str) -> bool {
+    session.provider == AgentConversationProvider::Claude
+        && session.native_session_id.as_deref().is_some_and(|root_id| {
+            session_id.starts_with(&format!("{root_id}:replay-subagent:"))
+        })
+}
+
+fn claude_native_child_payload(
+    session: &mut ManagedAgentSession,
+    params: &Value,
+) -> Option<AgentConversationPayload> {
+    if session.provider != AgentConversationProvider::Claude {
+        return None;
+    }
+    let update = params.get("update").unwrap_or(params);
+    let kind = session_update_kind(params)?;
+    if !matches!(kind, "subagent_spawned" | "subagent_state_update") {
+        return None;
+    }
+    let child_id = update
+        .get("subagentSessionId")
+        .or_else(|| update.get("subagent_session_id"))
+        .and_then(Value::as_str)?
+        .to_string();
+    if is_claude_replay_session_id(session, &child_id) {
+        return None;
+    }
+    let parent_id = inbound_native_session_id(params)?.to_string();
+    let existing = session.claude_children.get(&child_id);
+    let transcript_id = existing
+        .map(|child| child.transcript_id.clone())
+        .unwrap_or_else(|| durable_claude_agent_id(&child_id).to_string());
+    let label = update
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| existing.and_then(|child| child.label.clone()));
+    let state = if kind == "subagent_spawned" {
+        "running".to_string()
+    } else {
+        match update
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("running")
+        {
+            "completed" => "finished".to_string(),
+            other => other.to_string(),
+        }
+    };
+    let terminal = matches!(
+        state.as_str(),
+        "finished" | "failed" | "cancelled" | "disconnected"
+    );
+    let work_id = format!("claude-child:{child_id}");
+    if terminal {
+        session.background_work.remove(&work_id);
+    } else {
+        session.background_work.insert(work_id);
+    }
+    session.claude_children.insert(
+        child_id.clone(),
+        ClaudeChildSession {
+            parent_id: parent_id.clone(),
+            transcript_id: transcript_id.clone(),
+            label: label.clone(),
+            state: state.clone(),
+        },
+    );
+    Some(AgentConversationPayload::ChildUpdate {
+        child_id,
+        parent_tool_call_id: parent_id.clone(),
+        parent_id: Some(parent_id),
+        transcript_id: Some(transcript_id),
+        label,
+        state,
+        latest_activity: update
+            .get("task")
+            .and_then(Value::as_str)
+            .map(|value| value.chars().take(160).collect()),
+    })
+}
+
+fn durable_claude_agent_id(session_id: &str) -> &str {
+    session_id
+        .rsplit_once(":generation:")
+        .filter(|(_, generation)| {
+            !generation.is_empty() && generation.chars().all(|ch| ch.is_ascii_digit())
+        })
+        .map(|(agent_id, _)| agent_id)
+        .unwrap_or(session_id)
+}
+
+fn disconnect_claude_children(
+    session: &mut ManagedAgentSession,
+    emitter: &Arc<Mutex<Option<ConversationEmitter>>>,
+) {
+    let active = session
+        .claude_children
+        .iter()
+        .filter(|(_, child)| {
+            !matches!(
+                child.state.as_str(),
+                "finished" | "failed" | "cancelled" | "disconnected"
+            )
+        })
+        .map(|(child_id, child)| (child_id.clone(), child.clone()))
+        .collect::<Vec<_>>();
+    for (child_id, child) in active {
+        if let Some(stored) = session.claude_children.get_mut(&child_id) {
+            stored.state = "disconnected".to_string();
+        }
+        session.background_work.remove(&format!("claude-child:{child_id}"));
+        let _ = record_payload_for_session_and_dispatch(
+            session,
+            emitter,
+            AgentConversationPayload::ChildUpdate {
+                child_id,
+                parent_tool_call_id: child.parent_id.clone(),
+                parent_id: Some(child.parent_id),
+                transcript_id: Some(child.transcript_id),
+                label: child.label,
+                state: "disconnected".to_string(),
+                latest_activity: None,
+            },
+        );
+    }
 }
 
 fn update_raw_liveness(session: &mut ManagedAgentSession, params: &Value) -> bool {
@@ -5433,6 +5656,8 @@ fn changed_child_updates(
         updates.push(AgentConversationPayload::ChildUpdate {
             child_id: child.child_id.clone(),
             parent_tool_call_id: parent_id.to_string(),
+            parent_id: None,
+            transcript_id: None,
             label: Some(child.label.clone()),
             state: child.state.clone(),
             latest_activity: Some(child.latest_activity.clone()),
@@ -5562,7 +5787,8 @@ async fn handle_ordered_session_event(
                     return true;
                 }
                 abort_cancel_deadline(session);
-                let pending_permissions = session.permission_requests.drain().collect::<Vec<_>>();
+                let pending_permissions =
+                    drain_root_permissions(&mut session.permission_requests);
                 for (request_id, pending) in &pending_permissions {
                     if let Err(error) = record_payload_for_session_and_dispatch(
                         session,
@@ -5828,6 +6054,21 @@ fn permission_state(
             .map(|_| ApprovalState::Accepted)
             .unwrap_or(ApprovalState::Declined),
     }
+}
+
+fn drain_root_permissions(
+    permissions: &mut HashMap<String, PendingPermission>,
+) -> Vec<(String, PendingPermission)> {
+    let mut drained = Vec::new();
+    permissions.retain(|request_id, pending| {
+        if pending.child_scoped {
+            true
+        } else {
+            drained.push((request_id.clone(), pending.clone()));
+            false
+        }
+    });
+    drained
 }
 
 fn is_allow_kind(kind: &str) -> bool {
@@ -6133,15 +6374,6 @@ fn payload_from_session_update_for_turn(
     {
         return child_update_payload(update, kind);
     }
-    if matches!(kind, "tool_call" | "tool_call_update")
-        && update
-            .pointer("/_meta/claudeCode/toolName")
-            .and_then(Value::as_str)
-            == Some("Task")
-    {
-        return task_child_update_payload(update, kind);
-    }
-
     match kind {
         "available_commands_update" | "available-commands-update" => {
             Some(AgentConversationPayload::AvailableCommandsUpdate {
@@ -6310,65 +6542,12 @@ fn child_update_payload(update: &Value, update_kind: &str) -> Option<AgentConver
     Some(AgentConversationPayload::ChildUpdate {
         child_id,
         parent_tool_call_id,
+        parent_id: None,
+        transcript_id: None,
         label,
         state: if terminal { "finished" } else { "running" }.into(),
         latest_activity,
     })
-}
-
-fn task_child_update_payload(
-    update: &Value,
-    update_kind: &str,
-) -> Option<AgentConversationPayload> {
-    let tool_call_id = update
-        .get("toolCallId")
-        .or_else(|| update.get("tool_call_id"))
-        .and_then(Value::as_str)?
-        .to_string();
-    let label = update
-        .get("title")
-        .and_then(Value::as_str)
-        .and_then(|title| title.lines().next())
-        .map(str::trim)
-        .filter(|title| !title.is_empty())
-        .map(str::to_string);
-    // A background agent writes its id into the body of the result, under the
-    // line that says it started. Reading only the first line loses it, and the
-    // child is then filed under the tool call rather than under the agent.
-    let activity = tool_details(update).output;
-    let async_child_id = activity.as_deref().and_then(async_agent_id);
-    let is_async = async_child_id.is_some();
-    let terminal = !is_async
-        && update_kind == "tool_call_update"
-        && matches!(
-            update.get("status").and_then(Value::as_str),
-            Some("completed" | "failed" | "cancelled" | "canceled" | "stopped" | "done")
-        );
-    let child_id = async_child_id.unwrap_or_else(|| tool_call_id.clone());
-    let label = label.or_else(|| is_async.then(|| format!("Background agent {child_id}")));
-    let latest_activity = activity
-        .or_else(|| label.clone())
-        .map(|text: String| text.chars().take(160).collect());
-
-    Some(AgentConversationPayload::ChildUpdate {
-        child_id,
-        parent_tool_call_id: tool_call_id,
-        label,
-        state: if terminal { "finished" } else { "running" }.into(),
-        latest_activity,
-    })
-}
-
-fn async_agent_id(text: &str) -> Option<String> {
-    let mut lines = text.lines();
-    if lines.next()? != "Async agent launched successfully." {
-        return None;
-    }
-    lines
-        .find_map(|line| line.strip_prefix("agentId:"))
-        .and_then(|value| value.split_whitespace().next())
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
 }
 
 fn is_replay_session_update(params: &Value) -> bool {
@@ -7036,6 +7215,8 @@ mod tests {
             vec![AgentConversationPayload::ChildUpdate {
                 child_id: "child-1".into(),
                 parent_tool_call_id: "parent".into(),
+                parent_id: None,
+                transcript_id: None,
                 label: Some("probe (explore)".into()),
                 state: "running".into(),
                 latest_activity: Some("Running".into()),
@@ -7068,6 +7249,8 @@ mod tests {
             vec![AgentConversationPayload::ChildUpdate {
                 child_id: "child-1".into(),
                 parent_tool_call_id: "parent".into(),
+                parent_id: None,
+                transcript_id: None,
                 label: Some("probe (explore)".into()),
                 state: "running".into(),
                 latest_activity: Some("Running".into()),
@@ -7082,6 +7265,8 @@ mod tests {
             vec![AgentConversationPayload::ChildUpdate {
                 child_id: "child-1".into(),
                 parent_tool_call_id: "parent".into(),
+                parent_id: None,
+                transcript_id: None,
                 label: Some("probe (explore)".into()),
                 state: "finished".into(),
                 latest_activity: Some("Finished".into()),
@@ -7440,6 +7625,8 @@ mod tests {
             Some(AgentConversationPayload::ChildUpdate {
                 child_id: "child-session-1".into(),
                 parent_tool_call_id: "parent-tool-1".into(),
+                parent_id: None,
+                transcript_id: None,
                 label: Some("Review the change".into()),
                 state: "running".into(),
                 latest_activity: Some("Review the change".into()),
@@ -7455,6 +7642,8 @@ mod tests {
             Some(AgentConversationPayload::ChildUpdate {
                 child_id: "child-session-1".into(),
                 parent_tool_call_id: "parent-tool-1".into(),
+                parent_id: None,
+                transcript_id: None,
                 label: None,
                 state: "finished".into(),
                 latest_activity: Some("Review complete".into()),
@@ -7648,88 +7837,306 @@ mod tests {
         );
     }
 
-    #[test]
-    fn task_tool_call_maps_to_running_child() {
-        let task = json!({ "sessionId": "s", "update": {
-            "sessionUpdate": "tool_call",
-            "toolCallId": "task-tool-1",
-            "title": "Review the change",
-            "kind": "think",
-            "status": "pending",
-            "content": [{ "type": "content", "content": {
-                "type": "text", "text": "Inspect the implementation"
-            }}],
-            "rawInput": { "description": "Review the change", "subagent_type": "Explore" },
-            "_meta": { "claudeCode": { "toolName": "Task" } }
-        }});
-
-        assert_eq!(
-            payload_from_session_update_for_turn(&task, None),
-            Some(AgentConversationPayload::ChildUpdate {
-                child_id: "task-tool-1".into(),
-                parent_tool_call_id: "task-tool-1".into(),
-                label: Some("Review the change".into()),
-                state: "running".into(),
-                latest_activity: Some("Inspect the implementation".into()),
-            })
-        );
-    }
-
-    #[test]
-    fn task_terminal_update_maps_to_finished_child() {
-        for (status, activity) in [
-            ("completed", "Review complete"),
-            ("failed", "Review failed"),
-        ] {
-            let task = json!({ "sessionId": "s", "update": {
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": "task-tool-1",
-                "status": status,
-                "content": [{ "type": "content", "content": {
-                    "type": "text", "text": activity
-                }}],
-                "_meta": { "claudeCode": { "toolName": "Task" } }
-            }});
-
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_native_children_keep_routing_and_transcript_identities_separate() {
+        let fixture = fixture_manager_with_provider(
+            "native_claude_children",
+            AgentConversationProvider::Claude,
+            None,
+        )
+        .await;
+        let (transport, replay_id) = {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            let root_session_id = session.native_session_id.clone().unwrap();
+            let replay_id = format!("{root_session_id}:replay-subagent:tool-1");
+            let replayed = json!({
+                "sessionId": root_session_id,
+                "update": {
+                    "sessionUpdate": "subagent_spawned",
+                    "subagentSessionId": replay_id,
+                    "name": "Imported child"
+                }
+            });
+            assert!(claude_native_child_payload(session, &replayed).is_none());
+            assert!(session.claude_children.is_empty());
+            assert!(is_known_claude_child_inbound(
+                session,
+                &json!({
+                    "sessionId": replay_id,
+                    "update": { "sessionUpdate": "agent_message_chunk" }
+                })
+            ));
+            let spawned = json!({
+                "sessionId": root_session_id,
+                "update": {
+                    "sessionUpdate": "subagent_spawned",
+                    "subagentSessionId": "agent-a",
+                    "name": "Reviewer",
+                    "task": "Review the patch"
+                }
+            });
             assert_eq!(
-                payload_from_session_update_for_turn(&task, None),
+                claude_native_child_payload(session, &spawned),
                 Some(AgentConversationPayload::ChildUpdate {
-                    child_id: "task-tool-1".into(),
-                    parent_tool_call_id: "task-tool-1".into(),
-                    label: None,
-                    state: "finished".into(),
-                    latest_activity: Some(activity.into()),
+                    child_id: "agent-a".into(),
+                    parent_tool_call_id: root_session_id.clone(),
+                    parent_id: Some(root_session_id.clone()),
+                    transcript_id: Some("agent-a".into()),
+                    label: Some("Reviewer".into()),
+                    state: "running".into(),
+                    latest_activity: Some("Review the patch".into()),
                 })
             );
-        }
+            let nested = json!({
+                "sessionId": "agent-a",
+                "update": {
+                    "sessionUpdate": "subagent_spawned",
+                    "subagentSessionId": "agent-b:generation:2",
+                    "name": "Researcher"
+                }
+            });
+            let nested_payload = claude_native_child_payload(session, &nested).unwrap();
+            assert!(matches!(
+                nested_payload,
+                AgentConversationPayload::ChildUpdate {
+                    child_id,
+                    parent_id: Some(parent_id),
+                    transcript_id: Some(transcript_id),
+                    ..
+                } if child_id == "agent-b:generation:2"
+                    && parent_id == "agent-a"
+                    && transcript_id == "agent-b"
+            ));
+            assert_eq!(session.background_work.len(), 2);
+            let child_content = json!({
+                "sessionId": "agent-b:generation:2",
+                "update": { "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "private child content" } }
+            });
+            assert!(is_known_claude_child_inbound(session, &child_content));
+            assert!(claude_native_child_payload(session, &child_content).is_none());
+            for (parent, child) in [
+                ("agent-a", "agent-b:generation:2"),
+                (root_session_id.as_str(), "agent-a"),
+            ] {
+                let completed = json!({
+                    "sessionId": parent,
+                    "update": {
+                        "sessionUpdate": "subagent_state_update",
+                        "subagentSessionId": child,
+                        "state": "completed"
+                    }
+                });
+                assert!(claude_native_child_payload(session, &completed).is_some());
+            }
+            assert!(session.background_work.is_empty());
+            let still_running = json!({
+                "sessionId": root_session_id,
+                "update": {
+                    "sessionUpdate": "subagent_spawned",
+                    "subagentSessionId": "agent-c",
+                    "name": "Late reviewer"
+                }
+            });
+            assert!(claude_native_child_payload(session, &still_running).is_some());
+            disconnect_claude_children(session, &fixture.manager.emitter);
+            assert_eq!(session.claude_children["agent-c"].state, "disconnected");
+            assert!(session.background_work.is_empty());
+            (session.transport.clone().unwrap(), replay_id)
+        };
+
+        let sessions = fixture.manager.sessions.lock().unwrap();
+        assert_eq!(
+            routed_session_for_inbound(
+                &sessions,
+                &transport,
+                &AcpInbound::SessionUpdate(json!({
+                    "sessionId": "agent-b:generation:2",
+                    "update": { "sessionUpdate": "agent_message_chunk" }
+                }))
+            ),
+            Some((fixture.owned_id.clone(), fixture.generation))
+        );
+        assert_eq!(
+            routed_session_for_inbound(
+                &sessions,
+                &transport,
+                &AcpInbound::SessionUpdate(json!({
+                    "sessionId": replay_id,
+                    "update": { "sessionUpdate": "agent_message_chunk" }
+                }))
+            ),
+            Some((fixture.owned_id.clone(), fixture.generation))
+        );
+        drop(sessions);
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
     }
 
-    #[test]
-    fn async_task_launch_maps_agent_id_to_running_child() {
-        let task = json!({ "sessionId": "s", "update": {
-            "sessionUpdate": "tool_call_update",
-            "toolCallId": "task-tool-2",
-            "title": "Investigate startup",
-            "status": "completed",
-            "content": [{ "type": "content", "content": {
-                "type": "text",
-                "text": "Async agent launched successfully.\nagentId: ad9a1e2 (internal ID 123)\noutput_file: /private/tmp/task.output"
-            }}],
-            "_meta": { "claudeCode": { "toolName": "Task" } }
-        }});
-
-        assert_eq!(
-            payload_from_session_update_for_turn(&task, None),
-            Some(AgentConversationPayload::ChildUpdate {
-                child_id: "ad9a1e2".into(),
-                parent_tool_call_id: "task-tool-2".into(),
-                label: Some("Investigate startup".into()),
-                state: "running".into(),
-                latest_activity: Some(
-                    "Async agent launched successfully.\nagentId: ad9a1e2 (internal ID 123)\noutput_file: /private/tmp/task.output".into()
-                ),
+    #[tokio::test(flavor = "current_thread")]
+    async fn child_permission_uses_original_wire_id_after_parent_completion() {
+        let fixture = fixture_manager_with_provider(
+            "child_permission_after_parent",
+            AgentConversationProvider::Claude,
+            None,
+        )
+        .await;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await
+            .expect("prompt starts");
+        wait_until(|| {
+            let events = seen.lock().unwrap();
+            events.iter().any(|event| {
+                matches!(
+                    event.payload,
+                    AgentConversationPayload::Turn {
+                        state: super::super::protocol::TurnState::Completed,
+                        ..
+                    }
+                )
+            }) && events.iter().any(|event| {
+                matches!(
+                    event.payload,
+                    AgentConversationPayload::Approval {
+                        state: ApprovalState::Requested,
+                        ..
+                    }
+                )
             })
-        );
+        })
+        .await;
+        {
+            let events = seen.lock().unwrap();
+            let requested_sequence = events
+                .iter()
+                .find(|event| {
+                    matches!(
+                        event.payload,
+                        AgentConversationPayload::Approval {
+                            state: ApprovalState::Requested,
+                            ..
+                        }
+                    )
+                })
+                .unwrap()
+                .sequence;
+            let completed_sequence = events
+                .iter()
+                .find(|event| {
+                    matches!(
+                        event.payload,
+                        AgentConversationPayload::Turn {
+                            state: super::super::protocol::TurnState::Completed,
+                            ..
+                        }
+                    )
+                })
+                .unwrap()
+                .sequence;
+            assert!(requested_sequence < completed_sequence);
+        }
+        let request_id = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|event| match &event.payload {
+                AgentConversationPayload::Approval {
+                    request_id,
+                    state: ApprovalState::Requested,
+                    ..
+                } => Some(request_id.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(fixture
+            .manager
+            .sessions
+            .lock()
+            .unwrap()[&fixture.owned_id]
+            .active_turn_id
+            .is_none());
+        fixture
+            .manager
+            .respond_legacy_approval(
+                &fixture.owned_id,
+                fixture.generation,
+                request_id,
+                super::super::protocol::ApprovalDecision::Accept,
+            )
+            .await
+            .expect("child permission response");
+        wait_until(|| {
+            fs::read_to_string(fixture.root.join("child_permission_after_parent.jsonl"))
+                .is_ok_and(|log| {
+                    log.contains(r#""id":77"#)
+                        && log.contains(r#""outcome":{"outcome":"selected","optionId":"allow""#)
+                })
+        })
+        .await;
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transport_close_disconnects_running_claude_children() {
+        let fixture = fixture_manager_with_provider(
+            "child_then_dies",
+            AgentConversationProvider::Claude,
+            None,
+        )
+        .await;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await
+            .expect("prompt starts");
+        wait_until(|| {
+            seen.lock().unwrap().iter().any(|event| {
+                matches!(
+                    &event.payload,
+                    AgentConversationPayload::ChildUpdate {
+                        child_id,
+                        state,
+                        ..
+                    } if child_id == "child-agent" && state == "disconnected"
+                )
+            })
+        })
+        .await;
+        {
+            let sessions = fixture.manager.sessions.lock().unwrap();
+            let session = &sessions[&fixture.owned_id];
+            assert_eq!(session.claude_children["child-agent"].state, "disconnected");
+            assert!(session.background_work.is_empty());
+        }
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
     }
 
     #[test]
@@ -9073,6 +9480,7 @@ mod tests {
                     wire_id: json!(1),
                     options: Vec::new(),
                     summary: "Pending permission".into(),
+                    child_scoped: false,
                 },
             );
 
@@ -9717,7 +10125,11 @@ mod tests {
         }
         let output = fixture.root.join("background.output");
         for (code, expected) in [(0, ToolState::Completed), (7, ToolState::Failed)] {
-            fs::write(&output, format!("command output\n\n[exited with code {code}]\n")).unwrap();
+            fs::write(
+                &output,
+                format!("command output\n\n[exited with code {code}]\n"),
+            )
+            .unwrap();
             let stopped = serde_json::json!({"update": {
                 "sessionUpdate": "async_task_state_update", "asyncTaskId": "task-1",
                 "state": "stopped", "outputFilePath": output
