@@ -219,8 +219,12 @@
   function hostRect(): { x: number; y: number; width: number; height: number } | null {
     if (!pageHost || typeof window === 'undefined') return null;
     const rect = pageHost.getBoundingClientRect();
-    if (rect.width < 1 || rect.height < 1) return null;
-    const measured = { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+    // A grid squeezed below its columns' minimums runs past the frame, which
+    // clips the pane's DOM at its edge (under the drawer). The view is cut there too.
+    const frame = pageHost.closest<HTMLElement>('.shell-frame')?.getBoundingClientRect();
+    const width = (frame ? Math.min(rect.right, frame.right) : rect.right) - rect.left;
+    if (width < 1 || rect.height < 1) return null;
+    const measured = { x: rect.left, y: rect.top, width, height: rect.height };
     const toolsHost = pageHost.closest<HTMLElement>('.shell-region-host-tools');
     const centerHost = document.querySelector<HTMLElement>('.shell-region-host-center');
     if (!toolsHost || !centerHost) return null;
@@ -683,8 +687,9 @@
     if (chromeHost) observer.observe(chromeHost);
     // The pane can move without resizing (it sits at its minimum width while
     // the drawer opens or the sessions column folds). Its left edge is the
-    // width of the two cells before it, so a change there re-measures too.
-    for (const cell of document.querySelectorAll('.shell-region-host-sessions, .shell-region-host-center')) {
+    // width of the two cells before it, so a change there re-measures too, as
+    // does the frame whose edge clips it.
+    for (const cell of document.querySelectorAll('.shell-region-host-sessions, .shell-region-host-center, .shell-frame')) {
       observer.observe(cell);
     }
     return () => observer.disconnect();

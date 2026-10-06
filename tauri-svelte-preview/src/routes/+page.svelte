@@ -91,6 +91,19 @@
 	let toolsRailWidth = $state(0);
 	let pullRequestDiff = $state<OpenPullRequestDiffRequest | null>(null);
 	let routeDisposal: Promise<void> | null = null;
+	/** The right drawer's card width; its left edge drags it between these. */
+	const DRAWER_MIN_WIDTH = 240;
+	const DRAWER_MAX_WIDTH = 640;
+	let drawerWidth = $state(320);
+	let drawerDrag: { x: number; width: number } | null = null;
+
+	/**
+	 * Any open menu, list, card or dialog. The browser page is a native view
+	 * painted above every DOM layer, so it steps aside (hidden, still live)
+	 * while one is up. Tooltips are left out on purpose.
+	 */
+	const POPUP_SELECTOR = '[role="dialog"], [role="alertdialog"], [role="menu"], [data-select-content], dialog[open], [data-testid="usage-live-quota"]';
+	let popupOpen = $state(false);
 
 	async function changeSessionStatus(ownedId: string, status: 'working' | 'done' | 'settled'): Promise<void> {
 		const before = selection.railOwned.find((session) => session.ownedId === ownedId);
@@ -178,6 +191,11 @@
 	});
 
 	onMount(() => {
+		// Popups mount and unmount as DOM nodes, wherever they are drawn.
+		const popups = new MutationObserver(() => {
+			popupOpen = document.querySelector(POPUP_SELECTOR) !== null;
+		});
+		popups.observe(document.body, { childList: true, subtree: true });
 		const historyStop = new AbortController();
 		const releaseSessionRowJump = registerSessionRowJumpTarget({
 			selectSession,
@@ -232,6 +250,7 @@
 		void historyHost.rescan(historyStop.signal);
 
 		return () => {
+			popups.disconnect();
 			historyStop.abort();
 			historyHost.release();
 			releaseSessionRowJump();
@@ -506,9 +525,9 @@
 		</div>
 		<div class="pane-body" class:showing={paneShowing && topTabs.activeKind === "browser"}>
 			<!-- The page is a native view painted above every DOM layer, so it
-			     steps aside (hidden, still live) while Settings covers the window. -->
+			     steps aside (hidden, still live) while Settings or a popup is up. -->
 			<BrowserPanel
-				visible={paneShowing && topTabs.activeKind === "browser" && toolsRailWidth > 0 && !overlays?.settingsOpen()}
+				visible={paneShowing && topTabs.activeKind === "browser" && toolsRailWidth > 0 && !overlays?.settingsOpen() && !popupOpen}
 				panelOpen={paneShowing}
 				root={browserRoot}
 				ownedId={selection.activeOwnedId}
@@ -550,7 +569,7 @@
 	class="next-shell"
 	style:--sessions-rail-width={`${sessionsRailWidth}px`}
 	style:--tools-rail-width={`${toolsRailWidth}px`}
-	style:--drawer-width={workbench.rightPanelOpen ? "326px" : "0px"}
+	style:--drawer-width={workbench.rightPanelOpen ? `${drawerWidth + 6}px` : "0px"}
 	oncontextmenu={(event) => {
 		const target = event.target instanceof Element ? event.target : null;
 		if (target?.closest('input, textarea, [contenteditable="true"]')) return;
@@ -597,7 +616,22 @@
 		</div>
 		<!-- Closing hides the drawer rather than unmounting it (measured: unmounting
 		     saved no memory and made reopening slower). Hidden, it takes no width. -->
-		<aside class="right-drawer" class:open={workbench.rightPanelOpen} aria-label="Tools" aria-hidden={!workbench.rightPanelOpen}>
+		<aside class="right-drawer" class:open={workbench.rightPanelOpen} style:flex-basis={`${drawerWidth}px`} aria-label="Tools" aria-hidden={!workbench.rightPanelOpen}>
+			<div
+				class="right-drawer-resize"
+				role="separator"
+				aria-orientation="vertical"
+				aria-label="Resize the drawer"
+				onpointerdown={(event) => {
+					event.currentTarget.setPointerCapture(event.pointerId);
+					drawerDrag = { x: event.clientX, width: drawerWidth };
+				}}
+				onpointermove={(event) => {
+					if (drawerDrag) drawerWidth = Math.min(DRAWER_MAX_WIDTH, Math.max(DRAWER_MIN_WIDTH, drawerDrag.width + drawerDrag.x - event.clientX));
+				}}
+				onpointerup={() => (drawerDrag = null)}
+				onpointercancel={() => (drawerDrag = null)}
+			></div>
 			<RightPanelTabs
 				activeId={workbench.rightTab}
 				extraId={workbench.rightExtraTab}
@@ -655,7 +689,8 @@
 	}
 
 	/* The drawer is a card in the same gutter as the frame's own cards; its
-	   320px plus the 6px gutter is the --drawer-width the chrome row adds. The
+	   width (320px until its left edge is dragged) plus the 6px gutter is the
+	   --drawer-width the chrome row adds. The
 	   column takes its full width at once (an animated width would lay the
 	   whole frame out again every frame); only the card slides in, and the
 	   animation ends. Closed, it is display:none and releases its width. */
@@ -664,6 +699,7 @@
 		flex: 0 0 320px;
 		flex-direction: column;
 		min-height: 0;
+		position: relative;
 		margin: 6px 6px 6px 0;
 		border-radius: var(--radius-sm);
 		overflow: hidden;
@@ -687,6 +723,15 @@
 		.right-drawer.open {
 			animation: none;
 		}
+	}
+
+	.right-drawer-resize {
+		position: absolute;
+		inset: 0 auto 0 0;
+		z-index: 1;
+		width: 6px;
+		cursor: col-resize;
+		touch-action: none;
 	}
 
 	.right-drawer-body {
