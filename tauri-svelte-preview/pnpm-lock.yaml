@@ -8,6 +8,9 @@ patchedDependencies:
   '@keenmate/svelte-treeview@4.8.0':
     hash: 3de2051c6bf236ed156980aa27d669a0a9000a58d95f94a0c35da4b9c5bba49a
     path: patches/@keenmate__svelte-treeview@4.8.0.patch
+  '@tanstack/ai-svelte@0.24.3':
+    hash: 591f13c78fa2252eb9e77e2d4e9a57cb39699f685e45b9d432bf13fd7bf9e0aa
+    path: patches/@tanstack__ai-svelte@0.24.3.patch
   bits-ui@2.18.1:
     hash: af0df22c3b2624c919abaaab29e2523b089a321860ec99b256da65b6d6ffd684
     path: patches/bits-ui@2.18.1.patch
@@ -111,7 +114,7 @@ importers:
         version: 0.63.0(zod@4.6.5)
       '@tanstack/ai-svelte':
         specifier: 0.24.3
-        version: 0.24.3(@tanstack/ai@0.63.0(zod@4.6.5))(svelte@5.56.3)(zod@4.6.5)
+        version: 0.24.3(patch_hash=591f13c78fa2252eb9e77e2d4e9a57cb39699f685e45b9d432bf13fd7bf9e0aa)(@tanstack/ai@0.63.0(zod@4.6.5))(svelte@5.56.3)(zod@4.6.5)
       '@tanstack/svelte-virtual':
         specifier: 3.13.35
         version: 3.13.35(svelte@5.56.3)
@@ -2751,7 +2754,7 @@ snapshots:
     dependencies:
       '@tanstack/devtools-event-client': 0.4.4
 
-  '@tanstack/ai-svelte@0.24.3(@tanstack/ai@0.63.0(zod@4.6.5))(svelte@5.56.3)(zod@4.6.5)':
+  '@tanstack/ai-svelte@0.24.3(patch_hash=591f13c78fa2252eb9e77e2d4e9a57cb39699f685e45b9d432bf13fd7bf9e0aa)(@tanstack/ai@0.63.0(zod@4.6.5))(svelte@5.56.3)(zod@4.6.5)':
     dependencies:
       '@tanstack/ai': 0.63.0(zod@4.6.5)
       '@tanstack/ai-client': 0.36.0(zod@4.6.5)

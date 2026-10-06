@@ -678,7 +678,7 @@
     {/each}
     {#if worktree.olderCount > 0 && loadingOlder}
       <div class="flex justify-center px-3 py-1.5" aria-label="Loading older sessions">
-        <WorkingSpinner seed={worktree.key} size={12} />
+        <WorkingSpinner size={12} />
       </div>
     {/if}
   {/snippet}
@@ -724,7 +724,7 @@
                      focus-visible:ring-ring/50"
             >
               {#if loadingProjectKey === project.key}
-                <WorkingSpinner seed={project.key} size={14} />
+                <WorkingSpinner size={14} />
               {:else}
                 <ChevronRight
                   class={`size-3.5 shrink-0 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}

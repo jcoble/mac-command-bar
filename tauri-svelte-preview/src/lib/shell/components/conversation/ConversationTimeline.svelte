@@ -499,7 +499,7 @@
             {/if}
             {#if row.item}<TimelineItem item={row.item} {assistantLabel} {onApprovalDecision} {onFileLink} {onPlanOpen} />{/if}
             {#if row.edit}<TurnFileCard path={row.edit.path} added={row.edit.added} removed={row.edit.removed} onReview={onFileLink} />{/if}
-            {#if row.activity}<div class="working-row" data-testid="conversation-working-indicator" role="status"><WorkingSpinner seed={activeTurnId ?? renderWindowId} /><span>{activityLabel}…</span></div>{/if}
+            {#if row.activity}<div class="working-row" data-testid="conversation-working-indicator" role="status"><WorkingSpinner /><span>{activityLabel}…</span></div>{/if}
           </div>
       {/each}
     </div>
