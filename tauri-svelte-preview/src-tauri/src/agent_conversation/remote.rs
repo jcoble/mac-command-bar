@@ -794,9 +794,11 @@ impl RemoteConnectionManager {
         let (profile, _, replaced_profile_id) = self.resolve_profile_identity(profile).await?;
         self.stop_profile(&profile.id);
         super::remote_install::uninstall(&profile.ssh_target, delete_data).await?;
-        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(&profile.id)?;
         if delete_data {
+            self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(&profile.id)?;
             self.replace_cached_profile_sessions(&profile.id, &[])?;
+        } else {
+            self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).disconnect(&profile.id);
         }
         Ok(replaced_profile_id)
     }
@@ -984,7 +986,8 @@ impl RemoteConnectionManager {
             .clients
             .remove(profile_id);
         self.publish_status(profile_id);
-        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(profile_id)
+        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).disconnect(profile_id);
+        Ok(())
     }
 
     /// Installs a freshly connected client only while this attempt still owns
@@ -3682,12 +3685,21 @@ mod connection_tests {
         )
         .unwrap();
         manager.register_profile(profile("saved")).unwrap();
+        manager.history.lock().unwrap().snapshot(
+            "saved", 0, None, &history_snapshot(vec![history_event(1)], 1),
+        ).unwrap();
+        let stale_history_sink = manager.history_event_sink("saved");
         let attempt = ConnectingAttempt::start(&manager, "saved");
         assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Reconnecting);
 
         // Removal during the attempt answers disconnected immediately.
         manager.remove_profile("saved").unwrap();
         assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Disconnected);
+        let history = manager.history.lock().unwrap();
+        let epoch = history.epoch("saved");
+        assert_eq!(sequences(&history.read_snapshot("saved", epoch, "large-history").unwrap().events), vec![1]);
+        drop(history);
+        assert!(stale_history_sink(vec![history_event(2)]).is_err());
 
         // The pre-removal attempt finishes late: its client is refused, its own
         // actor is aborted, and the removed profile is not resurrected.
