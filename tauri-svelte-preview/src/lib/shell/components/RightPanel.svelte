@@ -57,7 +57,7 @@
     sourceControlWorkspace?: SessionSourceControlWorkspace;
     onSourceControlWorkspaceChange?(ownedId: string | null, state: SessionSourceControlWorkspace): void;
     tasksView?: SessionTasksWorkspace;
-    onTasksViewChange?(view: SessionTasksWorkspace): void;
+    onTasksViewChange?(ownedId: string, view: SessionTasksWorkspace): void;
     onUseSessionCheckout?(root: string): void | Promise<void>;
   }
   let {
@@ -110,7 +110,7 @@
       />
     </div>
     {#if visible && activeId === 'source-control'}
-      <div class="panel-body carded showing">
+      <div class="panel-body showing">
         <SourceControlPanel
           visible={true}
           {root}
@@ -125,19 +125,19 @@
         />
       </div>
     {:else if visible && activeId === 'worktrees'}
-      <div class="panel-body carded showing"><WorktreesPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body showing"><WorktreesPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'run'}
-      <div class="panel-body carded showing"><RunPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body showing"><RunPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'context'}
-      <div class="panel-body carded showing"><SessionContextPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body showing"><SessionContextPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'agents'}
-      <div class="panel-body carded showing"><AgentsPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body showing"><AgentsPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'history'}
-      <div class="panel-body carded showing">
+      <div class="panel-body showing">
         <HistoryPanel visible={true} {root} {ownedId} />
       </div>
     {:else if visible && activeId === 'tasks'}
-      <div class="panel-body carded showing"><TasksPanel {root} initialView={tasksView} onViewChange={onTasksViewChange} /></div>
+      <div class="panel-body showing"><TasksPanel {root} {ownedId} initialView={tasksView} onViewChange={onTasksViewChange} /></div>
     {/if}
   </div>
 </div>
@@ -177,14 +177,5 @@
 
   .panel-body.showing {
     display: block;
-  }
-
-  /* Every panel but Files sits in the same rounded card surface as the Files
-     header, header row included. Files carries its own header card over the
-     tree. */
-  .panel-body.carded {
-    inset: var(--space-3);
-    border-radius: var(--radius-sm);
-    background: var(--color-elevated);
   }
 </style>

@@ -129,18 +129,23 @@
 			if (!ref) return [];
 			if (ref.kind === "editor") {
 				const file = editorState.openFiles.find((entry) => entry.path === ref.id);
-				return file
-					? [{ key, kind: "editor", label: file.fileName, path: file.path, dirty: Boolean(file.dirty), preview: Boolean(file.previewTab) }]
-					: [];
+				if (!file) return [];
+				const detail = [file.relativePath, file.path, file.dirty ? "Unsaved changes" : ""];
+				return [{ key, kind: "editor", label: file.fileName, detail: detail.filter(Boolean).join("\n"), path: file.path, dirty: Boolean(file.dirty), preview: Boolean(file.previewTab) }];
 			}
 			if (ref.kind === "browser") {
 				const tab = browserTabs.find((entry) => entry.id === ref.id);
-				return [{ key, kind: "browser", label: tab?.title || "New browser tab" }];
+				const label = tab?.title || "New browser tab";
+				return [{ key, kind: "browser", label, detail: [label, tab?.url ?? ""].filter(Boolean).join("\n") }];
 			}
-			if (ref.kind === "diff") return [{ key, kind: "diff", label: "Changes" }];
-			if (ref.kind === "git-history") return [{ key, kind: "git-history", label: "History" }];
+			if (ref.kind === "diff") return [{ key, kind: "diff", label: "Changes", detail: gitPanel.selectedPath || "Working tree changes" }];
+			if (ref.kind === "git-history") return [{ key, kind: "git-history", label: "History", detail: gitPanel.historyPath || "Whole repository" }];
 			const pullRequest = pullRequestSelection.selected;
-			return [{ key, kind: "pull-requests", label: pullRequest ? `PR #${pullRequest.number}` : "Pull requests" }];
+			return [
+				pullRequest
+					? { key, kind: "pull-requests", label: `PR #${pullRequest.number}`, detail: `PR #${pullRequest.number} — ${pullRequest.title}\n${pullRequest.headBranch} → ${pullRequest.baseBranch}` }
+					: { key, kind: "pull-requests", label: "Pull requests", detail: "Pull requests" },
+			];
 		});
 	});
 
@@ -419,10 +424,7 @@
 			if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ sourceControl });
 		}}
 		tasksView={selection.activeWorkspaceSnapshot?.tasksView}
-		onTasksViewChange={(tasksView) => {
-			const ownedId = selection.activeOwnedId;
-			if (ownedId) selection.persistWorkspaceState(ownedId, { tasksView });
-		}}
+		onTasksViewChange={(ownedId, tasksView) => selection.persistWorkspaceState(ownedId, { tasksView })}
 		checkoutDiscoveryRoots={selection.filesProjectionRoot ? [selection.filesProjectionRoot] : []}
 		onUseSessionCheckout={selection.controlledSession?.agent === "codex" && selection.controlledSession.origin === "app"
 			? async (root) => {

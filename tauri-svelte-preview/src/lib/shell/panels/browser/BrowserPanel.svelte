@@ -733,15 +733,25 @@
 
   // A hidden Browser must not leave its pages running offscreen. Keep only the
   // compact tab metadata; returning recreates the native views from it.
+  // The release runs in the effect body, not its teardown: a teardown reads
+  // state as it was before the change that re-ran it, so closing the page in
+  // front put that page straight back into the remembered tabs, and its × had
+  // to be clicked twice.
+  let owningResources = false;
   $effect(() => {
     const ownsResources = panelOpen && visible;
     ownedId;
     root;
-    if (!ownsResources) return;
-    return () => untrack(() => {
-      releaseBrowserWorkspace();
-      discard();
+    untrack(() => {
+      if (owningResources) {
+        releaseBrowserWorkspace();
+        discard();
+      }
+      owningResources = ownsResources;
     });
+  });
+  $effect(() => () => {
+    if (owningResources) untrack(releaseBrowserWorkspace);
   });
 
   $effect(() => {
@@ -789,6 +799,9 @@
       onForward={() => step('forward')}
       onReload={reloadBrowserFrame}
       onToolChange={(next) => void chooseTool(next)}
+      annotationCount={annotations.length}
+      {listOpen}
+      onToggleList={() => (listOpen = !listOpen)}
     />
     {#if showsStill}
       <div class="annotation-header" data-testid="browser-annotation-header">

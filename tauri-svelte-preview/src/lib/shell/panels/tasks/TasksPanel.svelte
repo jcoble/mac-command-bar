@@ -61,13 +61,17 @@
   interface Props {
     /** The active session's folder; the list follows the Notion project it maps to. */
     root?: string;
+    /** The session the panel opened for; its view is saved to that session only. */
+    ownedId?: string | null;
     /** The search, filters and sort this session last used, read once at mount. */
     initialView?: SessionTasksWorkspace;
-    /** Told every view the list is reloaded for, to save with the session. */
-    onViewChange?(view: SessionTasksWorkspace): void;
+    /** Told the view on every reload and once more on unmount, to save with the
+     * session. The caller drops it unless that session is still selected. */
+    onViewChange?(ownedId: string, view: SessionTasksWorkspace): void;
   }
-  let { root = '', initialView, onViewChange }: Props = $props();
+  let { root = '', ownedId = null, initialView, onViewChange }: Props = $props();
   const restoredView = untrack(() => initialView);
+  const mountedOwnedId = untrack(() => ownedId);
 
   let settings = $state<NotionTaskSettings | null>(null);
   let tasks = $state<NotionTaskRow[]>([]);
@@ -161,14 +165,20 @@
     hasMore = page.hasMore;
   }
 
-  async function reloadCached(): Promise<void> {
-    onViewChange?.({
-      search,
+  /** The view as it stands, with the search as typed, submitted or not. */
+  function saveView(): void {
+    if (!mountedOwnedId) return;
+    onViewChange?.(mountedOwnedId, {
+      search: searchDraft.trim(),
       filters: { status: [...(filters.status ?? [])], priority: [...(filters.priority ?? [])] },
       projectFilter,
       sortBy,
       sortDirection
     });
+  }
+
+  async function reloadCached(): Promise<void> {
+    saveView();
     const owner = generation;
     loading = true;
     error = '';
@@ -356,6 +366,7 @@
     return () => observer.disconnect();
   });
   onDestroy(() => {
+    saveView();
     oauthController?.abort();
     oauthController = null;
     generation += 1;
@@ -384,7 +395,7 @@
         <DropdownMenu.Trigger
           class={cn(
             buttonVariants({ variant: 'outline', size: 'sm' }),
-            'min-w-0 rounded-full',
+            'h-[32px] min-w-0 rounded-full px-3 text-[13px] [&_svg]:size-[16px]',
             projectFilter && 'text-[var(--color-accent)]'
           )}
           aria-label="View task options"
@@ -458,22 +469,23 @@
         </DropdownMenu.Content>
       </DropdownMenu.Root>
       <span class="flex-1"></span>
-      <IconButton label="Task settings" side="bottom" onclick={() => (showSetup = !showSetup)}>
-        <Settings2 class="size-4" aria-hidden="true" />
+      <IconButton class="size-[32px]" label="Task settings" side="bottom" onclick={() => (showSetup = !showSetup)}>
+        <Settings2 class="size-[16px]" aria-hidden="true" />
       </IconButton>
       <IconButton
+        class="size-[32px]"
         label="Refresh tasks"
         side="bottom"
         disabled={refreshing || showSetup}
         onclick={() => void refresh()}
       >
-        <RefreshCw class="size-4" aria-hidden="true" />
+        <RefreshCw class="size-[16px]" aria-hidden="true" />
       </IconButton>
     </div>
     <form class="relative" onsubmit={applySearch}>
-      <Search class="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-      <Input bind:value={searchDraft} class="h-8 pr-10 pl-8" placeholder="Search tasks" aria-label="Search tasks" />
-      <span class="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-xs text-muted-foreground tabular-nums">{tasks.length}</span>
+      <Search class="pointer-events-none absolute top-1/2 left-3 size-[16px] -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+      <Input bind:value={searchDraft} class="h-[36px] pr-12 pl-9 text-[13px]" placeholder="Search tasks" aria-label="Search tasks" />
+      <span class="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-[12px] text-muted-foreground tabular-nums">{tasks.length}</span>
     </form>
   </header>
 

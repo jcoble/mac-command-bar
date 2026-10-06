@@ -118,17 +118,17 @@ assert.doesNotMatch(
 );
 assert.match(
   browserPanel,
-  /return \(\) => untrack\(\(\) => \{\s*releaseBrowserWorkspace\(\);/,
-  'the Browser component releases its native workspace from its own lifecycle cleanup'
+  /if \(owningResources\) \{\s*releaseBrowserWorkspace\(\);/,
+  'the Browser component releases its native workspace in an effect body; a teardown reads pre-change state'
 );
 assert.match(
   browserPanel,
   /untrack\(\(\) => subscribeToBrowserNavigation\(syncBrowserNavigation\)\)/,
   'Browser navigation diagnostics cannot become a dependency of their subscribing effect'
 );
-assert.equal(
-  (browserToolbar.match(/tooltip=\{false\}/g) ?? []).length,
-  7,
+assert.doesNotMatch(
+  browserToolbar,
+  /Tooltip\.|IconButton/,
   'Browser toolbar icons must not mount the tooltip state loop over the native view'
 );
 assert.match(page, /onProblemsLocationChange=\{\(location\) => workbench\.applyProblemsLocation\(location\)\}/);

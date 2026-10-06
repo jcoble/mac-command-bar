@@ -619,7 +619,7 @@
 </script>
 
 <div class="history-panel flex h-full min-h-0 flex-col">
-  <PanelHeader title="History" count={summaryViewModel.totalCount}>
+  <PanelHeader title="History">
     {#snippet actions()}
       <IconButton
         label="Look for sessions again"
@@ -629,12 +629,11 @@
         <RefreshCw />
       </IconButton>
     {/snippet}
+    <span data-testid="session-history-host-line" class="flex min-w-0 items-center gap-1.5">
+      <Server class="size-[16px] shrink-0" aria-hidden="true" />
+      <span data-testid="session-history-host" class="truncate">{summaryViewModel.totalCount} {summaryViewModel.totalCount === 1 ? 'session' : 'sessions'} from Local Mac</span>
+    </span>
   </PanelHeader>
-
-  <div data-testid="session-history-host-line" class="flex items-center gap-1.5 px-3 pt-1 text-xs text-muted-foreground">
-    <Server class="size-3.5" aria-hidden="true" />
-    <span data-testid="session-history-host">{summaryViewModel.totalCount} {summaryViewModel.totalCount === 1 ? 'session' : 'sessions'} from Local Mac</span>
-  </div>
   <div data-testid="session-history-scope" class="px-3 py-1">
     <SegmentedControl
       items={SCOPE_OPTIONS}
@@ -645,9 +644,9 @@
     />
   </div>
   <div class="relative px-3 py-2">
-    <Search class="pointer-events-none absolute top-1/2 left-5.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+    <Search class="pointer-events-none absolute top-1/2 left-6 size-[16px] -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
     <Input
-      class="h-8 pl-8"
+      class="h-[36px] pl-9 text-[13px]"
       placeholder="Search sessions"
       autocomplete="off"
       spellcheck="false"

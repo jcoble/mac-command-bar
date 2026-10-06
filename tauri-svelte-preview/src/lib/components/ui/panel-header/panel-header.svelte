@@ -3,7 +3,8 @@
 
   Every panel in the right drawer opens the same way, following the Codex file
   pane: one row with the panel's own control or note on the left, how many
-  things are in it, and round icon actions on the right. The drawer's tab row
+  things are in it, and round 32px icon actions on the right (sized here, so
+  every panel's header matches the Files one). The drawer's tab row
   already names the panel, so the name is the header's accessible label only.
   A panel with nothing to show here gets just the top padding.
 
@@ -48,16 +49,16 @@
     data-slot="panel-header"
     data-testid={dataTestId}
     aria-label={title}
-    class={cn('flex min-h-7 min-w-0 flex-none items-center gap-1 px-3 pt-3 pb-2', className)}
+    class={cn('flex min-h-[32px] min-w-0 flex-none items-center gap-1 px-3 pt-3 pb-2', className)}
   >
-    <div class="min-w-0 flex-1 truncate text-(length:--text-quiet) leading-tight text-muted-foreground">
+    <div class="min-w-0 flex-1 truncate text-[13px] leading-tight text-muted-foreground">
       {@render children?.()}
     </div>
     {#if count !== null}
       <Chip tone="count">{count}</Chip>
     {/if}
     {#if actions}
-      <div class="flex shrink-0 items-center gap-1">
+      <div class="flex shrink-0 items-center gap-1 [&_button]:size-[32px] [&_button]:rounded-full [&_svg]:size-[16px]">
         {@render actions()}
       </div>
     {/if}

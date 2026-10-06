@@ -6,6 +6,8 @@
     key: string;
     kind: TopTabKind;
     label: string;
+    /** Hover text, one fact per line; drawn by the OS above the native page. */
+    detail: string;
     /** Editor tabs only: the file's absolute path. */
     path?: string;
     dirty?: boolean;
@@ -24,6 +26,10 @@
    * pane is expanded it is the first tab, and clicking it collapses the pane.
    * After it: one tab per open file, browser page, Changes, History and Pull
    * requests, then `+` (new browser tab), expand, and the drawer toggle.
+   *
+   * Tabs shrink toward a minimum before the row scrolls; a thin line parts two
+   * neighbours that are both at rest. Hover details are the native `title`
+   * tooltip, the one popup the OS draws above a live browser page.
    *
    * PRESENTATIONAL ONLY: the tabs and the active key are handed in, and every
    * click is handed back out.
@@ -111,13 +117,18 @@
   });
 </script>
 
-{#snippet tabChip(tab: TopTabView, props: Record<string, unknown>)}
+{#snippet tabChip(tab: TopTabView, props: Record<string, unknown>, index: number)}
   {@const active = tab.key === activeKey}
+  {@const parted = index > 0 && !active && tabs[index - 1].key !== activeKey}
   <div
     {...props}
+    title={tab.detail}
     class={cn(
-      'group flex h-8 w-38 min-w-24 shrink items-center gap-1.5 rounded-lg pr-1 pl-2.5 text-sm font-medium transition-colors',
-      active ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+      'group relative flex h-[32px] min-w-[72px] items-center gap-1.5 rounded-[8px] pr-1 pl-2.5 text-[13px] font-medium transition-colors [flex:0_1_160px]',
+      active ? 'min-w-[120px] bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+      // The line on this tab's left edge goes while either neighbour is hovered.
+      parted &&
+        'before:absolute before:top-1/2 before:left-[-2.5px] before:h-[16px] before:w-px before:-translate-y-1/2 before:bg-border hover:before:opacity-0 [.group:hover+&]:before:opacity-0'
     )}
     data-active={active}
   >
@@ -132,25 +143,24 @@
         <FileIcon fileName={tab.label} size={16} />
       {:else}
         {@const Icon = ICONS[tab.kind]}
-        <Icon class="size-4 shrink-0" aria-hidden="true" />
+        <Icon class="size-[16px] shrink-0" aria-hidden="true" />
       {/if}
-      <span class={cn('truncate', tab.preview && 'italic')}>{tab.label}</span>
+      <span class={cn('min-w-0 truncate', tab.preview && 'italic')}>{tab.label}</span>
     </button>
     <Button
       variant="ghost"
-      size="icon-xs"
       aria-label={`Close ${tab.label}${tab.dirty ? ' (unsaved)' : ''}`}
       class={cn(
-        'shrink-0',
+        'size-[24px] shrink-0 rounded-[6px] p-0',
         active || tab.dirty ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
       )}
       onclick={() => onClose(tab.key)}
     >
       {#if tab.dirty}
         <span class="group-hover:hidden" aria-hidden="true">•</span>
-        <X class="hidden group-hover:block" aria-hidden="true" />
+        <X class="hidden size-[14px] group-hover:block" aria-hidden="true" />
       {:else}
-        <X aria-hidden="true" />
+        <X class="size-[14px]" aria-hidden="true" />
       {/if}
     </Button>
   </div>
@@ -162,16 +172,18 @@
   data-tauri-drag-region
 >
   <div class={cn('flex h-full min-w-0 items-center gap-1', expanded ? 'pl-2' : 'px-2')} data-tauri-drag-region>
+    <!-- Collapsed, chat is on screen beside the pane, so its tab reads as active. -->
     <button
       type="button"
       class={cn(
-        'flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-sm font-semibold text-foreground transition-colors',
-        expanded && 'max-w-56 hover:bg-accent/50'
+        'flex h-[32px] min-w-0 items-center gap-1.5 rounded-[8px] px-2.5 text-[13px] font-medium transition-colors',
+        expanded ? 'max-w-[224px] text-foreground hover:bg-accent/50' : 'bg-accent text-accent-foreground'
       )}
+      title={chatTitle}
       aria-label={expanded ? `Chat: ${chatTitle}. Collapse the pane` : `Chat: ${chatTitle}`}
       onclick={onSelectChat}
     >
-      {#if expanded}<MessageCircle class="size-4 shrink-0" aria-hidden="true" />{/if}
+      <MessageCircle class="size-[16px] shrink-0" aria-hidden="true" />
       <span class="truncate">{chatTitle}</span>
     </button>
     {#if expanded}<Separator orientation="vertical" class="h-4" />{/if}
@@ -183,12 +195,12 @@
   >
     <div
       bind:this={track}
-      class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]"
+      class="flex min-w-0 flex-1 items-center gap-[4px] overflow-x-auto [scrollbar-width:none]"
       role="tablist"
       aria-label="Open tabs"
       use:scrollTabStrip
     >
-      {#each tabs as tab (tab.key)}
+      {#each tabs as tab, index (tab.key)}
         {#if tab.kind === 'editor' && tab.path}
           {@const path = tab.path}
           <!-- Opening the menu activates its tab first, so the menu never
@@ -196,7 +208,7 @@
           <ContextMenu.Root onOpenChange={(open) => { if (open) onSelect(tab.key); }}>
             <ContextMenu.Trigger>
               {#snippet child({ props })}
-                {@render tabChip(tab, props)}
+                {@render tabChip(tab, props, index)}
               {/snippet}
             </ContextMenu.Trigger>
             <ContextMenu.Content class="w-[220px]" aria-label={`Actions for ${tab.label}`}>
@@ -216,7 +228,7 @@
             </ContextMenu.Content>
           </ContextMenu.Root>
         {:else}
-          {@render tabChip(tab, {})}
+          {@render tabChip(tab, {}, index)}
         {/if}
       {/each}
     </div>
