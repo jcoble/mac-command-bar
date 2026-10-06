@@ -69,8 +69,19 @@ export class EditorSessionController {
 		this.releaseActiveEditorResources();
 
 		if (stopSignal.aborted) return null;
-		const stored = await readAgentConversationWorkspaceFromTauri(ownedId);
 		const remote = parseRemoteWorkspacePath(projectRoot);
+		let stored: SessionWorkspaceSnapshot | null;
+		try {
+			stored = await readAgentConversationWorkspaceFromTauri(ownedId);
+		} catch (error) {
+			if (stopSignal.aborted) return null;
+			const message = error instanceof Error ? error.message
+				: typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error);
+			if (rootAvailable || !remote || message !== `Remote machine ${remote.profileId} is not connected`) throw error;
+			this.activeOwnedId = null;
+			this.activeSnapshot = null;
+			return null;
+		}
 		const snapshot = remote ? mapWorkspaceSnapshotPaths(stored, remote.profileId) as SessionWorkspaceSnapshot | null : stored;
 		if (stopSignal.aborted) return null;
 		this.activeOwnedId = ownedId;
@@ -153,6 +164,13 @@ export class EditorSessionController {
 		await writeAgentConversationWorkspaceFromTauri(ownedId, next);
 		if (this.activeOwnedId === ownedId) this.activeSnapshot = next;
 		return true;
+	}
+
+	/** Stop owning a session whose files couldn't be shown, so leaving it can't
+	 *  save its empty editor over the tabs it had. */
+	releaseOwnership(): void {
+		this.activeOwnedId = null;
+		this.activeSnapshot = null;
 	}
 
 	/** Drops file-backed editor state after the session moves to another checkout. */

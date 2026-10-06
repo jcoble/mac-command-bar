@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
-   * ShellFrame.svelte — mounts the Gridview root + center Dockview and
-   * teleports Svelte-owned content into them. All content is authored in the
+   * ShellFrame.svelte — mounts the Gridview root and teleports Svelte-owned
+   * content into its regions. All content is authored in the
    * hidden parking stage below, so dockview NEVER owns app DOM; if the frame
    * fails to mount, content simply stays parked (invisible) and the page's
    * error rail reports it. Layout persistence is supplied by SQLite settings.
@@ -9,11 +9,6 @@
   import 'dockview-core/dist/styles/dockview.css';
   import { onMount, type Snippet } from 'svelte';
 
-  import {
-    createCenterDock,
-    type CenterDock,
-    type CenterDockSnapshot
-  } from '$lib/shell/layout/centerDock';
   import {
     createShellFrame,
     type RegionHeightLimits,
@@ -26,32 +21,19 @@
     writeAssemblySettingFromTauri
   } from '$lib/tauriSource';
   const GRID_LAYOUT_SETTING_KEY = 'shell.grid-layout';
-  const CENTER_LAYOUT_SETTING_KEY = 'shell.center-layout';
 
   interface Props {
     /** The left column: the sessions list, and nothing else. */
     sessions: Snippet;
-    center: {
-      session: Snippet;
-      editor: Snippet;
-      diff: Snippet;
-      gitHistory: Snippet;
-      pullRequests: Snippet;
-    };
-    /** The right column: its tab strip, the open panel, and the bottom strip. */
+    /** The middle column: the chat, always mounted. */
+    center: Snippet;
+    /** The right column: the tab pane, in the grid only while it has tabs. */
     tools: Snippet;
     dock: Snippet;
-    onSessionPanelLayout?: () => void;
-    /** A center surface came to the front. Fires for Dockview's own start-up
-     * announcements too — see the note in `centerDock.ts`. */
-    onCenterPanelShown?: (id: string) => void;
     onSessionsWidthChange?: (width: number) => void;
     onToolsWidthChange?: (width: number) => void;
     onReady?: (controls: {
       resetLayout: () => void;
-      showCenterPanel: (id: string) => void;
-      captureCenterLayout: () => CenterDockSnapshot | null;
-      restoreCenterLayout: (snapshot: CenterDockSnapshot | null | undefined) => void;
       /** Give one region a width — how a column asks to be folded up or
        * opened out. See `setRegionWidth` in `frame.ts`. */
       setRegionWidth: (id: ShellRegionId, width: number, limits?: RegionWidthLimits) => void;
@@ -81,8 +63,6 @@
     center,
     tools,
     dock,
-    onSessionPanelLayout,
-    onCenterPanelShown,
     onSessionsWidthChange,
     onToolsWidthChange,
     onReady,
@@ -92,17 +72,10 @@
   let gridHost: HTMLElement;
   let sessionsSlot: HTMLElement;
   let centerRegionSlot: HTMLElement;
-  let centerSlot: HTMLElement; // holds the center Dockview's own container
   let toolsSlot: HTMLElement;
   let dockSlot: HTMLElement;
-  let sessionSlot: HTMLElement;
-  let editorSlot: HTMLElement;
-  let diffSlot: HTMLElement;
-  let gitHistorySlot: HTMLElement;
-  let pullRequestsSlot: HTMLElement;
 
   let frame: Frame | null = null;
-  let centerDock: CenterDock | null = null;
   let frameLayoutListener: { dispose(): void } | null = null;
   let ready = $state(false);
 
@@ -150,58 +123,14 @@
         });
         await frame.ready;
         if (!owner.active || !frame) return;
-        // Lay out the parent Gridview before the center Dockview restores or
-        // builds its panels. Center Dockview's restore path deliberately measures
-        // its host before calling `fromJSON`; doing that while the Gridview is
-        // still at 0×0 leaves always-rendered panels with stale overlay bounds
-        // until the next activation.
         layoutFrame();
         frameLayoutListener = frame.api.onDidLayoutChange(reportRegionWidths);
         reportRegionWidths();
-        centerDock = createCenterDock(centerSlot, {
-          readLayout: () => readAssemblySettingFromTauri(CENTER_LAYOUT_SETTING_KEY),
-          writeLayout: (layout) => writeAssemblySettingFromTauri(CENTER_LAYOUT_SETTING_KEY, layout),
-          // All three stacked, one showing at a time, opening on the session. The
-          // corner tabs are what move between them. Source control itself is not
-          // here at all — it is a panel of the right column — but the changes it
-          // shows are, because a diff wants the width of the middle.
-          panels: [
-            { id: 'session', title: 'Session', element: sessionSlot, renderer: 'always' },
-            {
-              id: 'editor',
-              title: 'Editor',
-              element: editorSlot,
-              renderer: 'onlyWhenVisible'
-            },
-            {
-              id: 'diff',
-              title: 'Diff',
-              element: diffSlot,
-              renderer: 'onlyWhenVisible'
-            },
-            { id: 'git-history', title: 'Git History', element: gitHistorySlot, renderer: 'onlyWhenVisible' },
-            { id: 'pull-requests', title: 'Pull Requests', element: pullRequestsSlot, renderer: 'onlyWhenVisible' }
-          ],
-          onPanelLayout: (id) => {
-            if (id === 'session') onSessionPanelLayout?.();
-          },
-          onPanelActivated: (id) => {
-            onCenterPanelShown?.(id);
-          }
-        });
-        await centerDock.ready;
-        if (!owner.active || !centerDock) return;
         observer = new ResizeObserver(scheduleFrameLayout);
         observer.observe(gridHost);
         ready = true;
         onReady?.({
-          resetLayout: () => {
-            frame?.resetLayout();
-            centerDock?.resetLayout();
-          },
-          showCenterPanel: (id: string) => centerDock?.activatePanel(id),
-          captureCenterLayout: () => centerDock?.captureLayout() ?? null,
-          restoreCenterLayout: (snapshot) => centerDock?.restoreLayout(snapshot),
+          resetLayout: () => frame?.resetLayout(),
           setRegionWidth: (id, width, limits) => frame?.setRegionWidth(id, width, limits),
           setRegionHeight: (id, height, limits) => frame?.setRegionHeight(id, height, limits),
           setDockPresent: (present) => frame?.setDockPresent(present),
@@ -222,8 +151,6 @@
       observer?.disconnect();
       frameLayoutListener?.dispose();
       frameLayoutListener = null;
-      centerDock?.dispose();
-      centerDock = null;
       frame?.dispose();
       frame = null;
     };
@@ -237,16 +164,9 @@
      can be measured — see the note on `.parking-stage` in the styles below. -->
 <div class="parking-stage" aria-hidden="true">
   <div class="slot" bind:this={sessionsSlot}>{@render sessions()}</div>
-  <div class="slot center-region" bind:this={centerRegionSlot}>
-    <div class="center-dock-host" bind:this={centerSlot}></div>
-  </div>
+  <div class="slot" bind:this={centerRegionSlot}>{@render center()}</div>
   <div class="slot tools-region" bind:this={toolsSlot}>{@render tools()}</div>
   <div class="slot" bind:this={dockSlot}>{@render dock()}</div>
-  <div class="slot" bind:this={sessionSlot}>{@render center.session()}</div>
-  <div class="slot" bind:this={editorSlot}>{@render center.editor()}</div>
-  <div class="slot" bind:this={diffSlot}>{@render center.diff()}</div>
-  <div class="slot" bind:this={gitHistorySlot}>{@render center.gitHistory()}</div>
-  <div class="slot" bind:this={pullRequestsSlot}>{@render center.pullRequests()}</div>
 </div>
 
 <style>
@@ -276,43 +196,27 @@
 
   /* Teleported slots and hosts must fill whatever cell they land in. */
   .slot,
-  :global(.shell-region-host),
-  :global(.center-panel-host) {
+  :global(.shell-region-host) {
     height: 100%;
     width: 100%;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-  }
-
-  .center-region {
-    display: grid;
-    grid-template-rows: minmax(0, 1fr);
-    /* Transparent on purpose: the card behind it paints the surface and its
-       gradient, and an opaque fill here would cover both. */
-    background: transparent;
   }
 
   .tools-region {
     min-width: 0;
     min-height: 0;
-    /* Same reason as `.center-region`. This also drops a stray `--background`,
-       which is a different token from the `--color-*` set the shell uses. */
+    /* Transparent on purpose: the card behind it paints the surface and its
+       gradient, and an opaque fill here would cover both. This also drops a
+       stray `--background`, which is a different token from the `--color-*`
+       set the shell uses. */
     background: transparent;
-  }
-
-  .center-dock-host {
-    width: 100%;
-    height: 100%;
-    min-width: 0;
-    min-height: 0;
-    overflow: hidden;
   }
 
   /* ---- dockview overrides (ported from the old shell's audited CSS) ----
      BOTH theme classes must be targeted where dracula reasserts values.   */
-  .shell-frame :global(.shell-grid),
-  .shell-frame :global(.shell-center-dock) {
+  .shell-frame :global(.shell-grid) {
     /* token map: translate dockview vars onto the /next palette */
     --dv-border-radius: 8px;
     /* Transparent, not the surface colour: the card underneath already paints
@@ -358,8 +262,7 @@
      — so rounding and insetting it here is what makes all four read as cards
      laid on the backdrop. Nothing else needs a radius: this clips its content.
 
-     Not the dockview classes. `.dv-groupview` exists only inside the centre's
-     own nested dock, so styling it shaped one panel out of four. */
+     Not the dockview classes: the regions are Gridview cells, not groups. */
   .shell-frame :global(.shell-region-host) {
     /* The inset is a pair of MAXIMUMS, not a width and a height. Dockview
        writes `width: 100%; height: 100%` on this element as an inline style,
@@ -390,19 +293,6 @@
   .shell-frame :global(.dv-tab) {
     border-color: transparent;
     box-shadow: none;
-  }
-
-  /* Dockview still owns the three panels and their active state, while the
-     center pane's corner tabs are their only visible navigation. */
-  .shell-frame :global(.shell-center-dock .dv-tabs-and-actions-container) {
-    display: none;
-  }
-
-  /* Every center tab is permanent this slice (a close is undone on the next
-     tick to protect the live terminal), so showing a close button would be a
-     lie. Remove this rule when closable tabs become real. */
-  .shell-frame :global(.shell-center-dock .dv-default-tab-action) {
-    display: none;
   }
 
   /* sizing chain — without this, dockview panels collapse in flex/grid parents */

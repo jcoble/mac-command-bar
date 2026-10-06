@@ -69,7 +69,7 @@
   role="radiogroup"
   aria-label={ariaLabel}
   class={cn(
-    'bg-background/60 ring-border inline-flex w-fit items-center gap-0.5 rounded-lg p-[3px] ring-1',
+    'bg-foreground/7 inline-flex w-fit items-center gap-0.5 rounded-full p-[3px]',
     'data-[size=default]:h-8 data-[size=sm]:h-7',
     disabled && 'pointer-events-none opacity-50',
     className
@@ -89,11 +89,11 @@
         : -1}
       {disabled}
       class={cn(
-        'focus-visible:ring-ring/50 focus-visible:border-ring inline-flex h-full min-w-14 items-center justify-center gap-1.5 rounded-md border border-transparent px-2.5 text-[13px] font-medium whitespace-nowrap transition-colors outline-none select-none focus-visible:ring-3',
+        'focus-visible:ring-ring/50 focus-visible:border-ring inline-flex h-full min-w-14 items-center justify-center gap-1.5 rounded-full border border-transparent px-2.5 text-[13px] font-medium whitespace-nowrap transition-colors outline-none select-none focus-visible:ring-3',
         "[&_svg:not([class*='size-'])]:size-3.5 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         selected
-          ? 'bg-secondary text-foreground shadow-[var(--shadow-sm)]'
-          : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+          ? 'bg-foreground/12 text-foreground shadow-sm'
+          : 'text-muted-foreground hover:bg-foreground/6 hover:text-foreground'
       )}
       onclick={() => choose(item.value)}
       onkeydown={(event) => onKeyDown(event, index)}

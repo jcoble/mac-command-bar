@@ -5,7 +5,7 @@ import {
   normalizeWorkspaceSnapshot
 } from '../src/lib/shell/sessionWorkspaces.ts';
 
-function sessionSnapshot(name, mode, panel) {
+function sessionSnapshot(name, mode, activeKey) {
   return captureWorkspace({
     openFiles: [{ path: `/repo/${name}.cs` }],
     activePath: `/repo/${name}.cs`,
@@ -40,16 +40,16 @@ function sessionSnapshot(name, mode, panel) {
       }],
       activeTabId: `browser-${name}`
     },
-    center: {
-      activePanelId: panel,
-      layout: { panels: { session: {}, editor: {}, browser: {}, diff: {} }, marker: name }
+    topTabs: {
+      order: ['diff', `editor:/repo/${name}.cs`, `browser:browser-${name}`],
+      activeKey
     }
   });
 }
 
 const sessions = {
-  'owned-a': sessionSnapshot('alpha', 'structured', 'session'),
-  'owned-b': sessionSnapshot('bravo', 'raw', 'browser'),
+  'owned-a': sessionSnapshot('alpha', 'structured', 'editor:/repo/alpha.cs'),
+  'owned-b': sessionSnapshot('bravo', 'raw', 'browser:browser-bravo'),
   'owned-c': sessionSnapshot('charlie', 'structured', 'diff')
 };
 
@@ -66,10 +66,10 @@ assert.equal(restored['owned-a'].conversation.selectedChildId, 'child-alpha');
 assert.equal(restored['owned-b'].conversation.scrollTop, 500);
 assert.equal(restored['owned-c'].browser.tabs[0].url, 'http://charlie.localhost:5177/');
 assert.equal(restored['owned-c'].browser.activeTabId, 'browser-charlie');
-assert.equal(restored['owned-a'].center.activePanelId, 'session');
-assert.equal(restored['owned-b'].center.activePanelId, 'browser');
-assert.equal(restored['owned-c'].center.activePanelId, 'diff');
-assert.notEqual(restored['owned-a'].center.layout.marker, restored['owned-b'].center.layout.marker);
+assert.equal(restored['owned-a'].topTabs.activeKey, 'editor:/repo/alpha.cs');
+assert.equal(restored['owned-b'].topTabs.activeKey, 'browser:browser-bravo');
+assert.equal(restored['owned-c'].topTabs.activeKey, 'diff');
+assert.notDeepEqual(restored['owned-a'].topTabs.order, restored['owned-b'].topTabs.order);
 assert.deepEqual(restored['owned-a'].conversation.attachmentIds, ['attachment-alpha']);
 assert.equal(restored['owned-b'].conversation.config.future_category, 'bravo');
 assert.equal(restored['owned-a'].conversation.futureWorkspaceField.owner, 'alpha');
@@ -90,6 +90,6 @@ const legacy = normalizeWorkspaceSnapshot({
 assert.ok(legacy);
 assert.equal(legacy.conversation, undefined);
 assert.equal(legacy.browser, undefined);
-assert.equal(legacy.center, undefined);
+assert.equal(legacy.topTabs, undefined);
 
 console.log('conversation session isolation tests passed');

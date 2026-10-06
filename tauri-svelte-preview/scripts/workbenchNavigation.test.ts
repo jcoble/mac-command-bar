@@ -120,8 +120,8 @@ trace = [];
 await openUrlInBrowser({ url: 'https://example.test' });
 assert.deepEqual(
   trace,
-  ['right:browser', 'url:https://example.test'],
-  'the browser panel is on screen before it is asked to navigate'
+  ['center:browser', 'url:https://example.test'],
+  'the browser tab is on screen before it is asked to navigate'
 );
 
 trace = [];
@@ -163,20 +163,20 @@ assert.equal(
 );
 assert.deepEqual(trace, [], 'after clearing, every caller is a no-op again');
 
-// The browser panel mounts only after showRightTab selects it, so its first
+// The browser tab places its view only after showCenterTab selects it, so its first
 // requested URL must wait for that late registration rather than disappear.
 clearWorkbenchNavigation();
 trace = [];
-registerWorkbenchNavigation({ showRightTab: (id) => trace.push(`right:${id}`) });
+registerWorkbenchNavigation({ showCenterTab: (id) => trace.push(`center:${id}`) });
 await openUrlInBrowser({ url: 'https://notion.test/setup' });
-assert.deepEqual(trace, ['right:browser']);
+assert.deepEqual(trace, ['center:browser']);
 const releaseBrowser = registerBrowserUrlNavigation((request) => {
   trace.push(`url:${request.url}`);
 });
-assert.deepEqual(trace, ['right:browser', 'url:https://notion.test/setup']);
+assert.deepEqual(trace, ['center:browser', 'url:https://notion.test/setup']);
 releaseBrowser();
 
-assert.equal(RIGHT_TAB_IDS.length, 9);
-assert.equal(CENTER_TAB_IDS.length, 5);
+assert.equal(RIGHT_TAB_IDS.length, 8);
+assert.equal(CENTER_TAB_IDS.length, 6);
 
 console.log('workbenchNavigation: no-op safety, partial registration, call order, and clearing passed');

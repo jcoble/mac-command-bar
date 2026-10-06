@@ -3,10 +3,12 @@
 	 * Primary Assembly shell orchestrator.
 	 *
 	 * Thin shell component: directly composes the real workbench components
-	 * (SessionsColumn, RightPanel, DockPanel, GitDiffView, GitHistoryView)
-	 * and uses controllers for state management.
+	 * (SessionsColumn, TopTabRow, the tab pane's surfaces, the right drawer,
+	 * DockPanel) and uses controllers for state management. The top tab row's
+	 * active tab (`topTabs`) decides what the pane shows; one effect below
+	 * hands that choice to the editor and browser stores.
 	 */
-	import { onMount } from "svelte";
+	import { onMount, untrack } from "svelte";
 	import { Button } from "$lib/components/ui/button/index.js";
 
 	import { PRODUCT_DOCUMENT_TITLE } from "$lib/productIdentity";
@@ -15,7 +17,6 @@
 	import "$lib/shell/styles/next.css";
 	import "$lib/shell/styles/themeChrome.css";
 
-	import CenterCornerTabs from "$lib/shell/components/CenterCornerTabs.svelte";
 	import { registerSessionRowJumpTarget } from "$lib/shell/components/sessionRowJump.ts";
 	import PendingFirstMessage from "$lib/shell/components/conversation/PendingFirstMessage.svelte";
 	import ConversationSurface from "$lib/shell/components/ConversationSurface.svelte";
@@ -31,6 +32,20 @@
 	import PullRequestWorkspace from "$lib/shell/components/github/PullRequestWorkspace.svelte";
 	import RightPanel from "$lib/shell/components/RightPanel.svelte";
 	import RightPanelTabs from "$lib/shell/components/RightPanelTabs.svelte";
+	import TopTabRow, { type TopTabView } from "$lib/shell/components/TopTabRow.svelte";
+	import BrowserPanel from "$lib/shell/panels/browser/BrowserPanel.svelte";
+	import { pullRequestSelection } from "$lib/shell/components/github/pullRequestSelection.svelte";
+	import { topTabs } from "$lib/shell/layout/topTabs.svelte";
+	import { parseTopTabKey } from "$lib/shell/layout/topTabsOps";
+	import { editorState, pinEditorFile } from "$lib/shell/editor/editorStore.svelte";
+	import {
+		browser,
+		captureBrowserState,
+		closeBrowserPageTab,
+		createBrowserPageTab,
+		queueBrowserPageTab,
+		selectBrowserPageTab,
+	} from "$lib/shell/browser/browserStore.svelte";
 	import SessionsColumn from "$lib/shell/components/SessionsColumn.svelte";
 	import ShellFrame from "$lib/shell/components/ShellFrame.svelte";
 	import ShellOverlays from "$lib/shell/components/ShellOverlays.svelte";
@@ -41,12 +56,11 @@
 	import { ownedSessionMetaForBackend } from "$lib/shell/ownedSessions";
 	import { setOwnedSessionStatus, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
 	import { updateAgentConversationSessionMetaFromTauri } from "$lib/tauriSource";
-	import type { EditorPanelLifecycle } from "$lib/shell/controllers/editorSessionController.svelte";
 	import { WorkbenchController } from "$lib/shell/controllers/workbenchController.svelte";
 	import { startShell, stopShell } from "$lib/shell/controllers/shellStartup";
 	import { gitService } from "$lib/shell/git/gitService";
 	import { gitPanel } from "$lib/shell/git/gitPanelStore.svelte";
-	import type { OpenPullRequestDiffRequest } from "$lib/shell/workbenchNavigation";
+	import type { CenterTabId, OpenPullRequestDiffRequest } from "$lib/shell/workbenchNavigation";
 	import { diffPathFor } from "$lib/shell/sessionWorkspaces";
 	import { registerSessionHistoryHost } from "$lib/shell/history/sessionHistoryHost";
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
@@ -67,11 +81,13 @@
 	});
 
 	let sessionsColumn = $state<SessionsColumn | null>(null);
-	let editorPanel = $state<EditorPanelLifecycle | null>(null);
+	let editorPanel = $state<EditorPanel | null>(null);
 	let overlays = $state<ShellOverlays | null>(null);
 	let openUtility = $state<UtilityId | null>(null);
 	let sessionsRailWidth = $state(360);
-	let toolsRailWidth = $state(320);
+	// Zero until the frame reports the pane's laid-out width: the browser may
+	// place its native view only once the pane really has a size.
+	let toolsRailWidth = $state(0);
 	let pullRequestDiff = $state<OpenPullRequestDiffRequest | null>(null);
 	let routeDisposal: Promise<void> | null = null;
 
@@ -100,6 +116,64 @@
 
 	$effect(() => {
 		selection.setEditorPanel(editorPanel);
+	});
+
+	/** The tab pane is in the frame whenever the top row has a tab. */
+	const paneShowing = $derived(topTabs.row.length > 0);
+	const browserRoot = $derived(selection.newSession.draftOpen ? "" : selection.durableSessionRoot);
+
+	const topTabViews = $derived.by(() => {
+		const browserTabs = captureBrowserState().tabs;
+		return topTabs.row.flatMap((key): TopTabView[] => {
+			const ref = parseTopTabKey(key);
+			if (!ref) return [];
+			if (ref.kind === "editor") {
+				const file = editorState.openFiles.find((entry) => entry.path === ref.id);
+				if (!file) return [];
+				const detail = [file.relativePath, file.path, file.dirty ? "Unsaved changes" : ""];
+				return [{ key, kind: "editor", label: file.fileName, detail: detail.filter(Boolean).join("\n"), path: file.path, dirty: Boolean(file.dirty), preview: Boolean(file.previewTab) }];
+			}
+			if (ref.kind === "browser") {
+				const tab = browserTabs.find((entry) => entry.id === ref.id);
+				const label = tab?.title || "New browser tab";
+				return [{ key, kind: "browser", label, detail: [label, tab?.url ?? ""].filter(Boolean).join("\n") }];
+			}
+			if (ref.kind === "diff") return [{ key, kind: "diff", label: "Changes", detail: gitPanel.selectedPath || "Working tree changes" }];
+			if (ref.kind === "git-history") return [{ key, kind: "git-history", label: "History", detail: gitPanel.historyPath || "Whole repository" }];
+			const pullRequest = pullRequestSelection.selected;
+			return [
+				pullRequest
+					? { key, kind: "pull-requests", label: `PR #${pullRequest.number}`, detail: `PR #${pullRequest.number} — ${pullRequest.title}\n${pullRequest.headBranch} → ${pullRequest.baseBranch}` }
+					: { key, kind: "pull-requests", label: "Pull requests", detail: "Pull requests" },
+			];
+		});
+	});
+
+	// The pane comes and goes with its tabs, but not mid-switch: the next
+	// session's tabs arrive in `restoreSessionState`, and removing then re-adding
+	// the region in between would flash.
+	$effect(() => {
+		const present = paneShowing;
+		if (workbench.switching) return;
+		untrack(() => workbench.setPanePresent(present));
+	});
+
+	$effect(() => {
+		const kind = paneShowing ? topTabs.activeKind : "session";
+		untrack(() => workbench.paneShown(kind ?? "session"));
+	});
+
+	// The active top tab is the truth for what is showing. Whatever made it
+	// change (a click, a close, a restore), the owning store follows.
+	$effect(() => {
+		if (workbench.switching) return;
+		const ref = topTabs.activeKey ? parseTopTabKey(topTabs.activeKey) : null;
+		const panel = editorPanel;
+		if (!ref) return;
+		untrack(() => {
+			if (ref.kind === "editor" && editorState.activePath !== ref.id) panel?.selectFile(ref.id);
+			else if (ref.kind === "browser" && captureBrowserState().activeTabId !== ref.id) selectBrowserPageTab(ref.id);
+		});
 	});
 
 	onMount(() => {
@@ -208,15 +282,71 @@
 	async function restoreSelectedWorkbench(): Promise<void> {
 		workbench.restoreSessionState(selection.activeWorkspaceSnapshot);
 		const storedDiffPath = diffPathFor(selection.activeWorkspaceSnapshot, selection.durableSessionRoot);
-		if (storedDiffPath && selection.activeWorkspaceSnapshot?.center?.activePanelId === 'diff') {
+		if (storedDiffPath && selection.activeWorkspaceSnapshot?.topTabs?.order.includes('diff')) {
 			await gitService.showStoredDiff(selection.durableSessionRoot, storedDiffPath);
 		}
 	}
 
-	function selectCenterTab(id: Parameters<WorkbenchController["selectCenterTab"]>[0]): void {
-		workbench.selectCenterTab(id);
+	function persistTabs(): void {
 		const ownedId = selection.activeOwnedId;
 		if (ownedId) selection.persistWorkspaceState(ownedId, workbench.captureSessionState());
+	}
+
+	function selectTopTab(key: string): void {
+		topTabs.select(key);
+		persistTabs();
+	}
+
+	function closeTopTab(key: string): void {
+		const ref = parseTopTabKey(key);
+		if (!ref) return;
+		if (ref.kind === "editor") {
+			if (editorState.openFiles.find((file) => file.path === ref.id)?.dirty) {
+				// The unsaved-changes dialog must not open over a live browser page,
+				// so the file comes to the front first. The row drops its tab once
+				// the dialog really closes the file.
+				topTabs.select(key);
+				editorPanel?.selectFile(ref.id);
+				editorPanel?.requestCloseFile(ref.id);
+				persistTabs();
+				return;
+			}
+			topTabs.forget(key);
+			editorPanel?.requestCloseFile(ref.id);
+		} else {
+			topTabs.forget(key);
+			if (ref.kind === "browser") closeBrowserPageTab(ref.id);
+			else if (ref.kind === "diff") {
+				pullRequestDiff = null;
+				gitService.clearSelection();
+			} else if (ref.kind === "pull-requests") pullRequestSelection.selected = null;
+		}
+		persistTabs();
+	}
+
+	function openNewBrowserTab(): void {
+		if (selection.activeOwnedId) browser.workspace.ownedId = selection.activeOwnedId;
+		const id = browser.workspace.activated ? createBrowserPageTab() : queueBrowserPageTab();
+		if (!id) return;
+		topTabs.open(`browser:${id}`);
+		persistTabs();
+	}
+
+	function selectCenterTab(id: CenterTabId): void {
+		if (id === "session") {
+			if (workbench.expanded) workbench.setExpanded(false);
+			return;
+		}
+		if (id === "editor") {
+			if (editorState.activePath) topTabs.open(`editor:${editorState.activePath}`);
+		} else if (id === "browser") {
+			const active = captureBrowserState().activeTabId;
+			if (!active) return openNewBrowserTab();
+			topTabs.open(`browser:${active}`);
+		} else {
+			topTabs.open(id);
+		}
+		persistTabs();
 	}
 
 	function selectRightTab(id: Parameters<WorkbenchController["selectRightTab"]>[0]): void {
@@ -239,7 +369,7 @@
 			},
 			() => {
 				selectCenterTab("session");
-				selectRightTab("files");
+				workbench.rightTab = "files";
 			},
 			(ownedId, ids) => selection.persistConversationAttachmentIds(ownedId, ids),
 		);
@@ -273,14 +403,13 @@
 	</div>
 {/snippet}
 
-{#snippet toolsArea()}
+{#snippet drawerArea()}
 	<RightPanel
 		visible={workbench.rightPanelOpen}
 		activeId={workbench.rightTab}
 		root={selection.newSession.draftOpen ? "" : selection.durableSessionRoot}
 		rootAvailable={selection.activeRootAvailable}
 		ownedId={selection.activeOwnedId}
-		session={selection.railOwned.find((s) => s.ownedId === selection.activeOwnedId) ?? null}
 		filesRoot={selection.filesProjectionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
@@ -290,31 +419,17 @@
 		onFilesInspectionRootChange={(root) => selection.rememberWorkspaceState({ filesInspectionRoot: root })}
 		onSourceControlInspectionRootChange={(root) => selection.rememberWorkspaceState({ sourceControlInspectionRoot: root })}
 		sourceControlWorkspace={selection.activeWorkspaceSnapshot?.sourceControl}
-		historyWorkspace={selection.activeWorkspaceSnapshot?.history}
 		onSourceControlWorkspaceChange={(ownedId, sourceControl) => {
 			if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ sourceControl });
 		}}
-		onHistoryWorkspaceChange={(ownedId, history) => {
-			if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ history });
-		}}
-		onBrowserWorkspaceChange={(ownedId, browser) => {
-			selection.persistWorkspaceState(ownedId, { browser });
-		}}
+		tasksView={selection.activeWorkspaceSnapshot?.tasksView}
+		onTasksViewChange={(ownedId, tasksView) => selection.persistWorkspaceState(ownedId, { tasksView })}
 		checkoutDiscoveryRoots={selection.filesProjectionRoot ? [selection.filesProjectionRoot] : []}
 		onUseSessionCheckout={selection.controlledSession?.agent === "codex" && selection.controlledSession.origin === "app"
 			? async (root) => {
 					await selection.useSessionCheckout(root);
 				}
 			: undefined}
-	/>
-{/snippet}
-
-{#snippet centerTabsArea()}
-	<CenterCornerTabs
-		activeId={workbench.centerTab}
-		onSelect={selectCenterTab}
-		rightPanelOpen={workbench.rightPanelOpen}
-		onToggleRightPanel={() => workbench.toggleRightPanel()}
 	/>
 {/snippet}
 
@@ -372,46 +487,67 @@
 	</div>
 {/snippet}
 
-{#snippet editorArea()}
-	<EditorPanel
-		bind:this={editorPanel}
-		ownedId={selection.activeOwnedId}
-		showing={workbench.centerTab === "editor"}
-		rootAvailable={selection.controlledEditorRootAvailable}
-		onCloseAllEditors={() => selection.editorSessions.clearActiveEditors()}
-		onFileOpened={() => selectCenterTab("editor")}
-	/>
-{/snippet}
-
-{#snippet diffArea()}
-	{#if workbench.centerTab === "diff"}
-		<GitDiffView
-			showing={true}
-			rootAvailable={pullRequestDiff !== null || selection.activeRootAvailable}
-			pullRequestDiff={pullRequestDiff}
-			mode={workbench.diffMode}
-			onModeChange={(mode) => workbench.setDiffMode(mode)}
-		/>
-	{/if}
-{/snippet}
-
-{#snippet gitHistoryArea()}
-	<GitHistoryView
-		root={selection.activeRootAvailable ? selection.durableSessionRoot : ""}
-		rootAvailable={selection.activeRootAvailable}
-		historyPath={gitPanel.historyPath}
-		showing={workbench.centerTab === "git-history"}
-	/>
-{/snippet}
-
-{#snippet pullRequestsArea()}
-	<PullRequestWorkspace showing={workbench.centerTab === "pull-requests"} />
+{#snippet toolsArea()}
+	<!-- The tab pane: one surface per kind, only the active one displayed.
+	     Editor and browser stay mounted (their lifecycles are per session);
+	     History and Pull requests mount while their tab exists; the diff only
+	     while it is in front. -->
+	<div class="pane-stack">
+		<div class="pane-body" class:showing={paneShowing && topTabs.activeKind === "editor"}>
+			<EditorPanel
+				bind:this={editorPanel}
+				ownedId={selection.activeOwnedId}
+				showing={paneShowing && topTabs.activeKind === "editor"}
+				rootAvailable={selection.controlledEditorRootAvailable}
+				onCloseAllEditors={() => selection.editorSessions.clearActiveEditors()}
+				onFileOpened={() => selectCenterTab("editor")}
+			/>
+		</div>
+		<div class="pane-body" class:showing={paneShowing && topTabs.activeKind === "browser"}>
+			<BrowserPanel
+				visible={paneShowing && topTabs.activeKind === "browser" && toolsRailWidth > 0}
+				panelOpen={paneShowing}
+				root={browserRoot}
+				ownedId={selection.activeOwnedId}
+				onWorkspaceChange={(ownedId, browser) => {
+					selection.persistWorkspaceState(ownedId, { browser });
+				}}
+			/>
+		</div>
+		{#if topTabs.row.includes("git-history")}
+			<div class="pane-body" class:showing={topTabs.activeKind === "git-history"}>
+				<GitHistoryView
+					root={selection.activeRootAvailable ? selection.durableSessionRoot : ""}
+					rootAvailable={selection.activeRootAvailable}
+					historyPath={gitPanel.historyPath}
+					showing={topTabs.activeKind === "git-history"}
+				/>
+			</div>
+		{/if}
+		{#if topTabs.row.includes("pull-requests")}
+			<div class="pane-body" class:showing={topTabs.activeKind === "pull-requests"}>
+				<PullRequestWorkspace showing={topTabs.activeKind === "pull-requests"} />
+			</div>
+		{/if}
+		{#if topTabs.activeKind === "diff"}
+			<div class="pane-body showing">
+				<GitDiffView
+					showing={true}
+					rootAvailable={pullRequestDiff !== null || selection.activeRootAvailable}
+					pullRequestDiff={pullRequestDiff}
+					mode={workbench.diffMode}
+					onModeChange={(mode) => workbench.setDiffMode(mode)}
+				/>
+			</div>
+		{/if}
+	</div>
 {/snippet}
 
 <main
 	class="next-shell"
 	style:--sessions-rail-width={`${sessionsRailWidth}px`}
 	style:--tools-rail-width={`${toolsRailWidth}px`}
+	style:--drawer-width={workbench.rightPanelOpen ? "326px" : "0px"}
 	oncontextmenu={(event) => {
 		const target = event.target instanceof Element ? event.target : null;
 		if (target?.closest('input, textarea, [contenteditable="true"]')) return;
@@ -420,37 +556,55 @@
 >
 	<div class="window-chrome" data-tauri-drag-region>
 		<div class="window-sessions-cap" data-tauri-drag-region></div>
-		<div class="window-center-tabs" data-tauri-drag-region>
-			{@render centerTabsArea()}
-		</div>
-		<div class="window-right-tabs" class:open={workbench.rightPanelOpen} data-tauri-drag-region>
-			{#if workbench.rightPanelOpen}
-				<RightPanelTabs
-					activeId={workbench.rightTab}
-					onSelect={selectRightTab}
-					expanded={workbench.rightExpanded}
-					onToggleExpand={() => workbench.toggleRightExpanded()}
-				/>
-			{/if}
-		</div>
-	</div>
-	<div class="frame-area">
-		<ShellFrame
-			sessions={sessionsArea}
-			tools={toolsArea}
-			dock={dockArea}
-			center={{
-				session: sessionArea,
-				editor: editorArea,
-				diff: diffArea,
-				gitHistory: gitHistoryArea,
-				pullRequests: pullRequestsArea,
+		<TopTabRow
+			tabs={topTabViews}
+			activeKey={topTabs.activeKey}
+			expanded={workbench.expanded}
+			paneOpen={paneShowing && toolsRailWidth > 0}
+			chatTitle={selection.railOwned.find((s) => s.ownedId === selection.activeOwnedId)?.title || "Chat"}
+			drawerOpen={workbench.rightPanelOpen}
+			canOpenBrowser={Boolean(browserRoot)}
+			onSelect={selectTopTab}
+			onClose={closeTopTab}
+			onSelectChat={() => selectCenterTab("session")}
+			onNewBrowserTab={openNewBrowserTab}
+			onToggleExpanded={() => workbench.setExpanded(!workbench.expanded)}
+			onToggleDrawer={() => workbench.toggleRightPanel()}
+			editorActions={{
+				pin: pinEditorFile,
+				closeOthers: (path) => editorPanel?.closeOtherFiles(path),
+				closeSaved: () => editorPanel?.closeSavedFiles(),
+				timeline: (path) => editorPanel?.openTimeline(path),
 			}}
-			onSessionsWidthChange={(width) => (sessionsRailWidth = width)}
-			onToolsWidthChange={(width) => (toolsRailWidth = width)}
-			onReady={(controls) => workbench.onFrameReady(controls)}
-			onCenterPanelShown={(id) => workbench.handleCenterPanelShown(id)}
 		/>
+	</div>
+	<!-- The drawer pushes rather than floats: the frame narrows beside it, so
+	     nothing is ever drawn over the native browser page. -->
+	<div class="frame-area">
+		<div class="frame-main">
+			<ShellFrame
+				sessions={sessionsArea}
+				center={sessionArea}
+				tools={toolsArea}
+				dock={dockArea}
+				onSessionsWidthChange={(width) => (sessionsRailWidth = width)}
+				onToolsWidthChange={(width) => (toolsRailWidth = width)}
+				onReady={(controls) => workbench.onFrameReady(controls)}
+			/>
+		</div>
+		<!-- Closing hides the drawer rather than unmounting it (measured: unmounting
+		     saved no memory and made reopening slower). Hidden, it takes no width. -->
+		<aside class="right-drawer" class:open={workbench.rightPanelOpen} aria-label="Tools" aria-hidden={!workbench.rightPanelOpen}>
+			<RightPanelTabs
+				activeId={workbench.rightTab}
+				extraId={workbench.rightExtraTab}
+				onSelect={selectRightTab}
+				onClose={() => workbench.setRightPanelOpen(false)}
+			/>
+			<div class="right-drawer-body">
+				{@render drawerArea()}
+			</div>
+		</aside>
 	</div>
 
 	<UtilityStrip
@@ -484,14 +638,81 @@
 	}
 
 	.frame-area {
+		display: flex;
 		flex: 1 1 auto;
 		min-height: 0;
 		position: relative;
 	}
 
+	.frame-main {
+		flex: 1 1 auto;
+		min-width: 0;
+		height: 100%;
+	}
+
+	/* The drawer is a card in the same gutter as the frame's own cards; its
+	   320px plus the 6px gutter is the --drawer-width the chrome row adds. The
+	   column takes its full width at once (an animated width would lay the
+	   whole frame out again every frame); only the card slides in, and the
+	   animation ends. Closed, it is display:none and releases its width. */
+	.right-drawer {
+		display: none;
+		flex: 0 0 320px;
+		flex-direction: column;
+		min-height: 0;
+		margin: 6px 6px 6px 0;
+		border-radius: var(--radius-sm);
+		overflow: hidden;
+		background: var(--panel-fade), var(--color-surface);
+		background-repeat: no-repeat;
+	}
+
+	.right-drawer.open {
+		display: flex;
+		animation: right-drawer-in 160ms ease-out;
+	}
+
+	@keyframes right-drawer-in {
+		from {
+			opacity: 0;
+			transform: translateX(16px);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.right-drawer.open {
+			animation: none;
+		}
+	}
+
+	.right-drawer-body {
+		flex: 1 1 auto;
+		min-height: 0;
+	}
+
+	.pane-stack {
+		position: relative;
+		height: 100%;
+		width: 100%;
+		min-width: 0;
+		min-height: 0;
+		overflow: hidden;
+	}
+
+	.pane-body {
+		position: absolute;
+		inset: 0;
+		display: none;
+		overflow: hidden;
+	}
+
+	.pane-body.showing {
+		display: block;
+	}
+
 	.window-chrome {
 		display: grid;
-		grid-template-columns: var(--sessions-rail-width) minmax(0, 1fr) var(--tools-rail-width);
+		grid-template-columns: var(--sessions-rail-width) minmax(0, 1fr);
 		flex: 0 0 calc(var(--center-head-row-height) + 6px);
 		align-items: center;
 		min-height: 0;
@@ -502,25 +723,6 @@
 	.window-sessions-cap {
 		height: 100%;
 		border-right: 1px solid var(--color-border);
-	}
-
-	.window-center-tabs {
-		min-width: 0;
-		max-width: 100%;
-		justify-self: center;
-	}
-
-	.window-right-tabs {
-		display: flex;
-		width: 100%;
-		height: 100%;
-		min-width: 0;
-		align-items: center;
-		box-sizing: border-box;
-	}
-
-	.window-right-tabs.open {
-		border-left: 1px solid var(--color-border);
 	}
 
 	.sessions-region {

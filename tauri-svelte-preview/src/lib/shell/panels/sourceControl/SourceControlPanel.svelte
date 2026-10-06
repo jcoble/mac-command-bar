@@ -581,7 +581,7 @@
            branch with no upstream. -->
       <DropdownMenu.Root onOpenChange={moreMenuOpenChange}>
         <DropdownMenu.Trigger
-          class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }))}
+          class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'rounded-full')}
           aria-label="More source-control actions"
           data-testid="source-control-more-actions"
         >

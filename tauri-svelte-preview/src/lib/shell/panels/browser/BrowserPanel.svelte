@@ -1,20 +1,19 @@
 <script lang="ts">
   /**
-   * BrowserPanel.svelte — the Browser tab of the right column.
+   * BrowserPanel.svelte — what a browser tab of the top row shows in the tab
+   * pane. One panel serves every browser tab; the top row picks the page.
    *
    * The page is not in this document. It is a native child view the shell puts
    * on screen by window-space bounds, which is why this panel spends most of
    * its effort measuring: it hands over the rectangle it wants filled every
-   * time that rectangle could have moved — mounting, the panel being resized,
+   * time that rectangle could have moved — mounting, the pane being resized,
    * the window being resized, and the tab being switched away from and back.
-   * When the tab is not the one in front the view is taken off screen entirely,
-   * or it would sit over whichever panel replaced it.
+   * When another tab is in front the view is hidden, so the same live page
+   * comes back; it is released only when the pane closes or the session changes.
    *
-   * The page has no width of its own. It is the right column's content, so the
-   * column's width IS the page's width: dragging the seam between the center
-   * and this column resizes the page. Expanding the right region gives the
-   * column the center's width too; the panel stays in that same column, and
-   * every right-side tab shares the expanded width.
+   * The page has no width of its own. It is the tab pane's content, so the
+   * pane's width IS the page's width: dragging the seam between the chat and
+   * the pane resizes the page, and expanding the pane widens it over the chat.
    *
    * Marking up works on a still of the page rather than the live view, for the
    * same reason: nothing in the document can be drawn over a native view. The
@@ -38,7 +37,7 @@
    * staged in a box the reader was not looking at read as a button that did
    * nothing.
    */
-  import { onMount, untrack } from 'svelte';
+  import { untrack } from 'svelte';
   import ArrowUp from '@lucide/svelte/icons/arrow-up';
   import Globe from '@lucide/svelte/icons/globe';
   import X from '@lucide/svelte/icons/x';
@@ -61,14 +60,11 @@
     browser,
     browserModelContext,
     captureBrowserState,
-    closeBrowserPageTab,
-    createBrowserPageTab,
     hasRestoredBrowserTabs,
     reloadBrowserFrame,
     releaseBrowserWorkspace,
     setBrowserUrl,
-    syncBrowserNavigation,
-    syncBrowserTab
+    syncBrowserNavigation
   } from '$lib/shell/browser/browserStore.svelte.ts';
   import { subscribeToBrowserNavigation } from '$lib/shell/browser/browserBackend.ts';
   import {
@@ -89,7 +85,6 @@
   import AnnotationBadges from './AnnotationBadges.svelte';
   import AnnotationCanvas from './AnnotationCanvas.svelte';
   import BrowserMiniComposer from './BrowserMiniComposer.svelte';
-  import BrowserTabs from './BrowserTabs.svelte';
   import BrowserToolbar from './BrowserToolbar.svelte';
   import { compositeAnnotations, liveShapes, type AnnotationShape, type PlacedAnnotationShape } from './annotationComposite.ts';
   import {
@@ -170,14 +165,6 @@
   const activeTab = $derived<BrowserTabState | null>(
     browser.workspace.activeTabId ? browser.workspace.tabs[browser.workspace.activeTabId] ?? null : null
   );
-  const browserTabs = $derived.by(() => {
-    const tabs: BrowserTabState[] = [];
-    for (const id of browser.workspace.tabOrder) {
-      const tab = browser.workspace.tabs[id];
-      if (tab) tabs.push(tab);
-    }
-    return tabs;
-  });
   const marks = $derived(liveShapes(composeMarks(annotations, strokes), NOTHING_ERASED));
   const numbered = $derived(numberAnnotations(annotations));
   /**
@@ -210,6 +197,8 @@
    * message that comes and goes with the marking.
    */
   const errorText = $derived(failure || activeTab?.error || browser.error);
+  /** The page the top row has chosen, live or only remembered. */
+  const chosenTabId = $derived(captureBrowserState().activeTabId);
 
   function markId(): string {
     nextMarkId += 1;
@@ -355,41 +344,25 @@
     navigate();
   }
 
-  onMount(() => registerBrowserUrlNavigation(openRequestedUrl));
+  // Only a browser tab on screen takes URLs; one requested before that waits
+  // in `workbenchNavigation` until this registers.
+  $effect(() => {
+    if (!visible) return;
+    return untrack(() => registerBrowserUrlNavigation(openRequestedUrl));
+  });
 
-  function openPageTab(): void {
-    if (!root) return;
-    failure = '';
-    if (ownedId) browser.workspace.ownedId = ownedId;
-    placeBeforeOpening();
-    if (!createBrowserPageTab()) return;
-    persistWorkspace();
-    address = '';
-    addressEdited = false;
-    dropStill();
-    layoutTick += 1;
-  }
-
-  function selectPageTab(tabId: string): void {
-    if (tabId === browser.workspace.activeTabId) return;
-    failure = '';
-    syncBrowserTab(tabId);
-    persistWorkspace();
-    address = '';
-    addressEdited = false;
-    dropStill();
-    layoutTick += 1;
-  }
-
-  function closePageTab(tabId: string): void {
-    failure = '';
-    closeBrowserPageTab(tabId);
-    persistWorkspace();
-    address = '';
-    addressEdited = false;
-    dropStill();
-    layoutTick += 1;
-  }
+  // Another page chosen in the top row (a click, a close, a restore): the
+  // address being typed and any marks belong to the page that was in front.
+  $effect(() => {
+    chosenTabId;
+    untrack(() => {
+      failure = '';
+      address = '';
+      addressEdited = false;
+      dropStill();
+      layoutTick += 1;
+    });
+  });
 
   function step(direction: 'back' | 'forward'): void {
     if (!activeTab) return;
@@ -708,6 +681,12 @@
     // The rows above move the page host, so a row appearing has to be a
     // re-measure in its own right.
     if (chromeHost) observer.observe(chromeHost);
+    // The pane can move without resizing (it sits at its minimum width while
+    // the drawer opens or the sessions column folds). Its left edge is the
+    // width of the two cells before it, so a change there re-measures too.
+    for (const cell of document.querySelectorAll('.shell-region-host-sessions, .shell-region-host-center')) {
+      observer.observe(cell);
+    }
     return () => observer.disconnect();
   });
 
@@ -752,17 +731,28 @@
     });
   });
 
-  // A hidden Browser must not leave its pages running offscreen. Keep only the
-  // compact tab metadata; returning recreates the native views from it.
+  // A closed pane must not leave its pages running offscreen. Keep only the
+  // compact tab metadata; reopening recreates the native views from it. While
+  // another tab is merely in front, the placement effect only hides the views.
+  // The release runs in the effect body, not its teardown: a teardown reads
+  // state as it was before the change that re-ran it, so closing the page in
+  // front put that page straight back into the remembered tabs, and its × had
+  // to be clicked twice.
+  let owningResources = false;
   $effect(() => {
-    const ownsResources = panelOpen && visible;
+    const ownsResources = panelOpen;
     ownedId;
     root;
-    if (!ownsResources) return;
-    return () => untrack(() => {
-      releaseBrowserWorkspace();
-      discard();
+    untrack(() => {
+      if (owningResources) {
+        releaseBrowserWorkspace();
+        discard();
+      }
+      owningResources = ownsResources;
     });
+  });
+  $effect(() => () => {
+    if (owningResources) untrack(releaseBrowserWorkspace);
   });
 
   $effect(() => {
@@ -776,7 +766,9 @@
   });
 
   $effect(() => {
-    if (!visible || !root || !ownedId) return;
+    // Pages live while the pane is open, so keep hearing their navigation
+    // while another tab is in front; showing a page doesn't replay it.
+    if (!panelOpen || !root || !ownedId) return;
     // The diagnostics wrapper increments a reactive counter while subscribing.
     // Keep that bookkeeping outside this effect's dependencies or the counter
     // invalidates the effect that just changed it.
@@ -796,14 +788,6 @@
 
 <div class="browser-panel" data-testid="browser-panel">
   <div class="chrome" bind:this={chromeHost} data-testid="browser-panel-chrome">
-    <BrowserTabs
-      tabs={browserTabs}
-      activeTabId={browser.workspace.activeTabId}
-      disabled={!root}
-      onSelect={selectPageTab}
-      onClose={closePageTab}
-      onNew={openPageTab}
-    />
     <BrowserToolbar
       address={addressValue}
       {tool}
@@ -818,6 +802,9 @@
       onForward={() => step('forward')}
       onReload={reloadBrowserFrame}
       onToolChange={(next) => void chooseTool(next)}
+      annotationCount={annotations.length}
+      {listOpen}
+      onToggleList={() => (listOpen = !listOpen)}
     />
     {#if showsStill}
       <div class="annotation-header" data-testid="browser-annotation-header">

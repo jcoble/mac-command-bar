@@ -1742,6 +1742,18 @@ impl BrowserView for TauriBrowserView {
     }
 
     fn close(&self) -> Result<(), BrowserCommandError> {
+        // wry connects the page's `ipc` handler on the page's own content
+        // manager with a closure holding the page (wry 0.55.1
+        // webkitgtk/mod.rs:638). That cycle keeps a closed page and its web
+        // process alive, so drop the manager's handlers before closing. This is
+        // best effort: the page must still close if it can't be reached.
+        #[cfg(target_os = "linux")]
+        let _ = self.webview.with_webview(|platform| {
+            use gtk::glib::prelude::*;
+            let manager: gtk::glib::Object = platform.inner().property("user-content-manager");
+            // SAFETY: only drops the manager's signal handlers; the page is closed next.
+            unsafe { manager.run_dispose() };
+        });
         self.webview.close().map_err(native_error)
     }
 

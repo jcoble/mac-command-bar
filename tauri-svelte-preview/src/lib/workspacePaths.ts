@@ -70,7 +70,11 @@ export function mapWorkspaceSnapshotPaths(value: unknown, profileId: string | nu
     const native = parseRemoteWorkspacePath(path)?.path ?? path;
     return profileId && native.startsWith('/') ? remoteWorkspacePath(profileId, native) : native;
   };
-  if (typeof value === 'string') return keys.has(key) || key === 'expandedPathsByRoot' ? mapPath(value) : value;
+  if (typeof value === 'string') {
+    // Top-row editor tabs are keyed 'editor:<path>' and must follow openPaths.
+    if ((key === 'order' || key === 'activeKey') && value.startsWith('editor:')) return `editor:${mapPath(value.slice(7))}`;
+    return keys.has(key) || key === 'expandedPathsByRoot' ? mapPath(value) : value;
+  }
   if (Array.isArray(value)) return value.map((item) => mapWorkspaceSnapshotPaths(item, profileId, key));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([name, item]) => [
     name.startsWith('/') || name.startsWith(remotePrefix) ? mapPath(name) : name,

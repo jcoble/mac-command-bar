@@ -26,8 +26,6 @@ const settingsStore = read('../src/lib/settingsStore.svelte.ts');
 const codeMirrorTheme = read('../src/lib/shell/editor/codeMirrorTheme.ts');
 const codeMirrorSourceEditor = read('../src/lib/CodeMirrorSourceEditor.svelte');
 const xtermFactory = read('../src/lib/shell/xtermFactory.ts');
-const centerTabs = read('../src/lib/shell/components/CenterCornerTabs.svelte');
-const segmentedTabs = read('../src/lib/shell/components/SegmentedTabs.svelte');
 const rightPanel = read('../src/lib/shell/components/RightPanel.svelte');
 const browserPanel = read('../src/lib/shell/panels/browser/BrowserPanel.svelte');
 const browserToolbar = read('../src/lib/shell/panels/browser/BrowserToolbar.svelte');
@@ -111,11 +109,8 @@ assert.doesNotMatch(
 assert.match(toolRun, /if \(runWasActive\)[\s\S]*?runOpen = false/);
 assert.match(elapsed, /if \(totalHours < 24\)/);
 assert.match(rowVisual, /\.row-visual:hover :global\(\.line-title\)/);
-assert.doesNotMatch(centerTabs, /LanguageIntelligenceControls/);
-assert.match(centerTabs, /data-testid="toggle-right-panel"/);
 assert.match(page, /visible=\{workbench\.rightPanelOpen\}/);
 assert.match(frame, /setToolsPresent[\s\S]*?api\.removePanel\(panel\)/);
-assert.match(workbenchController, /toggleRightPanel\(\)[\s\S]*?setToolsPresent\(open\)/);
 assert.doesNotMatch(
   workbenchController,
   /releaseBrowserWorkspace/,
@@ -123,23 +118,18 @@ assert.doesNotMatch(
 );
 assert.match(
   browserPanel,
-  /return \(\) => untrack\(\(\) => \{\s*releaseBrowserWorkspace\(\);/,
-  'the Browser component releases its native workspace from its own lifecycle cleanup'
+  /if \(owningResources\) \{\s*releaseBrowserWorkspace\(\);/,
+  'the Browser component releases its native workspace in an effect body; a teardown reads pre-change state'
 );
 assert.match(
   browserPanel,
   /untrack\(\(\) => subscribeToBrowserNavigation\(syncBrowserNavigation\)\)/,
   'Browser navigation diagnostics cannot become a dependency of their subscribing effect'
 );
-assert.equal(
-  (browserToolbar.match(/tooltip=\{false\}/g) ?? []).length,
-  7,
-  'Browser toolbar icons must not mount the tooltip state loop over the native view'
-);
 assert.doesNotMatch(
-  segmentedTabs,
-  /Tooltip\./,
-  'panel tabs must not mount tooltip state over the native Browser view'
+  browserToolbar,
+  /Tooltip\.|IconButton/,
+  'Browser toolbar icons must not mount the tooltip state loop over the native view'
 );
 assert.match(page, /onProblemsLocationChange=\{\(location\) => workbench\.applyProblemsLocation\(location\)\}/);
 assert.match(page, /onShowBottomDock=\{\(\) => workbench\.showBottomDock\(\)\}/);
@@ -151,7 +141,6 @@ assert.match(dockPanel, /await terminal\?\.close\(\)[\s\S]*?problemsLocation = l
 assert.match(workspaceTerminal, /new AbortController\(\)/);
 assert.match(workspaceTerminal, /stop\.abort\(\)[\s\S]*?closeTerminalSessionFromTauri/);
 assert.match(palettePanel, /id: 'show-bottom-dock'/);
-assert.match(rightPanel, /visible && activeId === 'browser'/);
 assert.match(rightPanel, /visible=\{visible && activeId === 'files'\}/);
 assert.doesNotMatch(utilityStrip, /LanguageIntelligenceControls/);
 assert.match(editorPanel, /<div class="editor-status">[\s\S]*?<LanguageIntelligenceControls \/>/);

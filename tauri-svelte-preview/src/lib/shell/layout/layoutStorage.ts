@@ -88,37 +88,6 @@ export function gridPanelIds(serialized: unknown): Set<string> {
 }
 
 /**
- * How many groups a `SerializedDockview` holds — one leaf of its grid tree is
- * one group of tabs. The center dock wants exactly one: three surfaces stacked,
- * with the corner tabs choosing between them. A layout stored by an older build
- * that split them across two groups counts two, and the caller rebuilds instead
- * of restoring it. Malformed input counts zero, which fails the same check.
- */
-export function dockGroupCount(serialized: unknown): number {
-  const root = (serialized as { grid?: { root?: unknown } } | null)?.grid?.root;
-  let groups = 0;
-  const walk = (node: unknown): void => {
-    if (!node || typeof node !== 'object') return;
-    const type = (node as { type?: unknown }).type;
-    if (type === 'leaf') {
-      groups += 1;
-      return;
-    }
-    const data = (node as { data?: unknown }).data;
-    if (Array.isArray(data)) for (const child of data) walk(child);
-  };
-  walk(root);
-  return groups;
-}
-
-/** Panel ids inside a `SerializedDockview` (`{ panels: Record<id, …> }`). */
-export function dockPanelIds(serialized: unknown): Set<string> {
-  const panels = (serialized as { panels?: unknown } | null)?.panels;
-  if (!panels || typeof panels !== 'object') return new Set();
-  return new Set(Object.keys(panels));
-}
-
-/**
  * Pane ids inside a `SerializedPaneview` (dockview-core 6.6.1 shape:
  * `{ size, views: [{ size, expanded?, data: { id, component, title, … } }] }`).
  * Collapsed panes are in `views` exactly like open ones, so this returns the

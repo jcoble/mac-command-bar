@@ -1220,9 +1220,12 @@ impl SessionStore {
         connection
             .execute(
                 "UPDATE session_workspaces
-                 SET snapshot_json = json_set(
-                        CASE WHEN json_type(snapshot_json) = 'object' THEN snapshot_json ELSE '{}' END,
-                        '$.rightTab', 'files', '$.center.activePanelId', 'session'
+                 SET snapshot_json = json_remove(
+                        json_set(
+                            CASE WHEN json_type(snapshot_json) = 'object' THEN snapshot_json ELSE '{}' END,
+                            '$.rightTab', 'files'
+                        ),
+                        '$.center', '$.topTabs'
                      ),
                      updated_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000
                  WHERE json_valid(snapshot_json)",
@@ -4134,6 +4137,38 @@ mod tests {
         let path = directory.path().join("sessions.db");
         let store = SessionStore::open(&path).expect("open session store");
         (directory, path, store)
+    }
+
+    /// Resetting the selected tabs puts the drawer back on Files and drops the
+    /// top tab row (and any old center-dock record), keeping everything else.
+    #[test]
+    fn clearing_selected_tabs_resets_the_drawer_and_drops_the_tab_row() {
+        let (_directory, _path, store) = open_temp_store();
+        store
+            .upsert_session(&fixture_session("owned-tabs", 2_000))
+            .expect("save the session");
+        store
+            .upsert_workspace_snapshot(
+                "owned-tabs",
+                r#"{"rightTab":"tasks","center":{"activePanelId":"diff","layout":{}},"topTabs":{"order":["diff"],"activeKey":"diff"},"openPaths":["/repo/a.ts"]}"#,
+            )
+            .expect("save the workspace");
+
+        store
+            .clear_workspace_selected_tabs()
+            .expect("clear the selected tabs");
+
+        let snapshot: serde_json::Value = serde_json::from_str(
+            &store
+                .get_workspace_snapshot("owned-tabs")
+                .expect("read the workspace")
+                .expect("the workspace is there"),
+        )
+        .expect("the workspace is JSON");
+        assert_eq!(snapshot["rightTab"], "files");
+        assert!(snapshot.get("center").is_none(), "the old center record is gone");
+        assert!(snapshot.get("topTabs").is_none(), "the tab row is gone");
+        assert_eq!(snapshot["openPaths"][0], "/repo/a.ts", "the rest is kept");
     }
 
     #[test]

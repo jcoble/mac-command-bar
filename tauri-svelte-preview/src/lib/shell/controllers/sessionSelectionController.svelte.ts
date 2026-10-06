@@ -237,7 +237,9 @@ export class SessionSelectionController {
 	}
 
 	rememberWorkspaceState(patch: Partial<SessionWorkspaceSnapshot>): void {
-		this.activeWorkspaceSnapshot = this.editorSessions.rememberWorkspaceState(patch);
+		// A session whose selection failed has no editor owner; keep showing its
+		// saved workspace rather than dropping it on the first panel change.
+		this.activeWorkspaceSnapshot = this.editorSessions.rememberWorkspaceState(patch) ?? this.activeWorkspaceSnapshot;
 	}
 
 	persistWorkspaceState(ownedId: string, patch: Partial<SessionWorkspaceSnapshot>): void {
@@ -368,7 +370,18 @@ export class SessionSelectionController {
 			const conversation = captureConversationWorkspace(displayedChatOwnedId);
 			if (conversation) this.editorSessions.rememberWorkspaceState({ conversation });
 		}
-		await this.sessionSelectionLayers.selectSession(session, displayedChatOwnedId, owner);
+		try {
+			await this.sessionSelectionLayers.selectSession(session, displayedChatOwnedId, owner);
+		} catch (error) {
+			if (!this.isCurrent(owner)) return;
+			const snapshot = await this.editorSessions.restoreEditorWorkspaceForSession(
+				session.ownedId, root, false, owner.signal,
+			);
+			if (!this.isCurrent(owner)) return;
+			this.editorSessions.releaseOwnership();
+			this.activeWorkspaceSnapshot = snapshot;
+			throw error;
+		}
 		if (!this.isCurrent(owner)) return;
 		this.activeRootAvailable = Boolean(this.sessionSelectionLayers.treeRoot);
 		shellPanels.sessionPicked(this.activeRootAvailable);
