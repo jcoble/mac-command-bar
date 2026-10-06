@@ -43,8 +43,8 @@ export function codeMirrorThemeForAppearance(
     {
       '&': {
         height: '100%',
-        backgroundColor: '#17191e',
-        color: '#eef0f9',
+        backgroundColor: 'var(--card)',
+        color: 'var(--foreground)',
         fontSize: `${appearance.fontSize}px`
       },
       '.cm-scroller': {
@@ -60,11 +60,11 @@ export function codeMirrorThemeForAppearance(
       '.cm-selectionBackground, ::selection': {
         backgroundColor: '#ad5dca44 !important'
       },
-      '.cm-activeLine': { backgroundColor: '#23262d' },
+      '.cm-activeLine': { backgroundColor: 'var(--muted)' },
       '.cm-gutters': {
-        backgroundColor: '#17191e',
+        backgroundColor: 'var(--card)',
         color: '#545864',
-        borderRight: '1px solid #23262d'
+        borderRight: 'none'
       },
       '.cm-activeLineGutter': {
         backgroundColor: '#23262d',
