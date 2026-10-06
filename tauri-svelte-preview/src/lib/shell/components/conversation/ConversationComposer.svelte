@@ -528,14 +528,13 @@
             {/if}
             <div class="wide-controls"><ComposerConfigMenu {provider} state={configState} pending={pendingConfig} error={configError} onChange={onConfigChange} /></div>
             <div class="compact-controls"><CompactComposerControlsMenu {provider} state={configState} pending={pendingConfig} onChange={onConfigChange} /></div>
-            <!-- The mic keeps its place in every state; send joins it to the
-                 right the moment there is something to send. -->
+            <!-- The mic and send keep their places in every state; send waits
+                 disabled until there is something to send. -->
             <button class="round-control mic" type="button" disabled title="Voice input is not available yet" aria-label="Voice input, not available yet"><Mic size={17} /></button>
             {#if sending && (!hasSendableContent || !supportsSteering)}
               <button class="round-control send stop" data-testid="conversation-stop" type="button" aria-label="Stop generation" onclick={() => void onStop?.()}><Square size={13} fill="currentColor" /></button>
-            {/if}
-            {#if hasSendableContent && (!sending || supportsSteering)}
-              <button class="round-control send" data-testid="conversation-send" type="submit" aria-label={sending ? 'Steer current turn' : 'Send message'}><ArrowUp size={17} strokeWidth={2.2} /></button>
+            {:else}
+              <button class="round-control send" data-testid="conversation-send" type="submit" disabled={!hasSendableContent} aria-label={sending ? 'Steer current turn' : 'Send message'}><ArrowUp size={17} strokeWidth={2.2} /></button>
             {/if}
           </div>
         </div>
@@ -567,7 +566,7 @@
     position: relative;
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
-    grid-template-areas: 'panels panels panels' 'prompt prompt prompt' 'lead . trail' 'hint hint hint';
+    grid-template-areas: 'panels panels panels' 'prompt prompt prompt' 'lead trail trail' 'hint hint hint';
     row-gap: var(--space-2);
     align-items: center;
     overflow: visible;
@@ -604,11 +603,13 @@
   .footer-left, .footer-right { display: flex; min-width: 0; align-items: center; gap: var(--composer-row-gap); }
   /* Pulled left so the + glyph lines up under the message text. */
   .footer-left { grid-area: lead; margin-left: calc(-1 * var(--space-2)); }
-  /* The right of the row is one cluster, not four separate controls: the pills
-     already carry their own padding, so the gap between them only has to keep
-     them from touching. The meter is the one thing there that is read rather
-     than pressed, so it keeps its own space ahead of the group. */
-  .footer-right { grid-area: trail; justify-self: end; gap: 2px; }
+  /* The settings pills follow the add button on the left; the mic and send
+     hold the far right. The pills already carry their own padding, so the gap
+     between them only has to keep them from touching. The meter is the one
+     thing there that is read rather than pressed, so it keeps its own space
+     ahead of the group. */
+  .footer-right { grid-area: trail; gap: 4px; }
+  .mic { margin-left: auto; }
   .file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
   .leading-controls { display: flex; width: min(820px, calc(100% - 44px)); min-width: 0; margin: 0 auto var(--composer-row-gap); align-items: center; gap: var(--composer-row-gap); }
   .wide-controls { display: flex; min-width: 0; }
@@ -620,10 +621,11 @@
   .round-control:focus-visible { outline: 2px solid var(--color-focus-solid); outline-offset: 2px; }
   .add-control.open { background: var(--composer-pill-surface-open); color: var(--composer-pill-text-open); }
   .mic:disabled { cursor: default; opacity: .55; }
-  .send { width: 32px; height: 32px; margin-left: var(--space-1); background: var(--primary); color: var(--primary-foreground); }
+  .send { width: 32px; height: 32px; background: var(--primary); color: var(--primary-foreground); }
   .send:hover:not(:disabled) { background: var(--primary); color: var(--primary-foreground); filter: brightness(1.08); }
   .send.stop { background: var(--destructive); }
   .send.stop:hover:not(:disabled) { background: var(--destructive); }
+  .send:disabled { cursor: default; }
 
   /* The gauge is the size of the icons beside it and drawn in the same quiet
      colour, warming as the window empties so the last stretch is noticed
@@ -677,8 +679,8 @@
   @container composer (max-width: 440px) { .wide-controls { display: none; } .compact-controls { display: flex; } }
 
   /* Short, one-shot transitions. The box eases its border and fill as focus
-     and dragging change; the send button pops in the moment there is
-     something to send. */
+     and dragging change; the send button pops in when it takes the stop
+     button's place. */
   @keyframes send-pop { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
   @media (prefers-reduced-motion: no-preference) {
     .composer-box { transition: border-color .14s ease, background-color .14s ease; }

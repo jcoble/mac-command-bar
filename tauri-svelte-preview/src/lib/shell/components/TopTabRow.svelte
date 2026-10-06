@@ -30,15 +30,15 @@
    * After it: one tab per open file, browser page, Changes, History and Pull
    * requests, then `+` (new browser tab), expand, and the drawer toggle.
    *
-   * Tabs shrink toward a minimum before the row scrolls; a thin line parts two
-   * neighbours that are both at rest. Hover details are the native `title`
+   * Tabs keep their natural width up to 180px; once they no longer fit, the
+   * row scrolls rather than squeezing them. Hover details are the native `title`
    * tooltip, the one popup the OS draws above a live browser page.
    *
    * PRESENTATIONAL ONLY: the tabs and the active key are handed in, and every
    * click is handed back out.
    */
   import { untrack } from 'svelte';
-  import FileDiff from '@lucide/svelte/icons/file-diff';
+  import GitBranch from '@lucide/svelte/icons/git-branch';
   import GitCommitHorizontal from '@lucide/svelte/icons/git-commit-horizontal';
   import GitPullRequest from '@lucide/svelte/icons/git-pull-request';
   import Globe from '@lucide/svelte/icons/globe';
@@ -98,7 +98,7 @@
 
   const ICONS = {
     browser: Globe,
-    diff: FileDiff,
+    diff: GitBranch,
     'git-history': GitCommitHorizontal,
     'pull-requests': GitPullRequest
   } as const;
@@ -130,19 +130,15 @@
   });
 </script>
 
-{#snippet tabChip(tab: TopTabView, props: Record<string, unknown>, index: number)}
+{#snippet tabChip(tab: TopTabView, props: Record<string, unknown>)}
   {@const active = tab.key === activeKey}
-  {@const parted = index > 0 && !active && tabs[index - 1].key !== activeKey}
   <div
     {...props}
     title={tab.detail}
     class={cn(
-      'group relative flex h-[30px] min-w-[88px] max-w-[180px] items-center gap-2 rounded-[6px] pl-3 text-[13px] font-medium transition-colors [flex:0_1_160px]',
-      active || tab.dirty ? 'pr-1' : 'pr-3',
-      active ? 'min-w-[120px] bg-card text-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
-      // The line on this tab's left edge goes while either neighbour is hovered.
-      parted &&
-        'before:absolute before:top-1/2 before:left-[-2.5px] before:h-[16px] before:w-px before:-translate-y-1/2 before:bg-border hover:before:opacity-0 [.group:hover+&]:before:opacity-0'
+      'group relative flex h-[30px] max-w-[180px] shrink-0 items-center gap-2 rounded-[6px] pl-3 text-[13px] transition-colors',
+      active || tab.dirty ? 'pr-1.5' : 'pr-3',
+      active ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
     )}
     data-active={active}
   >
@@ -150,7 +146,7 @@
       type="button"
       role="tab"
       aria-selected={active}
-      class="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left outline-none"
+      class="flex h-full min-w-0 flex-1 items-center gap-2 text-left outline-none"
       onclick={() => onSelect(tab.key)}
     >
       {#if tab.kind === 'editor'}
@@ -161,7 +157,7 @@
       {/if}
       <span class={cn('min-w-0 truncate', tab.preview && 'italic')}>{tab.label}</span>
       {#if tab.additions || tab.deletions}
-        <span class="shrink-0 text-[11px] tabular-nums">
+        <span class="inline-flex shrink-0 gap-1 text-[11px] tabular-nums">
           <span class="text-(--color-good)">+{tab.additions}</span>
           <span class="text-(--color-bad)">−{tab.deletions}</span>
         </span>
@@ -200,7 +196,7 @@
     <button
       type="button"
       class={cn(
-        'flex h-[30px] min-w-0 items-center gap-2 rounded-[6px] px-3 text-[13px] font-medium transition-colors',
+        'flex h-[30px] min-w-0 items-center gap-2 rounded-[6px] px-3 text-[13px] transition-colors',
         expanded ? 'max-w-[224px] text-foreground hover:bg-accent/50' : 'bg-card text-foreground'
       )}
       title={chatTitle}
@@ -213,15 +209,17 @@
     {#if expanded}<Separator orientation="vertical" class="h-4" />{/if}
   </div>
 
+  <!-- The tabs and + sit together on the left; the window controls hold the
+       right end, and the free space between them drags the window. -->
   <div class="flex h-full min-w-0 items-center gap-1 px-2" data-tauri-drag-region>
     <div
       bind:this={track}
-      class="flex min-w-0 flex-1 items-center gap-[4px] overflow-x-auto [scrollbar-width:none]"
+      class="flex min-w-0 items-center gap-1 overflow-x-auto [scrollbar-width:none]"
       role="tablist"
       aria-label="Open tabs"
       use:scrollTabStrip
     >
-      {#each tabs as tab, index (tab.key)}
+      {#each tabs as tab (tab.key)}
         {#if tab.kind === 'editor' && tab.path}
           {@const path = tab.path}
           <!-- Opening the menu activates its tab first, so the menu never
@@ -229,7 +227,7 @@
           <ContextMenu.Root onOpenChange={(open) => { if (open) onSelect(tab.key); }}>
             <ContextMenu.Trigger>
               {#snippet child({ props })}
-                {@render tabChip(tab, props, index)}
+                {@render tabChip(tab, props)}
               {/snippet}
             </ContextMenu.Trigger>
             <ContextMenu.Content class="w-[220px]" aria-label={`Actions for ${tab.label}`}>
@@ -249,23 +247,24 @@
             </ContextMenu.Content>
           </ContextMenu.Root>
         {:else}
-          {@render tabChip(tab, {}, index)}
+          {@render tabChip(tab, {})}
         {/if}
       {/each}
     </div>
 
-    <div class="flex flex-none items-center gap-1">
-      <Tooltip.Root>
-        <Tooltip.Trigger
-          class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
-          aria-label="New browser tab"
-          disabled={!canOpenBrowser}
-          onclick={onNewBrowserTab}
-        >
-          <Plus aria-hidden="true" />
-        </Tooltip.Trigger>
-        <Tooltip.Content side="bottom">New browser tab</Tooltip.Content>
-      </Tooltip.Root>
+    <Tooltip.Root>
+      <Tooltip.Trigger
+        class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'flex-none')}
+        aria-label="New browser tab"
+        disabled={!canOpenBrowser}
+        onclick={onNewBrowserTab}
+      >
+        <Plus aria-hidden="true" />
+      </Tooltip.Trigger>
+      <Tooltip.Content side="bottom">New browser tab</Tooltip.Content>
+    </Tooltip.Root>
+
+    <div class="ml-auto flex flex-none items-center gap-1">
       <Separator orientation="vertical" class="mx-1 h-[14px]" />
       {#if paneOpen}
         <Tooltip.Root>
