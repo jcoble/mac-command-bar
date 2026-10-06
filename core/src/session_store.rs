@@ -12,7 +12,7 @@ use serde::Serialize;
 
 mod evidence;
 
-const SCHEMA_VERSION: i64 = 16;
+const SCHEMA_VERSION: i64 = 17;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 static SESSION_STORE_ACTIVE_READS: AtomicUsize = AtomicUsize::new(0);
@@ -945,6 +945,54 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not finish remote history write", error))
     }
 
+    pub fn upsert_child_session(
+        &self,
+        parent_owned_id: &str,
+        expected_remote_profile_id: Option<&str>,
+        child: &SessionRow,
+    ) -> Result<()> {
+        let mut connection = self.lock_write()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| StoreError::sqlite("could not begin child session write", error))?;
+        let parent_matches: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions
+                    WHERE owned_id = ?1 AND cached_remote_profile_id IS ?2)",
+                params![parent_owned_id, expected_remote_profile_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| StoreError::sqlite("could not check child session parent", error))?;
+        if !parent_matches {
+            return Err(StoreError::message("child session parent or source does not match"));
+        }
+        let ownership_conflict: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE owned_id = ?1
+                    AND (parent_owned_id IS NOT ?2 OR cached_remote_profile_id IS NOT ?3))",
+                params![child.owned_id, parent_owned_id, expected_remote_profile_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| StoreError::sqlite("could not check child session ownership", error))?;
+        if ownership_conflict {
+            return Err(StoreError::message("child session ownership cannot change"));
+        }
+        upsert_session_on(&transaction, child)?;
+        let changed = transaction
+            .execute(
+                "UPDATE sessions SET parent_owned_id = ?1, cached_remote_profile_id = ?2
+                 WHERE owned_id = ?3",
+                params![parent_owned_id, expected_remote_profile_id, child.owned_id],
+            )
+            .map_err(|error| StoreError::sqlite("could not record child session ownership", error))?;
+        if changed != 1 {
+            return Err(StoreError::message("child session ownership was not recorded"));
+        }
+        transaction
+            .commit()
+            .map_err(|error| StoreError::sqlite("could not finish child session write", error))
+    }
+
     pub fn purge_remote_history(&self, profile_id: &str) -> Result<()> {
         self.lock_write()?.execute(
             "DELETE FROM sessions WHERE cached_remote_profile_id = ?",
@@ -1055,6 +1103,7 @@ impl SessionStore {
                     })?;
                 add_evidence_artifact_schema(&transaction)?;
                 add_notion_task_projection_schema(&transaction)?;
+                add_child_session_schema(&transaction)?;
                 transaction
                     .pragma_update(None, "user_version", SCHEMA_VERSION)
                     .map_err(|error| {
@@ -1426,6 +1475,18 @@ impl SessionStore {
                 transaction.commit()
                     .map_err(|error| StoreError::sqlite("could not finish the item page upgrade", error))?;
             }
+            16 => {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| StoreError::sqlite("could not begin the child session upgrade", error))?;
+                add_child_session_schema(&transaction)?;
+                transaction
+                    .pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| StoreError::sqlite("could not record the child session upgrade", error))?;
+                transaction
+                    .commit()
+                    .map_err(|error| StoreError::sqlite("could not finish the child session upgrade", error))?;
+            }
             SCHEMA_VERSION => {}
             _ => {
                 return Err(StoreError::message(
@@ -1441,6 +1502,7 @@ impl SessionStore {
         add_evidence_artifact_schema(&connection)?;
         add_notion_task_projection_schema(&connection)?;
         add_remote_history_column(&connection)?;
+        add_child_session_schema(&connection)?;
 
         let interrupt_handle = connection.get_interrupt_handle();
         SESSION_STORE_OPEN_HANDLES.fetch_add(1, Ordering::Relaxed);
@@ -1538,7 +1600,7 @@ impl SessionStore {
                         branch, title, project, state, suspended, created_at, last_activity_at,
                         extra, title_source
                  FROM sessions
-                 WHERE cached_remote_profile_id IS NULL
+                 WHERE cached_remote_profile_id IS NULL AND parent_owned_id IS NULL
                  ORDER BY last_activity_at DESC, owned_id ASC",
             )
             .map_err(|error| StoreError::sqlite("could not prepare the session list", error))?;
@@ -1552,7 +1614,8 @@ impl SessionStore {
     pub fn count_sessions(&self) -> Result<usize> {
         let connection = self.lock()?;
         let count: i64 = connection
-            .query_row("SELECT COUNT(*) FROM sessions WHERE cached_remote_profile_id IS NULL", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM sessions
+                        WHERE cached_remote_profile_id IS NULL AND parent_owned_id IS NULL", [], |row| row.get(0))
             .map_err(|error| StoreError::sqlite("could not count sessions", error))?;
         usize::try_from(count)
             .map_err(|_| StoreError::message("the session count could not be represented"))
@@ -3216,6 +3279,29 @@ fn add_remote_history_column(connection: &Connection) -> Result<()> {
         .map_err(|error| StoreError::sqlite("could not index remote history marker", error))
 }
 
+fn add_child_session_schema(connection: &Connection) -> Result<()> {
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'parent_owned_id')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| StoreError::sqlite("could not inspect child session ownership", error))?;
+    if !exists {
+        connection
+            .execute_batch(
+                "ALTER TABLE sessions ADD COLUMN parent_owned_id TEXT
+                    REFERENCES sessions(owned_id) ON DELETE CASCADE;",
+            )
+            .map_err(|error| StoreError::sqlite("could not add child session ownership", error))?;
+    }
+    connection
+        .execute_batch(
+            "CREATE INDEX IF NOT EXISTS sessions_parent_owned_idx ON sessions(parent_owned_id);",
+        )
+        .map_err(|error| StoreError::sqlite("could not index child session ownership", error))
+}
+
 /// Adds the column that records where a session's name came from, unless the
 /// database already has it. Older schemas upgrade directly to the current one.
 fn add_title_source_column(connection: &Connection) -> Result<()> {
@@ -3655,6 +3741,86 @@ mod tests {
         assert!(store.cache_remote_events("other", &remote, &[]).is_err());
         store.purge_remote_history("workbox").unwrap();
         assert!(store.get_session("collision").unwrap().is_some());
+    }
+
+    #[test]
+    fn child_session_is_hidden_from_roots_and_cascades_with_its_parent() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let parent = fixture_session("parent", 1);
+        let child = fixture_session("child", 2);
+        store.upsert_session(&parent).unwrap();
+        store.upsert_child_session("parent", None, &child).unwrap();
+        store.append_event(&fixture_event("child", 1)).unwrap();
+
+        assert_eq!(store.count_sessions().unwrap(), 1);
+        assert_eq!(store.list_sessions().unwrap()[0].owned_id, "parent");
+        assert!(store.get_session("child").unwrap().is_some());
+
+        store.delete_session("parent").unwrap();
+        assert!(store.get_session("child").unwrap().is_none());
+        assert!(store.list_events("child", i64::MIN, 100).unwrap().is_empty());
+    }
+
+    #[test]
+    fn child_session_requires_unchanged_parent_and_remote_source() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let parent = fixture_session("remote-parent", 1);
+        let other_parent = fixture_session("other-parent", 1);
+        store.cache_remote_events("workbox", &parent, &[]).unwrap();
+        store.cache_remote_events("workbox", &other_parent, &[]).unwrap();
+        let child = fixture_session("remote-child", 2);
+
+        assert!(store.upsert_child_session("remote-parent", None, &child).is_err());
+        assert!(store.upsert_child_session("remote-parent", Some("other"), &child).is_err());
+        store.upsert_child_session("remote-parent", Some("workbox"), &child).unwrap();
+        store.cache_remote_events("workbox", &child, &[fixture_event("remote-child", 1)]).unwrap();
+        assert!(store.upsert_child_session("other-parent", Some("workbox"), &child).is_err());
+
+        let local_root = fixture_session("local-root", 3);
+        store.upsert_session(&local_root).unwrap();
+        assert!(store.upsert_child_session("remote-parent", Some("workbox"), &local_root).is_err());
+
+        let connection = store.connection.lock().unwrap();
+        let ownership: (Option<String>, Option<String>) = connection.query_row(
+            "SELECT parent_owned_id, cached_remote_profile_id FROM sessions WHERE owned_id = ?",
+            ["remote-child"],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(ownership, (Some("remote-parent".into()), Some("workbox".into())));
+    }
+
+    #[test]
+    fn schema_v17_adds_child_session_ownership() {
+        let (_directory, path, store) = open_temp_store();
+        store.upsert_session(&fixture_session("existing", 1)).unwrap();
+        drop(store);
+
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(
+            "DROP INDEX sessions_parent_owned_idx;
+             ALTER TABLE sessions DROP COLUMN parent_owned_id;
+             PRAGMA user_version = 16;",
+        ).unwrap();
+        drop(connection);
+
+        let store = SessionStore::open(&path).unwrap();
+        assert!(store.get_session("existing").unwrap().is_some());
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        let column_exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'parent_owned_id')",
+            [], |row| row.get(0),
+        ).unwrap();
+        let index_exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master
+                WHERE type = 'index' AND name = 'sessions_parent_owned_idx')",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(version, super::SCHEMA_VERSION);
+        assert!(column_exists);
+        assert!(index_exists);
     }
 
     #[test]
