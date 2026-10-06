@@ -51,14 +51,11 @@ export interface SessionConversationWorkspace {
   attachmentIds?: string[];
   config?: Record<string, AgentConfigValue>;
   viewByHistoryId?: Record<string, ConversationViewState>;
-  parentScrollTop?: number;
-  childScrollTopById?: Record<string, number>;
   sequence?: number;
   telemetry?: Record<string, AgentConfigValue>;
   writerLease?: AgentWriterLease;
   writerLeaseTransition?: AgentWriterLeaseTransition | null;
   selectedChildId?: string | null;
-  scrollTop?: number;
   providerGeneration?: number;
   lastSequence?: number;
   [key: string]: unknown;
@@ -346,12 +343,6 @@ function normalizeConversation(value: unknown): SessionConversationWorkspace {
       ? { attachmentIds: stringsOf(entry.attachmentIds) }
       : {}),
     ...(isRecord(entry.config) ? { config: entry.config as Record<string, AgentConfigValue> } : {}),
-    ...(typeof entry.parentScrollTop === 'number' && entry.parentScrollTop >= 0
-      ? { parentScrollTop: entry.parentScrollTop }
-      : {}),
-    ...(isScrollMap(entry.childScrollTopById)
-      ? { childScrollTopById: entry.childScrollTopById }
-      : {}),
     ...(nonNegativeInteger(entry.sequence) !== undefined
       ? { sequence: nonNegativeInteger(entry.sequence) }
       : {}),
@@ -364,9 +355,6 @@ function normalizeConversation(value: unknown): SessionConversationWorkspace {
       : {}),
     ...(typeof entry.selectedChildId === 'string' || entry.selectedChildId === null
       ? { selectedChildId: entry.selectedChildId as string | null }
-      : {}),
-    ...(typeof entry.scrollTop === 'number' && entry.scrollTop >= 0
-      ? { scrollTop: entry.scrollTop }
       : {}),
     ...(nonNegativeInteger(entry.providerGeneration) !== undefined
       ? { providerGeneration: nonNegativeInteger(entry.providerGeneration) }
@@ -389,12 +377,6 @@ function isExecutionOwner(value: unknown): value is AgentExecutionOwner {
     'transitioning-to-terminal',
     'stopped'
   ].includes(value as string);
-}
-
-function isScrollMap(value: unknown): value is Record<string, number> {
-  return isRecord(value) && Object.values(value).every(
-    (entry) => typeof entry === 'number' && entry >= 0
-  );
 }
 
 function isWriterLease(value: unknown): value is AgentWriterLease {

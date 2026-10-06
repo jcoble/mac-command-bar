@@ -93,8 +93,6 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   selectedChildHistoryOwnedId: string | null;
   childTranscriptTruncated: boolean;
   childTranscriptError: string | null;
-  scrollTop: number;
-  childScrollTopById: Record<string, number>;
   executionOwner: AgentExecutionOwner;
   writerLease: AgentWriterLease;
   writerLeaseTransition: AgentWriterLeaseTransition | null;
@@ -193,8 +191,6 @@ function freshState(
     selectedChildHistoryOwnedId: null,
     childTranscriptTruncated: false,
     childTranscriptError: null,
-    scrollTop: 0,
-    childScrollTopById: {},
     executionOwner: 'stopped',
     writerLease: { ownedId, generation: 0, owner: 'none' },
     writerLeaseTransition: null,
@@ -1039,20 +1035,6 @@ export function setConversationSelectedChild(ownedId: string, childId: string | 
   current.childTranscriptError = null;
 }
 
-export function setConversationScrollTop(ownedId: string, scrollTop: number): void {
-  const current = conversationSessions[ownedId];
-  if (current) current.scrollTop = Math.max(0, scrollTop);
-}
-
-export function setChildConversationScrollTop(
-  ownedId: string,
-  childId: string,
-  scrollTop: number
-): void {
-  const current = conversationSessions[ownedId];
-  if (current) current.childScrollTopById[childId] = Math.max(0, scrollTop);
-}
-
 export function setConversationWriterLeaseTransition(
   transition: AgentWriterLeaseTransition
 ): boolean {
@@ -1154,14 +1136,11 @@ export function captureConversationWorkspace(
     attachmentIds: current.attachmentIds,
     config: current.config,
     viewByHistoryId: current.viewByHistoryId,
-    parentScrollTop: current.scrollTop,
-    childScrollTopById: current.childScrollTopById,
     sequence: current.lastSequence,
     telemetry: current.telemetry,
     writerLease: current.writerLease,
     writerLeaseTransition: current.writerLeaseTransition,
     selectedChildId: null,
-    scrollTop: current.scrollTop,
     providerGeneration: current.generation,
     lastSequence: current.lastSequence
   };
@@ -1178,8 +1157,6 @@ export function restoreConversationWorkspace(
   current.selectedChildHistoryOwnedId = null;
   current.childTranscriptTruncated = false;
   current.childTranscriptError = null;
-  current.scrollTop = snapshot?.parentScrollTop ?? snapshot?.scrollTop ?? 0;
-  current.childScrollTopById = snapshot?.childScrollTopById ?? {};
   current.executionOwner = snapshot?.owner ?? current.executionOwner;
   current.attachmentIds = snapshot?.attachmentIds ?? current.attachmentIds;
   current.config = snapshot?.config ?? current.config;

@@ -19,7 +19,6 @@ function sessionSnapshot(name, mode, activeKey) {
       mode,
       draft: `draft-${name}`,
       selectedChildId: `child-${name}`,
-      scrollTop: name.length * 100,
       providerGeneration: 2,
       lastSequence: 8,
       version: 1,
@@ -27,8 +26,7 @@ function sessionSnapshot(name, mode, activeKey) {
       owner: 'terminal',
       attachmentIds: [`attachment-${name}`],
       config: { future_category: name },
-      parentScrollTop: name.length * 100,
-      childScrollTopById: { [`child-${name}`]: name.length * 10 },
+      viewByHistoryId: { [name]: { followLatest: false, anchor: { itemId: `item-${name}`, firstSequence: 1, offsetPx: 20 }, expandedTurns: {} } },
       sequence: 8,
       telemetry: { providerLatencyMs: name.length },
       futureWorkspaceField: { owner: name }
@@ -65,7 +63,7 @@ const restored = Object.fromEntries(
 assert.equal('draft' in restored['owned-a'].conversation, false);
 assert.equal(restored['owned-b'].conversation.mode, 'raw');
 assert.equal(restored['owned-a'].conversation.selectedChildId, 'child-alpha');
-assert.equal(restored['owned-b'].conversation.scrollTop, 500);
+assert.equal(restored['owned-b'].conversation.viewByHistoryId.bravo.anchor.itemId, 'item-bravo');
 assert.equal(restored['owned-c'].browser.tabs[0].url, 'http://charlie.localhost:5177/');
 assert.equal(restored['owned-c'].browser.activeTabId, 'browser-charlie');
 assert.equal(restored['owned-a'].topTabs.activeKey, 'editor:/repo/alpha.cs');
@@ -76,8 +74,8 @@ assert.deepEqual(restored['owned-a'].conversation.attachmentIds, ['attachment-al
 assert.equal(restored['owned-b'].conversation.config.future_category, 'bravo');
 assert.equal(restored['owned-a'].conversation.futureWorkspaceField.owner, 'alpha');
 assert.notDeepEqual(
-  restored['owned-a'].conversation.childScrollTopById,
-  restored['owned-b'].conversation.childScrollTopById
+  restored['owned-a'].conversation.viewByHistoryId,
+  restored['owned-b'].conversation.viewByHistoryId
 );
 
 // A pre-conversation snapshot migrates without inventing another session's UI.

@@ -337,7 +337,7 @@ test('legacy single-page browser record becomes one restorable tab', () => {
       conversation: {
         mode: 'structured', draft: 'keep', version: 1, generation: 4,
         owner: 'terminal', attachmentIds: ['attachment-a'], config: { future: 'value' },
-        parentScrollTop: 20, childScrollTopById: { child: 30 }, sequence: 12,
+        parentScrollTop: 20, childScrollTopById: { child: 30 }, scrollTop: 40, sequence: 12,
         telemetry: { latencyMs: 7 }, futureField: { nested: true }
       }
     }),
@@ -350,6 +350,9 @@ test('legacy single-page browser record becomes one restorable tab', () => {
   assert.ok(restored.current);
   assert.ok(restored.legacy);
   assert.equal(restored.current.conversation.mode, 'structured', 'app-owned mode is pinned');
+  for (const key of ['parentScrollTop', 'childScrollTopById', 'scrollTop']) {
+    assert.equal(key in restored.current.conversation, false, 'retired conversation scroll state is discarded');
+  }
   assert.equal(restored.legacy.conversation.mode, 'raw', 'external raw mode persists');
   assert.equal(restored.current.conversation.futureField.nested, true);
   assert.equal(restored.current.conversation.config.future, 'value');
