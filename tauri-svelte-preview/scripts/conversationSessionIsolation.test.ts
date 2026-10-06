@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
 
 import {
   captureWorkspace,
@@ -91,5 +93,66 @@ assert.ok(legacy);
 assert.equal(legacy.conversation, undefined);
 assert.equal(legacy.browser, undefined);
 assert.equal(legacy.topTabs, undefined);
+
+// Exercise the production fixed client slots with a transport-free chat fixture.
+{
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const current = source.slice(source.indexOf('function isCurrent('), source.indexOf('function messageBytes('));
+  const bind = source.slice(source.indexOf('function bindSelectionSignal('), source.indexOf('async function restorePageAttachments('));
+  const selection = source.slice(source.indexOf('export function selectConversationChat('), source.indexOf('export function sendSelectedConversationMessage(')).replaceAll('export ', '');
+  const states = new Map<string, { provider: string; generation: number; selectedChildHistoryOwnedId: string | null }>();
+  const clearedAttachments: string[] = [];
+  const disposed: string[] = [];
+  const dependencies = {
+    getConversationSession: (id: string) => states.get(id),
+    ensureConversationSession: (id: string, provider: string) => {
+      if (!states.has(id)) states.set(id, { provider, generation: 1, selectedChildHistoryOwnedId: null });
+      return states.get(id);
+    },
+    evictConversationSession: (id: string) => states.delete(id),
+    restoreSelectedConversationAttachments: (id: string) => clearedAttachments.push(id),
+    rejectPendingAdmission: (value: { pendingAdmission: unknown }) => { value.pendingAdmission = null; },
+    createConnection: () => ({}),
+    createChat: ({ threadId }: { threadId: string }) => ({
+      messages: [], dispose: () => disposed.push(threadId)
+    })
+  };
+  const api = Function(...Object.keys(dependencies), stripTypeScriptTypes(`
+    let active = null;
+    let childActive = null;
+    ${current}${bind}${selection}
+  `, { mode: 'strip' }) + `
+    return { selectConversationChat, selectedConversationChat, disposeChildConversationChat,
+      disposeSelectedConversationChat, parent: () => active };
+  `)(...Object.values(dependencies));
+  dependencies.ensureConversationSession('parent-a', 'codex');
+  const parentOwner = new AbortController();
+  const parent = api.selectConversationChat('parent-a', 'parent-a', parentOwner.signal);
+  const admission = { waiting: true };
+  api.parent().pendingAdmission = admission;
+  const childOwner = new AbortController();
+  const child = api.selectConversationChat('parent-a', 'history-a', childOwner.signal);
+  assert.equal(api.selectedConversationChat('parent-a'), parent);
+  assert.equal(api.selectedConversationChat('parent-a', 'history-a'), child);
+  assert.equal(api.selectConversationChat('parent-a', 'history-a', childOwner.signal), child);
+  assert.deepEqual(disposed, []);
+  api.disposeChildConversationChat('parent-a');
+  assert.equal(api.selectedConversationChat('parent-a'), parent);
+  assert.equal(api.parent().pendingAdmission, admission, 'Back preserves an admitted parent send');
+  assert.equal(states.has('history-a'), false);
+  assert.equal(states.get('parent-a')!.selectedChildHistoryOwnedId, null);
+  assert.deepEqual(clearedAttachments, ['history-a']);
+  const obsoleteOwner = new AbortController();
+  api.selectConversationChat('parent-a', 'history-b', obsoleteOwner.signal);
+  const next = api.selectConversationChat('parent-a', 'history-c');
+  obsoleteOwner.abort();
+  assert.equal(api.selectedConversationChat('parent-a', 'history-c'), next, 'obsolete owner cannot dispose the replacement');
+  assert.equal(states.has('history-b'), false);
+  parentOwner.abort();
+  assert.equal(api.selectedConversationChat('parent-a'), null);
+  assert.equal(api.selectedConversationChat('parent-a', 'history-c'), null);
+  assert.equal(states.has('history-c'), false);
+  assert.deepEqual(disposed, ['history-a', 'history-b', 'history-c', 'parent-a']);
+}
 
 console.log('conversation session isolation tests passed');

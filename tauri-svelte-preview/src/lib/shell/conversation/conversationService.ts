@@ -44,8 +44,6 @@ import {
   ACTIVE_EVENT_WINDOW_EVENTS,
   displayEventFrom,
   applyChildConversationHistoryStatus,
-  applyConversationControlEventState,
-  applyConversationSnapshotControlState,
   beginConversationConfigChange,
   clearConversationWriterLeaseTransition,
   confirmConversationConfigChange,
@@ -122,9 +120,6 @@ type SelectedConversationRead = {
   overflow: boolean;
   reading: boolean;
   reloadRequested: boolean;
-  parentControlReading: boolean;
-  parentControlReloadRequested: boolean;
-  parentControlRevision: number;
   abortController: AbortController;
   onSnapshot: (snapshot: AgentConversationSelectionSnapshot) => void;
   onEvent: (event: AgentConversationEvent) => void;
@@ -134,6 +129,12 @@ type SelectedConversationRead = {
 const ensuring = new Map<string, ConversationEnsure>();
 const terminalProjections = new Map<string, string>();
 let selectedConversationRead: SelectedConversationRead | null = null;
+let childConversationRead: SelectedConversationRead | null = null;
+
+function isCurrentConversationRead(read: SelectedConversationRead): boolean {
+  return !read.abortController.signal.aborted
+    && (selectedConversationRead === read || childConversationRead === read);
+}
 const sessionDraftPersistence = new ConversationDraftPersistence(
   {
     set: (ownedId, text) => invoke('agent_conversation_set_session_draft', { ownedId, text }),
@@ -705,7 +706,7 @@ function requestSelectedConversationReload(read: SelectedConversationRead): void
   read.reloadRequested = true;
   if (read.reading) return;
   void reloadSelectedConversation(read).catch((error) => {
-    if (selectedConversationRead === read && !read.abortController.signal.aborted) {
+    if (isCurrentConversationRead(read) && !read.abortController.signal.aborted) {
       read.events.length = 0;
       read.bytes = 0;
       read.onError(error);
@@ -728,7 +729,7 @@ function bufferSelectedConversationEvent(
 }
 
 function admitSelectedConversationEvent(event: AgentConversationEvent): boolean {
-  const read = selectedConversationRead;
+  const read = selectedConversationRead?.ownedId === event.ownedId ? selectedConversationRead : childConversationRead;
   if (!read || read.ownedId !== event.ownedId || read.abortController.signal.aborted) return false;
   if (read.reading) bufferSelectedConversationEvent(read, event);
   else deliverSelectedConversationEvent(read, event);
@@ -736,8 +737,8 @@ function admitSelectedConversationEvent(event: AgentConversationEvent): boolean 
 }
 
 async function reloadSelectedConversation(read: SelectedConversationRead): Promise<void> {
-  if (selectedConversationRead !== read || read.abortController.signal.aborted) return;
-  if (read.reading || read.parentControlReading) {
+  if (!isCurrentConversationRead(read) || read.abortController.signal.aborted) return;
+  if (read.reading) {
     read.reloadRequested = true;
     return;
   }
@@ -757,7 +758,7 @@ async function reloadSelectedConversation(read: SelectedConversationRead): Promi
         read.minimumGeneration,
         read.abortController.signal
       );
-      if (selectedConversationRead !== read || read.abortController.signal.aborted || !snapshot) return;
+      if (!isCurrentConversationRead(read) || read.abortController.signal.aborted || !snapshot) return;
       if (read.overflow) {
         read.reloadRequested = true;
         continue;
@@ -778,49 +779,7 @@ async function reloadSelectedConversation(read: SelectedConversationRead): Promi
     }
     throw new Error('Conversation changed too quickly to open its selected history');
   } finally {
-    if (selectedConversationRead === read) {
-      read.reading = false;
-      if (read.parentControlReloadRequested) {
-        void refreshParentConversationControls(read).catch((error) => {
-          setConversationSendError(read.workspaceOwnedId, error instanceof Error ? error.message : String(error));
-        });
-      }
-    }
-  }
-}
-
-async function refreshParentConversationControls(read: SelectedConversationRead): Promise<void> {
-  if (read.workspaceOwnedId === read.ownedId || selectedConversationRead !== read
-    || read.abortController.signal.aborted) return;
-  if (read.reading || read.parentControlReading) {
-    read.parentControlReloadRequested = true;
-    return;
-  }
-  read.parentControlReading = true;
-  try {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      read.parentControlReloadRequested = false;
-      const revision = read.parentControlRevision;
-      const snapshot = await readAgentConversationSelectionFromTauri(
-        read.workspaceOwnedId,
-        read.maxBytes,
-        undefined,
-        read.abortController.signal
-      );
-      if (selectedConversationRead !== read || read.abortController.signal.aborted || !snapshot) return;
-      if (revision !== read.parentControlRevision || read.parentControlReloadRequested) continue;
-      applyConversationSnapshotControlState(read.workspaceOwnedId, snapshot);
-      return;
-    }
-    read.parentControlReloadRequested = false;
-    throw new Error('Parent conversation controls changed too quickly to refresh');
-  } finally {
-    if (selectedConversationRead === read) {
-      read.parentControlReading = false;
-      if (read.reloadRequested) {
-        void reloadSelectedConversation(read).catch(read.onError);
-      }
-    }
+    read.reading = false;
   }
 }
 
@@ -839,7 +798,8 @@ export async function subscribeSelectedConversation(input: {
   onEvent: (event: AgentConversationEvent) => void;
   onError: (error: unknown) => void;
 }): Promise<() => void> {
-  selectedConversationRead?.abortController.abort();
+  const child = input.ownedId !== input.workspaceOwnedId;
+  (child ? childConversationRead : selectedConversationRead)?.abortController.abort();
   const abortController = new AbortController();
   const abortFromOwner = (): void => abortController.abort();
   input.signal?.addEventListener('abort', abortFromOwner, { once: true });
@@ -856,20 +816,19 @@ export async function subscribeSelectedConversation(input: {
     // The snapshot started immediately afterwards is authoritative for them.
     reading: true,
     reloadRequested: false,
-    parentControlReading: false,
-    parentControlReloadRequested: input.workspaceOwnedId !== input.ownedId,
-    parentControlRevision: 0,
     abortController,
     onSnapshot: input.onSnapshot,
     onEvent: input.onEvent,
     onError: input.onError
   };
-  selectedConversationRead = read;
+  if (child) childConversationRead = read;
+  else selectedConversationRead = read;
   const dispose = (): void => {
     input.signal?.removeEventListener('abort', abortFromOwner);
     abortController.abort();
     read.events.length = 0;
     if (selectedConversationRead === read) selectedConversationRead = null;
+    if (childConversationRead === read) childConversationRead = null;
   };
   try {
     await startConversationEvents();
@@ -1036,7 +995,11 @@ async function reacquireSelectedChildHistory(
   streamGeneration: number
 ): Promise<void> {
   if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
-  const read = selectedConversationRead;
+  const parent = selectedConversationRead;
+  if (parent && rail.owned.find((session) => session.ownedId === parent.workspaceOwnedId)?.remoteProfileId === profileId) {
+    requestSelectedConversationReload(parent);
+  }
+  const read = childConversationRead;
   if (!read || read.workspaceOwnedId === read.ownedId || read.abortController.signal.aborted) return;
   const owned = rail.owned.find((session) => session.ownedId === read.workspaceOwnedId);
   if (owned?.remoteProfileId !== profileId) return;
@@ -1050,10 +1013,9 @@ async function reacquireSelectedChildHistory(
     childSessionId: child.transcriptId ?? childId,
     signal: read.abortController.signal
   });
-  if (!history || selectedConversationRead !== read || read.abortController.signal.aborted
+  if (!history || !isCurrentConversationRead(read) || read.abortController.signal.aborted
     || getConversationSession(read.workspaceOwnedId)?.selectedChildId !== childId
     || history.historyOwnedId !== read.ownedId) return;
-  read.parentControlReloadRequested = true;
   requestSelectedConversationReload(read);
 }
 
@@ -1063,7 +1025,7 @@ async function handleConversationStreamEnvelope(
 ): Promise<void> {
   if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
   const payload = envelope.chunk;
-  const selected = admitSelectedConversationEvent(payload);
+  admitSelectedConversationEvent(payload);
   const previous = railActivityEvents.get(payload.ownedId);
   if (previous && (payload.generation < previous.generation
     || (payload.generation === previous.generation && payload.sequence <= previous.sequence))) {
@@ -1072,19 +1034,6 @@ async function handleConversationStreamEnvelope(
   const displayEvent = displayEventFrom(payload);
   const terminal = shouldClearConversationSending(displayEvent);
   const current = getConversationSession(payload.ownedId);
-  const selectedRead = selectedConversationRead;
-  if (!selected && current?.selectedChildId
-    && selectedRead?.workspaceOwnedId === payload.ownedId
-    && selectedRead.ownedId !== payload.ownedId) {
-    if (selectedEventUsesControlCursor(payload)) selectedRead.parentControlRevision += 1;
-    const wasDesynchronized = current.desynchronized;
-    applyConversationControlEventState(payload.ownedId, payload);
-    if (!wasDesynchronized && current.desynchronized) {
-      void refreshParentConversationControls(selectedRead).catch((error) => {
-        setConversationSendError(payload.ownedId, error instanceof Error ? error.message : String(error));
-      });
-    }
-  }
   const presence = get(sessionPresenceHistory)[payload.ownedId];
   const activeTurnId = presence?.activeTurnId || current?.activeTurnId;
   if (current && payload.generation < current.generation) return;
@@ -1138,11 +1087,14 @@ async function handleConversationStreamEnvelope(
 
 async function handleConversationStreamResync(streamGeneration: number): Promise<void> {
   if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
-  const selected = selectedConversationRead;
-  if (selected) {
-    await reloadSelectedConversation(selected);
-    await refreshParentConversationControls(selected);
-  }
+  await Promise.allSettled([selectedConversationRead, childConversationRead].map(async (read) => {
+    if (!read) return;
+    try {
+      await reloadSelectedConversation(read);
+    } catch (error) {
+      if (isCurrentConversationRead(read)) read.onError(error);
+    }
+  }));
   await refreshRemoteSessionActivity(streamGeneration);
 }
 
@@ -1152,6 +1104,8 @@ export function stopConversationEvents(): void {
   for (const ownedId of childHistoryReads.keys()) stopChildConversationHistory(ownedId);
   selectedConversationRead?.abortController.abort();
   selectedConversationRead = null;
+  childConversationRead?.abortController.abort();
+  childConversationRead = null;
   railActivityEvents.clear();
   void conversationStream?.unregister();
   conversationStream = null;

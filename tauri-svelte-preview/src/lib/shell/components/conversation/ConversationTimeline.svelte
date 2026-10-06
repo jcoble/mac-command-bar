@@ -353,7 +353,11 @@
   }
 
   function readerInput(node: HTMLDivElement) {
+    const interactive = 'input, textarea, select, button, a, [contenteditable], [role="button"]';
     const pointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof Element && event.target.closest(interactive))) {
+        node.focus({ preventScroll: true });
+      }
       if (event.target !== node) return;
       dragging = true;
       lastScrollTop = node.scrollTop;
@@ -368,7 +372,7 @@
       follow = false;
     };
     const keydown = (event: KeyboardEvent) => {
-      if (event.target instanceof Element && event.target.closest('input, textarea, [contenteditable]')) return;
+      if (event.target instanceof Element && event.target.closest(interactive)) return;
       const older = ['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey);
       const newer = ['ArrowDown', 'PageDown', 'End'].includes(event.key) || (event.key === ' ' && !event.shiftKey);
       if (!older && !newer) return;
@@ -382,13 +386,13 @@
     node.addEventListener('touchstart', touchStart, { passive: true });
     window.addEventListener('pointerup', pointerUp);
     window.addEventListener('touchend', pointerUp);
-    window.addEventListener('keydown', keydown);
+    node.addEventListener('keydown', keydown);
     return { destroy() {
       node.removeEventListener('pointerdown', pointerDown);
       node.removeEventListener('touchstart', touchStart);
       window.removeEventListener('pointerup', pointerUp);
       window.removeEventListener('touchend', pointerUp);
-      window.removeEventListener('keydown', keydown);
+      node.removeEventListener('keydown', keydown);
     } };
   }
 
@@ -446,7 +450,7 @@
 
 <div class="timeline-wrap" data-testid="conversation-timeline-wrap" style={`--composer-height:${composerHeight}px`}>
   {#if loadingOlder}<p class="older-loading" data-testid="conversation-older-loading" role="status"><span class="older-spinner" aria-hidden="true"></span>Loading earlier messages</p>{/if}
-  <div class="timeline-scroll" data-testid="conversation-timeline-scroll" bind:this={host} onscroll={handleScroll} onwheel={handleWheel} use:readerInput>
+  <div class="timeline-scroll" tabindex="0" data-testid="conversation-timeline-scroll" bind:this={host} onscroll={handleScroll} onwheel={handleWheel} use:readerInput>
     {#if renderedItems.length === 0}
       {#if pendingFirstMessage}<PendingFirstMessage text={pendingFirstMessage} />{:else}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
     {/if}

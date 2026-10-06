@@ -6,7 +6,7 @@ export { displayEventFrom } from './conversationMessages.ts';
  * This module performs no IO. The conversation service owns Tauri calls and
  * holds controls and view state beside the selected TanStack message graph.
  */
-import { createConversationState, reduceConversationEvent } from './conversationReducer.ts';
+import { createConversationState, reduceConversationEvent, shouldClearConversationSending } from './conversationReducer.ts';
 import type {
   AgentApprovalRequest,
   AgentCapabilities,
@@ -90,6 +90,7 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   metadata: ConversationMetadata;
   children: ConversationChildAgent[];
   selectedChildId: string | null;
+  selectedChildHistoryOwnedId: string | null;
   childTranscriptTruncated: boolean;
   childTranscriptError: string | null;
   scrollTop: number;
@@ -189,6 +190,7 @@ function freshState(
     metadata: emptyMetadata(),
     children: [],
     selectedChildId: null,
+    selectedChildHistoryOwnedId: null,
     childTranscriptTruncated: false,
     childTranscriptError: null,
     scrollTop: 0,
@@ -275,17 +277,6 @@ function applyConversationSnapshotControls(
   for (const event of snapshot.pendingEvents) applyTypedEventPayload(current, displayEventFrom(event));
 }
 
-export function applyConversationSnapshotControlState(
-  workspaceOwnedId: string,
-  snapshot: AgentConversationSelectionSnapshot
-): void {
-  const current = ensureConversationSession(workspaceOwnedId, snapshot.connection.provider);
-  if (snapshot.connection.generation < current.generation) return;
-  const latestSequence = current.lastSequence;
-  applyConversationSnapshotControls(current, snapshot);
-  current.lastSequence = Math.max(latestSequence, snapshot.pendingSequence);
-}
-
 export function applySelectedConversationSnapshotState(
   workspaceOwnedId: string,
   historyOwnedId: string,
@@ -297,9 +288,9 @@ export function applySelectedConversationSnapshotState(
     : ensureConversationSession(workspaceOwnedId, snapshot.connection.provider);
   current.selectedHistoryOwnedId = historyOwnedId;
   if (applyControls) applyConversationSnapshotControls(current, snapshot);
-  else if (historyOwnedId !== workspaceOwnedId) {
-    current.childTranscriptTruncated = snapshot.page.hasEarlierTranscript;
-    current.childTranscriptError = null;
+  else {
+    current.generation = snapshot.connection.generation;
+    current.activeTurnId = snapshot.suspended ? undefined : snapshot.activeTurnId;
   }
   applySelectedPageState(current, snapshot.page, 'snapshot');
 }
@@ -321,13 +312,6 @@ function applyConversationEventControls(
   }
   applyTypedEventPayload(current, displayEvent);
   return { current, displayEvent };
-}
-
-export function applyConversationControlEventState(
-  workspaceOwnedId: string,
-  event: AgentConversationEvent
-): void {
-  applyConversationEventControls(workspaceOwnedId, event);
 }
 
 function applySelectedConversationTurnState(
@@ -378,7 +362,17 @@ export function applySelectedConversationHistoryEventState(
   event: AgentConversationEvent
 ): void {
   const current = conversationSessions[workspaceOwnedId];
-  if (current) applySelectedConversationTurnState(current, event, displayEventFrom(event));
+  if (!current) return;
+  const displayEvent = displayEventFrom(event);
+  const payload = displayEvent.payload as Record<string, unknown>;
+  const eventType = 'type' in displayEvent ? displayEvent.type : '';
+  const turnId = asString(payload.turnId) ?? ('turnId' in displayEvent ? displayEvent.turnId : undefined);
+  if ((payload.kind === 'turn' && payload.state === 'started') || eventType === 'turn.started') {
+    current.activeTurnId = turnId;
+  } else if (shouldClearConversationSending(displayEvent) && (!turnId || turnId === current.activeTurnId)) {
+    current.activeTurnId = undefined;
+  }
+  applySelectedConversationTurnState(current, event, displayEvent);
 }
 
 export function applySelectedConversationLiveWindow(
@@ -1181,6 +1175,7 @@ export function restoreConversationWorkspace(
   const current = ensureConversationSession(ownedId, provider);
   current.mode = snapshot?.mode === 'raw' ? 'raw' : 'structured';
   current.selectedChildId = null;
+  current.selectedChildHistoryOwnedId = null;
   current.childTranscriptTruncated = false;
   current.childTranscriptError = null;
   current.scrollTop = snapshot?.parentScrollTop ?? snapshot?.scrollTop ?? 0;
@@ -1213,10 +1208,11 @@ export function evictConversationSession(ownedId: string): void {
   publishConversationProjectionDiagnostics();
 }
 
-/** Release all materialized transcripts except the active session. */
+/** Retain the active parent and its one displayed child history. */
 export function evictInactiveConversationSessions(activeOwnedId: string | null): void {
+  const childHistoryOwnedId = activeOwnedId ? conversationSessions[activeOwnedId]?.selectedChildHistoryOwnedId : null;
   for (const ownedId of Object.keys(conversationSessions)) {
-    if (ownedId !== activeOwnedId) {
+    if (ownedId !== activeOwnedId && ownedId !== childHistoryOwnedId) {
       const current = conversationSessions[ownedId];
       if (current && !current.sending) {
         evictConversationSession(ownedId);

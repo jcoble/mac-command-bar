@@ -1,105 +1,153 @@
-<!--
-  AgentsPanel.svelte — the Agents tab of the right column.
-
-  The subagents of the session the user is looking at, with what each one is
-  doing. Picking one selects it in the conversation and reads its transcript,
-  which is also the only way its message count can become known: the record the
-  provider gives us for a subagent carries a label, a state, and a time, and
-  nothing more.
-
-  The selected child uses the same bounded conversation graph as its parent view.
-  Native watches publish durable updates without a panel polling loop.
-
-  The Workflows view hosts the app-owned, cross-provider handoff loop. It stays
-  separate from provider-native child agents so either surface can be removed
-  without disturbing the other.
--->
+<!-- Agents > Session owns the list and one bounded child transcript. -->
 <script lang="ts">
+  import { setContext, untrack } from 'svelte';
   import Bot from '@lucide/svelte/icons/bot';
+  import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 
+  import { Button } from '$lib/components/ui/button/index.js';
+  import { Chip } from '$lib/components/ui/chip/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
-  import type { UIMessage } from '@tanstack/ai/client';
+  import ConversationTimeline from '$lib/shell/components/conversation/ConversationTimeline.svelte';
   import {
     getConversationSession,
-    setConversationSelectedChild
+    setConversationSelectedChild,
+    selectedConversationViewState,
+    setSelectedConversationViewState
   } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import {
     readChildConversationHistory,
     stopChildConversationHistory
   } from '$lib/shell/conversation/conversationService.ts';
   import {
-    disposeSelectedConversationChat,
+    disposeChildConversationChat,
     selectConversationChat,
     selectedConversationChat,
-    selectedConversationChatReady
+    selectedConversationChatReady,
+    pageSelectedConversation,
+    jumpSelectedConversationToLatest
   } from '$lib/shell/conversation/conversationConnection.ts';
-  import { showCenterTab } from '$lib/shell/workbenchNavigation.ts';
+  import {
+    conversationMessagesContext,
+    type ConversationMessagesContext
+  } from '$lib/shell/conversation/conversationChatUI.ts';
+  import { conversationDisplayItems } from '$lib/shell/conversation/conversationMessages.ts';
+  import type { ConversationDisplayItem, ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { requestOpenConversationFile } from '$lib/shell/openFileBus.ts';
+  import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
 
   import AgentRow from './AgentRow.svelte';
   import { agentActivityRows } from './agentActivityModel.ts';
   import WorkflowRuns from './WorkflowRuns.svelte';
 
   interface Props {
-    /** True while this panel's tab is the selected one. */
     visible: boolean;
-    /** The active session's working folder, or '' when nothing is selected. */
     root: string;
-    /** The active session's ownedId, or null. */
     ownedId: string | null;
   }
   let { visible, root, ownedId }: Props = $props();
   let view = $state<'session' | 'workflows'>('session');
+  let transcriptState = $state<'loading' | 'unavailable' | 'ready' | 'error'>('unavailable');
+  let transcriptError = $state('');
+  let fileError = $state('');
+  let reader: AbortController | null = null;
 
   const VIEW_OPTIONS = [
     { value: 'session', label: 'Session' },
     { value: 'workflows', label: 'Workflows' }
   ] as const;
-
+  const STATUS_TONE = { working: 'live', done: 'good', failed: 'bad', idle: 'neutral' } as const;
+  const STATUS_WORD = { working: 'Working', done: 'Done', failed: 'Failed', idle: 'Idle' } as const;
   const conversation = $derived(ownedId ? getConversationSession(ownedId) : null);
   const selectedChildId = $derived(conversation?.selectedChildId ?? null);
+  // List rows use metadata; returning to the list releases the child body.
+  const rows = $derived(agentActivityRows(conversation?.children ?? [], {}));
+  const selectedRow = $derived(rows.find((row) => row.childId === selectedChildId) ?? null);
+  const historyOwnedId = $derived(conversation?.selectedChildHistoryOwnedId ?? null);
+  const childConversation = $derived(historyOwnedId ? getConversationSession(historyOwnedId) : null);
+  const messages = $derived.by(() => {
+    if (!ownedId || !historyOwnedId || !childConversation) return [];
+    childConversation.timelineRevision;
+    return selectedConversationChat(ownedId, historyOwnedId)?.messages ?? [];
+  });
+  const messagesById = $derived(new Map(messages.map((message) => [message.id, message])));
+  setContext<ConversationMessagesContext>(conversationMessagesContext, {
+    get messages() { return messagesById; }
+  });
+  let previousHistoryId: string | null = null;
+  let previousItems: ConversationDisplayItem[] = [];
+  const items = $derived.by(() => {
+    if (historyOwnedId !== previousHistoryId) {
+      previousHistoryId = historyOwnedId;
+      previousItems = [];
+    }
+    previousItems = conversationDisplayItems(messages, previousItems, childConversation?.sentAttachments ?? {});
+    return previousItems;
+  });
+  const error = $derived(transcriptError || conversation?.childTranscriptError || '');
 
-  /**
-   * The sole selected chat graph supplies one child's count. Everything else
-   * in the list has no loaded body and says so.
-   */
-  const timelineByChild = $derived.by((): Record<string, readonly UIMessage[]> => {
-    if (!selectedChildId || !conversation || conversation.selectedHistoryOwnedId === ownedId) return {};
-    conversation.timelineRevision;
-    return { [selectedChildId]: selectedConversationChat(ownedId)?.messages ?? [] };
+  function release(parentId: string): void {
+    reader?.abort();
+    reader = null;
+    stopChildConversationHistory(parentId);
+    disposeChildConversationChat(parentId);
+    setConversationSelectedChild(parentId, null);
+    previousHistoryId = null;
+    previousItems = [];
+    // These lazy projections must drop their old body even when the list is shown.
+    untrack(() => { void messagesById; void items; });
+    transcriptState = 'unavailable';
+    transcriptError = '';
+    fileError = '';
+  }
+
+  $effect(() => {
+    const parentId = ownedId;
+    const active = visible && view === 'session';
+    if (!active && parentId) untrack(() => release(parentId));
+    return () => { if (parentId) untrack(() => release(parentId)); };
   });
 
-  const rows = $derived(agentActivityRows(conversation?.children ?? [], timelineByChild));
   async function select(childId: string): Promise<void> {
-    if (!ownedId || !conversation) return;
-    const next = selectedChildId === childId ? null : childId;
-    stopChildConversationHistory(ownedId);
-    setConversationSelectedChild(ownedId, next);
-    if (!next) {
-      selectConversationChat(ownedId, ownedId);
-      await selectedConversationChatReady(ownedId);
-      return;
-    }
-    disposeSelectedConversationChat(ownedId);
-    const child = conversation.children.find((entry) => entry.childId === next) ?? null;
+    if (!ownedId || !conversation || !visible || view !== 'session' || selectedChildId === childId) return;
+    const parentId = ownedId;
+    release(parentId);
+    setConversationSelectedChild(parentId, childId);
+    const child = conversation.children.find((entry) => entry.childId === childId);
     if (!child?.transcriptAvailable) return;
-    // The conversation in the center switches to the child that was picked, so
-    // bring it forward rather than leaving the change somewhere unseen.
-    showCenterTab('session');
+    const controller = new AbortController();
+    reader = controller;
+    transcriptState = 'loading';
+    const current = (): boolean => !controller.signal.aborted && ownedId === parentId
+      && visible && view === 'session' && getConversationSession(parentId)?.selectedChildId === childId;
     try {
       const history = await readChildConversationHistory({
-        ownedId,
-        childId: next,
-        childSessionId: child.transcriptId ?? next
+        ownedId: parentId,
+        childId,
+        childSessionId: child.transcriptId ?? childId,
+        signal: controller.signal
       });
-      if (!history || getConversationSession(ownedId)?.selectedChildId !== next) return;
-      selectConversationChat(ownedId, history.historyOwnedId);
-      await selectedConversationChatReady(ownedId);
-    } catch {
-      // The child-specific store error remains visible without replacing saved content.
+      if (!current()) return;
+      if (!history) {
+        transcriptState = 'unavailable';
+        return;
+      }
+      selectConversationChat(parentId, history.historyOwnedId, controller.signal);
+      await selectedConversationChatReady(parentId, history.historyOwnedId);
+      if (current()) transcriptState = 'ready';
+    } catch (error) {
+      if (!current()) return;
+      transcriptState = 'error';
+      transcriptError = error instanceof Error ? error.message : String(error);
     }
+  }
+
+  function openFile(reference: string, provenance?: ConversationFileLinkProvenance): void {
+    const active = rail.owned.find((session) => session.ownedId === ownedId);
+    fileError = active ? requestOpenConversationFile(active, reference, provenance) ?? ''
+      : 'That file link could not be opened.';
   }
 </script>
 
@@ -118,6 +166,50 @@
 
   {#if view === 'workflows'}
     <WorkflowRuns visible={visible} {root} />
+  {:else if visible && selectedRow && ownedId}
+    <div class="flex min-w-0 items-center gap-2 px-2 pb-2" data-testid="agent-transcript-header">
+      <Button variant="ghost" size="sm" iconPosition="start" onclick={() => ownedId && release(ownedId)}>
+        <ArrowLeft data-icon="inline-start" />Back
+      </Button>
+      <span class="min-w-0 flex-1 truncate">{selectedRow.label}</span>
+      <Chip tone={STATUS_TONE[selectedRow.status]}>{STATUS_WORD[selectedRow.status]}</Chip>
+    </div>
+    {#if error}
+      <EmptyState title="Could not load transcript" body={error} data-testid="agent-transcript-error" />
+    {:else if transcriptState === 'loading'}
+      <EmptyState title="Loading transcript" body="Reading this agent’s saved conversation." data-testid="agent-transcript-loading" />
+    {:else if transcriptState === 'unavailable'}
+      <EmptyState title="Transcript unavailable" body="This agent’s transcript is not available yet." data-testid="agent-transcript-unavailable" />
+    {:else if historyOwnedId && childConversation}
+      {#if fileError}<p role="alert" class="px-2 pb-2 text-sm text-muted-foreground">{fileError}</p>{/if}
+      <ConversationTimeline
+        {items}
+        conversationId={ownedId}
+        {historyOwnedId}
+        renderWindowId={`${ownedId}:${historyOwnedId}`}
+        timelineRevision={childConversation.timelineRevision}
+        viewState={selectedConversationViewState(ownedId, historyOwnedId)}
+        onViewChange={setSelectedConversationViewState}
+        itemFirstSequence={(itemId) => {
+          const sequence = messagesById.get(itemId)?.metadata?.firstSequence;
+          return typeof sequence === 'number' ? sequence : undefined;
+        }}
+        activeTurnId={childConversation.activeTurnId ?? null}
+        turnFacts={childConversation.selectedTurns}
+        assistantLabel={selectedRow.label}
+        emptyText="This agent’s transcript is empty."
+        hasOlder={childConversation.selectedHasBefore}
+        loadingOlder={childConversation.selectedLoadingOlder}
+        onLoadOlder={() => void pageSelectedConversation('older', historyOwnedId)}
+        hasNewer={childConversation.selectedHasAfter}
+        loadingNewer={childConversation.selectedLoadingNewer}
+        onLoadNewer={() => void pageSelectedConversation('newer', historyOwnedId)}
+        oldestSequence={childConversation.selectedBeforeCursor ?? 0}
+        newestSequence={childConversation.selectedAfterCursor ?? 0}
+        onJumpToLatest={() => jumpSelectedConversationToLatest(ownedId!, historyOwnedId!)}
+        onFileLink={openFile}
+      />
+    {/if}
   {:else if rows.length === 0}
     <EmptyState
       title="No session agents yet"
@@ -131,7 +223,7 @@
       <ul class="flex flex-col gap-1 p-2">
         {#each rows as row (row.childId)}
           <li class="min-w-0">
-            <AgentRow {row} selected={selectedChildId === row.childId} onselect={(id) => void select(id)} />
+            <AgentRow {row} selected={false} onselect={(id) => void select(id)} />
           </li>
         {/each}
       </ul>

@@ -213,7 +213,8 @@ store.setConversationAttachments('owned-a', [{
   id: 'image-a', name: 'a.png', mimeType: 'image/png', path: '/managed/a.png', previewUrl: 'blob:a'
 }]);
 store.setConversationSelectedChild('owned-a', 'child-a');
-store.applySelectedConversationSnapshotState('owned-a', 'opaque-child-history', {
+store.ensureConversationSession('opaque-child-history', 'claude');
+store.applySelectedConversationSnapshotState('opaque-child-history', 'opaque-child-history', {
   connection: { ownedId: 'opaque-child-history', provider: 'claude', generation: 9, state: 'disconnected' },
   suspended: false,
   activeTurnId: 'child-turn',
@@ -226,22 +227,23 @@ store.applySelectedConversationSnapshotState('owned-a', 'opaque-child-history', 
 }, false);
 assert.equal(store.getConversationSession('owned-a').generation, 1, 'child snapshots preserve parent generation');
 assert.equal(store.getConversationSession('owned-a').connectionState, 'connected', 'child snapshots preserve parent controls');
-assert.equal(store.getConversationSession('owned-a').selectedHistoryOwnedId, 'opaque-child-history');
-assert.equal(store.getConversationSession('owned-a').childTranscriptTruncated, true);
-store.applyConversationControlEventState('owned-a', {
+assert.equal(store.getConversationSession('owned-a').selectedHistoryOwnedId, 'owned-a');
+assert.equal(store.getConversationSession('opaque-child-history').selectedHistoryOwnedId, 'opaque-child-history');
+assert.equal(store.getConversationSession('opaque-child-history').selectedHasBefore, true);
+store.applySelectedConversationEventState('owned-a', {
   ownedId: 'owned-a', provider: 'codex', generation: 2, sequence: 11, timestampMs: 2,
   payload: { kind: 'connection', state: 'connecting' }
 });
 assert.equal(store.getConversationSession('owned-a').generation, 2);
 assert.equal(store.getConversationSession('owned-a').desynchronized, false, 'journal sequence continues across runtime generations');
 assert.equal(store.getConversationSession('owned-a').connectionState, 'connecting');
-store.applyConversationControlEventState('owned-a', {
+store.applySelectedConversationEventState('owned-a', {
   ownedId: 'owned-a', provider: 'codex', generation: 2, sequence: 12, timestampMs: 3,
   payload: { kind: 'approval', requestId: 'parent-approval', turnId: 'parent-turn', itemId: 'tool',
     title: 'Allow?', options: [{ id: 'yes', label: 'Yes', action: 'allow_once' }] }
 });
 assert.ok(store.getConversationSession('owned-a').pendingApprovals['parent-approval']);
-store.applyConversationControlEventState('owned-a', {
+store.applySelectedConversationEventState('owned-a', {
   ownedId: 'owned-a', provider: 'codex', generation: 2, sequence: 11, timestampMs: 4,
   payload: {
     kind: 'childUpdate', childId: 'restored-child', parentToolCallId: 'tool-parent',
@@ -250,7 +252,7 @@ store.applyConversationControlEventState('owned-a', {
 });
 assert.equal(store.getConversationSession('owned-a').children[0]?.state, 'completed',
   'stale child updates cannot overwrite authoritative snapshot controls');
-assert.deepEqual(store.getConversationSession('owned-a').selectedTurns, [{
+assert.deepEqual(store.getConversationSession('opaque-child-history').selectedTurns, [{
   turnId: 'child-turn', terminalState: 'completed'
 }], 'parent controls do not enter child turn facts');
 assert.equal('transcript' in store.getConversationSession('owned-a'), false);
@@ -367,10 +369,10 @@ test('late attachment reads retain the current page and revoke evicted previews'
   let release!: (value: unknown[]) => void;
   const pendingRead = new Promise<unknown[]>((resolve) => { release = resolve; });
   const restore = Function(
-    'active', 'readSelectedConversationAttachments', 'restoreAttachmentList',
+    'isCurrent', 'readSelectedConversationAttachments', 'restoreAttachmentList',
     'restoreSelectedConversationAttachments', 'discardRestoredAttachments', 'setConversationAttachmentError',
     `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn restorePageAttachments;`
-  )(selection, () => pendingRead, async (unused: string, records: unknown[]) => records,
+  )((candidate: unknown) => candidate === selection && !selection.controller.signal.aborted, () => pendingRead, async (unused: string, records: unknown[]) => records,
     store.restoreSelectedConversationAttachments, () => undefined,
     (unused: string, message: string) => { throw new Error(message); });
   const revoked: string[] = [];
@@ -608,6 +610,7 @@ test('saved anchor admission keeps current authority and ignores a stale Jump fa
   ) => {
     const dependencies = {
       initialActive: selection,
+      isCurrent: (candidate: unknown) => candidate === selection && !selection.controller.signal.aborted,
       getConversationSession: () => ({
         viewByHistoryId: {
           history: { followLatest: false, anchor: { itemId: 'anchor', firstSequence: 50, offsetPx: 12 } }
@@ -622,7 +625,8 @@ test('saved anchor admission keeps current authority and ignores a stale Jump fa
       refreshSelectedConversationChat: async () => { selection.refreshes += 1; }
     };
     return Function(...Object.keys(dependencies), `
-      let active = initialActive;
+      let active = null;
+      let childActive = initialActive;
       ${stripTypeScriptTypes(admissionBlock, { mode: 'strip' })}
       ${stripTypeScriptTypes(jumpBlock, { mode: 'strip' })}
       return { admitInitialSnapshot, jumpSelectedConversationToLatest };
@@ -669,7 +673,7 @@ test('saved anchor admission keeps current authority and ignores a stale Jump fa
   );
   staleApi.admitInitialSnapshot(staleSelection, snapshot(1), (item) => staleErrors.push(item));
   const staleAdmission = staleSelection.anchorAdmission!;
-  await staleApi.jumpSelectedConversationToLatest('workspace');
+  await staleApi.jumpSelectedConversationToLatest('workspace', 'history');
   rejectAnchor(new Error('obsolete anchor read'));
   await staleAdmission.catch(() => undefined);
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -770,7 +774,6 @@ test('remote reconnect reacquires only the still-selected child watch', async ()
   );
   const read = {
     workspaceOwnedId: 'parent', ownedId: 'opaque-child', abortController: new AbortController(),
-    parentControlReloadRequested: false
   };
   const state = {
     selectedChildId: 'child-a',
@@ -786,7 +789,9 @@ test('remote reconnect reacquires only the still-selected child watch', async ()
     'requestSelectedConversationReload',
     `let conversationEventsDisposed = false;
      let conversationEventsGeneration = 7;
-     let selectedConversationRead = initialRead;
+     let selectedConversationRead = null;
+     let childConversationRead = initialRead;
+     const isCurrentConversationRead = (candidate) => candidate === childConversationRead && !candidate.abortController.signal.aborted;
      ${stripTypeScriptTypes(block, { mode: 'strip' })}
      return { reacquireSelectedChildHistory };`
   )(
@@ -798,7 +803,6 @@ test('remote reconnect reacquires only the still-selected child watch', async ()
       return new Promise((resolve) => pending.push(resolve));
     },
     () => {
-      assert.equal(read.parentControlReloadRequested, true, 'parent controls refresh is requested before child reload');
       reloads += 1;
     }
   ) as { reacquireSelectedChildHistory(profileId: string, generation: number): Promise<void> };
@@ -812,61 +816,42 @@ test('remote reconnect reacquires only the still-selected child watch', async ()
   pending[0]({ historyOwnedId: 'opaque-child' });
   await stale;
   assert.equal(reloads, 0, 'a changed child selection rejects the late reacquisition');
-  assert.equal(read.parentControlReloadRequested, false, 'stale child reacquisition cannot request parent refresh');
 
   state.selectedChildId = 'child-a';
   const current = api.reacquireSelectedChildHistory('remote-a', 7);
   pending[1]({ historyOwnedId: 'opaque-child' });
   await current;
   assert.equal(reloads, 1, 'the reacquired watch reloads the existing selected child graph');
-  assert.equal(read.parentControlReloadRequested, true, 'reconnect refreshes the authoritative parent controls');
 });
 
-test('parent control refresh waits for child admission and rejects a stale snapshot', async () => {
+test('parent and child readers deliver concurrently without sharing cursors', () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
-  const block = source.slice(
-    source.indexOf('async function reloadSelectedConversation('),
-    source.indexOf('async function refreshSelectedConversation(')
-  );
-  const snapshots: Array<(value: any) => void> = [];
-  const applied: number[] = [];
-  const read: any = {
-    workspaceOwnedId: 'parent', ownedId: 'opaque-child', maxBytes: 512 * 1024,
-    reading: true, parentControlReading: false, parentControlReloadRequested: false,
-    parentControlRevision: 0, abortController: new AbortController(), onError: assert.fail
+  const block = source.slice(source.indexOf('function selectedEventUsesControlCursor('), source.indexOf('async function refreshSelectedConversation('));
+  const delivered: string[] = [];
+  const makeRead = (ownedId: string) => ({
+    ownedId, generation: 1, pageWatermark: 0, pendingSequence: 0, reading: false,
+    abortController: new AbortController(),
+    onEvent: (event: AgentConversationEvent) => delivered.push(event.ownedId)
+  });
+  const parent = makeRead('parallel-parent');
+  const child = makeRead('parallel-child');
+  const dependencies = {
+    selectedConversationRead: parent, childConversationRead: child,
+    isCurrentConversationRead: (read: typeof parent) => !read.abortController.signal.aborted && (read === parent || read === child)
   };
-  const api = Function(
-    'initialRead', 'readAgentConversationSelectionFromTauri', 'applyConversationSnapshotControlState',
-    `${stripTypeScriptTypes(block, { mode: 'strip' })}
-     let selectedConversationRead = initialRead;
-     return { refreshParentConversationControls, reloadSelectedConversation };`
-  )(
-    read,
-    () => new Promise((resolve) => snapshots.push(resolve)),
-    (_ownedId: string, snapshot: any) => applied.push(snapshot.connection.generation)
-  ) as {
-    refreshParentConversationControls(read: any): Promise<void>;
-    reloadSelectedConversation(read: any): Promise<void>;
-  };
-  await api.refreshParentConversationControls(read);
-  assert.equal(read.parentControlReloadRequested, true);
-  assert.equal(snapshots.length, 0, 'parent reads serialize after the selected child snapshot');
-
-  read.reading = false;
-  const work = api.refreshParentConversationControls(read);
-  assert.equal(snapshots.length, 1);
-  read.parentControlRevision += 1;
-  snapshots[0]({ connection: { generation: 1 } });
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(snapshots.length, 2, 'a newer live parent event invalidates the pending snapshot');
-  snapshots[1]({ connection: { generation: 2 } });
-  await work;
-  assert.deepEqual(applied, [2]);
-
-  read.parentControlReading = true;
-  read.reloadRequested = false;
-  await api.reloadSelectedConversation(read);
-  assert.equal(read.reloadRequested, true, 'a child reload waits for the in-flight parent control snapshot');
+  const admit = Function(...Object.keys(dependencies), `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn admitSelectedConversationEvent;`)(...Object.values(dependencies));
+  const event = (ownedId: string, sequence: number) => ({
+    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
+    payload: { kind: 'assistantDelta', itemId: ownedId, delta: 'text' }
+  });
+  assert.equal(admit(event(parent.ownedId, 1)), true);
+  assert.equal(admit(event(child.ownedId, 1)), true);
+  child.abortController.abort();
+  assert.equal(admit(event(child.ownedId, 2)), false);
+  assert.equal(admit(event(parent.ownedId, 2)), true);
+  assert.deepEqual(delivered, [parent.ownedId, child.ownedId, parent.ownedId]);
+  assert.equal(parent.pageWatermark, 2);
+  assert.equal(child.pageWatermark, 1);
 });
 
 test('snapshot projection preserves implicit Claude compaction markers', () => {
@@ -920,13 +905,12 @@ await test('ensure refresh requires the confirmed generation before admitting ca
     const reads: Array<number | undefined> = [];
     const read = {
       ownedId, workspaceOwnedId: ownedId, maxBytes: 512 * 1024,
-      minimumGeneration: priorMinimum, reading: false, parentControlReading: false,
-      parentControlReloadRequested: false, reloadRequested: false,
+      minimumGeneration: priorMinimum, reading: false, reloadRequested: false,
       events: [], bytes: 0, overflow: false, abortController: new AbortController(),
       onSnapshot: (snapshot: { connection: { generation: number } }) => { state.generation = snapshot.connection.generation; }
     };
     const dependencies = {
-      selectedConversationRead: read, ensuring: new Map(), rail: { activeOwnedId: ownedId },
+      selectedConversationRead: read, childConversationRead: null, isCurrentConversationRead: (candidate: unknown) => candidate === read && !read.abortController.signal.aborted, ensuring: new Map(), rail: { activeOwnedId: ownedId },
       invoke: async () => ({ ownedId, provider: 'codex', generation: 1 }),
       setConversationConnection: (connection: { generation: number }) => { state.generation = connection.generation; },
       readAgentConversationSelectionFromTauri: async (_id: string, _bytes: number, minimum?: number) => {
@@ -1057,7 +1041,6 @@ test('completed file notifications do not depend on the selected transcript', as
       railActivityEvents: new Map(), selectedConversationRead: selection === 'child' ? { workspaceOwnedId: ownedId, ownedId: 'child-history' } : null,
       displayEventFrom: store.displayEventFrom, shouldClearConversationSending,
       getConversationSession: () => current, selectedEventUsesControlCursor: () => false,
-      applyConversationControlEventState: () => undefined,
       get: () => ({}), sessionPresenceHistory: {},
       agentItemFromEvent, displayItemFromAgentItem,
       publishWorkspaceFileChange: (change: { ownedId: string; path: string }) => notifications.push(change),
@@ -1498,7 +1481,7 @@ await test('selected refresh reports failure and releases buffered terminal even
       onError: (error: unknown) => errors.push(error)
     };
     const dependencies = {
-      selectedConversationRead: read, ACTIVE_EVENT_WINDOW_EVENTS: 100,
+      selectedConversationRead: read, childConversationRead: null, isCurrentConversationRead: (candidate: unknown) => candidate === read && !read.abortController.signal.aborted, ACTIVE_EVENT_WINDOW_EVENTS: 100,
       ACTIVE_EVENT_WINDOW_BYTES: 100_000,
       readAgentConversationSelectionFromTauri: () => new Promise((_resolve, reject) => { rejectRead = reject; })
     };
@@ -1521,5 +1504,62 @@ await test('selected refresh reports failure and releases buffered terminal even
       assert.equal(read.events.length, 0);
       assert.equal(read.bytes, 0);
     }
+  }
+});
+
+await test('displayed child state is isolated and eviction preserves parent controls and previews', () => {
+  store.ensureConversationSession('drill-parent', 'codex');
+  store.ensureConversationSession('drill-child-history', 'codex');
+  const parent = store.getConversationSession('drill-parent');
+  const child = store.getConversationSession('drill-child-history');
+  parent.selectedChildHistoryOwnedId = child.ownedId;
+  parent.selectedBeforeCursor = 900;
+  parent.pendingApprovals = { approval: { requestId: 'approval' } };
+  parent.sentAttachments = { parentMessage: [{ previewUrl: 'blob:parent-preview' }] };
+  child.sentAttachments = { childMessage: [{ previewUrl: 'blob:child-preview' }] };
+  const revoked: string[] = [];
+  const originalRevoke = URL.revokeObjectURL;
+  URL.revokeObjectURL = (url) => { revoked.push(url); };
+  try {
+    store.applySelectedConversationSnapshotState(child.ownedId, child.ownedId, {
+      connection: { provider: 'codex', generation: 7 }, suspended: false, activeTurnId: 'child-live',
+      page: { turns: [{ turnId: 'child-turn' }], beforeCursor: 10, afterCursor: 20, hasBefore: true,
+        hasAfter: false, watermark: 20, transferBytes: 200, oversized: false }
+    }, false);
+    assert.equal(child.generation, 7);
+    assert.equal(child.activeTurnId, 'child-live');
+    const childTurnEvent = (state: string, turnId: string) => ({
+      ownedId: child.ownedId, provider: 'codex', generation: 7, sequence: 21, timestampMs: 21,
+      payload: { kind: 'turn', state, turnId }
+    });
+    store.applySelectedConversationHistoryEventState(child.ownedId, childTurnEvent('started', 'child-next'));
+    assert.equal(child.activeTurnId, 'child-next');
+    store.applySelectedConversationHistoryEventState(child.ownedId, childTurnEvent('completed', 'older-child'));
+    assert.equal(child.activeTurnId, 'child-next', 'an unrelated terminal cannot finish the current child turn');
+    store.applySelectedConversationHistoryEventState(child.ownedId, childTurnEvent('completed', 'child-next'));
+    assert.equal(child.activeTurnId, undefined);
+    assert.equal(parent.activeTurnId, undefined, 'child activity cannot start a parent turn');
+    store.applySelectedConversationHistoryEventState(child.ownedId, childTurnEvent('started', 'child-error'));
+    store.applySelectedConversationHistoryEventState(child.ownedId, {
+      ...childTurnEvent('started', 'child-error'), payload: { kind: 'error', message: 'child failed' }
+    });
+    assert.equal(child.activeTurnId, undefined);
+    assert.equal(child.selectedBeforeCursor, 10);
+    assert.equal(parent.selectedBeforeCursor, 900);
+    assert.deepEqual(Object.keys(parent.pendingApprovals), ['approval']);
+    store.evictInactiveConversationSessions(parent.ownedId);
+    assert.equal(store.getConversationSession(child.ownedId), child);
+    assert.equal(revoked.includes('blob:parent-preview'), false);
+    assert.equal(revoked.includes('blob:child-preview'), false);
+    parent.selectedChildHistoryOwnedId = null;
+    store.evictConversationSession(child.ownedId);
+    assert.equal(store.getConversationSession(child.ownedId), null);
+    assert.equal(store.getConversationSession(parent.ownedId), parent);
+    assert.deepEqual(Object.keys(parent.sentAttachments), ['parentMessage']);
+    assert.equal(revoked.includes('blob:child-preview'), true);
+    assert.equal(revoked.includes('blob:parent-preview'), false);
+  } finally {
+    store.evictConversationSession(parent.ownedId);
+    URL.revokeObjectURL = originalRevoke;
   }
 });

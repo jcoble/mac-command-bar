@@ -7,10 +7,7 @@
   rather than a zero that would be a guess.
 -->
 <script lang="ts">
-  import FileText from '@lucide/svelte/icons/file-text';
-
   import { Chip } from '$lib/components/ui/chip/index.js';
-  import { HoverActionButton } from '$lib/components/ui/hover-actions/index.js';
   import { ListRow } from '$lib/components/ui/list-row/index.js';
 
   import type { AgentActivityRow, AgentStatus } from './agentActivityModel.ts';
@@ -19,10 +16,8 @@
     row: AgentActivityRow;
     selected: boolean;
     onselect: (childId: string) => void;
-    /** Opens the agent's log. Only ever called when the row has a path. */
-    onopenlog?: (logPath: string) => void;
   }
-  let { row, selected, onselect, onopenlog }: Props = $props();
+  let { row, selected, onselect }: Props = $props();
 
   const STATUS_TONE = {
     working: 'live',
@@ -38,7 +33,6 @@
     idle: 'Idle'
   };
 
-  const NO_LOG_HINT = "This agent's log is not available yet.";
 </script>
 
 <ListRow
@@ -60,27 +54,4 @@
     {/if}
   </span>
 
-  {#snippet actions()}
-    {#if row.logPath}
-      <HoverActionButton
-        label="Open log"
-        tone="info"
-        onclick={() => onopenlog?.(row.logPath ?? '')}
-      >
-        <FileText />
-      </HoverActionButton>
-    {:else}
-      <!--
-        A child agent record carries no path to a log, so this cannot work yet.
-        It stays visible and disabled rather than disappearing, and the wrapper
-        carries the reason because a disabled button never receives the hover a
-        tooltip would need.
-      -->
-      <span title={NO_LOG_HINT} class="flex">
-        <HoverActionButton label={`Open log — ${NO_LOG_HINT}`} disabled>
-          <FileText />
-        </HoverActionButton>
-      </span>
-    {/if}
-  {/snippet}
 </ListRow>

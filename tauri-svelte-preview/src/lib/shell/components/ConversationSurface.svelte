@@ -1,7 +1,6 @@
 <script lang="ts">
   import { setContext } from 'svelte';
   import { conversationMessagesContext, type ConversationMessagesContext } from '$lib/shell/conversation/conversationChatUI.ts';
-  import { remoteWorkspacePath } from '$lib/workspacePaths';
   import { readRemoteAssemblyEnvironmentFromTauri, type RemoteAssemblyProfile } from '$lib/tauriSource';
   import { untrack } from 'svelte';
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
@@ -14,7 +13,6 @@
   } from '$lib/shell/conversation/conversationTypes.ts';
   import ConversationTimeline from './conversation/ConversationTimeline.svelte';
   import ConversationComposer from './conversation/ConversationComposer.svelte';
-  import ConversationAgentTree from './conversation/ConversationAgentTree.svelte';
   import {
     beginConversationAgentConfigChange,
     confirmConversationAgentConfigChange,
@@ -30,8 +28,7 @@
     setConversationMode,
     setConversationProviderNotice,
     selectedConversationViewState,
-    setSelectedConversationViewState,
-    setConversationSelectedChild
+    setSelectedConversationViewState
   } from '$lib/shell/conversation/conversationStore.svelte';
   import {
     cleanupConversationAttachment,
@@ -39,17 +36,15 @@
     flushConversationSessionDraft,
     loadConversationCapabilities,
     persistConversationSessionDraft,
-    readChildConversationHistory,
     removeConversationAttachment,
     sendPermissionResponse,
     respondToStructuredInput,
     restoreConversationAttachments,
     saveConversationClipboardImage,
     sendStructuredMessage,
-    stopChildConversationHistory,
     stopStructuredTurn
   } from '$lib/shell/conversation/conversationService';
-  import { disposeSelectedConversationChat, selectConversationChat, selectedConversationChat, selectedConversationChatReady, sendSelectedConversationMessage, pageSelectedConversation, jumpSelectedConversationToLatest } from '$lib/shell/conversation/conversationConnection';
+  import { selectedConversationChat, sendSelectedConversationMessage, pageSelectedConversation, jumpSelectedConversationToLatest } from '$lib/shell/conversation/conversationConnection';
   import {
     readAgentConversationConfig,
     setAgentConversationConfig,
@@ -70,14 +65,7 @@
   import { conversationDisplayItems } from '$lib/shell/conversation/conversationMessages.ts';
   import { contextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
   import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
-  import {
-    requestOpenFile,
-    resolveConversationFilePath
-  } from '$lib/shell/openFileBus.ts';
-  import {
-    normalizeConversationFileHref,
-    splitConversationFileReference
-  } from '$lib/shell/conversation/conversationMessageSafety.ts';
+  import { requestOpenConversationFile } from '$lib/shell/openFileBus.ts';
   import { clearViewedSession, sessionPresenceHistory, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
   import type { ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
@@ -128,9 +116,6 @@
     return a === 'codex' || a === 'claude' || a === 'antigravity' || a === 'anthropic' || a === 'openai' || a === 'gemini' || a === 'agy';
   }
   const structured = $derived(!!active && isStructuredAgent(active.agent) && (appOwned || conversation?.mode !== 'raw'));
-  const selectedChild = $derived(conversation && conversation.selectedChildId
-    ? conversation.children.find((child) => child.childId === conversation.selectedChildId) ?? null
-    : null);
   const transcriptMessages = $derived.by(() => {
     if (!conversation) return [];
     conversation.timelineRevision;
@@ -144,7 +129,7 @@
   let previousVisibleTimeline: ConversationDisplayItem[] = [];
   const visibleTimeline = $derived.by((): ConversationDisplayItem[] => {
     if (!conversation) return [];
-    const timelineKey = `${conversation.ownedId}:${conversation.selectedChildId ?? 'root'}`;
+    const timelineKey = conversation.ownedId;
     if (timelineKey !== previousTimelineKey) {
       previousTimelineKey = timelineKey;
       previousVisibleTimeline = [];
@@ -152,7 +137,7 @@
     previousVisibleTimeline = conversationDisplayItems(
       transcriptMessages,
       previousVisibleTimeline,
-      conversation.selectedChildId ? {} : conversation.sentAttachments
+      conversation.sentAttachments
     ).filter((item) => (item.kind !== 'approval' || !conversation.pendingApprovals[item.requestId])
         && (item.kind !== 'input' || !conversation.pendingInputs[item.requestId]));
     return previousVisibleTimeline;
@@ -163,7 +148,7 @@
   let fileChangesViewKey = '';
   let planFileChanges = $state<ReturnType<typeof turnFileChanges>>(null);
   $effect(() => {
-    const viewKey = `${activeOwnedId ?? ''}:${conversation?.selectedChildId ?? 'root'}`;
+    const viewKey = activeOwnedId ?? '';
     if (viewKey !== fileChangesViewKey) {
       fileChangesViewKey = viewKey;
       planFileChanges = null;
@@ -178,12 +163,12 @@
   const pendingApprovals = $derived(conversation ? Object.values(conversation.pendingApprovals) : []);
   const pendingInputs = $derived(conversation ? Object.values(conversation.pendingInputs) : []);
   /* The live status line under the reply. Only the root transcript at its live
-     end can speak for the running turn; a sub-agent view or a window trimmed
+     end can speak for the running turn; a window trimmed
      while reading upward shows none. */
   const activityLabel = $derived(
-    turnActive && conversation && !conversation.selectedChildId && !conversation.selectedHasAfter
+    turnActive && conversation && !conversation.selectedHasAfter
       ? turnActivityLabel(visibleTimeline, activeTurnId, pendingApprovals.length, pendingInputs.length)
-      : active && conversation && !conversation.selectedChildId && !conversation.selectedHasAfter
+      : active && conversation && !conversation.selectedHasAfter
         && (active.backgroundTaskIds?.length ?? 0) > 0
         && (active.executionEnvironment !== 'remote' || rail.remoteConnections[active.remoteProfileId ?? ''] === 'connected')
         ? 'Background command running'
@@ -446,7 +431,7 @@
 
   async function send(): Promise<void> {
     const ownedId = activeOwnedId;
-    if (!ownedId || !conversation || conversation.selectedChildId || remoteDisconnected) return;
+    if (!ownedId || !conversation || remoteDisconnected) return;
     if (pendingAttachmentUploads.has(ownedId)) {
       if (sendsWaitingForUpload.has(ownedId)) return;
       sendsWaitingForUpload.add(ownedId);
@@ -478,7 +463,7 @@
       const receipt = steering
         ? await sendStructuredMessage(ownedId, text)
         : await sendSelectedConversationMessage(ownedId, text);
-      if (receipt && activeOwnedId === ownedId && !conversation?.selectedChildId) {
+      if (receipt && activeOwnedId === ownedId) {
         sendAnchorRequest = {
           requestId: ++sendAnchorRequestId,
           conversationId: ownedId,
@@ -508,47 +493,9 @@
     }
   }
 
-  async function selectChild(childId: string | null): Promise<void> {
-    if (!active || !conversation) return;
-    const ownedId = active.ownedId;
-    stopChildConversationHistory(ownedId);
-    setConversationSelectedChild(ownedId, childId);
-    if (!childId) {
-      selectConversationChat(ownedId, ownedId, surfaceController.signal);
-      await selectedConversationChatReady(ownedId);
-      return;
-    }
-    disposeSelectedConversationChat(ownedId);
-    const child = conversation.children.find((candidate) => candidate.childId === childId);
-    if (!child?.transcriptAvailable) return;
-    try {
-      const history = await readChildConversationHistory({
-        ownedId,
-        childId,
-        childSessionId: child.transcriptId ?? childId,
-        signal: surfaceController.signal
-      });
-      if (!history || conversationSessions[ownedId]?.selectedChildId !== childId) return;
-      selectConversationChat(ownedId, history.historyOwnedId, surfaceController.signal);
-      await selectedConversationChatReady(ownedId);
-    } catch (_error) {
-      // The child-specific store error remains visible without replacing saved content.
-    }
-  }
-
-  $effect(() => {
-    const ownedId = active?.ownedId;
-    return () => {
-      if (ownedId) {
-        stopChildConversationHistory(ownedId);
-        setConversationSelectedChild(ownedId, null);
-      }
-    };
-  });
-
   /** Cmd+V checks files first; text paste is untouched when there are no files. */
   async function paste(event: ClipboardEvent): Promise<void> {
-    if (!active || !conversation || conversation.selectedChildId) return;
+    if (!active || !conversation) return;
     const files = [...(event.clipboardData?.files ?? [])];
     if (files.length === 0) return;
     event.preventDefault();
@@ -579,7 +526,7 @@
   }
 
   async function saveImages(files: File[], rejectedMessage: string): Promise<void> {
-    if (!active || !conversation || conversation.selectedChildId) return;
+    if (!active || !conversation) return;
     const ownedId = active.ownedId;
     const generation = conversation.generation;
     const images = files.filter((file) => file.type.startsWith('image/'));
@@ -668,53 +615,10 @@
     void submitStructuredInput(ownedId, requestId, action, content, generation);
   }
 
-  function openConversationFile(
-    reference: string,
-    provenance?: ConversationFileLinkProvenance
-  ): void {
+  function openConversationFile(reference: string, provenance?: ConversationFileLinkProvenance): void {
     if (!active) return;
-    const sessionRoot = (active.cwd || active.projectPath || '').replace(/\/+$/, '');
-    const { path, line } = splitConversationFileReference(reference);
-    const candidate = normalizeConversationFileHref(path);
-    const recordedPath = provenance?.path ? normalizeConversationFileHref(provenance.path) : '';
-    const linkIsRecordedFile = Boolean(recordedPath && (
-      recordedPath === candidate
-      || recordedPath.endsWith(`/${candidate.replace(/^\.\//, '')}`)
-    ));
-    const recordedRoot = provenance?.root
-      ? normalizeConversationFileHref(provenance.root)
-      : !linkIsRecordedFile && recordedPath.includes('/')
-        ? recordedPath.slice(0, recordedPath.lastIndexOf('/'))
-        : '';
-    const recordedRootPath = recordedRoot
-      ? resolveConversationFilePath(recordedRoot, sessionRoot).replace(/\/+$/, '')
-      : '';
-    const root = recordedRootPath || sessionRoot;
-    if (!root || !candidate || candidate.includes('\0') || candidate.split('/').includes('..')) {
-      // Nothing here resolves to a file, so there is nothing to open.
-      setConversationAttachmentError(active.ownedId, 'That file link could not be opened.');
-      return;
-    }
-    const absolute = linkIsRecordedFile && (recordedPath.startsWith('/') || recordedPath.startsWith('~'))
-      ? recordedPath
-      : resolveConversationFilePath(candidate, root);
-    // A link that lands outside the workspace still opens, read-only: reading a
-    // file this session does not own is safe, and refusing it left the reader
-    // with a notice and no way to see what the link pointed at.
-    const outside = absolute !== root && !absolute.startsWith(`${root}/`);
-    const readOnly = outside || Boolean(recordedRootPath && recordedRootPath !== sessionRoot);
-    if (active.executionEnvironment === 'remote' && !active.remoteProfileId) {
-      setConversationAttachmentError(active.ownedId, 'Connect to this conversation’s saved machine first.');
-      return;
-    }
-    const qualify = (path: string): string => active.executionEnvironment === 'remote'
-      ? remoteWorkspacePath(active.remoteProfileId!, path) : path;
-    requestOpenFile({
-      path: qualify(absolute),
-      projectRoot: qualify(readOnly ? sessionRoot : root),
-      readOnly,
-      line
-    });
+    const error = requestOpenConversationFile(active, reference, provenance);
+    if (error) setConversationAttachmentError(active.ownedId, error);
   }
 
   async function changeConfig(field: AgentConversationConfigField, value: string): Promise<void> {
@@ -769,14 +673,13 @@
           </button>
         </div>
       {/if}
-      <ConversationAgentTree children={conversation.children} selectedChildId={conversation.selectedChildId} onSelect={(childId) => void selectChild(childId)} />
       <ConversationTimeline
         {pendingFirstMessage}
         items={visibleTimeline}
         conversationId={active.ownedId}
-        renderWindowId={`${active.ownedId}:${conversation.selectedHistoryOwnedId}`}
-        historyOwnedId={conversation.selectedHistoryOwnedId}
-        viewState={selectedConversationViewState(active.ownedId, conversation.selectedHistoryOwnedId)}
+        renderWindowId={`${active.ownedId}:${active.ownedId}`}
+        historyOwnedId={active.ownedId}
+        viewState={selectedConversationViewState(active.ownedId, active.ownedId)}
         onViewChange={setSelectedConversationViewState}
         itemFirstSequence={(itemId) => {
           const sequence = transcriptMessagesById.get(itemId)?.metadata?.firstSequence;
@@ -789,8 +692,8 @@
         {localTurnActive}
         {activityLabel}
         {composerHeight}
-        assistantLabel={selectedChild?.title ?? active.agent}
-        emptyText={conversation.selectedChildId ? 'This sub-agent transcript is not available yet.' : 'Start the conversation below.'}
+        assistantLabel={active.agent}
+        emptyText="Start the conversation below."
         hasOlder={conversation.selectedHasBefore}
         loadingOlder={conversation.selectedLoadingOlder}
         onLoadOlder={() => void pageSelectedConversation('older')}
@@ -804,7 +707,6 @@
         onFileLink={openConversationFile}
         onPlanOpen={() => composer?.expandPlan()}
       />
-      {#if !conversation.selectedChildId || pendingApprovals.length || pendingInputs.length}
         {#key active.ownedId}
         <ConversationComposer
           bind:this={composer}
@@ -853,7 +755,6 @@
           onHeightChange={(height) => (composerHeight = height)}
         />
         {/key}
-      {/if}
     </section>
   {:else if active && isStructuredAgent(active.agent) && conversation?.mode === 'raw'}
     <div class="raw-actions" aria-label="Conversation handoff actions">

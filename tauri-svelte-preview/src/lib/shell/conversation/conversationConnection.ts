@@ -28,6 +28,8 @@ import {
   applySelectedConversationPageState,
   applySelectedConversationSnapshotState,
   getConversationSession,
+  ensureConversationSession,
+  evictConversationSession,
   failChildConversationTranscript,
   restoreSelectedConversationAttachments,
   setConversationAttachmentError,
@@ -67,7 +69,6 @@ interface PendingAdmission {
 }
 
 interface ActiveConversation {
-  token: symbol;
   workspaceOwnedId: string;
   historyOwnedId: string;
   controller: AbortController;
@@ -91,6 +92,11 @@ interface ActiveConversation {
 }
 
 let active: ActiveConversation | null = null;
+let childActive: ActiveConversation | null = null;
+
+function isCurrent(selection: ActiveConversation): boolean {
+  return !selection.controller.signal.aborted && (active === selection || childActive === selection);
+}
 
 function messageBytes(message: UIMessage): number {
   return encoder.encode(JSON.stringify(message)).byteLength;
@@ -191,14 +197,14 @@ function boundLiveMessages(
   const replacement = evictedOldest ? conversationSnapshotChunks(messages) : [];
   if (evictedOldest) {
     resetMessageBytes(selection, messages);
-    const generation = getConversationSession(selection.workspaceOwnedId)?.generation ?? 0;
+    const generation = getConversationSession(selection.historyOwnedId)?.generation ?? 0;
     restoreSelectedConversationAttachments(
-      selection.workspaceOwnedId, {}, generation, messages.map((message) => message.id)
+      selection.historyOwnedId, {}, generation, messages.map((message) => message.id)
     );
   }
   selection.beforeCursor = historyPosition(messages[0]) ?? selection.beforeCursor;
   applySelectedConversationLiveWindow(
-    selection.workspaceOwnedId,
+    selection.historyOwnedId,
     messages.flatMap((message) => typeof message.metadata?.turnId === 'string'
       ? [message.metadata.turnId] : []),
     selection.graphBytes,
@@ -291,7 +297,10 @@ function resetReady(selection: ActiveConversation): void {
 function bindSelectionSignal(selection: ActiveConversation, signal?: AbortSignal): void {
   selection.releaseSelectionSignal?.();
   const abort = (): void => {
-    if (active?.token === selection.token) disposeSelectedConversationChat(selection.workspaceOwnedId);
+    if (isCurrent(selection)) {
+      if (selection === childActive) disposeChildConversationChat(selection.workspaceOwnedId);
+      else disposeSelectedConversationChat(selection.workspaceOwnedId);
+    }
   };
   if (signal?.aborted) abort();
   else signal?.addEventListener('abort', abort, { once: true });
@@ -306,7 +315,7 @@ async function restorePageAttachments(
 ): Promise<void> {
   try {
     restoreSelectedConversationAttachments(
-      selection.workspaceOwnedId, {}, generation, retainedItemIds
+      selection.historyOwnedId, {}, generation, retainedItemIds
     );
     if (!wanted.size) return;
     const byItem: Record<string, ConversationAttachment[]> = {};
@@ -317,13 +326,13 @@ async function restorePageAttachments(
         ids,
         selection.controller.signal
       );
-      if (active?.token !== selection.token || selection.controller.signal.aborted) return;
+      if (!isCurrent(selection) || selection.controller.signal.aborted) return;
       const restored = await restoreAttachmentList(
         selection.historyOwnedId,
         saved,
         selection.controller.signal
       );
-      if (active?.token !== selection.token || selection.controller.signal.aborted) {
+      if (!isCurrent(selection) || selection.controller.signal.aborted) {
         discardRestoredAttachments(restored);
         return;
       }
@@ -332,18 +341,18 @@ async function restorePageAttachments(
         byItem[itemId] = attachmentIds.flatMap((id) => byId.get(id) ?? []);
       }
     }
-    if (active?.token === selection.token) {
+    if (isCurrent(selection)) {
       restoreSelectedConversationAttachments(
-        selection.workspaceOwnedId,
+        selection.historyOwnedId,
         byItem,
         generation,
         selection.chat.messages.map((message) => message.id)
       );
     }
   } catch (error) {
-    if (active?.token === selection.token && !selection.controller.signal.aborted) {
+    if (isCurrent(selection) && !selection.controller.signal.aborted) {
       setConversationAttachmentError(
-        selection.workspaceOwnedId,
+        selection.historyOwnedId,
         error instanceof Error ? error.message : String(error)
       );
     }
@@ -380,7 +389,7 @@ function snapshotChunks(
     }
   }
   applySelectedConversationSnapshotState(
-    selection.workspaceOwnedId,
+    selection.historyOwnedId,
     selection.historyOwnedId,
     snapshot,
     applyControls
@@ -393,14 +402,12 @@ function snapshotChunks(
   }
   pushMessagesSnapshot(selection, messages, push);
   push({ type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: selection.historyOwnedId } as StreamChunk);
-  if (selection.historyOwnedId === selection.workspaceOwnedId) {
-    void restorePageAttachments(
-      selection,
-      pageAttachments(snapshot.page.events),
-      snapshot.connection.generation,
-      messages.map((message) => message.id)
-    );
-  }
+  void restorePageAttachments(
+    selection,
+    pageAttachments(snapshot.page.events),
+    snapshot.connection.generation,
+    messages.map((message) => message.id)
+  );
   if (pending?.receipt && snapshot.page.turns.some((turn) =>
     turn.turnId === pending.receipt?.turnId && turn.terminalState
   )) {
@@ -432,7 +439,7 @@ function admitInitialSnapshot(
   }
   selection.anchorSnapshot = snapshot;
   applySelectedConversationSnapshotState(
-    selection.workspaceOwnedId,
+    selection.historyOwnedId,
     selection.historyOwnedId,
     snapshot,
     selection.historyOwnedId === selection.workspaceOwnedId
@@ -456,7 +463,7 @@ function admitInitialSnapshot(
       selection.controller.signal
     );
     if (selection.controller.signal.aborted
-      || active?.token !== selection.token
+      || !isCurrent(selection)
       || revision !== selection.anchorRevision) return;
     const authority = selection.anchorSnapshot ?? snapshot;
     selection.anchorAdmission = null;
@@ -470,7 +477,7 @@ function admitInitialSnapshot(
   })();
   selection.anchorAdmission = admission;
   void admission.catch((error) => {
-    if (active?.token !== selection.token
+    if (!isCurrent(selection)
       || selection.controller.signal.aborted
       || revision !== selection.anchorRevision) return;
     selection.anchorAdmission = null;
@@ -486,12 +493,12 @@ function emitEvent(
   push: (item: QueueItem) => void,
   updateState = true
 ): void {
-  const previousUsedTokens = getConversationSession(selection.workspaceOwnedId)?.usage?.usedTokens;
+  const previousUsedTokens = getConversationSession(selection.historyOwnedId)?.usage?.usedTokens;
   if (updateState) {
     if (selection.historyOwnedId === selection.workspaceOwnedId) {
       applySelectedConversationEventState(selection.workspaceOwnedId, event);
     } else {
-      applySelectedConversationHistoryEventState(selection.workspaceOwnedId, event);
+      applySelectedConversationHistoryEventState(selection.historyOwnedId, event);
     }
   }
   if (event.payload.kind === 'error') {
@@ -502,7 +509,7 @@ function emitEvent(
       setConversationSendError(selection.workspaceOwnedId, event.payload.message);
     }
   }
-  const showingLatest = !getConversationSession(selection.workspaceOwnedId)?.selectedHasAfter;
+  const showingLatest = !getConversationSession(selection.historyOwnedId)?.selectedHasAfter;
   const displayEvents = event.payload.kind === 'usage'
     && usageDropIsCompaction(previousUsedTokens, event.payload.usedTokens)
     ? [{
@@ -609,7 +616,7 @@ function createConnection(selection: ActiveConversation): SubscribeConnectionAda
       };
       selection.pendingSend = pending;
       try {
-        if (getConversationSession(selection.workspaceOwnedId)?.selectedHasAfter) {
+        if (getConversationSession(selection.historyOwnedId)?.selectedHasAfter) {
           if (!selection.resolveReady) resetReady(selection);
           await selection.resubscribe?.();
           await selection.ready;
@@ -622,7 +629,7 @@ function createConnection(selection: ActiveConversation): SubscribeConnectionAda
           selection.pendingAdmission = null;
           admission.resolve(receipt);
         }
-        if (signal?.aborted || active?.token !== selection.token) return;
+        if (signal?.aborted || !isCurrent(selection)) return;
         if (pending.optimisticId && selection.push) {
           pushMessagesSnapshot(selection, selection.chat.messages.map((message) =>
             message.id === pending.optimisticId ? { ...message, id: receipt.userItemId } : message
@@ -653,19 +660,21 @@ export function selectConversationChat(
   historyOwnedId = workspaceOwnedId,
   signal?: AbortSignal
 ): CreateChatReturn {
-  if (active?.workspaceOwnedId === workspaceOwnedId && active.historyOwnedId === historyOwnedId) {
-    bindSelectionSignal(active, signal);
-    return active.chat;
+  const child = historyOwnedId !== workspaceOwnedId;
+  const current = child ? childActive : active;
+  if (current?.workspaceOwnedId === workspaceOwnedId && current.historyOwnedId === historyOwnedId) {
+    bindSelectionSignal(current, signal);
+    return current.chat;
   }
-  if (active) {
-    const generation = getConversationSession(active.workspaceOwnedId)?.generation ?? 0;
-    restoreSelectedConversationAttachments(active.workspaceOwnedId, {}, generation, []);
+  if (child) {
+    disposeChildConversationChat();
+    const parent = getConversationSession(workspaceOwnedId);
+    if (!parent) throw new Error('The parent conversation is not selected.');
+    ensureConversationSession(historyOwnedId, parent.provider);
+    parent.selectedChildHistoryOwnedId = historyOwnedId;
+  } else {
+    disposeSelectedConversationChat();
   }
-  active?.controller.abort();
-  active?.rejectReady?.(new DOMException('Conversation selection changed', 'AbortError'));
-  if (active) rejectPendingAdmission(active, new DOMException('Conversation selection changed', 'AbortError'));
-  active?.releaseSelectionSignal?.();
-  active?.chat.dispose();
   let resolveReady: (() => void) | undefined;
   let rejectReady: ((error: unknown) => void) | undefined;
   const ready = new Promise<void>((resolve, reject) => {
@@ -674,7 +683,6 @@ export function selectConversationChat(
   });
   void ready.catch(() => {});
   const selection = {
-    token: Symbol(historyOwnedId),
     workspaceOwnedId,
     historyOwnedId,
     controller: new AbortController(),
@@ -720,34 +728,55 @@ export function selectConversationChat(
       }
     }
   });
-  active = selection;
+  if (child) childActive = selection;
+  else active = selection;
   bindSelectionSignal(selection, signal);
   return selection.chat;
 }
 
 export function selectedConversationChat(
-  workspaceOwnedId?: string | null
+  workspaceOwnedId?: string | null,
+  historyOwnedId = workspaceOwnedId
 ): CreateChatReturn | null {
-  return active && (!workspaceOwnedId || active.workspaceOwnedId === workspaceOwnedId)
-    ? active.chat
-    : null;
+  const selection = historyOwnedId && historyOwnedId !== workspaceOwnedId ? childActive : active;
+  return selection && (!workspaceOwnedId || selection.workspaceOwnedId === workspaceOwnedId)
+    && (!historyOwnedId || selection.historyOwnedId === historyOwnedId) ? selection.chat : null;
+}
+
+function disposeConversationChat(selection: ActiveConversation): void {
+  const generation = getConversationSession(selection.historyOwnedId)?.generation ?? 0;
+  restoreSelectedConversationAttachments(selection.historyOwnedId, {}, generation, []);
+  selection.controller.abort();
+  selection.rejectReady?.(new DOMException('Conversation selection disposed', 'AbortError'));
+  selection.releaseSelectionSignal?.();
+  rejectPendingAdmission(selection, new DOMException('Conversation selection disposed', 'AbortError'));
+  selection.chat.dispose();
+}
+
+export function disposeChildConversationChat(workspaceOwnedId?: string): void {
+  const selection = childActive;
+  if (!selection || (workspaceOwnedId && selection.workspaceOwnedId !== workspaceOwnedId)) return;
+  childActive = null;
+  const parent = getConversationSession(selection.workspaceOwnedId);
+  if (parent?.selectedChildHistoryOwnedId === selection.historyOwnedId) parent.selectedChildHistoryOwnedId = null;
+  disposeConversationChat(selection);
+  evictConversationSession(selection.historyOwnedId);
 }
 
 export function disposeSelectedConversationChat(workspaceOwnedId?: string): void {
-  if (!active || (workspaceOwnedId && active.workspaceOwnedId !== workspaceOwnedId)) return;
-  const generation = getConversationSession(active.workspaceOwnedId)?.generation ?? 0;
-  restoreSelectedConversationAttachments(active.workspaceOwnedId, {}, generation, []);
-  active.controller.abort();
-  active.rejectReady?.(new DOMException('Conversation selection disposed', 'AbortError'));
-  active.releaseSelectionSignal?.();
-  rejectPendingAdmission(active, new DOMException('Conversation selection disposed', 'AbortError'));
-  active.chat.dispose();
+  disposeChildConversationChat(workspaceOwnedId);
+  const selection = active;
+  if (!selection || (workspaceOwnedId && selection.workspaceOwnedId !== workspaceOwnedId)) return;
   active = null;
+  disposeConversationChat(selection);
 }
 
-export async function selectedConversationChatReady(workspaceOwnedId: string): Promise<void> {
-  const selection = active;
-  if (!selection || selection.workspaceOwnedId !== workspaceOwnedId) return;
+export async function selectedConversationChatReady(
+  workspaceOwnedId: string,
+  historyOwnedId = workspaceOwnedId
+): Promise<void> {
+  const selection = historyOwnedId === workspaceOwnedId ? active : childActive;
+  if (!selection || selection.workspaceOwnedId !== workspaceOwnedId || selection.historyOwnedId !== historyOwnedId) return;
   await selection.ready;
 }
 
@@ -780,29 +809,29 @@ export function sendSelectedConversationMessage(
   return promise;
 }
 
-export async function refreshSelectedConversationChat(workspaceOwnedId: string): Promise<void> {
-  const selection = active;
-  if (!selection || selection.workspaceOwnedId !== workspaceOwnedId || !selection.resubscribe) return;
+export async function refreshSelectedConversationChat(workspaceOwnedId: string, historyOwnedId = workspaceOwnedId): Promise<void> {
+  const selection = historyOwnedId === workspaceOwnedId ? active : childActive;
+  if (!selection || selection.workspaceOwnedId !== workspaceOwnedId || selection.historyOwnedId !== historyOwnedId || !selection.resubscribe) return;
   if (!selection.resolveReady) resetReady(selection);
   await selection.resubscribe();
   await selection.ready;
 }
 
-export function jumpSelectedConversationToLatest(workspaceOwnedId: string): Promise<void> {
-  const selection = active;
-  if (selection?.workspaceOwnedId === workspaceOwnedId) {
+export function jumpSelectedConversationToLatest(workspaceOwnedId: string, historyOwnedId = workspaceOwnedId): Promise<void> {
+  const selection = historyOwnedId === workspaceOwnedId ? active : childActive;
+  if (selection?.workspaceOwnedId === workspaceOwnedId && selection.historyOwnedId === historyOwnedId) {
     selection.anchorRevision += 1;
     selection.anchorAdmission = null;
     selection.anchorSnapshot = null;
     selection.contentAdmitted = true;
   }
-  return refreshSelectedConversationChat(workspaceOwnedId);
+  return refreshSelectedConversationChat(workspaceOwnedId, historyOwnedId);
 }
 
-export async function pageSelectedConversation(direction: Direction): Promise<void> {
-  const selection = active;
-  if (!selection) return;
-  if (!setSelectedConversationPageLoading(selection.workspaceOwnedId, direction, true)) return;
+export async function pageSelectedConversation(direction: Direction, historyOwnedId?: string): Promise<void> {
+  const selection = historyOwnedId && historyOwnedId !== active?.historyOwnedId ? childActive : active;
+  if (!selection || (historyOwnedId && selection.historyOwnedId !== historyOwnedId)) return;
+  if (!setSelectedConversationPageLoading(selection.historyOwnedId, direction, true)) return;
   try {
     const cursor = direction === 'older'
       ? selection.beforeCursor
@@ -815,7 +844,7 @@ export async function pageSelectedConversation(direction: Direction): Promise<vo
       : await readNewerSelectedConversationItems(
           selection.historyOwnedId, cursor, PAGE_BYTES, selection.controller.signal
         );
-    if (!page || active?.token !== selection.token) return;
+    if (!page || !isCurrent(selection)) return;
     if (direction === 'newer' && !page.hasAfter) {
       if (!selection.resolveReady) resetReady(selection);
       await selection.resubscribe?.();
@@ -831,7 +860,7 @@ export async function pageSelectedConversation(direction: Direction): Promise<vo
         page = await readOlderSelectedConversationItems(
           selection.historyOwnedId, cursor, PAGE_BYTES, selection.controller.signal
         );
-        if (!page || active?.token !== selection.token) return;
+        if (!page || !isCurrent(selection)) return;
       }
       if (extended?.reachedStart && page.hasEarlierTranscript) {
         page = { ...page, hasEarlierTranscript: false };
@@ -849,7 +878,7 @@ export async function pageSelectedConversation(direction: Direction): Promise<vo
     const evictedPrevious = [...previousIds].some((id) => !retainedIds.has(id));
     selection.beforeCursor = historyPosition(messages[0]) ?? page.beforeCursor;
     selection.afterCursor = historyPosition(messages.at(-1)) ?? page.afterCursor;
-    applySelectedConversationPageState(selection.workspaceOwnedId, page, direction, {
+    applySelectedConversationPageState(selection.historyOwnedId, page, direction, {
       beforeCursor: selection.beforeCursor,
       afterCursor: selection.afterCursor,
       hasBefore: direction === 'older' ? hasOlderHistory(page) : evictedPrevious || hasOlderHistory(page),
@@ -859,7 +888,7 @@ export async function pageSelectedConversation(direction: Direction): Promise<vo
       ),
       transferBytes: messages.reduce((total, message) => total + messageBytes(message), 0)
     });
-    const generation = getConversationSession(selection.workspaceOwnedId)?.generation ?? 0;
+    const generation = getConversationSession(selection.historyOwnedId)?.generation ?? 0;
     void restorePageAttachments(
       selection,
       pageAttachments(page.events),
@@ -867,8 +896,8 @@ export async function pageSelectedConversation(direction: Direction): Promise<vo
       messages.map((message) => message.id)
     );
   } finally {
-    if (active?.token === selection.token) {
-      setSelectedConversationPageLoading(selection.workspaceOwnedId, direction, false);
+    if (isCurrent(selection)) {
+      setSelectedConversationPageLoading(selection.historyOwnedId, direction, false);
     }
   }
 }
