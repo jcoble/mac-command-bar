@@ -3082,7 +3082,10 @@ mod connection_tests {
     async fn cached_open_tops_up_once_and_pages_from_the_mac_copy() {
         let published = Arc::new(Mutex::new(Vec::new()));
         let captured = published.clone();
-        let shared = store();
+        let directory = std::env::temp_dir().join(format!("assembly-disconnect-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let database = directory.join("sessions.db");
+        let shared = Arc::new(SessionStore::open(&database).unwrap());
         let manager = RemoteConnectionManager::from_environment(
             Arc::new(move |event: AgentConversationEvent| captured.lock().unwrap().push(event.sequence)),
             Arc::new(|_| {}), shared.clone(),
@@ -3145,8 +3148,12 @@ mod connection_tests {
         assert!(late_sink(vec![large_history_event(32)]).is_err());
         assert_eq!(manager.history.lock().unwrap().through("cache-test", "large-history").unwrap(), Some(6));
 
+        drop(late_sink);
+        drop(requests);
+        drop(manager);
+        drop(shared);
         let restarted = RemoteConnectionManager::from_environment(
-            Arc::new(|_| {}), Arc::new(|_| {}), shared,
+            Arc::new(|_| {}), Arc::new(|_| {}), Arc::new(SessionStore::open(&database).unwrap()),
         ).unwrap();
         assert_eq!(
             sequences(&restarted.snapshot("large-history".into(), 4).await.unwrap().unwrap().events),
@@ -3156,6 +3163,8 @@ mod connection_tests {
             sequences(&restarted.events_before("large-history".into(), 4, 1 << 20).await.unwrap().events),
             vec![1, 2, 3],
         );
+        drop(restarted);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     fn connect(manager: &RemoteConnectionManager) -> mpsc::Receiver<ClientRequest> {
