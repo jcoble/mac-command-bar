@@ -6,12 +6,11 @@
 	 * active paint and calls no session, panel, persistence, or native service.
 	 *
 	 * The rail passes one shared timestamp into every row. This row mounts no
-	 * timer or clock subscription. Its seeded activity glyph exists only during
-	 * real work and pauses itself when the row is offscreen.
+	 * timer or clock subscription. A dot on the provider tile says when the
+	 * session is working, waiting on you, or failed.
 	 */
 	import Server from "@lucide/svelte/icons/server";
 	import { AGENT_ICONS, agentDisplayName } from "$lib/shell/agentIcons.ts";
-	import WorkingSpinner from "$lib/shell/components/conversation/WorkingSpinner.svelte";
 	import {
 		deriveSessionPresence,
 		EMPTY_SESSION_PRESENCE_HISTORY,
@@ -146,6 +145,7 @@
 	data-presence={presence}
 	data-shelf={shelf}
 	class:needs-you-row={needsYou}
+	class:selected={active}
 	class="row"
 	oncontextmenu={onContextMenu}
 >
@@ -156,9 +156,9 @@
 		{onOpenEditor}
 		{onOpenSourceControl}
 	>
-		<!-- The mark, at the height of the three lines beside it. It carries
-               the provider and whether this session is working, and nothing
-               else: no action is ever drawn on top of it. -->
+		<!-- The 32px provider tile. It carries the provider and, in its corner
+               dot, whether this session is working, waiting or failed, and
+               nothing else: no action is ever drawn on top of it. -->
 		<span
 			data-testid="worktree-agent-provider"
 			class="thumb"
@@ -168,6 +168,9 @@
 			title={remote ? `This session runs on a remote machine — ${remoteState}` : undefined}
 		>
 			<ProviderIcon class="thumb-mark" aria-hidden="true" />
+			{#if presence === "working" || presence === "attention" || presence === "failed"}
+				<span class="status-dot" data-presence={presence} role="img" aria-label={presenceLabel}></span>
+			{/if}
 			<!-- The machine, in the mark's corner rather than in a third line: a
                  remote session is told apart at a glance and the row keeps its
                  two lines and its height. The label above carries it in words. -->
@@ -188,18 +191,13 @@
 				<span data-testid="worktree-agent-title" class="session-title">{label}</span>
 				<span data-testid="worktree-agent-age" class="age">
 					<span class="age-text">{ageText ?? ""}</span>
-					{#if presence === "working"}
-						<span class="working-mark" role="img" aria-label="Working">
-							<WorkingSpinner seed={activeTurnId ?? session.ownedId} size={14} />
-						</span>
-					{/if}
 				</span>
 			</span>
 
 			<span class="line line-meta">
 				<span data-testid="worktree-agent-meta" class="project">{project}</span>
 				{#if session.branch}
-					<span class="sep" aria-hidden="true">•</span>
+					<span class="sep" aria-hidden="true">·</span>
 					<span class="branch">{session.branch}</span>
 				{/if}
 
@@ -231,59 +229,98 @@
 		box-sizing: border-box;
 		min-width: 0;
 		content-visibility: auto;
-		contain-intrinsic-size: auto 58px;
+		contain-intrinsic-size: auto 48px;
 		/* The highlight block is inset from the rail's edges rather than bled to
        them, so a hovered row reads as a card in the list. */
-		padding: 0 6px;
+		padding: 0 8px;
 		list-style: none;
-		color: var(--color-text);
+		color: var(--foreground);
 		font-size: 13px;
 		line-height: 1.4;
 	}
 
-	/* The mark, then the three lines. The row is 58px so a rail this narrow still
-     shows a useful stack of sessions; the mark matches the height of the three
-     lines beside it, which is the proportion the reference keeps. */
-	/* The provider mark, at the height of the text beside it. Nothing is ever
-     drawn over this square: it says who is running the session and whether the
-     session is working, and those are the only two things it says. */
+	/* The 32px provider tile, on the raised fill. Nothing is ever drawn over
+     this square: it says who is running the session and, in its corner dot,
+     what state the session is in. */
 	.thumb {
 		position: relative;
 		display: flex;
-		width: 44px;
-		height: 44px;
+		width: 32px;
+		height: 32px;
 		align-items: center;
 		justify-content: center;
-		border-radius: var(--radius-sm);
-		background: color-mix(in srgb, var(--color-elevated) 68%, var(--color-surface));
-		color: var(--color-text-2);
+		border-radius: 8px;
+		background: var(--muted);
+		color: var(--muted-foreground);
+	}
+
+	.row.selected .thumb {
+		background: var(--secondary);
 	}
 
 	:global(.thumb-mark) {
-		width: 22px;
-		height: 22px;
+		width: 16px;
+		height: 16px;
 		flex: 0 0 auto;
 	}
 
-	/* The remote badge sits inside the mark's square — the row clips its own
-     overflow, and a badge hanging off the corner would be cut. Static: its
-     colour changes only when the machine's state does, and it never animates. */
+	/* The status dot in the tile's bottom corner, ringed in the row's own fill
+     so it reads as cut out of the tile. Static: it never animates. */
+	.status-dot {
+		position: absolute;
+		right: -2px;
+		bottom: -2px;
+		width: 10px;
+		height: 10px;
+		box-sizing: border-box;
+		border: 2px solid var(--card);
+		border-radius: 50%;
+		background: var(--color-good);
+	}
+
+	.status-dot[data-presence="attention"] {
+		background: var(--color-attention);
+	}
+
+	.status-dot[data-presence="failed"] {
+		background: var(--color-bad);
+	}
+
+	.row:hover .status-dot {
+		border-color: var(--accent);
+	}
+
+	.row.selected .status-dot {
+		border-color: var(--secondary);
+	}
+
+	/* The remote badge sits in the tile's top corner, clear of the status dot.
+     Static: its colour changes only when the machine's state does, and it
+     never animates. */
 	.remote-mark {
 		position: absolute;
-		right: 1px;
-		bottom: 1px;
+		top: -3px;
+		right: -3px;
 		display: grid;
-		width: 15px;
-		height: 15px;
+		width: 13px;
+		height: 13px;
 		place-items: center;
 		border-radius: 50%;
-		background: var(--color-surface);
-		color: var(--color-text-2);
+		background: var(--card);
+		color: var(--muted-foreground);
+	}
+
+	.row:hover .remote-mark {
+		background: var(--accent);
+	}
+
+	.row.selected .remote-mark {
+		background: var(--secondary);
 	}
 
 	.remote-mark :global(svg) {
-		width: 10px;
-		height: 10px;
+		width: 9px;
+		height: 9px;
 	}
 
 	/* One state, told in colour as well as in the label and tooltip above. */
@@ -329,26 +366,26 @@
 	}
 
 	.line-title {
-		height: 21px;
-		line-height: 21px;
+		height: 20px;
+		line-height: 20px;
 	}
 
 	.line-meta {
-		height: 17px;
-		line-height: 17px;
+		height: 16px;
+		line-height: 16px;
 	}
 
 	.project {
 		min-width: 0;
 		flex: 0 1 auto;
 		overflow: hidden;
-		color: var(--color-text-2);
+		color: var(--muted-foreground);
 		font-size: 12px;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 
-	/* The branch, at the project's size but a step dimmer. Not monospaced: this
+	/* The branch, at the project's size. Not monospaced: this
      line is read, not compared character by character, and a mono face at this
      size is both wider and harder to read in a rail this narrow. The project
      gives way first, because it repeats down the whole list and the branch is
@@ -363,7 +400,7 @@
 		min-width: 0;
 		flex: 0 1 auto;
 		overflow: hidden;
-		color: var(--color-text-3);
+		color: var(--muted-foreground);
 		font-size: 12px;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -381,32 +418,17 @@
 		flex: 0 0 auto;
 		align-items: center;
 		justify-content: flex-end;
-		gap: 6px;
 		padding-left: 8px;
 		color: var(--color-text-3);
-		font-family: var(--font-mono);
 		font-size: 12px;
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
 	}
 
-	/* Keep elapsed values aligned while the static working mark occupies its own slot. */
+	/* Keep elapsed values right-aligned down the list. */
 	.age-text {
 		min-width: 28px;
 		text-align: right;
-	}
-
-	.working-mark {
-		display: inline-grid;
-		width: 14px;
-		height: 14px;
-		flex: 0 0 auto;
-		place-items: center;
-		color: var(--color-accent);
-	}
-
-	.row[data-presence="working"] .age {
-		color: var(--color-text-2);
 	}
 
 	.needs-you {
@@ -415,8 +437,8 @@
 		align-items: center;
 		gap: 5px;
 		color: var(--color-attention);
-		font-size: 11.5px;
-		font-weight: 600;
+		font-size: 11px;
+		font-weight: 500;
 		white-space: nowrap;
 	}
 
@@ -433,9 +455,9 @@
 		flex: 0 0 auto;
 		align-items: center;
 		gap: 5px;
-		color: var(--color-accent);
-		font-size: 11.5px;
-		font-weight: 600;
+		color: var(--primary);
+		font-size: 11px;
+		font-weight: 500;
 		white-space: nowrap;
 	}
 
@@ -444,7 +466,7 @@
 		height: 7px;
 		flex: 0 0 auto;
 		border-radius: 2px;
-		background: var(--color-accent);
+		background: var(--primary);
 	}
 
 	.failed {
@@ -452,7 +474,7 @@
 		flex: 0 1 auto;
 		overflow: hidden;
 		color: var(--color-bad);
-		font-size: 11.5px;
+		font-size: 11px;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
@@ -461,11 +483,16 @@
 		min-width: 0;
 		flex: 1 1 auto;
 		overflow: hidden;
-		color: var(--color-text);
+		color: var(--foreground);
 		font-size: 14px;
-		font-weight: 600;
+		font-weight: 500;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	/* The running session's title takes the primary colour. */
+	.row[data-presence="working"] .session-title {
+		color: var(--primary);
 	}
 
 	/* Presence changes may fade their own small labels; pointer movement owns no
