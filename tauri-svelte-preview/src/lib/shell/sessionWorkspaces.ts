@@ -35,6 +35,12 @@ export function isDiffMode(value: unknown): value is DiffMode {
   return value === 'unified' || value === 'side-by-side';
 }
 
+export interface ConversationViewState {
+  followLatest: boolean;
+  anchor?: { itemId: string; firstSequence: number; offsetPx: number };
+  expandedTurns: Record<string, boolean>;
+}
+
 export interface SessionConversationWorkspace {
   mode: 'structured' | 'raw';
   version?: number;
@@ -42,6 +48,7 @@ export interface SessionConversationWorkspace {
   owner?: AgentExecutionOwner;
   attachmentIds?: string[];
   config?: Record<string, AgentConfigValue>;
+  viewByHistoryId?: Record<string, ConversationViewState>;
   parentScrollTop?: number;
   childScrollTopById?: Record<string, number>;
   sequence?: number;
@@ -294,6 +301,24 @@ function nonNegativeInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
+function normalizeConversationViews(value: unknown): Record<string, ConversationViewState> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([historyId, view]) => {
+    if (!isRecord(view) || typeof view.followLatest !== 'boolean') return [];
+    const anchor = view.anchor;
+    return [[historyId, {
+      followLatest: view.followLatest,
+      ...(isRecord(anchor) && typeof anchor.itemId === 'string' && anchor.itemId.length > 0
+        && typeof anchor.firstSequence === 'number' && Number.isSafeInteger(anchor.firstSequence)
+        && typeof anchor.offsetPx === 'number' && Number.isFinite(anchor.offsetPx)
+        ? { anchor: { itemId: anchor.itemId, firstSequence: anchor.firstSequence, offsetPx: anchor.offsetPx } }
+        : {}),
+      expandedTurns: Object.fromEntries(Object.entries(isRecord(view.expandedTurns) ? view.expandedTurns : {})
+        .filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'))
+    }]];
+  }));
+}
+
 function normalizeConversation(value: unknown): SessionConversationWorkspace {
   const entry = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -301,12 +326,13 @@ function normalizeConversation(value: unknown): SessionConversationWorkspace {
   const preserved = { ...entry };
   for (const key of [
     'mode', 'draft', 'version', 'generation', 'owner', 'attachmentIds', 'config',
-    'parentScrollTop', 'childScrollTopById', 'sequence', 'telemetry', 'writerLease',
+    'viewByHistoryId', 'parentScrollTop', 'childScrollTopById', 'sequence', 'telemetry', 'writerLease',
     'writerLeaseTransition', 'selectedChildId', 'scrollTop', 'providerGeneration', 'lastSequence'
   ]) delete preserved[key];
   return {
     ...preserved,
     mode: entry.mode === 'raw' ? 'raw' : 'structured',
+    ...(isRecord(entry.viewByHistoryId) ? { viewByHistoryId: normalizeConversationViews(entry.viewByHistoryId) } : {}),
     ...(nonNegativeInteger(entry.version) !== undefined
       ? { version: nonNegativeInteger(entry.version) }
       : {}),
