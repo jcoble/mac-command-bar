@@ -190,12 +190,20 @@
 		});
 	});
 
-	onMount(() => {
-		// Popups mount and unmount as DOM nodes, wherever they are drawn.
-		const popups = new MutationObserver(() => {
-			popupOpen = document.querySelector(POPUP_SELECTOR) !== null;
-		});
+	$effect(() => {
+		if (!paneShowing || topTabs.activeKind !== "browser" || toolsRailWidth <= 0) {
+			popupOpen = false;
+			return;
+		}
+		// Only the native browser needs to step aside for DOM popups.
+		const report = () => { popupOpen = document.querySelector(POPUP_SELECTOR) !== null; };
+		const popups = new MutationObserver(report);
 		popups.observe(document.body, { childList: true, subtree: true });
+		report();
+		return () => popups.disconnect();
+	});
+
+	onMount(() => {
 		const historyStop = new AbortController();
 		const releaseSessionRowJump = registerSessionRowJumpTarget({
 			selectSession,
@@ -250,7 +258,6 @@
 		void historyHost.rescan(historyStop.signal);
 
 		return () => {
-			popups.disconnect();
 			historyStop.abort();
 			historyHost.release();
 			releaseSessionRowJump();
