@@ -34,6 +34,10 @@
   const OUTPUT_FOLD_OVER_LINES = 20;
   const OUTPUT_LINES_KEPT = 12;
 
+  const input = $derived.by(() => {
+    const value = item.metadata?.rawInput ?? (item.toolKind === 'command' ? item.summary : undefined);
+    return value == null ? '' : typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  });
   const output = $derived(item.output && item.output !== item.diff ? item.output.trimEnd() : '');
   const outputLines = $derived(output ? output.split('\n') : []);
   const foldable = $derived(outputLines.length > OUTPUT_FOLD_OVER_LINES);
@@ -48,9 +52,8 @@
      printed and stays as printed. Plain until the editor answers. */
   const language = $derived(languageForPath(item.path));
   const shownLines = $derived(highlightCode(shownOutput, language));
-  /* The summary is already the row's preview line, so only real payload —
-     output or a diff — earns a body worth opening. */
-  const expandable = $derived(!!(output || item.diff));
+  /* Call arguments remain inspectable even when the tool returns no output. */
+  const expandable = $derived(!!(input || output || item.diff));
   const statusLabel = $derived(
     item.state === 'running' ? 'Running' : item.state === 'completed' ? 'Done' : item.state === 'failed' ? 'Failed' : 'Queued'
   );
@@ -118,6 +121,10 @@
 
   {#if expandable}
     <div class="tool-body" data-testid="timeline-tool-body">
+      {#if input}
+        <span>Input</span>
+        <pre><code>{input}</code></pre>
+      {/if}
       {#if item.diff}<FileChangeItem item={fileDisplayItem(item)} {onFileLink} />{/if}
       {#if output}
         <pre data-testid="timeline-tool-output"><code>{#each shownLines as line, index}{#if index > 0}{'\n'}{/if}{#each line as span}<span class={span.className}>{span.value}</span>{/each}{/each}</code></pre>
