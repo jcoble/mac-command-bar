@@ -3,10 +3,11 @@
    * UtilityStrip.svelte — the slim always-visible strip along the bottom of the
    * right panel.
    *
-   * Two things live here: Resources, which carries the machine's live memory,
+   * Three things live here: Resources, which carries the machine's live memory,
    * CPU and process count and opens the Resource Manager, and Usage, which
    * opens the quota card. Neither is a tab — they are always on screen, under
-   * whichever panel is open.
+   * whichever panel is open. Between them sits a quick theme switcher, which
+   * applies and remembers the theme exactly as the Settings dialog does.
    *
    * The surfaces themselves are mounted at the page root (see
    * `ShellOverlays.svelte`), so this component only says which one was asked
@@ -29,6 +30,10 @@
     resourceSampleState
   } from '$lib/shell/resources/resourceSampleStore.svelte';
   import { resourceDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
+  import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
+  import { settings } from '$lib/settingsStore.svelte';
+  import { resolveThemeId } from '$lib/shell/themes/themeRegistry';
+  import { apply as applyTheme, themeChoices } from '$lib/shell/themes/themeService';
 
   import { utilityAnchorFor, type UtilityId } from './utilityStrip';
 
@@ -46,6 +51,13 @@
     if (!(event.currentTarget instanceof HTMLElement)) return;
     onOpenUtility(id, utilityAnchorFor(event.currentTarget.getBoundingClientRect()));
   }
+
+  /* Only the five full shell themes fit the bar; the editor-only syntax
+     themes stay in Settings. Labels come from the registry. */
+  const SHELL_THEME_IDS = ['assembly', 'houston', 'dracula', 'tokyo-night', 'graphite'];
+  const themeItems = themeChoices().filter((item) => SHELL_THEME_IDS.includes(item.value));
+  /* A stored `dark` from before themes existed reads as the shipped theme. */
+  const shownThemeId = $derived(resolveThemeId(settings.appearance.themeId));
 
   /* Each figure is a quiet label with its value one step brighter, so the
      bar reads as a row of named numbers rather than one run-on string. */
@@ -94,7 +106,7 @@
   });
 </script>
 
-<footer class="utility-strip" aria-label="Settings, resources and usage">
+<footer class="utility-strip" aria-label="Settings, resources, theme and usage">
   <button
     type="button"
     class="utility settings"
@@ -133,6 +145,15 @@
       </span>
     {/if}
   </button>
+  <!-- Not `bind:value`: applying a theme writes the setting itself. -->
+  <SegmentedControl
+    class="theme-switch"
+    size="sm"
+    aria-label="Theme"
+    items={themeItems}
+    value={shownThemeId}
+    onValueChange={(id) => applyTheme(id)}
+  />
   <button
     type="button"
     class="utility usage"
@@ -201,6 +222,20 @@
 
   .usage {
     flex: 0 0 auto;
+  }
+
+  /* The pill track at status-bar scale: 20px choices on a 2px track, so it
+     sits inside the 28px bar like the mockup. */
+  .utility-strip :global(.theme-switch) {
+    flex: 0 0 auto;
+    padding: 2px;
+  }
+
+  .utility-strip :global(.theme-switch [data-slot='segmented-control-item']) {
+    height: 20px;
+    min-width: 0;
+    padding: 0 var(--space-2);
+    font-size: 11px;
   }
 
   .utility:hover,
