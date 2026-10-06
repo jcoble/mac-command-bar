@@ -52,6 +52,7 @@ import {
   confirmConversationConfigChange,
   ensureConversationSession,
   evictConversationSession,
+  failChildConversationTranscript,
   failConversationConfigChange,
   failLoadingNewerConversationEvents,
   failLoadingOlderConversationEvents,
@@ -198,7 +199,21 @@ export async function readChildConversationTranscript(input: {
       childSessionId: input.childSessionId
     });
   } catch (error) {
-    if (childTranscriptReads.get(input.ownedId) === readToken) childTranscriptReads.delete(input.ownedId);
+    const ownsRead = childTranscriptReads.get(input.ownedId) === readToken;
+    if (ownsRead) childTranscriptReads.delete(input.ownedId);
+    const current = getConversationSession(input.ownedId);
+    if (
+      ownsRead
+      && !input.signal?.aborted
+      && current?.generation === readToken.generation
+      && current.selectedChildId === readToken.childSessionId
+    ) {
+      failChildConversationTranscript(
+        input.ownedId,
+        input.childSessionId,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
     throw error;
   } finally {
     input.signal?.removeEventListener('abort', abortFromOwner);
@@ -211,7 +226,7 @@ export async function readChildConversationTranscript(input: {
     || current.generation !== readToken.generation
     || current.selectedChildId !== readToken.childSessionId
   ) return;
-  applyChildConversationTranscript(input.ownedId, input.childSessionId, snapshot.messages);
+  applyChildConversationTranscript(input.ownedId, input.childSessionId, snapshot);
 }
 
 export type SavedAttachment = Omit<ConversationAttachment, 'previewUrl' | 'originalUrl'> & { byteLength: number };

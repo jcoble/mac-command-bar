@@ -445,7 +445,7 @@ pub(super) fn read_snapshot(
     let target = child_id.unwrap_or(id);
     let path =
         discover_path(target).ok_or_else(|| format!("Codex transcript {target} was not found"))?;
-    let input = read_snapshot_text(&path)?;
+    let (input, truncated) = read_snapshot_text(&path)?;
     let mut messages = Vec::new();
     let mut metadata = ConversationMetadata::default();
     let mut children = HashMap::new();
@@ -530,5 +530,6 @@ pub(super) fn read_snapshot(
         messages,
         metadata,
         children: children.into_values().collect(),
+        truncated,
     })
 }

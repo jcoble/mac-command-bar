@@ -27,7 +27,6 @@ import type {
   ConversationAttachment,
   ConversationChildAgent,
   ConversationMetadata,
-  ConversationTranscriptMessage,
   ConversationTranscriptSnapshot,
   ConversationSessionState
 } from './conversationTypes.ts';
@@ -108,6 +107,8 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   children: ConversationChildAgent[];
   selectedChildId: string | null;
   childTranscript: StreamProcessor;
+  childTranscriptTruncated: boolean;
+  childTranscriptError: string | null;
   scrollTop: number;
   childScrollTopById: Record<string, number>;
   executionOwner: AgentExecutionOwner;
@@ -229,6 +230,8 @@ function releaseChildTranscriptProjection(current: ConversationWorkspaceState): 
     || current.loadedChildTranscriptBytes > 0;
   current.selectedChildId = null;
   current.childTranscript = new StreamProcessor();
+  current.childTranscriptTruncated = false;
+  current.childTranscriptError = null;
   current.loadedChildTranscriptBytes = 0;
   return hadProjection;
 }
@@ -259,6 +262,8 @@ function freshState(
     children: [],
     selectedChildId: null,
     childTranscript: new StreamProcessor(),
+    childTranscriptTruncated: false,
+    childTranscriptError: null,
     scrollTop: 0,
     childScrollTopById: {},
     executionOwner: 'stopped',
@@ -689,6 +694,8 @@ export function applyAgentConversationSnapshot(
     children: current.children,
     selectedChildId: keepChildProjection ? current.selectedChildId : null,
     childTranscript: keepChildProjection ? current.childTranscript : new StreamProcessor(),
+    childTranscriptTruncated: keepChildProjection ? current.childTranscriptTruncated : false,
+    childTranscriptError: keepChildProjection ? current.childTranscriptError : null,
     scrollTop: current.scrollTop,
     childScrollTopById: current.childScrollTopById,
     executionOwner: current.executionOwner,
@@ -1262,18 +1269,30 @@ export function applyConversationTranscript(
 export function applyChildConversationTranscript(
   ownedId: string,
   childId: string,
-  messages: readonly ConversationTranscriptMessage[]
+  snapshot: ConversationTranscriptSnapshot
 ): void {
   const current = conversationSessions[ownedId];
   if (!current || current.selectedChildId !== childId) return;
   releaseOtherChildTranscriptProjections(ownedId);
-  current.childTranscript = transcriptMessages(messages, `child:${childId}:`);
+  current.childTranscript = transcriptMessages(snapshot.messages, `child:${childId}:`);
+  current.childTranscriptTruncated = snapshot.truncated;
+  current.childTranscriptError = null;
   current.timelineRevision += 1;
-  current.loadedChildTranscriptBytes = messages.reduce(
+  current.loadedChildTranscriptBytes = snapshot.messages.reduce(
     (total, message) => total + textBytes(message.text),
     0
   );
   publishConversationProjectionDiagnostics();
+}
+
+export function failChildConversationTranscript(
+  ownedId: string,
+  childId: string,
+  message: string
+): void {
+  const current = conversationSessions[ownedId];
+  if (!current || current.selectedChildId !== childId) return;
+  current.childTranscriptError = message;
 }
 
 export function setConversationAttachments(ownedId: string, attachments: ConversationAttachment[]): void {
@@ -1526,6 +1545,8 @@ export function setConversationSelectedChild(ownedId: string, childId: string | 
   }
   current.selectedChildId = childId;
   current.childTranscript = new StreamProcessor();
+  current.childTranscriptTruncated = false;
+  current.childTranscriptError = null;
   current.loadedChildTranscriptBytes = 0;
   publishConversationProjectionDiagnostics();
 }

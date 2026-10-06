@@ -597,6 +597,7 @@ export interface ConversationTranscriptSnapshot {
   messages: ConversationTranscriptMessage[];
   metadata: ConversationMetadata;
   children: ConversationChildAgent[];
+  truncated: boolean;
 }
 
 export interface ConversationAttachment {

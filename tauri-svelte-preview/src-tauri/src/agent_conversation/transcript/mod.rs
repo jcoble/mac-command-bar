@@ -63,6 +63,7 @@ pub struct TranscriptSnapshot {
     pub messages: Vec<TranscriptMessage>,
     pub metadata: ConversationMetadata,
     pub children: Vec<ChildAgentDescriptor>,
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -240,15 +241,18 @@ pub fn home_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "HOME is unavailable".to_string())
 }
 
-pub fn read_snapshot_text(path: &Path) -> Result<String, String> {
+pub fn read_snapshot_text(path: &Path) -> Result<(String, bool), String> {
     let len = path.metadata().map_err(|error| error.to_string())?.len();
     let (start, bytes) = read_bounded(path, len)?;
     let (lines, _) = complete_lines(&bytes, start > 0);
-    Ok(lines
-        .into_iter()
-        .map(String::from_utf8_lossy)
-        .collect::<Vec<_>>()
-        .join("\n"))
+    Ok((
+        lines
+            .into_iter()
+            .map(String::from_utf8_lossy)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        start > 0,
+    ))
 }
 
 pub fn parse_json_lines(input: &str) -> impl Iterator<Item = Value> + '_ {
@@ -555,6 +559,30 @@ fn file_identity(metadata: &Metadata) -> FileIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_text_reports_when_it_discards_the_prefix() {
+        let path = std::env::temp_dir().join(format!(
+            "assembly-transcript-tail-{}-{}.jsonl",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        fs::write(&path, []).expect("write empty transcript");
+        let (empty, truncated) = read_snapshot_text(&path).expect("read empty transcript");
+        assert!(empty.is_empty());
+        assert!(!truncated);
+
+        let mut input = vec![b'x'; RECONCILIATION_BYTES as usize + 1];
+        input.extend_from_slice(b"\ntail\n");
+        fs::write(&path, input).expect("write oversized transcript");
+        let (tail, truncated) = read_snapshot_text(&path).expect("read transcript tail");
+        assert_eq!(tail, "tail");
+        assert!(truncated);
+        fs::remove_file(path).expect("remove transcript fixture");
+    }
 
     #[test]
     fn a_codex_raw_patch_keeps_every_edited_file() {

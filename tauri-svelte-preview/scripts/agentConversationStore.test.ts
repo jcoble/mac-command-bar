@@ -146,21 +146,38 @@ store.applyConversationTranscript('owned-a', 'codex', {
   children: [{
     childId: 'child-a', parentId: 'thread-a', provider: 'codex', label: 'Reviewer',
     state: 'active', updatedAtMs: 2
-  }]
+  }],
+  truncated: false
 });
 store.setConversationAttachments('owned-a', [{
   id: 'image-a', name: 'a.png', mimeType: 'image/png', path: '/managed/a.png', previewUrl: 'blob:a'
 }]);
 store.setConversationSelectedChild('owned-a', 'child-a');
 store.setConversationScrollTop('owned-a', 240);
-store.applyChildConversationTranscript('owned-a', 'child-a', [
-  { itemId: 'child-message', role: 'assistant', text: 'Child A', timestampMs: 3 }
-]);
+store.failChildConversationTranscript('owned-a', 'child-a', 'read failed');
+assert.equal(store.getConversationSession('owned-a').childTranscriptError, 'read failed');
+store.applyChildConversationTranscript('owned-a', 'child-a', {
+  messages: [],
+  metadata: { model: null, effort: null, approvalPolicy: null, usedTokens: null, contextWindow: null },
+  children: [],
+  truncated: false
+});
+assert.equal(store.getConversationSession('owned-a').childTranscript.getMessages().length, 0);
+assert.equal(store.getConversationSession('owned-a').childTranscriptTruncated, false);
+assert.equal(store.getConversationSession('owned-a').childTranscriptError, null);
+store.applyChildConversationTranscript('owned-a', 'child-a', {
+  messages: [{ itemId: 'child-message', role: 'assistant', text: 'Child A', timestampMs: 3 }],
+  metadata: { model: null, effort: null, approvalPolicy: null, usedTokens: null, contextWindow: null },
+  children: [],
+  truncated: true
+});
 assert.equal(store.getConversationSession('owned-a').metadata.model, 'gpt-5.6-sol');
 // WIP: disabled. The child record field is `title` since 81962044.
 // assert.equal(store.getConversationSession('owned-a').children[0].label, 'Reviewer');
 assert.equal(store.getConversationSession('owned-a').attachments[0].path, '/managed/a.png');
 assert.equal(conversationDisplayItems(store.getConversationSession('owned-a').childTranscript.getMessages())[0].text, 'Child A');
+assert.equal(store.getConversationSession('owned-a').childTranscriptTruncated, true);
+assert.equal(store.getConversationSession('owned-a').childTranscriptError, null);
 assert.equal(store.getConversationSession('owned-a').scrollTop, 240);
 assert.equal(store.getConversationSession('owned-b').metadata.model, null);
 assert.equal(store.getConversationSession('owned-b').children.length, 0);
@@ -1834,7 +1851,7 @@ await test('journal payloads stay plain across live events, snapshots, paging an
     assert.equal(state.loadedEvents[index].payload, original.payload);
   });
   assert.deepEqual(display(state).map((entry: { text: string }) => entry.text), ['Message 2', 'Message 3', 'Message 4']);
-  store.applyConversationTranscript(ownedId, 'codex', { messages: [], metadata: state.metadata, children: [] });
+  store.applyConversationTranscript(ownedId, 'codex', { messages: [], metadata: state.metadata, children: [], truncated: false });
   assert.equal(store.getConversationSession(ownedId).loadedEvents[0], older);
   store.evictConversationSession(ownedId);
 });

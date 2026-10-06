@@ -325,7 +325,7 @@ pub(super) fn read_snapshot(
     } else {
         parent.clone()
     };
-    let input = read_snapshot_text(&path)?;
+    let (input, truncated) = read_snapshot_text(&path)?;
     let mut messages = Vec::new();
     let mut metadata = ConversationMetadata::default();
     for value in parse_json_lines(&input) {
@@ -398,6 +398,7 @@ pub(super) fn read_snapshot(
         } else {
             Vec::new()
         },
+        truncated,
     })
 }
 
@@ -416,7 +417,7 @@ fn find_child(parent: &Path, id: &str, child_id: &str) -> Result<Option<PathBuf>
         if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
             continue;
         }
-        let input = read_snapshot_text(&path)?;
+        let (input, _) = read_snapshot_text(&path)?;
         if parse_json_lines(&input)
             .any(|value| value.get("agentId").and_then(Value::as_str) == Some(child_id))
         {
@@ -438,7 +439,7 @@ fn discover_children(parent: &Path, id: &str) -> Result<Vec<ChildAgentDescriptor
         if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
             continue;
         }
-        let input = read_snapshot_text(&path)?;
+        let (input, _) = read_snapshot_text(&path)?;
         let values = parse_json_lines(&input).collect::<Vec<_>>();
         let Some(child_id) = values
             .iter()
