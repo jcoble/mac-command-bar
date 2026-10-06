@@ -12,16 +12,16 @@
  * PURE: no DOM, no Svelte, no backend call. Every caller is a no-op — never a
  * throw — while nothing is registered, so a panel that runs before the page is
  * ready simply does nothing. Browser URLs are the one queued handoff because
- * selecting that tab is what mounts the handler that can place its native view.
+ * showing a browser tab is what registers the handler that can place its view.
  */
 import type { ConversationAttachment } from './conversation/conversationTypes.ts';
 import type { SourceGitDiff } from '../tauriSource.ts';
 import { requestOpenFile, type OpenFileRequest } from './openFileBus.ts';
 
-/** The four surfaces the center pane's corner tabs switch between. */
-export type CenterTabId = 'session' | 'editor' | 'diff' | 'git-history' | 'pull-requests';
+/** The chat and the five kinds of tab the top tab row can bring forward. */
+export type CenterTabId = 'session' | 'editor' | 'browser' | 'diff' | 'git-history' | 'pull-requests';
 
-/** The nine panels the right column's icon strip switches between. */
+/** The eight panels the right drawer's icon strip switches between. */
 export type RightTabId =
   | 'files'
   | 'source-control'
@@ -29,13 +29,13 @@ export type RightTabId =
   | 'run'
   | 'context'
   | 'agents'
-  | 'browser'
   | 'history'
   | 'tasks';
 
 export const CENTER_TAB_IDS: readonly CenterTabId[] = [
   'session',
   'editor',
+  'browser',
   'diff',
   'git-history',
   'pull-requests'
@@ -48,7 +48,6 @@ export const RIGHT_TAB_IDS: readonly RightTabId[] = [
   'run',
   'context',
   'agents',
-  'browser',
   'history',
   'tasks'
 ];
@@ -119,9 +118,9 @@ export function clearWorkbenchNavigation(): void {
   pendingOpenUrl = null;
 }
 
-/** BrowserPanel mounts only after its tab is selected. Keep the one URL that
- * caused that mount until the panel owns the native-view placement needed to
- * open it. */
+/** BrowserPanel listens for URLs only while a browser tab is showing. Keep
+ * the one URL that brought it forward until the panel owns the native-view
+ * placement needed to open it. */
 export function registerBrowserUrlNavigation(
   openUrl: (request: OpenUrlRequest) => void
 ): () => void {
@@ -168,10 +167,10 @@ export async function openFileTimeline(request: OpenDiffRequest): Promise<void> 
   showCenterTab('git-history');
 }
 
-/** Point the browser panel at a URL. The panel is put on screen first: the
+/** Point the browser at a URL. A browser tab is put on screen first: the
  * browser only loads while it is the tab in front. */
 export async function openUrlInBrowser(request: OpenUrlRequest): Promise<void> {
-  showRightTab('browser');
+  showCenterTab('browser');
   const openUrl = handlers.openUrl;
   if (openUrl) {
     await openUrl(request);

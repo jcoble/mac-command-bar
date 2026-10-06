@@ -23,6 +23,7 @@ import {
   DEFAULT_RIGHT_TAB,
   isRightTabId
 } from './layout/workbenchTabs.ts';
+import { normalizeTopTabs, type SessionTopTabsWorkspace } from './layout/topTabsOps.ts';
 import type { AgentExecutionOwner } from './ownedSessions.ts';
 import type { RightTabId } from './workbenchNavigation.ts';
 
@@ -65,11 +66,6 @@ export interface SessionBrowserTabWorkspace {
 export interface SessionBrowserWorkspace {
   tabs: SessionBrowserTabWorkspace[];
   activeTabId: string | null;
-}
-
-export interface SessionCenterWorkspace {
-  activePanelId: string | null;
-  layout: object;
 }
 
 export interface SessionSourceControlWorkspace {
@@ -127,8 +123,8 @@ export interface SessionWorkspaceSnapshot {
   conversation?: SessionConversationWorkspace;
   /** The embedded Browser state owned by this session. */
   browser?: SessionBrowserWorkspace;
-  /** The center Dockview arrangement and active tab owned by this session. */
-  center?: SessionCenterWorkspace;
+  /** The top tab row's order and active tab owned by this session. */
+  topTabs?: SessionTopTabsWorkspace;
   /** The selected tab in the right column. */
   rightTab: RightTabId;
   /** Expanded lazy-tree directories, keyed by the root they belong to. */
@@ -218,7 +214,7 @@ export function captureWorkspace(input: {
   diffMode?: DiffMode;
   conversation?: SessionConversationWorkspace;
   browser?: SessionBrowserWorkspace;
-  center?: SessionCenterWorkspace | null;
+  topTabs?: SessionTopTabsWorkspace;
   rightTab: RightTabId;
   expandedPathsByRoot?: SessionWorkspaceExpandedPathsByRoot;
   filesInspectionRoot?: string | null;
@@ -267,7 +263,12 @@ export function captureWorkspace(input: {
   if (Object.keys(fileStates).length > 0) snapshot.fileStates = fileStates;
   if (input.conversation) snapshot.conversation = normalizeConversation(input.conversation);
   if (input.browser) snapshot.browser = normalizeBrowser(input.browser);
-  if (input.center) snapshot.center = normalizeCenter(input.center) ?? undefined;
+  if (input.topTabs) {
+    snapshot.topTabs = normalizeTopTabs(input.topTabs, {
+      editorPaths: openPaths,
+      browserTabIds: snapshot.browser?.tabs.map((tab) => tab.id) ?? []
+    });
+  }
   const expandedPathsByRoot = normalizeExpandedPathsByRoot(input.expandedPathsByRoot);
   if (expandedPathsByRoot) snapshot.expandedPathsByRoot = expandedPathsByRoot;
   const filesInspectionRoot = normalizeInspectionRoot(input.filesInspectionRoot);
@@ -427,16 +428,6 @@ function normalizeBrowser(value: unknown): SessionBrowserWorkspace {
   };
 }
 
-function normalizeCenter(value: unknown): SessionCenterWorkspace | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const entry = value as Record<string, unknown>;
-  if (!entry.layout || typeof entry.layout !== 'object' || Array.isArray(entry.layout)) return null;
-  return {
-    activePanelId: typeof entry.activePanelId === 'string' ? entry.activePanelId : null,
-    layout: entry.layout as object
-  };
-}
-
 function normalizeFileStates(
   value: unknown,
   openPaths: readonly string[]
@@ -559,8 +550,11 @@ export function normalizeWorkspaceSnapshot(value: unknown): SessionWorkspaceSnap
   if (fileStates) snapshot.fileStates = fileStates;
   if ('conversation' in entry) snapshot.conversation = normalizeConversation(entry.conversation);
   if ('browser' in entry) snapshot.browser = normalizeBrowser(entry.browser);
-  const center = normalizeCenter(entry.center);
-  if (center) snapshot.center = center;
+  const topTabs = normalizeTopTabs(entry.topTabs, {
+    editorPaths: openPaths,
+    browserTabIds: snapshot.browser?.tabs.map((tab) => tab.id) ?? []
+  });
+  if (topTabs) snapshot.topTabs = topTabs;
   const expandedPathsByRoot = normalizeExpandedPathsByRoot(entry.expandedPathsByRoot);
   if (expandedPathsByRoot) snapshot.expandedPathsByRoot = expandedPathsByRoot;
   const filesInspectionRoot = normalizeInspectionRoot(entry.filesInspectionRoot);

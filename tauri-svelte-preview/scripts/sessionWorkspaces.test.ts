@@ -376,3 +376,43 @@ test('legacy single-page browser record becomes one restorable tab', () => {
 }
 
 console.log('sessionWorkspaces: all tests passed');
+
+test('workspace_record_round_trips_top_tabs_against_live_editor_and_browser_tabs', () => {
+  const snapshot = normalizeWorkspaceSnapshot(captureWorkspace({
+    openFiles: openFiles('/repo/a.ts'),
+    activePath: '/repo/a.ts',
+    selectedPath: null,
+    scrollTop: 0,
+    rightTab: 'files',
+    browser: {
+      tabs: [{ id: 'tab-1', url: 'https://one.example/', inputUrl: 'one.example', title: 'One' }],
+      activeTabId: 'tab-1'
+    },
+    topTabs: {
+      order: ['diff', 'editor:/repo/a.ts', 'browser:tab-1', 'editor:/repo/closed.ts'],
+      activeKey: 'browser:tab-1'
+    }
+  }));
+
+  assert.deepEqual(snapshot?.topTabs, {
+    order: ['diff', 'editor:/repo/a.ts', 'browser:tab-1'],
+    activeKey: 'browser:tab-1'
+  });
+});
+
+test('an old center dock record disappears on normalize', () => {
+  const snapshot = normalizeWorkspaceSnapshot({
+    openPaths: [],
+    activePath: null,
+    selectedPath: null,
+    scrollTop: 0,
+    diffPath: null,
+    diffRoot: null,
+    rightTab: 'files',
+    center: { activePanelId: 'diff', layout: { panels: {} } }
+  });
+
+  assert.ok(snapshot);
+  assert.equal('center' in snapshot, false);
+  assert.equal(snapshot.topTabs, undefined);
+});

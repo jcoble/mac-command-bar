@@ -20,6 +20,7 @@
   } from '$lib/tauriSource';
   import { parseUnifiedDiff } from '$lib/shell/git/parseUnifiedDiff';
   import { openPullRequestDiff } from '$lib/shell/workbenchNavigation';
+  import { pullRequestSelection } from './pullRequestSelection.svelte';
   import ConversationMessage from '$lib/shell/components/conversation/ConversationMessage.svelte';
   import type CodeMirrorGitDiffEditor from '$lib/shell/components/git/CodeMirrorGitDiffEditor.svelte';
 
@@ -30,7 +31,6 @@
   let searchInput = $state('');
   let search = $state('');
   let items = $state<GithubPullRequestSummary[]>([]);
-  let selected = $state<GithubPullRequestSummary | null>(null);
   let detail = $state<GithubPullRequestDetail | null>(null);
   let detailTab = $state<'conversation' | 'checks' | 'files'>('conversation');
   let detailLoading = $state(false);
@@ -75,7 +75,7 @@
   const remoteRoots = $derived([...new Set(rail.owned.filter((session) => session.executionEnvironment === 'remote').map(sessionWorkspaceRoot).filter(Boolean))]);
   const selectedFile = $derived(detail?.files.find((file) => file.path === selectedFilePath) ?? null);
   const parsedFile = $derived(selectedFile?.patch ? parseUnifiedDiff(selectedFile.patch) : null);
-  const headerState = $derived(prState(detail ?? selected));
+  const headerState = $derived(prState(detail ?? pullRequestSelection.selected));
   const canMerge = $derived(detail?.state === 'OPEN' && !detail.isDraft && detail.mergeable === 'MERGEABLE' && !detailLoading && !posting && !merging && !mergeUncertain);
 
   function mergeMethodLabel(method: GithubMergeRequest['method']): string {
@@ -227,8 +227,8 @@
       items = reset ? page.items : [...items, ...page.items];
       cursor = page.nextCursor;
       totalCount = page.totalCount;
-      if (selected && !items.some((item) => item.repository === selected?.repository && item.number === selected?.number)) selected = null;
-      if (!selected) selected = items[0] ?? null;
+      if (pullRequestSelection.selected && !items.some((item) => item.repository === pullRequestSelection.selected?.repository && item.number === pullRequestSelection.selected?.number)) pullRequestSelection.selected = null;
+      if (!pullRequestSelection.selected) pullRequestSelection.selected = items[0] ?? null;
       loaded = true;
     } catch (reason) {
       if (current === generation) error = reason instanceof Error ? reason.message : String(reason);
@@ -250,7 +250,7 @@
   }
 
   function selectPullRequest(item: GithubPullRequestSummary): void {
-    if (selected?.repository === item.repository && selected.number === item.number) return;
+    if (pullRequestSelection.selected?.repository === item.repository && pullRequestSelection.selected.number === item.number) return;
     draftSummary = '';
     draftLines = [];
     lineTarget = null;
@@ -264,7 +264,7 @@
     mergeError = '';
     mergeMethod = 'merge';
     detailTab = 'conversation';
-    selected = item;
+    pullRequestSelection.selected = item;
   }
 
   function startLineDraft(path: string, beforeLine: number | null, afterLine: number | null): void {
@@ -368,7 +368,7 @@
     try {
       postedUrl = await submitGithubPullRequestReviewFromTauri(submission);
       cancelDrafts();
-      if (selected) await loadDetail(selected.localRoot, selected.number);
+      if (pullRequestSelection.selected) await loadDetail(pullRequestSelection.selected.localRoot, pullRequestSelection.selected.number);
     } catch (reason) {
       detailError = reason instanceof Error ? reason.message : String(reason);
       postUncertain = /uncertain|not confirmed/i.test(detailError);
@@ -403,7 +403,7 @@
       mergedUrl = await mergeGithubPullRequestFromTauri(request);
       cancelDrafts();
       items = items.filter((item) => item.repository !== request.repository || item.number !== request.number);
-      if (selected?.repository === request.repository && selected.number === request.number) await loadDetail(request.root, request.number);
+      if (pullRequestSelection.selected?.repository === request.repository && pullRequestSelection.selected.number === request.number) await loadDetail(request.root, request.number);
     } catch (reason) {
       mergeError = reason instanceof Error ? reason.message : String(reason);
       mergeUncertain = /uncertain/i.test(mergeError);
@@ -416,7 +416,7 @@
     if (showing && !loaded && !loading && !error) void load(true);
   });
   $effect(() => {
-    const target = selected;
+    const target = pullRequestSelection.selected;
     if (showing && target) untrack(() => void loadDetail(target.localRoot, target.number));
   });
   $effect(() => {
@@ -449,7 +449,7 @@
     {#if loaded && items.length === 0 && !loading && !error}<p class="notice">No pull requests match this view.</p>{/if}
     <div class="rows">
       {#each items as item (`${item.repository}#${item.number}`)}
-        <button type="button" class="row" class:selected={selected?.repository === item.repository && selected?.number === item.number} onclick={() => selectPullRequest(item)}>
+        <button type="button" class="row" class:selected={pullRequestSelection.selected?.repository === item.repository && pullRequestSelection.selected?.number === item.number} onclick={() => selectPullRequest(item)}>
           <span class="row-title">{item.title} <span>#{item.number}</span></span>
           <span class="row-meta">{item.repository} · {item.isDraft ? 'Draft · ' : ''}{item.author}</span>
         </button>
@@ -458,17 +458,17 @@
     {#if cursor}<button type="button" class="more" disabled={loading} onclick={() => void load(false)}>{loading ? 'Loading…' : `Load more · ${items.length} of ${totalCount}`}</button>{/if}
   </aside>
   <section class="detail" aria-label="Selected pull request">
-    {#if selected}
+    {#if pullRequestSelection.selected}
       <header class="pr-header">
-        <p class="repo">{selected.repository}</p>
-        <h2 class="pr-title">{selected.title} <span class="pr-number">#{selected.number}</span></h2>
+        <p class="repo">{pullRequestSelection.selected.repository}</p>
+        <h2 class="pr-title">{pullRequestSelection.selected.title} <span class="pr-number">#{pullRequestSelection.selected.number}</span></h2>
         <div class="pr-meta">
           <span class="state-pill {headerState.tone}">{headerState.label}</span>
-          <span><strong>{selected.author}</strong> wants to merge into <code>{selected.baseBranch}</code> from <code>{selected.headBranch}</code></span>
+          <span><strong>{pullRequestSelection.selected.author}</strong> wants to merge into <code>{pullRequestSelection.selected.baseBranch}</code> from <code>{pullRequestSelection.selected.headBranch}</code></span>
         </div>
         <div class="pr-actions">
-          <a class="action primary" href={selected.url} target="_blank" rel="noreferrer">Open on GitHub</a>
-          <button type="button" class="action" disabled={detailLoading || posting} onclick={() => { const target = selected; if (target) void loadDetail(target.localRoot, target.number); }}>{detailLoading ? 'Refreshing…' : 'Refresh'}</button>
+          <a class="action primary" href={pullRequestSelection.selected.url} target="_blank" rel="noreferrer">Open on GitHub</a>
+          <button type="button" class="action" disabled={detailLoading || posting} onclick={() => { const target = pullRequestSelection.selected; if (target) void loadDetail(target.localRoot, target.number); }}>{detailLoading ? 'Refreshing…' : 'Refresh'}</button>
         </div>
         {#if detail}
           <p class="pr-facts">
@@ -597,7 +597,7 @@
         <div class="confirm-backdrop" role="presentation">
           <div class="confirm-review" role="dialog" aria-modal="true" aria-label="Confirm pull request review">
             <h3>Post this review?</h3>
-            <p><strong>{selected.repository} #{pendingReview.number}</strong> · head {pendingReview.expectedHeadSha.slice(0, 10)}</p>
+            <p><strong>{pullRequestSelection.selected.repository} #{pendingReview.number}</strong> · head {pendingReview.expectedHeadSha.slice(0, 10)}</p>
             <h4>Overall comment</h4><pre>{pendingReview.body}</pre>
             {#each pendingReview.comments as comment}
               <h4>{comment.path}:{comment.line} · {comment.side === 'LEFT' ? 'before' : 'after'}</h4><pre>{comment.body}</pre>
@@ -608,7 +608,7 @@
         </div>
       {/if}
       {#if pendingReply}
-        <div class="confirm-backdrop" role="presentation"><div class="confirm-review" role="dialog" aria-modal="true" aria-label="Confirm review reply"><h3>Post this reply?</h3><p><strong>{selected.repository} #{selected.number}</strong> · comment {pendingReply.commentId}</p><pre>{pendingReply.body}</pre><p>GitHub will notify participants. Assembly will check the PR head again before submitting.</p><div class="draft-actions"><button type="button" onclick={() => pendingReply = null}>Cancel</button><button type="button" class="confirm-submit" onclick={() => void confirmReply()}>Post reply to GitHub</button></div></div></div>
+        <div class="confirm-backdrop" role="presentation"><div class="confirm-review" role="dialog" aria-modal="true" aria-label="Confirm review reply"><h3>Post this reply?</h3><p><strong>{pullRequestSelection.selected.repository} #{pullRequestSelection.selected.number}</strong> · comment {pendingReply.commentId}</p><pre>{pendingReply.body}</pre><p>GitHub will notify participants. Assembly will check the PR head again before submitting.</p><div class="draft-actions"><button type="button" onclick={() => pendingReply = null}>Cancel</button><button type="button" class="confirm-submit" onclick={() => void confirmReply()}>Post reply to GitHub</button></div></div></div>
       {/if}
       {#if pendingMerge}
         <div class="confirm-backdrop" role="presentation">

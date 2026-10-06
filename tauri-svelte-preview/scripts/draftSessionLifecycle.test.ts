@@ -126,7 +126,7 @@ assert.match(page, /await selection\.newSession\.start\(/);
 assert.match(controller, /shellPanels\.allowSessionLoads\(\);\s*\n\s*let promptAccepted = false;\s*\n\s*try \{/);
 assert.match(controller, /await selectSession\(owned\.ownedId\)/);
 assert.match(selectionController, /shellPanels\.sessionPicked\(this\.activeRootAvailable\)/);
-assert.match(page, /selectCenterTab\("session"\);\s*\n\s*selectRightTab\("files"\);/);
+assert.match(page, /selectCenterTab\("session"\);\s*\n\s*workbench\.rightTab = "files";/);
 
 // The draft's controls are the composer's own: the same settings menu a running
 // session uses, plus the project and branch pickers in the footer beside it.

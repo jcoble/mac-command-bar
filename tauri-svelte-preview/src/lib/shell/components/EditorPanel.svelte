@@ -4,7 +4,7 @@
    * EditorPanel.svelte — the /next code-reading panel.
    *
    * Thin by construction. It owns three things and nothing else:
-   *  1. the strip of open files,
+   *  1. the open-file actions the top tab row calls (select, close, timeline),
    *  2. reading a file when one is requested, and
    *  3. handing `CodeMirrorSourceEditor` the lookup callbacks from
    *     `sourceIntelligence`.
@@ -15,7 +15,7 @@
    *  - **Nothing loads at start-up.** The panel subscribes to open-file
    *    requests when it mounts (free, no backend), and CodeMirror itself is only
    *    downloaded once a file is on screen in front of the reader — not merely
-   *    in the strip, because putting a session's files back fills the strip out
+   *    in the top row, because putting a session's files back fills the row out
    *    of sight. The language server is warmed on the first file opened per
    *    project, never before.
    *  - **Read mode is the default.** Opening a file colours it and stops
@@ -23,7 +23,7 @@
    *    editor status bar has been turned on, and turning it off stops that server. The
    *    global choice is remembered between launches.
    *  - **No `$effect` reads a file.** Every read is started by a user action: a
-   *    file-open request, or a click in the strip. The one effect that starts
+   *    file-open request, or a click on a top-row tab. The one effect that starts
    *    anything starts the editor, and only for a file already on screen.
    */
   import { onMount } from 'svelte';
@@ -59,7 +59,6 @@
   } from '$lib/shell/editor/languageIntelligenceBar.svelte';
   import { onOpenFile, type OpenFileRequest } from '$lib/shell/openFileBus';
   import { onWorkspaceFileChange } from '$lib/shell/workspaceFileChangeBus.ts';
-  import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import { setEditorSourceReadDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
   import {
@@ -73,7 +72,6 @@
     editorState,
     markEditorFileLoading,
     openEditorFile,
-    pinEditorFile,
     resetEditorState,
     revealEditorLine,
     setActiveEditorFile,
@@ -203,7 +201,6 @@
   /** Language-server processes the desktop app reports for this project. */
   let languageServerPids = $state<number[]>([]);
   let destroyed = false;
-  let fileStrip = $state<HTMLDivElement | null>(null);
 
   const activeFile = $derived(activeEditorFile());
   const activeImageMimeType = $derived(rasterImageMimeType(activeFile?.fileName));
@@ -1184,7 +1181,7 @@
     }
   }
 
-  function selectOpenFile(path: string): void {
+  export function selectFile(path: string): void {
     if (closeActionBusy) return;
     if (editorState.activePath && editorState.activePath !== path) {
       releaseImagePreview(editorState.activePath);
@@ -1229,7 +1226,8 @@
     readOnlyByPath = remaining;
   }
 
-  function closeOpenFileAt(path: string): void {
+  /** Close one file; a file with unsaved changes asks first. */
+  export function requestCloseFile(path: string): void {
     if (closeActionBusy) return;
     if (editorFileFor(path)?.dirty) {
       closeRequest = { kind: 'file', path };
@@ -1239,14 +1237,14 @@
     closeFileNow(path);
   }
 
-  function closeOtherOpenFiles(path: string): void {
+  export function closeOtherFiles(path: string): void {
     if (closeActionBusy) return;
     for (const file of editorState.openFiles) {
       if (file.path !== path && !file.dirty) closeFileNow(file.path);
     }
   }
 
-  function closeSavedOpenFiles(): void {
+  export function closeSavedFiles(): void {
     if (closeActionBusy) return;
     for (const file of editorState.openFiles) {
       if (!file.dirty) closeFileNow(file.path);
@@ -1363,12 +1361,13 @@
   }
 
   export function requestCloseActive(): void {
-    if (editorState.activePath) closeOpenFileAt(editorState.activePath);
+    if (editorState.activePath) requestCloseFile(editorState.activePath);
   }
 
-  function openTimelineFor(file: { relativePath: string }): void {
+  export function openTimeline(path: string): void {
     const projectRoot = canonicalPath(editorState.projectRoot ?? '');
-    if (!projectRoot) return;
+    const file = editorFileFor(path);
+    if (!projectRoot || !file) return;
     void openFileTimeline({ projectRoot, relativePath: file.relativePath });
   }
 
@@ -1536,16 +1535,6 @@
     void ensureCodeEditor();
   });
 
-  // Keep the selected tab on screen when opening, selecting, or restoring files.
-  $effect(() => {
-    const activePath = editorState.activePath;
-    const openFiles = editorState.openFiles;
-    if (!activePath || openFiles.length === 0 || !fileStrip) return;
-    fileStrip
-      .querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
-      ?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-  });
-
   /**
    * Keep the top strip's copy of the language-server controls in step.
    *
@@ -1607,68 +1596,6 @@
     </div>
   {:else}
     <div class="editor-header">
-      <div bind:this={fileStrip} class="file-strip" role="tablist" aria-label="Open files">
-        {#each editorState.openFiles as file (file.path)}
-          <ContextMenu.Root>
-            <ContextMenu.Trigger>
-              {#snippet child({ props })}
-                <div {...props} class="file-chip" class:active={file.path === editorState.activePath}>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={file.path === editorState.activePath}
-                    aria-label={`${file.fileName}${file.dirty ? ' (unsaved)' : ''}${readOnlyByPath[file.path] ? ` (read-only: ${readOnlyByPath[file.path]})` : ''}`}
-                    class="file-name"
-                    title={readOnlyByPath[file.path]
-                      ? `Read-only inspection in ${readOnlyByPath[file.path]}\n${file.relativePath}`
-                      : file.relativePath}
-                    onclick={() => selectOpenFile(file.path)}
-                  >
-                    <FileIcon fileName={file.fileName} size={13} />
-                    {#if file.previewTab}<em>{file.fileName}</em>{:else}{file.fileName}{/if}
-                    {#if file.dirty}<span class="chip-note" aria-hidden="true">*</span>{/if}
-                    {#if readOnlyByPath[file.path]}<span class="chip-note">read-only</span>{/if}
-                    {#if file.loading}<span class="chip-note">reading</span>{/if}
-                    {#if file.error}<span class="chip-note error">failed</span>{/if}
-                    {#if file.conflict}<span class="chip-note error">conflict</span>{/if}
-                  </button>
-                  <IconButton
-                    label={`Close ${file.fileName}`}
-                    size="sm"
-                    side="bottom"
-                    class="file-close text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
-                    onclick={() => closeOpenFileAt(file.path)}
-                  >
-                    <X class="size-3.5" aria-hidden="true" />
-                  </IconButton>
-                </div>
-              {/snippet}
-            </ContextMenu.Trigger>
-            <ContextMenu.Content class="w-[220px]" aria-label={`Actions for ${file.fileName}`}>
-              {#if file.previewTab}
-                <ContextMenu.Item
-                  onSelect={() => pinEditorFile(file.path)}
-                >Pin Tab</ContextMenu.Item>
-              {/if}
-              <ContextMenu.Item
-                onSelect={() => closeOpenFileAt(file.path)}
-              >Close</ContextMenu.Item>
-              <ContextMenu.Item
-                disabled={!editorState.openFiles.some((candidate) => candidate.path !== file.path && !candidate.dirty)}
-                onSelect={() => closeOtherOpenFiles(file.path)}
-              >Close other clean files</ContextMenu.Item>
-              <ContextMenu.Item
-                disabled={!editorState.openFiles.some((candidate) => !candidate.dirty)}
-                onSelect={closeSavedOpenFiles}
-              >Close saved files</ContextMenu.Item>
-              <ContextMenu.Item
-                onSelect={() => openTimelineFor(file)}
-              >File Timeline</ContextMenu.Item>
-            </ContextMenu.Content>
-          </ContextMenu.Root>
-        {/each}
-      </div>
-
       <!-- Only the open file's own controls belong here. The language-server
            switch sits in this editor's status bar. -->
       <div class="editor-controls">
@@ -1929,18 +1856,16 @@
     font-size: 12px;
   }
 
-  /* The strip of open files and, pinned to the right, the controls that belong
-   * to the open file. The strip scrolls when there are many files; those
-   * controls do not go with it, so they stay reachable however many tabs are
-   * open.
+  /* The controls that belong to the open file, pinned to the right. The open
+   * files themselves are tabs in the top row.
    *
-   * The height is stated rather than left to the tallest child because the
-   * centre pane's pill tabs are placed directly beneath this row and read the
-   * same value. It is what the row already measured — a 28px close button
-   * between 3px of padding, over a hairline — so nothing moves. */
+   * The height is stated rather than left to the tallest child: it is what the
+   * row already measured — a 28px close button between 3px of padding, over a
+   * hairline — so nothing moves. */
   .editor-header {
     display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: 8px;
     flex: 0 0 auto;
     box-sizing: border-box;
@@ -1985,87 +1910,12 @@
     outline-offset: -2px;
   }
 
-  .file-strip {
-    display: flex;
-    align-items: stretch;
-    gap: 2px;
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: thin;
-    scrollbar-color: var(--color-border-strong) transparent;
-  }
-
-  .file-strip::-webkit-scrollbar {
-    height: 4px;
-  }
-
-  .file-strip::-webkit-scrollbar-thumb {
-    border-radius: 2px;
-    background: var(--color-border-strong);
-  }
-
-  .file-chip {
-    display: flex;
-    align-items: center;
-    flex: 0 0 auto;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    background: transparent;
-  }
-
-  .file-chip.active {
-    background: var(--color-elevated);
-    border-color: var(--color-border);
-  }
-
-  .file-name {
-    background: transparent;
-    border: none;
-    color: var(--color-text-2);
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 12px;
-    padding: 3px 4px 3px 8px;
-    white-space: nowrap;
-  }
-
-  /* The file-type icon sits on the same line as the name, and the gap is what
-   * keeps it off the text. */
-  .file-name {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-  }
-
-  .file-chip.active .file-name {
-    color: var(--color-text);
-  }
-
-  .file-name:hover {
-    color: var(--color-text);
-  }
-
-  /* The complete right edge is one non-shrinking sibling of the scrollable
-   * file strip. Tabs can move underneath their own clip, but these controls
-   * retain their full width and never enter that scrolling region. */
   .editor-controls {
     display: flex;
     align-items: center;
     gap: 8px;
     flex: 0 0 auto;
     min-width: max-content;
-  }
-
-  .chip-note {
-    color: var(--color-text-3);
-    font-size: 12px;
-    margin-left: 5px;
-  }
-
-  .chip-note.error {
-    color: var(--color-bad);
   }
 
   .editor-canvas {
