@@ -256,12 +256,12 @@
         <div class="header-actions ml-auto flex items-center gap-2">
           <IconButton
             label="Search sessions"
-            size="xs"
+            size="sm"
             side="bottom"
             class={ACTION_CLASS}
             onclick={showFilter}
           >
-            <Search class="size-3.5" aria-hidden="true" />
+            <Search class="size-4" aria-hidden="true" />
           </IconButton>
           <DropdownMenu.Root>
             <Tooltip.Root>
@@ -451,15 +451,6 @@
     line-height: 19.5px;
   }
 
-  .sessions-header :global(button) {
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border-radius: var(--radius-pill);
-    font-size: 13.3333px;
-    line-height: normal;
-  }
-
   /* Search, view options and new session are three plain icon buttons on the
      header band, not a grouped track: they are three things you do, not one
      choice out of three. */
@@ -475,10 +466,5 @@
   .filter-strip {
     flex: 0 0 auto;
     padding: 0 12px 8px 16px;
-  }
-
-  .sessions-header :global(button svg) {
-    width: 16px;
-    height: 16px;
   }
 </style>

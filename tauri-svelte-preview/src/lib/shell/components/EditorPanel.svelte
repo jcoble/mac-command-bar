@@ -1691,7 +1691,7 @@
              files' own close buttons are on their tabs in the top row. -->
         <DropdownMenu.Root>
           <DropdownMenu.Trigger
-            class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'rounded-full text-muted-foreground')}
+            class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
             aria-label="More editor actions"
           >
             <Ellipsis class="size-3.5" aria-hidden="true" />

@@ -7,6 +7,7 @@
   import Square from '@lucide/svelte/icons/square';
   import X from '@lucide/svelte/icons/x';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
+  import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
   import type { ConversationAttachment, AgentConfigValue, AgentPermissionRequest, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import type { AgentConversationConfigField, AgentConversationConfigState } from '$lib/shell/conversation/conversationConfig.ts';
@@ -457,12 +458,11 @@
                 {#snippet child({ props })}
                   <button
                     {...props}
-                    class:open={addMenuOpen}
-                    class="round-control add-control"
+                    class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
                     type="button"
                     aria-label={addMenuOpen ? 'Close the add menu' : 'Add to this message'}
                   >
-                    {#if addMenuOpen}<X size={18} />{:else}<Plus size={18} />{/if}
+                    {#if addMenuOpen}<X />{:else}<Plus />{/if}
                   </button>
                 {/snippet}
               </DropdownMenu.Trigger>
@@ -530,7 +530,7 @@
             <div class="compact-controls"><CompactComposerControlsMenu {provider} state={configState} pending={pendingConfig} onChange={onConfigChange} /></div>
             <!-- The mic and send keep their places in every state; send waits
                  disabled until there is something to send. -->
-            <button class="round-control mic" type="button" disabled title="Voice input is not available yet" aria-label="Voice input, not available yet"><Mic size={17} /></button>
+            <Button variant="ghost" size="icon-sm" class="ml-auto" disabled title="Voice input is not available yet" aria-label="Voice input, not available yet"><Mic /></Button>
             {#if sending && (!hasSendableContent || !supportsSteering)}
               <button class="round-control send stop" data-testid="conversation-stop" type="button" aria-label="Stop generation" onclick={() => void onStop?.()}><Square size={13} fill="currentColor" /></button>
             {:else}
@@ -609,18 +609,15 @@
      thing there that is read rather than pressed, so it keeps its own space
      ahead of the group. */
   .footer-right { grid-area: trail; gap: 4px; }
-  .mic { margin-left: auto; }
   .file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
   .leading-controls { display: flex; width: min(820px, calc(100% - 44px)); min-width: 0; margin: 0 auto var(--composer-row-gap); align-items: center; gap: var(--composer-row-gap); }
   .wide-controls { display: flex; min-width: 0; }
   .compact-controls { display: none; }
 
-  /* Every round control on the row — add, mic, send — is the same capsule. */
+  /* The send and stop button; add and mic are the shared ghost icon button. */
   .round-control { display: inline-grid; place-items: center; flex: none; width: var(--composer-control-size); height: var(--composer-control-size); padding: 0; border: 0; border-radius: var(--radius-pill); background: var(--composer-pill-surface); color: var(--composer-pill-text); cursor: pointer; }
   .round-control:hover:not(:disabled) { background: var(--composer-pill-surface-hover); color: var(--composer-pill-text-open); }
   .round-control:focus-visible { outline: 2px solid var(--color-focus-solid); outline-offset: 2px; }
-  .add-control.open { background: var(--composer-pill-surface-open); color: var(--composer-pill-text-open); }
-  .mic:disabled { cursor: default; opacity: .55; }
   .send { width: 32px; height: 32px; background: var(--primary); color: var(--primary-foreground); }
   .send:hover:not(:disabled) { background: var(--primary); color: var(--primary-foreground); filter: brightness(1.08); }
   .send.stop { background: var(--destructive); }

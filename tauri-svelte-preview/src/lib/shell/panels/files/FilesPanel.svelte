@@ -1057,34 +1057,31 @@
 				{#if dev}
 					<Button
 						size="icon-sm"
-						variant={virtualized ? "secondary" : "ghost"}
-						class="size-7 rounded-full text-muted-foreground [&_svg]:size-3.5"
+						variant="ghost"
 						aria-pressed={virtualized}
 						aria-label="Compare virtualized and all file-tree rows"
 						title="Virtualized rows (dev only)"
 						onclick={() => (virtualized = !virtualized)}
 					>
-						<Rows3 strokeWidth={2} aria-hidden="true" />
+						<Rows3 class="size-3.5" strokeWidth={2} aria-hidden="true" />
 					</Button>
 				{/if}
 				<IconButton
-					class="size-7"
 					label={sortDirection === "ascending" ? "Sort Z to A" : "Sort A to Z"}
 					onclick={() => (sortDirection = sortDirection === "ascending" ? "descending" : "ascending")}
 				>
 					{#if sortDirection === "ascending"}<ArrowDownAZ class="size-3.5" />{:else}<ArrowUpZA class="size-3.5" />{/if}
 				</IconButton>
 				<IconButton
-					class="size-7"
 					label={explorer.includeExcluded ? "Hide excluded files" : "Show excluded files"}
 					onclick={() => void toggleExcludedFiles()}
 				>
 					{#if explorer.includeExcluded}<EyeOff class="size-3.5" />{:else}<Eye class="size-3.5" />{/if}
 				</IconButton>
 				{#if explorer.scanning}
-					<IconButton class="size-7" label="Stop listing files" onclick={() => stopScan()}><Square class="size-3.5" /></IconButton>
+					<IconButton label="Stop listing files" onclick={() => stopScan()}><Square class="size-3.5" /></IconButton>
 				{:else}
-					<IconButton class="size-7" label="List this project's files again" disabled={!explorer.root} onclick={refreshFiles}>
+					<IconButton label="List this project's files again" disabled={!explorer.root} onclick={refreshFiles}>
 						<RefreshCw class="size-3.5" />
 					</IconButton>
 				{/if}

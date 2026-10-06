@@ -8,11 +8,9 @@
   and to a screen reader. Every icon button is at least 28px square, whichever
   size it asks for, because a smaller square is one a pointer misses.
 
-  At rest it is only the glyph. Pointing at it fills a tinted disc behind the
-  icon and puts a soft ring around that — the fill is mixed into the elevated
-  surface rather than laid over it, so it is opaque and the row's own text
-  cannot read through it. `tone` picks which of the shell's three signal
-  colours that fill is drawn in.
+  It is a round ghost button: at rest only the muted glyph, on hover the
+  shared hover fill with the glyph brightened. `tone` picks the colour the
+  glyph turns on hover.
 
   Usage:
     <IconButton label="Close panel" onclick={close}><X /></IconButton>
@@ -41,7 +39,7 @@
      * `default` are 28px and 32px. `xs` asks for 24px and still gets a 28px
      * hit target, because the floor applies to every size. */
     size?: 'xs' | 'sm' | 'default';
-    /** Which colour the hover fill is drawn in. Mint unless there is a reason. */
+    /** Which colour the glyph turns on hover. Plain text unless there is a reason. */
     tone?: IconButtonTone;
     variant?: ButtonVariant;
     side?: 'top' | 'bottom' | 'left' | 'right';
@@ -72,37 +70,21 @@
   );
 
   /**
-   * The three recipes are written out in full rather than built from a colour
-   * name: Tailwind reads this file as text, and a class it never sees written
-   * down is a class it never generates.
+   * The look itself is the ghost icon button's own: muted glyph, the hover
+   * fill on hover, the selected fill while pressed. A tone only changes the
+   * colour the glyph turns on hover. Written out in full because Tailwind
+   * reads this file as text and only generates classes it sees.
    *
    * The caller's own `class` is applied after these, so a button that already
    * declares its own hover colour keeps it.
    */
   const TONE_CLASSES: Record<IconButtonTone, string> = {
-    accent:
-      'min-h-7 min-w-7 text-[var(--color-text-3)] duration-[120ms] motion-reduce:transition-none '
-      + 'hover:bg-[color-mix(in_srgb,var(--color-accent)_16%,var(--color-elevated))] '
-      + 'hover:text-[var(--color-accent)] '
-      + 'hover:shadow-[0_0_0_4px_color-mix(in_srgb,var(--color-accent)_10%,transparent)] '
-      + 'focus-visible:shadow-[var(--focus-ring)]',
-    live:
-      'min-h-7 min-w-7 text-[var(--color-text-3)] duration-[120ms] motion-reduce:transition-none '
-      + 'hover:bg-[color-mix(in_srgb,var(--color-live)_16%,var(--color-elevated))] '
-      + 'hover:text-[var(--color-live)] '
-      + 'hover:shadow-[0_0_0_4px_color-mix(in_srgb,var(--color-live)_10%,transparent)] '
-      + 'focus-visible:shadow-[var(--focus-ring)]',
-    attention:
-      'min-h-7 min-w-7 text-[var(--color-text-3)] duration-[120ms] motion-reduce:transition-none '
-      + 'hover:bg-[color-mix(in_srgb,var(--color-attention)_16%,var(--color-elevated))] '
-      + 'hover:text-[var(--color-attention)] '
-      + 'hover:shadow-[0_0_0_4px_color-mix(in_srgb,var(--color-attention)_10%,transparent)] '
-      + 'focus-visible:shadow-[var(--focus-ring)]'
+    accent: 'min-h-7 min-w-7',
+    live: 'min-h-7 min-w-7 hover:text-[var(--color-live)]',
+    attention: 'min-h-7 min-w-7 hover:text-[var(--color-attention)]'
   };
 
-  /* Round, so an icon on its own reads as a control rather than as a small
-     panel. The caller's class still wins if it names a different radius. */
-  const buttonClass = $derived(cn('rounded-full', TONE_CLASSES[tone], className));
+  const buttonClass = $derived(cn(TONE_CLASSES[tone], className));
 </script>
 
 {#if tooltip}

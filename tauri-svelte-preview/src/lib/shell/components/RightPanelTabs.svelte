@@ -27,7 +27,6 @@
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import type { RightExtraTabId } from '$lib/shell/controllers/workbenchController.svelte';
   import type { RightTabId } from '$lib/shell/workbenchNavigation';
-  import { cn } from '$lib/utils.js';
 
   interface Props {
     activeId: RightTabId;
@@ -51,7 +50,6 @@
     { id: 'history', label: 'History', icon: History }
   ] as const;
 
-  const ROUND = 'size-7 rounded-full p-0 text-muted-foreground [&_svg]:size-3.5';
   // A 24px pill with a 14px glyph in the --muted track; the active one is a
   // white-16% fill with no border, shadow or underline.
   const PILL =
@@ -69,7 +67,7 @@
           <Tooltip.Trigger>
             {#snippet child({ props })}
               <Tabs.Trigger {...props} value={tab.id} aria-label={tab.label} class={PILL}>
-                <tab.icon strokeWidth={2} aria-hidden="true" />
+                <tab.icon class="size-3.5" strokeWidth={2} aria-hidden="true" />
               </Tabs.Trigger>
             {/snippet}
           </Tooltip.Trigger>
@@ -82,8 +80,8 @@
   <!-- The menu opens down and to the left, inside the drawer: anything drawn
        past its edge would sit under the live browser page beside it. -->
   <DropdownMenu.Root>
-    <DropdownMenu.Trigger class={cn(buttonVariants({ variant: 'ghost' }), ROUND)} aria-label="More panels">
-      <Ellipsis strokeWidth={2} aria-hidden="true" />
+    <DropdownMenu.Trigger class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })} aria-label="More panels">
+      <Ellipsis class="size-3.5" strokeWidth={2} aria-hidden="true" />
     </DropdownMenu.Trigger>
     <DropdownMenu.Content side="bottom" align="end" class="w-44">
       {#each EXTRA as tab (tab.id)}
@@ -94,7 +92,7 @@
       {/each}
     </DropdownMenu.Content>
   </DropdownMenu.Root>
-  <Button variant="ghost" class={ROUND} aria-label="Close side panel" onclick={onClose}>
-    <X strokeWidth={2} aria-hidden="true" />
+  <Button variant="ghost" size="icon-sm" aria-label="Close side panel" onclick={onClose}>
+    <X class="size-3.5" strokeWidth={2} aria-hidden="true" />
   </Button>
 </div>
