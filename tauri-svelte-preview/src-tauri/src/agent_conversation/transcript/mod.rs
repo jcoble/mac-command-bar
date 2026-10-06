@@ -386,6 +386,7 @@ pub fn tool_record(
         .map(str::to_string);
 
     let mut payload = std::collections::BTreeMap::from([
+        ("kind".to_string(), Value::String("tool".to_string())),
         ("historical".to_string(), Value::Bool(true)),
         ("itemId".to_string(), Value::String(item_id.to_string())),
         ("title".to_string(), Value::String(name.to_string())),
@@ -393,7 +394,7 @@ pub fn tool_record(
         ("status".to_string(), Value::String("completed".to_string())),
     ]);
     if !input.is_null() {
-        payload.insert("args".to_string(), input.clone());
+        payload.insert("rawInput".to_string(), input.clone());
     }
     if let Some(summary_text) = &summary {
         payload.insert("summary".to_string(), Value::String(summary_text.clone()));
@@ -462,7 +463,13 @@ pub fn tool_output_record(item_id: &str, output: String, timestamp_ms: u128) -> 
         event_type: AgentEventType::ItemCompleted,
         timestamp_ms,
         item_id: Some(item_id.to_string()),
-        payload: std::collections::BTreeMap::from([("historical".to_string(), Value::Bool(true))]),
+        payload: std::collections::BTreeMap::from([
+            ("kind".to_string(), Value::String("tool".to_string())),
+            ("historical".to_string(), Value::Bool(true)),
+            ("itemId".to_string(), Value::String(item_id.to_string())),
+            ("state".to_string(), Value::String("completed".to_string())),
+            ("output".to_string(), Value::String(output.clone())),
+        ]),
         native: Some(AgentConversationPayload::Tool {
             item_id: item_id.to_string(),
             name: String::new(),
@@ -597,6 +604,9 @@ mod tests {
             }
         }).to_string();
         let records = parse_durable_line(AgentConversationProvider::Codex, "session-1", line.as_bytes());
+        assert_eq!(records[0].payload.get("kind"), Some(&serde_json::json!("tool")));
+        assert!(records[0].payload.contains_key("rawInput"));
+        assert!(!records[0].payload.contains_key("args"));
         match records[0].native.as_ref().expect("tool event") {
             AgentConversationPayload::Tool { path, .. } => {
                 assert_eq!(path.as_deref(), Some("src/one.ts\nsrc/two.ts"));
@@ -637,8 +647,12 @@ mod tests {
             .iter()
             .find(|record| record.item_id.as_deref() == Some("toolu_1"))
             .expect("the answer is kept");
+        assert_eq!(tool.payload.get("kind"), Some(&serde_json::json!("tool")));
+        assert_eq!(tool.payload.get("itemId").and_then(Value::as_str), tool.item_id.as_deref());
+        assert_eq!(tool.payload.get("state"), Some(&serde_json::json!("completed")));
         match tool.native.as_ref().expect("it is a tool event") {
             AgentConversationPayload::Tool { output, name, .. } => {
+                assert_eq!(tool.payload.get("output").and_then(Value::as_str), output.as_deref());
                 assert_eq!(output.as_deref(), Some("running 3 tests\nall passed"));
                 assert!(
                     name.is_empty(),
@@ -673,8 +687,12 @@ mod tests {
             .iter()
             .find(|record| record.item_id.as_deref() == Some("call_1"))
             .expect("the answer is kept");
+        assert_eq!(tool.payload.get("kind"), Some(&serde_json::json!("tool")));
+        assert_eq!(tool.payload.get("itemId").and_then(Value::as_str), tool.item_id.as_deref());
+        assert_eq!(tool.payload.get("state"), Some(&serde_json::json!("completed")));
         match tool.native.as_ref().expect("it is a tool event") {
             AgentConversationPayload::Tool { output, .. } => {
+                assert_eq!(tool.payload.get("output").and_then(Value::as_str), output.as_deref());
                 assert_eq!(
                     output.as_deref(),
                     Some("Script completed\nWall time 0.1 seconds")
