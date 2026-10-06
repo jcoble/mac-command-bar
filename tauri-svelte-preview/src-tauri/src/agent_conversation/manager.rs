@@ -1,11 +1,16 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex, Weak};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use mcb_core::session_store::{AnnotationRow, EventRow, SessionRow, SessionStore};
+use mcb_core::session_store::{
+    AnnotationRow, EventCoverage, EventRow, ItemPage, SessionRow, SessionStore,
+};
+use notify::{RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use similar::TextDiff;
@@ -18,13 +23,18 @@ use super::handoff::{
 };
 use super::protocol::{
     AgentApprovalDecision, AgentApprovalResponse, AgentCapabilities, AgentCommandDescriptor,
+    AgentConfigOptionChoice,
     AgentConversationConfigState, AgentConversationConnection, AgentConversationEvent,
-    AgentConversationEventPage, AgentConversationPayload, AgentConversationProvider,
+    AgentConversationChildHistorySelection,
+    AgentConversationEventCoverage, AgentConversationEventPage, AgentConversationItemDescriptor,
+    AgentConversationItemPage, AgentConversationPayload, AgentConversationProvider,
+    AgentConversationSelectionSnapshot, AgentConversationTurnFacts,
     AgentConversationSendReceipt, AgentConversationSessionMeta, AgentConversationSessionRecord,
     AgentConversationSnapshot,
     AgentEvent, AgentEventType, AgentExecutionOwner, AgentImplementation,
     AgentInteractionCapabilities, AgentNativeSessionMode, AgentPromptCapabilities,
-    AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities, AgentUserInputResponse,
+    AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities, AgentUserInputAction,
+    AgentUserInputField, AgentUserInputKind, AgentUserInputResponse,
     AgentWriterLease, AgentWriterLeaseOwner, AgentWriterLeaseTransition, ApprovalState,
     ChangeAgentConversationCheckoutRequest, ConversationConnectionState,
     EnsureAgentConversationRequest, ExecutionEnvironment, PlanItem,
@@ -105,6 +115,7 @@ struct PendingPermission {
     options: Vec<PermissionOption>,
     summary: String,
     child_scoped: bool,
+    event: AgentConversationEvent,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -119,6 +130,15 @@ struct ClaudeChildSession {
 #[derive(Clone, Debug)]
 struct PendingUserInput {
     wire_id: Value,
+    response_shape: UserInputResponseShape,
+    child_scoped: bool,
+    event: AgentConversationEvent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UserInputResponseShape {
+    Legacy,
+    Elicitation,
 }
 
 enum PermissionSelection {
@@ -319,6 +339,25 @@ pub(crate) struct HandoffContext {
     pub native_session_id: Option<String>,
 }
 
+struct ChildHistoryWatcher {
+    request_id: u64,
+    watcher: Option<notify::RecommendedWatcher>,
+    stop: Arc<AtomicBool>,
+    wake: std_mpsc::SyncSender<()>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl ChildHistoryWatcher {
+    fn stop(mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = self.wake.try_send(());
+        self.watcher.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AgentRuntimeManager {
     /// Live process and request overlay. Durable identity, lifecycle state, and
@@ -336,6 +375,7 @@ pub struct AgentRuntimeManager {
     store: Arc<SessionStore>,
     adapter_pools: Arc<AsyncMutex<HashMap<AdapterPoolKey, AdapterPoolEntry>>>,
     probe_cancellations: tokio::sync::watch::Sender<u64>,
+    child_history_watchers: Arc<Mutex<HashMap<String, ChildHistoryWatcher>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -400,6 +440,7 @@ impl AgentRuntimeManager {
             store,
             adapter_pools: Arc::new(AsyncMutex::new(HashMap::new())),
             probe_cancellations: tokio::sync::watch::channel(0).0,
+            child_history_watchers: Arc::new(Mutex::new(HashMap::new())),
             authentications: Authentications::default(),
         })
     }
@@ -571,6 +612,308 @@ impl AgentRuntimeManager {
         max_records: usize,
     ) -> Result<super::transcript_import::ExtendedImport, String> {
         super::transcript_import::extend_session(&self.store, owned_id, max_bytes, max_records)
+    }
+
+    pub fn select_child_history(
+        &self,
+        parent_owned_id: &str,
+        child_session_id: &str,
+        request_id: u64,
+        max_bytes: u32,
+        import_max_bytes: u64,
+        import_max_records: usize,
+    ) -> Result<AgentConversationChildHistorySelection, String> {
+        self.reserve_child_history_request(parent_owned_id, request_id);
+        self.select_reserved_child_history(
+            parent_owned_id,
+            child_session_id,
+            request_id,
+            max_bytes,
+            import_max_bytes,
+            import_max_records,
+        )
+    }
+
+    pub(crate) fn reserve_child_history_request(
+        &self,
+        parent_owned_id: &str,
+        request_id: u64,
+    ) {
+        let (wake, _changes) = std_mpsc::sync_channel(1);
+        let previous = self
+            .child_history_watchers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                parent_owned_id.to_string(),
+                ChildHistoryWatcher {
+                    request_id,
+                    watcher: None,
+                    stop: Arc::new(AtomicBool::new(false)),
+                    wake,
+                    worker: None,
+                },
+            );
+        if let Some(previous) = previous {
+            previous.stop();
+        }
+    }
+
+    pub(crate) fn select_reserved_child_history(
+        &self,
+        parent_owned_id: &str,
+        child_session_id: &str,
+        request_id: u64,
+        max_bytes: u32,
+        import_max_bytes: u64,
+        import_max_records: usize,
+    ) -> Result<AgentConversationChildHistorySelection, String> {
+        let (wake, changes) = std_mpsc::sync_channel(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        let previous = self.replace_reserved_child_history(
+            parent_owned_id,
+            ChildHistoryWatcher {
+                request_id,
+                watcher: None,
+                stop: stop.clone(),
+                wake: wake.clone(),
+                worker: None,
+            },
+        )?;
+        if let Some(previous) = previous {
+            previous.stop();
+        }
+        let result = (|| {
+        let parent = self
+            .store
+            .get_session(parent_owned_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("Conversation session {parent_owned_id} was not found"))?;
+        let provider = transcript::parse_provider(&parent.provider)?;
+        let parent_native_id = parent
+            .native_session_id
+            .as_deref()
+            .ok_or_else(|| "The parent conversation has no provider session".to_string())?;
+        let child_owned_id =
+            super::transcript_import::child_owned_id(parent_owned_id, child_session_id)?;
+        let saved_page = self
+            .store
+            .get_session(&child_owned_id)
+            .map_err(|error| error.to_string())?
+            .map(|_| self.list_items_before(&child_owned_id, i64::MAX, max_bytes))
+            .transpose()?;
+        let saved_exists = saved_page.is_some();
+        let watch_directory = match transcript::child_watch_directory(
+            provider,
+            parent_native_id,
+            child_session_id,
+        ) {
+            Ok(directory) => directory,
+            Err(error) => {
+                if let Some(page) = saved_page {
+                    crate::debug_log::stderr_log!(
+                        "Could not restore selected child transcript watch: {error}"
+                    );
+                    self.stop_child_history(parent_owned_id, request_id);
+                    return Ok(AgentConversationChildHistorySelection {
+                        history_owned_id: child_owned_id,
+                        page,
+                    });
+                }
+                return Err(error);
+            }
+        };
+        let known_path = transcript::discover_child(provider, parent_native_id, child_session_id)
+            .ok()
+            .flatten()
+            .map(|location| location.canonical_path);
+
+        let callback_wake = wake.clone();
+        let watched_child = child_session_id.to_string();
+        let mut watcher = notify::recommended_watcher(
+            move |result: notify::Result<notify::Event>| {
+                let Ok(event) = result else { return; };
+                if child_watch_event_relevant(
+                    &event,
+                    known_path.as_deref(),
+                    provider,
+                    &watched_child,
+                ) {
+                    let _ = callback_wake.try_send(());
+                }
+            },
+        )
+        .map_err(|error| format!("Could not watch child transcript: {error}"))?;
+        if let Err(error) = watcher.watch(&watch_directory, RecursiveMode::Recursive) {
+            if let Some(page) = saved_page {
+                crate::debug_log::stderr_log!(
+                    "Could not restore selected child transcript watch: {error}"
+                );
+                self.stop_child_history(parent_owned_id, request_id);
+                return Ok(AgentConversationChildHistorySelection {
+                    history_owned_id: child_owned_id,
+                    page,
+                });
+            }
+            return Err(format!("Could not watch child transcript directory: {error}"));
+        }
+
+        self.attach_child_history_watcher(parent_owned_id, request_id, watcher)?;
+        let initial = import_selected_child(
+            &self.store,
+            &self.emitter,
+            parent_owned_id,
+            child_session_id,
+            import_max_bytes,
+            import_max_records,
+            false,
+            Some(&stop),
+        );
+        if let Err(error) = &initial {
+            if !saved_exists && !error.contains("was not found") {
+                self.stop_child_history(parent_owned_id, request_id);
+                return Err(error.clone());
+            }
+            crate::debug_log::stderr_log!("Could not refresh selected child transcript: {error}");
+        }
+
+        let worker_stop = stop.clone();
+        let worker_store = self.store.clone();
+        let worker_emitter = self.emitter.clone();
+        let worker_parent = parent_owned_id.to_string();
+        let worker_child = child_session_id.to_string();
+        let worker = match thread::Builder::new()
+            .name(format!("child-history-{request_id}"))
+            .spawn(move || {
+                while changes.recv().is_ok() {
+                    if worker_stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    if let Err(error) = import_selected_child(
+                        &worker_store,
+                        &worker_emitter,
+                        &worker_parent,
+                        &worker_child,
+                        import_max_bytes,
+                        import_max_records,
+                        true,
+                        Some(&worker_stop),
+                    ) {
+                        crate::debug_log::stderr_log!(
+                            "Could not refresh selected child transcript: {error}"
+                        );
+                    }
+                }
+            }) {
+                Ok(worker) => worker,
+                Err(error) => {
+                    self.stop_child_history(parent_owned_id, request_id);
+                    return Err(format!("Could not start child transcript watcher: {error}"));
+                }
+            };
+        let mut watchers = self
+            .child_history_watchers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(current) = watchers
+            .get_mut(parent_owned_id)
+            .filter(|current| current.request_id == request_id)
+        {
+            current.worker = Some(worker);
+        } else {
+            stop.store(true, Ordering::Release);
+            let _ = wake.try_send(());
+            let _ = worker.join();
+        }
+        drop(watchers);
+        let page = self.list_items_before(&child_owned_id, i64::MAX, max_bytes)?;
+        Ok(AgentConversationChildHistorySelection {
+            history_owned_id: child_owned_id,
+            page,
+        })
+        })();
+        if result.is_err() {
+            self.stop_child_history(parent_owned_id, request_id);
+        }
+        result
+    }
+
+    fn replace_reserved_child_history(
+        &self,
+        parent_owned_id: &str,
+        reservation: ChildHistoryWatcher,
+    ) -> Result<Option<ChildHistoryWatcher>, String> {
+        let mut watchers = self
+            .child_history_watchers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !watchers
+            .get(parent_owned_id)
+            .is_some_and(|current| current.request_id == reservation.request_id)
+        {
+            return Err("Child transcript selection was replaced".to_string());
+        }
+        Ok(watchers.insert(parent_owned_id.to_string(), reservation))
+    }
+
+    fn attach_child_history_watcher(
+        &self,
+        parent_owned_id: &str,
+        request_id: u64,
+        watcher: notify::RecommendedWatcher,
+    ) -> Result<(), String> {
+        let mut watchers = self
+            .child_history_watchers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(current) = watchers
+            .get_mut(parent_owned_id)
+            .filter(|current| current.request_id == request_id)
+        else {
+            return Err("Child transcript selection was replaced".to_string());
+        };
+        if current.stop.load(Ordering::Acquire) {
+            return Err("Child transcript selection was stopped".to_string());
+        }
+        current.watcher = Some(watcher);
+        Ok(())
+    }
+
+    pub fn stop_child_history(&self, parent_owned_id: &str, request_id: u64) -> bool {
+        let watcher = {
+            let mut watchers = self
+                .child_history_watchers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if watchers
+                .get(parent_owned_id)
+                .is_some_and(|watcher| watcher.request_id == request_id)
+            {
+                watchers.remove(parent_owned_id)
+            } else {
+                None
+            }
+        };
+        if let Some(watcher) = watcher {
+            watcher.stop();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn cancel_child_history_request(&self, request_id: u64) {
+        let parent = self
+            .child_history_watchers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find_map(|(parent, watcher)| {
+                (watcher.request_id == request_id).then(|| parent.clone())
+            });
+        if let Some(parent) = parent {
+            self.stop_child_history(&parent, request_id);
+        }
     }
 
     async fn release_pool_scope(
@@ -2357,24 +2700,46 @@ impl AgentRuntimeManager {
                 .ok_or_else(|| "User input request is no longer pending".to_string())?;
             (pending, ordered_events)
         };
-        let response = serde_json::json!({
-            "values": input.values,
-            "cancelled": input.cancelled,
-        });
+        let response = match user_input_response(pending.response_shape, input.action, input.content)
+        {
+            Ok(response) => response,
+            Err(error) => {
+                let mut sessions = self
+                    .sessions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) {
+                    if session
+                        .runtime
+                        .as_ref()
+                        .is_some_and(|current| Arc::ptr_eq(current, &runtime))
+                    {
+                        session.user_input_requests.insert(request_id, pending);
+                    }
+                }
+                return Err(error);
+            }
+        };
         if let Err(error) = transport.respond(pending.wire_id.clone(), response).await {
             let mut sessions = self
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Ok(session) = current_session_mut(&mut sessions, &owned_id, generation) {
-                session.user_input_requests.insert(request_id, pending);
+                if session
+                    .runtime
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &runtime))
+                {
+                    session.user_input_requests.insert(request_id, pending);
+                }
             }
             return Err(error.to_string());
         }
         ordered_events
             .send(OrderedSessionEvent::UserInputResolved {
                 request_id,
-                cancelled: input.cancelled,
+                cancelled: input.action == AgentUserInputAction::Cancel,
             })
             .map_err(|_| "Structured event pump is no longer running".to_string())?;
         Ok(())
@@ -2754,21 +3119,131 @@ impl AgentRuntimeManager {
         request_id: Option<u64>,
         after: Option<i64>,
     ) -> Result<Option<AgentConversationSnapshot>, String> {
+        let Some((connection, suspended, last_sequence, active_turn_id, pending_events)) =
+            self.snapshot_state(owned_id)?
+        else {
+            return Ok(None);
+        };
+        if request_id.is_some_and(|request_id| {
+            self.latest_snapshot_request.load(Ordering::Acquire) != request_id
+        }) {
+            return Ok(None);
+        }
+        let rows = if let Some(after) = after {
+            self.store
+                .list_events_after(owned_id, after, 512 * 1024, last_sequence)
+        } else {
+            self.store.list_events_before(
+                owned_id,
+                last_sequence.saturating_add(1),
+                SNAPSHOT_WINDOW_BYTES,
+                i64::MIN,
+            )
+        }
+        .map_err(|error| error.to_string())?;
+        let events = rows
+            .events
+            .into_iter()
+            .map(stored_event)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some(AgentConversationSnapshot {
+            connection,
+            suspended,
+            last_sequence,
+            events,
+            has_earlier_transcript: self.has_earlier_transcript(owned_id)?,
+            pending_events,
+            active_turn_id,
+        }))
+    }
+
+    pub fn latest_selection_snapshot(
+        &self,
+        owned_id: &str,
+        request_id: u64,
+        max_bytes: u32,
+    ) -> Result<Option<AgentConversationSelectionSnapshot>, String> {
+        if !self.advance_snapshot_request(request_id) {
+            return Ok(None);
+        }
+        let Some((connection, suspended, head, active_turn_id, pending_events)) =
+            self.snapshot_state(owned_id)?
+        else {
+            return Ok(None);
+        };
+        let page = self
+            .store
+            .list_items_before(
+                owned_id,
+                i64::MAX,
+                max_bytes,
+                Some(EventCoverage {
+                    low: i64::MIN,
+                    high: head,
+                    start_complete: true,
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+        if self.latest_snapshot_request.load(Ordering::Acquire) != request_id {
+            return Ok(None);
+        }
+        let mut page = selected_item_page(page)?;
+        page.has_earlier_transcript = self.has_earlier_transcript(owned_id)?;
+        // Local history has no synchronization boundary. The explicit bound
+        // above freezes this read at `head`; it is not an external coverage gap.
+        page.coverage = None;
+        Ok(Some(AgentConversationSelectionSnapshot {
+            connection,
+            suspended,
+            page,
+            pending_events,
+            pending_sequence: head,
+            active_turn_id,
+        }))
+    }
+
+    fn snapshot_state(
+        &self,
+        owned_id: &str,
+    ) -> Result<
+        Option<(
+            AgentConversationConnection,
+            bool,
+            i64,
+            Option<String>,
+            Vec<AgentConversationEvent>,
+        )>,
+        String,
+    > {
         let live = {
             let sessions = self
                 .sessions
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             sessions.get(owned_id).map(|session| {
+                let mut pending_events = session
+                    .permission_requests
+                    .values()
+                    .map(|pending| pending.event.clone())
+                    .chain(
+                        session
+                            .user_input_requests
+                            .values()
+                            .map(|pending| pending.event.clone()),
+                    )
+                    .collect::<Vec<_>>();
+                pending_events.sort_by_key(|event| event.sequence);
                 (
                     session.connection.clone(),
                     session.state == AgentRuntimeState::Suspended,
                     session.next_sequence.saturating_sub(1),
+                    session.active_turn_id.clone(),
+                    pending_events,
                 )
             })
         };
-        let (connection, suspended, last_sequence) = match live {
-            Some(live) => live,
+        let mut state = match live {
+            Some(state) => Some(state),
             None => {
                 let Some(row) = self
                     .store
@@ -2778,11 +3253,11 @@ impl AgentRuntimeManager {
                     return Ok(None);
                 };
                 let (provider, stored, state) = stored_session_projection(&self.store, &row)?;
-                let last_sequence = self
+                let head = self
                     .store
                     .latest_seq(owned_id)
                     .map_err(|error| error.to_string())?;
-                (
+                Some((
                     AgentConversationConnection {
                         owned_id: row.owned_id,
                         provider,
@@ -2792,53 +3267,41 @@ impl AgentRuntimeManager {
                         config: stored.config,
                     },
                     state == AgentRuntimeState::Suspended,
-                    last_sequence,
-                )
+                    head,
+                    None,
+                    Vec::new(),
+                ))
             }
         };
-        if request_id.is_some_and(|request_id| {
-            self.latest_snapshot_request.load(Ordering::Acquire) != request_id
-        }) {
-            return Ok(None);
+        if let Some((_, _, head, _, pending_events)) = &mut state {
+            pending_events.extend(
+                self.store
+                    .latest_child_events(owned_id, *head)
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .map(stored_event)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+            pending_events.sort_by_key(|event| event.sequence);
         }
-        let events = if let Some(after) = after {
-            self.list_events_after(owned_id, after, 512 * 1024)?.events
-        } else {
-            match request_id {
-                Some(_) => self.list_recent_events_cancellable(owned_id),
-                None => self.list_recent_events(owned_id),
-            }?
-        };
-        Ok(Some(AgentConversationSnapshot {
-            connection,
-            suspended,
-            last_sequence,
-            events,
-        }))
+        Ok(state)
     }
 
-    /// Read only the newest requested active-session snapshot. A newer request
-    /// interrupts the superseded SQLite query and no stale event window crosses
-    /// the Tauri boundary into JavaScript.
-    pub fn latest_snapshot(
-        &self,
-        owned_id: &str,
-        request_id: u64,
-    ) -> Result<Option<AgentConversationSnapshot>, String> {
-        if !self.advance_snapshot_request(request_id) {
-            return Ok(None);
-        }
-        let snapshot = match self.snapshot_for_request(owned_id, Some(request_id), None) {
-            Ok(snapshot) => snapshot,
-            Err(_) if self.latest_snapshot_request.load(Ordering::Acquire) != request_id => {
-                return Ok(None);
-            }
-            Err(error) => return Err(error),
+    fn has_earlier_transcript(&self, owned_id: &str) -> Result<bool, String> {
+        let Some(row) = self
+            .store
+            .get_session(owned_id)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(false);
         };
-        if self.latest_snapshot_request.load(Ordering::Acquire) != request_id {
-            return Ok(None);
-        }
-        Ok(snapshot)
+        let extra: serde_json::Value = serde_json::from_str(&row.extra_json)
+            .map_err(|error| format!("Could not decode stored session metadata: {error}"))?;
+        Ok(extra
+            .get("import")
+            .and_then(|import| import.get("reachedStart"))
+            .and_then(serde_json::Value::as_bool)
+            == Some(false))
     }
 
     /// Releases the frontend owner even when no replacement session snapshot
@@ -2962,6 +3425,36 @@ impl AgentRuntimeManager {
             .collect()
     }
 
+    pub fn list_items_before(
+        &self,
+        owned_id: &str,
+        before_sequence: i64,
+        max_bytes: u32,
+    ) -> Result<AgentConversationItemPage, String> {
+        let mut page = selected_item_page(
+            self.store
+                .list_items_before(owned_id, before_sequence, max_bytes, None)
+                .map_err(|error| error.to_string())?,
+        )?;
+        page.has_earlier_transcript = self.has_earlier_transcript(owned_id)?;
+        Ok(page)
+    }
+
+    pub fn list_items_after(
+        &self,
+        owned_id: &str,
+        after_sequence: i64,
+        max_bytes: u32,
+    ) -> Result<AgentConversationItemPage, String> {
+        let mut page = selected_item_page(
+            self.store
+                .list_items_after(owned_id, after_sequence, max_bytes, None)
+                .map_err(|error| error.to_string())?,
+        )?;
+        page.has_earlier_transcript = self.has_earlier_transcript(owned_id)?;
+        Ok(page)
+    }
+
     /// The page of transcript events just older than `before_sequence`.
     ///
     /// Opening a conversation ships one screen of history; scrolling up calls
@@ -3026,27 +3519,6 @@ impl AgentRuntimeManager {
             &self.emitter,
             AgentConversationPayload::TerminalProjection(projection),
         )
-    }
-
-    fn list_recent_events(&self, owned_id: &str) -> Result<Vec<AgentConversationEvent>, String> {
-        self.store
-            .list_recent_events(owned_id, SNAPSHOT_WINDOW_BYTES)
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .map(stored_event)
-            .collect()
-    }
-
-    fn list_recent_events_cancellable(
-        &self,
-        owned_id: &str,
-    ) -> Result<Vec<AgentConversationEvent>, String> {
-        self.store
-            .list_recent_events_cancellable(owned_id, SNAPSHOT_WINDOW_BYTES)
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .map(stored_event)
-            .collect()
     }
 
     pub fn update_session_meta(
@@ -3539,7 +4011,7 @@ impl AgentRuntimeManager {
                         cancelled: true,
                     },
                 );
-                pending_inputs.push(pending.wire_id);
+                pending_inputs.push(pending);
             }
             record_payload_for_session_and_dispatch_with_lifecycle(
                 session,
@@ -3574,12 +4046,10 @@ impl AgentRuntimeManager {
                     )
                     .await;
             }
-            for wire_id in pending_inputs {
+            for pending in pending_inputs {
+                let response = cancelled_user_input_response(&pending);
                 let _ = transport
-                    .respond(
-                        wire_id,
-                        serde_json::json!({ "values": {}, "cancelled": true }),
-                    )
+                    .respond(pending.wire_id, response)
                     .await;
             }
         }
@@ -4039,8 +4509,48 @@ impl AgentRuntimeManager {
     }
 }
 
+fn child_watch_event_relevant(
+    event: &notify::Event,
+    known_path: Option<&Path>,
+    provider: AgentConversationProvider,
+    child_session_id: &str,
+) -> bool {
+    let writes_source = matches!(
+        event.kind,
+        notify::EventKind::Create(_)
+            | notify::EventKind::Modify(notify::event::ModifyKind::Data(_))
+            | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+            | notify::EventKind::Access(notify::event::AccessKind::Close(
+                notify::event::AccessMode::Write
+            ))
+    );
+    writes_source
+        && known_path.map_or_else(
+            || {
+                provider != AgentConversationProvider::Codex
+                    || event.paths.iter().any(|path| {
+                        path.file_name()
+                            .and_then(|value| value.to_str())
+                            .is_some_and(|name| name.contains(child_session_id))
+                    })
+            },
+            |path| event.paths.iter().any(|changed| changed == path),
+        )
+}
+
 impl Drop for AgentRuntimeManager {
     fn drop(&mut self) {
+        if Arc::strong_count(&self.child_history_watchers) == 1 {
+            let watchers = std::mem::take(
+                &mut *self
+                    .child_history_watchers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            for (_, watcher) in watchers {
+                watcher.stop();
+            }
+        }
         if Arc::strong_count(&self.sessions) == 1 {
             self.sessions
                 .lock()
@@ -4533,6 +5043,14 @@ fn record_payload_for_session_with_lifecycle(
     };
     result.map_err(|error| error.to_string())?;
     candidate.apply(session);
+    if matches!(&payload, AgentConversationPayload::Tool { state: ToolState::Completed, .. }) {
+        let stored = session.store.list_events(&session.owned_id, event_row.seq, 1)
+            .map_err(|error| error.to_string())?
+            .into_iter().next()
+            .filter(|event| event.seq == event_row.seq)
+            .ok_or_else(|| "Committed tool event is missing from the journal".to_string())?;
+        return stored_event(stored);
+    }
     Ok(frontend_event)
 }
 
@@ -4546,7 +5064,7 @@ fn record_payload_for_session_with_lifecycle(
 /// them as they are read, and keeps the two from ever disagreeing again. The
 /// `turn_id` column is taken the same way, so rows written before the event
 /// carried it still say which turn they belong to.
-fn stored_event(row: EventRow) -> Result<AgentConversationEvent, String> {
+pub(super) fn stored_event(row: EventRow) -> Result<AgentConversationEvent, String> {
     let mut event: AgentConversationEvent = serde_json::from_str(&row.payload_json)
         .map_err(|error| format!("Could not decode stored conversation event: {error}"))?;
     event.sequence = row.seq;
@@ -4562,6 +5080,123 @@ fn stored_event(row: EventRow) -> Result<AgentConversationEvent, String> {
         }
     }
     Ok(event)
+}
+
+pub(super) fn selected_item_page(page: ItemPage) -> Result<AgentConversationItemPage, String> {
+    Ok(AgentConversationItemPage {
+        items: page
+            .items
+            .into_iter()
+            .map(|item| AgentConversationItemDescriptor {
+                stable_id: item.stable_id,
+                item_id: item.item_id,
+                selection_mode: item.record_mode,
+                first_sequence: item.first_sequence,
+                first_timestamp_ms: item.first_timestamp_ms,
+                last_sequence: item.last_sequence,
+                authority_seq: item.authority_sequence,
+                turn_id: item.turn_id,
+                completed: item.completed,
+                prefix_complete: item.prefix_complete,
+                position_known: item.position_known,
+                required_bytes: item.required_bytes,
+            })
+            .collect(),
+        events: page
+            .events
+            .into_iter()
+            .map(stored_event)
+            .collect::<Result<Vec<_>, _>>()?,
+        turns: page
+            .turns
+            .into_iter()
+            .map(|turn| AgentConversationTurnFacts {
+                turn_id: turn.turn_id,
+                started_at_ms: turn.started_at_ms,
+                ended_at_ms: turn.ended_at_ms,
+                terminal_state: turn.terminal_state,
+                final_assistant_item_id: turn.final_assistant_item_id,
+            })
+            .collect(),
+        before_cursor: page.before_cursor,
+        after_cursor: page.after_cursor,
+        has_before: page.has_before,
+        has_earlier_transcript: false,
+        has_after: page.has_after,
+        watermark: page.watermark,
+        transfer_bytes: page.transfer_bytes,
+        oversized: page.oversized,
+        coverage: page.coverage.map(|coverage| AgentConversationEventCoverage {
+            low: coverage.low,
+            high: coverage.high,
+            start_complete: coverage.start_complete,
+        }),
+    })
+}
+
+fn import_selected_child(
+    store: &SessionStore,
+    emitter: &Arc<Mutex<Option<ConversationEmitter>>>,
+    parent_owned_id: &str,
+    child_session_id: &str,
+    max_bytes: u64,
+    max_records: usize,
+    publish: bool,
+    stop: Option<&AtomicBool>,
+) -> Result<String, String> {
+    let child_owned_id = super::transcript_import::ensure_child_import(
+        store,
+        parent_owned_id,
+        None,
+        child_session_id,
+    )?;
+    let mut published_after = store
+        .latest_seq(&child_owned_id)
+        .map_err(|error| error.to_string())?;
+    loop {
+        if stop.is_some_and(|stop| stop.load(Ordering::Acquire)) {
+            return Ok(child_owned_id);
+        }
+        let progress = super::transcript_import::refresh_child_import(
+            store,
+            parent_owned_id,
+            None,
+            &child_owned_id,
+            max_bytes,
+            max_records,
+        )?;
+        if publish {
+            loop {
+                if stop.is_some_and(|stop| stop.load(Ordering::Acquire)) {
+                    break;
+                }
+                let page = store
+                    .list_events_after(
+                        &child_owned_id,
+                        published_after,
+                        SNAPSHOT_WINDOW_BYTES,
+                        i64::MAX,
+                    )
+                    .map_err(|error| error.to_string())?;
+                let has_more = page.has_more;
+                if page.events.is_empty() {
+                    break;
+                }
+                for row in page.events {
+                    let event = stored_event(row)?;
+                    published_after = event.sequence;
+                    dispatch_event(emitter, &event);
+                }
+                if !has_more {
+                    break;
+                }
+            }
+        }
+        if !progress.has_more_source {
+            break;
+        }
+    }
+    Ok(child_owned_id)
 }
 
 /// Records durably, then emits while the session lock still preserves event order.
@@ -4952,28 +5587,56 @@ async fn pump_inbound(
                 if method != "session/request_permission"
                     && method != "session/request_user_input"
                     && method != "session/request_input"
+                    && method != "elicitation/create"
                 {
                     crate::debug_log::stderr_log!(
                         "Ignoring unsupported ACP agent request: {method}"
                     );
                     continue;
                 }
-                if method == "session/request_user_input" || method == "session/request_input" {
-                    let title = params
-                        .get("title")
-                        .and_then(Value::as_str)
-                        .filter(|value| !value.trim().is_empty())
-                        .unwrap_or("Input requested")
-                        .to_string();
-                    let description = params
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                    let fields = params
-                        .get("fields")
-                        .cloned()
-                        .and_then(|value| serde_json::from_value(value).ok())
-                        .unwrap_or_default();
+                if method == "session/request_user_input"
+                    || method == "session/request_input"
+                    || method == "elicitation/create"
+                {
+                    let elicitation = method == "elicitation/create";
+                    let parsed = if elicitation {
+                        parse_elicitation_form(&params)
+                    } else {
+                        Ok((
+                            params
+                                .get("title")
+                                .and_then(Value::as_str)
+                                .filter(|value| !value.trim().is_empty())
+                                .unwrap_or("Input requested")
+                                .to_string(),
+                            params
+                                .get("description")
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                            params
+                                .get("fields")
+                                .cloned()
+                                .and_then(|value| serde_json::from_value(value).ok())
+                                .unwrap_or_default(),
+                        ))
+                    };
+                    let (title, description, fields) = match parsed {
+                        Ok(parsed) => parsed,
+                        Err(error) => {
+                            crate::debug_log::stderr_log!(
+                                "Declining unsupported ACP elicitation: {error}"
+                            );
+                            if let Err(error) = transport_runtime
+                                .respond(wire_id, serde_json::json!({ "action": "decline" }))
+                                .await
+                            {
+                                crate::debug_log::stderr_log!(
+                                    "Could not decline unsupported ACP elicitation: {error}"
+                                );
+                            }
+                            continue;
+                        }
+                    };
                     let mut sessions = sessions
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -4984,30 +5647,44 @@ async fn pump_inbound(
                     if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
                         continue;
                     }
+                    let child_scoped = is_known_claude_child_inbound(session, &params);
                     session.next_user_input_id = session.next_user_input_id.saturating_add(1);
                     let request_id = format!("input-{}", session.next_user_input_id);
-                    session
-                        .user_input_requests
-                        .insert(request_id.clone(), PendingUserInput { wire_id });
                     let lifecycle = lifecycle_update_for_state(
                         session,
                         AgentRuntimeState::WaitingInput,
                         session.connection.state,
                     );
-                    if let Err(error) = record_payload_for_session_and_dispatch_with_lifecycle(
+                    match record_payload_for_session_and_dispatch_with_lifecycle(
                         session,
                         &emitter,
                         AgentConversationPayload::UserInputRequested {
-                            request_id,
+                            request_id: request_id.clone(),
                             title,
                             description,
                             fields,
+                            can_decline: elicitation,
                         },
                         lifecycle,
                     ) {
-                        crate::debug_log::stderr_log!(
+                        Ok(event) => {
+                            session.user_input_requests.insert(
+                                request_id,
+                                PendingUserInput {
+                                    wire_id,
+                                    response_shape: if elicitation {
+                                        UserInputResponseShape::Elicitation
+                                    } else {
+                                        UserInputResponseShape::Legacy
+                                    },
+                                    child_scoped,
+                                    event,
+                                },
+                            );
+                        }
+                        Err(error) => crate::debug_log::stderr_log!(
                             "Could not record ACP user input request: {error}"
-                        );
+                        ),
                     }
                     continue;
                 }
@@ -5024,33 +5701,36 @@ async fn pump_inbound(
                 }
                 let request_id = format!("perm-{}", uuid::Uuid::new_v4());
                 let child_scoped = is_known_claude_child_inbound(session, &params);
-                session.permission_requests.insert(
-                    request_id.clone(),
-                    PendingPermission {
-                        wire_id,
-                        options,
-                        summary: summary.clone(),
-                        child_scoped,
-                    },
-                );
                 let lifecycle = lifecycle_update_for_state(
                     session,
                     AgentRuntimeState::WaitingApproval,
                     session.connection.state,
                 );
-                if let Err(error) = record_payload_for_session_and_dispatch_with_lifecycle(
+                match record_payload_for_session_and_dispatch_with_lifecycle(
                     session,
                     &emitter,
                     AgentConversationPayload::Approval {
-                        request_id,
+                        request_id: request_id.clone(),
                         state: ApprovalState::Requested,
-                        summary,
+                        summary: summary.clone(),
                     },
                     lifecycle,
                 ) {
-                    crate::debug_log::stderr_log!(
+                    Ok(event) => {
+                        session.permission_requests.insert(
+                            request_id,
+                            PendingPermission {
+                                wire_id,
+                                options,
+                                summary,
+                                child_scoped,
+                                event,
+                            },
+                        );
+                    }
+                    Err(error) => crate::debug_log::stderr_log!(
                         "Could not record ACP permission request: {error}"
-                    );
+                    ),
                 }
             }
             AcpInbound::TransportClosed { .. } => unreachable!("handled before session routing"),
@@ -5230,6 +5910,184 @@ fn is_known_claude_child_inbound(session: &ManagedAgentSession, params: &Value) 
             session.claude_children.contains_key(session_id)
                 || is_claude_replay_session_id(session, session_id)
         })
+}
+
+fn parse_elicitation_form(
+    params: &Value,
+) -> Result<(String, Option<String>, Vec<AgentUserInputField>), String> {
+    if params.get("mode").and_then(Value::as_str) != Some("form") {
+        return Err("only form elicitation is supported".to_string());
+    }
+    let title = params
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|message| !message.trim().is_empty())
+        .ok_or_else(|| "elicitation message is missing".to_string())?
+        .to_string();
+    let schema = params
+        .get("requestedSchema")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "elicitation schema is missing".to_string())?;
+    if schema
+        .keys()
+        .any(|key| !matches!(key.as_str(), "type" | "properties" | "required"))
+        || schema.get("type").and_then(Value::as_str) != Some("object")
+    {
+        return Err("elicitation object schema contains unsupported constraints".to_string());
+    }
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .filter(|properties| !properties.is_empty())
+        .ok_or_else(|| "elicitation form has no fields".to_string())?;
+    let required = match schema.get("required") {
+        None => HashSet::new(),
+        Some(Value::Array(values)) => values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| "elicitation required entries must be field ids".to_string())
+            })
+            .collect::<Result<HashSet<_>, _>>()?,
+        Some(_) => return Err("elicitation required must be an array".to_string()),
+    };
+    if required.iter().any(|field| !properties.contains_key(field)) {
+        return Err("elicitation required names an unknown field".to_string());
+    }
+    let mut fields = Vec::with_capacity(properties.len());
+    for (id, value) in properties {
+        let property = value
+            .as_object()
+            .ok_or_else(|| format!("elicitation field {id} is not an object"))?;
+        let field_type = property
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("elicitation field {id} has no type"))?;
+        let label = match property.get("title") {
+            Some(Value::String(label)) if !label.trim().is_empty() => label.clone(),
+            None => id.clone(),
+            _ => return Err(format!("elicitation field {id} has an invalid title")),
+        };
+        let description = match property.get("description") {
+            Some(Value::String(description)) => Some(description.clone()),
+            None => None,
+            _ => return Err(format!("elicitation field {id} has an invalid description")),
+        };
+        let (kind, choices, allowed): (_, _, &[&str]) = match field_type {
+            "string" if property.contains_key("oneOf") => (
+                AgentUserInputKind::Select,
+                Some(parse_elicitation_choices(
+                    property.get("oneOf").unwrap(),
+                    id,
+                )?),
+                &["type", "title", "description", "oneOf", "_meta"],
+            ),
+            "string" => (
+                AgentUserInputKind::Text,
+                None,
+                &["type", "title", "description", "_meta"],
+            ),
+            "array" => {
+                let items = property
+                    .get("items")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| format!("elicitation field {id} has invalid array items"))?;
+                if items
+                    .keys()
+                    .any(|key| !matches!(key.as_str(), "anyOf" | "_meta"))
+                {
+                    return Err(format!(
+                        "elicitation field {id} has unsupported item constraints"
+                    ));
+                }
+                (
+                    AgentUserInputKind::MultiSelect,
+                    Some(parse_elicitation_choices(
+                        items
+                            .get("anyOf")
+                            .ok_or_else(|| format!("elicitation field {id} has no choices"))?,
+                        id,
+                    )?),
+                    &["type", "title", "description", "items", "_meta"],
+                )
+            }
+            _ => return Err(format!("elicitation field {id} has an unsupported type")),
+        };
+        if property
+            .keys()
+            .any(|key| !allowed.contains(&key.as_str()))
+        {
+            return Err(format!(
+                "elicitation field {id} contains unsupported constraints"
+            ));
+        }
+        fields.push(AgentUserInputField {
+            id: id.clone(),
+            label,
+            description,
+            required: required.contains(id),
+            kind,
+            choices,
+        });
+    }
+    Ok((title, None, fields))
+}
+
+fn parse_elicitation_choices(
+    value: &Value,
+    field_id: &str,
+) -> Result<Vec<AgentConfigOptionChoice>, String> {
+    let values = value
+        .as_array()
+        .filter(|values| !values.is_empty())
+        .ok_or_else(|| format!("elicitation field {field_id} has no choices"))?;
+    values
+        .iter()
+        .map(|value| {
+            let choice = value
+                .as_object()
+                .ok_or_else(|| format!("elicitation field {field_id} has an invalid choice"))?;
+            if choice.keys().any(|key| {
+                !matches!(key.as_str(), "const" | "title" | "description" | "_meta")
+            }) {
+                return Err(format!(
+                    "elicitation field {field_id} has unsupported choice constraints"
+                ));
+            }
+            let value = choice
+                .get("const")
+                .cloned()
+                .ok_or_else(|| format!("elicitation field {field_id} choice has no value"))?;
+            let label = match choice.get("title") {
+                Some(Value::String(label)) if !label.trim().is_empty() => label.clone(),
+                None => match &value {
+                    Value::String(value) => value.clone(),
+                    _ => value.to_string(),
+                },
+                _ => {
+                    return Err(format!(
+                        "elicitation field {field_id} choice has an invalid title"
+                    ))
+                }
+            };
+            let description = match choice.get("description") {
+                Some(Value::String(description)) => Some(description.clone()),
+                None => None,
+                _ => {
+                    return Err(format!(
+                        "elicitation field {field_id} choice has an invalid description"
+                    ))
+                }
+            };
+            Ok(AgentConfigOptionChoice {
+                value,
+                label,
+                description,
+            })
+        })
+        .collect()
 }
 
 fn is_claude_replay_session_id(session: &ManagedAgentSession, session_id: &str) -> bool {
@@ -5728,7 +6586,9 @@ async fn handle_ordered_session_event(
             if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
                 return true;
             }
-            let next_state = if session.active_turn_id.is_some() {
+            let next_state = if session.active_turn_id.is_some()
+                || !session.background_work.is_empty()
+            {
                 AgentRuntimeState::Working
             } else {
                 AgentRuntimeState::Ready
@@ -5809,7 +6669,7 @@ async fn handle_ordered_session_event(
                         return false;
                     }
                 }
-                let pending_inputs = session.user_input_requests.drain().collect::<Vec<_>>();
+                let pending_inputs = drain_root_inputs(&mut session.user_input_requests);
                 for (request_id, _pending) in &pending_inputs {
                     if let Err(error) = record_payload_for_session_and_dispatch(
                         session,
@@ -5888,11 +6748,9 @@ async fn handle_ordered_session_event(
                     }
                 }
                 for (_, pending) in pending_inputs {
+                    let response = cancelled_user_input_response(&pending);
                     if let Err(error) = transport
-                        .respond(
-                            pending.wire_id,
-                            serde_json::json!({ "values": {}, "cancelled": true }),
-                        )
+                        .respond(pending.wire_id, response)
                         .await
                     {
                         crate::debug_log::stderr_log!(
@@ -6056,6 +6914,33 @@ fn permission_state(
     }
 }
 
+fn user_input_response(
+    shape: UserInputResponseShape,
+    action: AgentUserInputAction,
+    content: BTreeMap<String, Value>,
+) -> Result<Value, String> {
+    match (shape, action) {
+        (UserInputResponseShape::Legacy, AgentUserInputAction::Accept) => {
+            Ok(serde_json::json!({ "values": content, "cancelled": false }))
+        }
+        (UserInputResponseShape::Legacy, AgentUserInputAction::Cancel) => {
+            Ok(serde_json::json!({ "values": {}, "cancelled": true }))
+        }
+        (UserInputResponseShape::Legacy, AgentUserInputAction::Decline) => {
+            Err("This input request does not support decline".to_string())
+        }
+        (UserInputResponseShape::Elicitation, AgentUserInputAction::Accept) => {
+            Ok(serde_json::json!({ "action": "accept", "content": content }))
+        }
+        (UserInputResponseShape::Elicitation, AgentUserInputAction::Decline) => {
+            Ok(serde_json::json!({ "action": "decline" }))
+        }
+        (UserInputResponseShape::Elicitation, AgentUserInputAction::Cancel) => {
+            Ok(serde_json::json!({ "action": "cancel" }))
+        }
+    }
+}
+
 fn drain_root_permissions(
     permissions: &mut HashMap<String, PendingPermission>,
 ) -> Vec<(String, PendingPermission)> {
@@ -6069,6 +6954,30 @@ fn drain_root_permissions(
         }
     });
     drained
+}
+
+fn drain_root_inputs(
+    inputs: &mut HashMap<String, PendingUserInput>,
+) -> Vec<(String, PendingUserInput)> {
+    let mut drained = Vec::new();
+    inputs.retain(|request_id, pending| {
+        if pending.child_scoped {
+            true
+        } else {
+            drained.push((request_id.clone(), pending.clone()));
+            false
+        }
+    });
+    drained
+}
+
+fn cancelled_user_input_response(pending: &PendingUserInput) -> Value {
+    user_input_response(
+        pending.response_shape,
+        AgentUserInputAction::Cancel,
+        BTreeMap::new(),
+    )
+    .expect("cancel is valid for every user input response shape")
 }
 
 fn is_allow_kind(kind: &str) -> bool {
@@ -7043,6 +7952,89 @@ mod tests {
     use crate::agent_conversation::handoff::{
         AgentConversationHistoryBoundary, AgentConversationProcessTreeAssertion,
     };
+
+    fn pending_test_event(
+        owned_id: &str,
+        generation: u64,
+        payload: AgentConversationPayload,
+    ) -> AgentConversationEvent {
+        AgentConversationEvent {
+            owned_id: owned_id.into(),
+            provider: AgentConversationProvider::Codex,
+            generation,
+            sequence: 1,
+            timestamp_ms: 1,
+            turn_id: Some("turn-pending".into()),
+            payload,
+        }
+    }
+
+    #[test]
+    fn claude_form_maps_installed_text_single_and_multi_fields() {
+        let (title, description, fields) = parse_elicitation_form(&json!({
+            "mode": "form",
+            "message": "Choose release details",
+            "requestedSchema": {
+                "type": "object",
+                "required": ["summary", "channel"],
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "title": "Summary",
+                        "description": "What changed?",
+                        "_meta": { "source": "claude" }
+                    },
+                    "channel": {
+                        "type": "string",
+                        "oneOf": [
+                            { "const": "stable", "title": "Stable" },
+                            { "const": "other", "title": "Other", "description": "Enter another value" }
+                        ]
+                    },
+                    "reviewers": {
+                        "type": "array",
+                        "items": {
+                            "anyOf": [
+                                { "const": "ada", "title": "Ada" },
+                                { "const": "lin", "title": "Lin" }
+                            ]
+                        }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(title, "Choose release details");
+        assert_eq!(description, None);
+        assert_eq!(fields.len(), 3);
+        let by_id = fields
+            .into_iter()
+            .map(|field| (field.id.clone(), field))
+            .collect::<HashMap<_, _>>();
+        assert!(by_id["summary"].required);
+        assert_eq!(by_id["summary"].description.as_deref(), Some("What changed?"));
+        assert_eq!(by_id["channel"].kind, AgentUserInputKind::Select);
+        assert_eq!(by_id["channel"].choices.as_ref().unwrap()[1].label, "Other");
+        assert_eq!(by_id["reviewers"].kind, AgentUserInputKind::MultiSelect);
+        assert!(!by_id["reviewers"].required);
+    }
+
+    #[test]
+    fn claude_form_declines_unsupported_constraints() {
+        let error = parse_elicitation_form(&json!({
+            "mode": "form",
+            "message": "Name",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "minLength": 2 }
+                }
+            }
+        }))
+        .unwrap_err();
+        assert!(error.contains("unsupported constraints"));
+    }
 
     #[test]
     fn stale_codex_composite_choice_becomes_live_model_and_effort_controls() {
@@ -8085,6 +9077,138 @@ mod tests {
         })
         .await;
 
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn child_elicitation_survives_parent_completion_and_answers_original_wire() {
+        let fixture = fixture_manager_with_provider(
+            "child_input_after_parent",
+            AgentConversationProvider::Claude,
+            None,
+        )
+        .await;
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await
+            .expect("prompt starts");
+        wait_until(|| {
+            let sessions = fixture.manager.sessions.lock().unwrap();
+            let session = &sessions[&fixture.owned_id];
+            session.active_turn_id.is_none() && session.user_input_requests.len() == 1
+        })
+        .await;
+        let request_id = {
+            let sessions = fixture.manager.sessions.lock().unwrap();
+            let session = &sessions[&fixture.owned_id];
+            let (request_id, pending) = session.user_input_requests.iter().next().unwrap();
+            assert_eq!(pending.wire_id, json!(77));
+            assert_eq!(pending.response_shape, UserInputResponseShape::Elicitation);
+            assert!(pending.child_scoped);
+            request_id.clone()
+        };
+
+        fixture
+            .manager
+            .respond_user_input(AgentUserInputResponse {
+                identity: AgentRequestIdentity {
+                    owned_id: fixture.owned_id.clone(),
+                    generation: fixture.generation,
+                    request_id,
+                    turn_id: None,
+                    item_id: None,
+                },
+                action: AgentUserInputAction::Accept,
+                content: BTreeMap::from([("question_0_custom".into(), json!("Canary"))]),
+            })
+            .await
+            .expect("child elicitation response");
+        wait_until(|| {
+            let sessions = fixture.manager.sessions.lock().unwrap();
+            let session = &sessions[&fixture.owned_id];
+            session.user_input_requests.is_empty()
+                && session.state == AgentRuntimeState::Working
+                && !session.background_work.is_empty()
+        })
+        .await;
+        let log = fs::read_to_string(fixture.root.join("child_input_after_parent.jsonl")).unwrap();
+        assert!(log.contains(r#""id":77"#));
+        assert!(log.contains(r#""action":"accept""#));
+        assert!(log.contains(r#""question_0_custom":"Canary""#));
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn failed_input_response_restores_exact_pending_request_and_legacy_shape() {
+        let fixture = fixture_manager_with_acp_session("legacy_input").await;
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await
+            .expect("prompt starts");
+        wait_until(|| {
+            fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
+                .user_input_requests
+                .len()
+                == 1
+        })
+        .await;
+        let (request_id, wire_id, event, transport) = {
+            let sessions = fixture.manager.sessions.lock().unwrap();
+            let session = &sessions[&fixture.owned_id];
+            let (request_id, pending) = session.user_input_requests.iter().next().unwrap();
+            assert_eq!(pending.response_shape, UserInputResponseShape::Legacy);
+            (
+                request_id.clone(),
+                pending.wire_id.clone(),
+                pending.event.clone(),
+                session.transport.clone().unwrap(),
+            )
+        };
+        let response = || AgentUserInputResponse {
+            identity: AgentRequestIdentity {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                request_id: request_id.clone(),
+                turn_id: None,
+                item_id: None,
+            },
+            action: AgentUserInputAction::Accept,
+            content: BTreeMap::from([("channel".into(), json!("stable"))]),
+        };
+        transport.fail_next_write_for_test();
+        assert!(fixture.manager.respond_user_input(response()).await.is_err());
+        {
+            let sessions = fixture.manager.sessions.lock().unwrap();
+            let restored = &sessions[&fixture.owned_id].user_input_requests[&request_id];
+            assert_eq!(restored.wire_id, wire_id);
+            assert_eq!(restored.response_shape, UserInputResponseShape::Legacy);
+            assert_eq!(restored.event, event);
+        }
+
+        fixture
+            .manager
+            .respond_user_input(response())
+            .await
+            .expect("retried legacy response");
+        wait_until(|| {
+            fs::read_to_string(fixture.root.join("legacy_input.jsonl"))
+                .is_ok_and(|log| log.contains(r#""id":78"#) && log.contains(r#""cancelled":false"#)
+                    && log.contains(r#""values":{"channel":"stable"}"#))
+        })
+        .await;
         fixture
             .manager
             .close(&fixture.owned_id, fixture.generation)
@@ -9481,6 +10605,15 @@ mod tests {
                     options: Vec::new(),
                     summary: "Pending permission".into(),
                     child_scoped: false,
+                    event: pending_test_event(
+                        &fixture.owned_id,
+                        fixture.generation,
+                        AgentConversationPayload::Approval {
+                            request_id: "permission-1".into(),
+                            state: ApprovalState::Requested,
+                            summary: "Pending permission".into(),
+                        },
+                    ),
                 },
             );
 
@@ -9500,6 +10633,244 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn selected_snapshot_carries_a_pending_request_outside_the_item_page() {
+        let fixture = fixture_manager_with_acp_session("selected_pending").await;
+        let pending = {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            let event = record_payload_for_session(
+                session,
+                AgentConversationPayload::UserInputRequested {
+                    request_id: "input-selected".into(),
+                    title: "Input requested".into(),
+                    description: None,
+                    fields: Vec::new(),
+                    can_decline: false,
+                },
+            )
+            .unwrap();
+            session.user_input_requests.insert(
+                "input-selected".into(),
+                PendingUserInput {
+                    wire_id: json!(1),
+                    response_shape: UserInputResponseShape::Legacy,
+                    child_scoped: false,
+                    event: event.clone(),
+                },
+            );
+            record_payload_for_session(
+                session,
+                AgentConversationPayload::AssistantMessage {
+                    item_id: "newer-message".into(),
+                    text: "newer selected item".into(),
+                    completed: true,
+                    blocks: None,
+                },
+            )
+            .unwrap();
+            event
+        };
+
+        let snapshot = fixture
+            .manager
+            .latest_selection_snapshot(&fixture.owned_id, 1, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.pending_events, vec![pending.clone()]);
+        assert!(snapshot.pending_sequence >= pending.sequence);
+        assert!(snapshot
+            .page
+            .events
+            .iter()
+            .all(|event| event.sequence != pending.sequence));
+
+        fixture
+            .manager
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut(&fixture.owned_id)
+            .unwrap()
+            .user_input_requests
+            .clear();
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn fresh_selection_restores_latest_child_descriptors_outside_the_item_page() {
+        for provider in [
+            AgentConversationProvider::Claude,
+            AgentConversationProvider::Codex,
+        ] {
+            let root = temp_root();
+            let database = root.join("sessions.db");
+            let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+            let owned_id = format!("owned-child-restore-{provider:?}");
+            manager
+                .ensure_inner(request(root.to_str().unwrap(), &owned_id, provider))
+                .unwrap();
+            {
+                let mut sessions = manager.sessions.lock().unwrap();
+                let session = sessions.get_mut(&owned_id).unwrap();
+                record_payload_for_session(
+                    session,
+                    AgentConversationPayload::ChildUpdate {
+                        child_id: "child-1".into(),
+                        parent_tool_call_id: "parent-tool".into(),
+                        parent_id: None,
+                        transcript_id: Some("durable-child-1".into()),
+                        label: Some("child".into()),
+                        state: "running".into(),
+                        latest_activity: Some("Running".into()),
+                    },
+                )
+                .unwrap();
+                record_payload_for_session(
+                    session,
+                    AgentConversationPayload::ChildUpdate {
+                        child_id: "child-1".into(),
+                        parent_tool_call_id: "parent-tool".into(),
+                        parent_id: None,
+                        transcript_id: Some("durable-child-1".into()),
+                        label: Some("child".into()),
+                        state: "finished".into(),
+                        latest_activity: Some("Finished".into()),
+                    },
+                )
+                .unwrap();
+                record_payload_for_session(
+                    session,
+                    AgentConversationPayload::AssistantMessage {
+                        item_id: "newer-message".into(),
+                        text: "newer content".repeat(256),
+                        completed: true,
+                        blocks: None,
+                    },
+                )
+                .unwrap();
+            }
+            drop(manager);
+
+            let reopened =
+                AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+            let snapshot = reopened
+                .latest_selection_snapshot(&owned_id, 1, 1)
+                .unwrap()
+                .unwrap();
+            assert!(snapshot.page.events.iter().all(|event| {
+                !matches!(event.payload, AgentConversationPayload::ChildUpdate { .. })
+            }));
+            assert_eq!(snapshot.pending_events.len(), 1);
+            assert!(matches!(
+                &snapshot.pending_events[0].payload,
+                AgentConversationPayload::ChildUpdate { child_id, state, .. }
+                    if child_id == "child-1" && state == "finished"
+            ));
+            drop(reopened);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn child_created_before_its_transcript_has_a_valid_empty_selection() {
+        let root = temp_root();
+        let manager = AgentRuntimeManager::new(ProviderRegistry::default());
+        let parent = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "parent-before-child-file",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap()
+            .0;
+        let mut parent_row = manager.store.get_session(&parent.owned_id).unwrap().unwrap();
+        parent_row.native_session_id = Some("native-parent-before-child-file".into());
+        manager.store.upsert_session(&parent_row).unwrap();
+        let child_owned_id = super::super::transcript_import::ensure_child_import(
+            &manager.store,
+            &parent.owned_id,
+            None,
+            "child-file-created-later",
+        )
+        .unwrap();
+
+        let selection = manager
+            .latest_selection_snapshot(&child_owned_id, 1024, 1024)
+            .unwrap()
+            .unwrap();
+        assert_eq!(selection.connection.owned_id, child_owned_id);
+        assert!(selection.page.events.is_empty());
+        assert!(selection.page.items.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn child_watch_wakes_for_a_completed_append_but_not_for_a_read() {
+        use std::io::{Read as _, Write as _};
+
+        let root = temp_root();
+        let path = root.join("rollout-child-1.jsonl");
+        fs::write(&path, "first line\n").unwrap();
+        let expected_path = path.clone();
+        let (wake, changes) = std_mpsc::sync_channel(1);
+        let mut watcher = notify::recommended_watcher(
+            move |result: notify::Result<notify::Event>| {
+                let Ok(event) = result else { return; };
+                if child_watch_event_relevant(
+                    &event,
+                    Some(&expected_path),
+                    AgentConversationProvider::Codex,
+                    "child-1",
+                ) {
+                    let _ = wake.try_send(());
+                }
+            },
+        )
+        .unwrap();
+        watcher.watch(&root, RecursiveMode::NonRecursive).unwrap();
+
+        let mut contents = String::new();
+        fs::File::open(&path)
+            .unwrap()
+            .read_to_string(&mut contents)
+            .unwrap();
+        assert_eq!(contents, "first line\n");
+        assert!(changes.recv_timeout(Duration::from_millis(100)).is_err());
+
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"final complete line\n").unwrap();
+        file.sync_all().unwrap();
+        assert!(changes.recv_timeout(Duration::from_secs(2)).is_ok());
+
+        drop(watcher);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stopped_or_replaced_child_selection_cannot_install_a_late_watcher() {
+        let manager = AgentRuntimeManager::new(ProviderRegistry::default());
+        manager.reserve_child_history_request("parent", 1);
+        assert!(manager.stop_child_history("parent", 1));
+        assert!(manager
+            .select_reserved_child_history("parent", "child", 1, 1024, 1024, 100)
+            .is_err());
+
+        manager.reserve_child_history_request("parent", 1);
+        manager.reserve_child_history_request("parent", 2);
+        assert!(manager
+            .select_reserved_child_history("parent", "child", 1, 1024, 1024, 100)
+            .is_err());
+        assert_eq!(manager.child_history_watchers.lock().unwrap()["parent"].request_id, 2);
+        assert!(manager.stop_child_history("parent", 2));
+        assert!(manager.child_history_watchers.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn suspend_skips_pending_user_input() {
         let fixture = fixture_manager_with_acp_session("suspend_input").await;
         fixture
@@ -9510,7 +10881,25 @@ mod tests {
             .get_mut(&fixture.owned_id)
             .unwrap()
             .user_input_requests
-            .insert("input-1".into(), PendingUserInput { wire_id: json!(1) });
+            .insert(
+                "input-1".into(),
+                PendingUserInput {
+                    wire_id: json!(1),
+                    response_shape: UserInputResponseShape::Legacy,
+                    child_scoped: false,
+                    event: pending_test_event(
+                        &fixture.owned_id,
+                        fixture.generation,
+                        AgentConversationPayload::UserInputRequested {
+                            request_id: "input-1".into(),
+                            title: "Input requested".into(),
+                            description: None,
+                            fields: Vec::new(),
+                            can_decline: false,
+                        },
+                    ),
+                },
+            );
 
         assert!(!fixture
             .manager
@@ -12761,6 +14150,47 @@ mod tests {
             ConversationConnectionState::Disconnected
         );
         assert!(manager.resource_roots().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sparse_completed_tool_dispatch_retains_committed_file_fields() {
+        let root = temp_root();
+        let manager = AgentRuntimeManager::default();
+        let connection = manager.ensure_inner(request(
+            root.to_str().unwrap(), "owned-sparse-file", AgentConversationProvider::Codex,
+        )).unwrap().0;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        manager.set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+        let mut sessions = manager.sessions.lock().unwrap();
+        let session = current_session_mut(&mut sessions, "owned-sparse-file", connection.generation).unwrap();
+        for (state, path, diff) in [
+            (ToolState::Started, Some("/workspace/new.txt".into()), Some("@@ -0,0 +1 @@\n+created\n".into())),
+            (ToolState::Completed, None, None),
+        ] {
+            record_payload_for_session_and_dispatch(session, &manager.emitter, AgentConversationPayload::Tool {
+                item_id: "edit-1".into(), name: "Edit".into(), state,
+                summary: None, output: None, path, diff,
+            }).unwrap();
+        }
+        let emitted = seen.lock().unwrap();
+        let completion = emitted.last().unwrap();
+        assert_eq!(completion.sequence + 1, session.next_sequence);
+        assert!(!session.live_tool_calls.contains("edit-1"));
+        match &completion.payload {
+            AgentConversationPayload::Tool { state, path, diff, .. } => {
+                assert_eq!(*state, ToolState::Completed);
+                assert_eq!(path.as_deref(), Some("/workspace/new.txt"));
+                assert_eq!(diff.as_deref(), Some("@@ -0,0 +1 @@\n+created\n"));
+            }
+            _ => panic!("expected completed tool"),
+        }
+        let persisted = session.store.list_events(&session.owned_id, completion.sequence, 1).unwrap();
+        let persisted = stored_event(persisted.into_iter().next().unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(completion).unwrap(), serde_json::to_value(persisted).unwrap());
+        drop(emitted);
+        drop(sessions);
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -1,6 +1,6 @@
 use chrono::{DateTime, Datelike, Local};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -8,9 +8,8 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use super::{
-    home_dir, object, parse_json_lines, read_snapshot_text, stable_key, timestamp,
-    ChildAgentDescriptor, CodexChildRollout, ConversationMetadata, ProjectedRecord,
-    TranscriptMessage, TranscriptSnapshot,
+    home_dir, object, stable_key, timestamp,
+    CodexChildRollout, ProjectedRecord,
 };
 use crate::agent_conversation::protocol::{AgentConversationPayload, AgentEventType};
 
@@ -22,6 +21,23 @@ pub(super) fn discover_path(id: &str) -> Option<PathBuf> {
     ]
     .into_iter()
     .find_map(|root| find(&root, id))
+}
+
+pub(super) fn discover_child_path(parent_id: &str, child_id: &str) -> Option<PathBuf> {
+    let path = discover_path(child_id)?;
+    child_rollout_from_first_line(&path, parent_id, SystemTime::UNIX_EPOCH)
+        .filter(|child| child.child_id == child_id)
+        .map(|_| path)
+}
+
+pub(super) fn child_watch_directory(parent_id: &str, child_id: &str) -> Result<PathBuf, String> {
+    if let Some(path) = discover_child_path(parent_id, child_id) {
+        return path
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| "Child transcript has no containing directory".to_string());
+    }
+    Ok(super::home_dir()?.join(".codex/sessions"))
 }
 
 pub(super) fn scan_child_rollouts(
@@ -439,100 +455,4 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
         _ => {}
     }
     records
-}
-
-pub(super) fn read_snapshot(
-    id: &str,
-    child_id: Option<&str>,
-) -> Result<TranscriptSnapshot, String> {
-    let target = child_id.unwrap_or(id);
-    let path =
-        discover_path(target).ok_or_else(|| format!("Codex transcript {target} was not found"))?;
-    let (input, truncated) = read_snapshot_text(&path)?;
-    let mut messages = Vec::new();
-    let mut metadata = ConversationMetadata::default();
-    let mut children = HashMap::new();
-    for value in parse_json_lines(&input) {
-        if value.get("type").and_then(Value::as_str) == Some("turn_context") {
-            metadata.model = value
-                .pointer("/payload/model")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            metadata.effort = value
-                .pointer("/payload/effort")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            metadata.approval_policy = value
-                .pointer("/payload/approval_policy")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-        }
-        if value.pointer("/payload/type").and_then(Value::as_str) == Some("token_count") {
-            metadata.used_tokens = value
-                .pointer("/payload/info/last_token_usage/total_tokens")
-                .and_then(Value::as_u64);
-            metadata.context_window = value
-                .pointer("/payload/info/model_context_window")
-                .and_then(Value::as_u64);
-        }
-        for record in project(
-            &value,
-            serde_json::to_string(&value).unwrap_or_default().as_bytes(),
-        ) {
-            if record.event_type == AgentEventType::ItemCompleted {
-                let Some(item) = record.payload.get("item") else {
-                    continue;
-                };
-                let role = item
-                    .pointer("/providerMetadata/transcriptRole")
-                    .and_then(Value::as_str)
-                    .unwrap_or("assistant");
-                let text = item
-                    .pointer("/content/0/text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                messages.push(TranscriptMessage {
-                    item_id: record.item_id.unwrap_or(record.key),
-                    role: role.into(),
-                    text: text.into(),
-                    timestamp_ms: record.timestamp_ms as u64,
-                });
-            } else if record.event_type == AgentEventType::ChildrenUpdated && child_id.is_none() {
-                if let Some(child) = record
-                    .payload
-                    .get("children")
-                    .and_then(Value::as_array)
-                    .and_then(|items| items.first())
-                {
-                    if let Some(child_id) = child.get("childId").and_then(Value::as_str) {
-                        children.insert(
-                            child_id.to_string(),
-                            ChildAgentDescriptor {
-                                child_id: child_id.into(),
-                                parent_id: id.into(),
-                                provider: "codex".into(),
-                                label: child
-                                    .get("label")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("Sub-agent")
-                                    .into(),
-                                state: child
-                                    .get("state")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("historical")
-                                    .into(),
-                                updated_at_ms: record.timestamp_ms as u64,
-                            },
-                        );
-                    }
-                }
-            }
-        }
-    }
-    Ok(TranscriptSnapshot {
-        messages,
-        metadata,
-        children: children.into_values().collect(),
-        truncated,
-    })
 }

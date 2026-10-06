@@ -1,118 +1,124 @@
 <script lang="ts">
-  import { tick, untrack } from 'svelte';
+  import { tick, untrack, setContext } from 'svelte';
+  import { createVirtualizer } from '@tanstack/svelte-virtual';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
-  import type { AgentConfigValue } from '$lib/shell/conversation/conversationTypes.ts';
-  import {
-    conversationTurnGroups,
-    foldFileEdits,
-    foldToolRuns,
-    formatWorkedFor,
-    type ConversationTurnGroup,
-    type ConversationDisplayItem,
-    type ConversationFileLinkProvenance
-  } from '$lib/shell/conversation/conversationTimeline.ts';
-  import {
-    decideConversationScroll,
-    initialConversationScrollAnchorState,
-    nextWritingFollowScrollTop,
-    USER_SEND_ANCHOR_OFFSET_PX,
-    type ConversationScrollAction,
-    type ConversationScrollAnchorState,
-    type ConversationScrollMotion,
-    type ConversationSendAnchorRequest
-  } from '$lib/shell/conversation/conversationScrollAnchor.ts';
+  import type { AgentConversationTurnFacts } from '$lib/shell/conversation/conversationTypes.ts';
+  import { conversationTurnGroups, type ConversationTurnGroup, type ConversationDisplayItem, type ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { USER_SEND_ANCHOR_OFFSET_PX, type ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
+  import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
+  import type { ConversationViewState } from '$lib/shell/sessionWorkspaces.ts';
   import { conversationItemHasVisibleContent } from '$lib/shell/conversation/conversationItemVisibility.ts';
   import { setConversationTimelineDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
   import TimelineItem from './TimelineItem.svelte';
   import TurnFileCard from './TurnFileCard.svelte';
   import PendingFirstMessage from './PendingFirstMessage.svelte';
   import WorkingSpinner from './WorkingSpinner.svelte';
+  import ConversationTurnElapsed from './ConversationTurnElapsed.svelte';
 
   interface Props {
     items: readonly ConversationDisplayItem[];
     conversationId: string;
+    historyOwnedId: string;
     renderWindowId?: string;
     timelineRevision: number;
+    viewState: ConversationViewState;
+    onViewChange(ownedId: string, historyOwnedId: string, view: ConversationViewState): void;
+    itemFirstSequence(itemId: string): number | undefined;
     anchorRequest?: ConversationSendAnchorRequest | null;
     activeTurnId?: string | null;
+    turnFacts?: readonly AgentConversationTurnFacts[];
     localTurnActive?: boolean;
-    /** What the running turn is doing, or null when no turn runs here. */
     activityLabel?: string | null;
     composerHeight?: number;
     assistantLabel?: string;
     emptyText?: string;
     pendingFirstMessage?: string | null;
-    /** Older history exists behind the first row on screen. */
     hasOlder?: boolean;
     loadingOlder?: boolean;
     onLoadOlder?(): void;
-    /** Newer history exists beyond a window trimmed while reading upward. */
     hasNewer?: boolean;
     loadingNewer?: boolean;
     onLoadNewer?(): void;
-    /** The oldest and newest loaded sequences; only a page that lands moves them outward. */
     oldestSequence?: number;
     newestSequence?: number;
     onJumpToLatest?(): void | Promise<void>;
-    onScroll?(scrollTop: number): void;
     onApprovalDecision?(requestId: string, decision: string): void;
-    onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void;
     onFileLink?(path: string, provenance?: ConversationFileLinkProvenance): void;
-    /** Opens the plan chip above the composer, for the transcript's plan line. */
     onPlanOpen?(): void;
   }
-
   let {
-    items,
-    conversationId,
-    renderWindowId = conversationId,
-    timelineRevision,
-    anchorRequest = null,
-    activeTurnId = null,
-    localTurnActive = false,
-    activityLabel = null,
-    composerHeight = 0,
-    assistantLabel = 'Assistant',
-    emptyText = 'Start the conversation below.',
-    pendingFirstMessage = null,
-    hasOlder = false,
-    loadingOlder = false,
-    onLoadOlder,
-    hasNewer = false,
-    loadingNewer = false,
-    onLoadNewer,
-    oldestSequence = 0,
-    newestSequence = 0,
-    onJumpToLatest,
-    onScroll,
-    onApprovalDecision,
-    onInputSubmit,
-    onFileLink,
-    onPlanOpen
+    items, conversationId, historyOwnedId, renderWindowId = conversationId, timelineRevision,
+    viewState, onViewChange, itemFirstSequence, anchorRequest = null, activeTurnId = null,
+    turnFacts = [], localTurnActive = false, activityLabel = null, composerHeight = 0,
+    assistantLabel = 'Assistant', emptyText = 'Start the conversation below.', pendingFirstMessage = null,
+    hasOlder = false, loadingOlder = false, onLoadOlder, hasNewer = false, loadingNewer = false,
+    onLoadNewer, oldestSequence = 0, newestSequence = 0, onJumpToLatest, onApprovalDecision,
+    onFileLink, onPlanOpen
   }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
-  let list = $state<HTMLDivElement | null>(null);
   let follow = $state(true);
-  // A scroll correction after older paging is not a request for newer history.
-  let newerPagingAllowed = true;
-  let scrollState = $state<ConversationScrollAnchorState>(initialConversationScrollAnchorState);
-  let seenAnchorRequest = '';
-  let anchoredUserItemId = $state<string | null>(null);
-  let lastContentRevision = -1;
-  let lastComposerHeight = -1;
-  let lastItemCount = -1;
-  let turnWasActive = false;
-  let userItemIds = $state<string[]>([]);
-  let openedConversationId = $state('');
-  let expandedTurns = $state<Map<string, boolean>>(new Map());
-  /** Every item the conversation holds. A stored row is drawn, never offered. */
+  let expandedTurns = $state<Record<string, boolean>>({});
+  let disclosures = $state<Record<string, boolean>>({});
+  let openedWindow = '';
+  let openedOwnedId = '';
+  let openedHistoryId = '';
+  let restoring = $state(true);
+  let savedAnchor: ConversationViewState['anchor'];
+  let jumping = $state(false);
+  let seenSendRequest = 0;
+  let anchoredSendItemId = $state<string | null>(null);
+  let userDirection: 'older' | 'newer' | null = null;
+  let dragging = false;
+  let lastScrollTop = 0;
+  let pendingSendAnchor = $state<ConversationSendAnchorRequest | null>(null);
+  let pageRequest: { older: boolean; edge: number; windowId: string } | null = null;
   const renderedItems = $derived(items.filter(conversationItemHasVisibleContent));
-  const effectiveActiveTurnId = $derived(activeTurnId ?? (localTurnActive
-    ? renderedItems.findLast((item) => item.turnId)?.turnId ?? null
-    : null));
-  const renderedGroups = $derived(conversationTurnGroups(renderedItems, effectiveActiveTurnId));
+  const groups = $derived(conversationTurnGroups(renderedItems, activeTurnId, turnFacts));
+
+  function turnExpanded(group: ConversationTurnGroup): boolean {
+    return !group.turnId || (expandedTurns[group.turnId] ?? group.running);
+  }
+  type Row = {
+    key: string;
+    item?: ConversationDisplayItem;
+    group?: ConversationTurnGroup;
+    heading?: boolean;
+    edit?: { path: string; added: number; removed: number };
+    activity?: boolean;
+  };
+  const rows = $derived.by((): Row[] => {
+    const result: Row[] = [];
+    for (const group of groups) {
+      const expanded = turnExpanded(group);
+      const workIds = new Set(group.workItemIds);
+      const firstWork = group.items.find((item) => workIds.has(item.itemId));
+      for (const item of group.items) {
+        const work = workIds.has(item.itemId);
+        const heading = item === firstWork && !!group.turnId;
+        if (!work || expanded || heading) result.push({
+          key: item.itemId, item: !work || expanded ? item : undefined, group, heading
+        });
+      }
+      if (group.completed && expanded) for (const edit of getTurnFileEdits(group)) {
+        result.push({ key: `turn-file:${group.turnId}:${edit.path}`, group, edit });
+      }
+    }
+    if (activityLabel) result.push({ key: 'activity', activity: true });
+    return result;
+  });
+  const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: 0, getScrollElement: () => host, estimateSize: () => 90, overscan: 3,
+    anchorTo: 'end', followOnAppend: false, scrollEndThreshold: -1, gap: 12
+  });
+  const virtualRows = $derived($virtualizer.getVirtualItems());
+  const totalSize = $derived($virtualizer.getTotalSize());
+
+  setContext<ConversationDisclosureContext>(conversationDisclosureContext, {
+    get(key) { return disclosures[key]; },
+    set(key, open) { disclosures = { ...disclosures, [key]: open }; saveView(); }
+  });
 
   function countDiffLines(diffText: string): { added: number; removed: number } {
     let added = 0;
@@ -177,489 +183,293 @@
     return edits;
   }
 
-  function rowKey(group: ConversationTurnGroup | undefined, index: number): string {
-    const groupId = group?.items[0]?.itemId ?? `row:${index}`;
-    return `${renderWindowId}:${groupId}`;
+  function captureAnchor(): ConversationViewState['anchor'] {
+    if (!host) return savedAnchor;
+    const viewportTop = host.getBoundingClientRect().top;
+    const candidates = [...host.querySelectorAll<HTMLElement>('[data-anchor-item-id]')];
+    const node = candidates.find((candidate) => candidate.getBoundingClientRect().bottom > viewportTop);
+    const itemId = node?.dataset.anchorItemId;
+    const firstSequence = itemId ? itemFirstSequence(itemId) : undefined;
+    return node && itemId && firstSequence !== undefined
+      ? { itemId, firstSequence, offsetPx: node.getBoundingClientRect().top - viewportTop }
+      : savedAnchor;
   }
 
-
-  let timelineMounted = false;
-  function publishTimelineDiagnostics(): void {
-    if (!timelineMounted) return;
-    setConversationTimelineDiagnostics(
-      renderedGroups.length,
-      renderedGroups.length,
-      0,
-      0
-    );
+  function saveView(): void {
+    if (restoring || !openedOwnedId || openedWindow !== renderWindowId) return;
+    savedAnchor = captureAnchor();
+    const effective = { ...expandedTurns };
+    for (const group of groups) if (group.turnId && group.running) effective[group.turnId] = turnExpanded(group);
+    onViewChange(openedOwnedId, openedHistoryId, {
+      followLatest: follow, ...(savedAnchor ? { anchor: savedAnchor } : {}),
+      expandedTurns: effective, ...(Object.keys(disclosures).length ? { disclosures: { ...disclosures } } : {})
+    });
   }
 
   $effect(() => {
-    timelineMounted = true;
-    publishTimelineDiagnostics();
-    return () => {
-      timelineMounted = false;
-      setConversationTimelineDiagnostics(0, 0, 0, 0);
-    };
+    const windowId = renderWindowId;
+    if (openedWindow === windowId) return;
+    openedWindow = windowId;
+    openedOwnedId = conversationId;
+    openedHistoryId = historyOwnedId;
+    const saved = untrack(() => viewState);
+    follow = saved.followLatest;
+    expandedTurns = { ...saved.expandedTurns };
+    disclosures = { ...saved.disclosures };
+    savedAnchor = saved.anchor;
+    restoring = true;
+    pendingSendAnchor = null;
+    anchoredSendItemId = null;
+    pageRequest = null;
+    jumping = false;
+    seenSendRequest = anchorRequest?.requestId ?? 0;
+    $virtualizer.measure();
   });
 
   $effect(() => {
-    if (openedConversationId === renderWindowId) return;
-    openedConversationId = renderWindowId;
-    pageAnchor = null;
-    anchoredUserItemId = null;
-    expandedTurns = new Map();
-    // Every open starts at the newest message; the reader controls scrolling
-    // after that, including while new writing arrives.
-    follow = true;
-    newerPagingAllowed = true;
-    scrollState = decideConversationScroll(scrollState, { type: 'opened' }).state;
+    const currentRows = rows;
+    const element = host;
+    const following = follow && !hasNewer && !restoring;
+    const topInset = element ? Number.parseFloat(getComputedStyle(element).getPropertyValue('--center-head-height')) || 0 : 0;
+    const footer = Math.max(composerHeight, 120) + 60;
+    const paddingEnd = anchoredSendItemId ? Math.max(element?.clientHeight ?? 0, footer) : footer;
+    untrack(() => $virtualizer.setOptions({
+      count: currentRows.length,
+      // Each options snapshot retains its own key list for prepend/trim comparison.
+      getItemKey: (index) => currentRows[index]?.key ?? index,
+      paddingStart: topInset, paddingEnd,
+      scrollPaddingStart: topInset + (anchoredSendItemId ? USER_SEND_ANCHOR_OFFSET_PX : 0),
+      followOnAppend: following, scrollEndThreshold: following ? 80 : -1
+    }));
+    // Measurements belong to this bounded selected window, not every visited page.
+    const keys = new Set(currentRows.map((row) => row.key));
+    untrack(() => {
+      for (const key of $virtualizer.itemSizeCache.keys()) if (!keys.has(String(key))) $virtualizer.itemSizeCache.delete(key);
+    });
   });
 
   $effect(() => {
-    // Wait for the rows to draw, then for content-visibility to measure them.
-    // The first frame can still report a scroll height equal to the viewport;
-    // the second lands on the actual newest row without an animated trip there.
-    if (renderedItems.length === 0 || !scrollState.openingToLatest) return;
-    if (!host) return;
-    const openingId = renderWindowId;
+    void composerHeight;
+    if (!follow || restoring || !host) return;
+    const windowId = renderWindowId;
     void tick().then(() => {
-      if (!host || renderWindowId !== openingId || !scrollState.openingToLatest) return;
-      requestAnimationFrame(() => {
-        if (!host || renderWindowId !== openingId || !scrollState.openingToLatest) return;
-        host.scrollTop = host.scrollHeight - host.clientHeight;
-        requestAnimationFrame(() => {
-          if (!host || renderWindowId !== openingId || !scrollState.openingToLatest) return;
-          host.scrollTop = host.scrollHeight - host.clientHeight;
-          follow = true;
-          scrollState = { ...scrollState, openingToLatest: false, pinnedToBottom: true };
-        });
+      if (windowId === renderWindowId && follow && !hasNewer && !restoring) $virtualizer.scrollToEnd();
+    });
+  });
+
+  function restoreAnchor(anchor: NonNullable<ConversationViewState['anchor']>): boolean {
+    const index = rows.findIndex((row) => row.key === anchor.itemId);
+    if (index < 0) return false;
+    const item = $virtualizer.getMeasurements()[index];
+    if (!item) return false;
+    $virtualizer.scrollToOffset(item.start - anchor.offsetPx);
+    return true;
+  }
+
+  $effect(() => {
+    if (!restoring || !host || rows.length === 0) return;
+    const windowId = renderWindowId;
+    void tick().then(() => {
+      if (windowId !== renderWindowId || !restoring) return;
+      if (follow) $virtualizer.scrollToEnd();
+      else if (savedAnchor && !restoreAnchor(savedAnchor)) return;
+      // Measure the admitted row before the final saved item-offset correction.
+      void tick().then(() => {
+        if (windowId !== renderWindowId || !restoring) return;
+        if (follow) $virtualizer.scrollToEnd();
+        else if (savedAnchor) restoreAnchor(savedAnchor);
+        restoring = false;
+        saveView();
       });
     });
   });
 
-  $effect(() => {
-    const itemCount = renderedItems.length;
-    if (itemCount === lastItemCount) return;
-    lastItemCount = itemCount;
-    userItemIds = renderedItems.filter((item) => item.kind === 'user').map((item) => item.itemId);
-  });
-
-  function prefersReducedMotion(): boolean {
-    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  }
-
-  function finishAnimation(): void {
-    scrollState = decideConversationScroll(scrollState, { type: 'animation-finished' }).state;
-  }
-
-  function animateTo(top: number, motion: ConversationScrollMotion, settleItemId?: string, settleOffsetPx?: number): void {
-    if (!host) return;
-    const target = Math.max(0, top);
-    void motion;
-    host.scrollTop = target;
-    if (settleItemId) {
-      const settledTop = itemTop(settleItemId, settleOffsetPx ?? 0);
-      if (settledTop !== null) host.scrollTop = settledTop;
-    }
-    finishAnimation();
-  }
-
-  function itemTop(itemId: string, offsetPx: number): number | null {
-    if (!host) return null;
-    const item = [...host.querySelectorAll<HTMLElement>('[data-item-id]')]
-      .find((candidate) => candidate.dataset.itemId === itemId);
-    if (!item) return null;
-    // Measured from where the transcript BEGINS, not from the box's outer edge.
-    // The centre pane's controls are laid over the top of this box, and the top
-    // inset below is what keeps the reading clear of them; measuring from the
-    // outer edge parked a just-sent message underneath those controls, which
-    // reads as a message that scrolled away.
-    const hostTop = host.getBoundingClientRect().top + host.clientTop
-      + Number.parseFloat(getComputedStyle(host).paddingTop);
-    const itemTop = item.getBoundingClientRect().top;
-    return host.scrollTop + itemTop - hostTop - offsetPx;
-  }
-
-  /** Where to stop when following the newest writing. The empty space under the
-   * newest user message is not writing, so it is left out of the sum: following
-   * the reply means stopping where the reply stops, not sailing on into blank
-   * screen. What is left below the last line is the scroll box's bottom padding,
-   * which is exactly the height of the prompt box, so the last line comes to rest
-   * just above the prompt instead of hiding behind it. */
-  function latestWritingScrollTop(): number {
-    if (!host) return 0;
-    const item = [...host.querySelectorAll<HTMLElement>('[data-item-id]')].at(-1);
-    if (!item) return 0;
-    const hostTop = host.getBoundingClientRect().top + host.clientTop;
-    const writingBottom = host.scrollTop + item.getBoundingClientRect().bottom - hostTop;
-    const composerClearance = Math.max(composerHeight, 120) + 60;
-    return Math.max(0, writingBottom - host.clientHeight + composerClearance);
-  }
-
-  /** How far the reader is above the end of the writing. Zero means they are
-   * level with the prompt box and reading the newest line. */
-  function distanceBelowReader(): number {
-    return host ? latestWritingScrollTop() - host.scrollTop : 0;
-  }
-
-  function anchorUser(itemId: string, motion: ConversationScrollMotion, offsetPx: number): void {
-    const top = itemTop(itemId, offsetPx);
-    if (top !== null) {
-      animateTo(top, motion, itemId, offsetPx);
-      return;
-    }
-    finishAnimation();
-  }
-
-  function perform(action: ConversationScrollAction): void {
-    if (!host || action.type === 'none') return;
-    if (action.type === 'cancel-programmatic-scroll') return finishAnimation();
-    if (action.type === 'scroll-to-latest') {
-      animateTo(latestWritingScrollTop(), action.motion);
-      return;
-    }
-    anchoredUserItemId = action.itemId;
-    anchorUser(action.itemId, action.motion, action.offsetPx);
-  }
-
-  /*
-   * Reading older history moves everything already on screen down. Remember the
-   * first existing item and restore its viewport offset after replay; anchoring
-   * an item rather than total height also survives the newest rows being trimmed.
-   */
-  type PageAnchor = { viewportTop: number; itemId: string; timelineRevision: number; conversationId: string };
-
-  let pageAnchor: PageAnchor | null = null;
-
-  function captureViewportAnchor(): void {
-    if (!host) return;
-    const hostTop = host.getBoundingClientRect().top;
-    const candidates = [...host.querySelectorAll<HTMLElement>('[data-item-id]')];
-    const item = candidates.find((candidate) => candidate.getBoundingClientRect().bottom > hostTop)
-      ?? candidates[0];
-    pageAnchor = item
-      ? {
-          viewportTop: item.getBoundingClientRect().top,
-          itemId: item.dataset.itemId ?? '',
-          timelineRevision,
-          conversationId
-        }
-      : null;
-  }
-
-  // The window, edge, direction and content height a page was asked from. A
-  // page that lands without changing the content height added nothing visible
-  // (a collapsed turn hides it), so the next one is asked for at once instead
-  // of waiting for another wheel event.
-  let pageRequest: { windowId: string; edge: number; older: boolean; height: number } | null = null;
-
-  function requestOlderHistory(): void {
-    if (!host || !hasOlder || loadingOlder || !onLoadOlder || scrollState.openingToLatest) return;
-    if (host.scrollTop > 80) return;
-    follow = false;
-    newerPagingAllowed = false;
-    captureViewportAnchor();
-    pageRequest = { windowId: renderWindowId, edge: oldestSequence, older: true, height: host.scrollHeight };
-    onLoadOlder();
-  }
-
-  function requestNewerHistory(force = false): void {
-    if (!host || !hasNewer || loadingNewer || !onLoadNewer || scrollState.openingToLatest) return;
-    if (!force && !newerPagingAllowed) return;
-    if (!force && distanceBelowReader() > 80) return;
-    captureViewportAnchor();
-    pageRequest = { windowId: renderWindowId, edge: newestSequence, older: false, height: host.scrollHeight };
-    onLoadNewer();
-  }
-
-  function restoreViewportAnchor(anchor: PageAnchor): void {
-    if (!host) return;
-    const item = host.querySelector<HTMLElement>(`[data-item-id="${CSS.escape(anchor.itemId)}"]`);
-    if (item) host.scrollTop += item.getBoundingClientRect().top - anchor.viewportTop;
-    if (follow) pageAnchor = null;
-    else captureViewportAnchor();
-  }
-
-  $effect(() => {
-    const revision = timelineRevision;
-    const anchor = pageAnchor;
-    if (!anchor) return;
-    if (anchor.conversationId !== conversationId) {
-      pageAnchor = null;
-      return;
-    }
-    if (revision <= anchor.timelineRevision) return;
-    pageAnchor = null;
-    restoreViewportAnchor(anchor);
-  });
-
-  $effect(() => {
-    if (loadingOlder || loadingNewer || !pageRequest) return;
-    // A failed read leaves the edge where it was and a switch changes the window.
-    // Live output cannot pass for a page: it bumps the revision, and trimming
-    // only moves the oldest edge forward.
-    const landed = pageRequest.windowId === renderWindowId
-      && (pageRequest.older ? oldestSequence < pageRequest.edge : newestSequence > pageRequest.edge);
-    // A height change stops the chain even when the view stayed at the edge,
-    // which happens when the viewport anchor cannot find its row after the page.
-    // It counts both ways: a page that also trimmed the far end can add rows
-    // here and still leave the content shorter.
-    const changed = !host || Math.abs(host.scrollHeight - pageRequest.height) > 80;
-    const older = pageRequest.older;
-    pageRequest = null;
-    if (landed && !changed) untrack(() => (older ? requestOlderHistory() : requestNewerHistory()));
-  });
-
-  function handleScroll(): void {
-    if (!host) return;
-    const maxScroll = Math.max(0, host.scrollHeight - host.clientHeight);
-    if (host.scrollTop > maxScroll) {
-      host.scrollTop = maxScroll;
-    }
-    follow = !hasNewer && newerPagingAllowed && anchoredUserItemId === null && distanceBelowReader() <= 80;
-    // Keep the anchor fresh while reading so a live append that trims the top
-    // can restore the same visible item instead of moving the reader.
-    if (follow) pageAnchor = null;
-    else captureViewportAnchor();
-    onScroll?.(host.scrollTop);
-  }
-
-  let jumpingToLatest = false;
-  async function jumpToLatest(): Promise<void> {
-    if (jumpingToLatest) return;
-    newerPagingAllowed = true;
-    anchoredUserItemId = null;
-    if (hasNewer && onJumpToLatest) {
-      jumpingToLatest = true;
-      // A direct tail reload replaces the paging operation. Do not let its
-      // pending viewport correction pull the reader back from the newest row.
-      pageAnchor = null;
-      try {
-        await onJumpToLatest();
-      } finally {
-        jumpingToLatest = false;
-      }
-    }
-    const decision = decideConversationScroll(scrollState, {
-      type: 'jump-to-latest',
-      reducedMotion: prefersReducedMotion()
-    });
-    scrollState = decision.state;
-    follow = true;
-    perform(decision.action);
-  }
-
-  $effect(() => {
-    if (!anchorRequest || anchorRequest.conversationId !== conversationId) return;
-    const key = `${anchorRequest.conversationId}:${anchorRequest.requestId}`;
-    if (seenAnchorRequest === key) return;
-    seenAnchorRequest = key;
-    scrollState = decideConversationScroll(scrollState, {
-      type: 'send',
-      previousUserItemId: anchorRequest.previousUserItemId,
-      reducedMotion: prefersReducedMotion()
-    }).state;
-    // The message just sent goes to the top and stays there. Following the
-    // writing as well meant the reply pushed that message off the top of the
-    // screen the moment it ran longer than one, so the reader was returned to
-    // the bottom of something they had not read the beginning of. Jump to
-    // latest is how following starts again.
-    follow = false;
-  });
-
-  $effect(() => {
-    const decision = decideConversationScroll(scrollState, {
-      type: 'user-items-changed',
-      userItemIds
-    });
-    scrollState = decision.state;
-    if (decision.action.type !== 'none') perform(decision.action);
-  });
-
-  $effect(() => {
-    if (timelineRevision === lastContentRevision) return;
-    lastContentRevision = timelineRevision;
-    if (anchoredUserItemId && host) {
-      const top = itemTop(anchoredUserItemId, USER_SEND_ANCHOR_OFFSET_PX);
-      if (top !== null) host.scrollTop = top;
-      return;
-    }
-    const decision = decideConversationScroll(scrollState, { type: 'stream-growth' });
-    scrollState = decision.state;
-    perform(decision.action);
-    if (!host) return;
-    if (follow && decision.action.type === 'none') {
-      animateTo(nextWritingFollowScrollTop(host.scrollTop, latestWritingScrollTop()), 'instant');
-    }
-    // Whether the view follows is the reader's to decide — by scrolling to
-    // the bottom, or by asking for the latest. It used to be recomputed here
-    // as well, from how close the writing had grown to where they were
-    // sitting, which turned a reply catching up with the reader into
-    // permission to take the view from them.
-  });
-
-  $effect(() => {
-    const turnIsActive = localTurnActive;
-    const turnJustFinished = turnWasActive && !turnIsActive;
-    turnWasActive = turnIsActive;
-    if (!turnJustFinished || !anchoredUserItemId || !host) return;
-    const top = itemTop(anchoredUserItemId, USER_SEND_ANCHOR_OFFSET_PX);
-    if (top !== null) host.scrollTop = top;
-  });
-
-  $effect(() => {
-    if (composerHeight === lastComposerHeight) return;
-    lastComposerHeight = composerHeight;
-    if (follow || scrollState.pinnedToBottom || scrollState.openingToLatest) {
-      if (host) animateTo(latestWritingScrollTop(), 'instant');
-    }
-  });
-
-
-
-  function handleUserInput(): void {
-    if (!newerPagingAllowed) follow = false; // Upward intent wins before the browser scrolls.
-    anchoredUserItemId = null;
-    const decision = decideConversationScroll(scrollState, { type: 'user-input' });
-    scrollState = decision.state;
-    perform(decision.action);
-  }
-
-  function turnExpanded(group: ConversationTurnGroup): boolean {
-    if (!group.turnId || group.workItemIds.length === 0) return true;
-    return expandedTurns.get(group.turnId) ?? group.turnId === effectiveActiveTurnId;
+  function measureRow(node: HTMLDivElement) {
+    $virtualizer.measureElement(node);
+    return { destroy() { $virtualizer.measureElement(null); } };
   }
 
   function toggleTurn(group: ConversationTurnGroup): void {
     if (!group.turnId) return;
-    const next = new Map(expandedTurns);
-    next.set(group.turnId, !turnExpanded(group));
-    expandedTurns = next;
+    const itemId = group.workItemIds[0];
+    const node = itemId && host?.querySelector<HTMLElement>(`[data-anchor-item-id="${CSS.escape(itemId)}"]`);
+    const offsetPx = node && host ? node.getBoundingClientRect().top - host.getBoundingClientRect().top : null;
+    expandedTurns = { ...expandedTurns, [group.turnId]: !turnExpanded(group) };
+    const windowId = renderWindowId;
+    void tick().then(() => {
+      if (windowId !== renderWindowId) return;
+      const index = rows.findIndex((row) => row.key === itemId);
+      const measurement = $virtualizer.getMeasurements()[index];
+      if (measurement && offsetPx !== null) $virtualizer.scrollToOffset(measurement.start - offsetPx);
+      saveView();
+    });
   }
 
-  function handleKeydown(event: KeyboardEvent): void {
-    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) {
-      if (!(event.target instanceof Element && event.target.closest('input, textarea, [contenteditable]'))) {
-        newerPagingAllowed = ['ArrowDown', 'PageDown', 'End', ' '].includes(event.key);
-      }
-      if ((event.target as HTMLElement | null)?.closest('input, textarea, [contenteditable]')) return;
-      handleUserInput();
-      const older = ['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey);
-      const windowId = renderWindowId;
-      requestAnimationFrame(() => {
-        if (renderWindowId !== windowId) return;
-        if (older) requestOlderHistory();
-        else requestNewerHistory();
-      });
+  $effect(() => {
+    const running = groups.filter((group) => group.running && group.turnId && expandedTurns[group.turnId] === undefined);
+    if (running.length) expandedTurns = { ...expandedTurns, ...Object.fromEntries(running.map((group) => [group.turnId!, true])) };
+  });
+
+  function requestPage(older: boolean): void {
+    if (!host || restoring || jumping || pageRequest) return;
+    if (older ? !hasOlder || loadingOlder || host.scrollTop > 80 : !hasNewer || loadingNewer || !$virtualizer.isAtEnd(80)) return;
+    pageRequest = { older, edge: older ? oldestSequence : newestSequence, windowId: renderWindowId };
+    if (older) onLoadOlder?.(); else onLoadNewer?.();
+  }
+
+  $effect(() => {
+    if (loadingOlder || loadingNewer || !pageRequest) return;
+    const request = pageRequest;
+    const landed = request.windowId === renderWindowId && (request.older ? oldestSequence < request.edge : newestSequence > request.edge);
+    pageRequest = null;
+    // Collapsed work can add no visible height: keep reading until a visible page arrives.
+    if (landed) void tick().then(() => {
+      if (request.windowId === renderWindowId) requestPage(request.older);
+    });
+  });
+
+  function handleScroll(): void {
+    if (!host || restoring || jumping) return;
+    const direction = dragging ? (host.scrollTop < lastScrollTop ? 'older' : 'newer') : userDirection;
+    lastScrollTop = host.scrollTop;
+    if (direction === 'older') follow = false;
+    else if (direction === 'newer' && !hasNewer && $virtualizer.isAtEnd(80)) follow = true;
+    userDirection = null;
+    saveView();
+    if (direction) requestPage(direction === 'older');
+  }
+  function handleWheel(event: WheelEvent): void {
+    anchoredSendItemId = null;
+    userDirection = event.deltaY < 0 ? 'older' : 'newer';
+    if (event.deltaY < 0) {
+      follow = false;
+      saveView();
+      requestPage(true);
+    } else if (event.deltaY > 0) {
+      if (!hasNewer && $virtualizer.isAtEnd(80)) follow = true;
+      saveView();
+      requestPage(false);
     }
   }
 
-  let pointerScrollTop: number | null = null;
-  function handlePointerDown(): void {
-    pointerScrollTop = host?.scrollTop ?? null;
-  }
-  function handlePointerUp(): void {
-    if (!host || pointerScrollTop === null) return;
-    const moved = host.scrollTop - pointerScrollTop;
-    pointerScrollTop = null;
-    if (moved < 0) requestOlderHistory();
-    else if (moved > 0) requestNewerHistory();
+  function readerInput(node: HTMLDivElement) {
+    const pointerDown = (event: PointerEvent) => {
+      if (event.target !== node) return;
+      dragging = true;
+      lastScrollTop = node.scrollTop;
+      anchoredSendItemId = null;
+      follow = false;
+    };
+    const pointerUp = () => { dragging = false; };
+    const touchStart = () => {
+      dragging = true;
+      lastScrollTop = node.scrollTop;
+      anchoredSendItemId = null;
+      follow = false;
+    };
+    const keydown = (event: KeyboardEvent) => {
+      if (event.target instanceof Element && event.target.closest('input, textarea, [contenteditable]')) return;
+      const older = ['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey);
+      const newer = ['ArrowDown', 'PageDown', 'End'].includes(event.key) || (event.key === ' ' && !event.shiftKey);
+      if (!older && !newer) return;
+      anchoredSendItemId = null;
+      userDirection = older ? 'older' : 'newer';
+      if (older) follow = false;
+      saveView();
+      requestPage(older);
+    };
+    node.addEventListener('pointerdown', pointerDown);
+    node.addEventListener('touchstart', touchStart, { passive: true });
+    window.addEventListener('pointerup', pointerUp);
+    window.addEventListener('touchend', pointerUp);
+    window.addEventListener('keydown', keydown);
+    return { destroy() {
+      node.removeEventListener('pointerdown', pointerDown);
+      node.removeEventListener('touchstart', touchStart);
+      window.removeEventListener('pointerup', pointerUp);
+      window.removeEventListener('touchend', pointerUp);
+      window.removeEventListener('keydown', keydown);
+    } };
   }
 
-  function userInputInterrupts(node: HTMLElement): { destroy(): void } {
-    const onWheel = (event: WheelEvent): void => {
-      newerPagingAllowed = event.deltaY > 0;
-      handleUserInput();
-    };
-    const onPointerDown = (event: PointerEvent): void => {
-      if (event.target === node && event.clientX >= node.getBoundingClientRect().right - 18) {
-        newerPagingAllowed = true;
-      }
-    };
-    node.addEventListener('wheel', onWheel, { passive: true });
-    node.addEventListener('pointerdown', onPointerDown);
-    node.addEventListener('touchstart', handleUserInput, { passive: true });
-    node.addEventListener('pointerdown', handlePointerDown);
-    node.addEventListener('pointerup', handlePointerUp);
-    window.addEventListener('keydown', handleKeydown);
-    return {
-      destroy(): void {
-        node.removeEventListener('wheel', onWheel);
-        node.removeEventListener('pointerdown', onPointerDown);
-        node.removeEventListener('touchstart', handleUserInput);
-        node.removeEventListener('pointerdown', handlePointerDown);
-        node.removeEventListener('pointerup', handlePointerUp);
-        window.removeEventListener('keydown', handleKeydown);
-        finishAnimation();
-      }
-    };
+  async function jumpToLatest(): Promise<void> {
+    if (jumping) return;
+    const windowId = renderWindowId;
+    jumping = true;
+    anchoredSendItemId = null;
+    pageRequest = null;
+    try {
+      if (hasNewer) await onJumpToLatest?.();
+      if (windowId !== renderWindowId) return;
+      follow = true;
+      savedAnchor = undefined;
+      await tick();
+      if (windowId !== renderWindowId) return;
+      $virtualizer.scrollToEnd();
+    } finally {
+      if (windowId === renderWindowId) { jumping = false; saveView(); }
+    }
   }
+
+  $effect(() => {
+    if (!anchorRequest || anchorRequest.conversationId !== conversationId || anchorRequest.requestId === seenSendRequest) return;
+    seenSendRequest = anchorRequest.requestId;
+    pendingSendAnchor = anchorRequest;
+    follow = false;
+  });
+  $effect(() => {
+    void timelineRevision;
+    if (!pendingSendAnchor) return;
+    const itemId = pendingSendAnchor.userItemId;
+    if (!rows.some((row) => row.key === itemId)) return;
+    pendingSendAnchor = null;
+    anchoredSendItemId = itemId;
+    const windowId = renderWindowId;
+    void tick().then(() => {
+      if (windowId !== renderWindowId || anchoredSendItemId !== itemId) return;
+      const index = rows.findIndex((row) => row.key === itemId);
+      if (index < 0) return;
+      $virtualizer.scrollToIndex(index, { align: 'start' });
+      saveView();
+    });
+  });
+
+  $effect(() => {
+    void timelineRevision;
+    if (!restoring) untrack(saveView);
+  });
+  $effect(() => {
+    setConversationTimelineDiagnostics(rows.length, virtualRows.length, $virtualizer.elementsCache.size, $virtualizer.itemSizeCache.size);
+    return () => setConversationTimelineDiagnostics(0, 0, 0, 0);
+  });
 </script>
 
 <div class="timeline-wrap" data-testid="conversation-timeline-wrap" style={`--composer-height:${composerHeight}px`}>
-  {#if loadingOlder}
-    <p class="older-loading" data-testid="conversation-older-loading" role="status">
-      <span class="older-spinner" aria-hidden="true"></span>
-      Loading earlier messages
-    </p>
-  {/if}
-  <div
-    class="timeline-scroll"
-    data-testid="conversation-timeline-scroll"
-    bind:this={host}
-    onscroll={handleScroll}
-    onwheel={(event) => { if (event.deltaY < 0) requestOlderHistory(); else if (event.deltaY > 0) requestNewerHistory(); }}
-    use:userInputInterrupts
-  >
+  {#if loadingOlder}<p class="older-loading" data-testid="conversation-older-loading" role="status"><span class="older-spinner" aria-hidden="true"></span>Loading earlier messages</p>{/if}
+  <div class="timeline-scroll" data-testid="conversation-timeline-scroll" bind:this={host} onscroll={handleScroll} onwheel={handleWheel} use:readerInput>
     {#if renderedItems.length === 0}
-      {#if pendingFirstMessage}<PendingFirstMessage text={pendingFirstMessage} />
-      {:else}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
+      {#if pendingFirstMessage}<PendingFirstMessage text={pendingFirstMessage} />{:else}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
     {/if}
-    <div
-      class="timeline-list"
-      data-testid="conversation-timeline-list"
-      bind:this={list}
-    >
-      {#each renderedGroups as group, index (rowKey(group, index))}
-        {@const expanded = turnExpanded(group)}
-        {@const foldedItems = foldToolRuns(foldFileEdits(group.items))}
-        {@const firstWorkItemId = foldedItems.find((item) => item.kind === 'toolRun' || item.kind === 'fileEdits' || group.workItemIds.includes(item.itemId))?.itemId}
-        <div
-          class="turn-row"
-          data-index={index}
-          data-turn-id={group.turnId}
-          data-testid="conversation-timeline-row"
-        >
-          {#each foldedItems as item (item.itemId)}
-            {@const workItem = item.kind === 'toolRun' || item.kind === 'fileEdits' || group.workItemIds.includes(item.itemId)}
-            {#if group.turnId !== effectiveActiveTurnId && item.itemId === firstWorkItemId}
-              <button class="turn-fold" data-testid="conversation-turn-fold" type="button" aria-expanded={expanded} onclick={() => toggleTurn(group)}>
-                <span>{group.elapsedMs === null ? 'Worked' : `Worked for ${formatWorkedFor(group.elapsedMs)}`}</span>
-                <span class="turn-fold-chevron" class:open={expanded} aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
+    <div class="timeline-list" data-testid="conversation-timeline-list" style:height={`${totalSize}px`}>
+      {#each virtualRows as virtualRow (virtualRow.key)}
+        {@const row = rows[virtualRow.index]}
+        {#if row}
+          <div class="turn-row" data-index={virtualRow.index} data-anchor-item-id={row.group && !row.edit ? row.key : undefined} data-turn-id={row.group?.turnId} data-testid="conversation-timeline-row" style:transform={`translateY(${virtualRow.start}px)`} use:measureRow>
+            {#if row.heading && row.group}
+              <button class="turn-fold" data-testid="conversation-turn-fold" type="button" aria-expanded={turnExpanded(row.group)} onclick={() => toggleTurn(row.group!)}>
+                <ConversationTurnElapsed running={row.group.running} completed={row.group.completed} startedAtMs={row.group.startedAtMs} elapsedMs={row.group.elapsedMs} />
+                <span class="turn-fold-chevron" class:open={turnExpanded(row.group)} aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
               </button>
             {/if}
-            {#if !workItem || expanded}
-              <TimelineItem {item} {assistantLabel} onApprovalDecision={onApprovalDecision} onInputSubmit={onInputSubmit} {onFileLink} {onPlanOpen} />
-            {/if}
-          {/each}
-          {#if group.completed && expanded}
-            {#each getTurnFileEdits(group) as edit (edit.path)}
-              <TurnFileCard path={edit.path} added={edit.added} removed={edit.removed} onReview={onFileLink} />
-            {/each}
-          {/if}
-        </div>
+            {#if row.item}<TimelineItem item={row.item} {assistantLabel} {onApprovalDecision} {onFileLink} {onPlanOpen} />{/if}
+            {#if row.edit}<TurnFileCard path={row.edit.path} added={row.edit.added} removed={row.edit.removed} onReview={onFileLink} />{/if}
+            {#if row.activity}<div class="working-row" data-testid="conversation-working-indicator" role="status"><WorkingSpinner seed={activeTurnId ?? renderWindowId} /><span>{activityLabel}…</span></div>{/if}
+          </div>
+        {/if}
       {/each}
-      {#if activityLabel}
-        <div class="working-row" data-testid="conversation-working-indicator" role="status">
-          <WorkingSpinner seed={activeTurnId ?? renderWindowId} />
-          <span>{activityLabel}…</span>
-        </div>
-      {/if}
-      <div class:send-anchor-space={anchoredUserItemId !== null} class="timeline-bottom-spacer" aria-hidden="true"></div>
     </div>
   </div>
-  {#if !follow && renderedItems.length > 0}<button class="jump-latest" data-testid="conversation-jump-latest" type="button" aria-label="Jump to latest" onclick={() => void jumpToLatest()}><ArrowDown size={16} strokeWidth={2} aria-hidden="true" /></button>{/if}
+  {#if (!follow || hasNewer) && renderedItems.length > 0}<button class="jump-latest" data-testid="conversation-jump-latest" type="button" aria-label="Jump to latest" onclick={() => void jumpToLatest()}><ArrowDown size={16} strokeWidth={2} aria-hidden="true" /></button>{/if}
 </div>
 
 <style>
@@ -670,11 +480,9 @@
   .older-spinner{width:11px;height:11px;border:1.5px solid color-mix(in srgb,var(--color-text-3) 45%,transparent);border-top-color:var(--color-text-2);border-radius:50%;animation:older-spin 700ms linear infinite}
   @keyframes older-spin{to{transform:rotate(360deg)}}
   @media (prefers-reduced-motion: reduce){.older-spinner{animation:none;border-top-color:color-mix(in srgb,var(--color-text-3) 45%,transparent)}}
-  .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:none;padding:var(--center-head-height, 0px) 28px 0;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
-  .timeline-list{position:relative;display:flex;flex-direction:column;gap:18px;width:min(820px,100%);min-height:1px;margin:0 auto}
-  .timeline-bottom-spacer{flex:none;height:calc(max(var(--composer-height, 0px), 120px) + 60px);pointer-events:none}
-  .timeline-bottom-spacer.send-anchor-space{height:max(calc(max(var(--composer-height, 0px), 120px) + 60px),100vh)}
-  .turn-row{position:relative;display:flex;flex-direction:column;gap:12px;width:100%}
+  .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:none;padding:0 28px;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
+  .timeline-list{flex:none;position:relative;width:min(820px,100%);min-height:1px;margin:0 auto}
+  .turn-row{position:absolute;top:0;left:0;display:flex;flex-direction:column;gap:12px;width:100%}
   .turn-fold{display:flex;width:100%;align-items:center;gap:5px;min-height:28px;padding:0 0 7px;border:0;border-bottom:1px solid var(--color-border);background:transparent;color:var(--color-text-2);font:inherit;font-size:13px;text-align:left;cursor:pointer}
   .turn-fold:hover{color:var(--color-text)}
   .turn-fold:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}

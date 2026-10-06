@@ -1,6 +1,7 @@
-import { EventType, StreamProcessor, type UIMessage } from '@tanstack/ai/client';
-import type { AgentConfigValue, AgentEvent, AgentConversationEvent, AgentItem, ConversationAttachment, ConversationTranscriptMessage } from './conversationTypes.ts';
+import { EventType, StreamProcessor, type StreamChunk, type UIMessage } from '@tanstack/ai/client';
+import type { AgentConfigValue, AgentEvent, AgentConversationEvent, AgentItem, ConversationAttachment } from './conversationTypes.ts';
 import { agentItemFromEvent, conversationEventAppendsItemContent, displayItemFromAgentItem, displayItemFromApproval, permissionRequestFromEvent, reuseConversationDisplayItems, withoutRepeatedPlans, type ConversationDisplayItem } from './conversationTimeline.ts';
+import { usageDropIsCompaction } from './conversationReducer.ts';
 
 /** Unwrap stored provider projections before the one live/replay mapper. */
 export function displayEventFrom(event: AgentConversationEvent): AgentConversationEvent | AgentEvent {
@@ -21,6 +22,30 @@ function metadataOf(message: UIMessage | undefined): Record<string, AgentConfigV
 
 function textOf(message: UIMessage | undefined): string {
   return message?.parts.map((part) => part.type === 'text' ? part.content : part.type === 'thinking' ? part.content : '').join('') ?? '';
+}
+
+export function conversationMessagesFromEvents(
+  events: readonly AgentConversationEvent[]
+): UIMessage[] {
+  const processor = new StreamProcessor();
+  let usedTokens: number | undefined;
+  for (const event of events) {
+    if (event.payload.kind === 'usage') {
+      if (usageDropIsCompaction(usedTokens, event.payload.usedTokens)) {
+        applyMessageEvent(processor, {
+          ...event,
+          payload: {
+            kind: 'contextCompaction',
+            preTokens: usedTokens,
+            postTokens: event.payload.usedTokens
+          }
+        });
+      }
+      usedTokens = event.payload.usedTokens ?? usedTokens;
+    }
+    applyMessageEvent(processor, displayEventFrom(event));
+  }
+  return processor.getMessages();
 }
 
 export function conversationMessageDisplayItem(message: UIMessage): ConversationDisplayItem {
@@ -60,51 +85,65 @@ export function conversationHasRunningTool(messages: readonly UIMessage[]): bool
     && part.state !== 'complete' && part.state !== 'error'));
 }
 
-export function restoreProcessor(processor: StreamProcessor, messages: readonly UIMessage[]): void {
-  processor.reset();
-  for (const message of messages) {
-    // Seed each message on its own so every chunk scans one message, not all.
-    processor.setMessages([]);
-    processor.processChunk({ type: EventType.TEXT_MESSAGE_START, messageId: message.id, role: message.role, metadata: message.metadata });
-    for (const part of message.parts) {
-      if (part.type === 'text') {
-        processor.processChunk({ type: EventType.TEXT_MESSAGE_CONTENT, messageId: message.id, delta: part.content });
-      } else if (part.type === 'tool-call') {
-        processor.processChunk({ type: EventType.TOOL_CALL_START, toolCallId: part.id, parentMessageId: message.id, toolCallName: part.name, metadata: part.metadata as Record<string, unknown> | undefined });
-        processor.processChunk({ type: EventType.TOOL_CALL_ARGS, toolCallId: part.id, delta: part.arguments });
-        processor.processChunk({ type: EventType.TOOL_CALL_END, toolCallId: part.id });
-      }
-    }
-  }
-  // Preserve the exact canonical parts, including running native tool output
-  // and results (a result chunk changes only the parts, so none is replayed).
-  // The event replay above seeds the processor's internal segment state.
-  processor.setMessages([...messages]);
+function nativeCustomChunk(name: string, value: unknown): StreamChunk {
+  return { type: EventType.CUSTOM, name, value } as StreamChunk;
 }
 
-/** Native events carry authoritative full messages as well as text deltas. */
-export function applyMessageEvent(processor: StreamProcessor, event: AgentConversationEvent | AgentEvent): boolean {
+/** Replace a complete retained window, then restore native authority for tools
+ * that are still running. The SDK intentionally carries richer pre-snapshot
+ * tool state, which must not let an old terminal result beat a running page. */
+export function conversationSnapshotChunks(messages: readonly UIMessage[]): StreamChunk[] {
+  return [{
+    type: EventType.MESSAGES_SNAPSHOT,
+    messages: [...messages]
+  } as StreamChunk, ...messages.flatMap((message) => message.parts.flatMap((part) =>
+    part.type === 'tool-call' && part.state !== 'complete' && part.state !== 'error'
+      ? [nativeCustomChunk('assembly:running-tool', {
+          itemId: message.id,
+          toolCall: part,
+          metadata: message.metadata
+        })]
+      : []
+  ))];
+}
+
+/** Translate one native event into the standard chunks owned by TanStack. */
+export function conversationChunksFromEvent(
+  messages: readonly UIMessage[],
+  source: AgentConversationEvent | AgentEvent
+): StreamChunk[] {
+  const event = 'type' in source ? source : displayEventFrom(source);
+  const finishChunks = reasoningEndChunks(messages, event);
   const request = permissionRequestFromEvent(event);
   if (request) {
     const row = displayItemFromApproval(request, event.timestampMs);
-    processor.processChunk({ type: EventType.TEXT_MESSAGE_START, messageId: row.itemId, role: 'assistant', metadata: { displayItem: row } });
-    return true;
+    return [{ type: EventType.TEXT_MESSAGE_START, messageId: row.itemId, role: 'assistant', metadata: { displayItem: row } }, ...finishChunks];
   }
   const item = agentItemFromEvent(event);
-  if (!item) return false;
-  const existing = processor.getMessages().find((message) => message.id === item.id);
+  if (!item) return finishChunks;
+  const existing = messages.find((message) => message.id === item.id);
   const prior = metadataOf(existing);
   const metadata: Record<string, AgentConfigValue> = {
     ...prior, ...item.providerMetadata, itemType: item.type,
     turnId: item.turnId ?? prior.turnId ?? null,
-    startedAtMs: prior.startedAtMs ?? item.providerMetadata?.startedAtMs ?? event.timestampMs
+    startedAtMs: prior.startedAtMs ?? item.providerMetadata?.startedAtMs ?? event.timestampMs,
+    firstSequence: prior.firstSequence ?? item.providerMetadata?.firstSequence ?? event.sequence,
+    lastSequence: event.sequence,
+    positionKnown: item.providerMetadata?.positionKnown ?? prior.positionKnown ?? true
   };
   // Tool output has one owner: the paired canonical tool-call/result parts.
   delete metadata.output;
   const text = item.content.map((part) => part.text).join('');
   const append = conversationEventAppendsItemContent(event);
   const display = displayItemFromAgentItem(item, event.timestampMs);
-  processor.processChunk({ type: EventType.TEXT_MESSAGE_START, messageId: item.id, role: item.type === 'user-message' ? 'user' : 'assistant', metadata });
+  const chunks: StreamChunk[] = existing
+    ? [nativeCustomChunk('assembly:message-metadata', { itemId: item.id, metadata })]
+    : [{
+        type: EventType.TEXT_MESSAGE_START,
+        messageId: item.id,
+        role: item.type === 'user-message' ? 'user' : 'assistant',
+        metadata
+      }];
   if (display.kind === 'tool') {
     const previousCall = existing?.parts.find((part) => part.type === 'tool-call');
     const previousOutput = previousCall?.output && typeof previousCall.output === 'object' ? previousCall.output as Record<string, AgentConfigValue> : {};
@@ -116,80 +155,128 @@ export function applyMessageEvent(processor: StreamProcessor, event: AgentConver
       output: append && !duplicateReplay ? previousText + text : text && !duplicateReplay ? text : previousText
     };
     if (!previousCall) {
-      processor.processChunk({ type: EventType.TOOL_CALL_START, toolCallId: item.id, parentMessageId: item.id, toolCallName: String(item.providerMetadata?.name ?? display.title) });
+      chunks.push({ type: EventType.TOOL_CALL_START, toolCallId: item.id, parentMessageId: item.id, toolCallName: String(item.providerMetadata?.name ?? display.title) });
       const input = item.providerMetadata?.rawInput ?? {};
-      processor.processChunk({ type: EventType.TOOL_CALL_ARGS, toolCallId: item.id, delta: typeof input === 'string' ? input : JSON.stringify(input) });
-      processor.processChunk({ type: EventType.TOOL_CALL_END, toolCallId: item.id });
+      chunks.push({ type: EventType.TOOL_CALL_ARGS, toolCallId: item.id, delta: typeof input === 'string' ? input : JSON.stringify(input) });
+      chunks.push({ type: EventType.TOOL_CALL_END, toolCallId: item.id });
     }
     if (display.state === 'completed' || display.state === 'failed') {
-      processor.processChunk({ type: EventType.TOOL_CALL_RESULT, toolCallId: item.id, messageId: item.id,
+      chunks.push({ type: EventType.TOOL_CALL_RESULT, toolCallId: item.id, messageId: item.id,
         content: JSON.stringify(output), role: 'tool',
         metadata: display.state === 'failed' ? { tanstack: { state: 'output-error' } } : undefined });
     } else {
-      // Native providers stream tool output, whereas AG-UI results are terminal.
-      // Keep progress in the canonical call until its real result arrives.
-      processor.setMessages(processor.getMessages().map((message) => message.id === item.id
-        ? { ...message, parts: message.parts.map((part) => part.type === 'tool-call'
-          ? { ...part, output, state: 'input-complete' as const } : part) }
-        : message));
+      chunks.push(nativeCustomChunk('assembly:running-tool', { itemId: item.id, output }));
     }
-    return true;
+    return [...chunks, ...finishChunks];
   }
   const previousText = textOf(existing);
   if (append) {
     if (text && !(item.providerMetadata?.replay === true && previousText.endsWith(text))) {
       if (item.type === 'assistant-message' && existing?.metadata && 'blocks' in existing.metadata) {
-        processor.setMessages(processor.getMessages().map((message) => {
-          if (message.id !== item.id || !message.metadata) return message;
-          const metadata = { ...message.metadata };
-          delete metadata.blocks;
-          return { ...message, metadata };
-        }));
+        chunks.push(nativeCustomChunk('assembly:stale-markdown', { itemId: item.id }));
       }
-      processor.processChunk({ type: EventType.TEXT_MESSAGE_CONTENT, messageId: item.id, delta: text });
+      chunks.push({ type: EventType.TEXT_MESSAGE_CONTENT, messageId: item.id, delta: text });
     }
   } else if (text.startsWith(previousText)) {
     const delta = text.slice(previousText.length);
-    if (delta) processor.processChunk({ type: EventType.TEXT_MESSAGE_CONTENT, messageId: item.id, delta });
-  } else {
-    // Full snapshots can replace streamed text. Re-seed the library's internal
-    // segments too, so a later delta cannot resurrect the replaced prefix.
-    restoreProcessor(processor, processor.getMessages().map((message) => message.id === item.id
-      ? { ...message, parts: [{ type: 'text', content: text }] }
-      : message));
+    if (delta) chunks.push({ type: EventType.TEXT_MESSAGE_CONTENT, messageId: item.id, delta });
+  } else if (text !== previousText) {
+    chunks.length = 0;
+    chunks.push(...conversationSnapshotChunks(messages.map((message) => message.id === item.id ? {
+        ...message,
+        role: item.type === 'user-message' ? 'user' : 'assistant',
+        metadata,
+        parts: [{ type: item.type === 'reasoning' ? 'thinking' : 'text', content: text }]
+      } : message)
+    ));
   }
-  if (metadata.completed === true) processor.processChunk({ type: EventType.TEXT_MESSAGE_END, messageId: item.id });
-  return true;
+  if (metadata.completed === true) chunks.push({ type: EventType.TEXT_MESSAGE_END, messageId: item.id });
+  return [...chunks, ...finishChunks];
 }
 
-export function finishMessageReasoning(processor: StreamProcessor, event: AgentConversationEvent | AgentEvent): boolean {
+function reasoningEndChunks(
+  messages: readonly UIMessage[],
+  event: AgentConversationEvent | AgentEvent
+): StreamChunk[] {
   const payload = event.payload as Record<string, unknown>;
-  const kind = typeof payload.kind === 'string' ? payload.kind.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase()) : '';
+  const kind = typeof payload.kind === 'string'
+    ? payload.kind.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase())
+    : '';
   const eventType = 'type' in event ? event.type : '';
   if (!(kind === 'turn' && payload.state !== 'started')
     && !['assistantDelta', 'assistantMessage', 'agentMessageChunk'].includes(kind)
     && !['turn.completed', 'turn.interrupted'].includes(eventType)
-    && !(eventType === 'content.delta' && payload.channel === 'assistant')) return false;
+    && !(eventType === 'content.delta' && payload.channel === 'assistant')) return [];
   const turnId = 'turnId' in event ? event.turnId : payload.turnId;
-  let changed = false;
-  for (const message of processor.getMessages()) {
+  return messages.flatMap((message) => {
     const metadata = metadataOf(message);
-    if (metadata.itemType !== 'reasoning' || metadata.completed === true) continue;
-    if (turnId && metadata.turnId && turnId !== metadata.turnId) continue;
-    processor.processChunk({ type: EventType.TEXT_MESSAGE_END, messageId: message.id, metadata: { completed: true, streaming: false } });
-    changed = true;
-  }
-  return changed;
+    if (metadata.itemType !== 'reasoning' || metadata.completed === true) return [];
+    if (turnId && metadata.turnId && turnId !== metadata.turnId) return [];
+    return [{
+      type: EventType.TEXT_MESSAGE_END,
+      messageId: message.id,
+      metadata: { completed: true, streaming: false }
+    }];
+  });
 }
 
-export function transcriptMessages(messages: readonly ConversationTranscriptMessage[], prefix = ''): StreamProcessor {
-  const processor = new StreamProcessor();
-  processor.setMessages(messages.map((message) => ({
-    id: prefix + message.itemId, role: message.role,
-    parts: [{ type: 'text', content: message.text }],
-    metadata: { itemType: message.role === 'user' ? 'user-message' : 'assistant-message', completed: true, startedAtMs: message.timestampMs }
-  })));
-  return processor;
+export function conversationMessagesAfterCustom(
+  messages: readonly UIMessage[],
+  name: string,
+  value: unknown
+): UIMessage[] {
+  const patch = value as {
+    itemId?: unknown;
+    output?: unknown;
+    toolCall?: UIMessage['parts'][number];
+    metadata?: UIMessage['metadata'];
+  };
+  if (typeof patch.itemId !== 'string') return [...messages];
+  if (name === 'assembly:running-tool') {
+    return messages.map((message) => {
+      if (message.id !== patch.itemId) return message;
+      const authoritative = patch.toolCall?.type === 'tool-call' ? patch.toolCall : null;
+      return {
+        ...message,
+        ...(patch.metadata ? { metadata: patch.metadata } : {}),
+        parts: message.parts.reduce<UIMessage['parts']>((parts, part) => {
+          if (part.type === 'tool-result' && authoritative && part.toolCallId === authoritative.id) return parts;
+          if (part.type !== 'tool-call') return [...parts, part];
+          if (authoritative && part.id !== authoritative.id) return [...parts, part];
+          return [...parts, authoritative ?? { ...part, output: patch.output, state: 'input-complete' as const }];
+        }, [])
+      };
+    });
+  }
+  if (name === 'assembly:message-metadata') {
+    return messages.map((message) => message.id === patch.itemId
+      ? { ...message, metadata: { ...message.metadata, ...patch.metadata } }
+      : message);
+  }
+  if (name === 'assembly:stale-markdown') {
+    return messages.map((message) => {
+      if (message.id !== patch.itemId || !message.metadata) return message;
+      const metadata = { ...message.metadata };
+      delete metadata.blocks;
+      return { ...message, metadata };
+    });
+  }
+  return [...messages];
+}
+
+/** Bounded history replay uses the same native-to-TanStack mapping as live events. */
+function applyMessageEvent(processor: StreamProcessor, event: AgentConversationEvent | AgentEvent): boolean {
+  const chunks = conversationChunksFromEvent(processor.getMessages(), event);
+  for (const chunk of chunks) {
+    if (chunk.type === EventType.CUSTOM) {
+      processor.setMessages(conversationMessagesAfterCustom(
+        processor.getMessages(), chunk.name, chunk.value
+      ));
+    } else {
+      processor.processChunk(chunk);
+    }
+  }
+  return chunks.length > 0;
 }
 
 export function displayItemsFromConversationEvents(events: readonly (AgentEvent | AgentConversationEvent)[]): ConversationDisplayItem[] {
@@ -197,7 +284,6 @@ export function displayItemsFromConversationEvents(events: readonly (AgentEvent 
   for (const event of events) {
     const normalized = 'type' in event ? event : displayEventFrom(event);
     applyMessageEvent(processor, normalized);
-    finishMessageReasoning(processor, normalized);
   }
   return conversationDisplayItems(processor.getMessages());
 }

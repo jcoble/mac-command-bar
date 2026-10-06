@@ -8,6 +8,7 @@
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import type {
     AgentConfigValue,
+    AgentUserInputAction,
     AgentConversationProvider,
     ConversationAttachment
   } from '$lib/shell/conversation/conversationTypes.ts';
@@ -28,28 +29,27 @@
     setConversationSendError,
     setConversationMode,
     setConversationProviderNotice,
-    setConversationScrollTop,
+    selectedConversationViewState,
+    setSelectedConversationViewState,
     setConversationSelectedChild
   } from '$lib/shell/conversation/conversationStore.svelte';
   import {
-    cancelChildConversationTranscriptRead,
     cleanupConversationAttachment,
     clearConversationSessionDraft,
     flushConversationSessionDraft,
     loadConversationCapabilities,
-    loadConversationForRead,
-    loadOlderConversationEvents,
-    loadNewerConversationEvents,
     persistConversationSessionDraft,
-    readChildConversationTranscript,
+    readChildConversationHistory,
     removeConversationAttachment,
     sendPermissionResponse,
     respondToStructuredInput,
     restoreConversationAttachments,
     saveConversationClipboardImage,
     sendStructuredMessage,
+    stopChildConversationHistory,
     stopStructuredTurn
   } from '$lib/shell/conversation/conversationService';
+  import { disposeSelectedConversationChat, selectConversationChat, selectedConversationChat, selectedConversationChatReady, sendSelectedConversationMessage, pageSelectedConversation, jumpSelectedConversationToLatest } from '$lib/shell/conversation/conversationConnection';
   import {
     readAgentConversationConfig,
     setAgentConversationConfig,
@@ -134,7 +134,7 @@
   const transcriptMessages = $derived.by(() => {
     if (!conversation) return [];
     conversation.timelineRevision;
-    return (conversation.selectedChildId ? conversation.childTranscript : conversation.transcript).getMessages();
+    return selectedConversationChat(conversation.ownedId)?.messages ?? [];
   });
   const transcriptMessagesById = $derived(new Map(transcriptMessages.map((message) => [message.id, message])));
   setContext<ConversationMessagesContext>(conversationMessagesContext, {
@@ -153,8 +153,7 @@
       transcriptMessages,
       previousVisibleTimeline,
       conversation.selectedChildId ? {} : conversation.sentAttachments
-    ).filter((item) => conversation.selectedChildId
-      || (item.kind !== 'approval' || !conversation.pendingApprovals[item.requestId])
+    ).filter((item) => (item.kind !== 'approval' || !conversation.pendingApprovals[item.requestId])
         && (item.kind !== 'input' || !conversation.pendingInputs[item.requestId]));
     return previousVisibleTimeline;
   });
@@ -169,19 +168,22 @@
       fileChangesViewKey = viewKey;
       planFileChanges = null;
     }
-    if (conversation?.reachedTranscriptEnd && visibleTimeline.length) {
+    if (conversation && !conversation.selectedHasAfter && visibleTimeline.length) {
       planFileChanges = turnFileChanges(visibleTimeline);
     }
   });
+  const remoteDisconnected = $derived(active?.executionEnvironment === 'remote'
+    && rail.remoteConnections[active.remoteProfileId ?? ''] !== 'connected');
+  const controlsDisabled = $derived(conversation?.connectionState !== 'connected' || remoteDisconnected);
   const pendingApprovals = $derived(conversation ? Object.values(conversation.pendingApprovals) : []);
   const pendingInputs = $derived(conversation ? Object.values(conversation.pendingInputs) : []);
   /* The live status line under the reply. Only the root transcript at its live
      end can speak for the running turn; a sub-agent view or a window trimmed
      while reading upward shows none. */
   const activityLabel = $derived(
-    turnActive && conversation && !conversation.selectedChildId && conversation.reachedTranscriptEnd
+    turnActive && conversation && !conversation.selectedChildId && !conversation.selectedHasAfter
       ? turnActivityLabel(visibleTimeline, activeTurnId, pendingApprovals.length, pendingInputs.length)
-      : active && conversation && !conversation.selectedChildId && conversation.reachedTranscriptEnd
+      : active && conversation && !conversation.selectedChildId && !conversation.selectedHasAfter
         && (active.backgroundTaskIds?.length ?? 0) > 0
         && (active.executionEnvironment !== 'remote' || rail.remoteConnections[active.remoteProfileId ?? ''] === 'connected')
         ? 'Background command running'
@@ -275,7 +277,7 @@
   });
 
   $effect(() => {
-    if (pendingFirstMessage) return;
+    if (pendingFirstMessage || remoteDisconnected) return;
     if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex' && active.agent !== 'antigravity')) return;
     const ownedId = active.ownedId;
     const generation = conversation.generation;
@@ -382,28 +384,6 @@
     }
   }
 
-  async function readSelectedChildTranscript(
-    ownedId: string,
-    provider: AgentConversationProvider,
-    nativeSessionId: string,
-    childSessionId: string,
-    generation: number,
-    signal: AbortSignal
-  ): Promise<void> {
-    try {
-      await readChildConversationTranscript({
-        ownedId,
-        provider,
-        nativeSessionId,
-        childSessionId,
-        signal
-      });
-    } catch (_error) {
-      // The transcript read is opportunistic; the selector remains usable.
-    }
-    if (signal.aborted || conversationSessions[ownedId]?.generation !== generation) return;
-  }
-
   async function cleanupSavedAttachments(
     ownedId: string,
     attachments: ConversationAttachment[],
@@ -438,12 +418,16 @@
   async function submitStructuredInput(
     ownedId: string,
     requestId: string,
-    values: Record<string, AgentConfigValue>,
-    cancelled: boolean,
+    action: AgentUserInputAction,
+    content: Record<string, AgentConfigValue>,
     generation: number
   ): Promise<void> {
     try {
-      await respondToStructuredInput(ownedId, { requestId, values, cancelled });
+      await respondToStructuredInput(ownedId, {
+        requestId,
+        action,
+        content
+      });
     } catch (error) {
       if (conversationSessions[ownedId]?.generation === generation) {
         setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
@@ -452,7 +436,7 @@
   }
 
   async function stopActiveStructuredTurn(ownedId: string, generation: number): Promise<void> {
-    if (conversationSessions[ownedId]?.generation !== generation) return;
+    if (controlsDisabled || conversationSessions[ownedId]?.generation !== generation) return;
     try {
       await stopStructuredTurn(ownedId);
     } catch (_error) {
@@ -462,7 +446,7 @@
 
   async function send(): Promise<void> {
     const ownedId = activeOwnedId;
-    if (!ownedId || !conversation || conversation.selectedChildId) return;
+    if (!ownedId || !conversation || conversation.selectedChildId || remoteDisconnected) return;
     if (pendingAttachmentUploads.has(ownedId)) {
       if (sendsWaitingForUpload.has(ownedId)) return;
       sendsWaitingForUpload.add(ownedId);
@@ -483,12 +467,6 @@
     const text = conversation.draft;
     const deliveredIds = new Set(conversation.attachments.map((attachment) => attachment.id));
     const retainedIds = conversation.attachmentIds.filter((id) => !deliveredIds.has(id));
-    const previousUserItemId = visibleTimeline.findLast((item) => item.kind === 'user')?.itemId ?? null;
-    sendAnchorRequest = {
-      requestId: ++sendAnchorRequestId,
-      conversationId: ownedId,
-      previousUserItemId
-    };
     if (!steering) {
       localTurnActive = true;
       localTurnStarted = false;
@@ -497,7 +475,16 @@
     setConversationSendError(ownedId, '');
     try {
       await clearConversationSessionDraft(ownedId);
-      await sendStructuredMessage(ownedId, text);
+      const receipt = steering
+        ? await sendStructuredMessage(ownedId, text)
+        : await sendSelectedConversationMessage(ownedId, text);
+      if (receipt && activeOwnedId === ownedId && !conversation?.selectedChildId) {
+        sendAnchorRequest = {
+          requestId: ++sendAnchorRequestId,
+          conversationId: ownedId,
+          userItemId: receipt.userItemId
+        };
+      }
     } catch (error) {
       // Restore the draft. The service intentionally leaves attachments in the
       // store on every failure, so the user can retry without data loss. The
@@ -523,26 +510,37 @@
 
   async function selectChild(childId: string | null): Promise<void> {
     if (!active || !conversation) return;
-    cancelChildConversationTranscriptRead(active.ownedId);
-    setConversationSelectedChild(active.ownedId, childId);
-    if (!childId || !active.nativeSessionId) return;
+    const ownedId = active.ownedId;
+    stopChildConversationHistory(ownedId);
+    setConversationSelectedChild(ownedId, childId);
+    if (!childId) {
+      selectConversationChat(ownedId, ownedId, surfaceController.signal);
+      await selectedConversationChatReady(ownedId);
+      return;
+    }
+    disposeSelectedConversationChat(ownedId);
     const child = conversation.children.find((candidate) => candidate.childId === childId);
     if (!child?.transcriptAvailable) return;
-    await readSelectedChildTranscript(
-      active.ownedId,
-      conversation.provider,
-      active.nativeSessionId,
-      childId,
-      conversation.generation,
-      surfaceController.signal
-    );
+    try {
+      const history = await readChildConversationHistory({
+        ownedId,
+        childId,
+        childSessionId: child.transcriptId ?? childId,
+        signal: surfaceController.signal
+      });
+      if (!history || conversationSessions[ownedId]?.selectedChildId !== childId) return;
+      selectConversationChat(ownedId, history.historyOwnedId, surfaceController.signal);
+      await selectedConversationChatReady(ownedId);
+    } catch (_error) {
+      // The child-specific store error remains visible without replacing saved content.
+    }
   }
 
   $effect(() => {
     const ownedId = active?.ownedId;
     return () => {
       if (ownedId) {
-        cancelChildConversationTranscriptRead(ownedId);
+        stopChildConversationHistory(ownedId);
         setConversationSelectedChild(ownedId, null);
       }
     };
@@ -657,17 +655,17 @@
   }
 
   function onApprovalDecision(requestId: string, optionId: string): void {
-    if (!active || !optionId) return;
+    if (!active || !optionId || controlsDisabled) return;
     const ownedId = active.ownedId;
     const generation = conversationSessions[ownedId]?.generation ?? 0;
     void chooseApprovalOption(ownedId, requestId, optionId, generation);
   }
 
-  function onInputSubmit(requestId: string, values: Record<string, AgentConfigValue>, cancelled = false): void {
-    if (!active) return;
+  function onInputSubmit(requestId: string, action: AgentUserInputAction, content: Record<string, AgentConfigValue>): void {
+    if (!active || controlsDisabled) return;
     const ownedId = active.ownedId;
     const generation = conversationSessions[ownedId]?.generation ?? 0;
-    void submitStructuredInput(ownedId, requestId, values, cancelled, generation);
+    void submitStructuredInput(ownedId, requestId, action, content, generation);
   }
 
   function openConversationFile(
@@ -776,34 +774,37 @@
         {pendingFirstMessage}
         items={visibleTimeline}
         conversationId={active.ownedId}
-        renderWindowId={`${active.ownedId}:${conversation.selectedChildId ?? 'root'}`}
+        renderWindowId={`${active.ownedId}:${conversation.selectedHistoryOwnedId}`}
+        historyOwnedId={conversation.selectedHistoryOwnedId}
+        viewState={selectedConversationViewState(active.ownedId, conversation.selectedHistoryOwnedId)}
+        onViewChange={setSelectedConversationViewState}
+        itemFirstSequence={(itemId) => {
+          const sequence = transcriptMessagesById.get(itemId)?.metadata?.firstSequence;
+          return typeof sequence === 'number' ? sequence : undefined;
+        }}
         timelineRevision={conversation.timelineRevision}
         anchorRequest={sendAnchorRequest}
         activeTurnId={conversation.activeTurnId ?? null}
+        turnFacts={conversation.selectedTurns}
         {localTurnActive}
         {activityLabel}
         {composerHeight}
         assistantLabel={selectedChild?.title ?? active.agent}
         emptyText={conversation.selectedChildId ? 'This sub-agent transcript is not available yet.' : 'Start the conversation below.'}
-        hasOlder={!conversation.selectedChildId && !conversation.reachedTranscriptStart}
-        loadingOlder={!conversation.selectedChildId && conversation.loadingOlder}
-        onLoadOlder={() => void loadOlderConversationEvents(active.ownedId, surfaceController.signal)}
-        hasNewer={!conversation.selectedChildId && !conversation.reachedTranscriptEnd}
-        loadingNewer={!conversation.selectedChildId && conversation.loadingNewer}
-        onLoadNewer={() => void loadNewerConversationEvents(active.ownedId, surfaceController.signal)}
-        oldestSequence={conversation.oldestLoadedSequence}
-        newestSequence={conversation.newestLoadedSequence}
-        onJumpToLatest={() => loadConversationForRead(active.ownedId, true, surfaceController.signal)}
-        onScroll={(scrollTop) => {
-          if (conversation.selectedChildId) conversation.childScrollTopById[conversation.selectedChildId] = scrollTop;
-          else setConversationScrollTop(active.ownedId, scrollTop);
-        }}
+        hasOlder={conversation.selectedHasBefore}
+        loadingOlder={conversation.selectedLoadingOlder}
+        onLoadOlder={() => void pageSelectedConversation('older')}
+        hasNewer={conversation.selectedHasAfter}
+        loadingNewer={conversation.selectedLoadingNewer}
+        onLoadNewer={() => void pageSelectedConversation('newer')}
+        oldestSequence={conversation.selectedBeforeCursor ?? 0}
+        newestSequence={conversation.selectedAfterCursor ?? 0}
+        onJumpToLatest={() => jumpSelectedConversationToLatest(active.ownedId)}
         onApprovalDecision={onApprovalDecision}
-        onInputSubmit={onInputSubmit}
         onFileLink={openConversationFile}
         onPlanOpen={() => composer?.expandPlan()}
       />
-      {#if !conversation.selectedChildId}
+      {#if !conversation.selectedChildId || pendingApprovals.length || pendingInputs.length}
         {#key active.ownedId}
         <ConversationComposer
           bind:this={composer}
@@ -823,6 +824,8 @@
           pendingApproval={pendingApprovals[0] ?? null}
           pendingApprovalCount={pendingApprovals.length}
           pendingInputs={pendingInputs}
+          {controlsDisabled}
+          sendDisabled={remoteDisconnected}
           {attachmentError}
           {sendError}
           {providerNotice}

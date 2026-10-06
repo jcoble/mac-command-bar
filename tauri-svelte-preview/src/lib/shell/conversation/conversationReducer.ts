@@ -1,5 +1,3 @@
-import { StreamProcessor } from '@tanstack/ai/client';
-import { applyMessageEvent, displayEventFrom, finishMessageReasoning } from './conversationMessages.ts';
 import type {
   AgentEvent,
   AgentConversationEvent,
@@ -52,8 +50,7 @@ export function createConversationState(
     desynchronized: false,
     connectionState: 'disconnected',
     suspended: false,
-    timelineRevision: 0,
-    transcript: new StreamProcessor()
+    timelineRevision: 0
   };
 }
 
@@ -65,7 +62,7 @@ export function reduceConversationEvent(
 ): ConversationSessionState {
   if (event.ownedId !== state.ownedId || event.provider !== state.provider || event.generation < state.generation) return state;
   const newGeneration = event.generation > state.generation;
-  const previousSequence = newGeneration ? 0 : state.lastSequence;
+  const previousSequence = state.lastSequence;
   if (!newGeneration && event.sequence <= previousSequence) return state;
   const gap = event.sequence !== previousSequence + 1;
   const next: ConversationSessionState = {
@@ -74,7 +71,7 @@ export function reduceConversationEvent(
     desynchronized: newGeneration ? gap : state.desynchronized || gap,
     connectionState: state.connectionState, suspended: state.suspended,
     timelineRevision: state.timelineRevision, nativeSessionId: state.nativeSessionId,
-    activeTurnId: state.activeTurnId, usage: state.usage, transcript: state.transcript
+    activeTurnId: state.activeTurnId, usage: state.usage
   };
   if (next.desynchronized) return next;
   const payload = event.payload;
@@ -95,26 +92,5 @@ export function reduceConversationEvent(
       totalTokens: payload.totalTokens ?? next.usage?.totalTokens
     };
   }
-  return next;
-}
-
-export function applyConversationEvent(
-  state: ConversationSessionState,
-  event: AgentConversationEvent
-): ConversationSessionState {
-  const next = reduceConversationEvent(state, event);
-  if (next === state || next.desynchronized) return next;
-  const payload = event.payload;
-  if (payload.kind === 'usage') {
-    const previous = state.usage?.usedTokens;
-    const last = next.transcript.getMessages().at(-1);
-    if (usageDropIsCompaction(previous, payload.usedTokens) && last?.metadata?.itemType !== 'context-compaction') {
-      applyMessageEvent(next.transcript, { ...event, payload: { kind: 'contextCompaction', preTokens: previous, postTokens: payload.usedTokens } });
-      next.timelineRevision += 1;
-    }
-  }
-  const normalized = displayEventFrom(event);
-  if (applyMessageEvent(next.transcript, normalized)) next.timelineRevision += 1;
-  if (finishMessageReasoning(next.transcript, normalized)) next.timelineRevision += 1;
   return next;
 }

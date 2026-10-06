@@ -39,6 +39,7 @@ export interface ConversationViewState {
   followLatest: boolean;
   anchor?: { itemId: string; firstSequence: number; offsetPx: number };
   expandedTurns: Record<string, boolean>;
+  disclosures?: Record<string, boolean>;
 }
 
 export interface SessionConversationWorkspace {
@@ -314,7 +315,9 @@ function normalizeConversationViews(value: unknown): Record<string, Conversation
         ? { anchor: { itemId: anchor.itemId, firstSequence: anchor.firstSequence, offsetPx: anchor.offsetPx } }
         : {}),
       expandedTurns: Object.fromEntries(Object.entries(isRecord(view.expandedTurns) ? view.expandedTurns : {})
-        .filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'))
+        .filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean')),
+      ...(isRecord(view.disclosures) ? { disclosures: Object.fromEntries(Object.entries(view.disclosures)
+        .filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean')) } : {})
     }]];
   }));
 }

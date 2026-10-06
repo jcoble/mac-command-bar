@@ -1,3 +1,4 @@
+import { rail } from '../stores/sessionRailStore.svelte';
 import { parseRemoteWorkspacePath, mapWorkspaceSnapshotPaths } from '../../workspacePaths';
 /** Saves and restores only the editor portion of each session workspace. */
 import {
@@ -69,7 +70,10 @@ export class EditorSessionController {
 		this.releaseActiveEditorResources();
 
 		if (stopSignal.aborted) return null;
-		const stored = await readAgentConversationWorkspaceFromTauri(ownedId);
+		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
+		const offline = session?.executionEnvironment === 'remote'
+			&& rail.remoteConnections[session.remoteProfileId ?? ''] !== 'connected';
+		const stored = offline ? null : await readAgentConversationWorkspaceFromTauri(ownedId);
 		const remote = parseRemoteWorkspacePath(projectRoot);
 		const snapshot = remote ? mapWorkspaceSnapshotPaths(stored, remote.profileId) as SessionWorkspaceSnapshot | null : stored;
 		if (stopSignal.aborted) return null;
@@ -168,6 +172,9 @@ export class EditorSessionController {
 	private async checkpointActiveWorkspace(stopSignal: AbortSignal, attachmentIds?: readonly string[]): Promise<void> {
 		const ownedId = this.activeOwnedId;
 		if (!ownedId || stopSignal.aborted) return;
+		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
+		if (session?.executionEnvironment === 'remote'
+			&& rail.remoteConnections[session.remoteProfileId ?? ''] !== 'connected') return;
 		const panel = this.panel;
 		const ownedPaths = panel?.workspaceOwnedPaths()
 			?? editorState.openFiles.map((file) => file.path);

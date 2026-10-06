@@ -1,7 +1,6 @@
 mod claude;
 mod codex;
 
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File, Metadata};
@@ -19,51 +18,12 @@ pub const RECONCILIATION_BYTES: u64 = 4 * 1024 * 1024;
 /// How much of a tool call's arguments one transcript row shows.
 const TOOL_SUMMARY_CHARS: usize = 200;
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TranscriptMessage {
-    pub item_id: String,
-    pub role: String,
-    pub text: String,
-    pub timestamp_ms: u64,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConversationMetadata {
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    pub approval_policy: Option<String>,
-    pub used_tokens: Option<u64>,
-    pub context_window: Option<u64>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChildAgentDescriptor {
-    pub child_id: String,
-    pub parent_id: String,
-    pub provider: String,
-    pub label: String,
-    pub state: String,
-    pub updated_at_ms: u64,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CodexChildRollout {
     pub child_id: String,
     pub label: String,
     pub state: String,
     pub latest_activity: String,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TranscriptSnapshot {
-    pub messages: Vec<TranscriptMessage>,
-    pub metadata: ConversationMetadata,
-    pub children: Vec<ChildAgentDescriptor>,
-    pub truncated: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -100,27 +60,6 @@ pub struct ProjectedRecord {
     pub native: Option<AgentConversationPayload>,
 }
 
-pub fn read(
-    provider: &str,
-    native_session_id: &str,
-    child_session_id: Option<&str>,
-) -> Result<TranscriptSnapshot, String> {
-    let provider = parse_provider(provider)?;
-    let native_session_id = safe_session_id(native_session_id)?;
-    let child_session_id = child_session_id.map(safe_session_id).transpose()?;
-    match provider {
-        AgentConversationProvider::Codex => {
-            codex::read_snapshot(&native_session_id, child_session_id.as_deref())
-        }
-        AgentConversationProvider::Claude => {
-            claude::read_snapshot(&native_session_id, child_session_id.as_deref())
-        }
-        AgentConversationProvider::Antigravity => {
-            Err("Antigravity does not expose a local transcript".to_string())
-        }
-    }
-}
-
 pub fn parse_provider(value: &str) -> Result<AgentConversationProvider, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "codex" => Ok(AgentConversationProvider::Codex),
@@ -141,6 +80,38 @@ pub fn discover(
         AgentConversationProvider::Antigravity => None,
     };
     path.map(location).transpose()
+}
+
+pub fn discover_child(
+    provider: AgentConversationProvider,
+    parent_native_session_id: &str,
+    child_session_id: &str,
+) -> Result<Option<TranscriptLocation>, String> {
+    let parent_id = safe_session_id(parent_native_session_id)?;
+    let child_id = safe_session_id(child_session_id)?;
+    let path = match provider {
+        AgentConversationProvider::Codex => codex::discover_child_path(&parent_id, &child_id),
+        AgentConversationProvider::Claude => claude::discover_child_path(&parent_id, &child_id)?,
+        AgentConversationProvider::Antigravity => None,
+    };
+    path.map(location).transpose()
+}
+
+pub fn child_watch_directory(
+    provider: AgentConversationProvider,
+    parent_native_session_id: &str,
+    child_session_id: &str,
+) -> Result<PathBuf, String> {
+    let parent_id = safe_session_id(parent_native_session_id)?;
+    let child_id = safe_session_id(child_session_id)?;
+    match provider {
+        AgentConversationProvider::Codex => codex::child_watch_directory(&parent_id, &child_id),
+        AgentConversationProvider::Claude => claude::child_watch_directory(&parent_id)?
+            .ok_or_else(|| format!("Parent transcript {parent_id} was not found")),
+        AgentConversationProvider::Antigravity => {
+            Err("Transcript provider is unsupported".to_string())
+        }
+    }
 }
 
 /// Whether Claude's own transcript for this session holds a turn to resume.
@@ -174,6 +145,24 @@ pub fn parse_durable_line(
     match provider {
         AgentConversationProvider::Codex => codex::project(&value, line),
         AgentConversationProvider::Claude => claude::project(&value, line, native_session_id),
+        AgentConversationProvider::Antigravity => Vec::new(),
+    }
+}
+
+pub fn parse_durable_child_line(
+    provider: AgentConversationProvider,
+    parent_native_session_id: &str,
+    child_session_id: &str,
+    line: &[u8],
+) -> Vec<ProjectedRecord> {
+    let Ok(value) = serde_json::from_slice::<Value>(line) else {
+        return Vec::new();
+    };
+    match provider {
+        AgentConversationProvider::Codex => codex::project(&value, line),
+        AgentConversationProvider::Claude => {
+            claude::project_child(&value, line, parent_native_session_id, child_session_id)
+        }
         AgentConversationProvider::Antigravity => Vec::new(),
     }
 }
@@ -524,15 +513,6 @@ fn rfc3339_millis(text: &str) -> Option<u128> {
     u128::try_from(parsed.timestamp_millis()).ok()
 }
 
-pub fn modified_millis(path: &Path) -> u64 {
-    path.metadata()
-        .ok()
-        .and_then(|value| value.modified().ok())
-        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|value| value.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 fn location(path: PathBuf) -> Result<TranscriptLocation, String> {
     let canonical_path = fs::canonicalize(&path)
         .map_err(|error| format!("Could not resolve transcript: {error}"))?;
@@ -821,6 +801,33 @@ mod tests {
             .find(|record| record.event_type == AgentEventType::UsageUpdated)
             .unwrap();
         assert_eq!(usage.payload["usedTokens"], 122);
+    }
+
+    #[test]
+    fn claude_child_projection_is_scoped_and_keeps_markdown_and_tools() {
+        let line = r#"{"type":"assistant","uuid":"a1","sessionId":"parent","isSidechain":true,"agentId":"agent-a","message":{"content":[{"type":"text","text":"```rust\nfn main() {}\n```"},{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/tmp/one.rs"}}]}}"#;
+        let records = parse_durable_child_line(
+            AgentConversationProvider::Claude, "parent", "agent-a", line.as_bytes(),
+        );
+        assert_eq!(records.len(), 2);
+        assert!(matches!(records[0].native,
+            Some(AgentConversationPayload::AssistantMessage { ref blocks, .. }) if blocks.is_some()));
+        assert!(matches!(records[1].native,
+            Some(AgentConversationPayload::Tool { ref name, .. }) if name == "Read"));
+        assert!(parse_durable_child_line(
+            AgentConversationProvider::Claude, "other", "agent-a", line.as_bytes(),
+        ).is_empty());
+        assert!(parse_durable_child_line(
+            AgentConversationProvider::Claude, "parent", "agent-b", line.as_bytes(),
+        ).is_empty());
+        assert!(parse_durable_child_line(
+            AgentConversationProvider::Claude, "parent", "agent-a",
+            line.replace(r#","isSidechain":true"#, "").as_bytes(),
+        ).is_empty());
+        assert!(parse_durable_child_line(
+            AgentConversationProvider::Claude, "parent", "agent-a",
+            line.replace("\"isSidechain\":true", "\"isSidechain\":false").as_bytes(),
+        ).is_empty());
     }
 
     #[test]

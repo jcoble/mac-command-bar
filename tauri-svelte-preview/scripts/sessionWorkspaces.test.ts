@@ -379,7 +379,8 @@ test('conversation_reading_location_retains_only_small_view_fields', () => {
   const view = {
     followLatest: false,
     anchor: { itemId: 'tool-a', firstSequence: -20, offsetPx: -14.5 },
-    expandedTurns: { active: true, completed: false }
+    expandedTurns: { active: true, completed: false },
+    disclosures: { "tool-a:output": true }
   };
   const snapshot = captureWorkspace({
     openFiles: [], activePath: null, selectedPath: null, scrollTop: 0,

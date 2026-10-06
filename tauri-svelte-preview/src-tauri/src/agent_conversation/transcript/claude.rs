@@ -6,13 +6,26 @@ use std::path::{Path, PathBuf};
 
 use super::{
     home_dir, object, parse_json_lines, read_snapshot_text, stable_key, timestamp,
-    ChildAgentDescriptor, ConversationMetadata, ProjectedRecord, TranscriptMessage,
-    TranscriptSnapshot,
+    ProjectedRecord,
 };
 use crate::agent_conversation::protocol::{AgentConversationPayload, AgentEventType};
 
 pub(super) fn discover_path(id: &str) -> Result<Option<PathBuf>, String> {
     find(&home_dir()?.join(".claude/projects"), id)
+}
+
+pub(super) fn discover_child_path(
+    parent_id: &str,
+    child_id: &str,
+) -> Result<Option<PathBuf>, String> {
+    let Some(parent) = discover_path(parent_id)? else {
+        return Ok(None);
+    };
+    find_child(&parent, parent_id, child_id)
+}
+
+pub(super) fn child_watch_directory(parent_id: &str) -> Result<Option<PathBuf>, String> {
+    Ok(discover_path(parent_id)?.and_then(|path| path.parent().map(Path::to_path_buf)))
 }
 
 /// Whether the transcript Claude keeps for this session holds a turn.
@@ -314,93 +327,21 @@ pub(super) fn project(value: &Value, line: &[u8], session_id: &str) -> Vec<Proje
     records
 }
 
-pub(super) fn read_snapshot(
-    id: &str,
-    child_id: Option<&str>,
-) -> Result<TranscriptSnapshot, String> {
-    let parent =
-        discover_path(id)?.ok_or_else(|| format!("Claude transcript {id} was not found"))?;
-    let path = if let Some(child_id) = child_id {
-        find_child(&parent, id, child_id)?
-            .ok_or_else(|| format!("Claude child transcript {child_id} was not found"))?
-    } else {
-        parent.clone()
-    };
-    let (input, truncated) = read_snapshot_text(&path)?;
-    let mut messages = Vec::new();
-    let mut metadata = ConversationMetadata::default();
-    for value in parse_json_lines(&input) {
-        if child_id.is_some() {
-            if value.get("agentId").and_then(Value::as_str) != child_id {
-                continue;
-            }
-        }
-        if let Some(model) = value.pointer("/message/model").and_then(Value::as_str) {
-            metadata.model = Some(model.into());
-        }
-        if let Some(effort) = value.get("effort").and_then(Value::as_str) {
-            metadata.effort = Some(effort.into());
-        }
-        if let Some(policy) = value.get("permissionMode").and_then(Value::as_str) {
-            metadata.approval_policy = Some(policy.into());
-        }
-        if let Some(usage) = value.pointer("/message/usage") {
-            let used = [
-                "input_tokens",
-                "cache_creation_input_tokens",
-                "cache_read_input_tokens",
-            ]
-            .into_iter()
-            .filter_map(|key| usage.get(key).and_then(Value::as_u64))
-            .sum();
-            if used > 0 {
-                metadata.used_tokens = Some(used);
-            }
-        }
-        let mut projected = value.clone();
-        if child_id.is_some() {
-            projected["isSidechain"] = Value::Bool(false);
-        }
-        for record in project(
-            &projected,
-            serde_json::to_string(&projected)
-                .unwrap_or_default()
-                .as_bytes(),
-            id,
-        ) {
-            if record.event_type != AgentEventType::ItemCompleted {
-                continue;
-            }
-            // A tool call is a completed item too, and it carries no message.
-            let Some(item) = record.payload.get("item") else {
-                continue;
-            };
-            messages.push(TranscriptMessage {
-                item_id: record.item_id.unwrap_or(record.key),
-                role: item
-                    .pointer("/providerMetadata/transcriptRole")
-                    .and_then(Value::as_str)
-                    .unwrap_or("assistant")
-                    .into(),
-                text: item
-                    .pointer("/content/0/text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .into(),
-                timestamp_ms: record.timestamp_ms as u64,
-            });
-        }
+pub(super) fn project_child(
+    value: &Value,
+    line: &[u8],
+    parent_id: &str,
+    child_id: &str,
+) -> Vec<ProjectedRecord> {
+    if value.get("sessionId").and_then(Value::as_str) != Some(parent_id)
+        || value.get("agentId").and_then(Value::as_str) != Some(child_id)
+        || value.get("isSidechain").and_then(Value::as_bool) != Some(true)
+    {
+        return Vec::new();
     }
-    Ok(TranscriptSnapshot {
-        messages,
-        metadata,
-        children: if child_id.is_none() {
-            discover_children(&parent, id)?
-        } else {
-            Vec::new()
-        },
-        truncated,
-    })
+    let mut projected = value.clone();
+    projected["isSidechain"] = Value::Bool(false);
+    project(&projected, line, parent_id)
 }
 
 fn children_dir(parent: &Path, id: &str) -> Option<PathBuf> {
@@ -419,53 +360,17 @@ fn find_child(parent: &Path, id: &str, child_id: &str) -> Result<Option<PathBuf>
             continue;
         }
         let (input, _) = read_snapshot_text(&path)?;
-        if parse_json_lines(&input)
-            .any(|value| value.get("agentId").and_then(Value::as_str) == Some(child_id))
+        if parse_json_lines(&input).any(|value| {
+            value.get("sessionId").and_then(Value::as_str) == Some(id)
+                && value.get("agentId").and_then(Value::as_str) == Some(child_id)
+                && value.get("isSidechain").and_then(Value::as_bool) == Some(true)
+        })
         {
             return Ok(Some(path));
         }
     }
     Ok(None)
 }
-fn discover_children(parent: &Path, id: &str) -> Result<Vec<ChildAgentDescriptor>, String> {
-    let Some(dir) = children_dir(parent, id) else {
-        return Ok(Vec::new());
-    };
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Ok(Vec::new());
-    };
-    let mut result = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let (input, _) = read_snapshot_text(&path)?;
-        let values = parse_json_lines(&input).collect::<Vec<_>>();
-        let Some(child_id) = values
-            .iter()
-            .find_map(|value| value.get("agentId").and_then(Value::as_str))
-        else {
-            continue;
-        };
-        let completed = values.iter().any(|value| {
-            value
-                .pointer("/message/stop_reason")
-                .and_then(Value::as_str)
-                .is_some()
-        });
-        result.push(ChildAgentDescriptor {
-            child_id: child_id.into(),
-            parent_id: id.into(),
-            provider: "claude".into(),
-            label: child_id.trim_start_matches("agent-").into(),
-            state: if completed { "completed" } else { "historical" }.into(),
-            updated_at_ms: super::modified_millis(&path),
-        });
-    }
-    Ok(result)
-}
-
 #[cfg(test)]
 mod tests {
     use super::holds_a_turn_at;

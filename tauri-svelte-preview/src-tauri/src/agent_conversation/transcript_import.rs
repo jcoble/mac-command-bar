@@ -11,15 +11,34 @@ use super::protocol::{
     AgentConversationEvent, AgentConversationProvider, AgentEventType, AgentRawFrameReference,
     TerminalProjectionPayload,
 };
-use super::transcript::{complete_lines, parse_durable_line, read_range, ProjectedRecord};
+use super::transcript::{
+    complete_lines, discover_child, parse_durable_child_line, parse_durable_line, read_range,
+    ProjectedRecord,
+};
 
 /// Where an import stopped, stored inside the session's `extra_json`.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportCursor {
     pub transcript_path: String,
     pub cutoff_offset: u64,
     pub reached_start: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_native_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_owned_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_profile_id: Option<String>,
+    #[serde(default)]
+    pub forward_offset: u64,
+    #[serde(default)]
+    pub forward_sequence: i64,
+    #[serde(default)]
+    pub initial_tail_imported: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trailing_bytes: Vec<u8>,
 }
 
 pub struct ImportedTail {
@@ -29,6 +48,8 @@ pub struct ImportedTail {
     pub cutoff_offset: u64,
     /// True when the tail reaches the start of the file and nothing older remains.
     pub reached_start: bool,
+    /// Incomplete bytes at the captured end, retained for a later append.
+    pub trailing_bytes: Vec<u8>,
 }
 
 /// Imports a transcript whole: names the session, then reads its newest page.
@@ -113,6 +134,7 @@ pub fn begin_import_session(
                     transcript_path: path.to_string_lossy().into_owned(),
                     cutoff_offset: metadata.len(),
                     reached_start: false,
+                    ..ImportCursor::default()
                 },
             )?;
             store
@@ -135,6 +157,7 @@ pub fn begin_import_session(
         transcript_path: path.to_string_lossy().into_owned(),
         cutoff_offset: metadata.len(),
         reached_start: false,
+        ..ImportCursor::default()
     };
     let extra_json =
         merge_import_cursor(&super::manager::imported_session_extra(provider)?, &cursor)?;
@@ -162,6 +185,325 @@ pub fn begin_import_session(
         .upsert_session(&session)
         .map_err(|error| error.to_string())?;
     Ok(owned_id)
+}
+
+pub fn ensure_child_import(
+    store: &SessionStore,
+    parent_owned_id: &str,
+    expected_remote_profile_id: Option<&str>,
+    child_session_id: &str,
+) -> Result<String, String> {
+    let owned_id = child_owned_id(parent_owned_id, child_session_id)?;
+    if let Some(existing) = store
+        .get_session(&owned_id)
+        .map_err(|error| error.to_string())?
+    {
+        if existing.native_session_id.as_deref() != Some(child_session_id) {
+            return Err("Child session identity does not match".to_string());
+        }
+        store
+            .upsert_child_session(parent_owned_id, expected_remote_profile_id, &existing)
+            .map_err(|error| error.to_string())?;
+        return Ok(owned_id);
+    }
+    let parent = store
+        .get_session(parent_owned_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Child transcript parent was not found".to_string())?;
+    let provider = super::transcript::parse_provider(&parent.provider)?;
+    let parent_native_session_id = parent
+        .native_session_id
+        .as_deref()
+        .ok_or_else(|| "Child transcript parent has no native session id".to_string())?;
+    let location = discover_child(provider, parent_native_session_id, child_session_id)?;
+    let cursor = ImportCursor {
+        transcript_path: location
+            .as_ref()
+            .map(|location| location.canonical_path.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        cutoff_offset: location.as_ref().map_or(0, |location| location.len),
+        reached_start: false,
+        parent_native_session_id: Some(parent_native_session_id.to_string()),
+        child_session_id: Some(child_session_id.to_string()),
+        parent_owned_id: Some(parent_owned_id.to_string()),
+        remote_profile_id: expected_remote_profile_id.map(str::to_string),
+        forward_offset: location.as_ref().map_or(0, |location| location.len),
+        ..ImportCursor::default()
+    };
+    let extra_json = merge_import_cursor(&super::manager::imported_session_extra(provider)?, &cursor)?;
+    let session = SessionRow {
+        owned_id: owned_id.clone(),
+        native_session_id: Some(child_session_id.to_string()),
+        provider: parent.provider,
+        model: parent.model,
+        effort: parent.effort,
+        cwd: parent.cwd,
+        worktree: parent.worktree,
+        branch: parent.branch,
+        title: Some(child_session_id.to_string()),
+        title_source: None,
+        project: parent.project,
+        state: "ready".to_string(),
+        suspended: false,
+        created_at_ms: parent.created_at_ms,
+        last_activity_at_ms: parent.last_activity_at_ms,
+        extra_json,
+    };
+    store
+        .upsert_child_session(parent_owned_id, expected_remote_profile_id, &session)
+        .map_err(|error| error.to_string())?;
+    Ok(owned_id)
+}
+
+pub fn child_owned_id(parent_owned_id: &str, child_session_id: &str) -> Result<String, String> {
+    serde_json::to_string(&("child", parent_owned_id, child_session_id))
+        .map_err(|error| format!("Could not encode child history id: {error}"))
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshedChildImport {
+    pub added: usize,
+    pub read_bytes: u64,
+    pub has_more_source: bool,
+}
+
+pub fn refresh_child_import(
+    store: &SessionStore,
+    parent_owned_id: &str,
+    expected_remote_profile_id: Option<&str>,
+    child_owned_id: &str,
+    max_bytes: u64,
+    max_records: usize,
+) -> Result<RefreshedChildImport, String> {
+    if max_bytes == 0 || max_records == 0 {
+        return Ok(RefreshedChildImport::default());
+    }
+    let session = store
+        .get_session(child_owned_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Child import session was not found".to_string())?;
+    let cursor = import_cursor(&session.extra_json)?;
+    let parent_native_session_id = cursor
+        .parent_native_session_id
+        .as_deref()
+        .ok_or_else(|| "Child import has no parent session id".to_string())?;
+    let child_session_id = cursor
+        .child_session_id
+        .as_deref()
+        .ok_or_else(|| "Child import has no child session id".to_string())?;
+    let provider = super::transcript::parse_provider(&session.provider)?;
+    let location = discover_child(provider, parent_native_session_id, child_session_id)?
+        .ok_or_else(|| format!("Child transcript {child_session_id} was not found"))?;
+    if !cursor.transcript_path.is_empty()
+        && location.canonical_path != Path::new(&cursor.transcript_path)
+    {
+        return Err("Child transcript path changed".to_string());
+    }
+    if location.len < cursor.forward_offset {
+        return Err("Child transcript became shorter".to_string());
+    }
+    refresh_child_import_at_location(
+        store,
+        parent_owned_id,
+        expected_remote_profile_id,
+        child_owned_id,
+        &session,
+        cursor,
+        provider,
+        &location.canonical_path,
+        location.len,
+        max_bytes,
+        max_records,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn refresh_child_import_at_location(
+    store: &SessionStore,
+    parent_owned_id: &str,
+    expected_remote_profile_id: Option<&str>,
+    child_owned_id: &str,
+    session: &SessionRow,
+    mut cursor: ImportCursor,
+    provider: AgentConversationProvider,
+    path: &Path,
+    file_len: u64,
+    max_bytes: u64,
+    max_records: usize,
+) -> Result<RefreshedChildImport, String> {
+    if cursor.transcript_path.is_empty() {
+        let initialized = ImportCursor {
+            transcript_path: path.to_string_lossy().into_owned(),
+            cutoff_offset: file_len,
+            forward_offset: file_len,
+            ..cursor.clone()
+        };
+        commit_child_page(
+            store,
+            parent_owned_id,
+            expected_remote_profile_id,
+            child_owned_id,
+            &cursor,
+            &initialized,
+            &[],
+        )?;
+        cursor = initialized;
+    }
+    if file_len < cursor.forward_offset {
+        return Err("Child transcript became shorter".to_string());
+    }
+    let parent_native_session_id = cursor
+        .parent_native_session_id
+        .as_deref()
+        .ok_or_else(|| "Child import has no parent session id".to_string())?;
+    let child_session_id = cursor
+        .child_session_id
+        .as_deref()
+        .ok_or_else(|| "Child import has no child session id".to_string())?;
+    if !cursor.initial_tail_imported {
+        let tail = read_tail_scoped(
+            provider,
+            parent_native_session_id,
+            Some(child_session_id),
+            path,
+            cursor.forward_offset,
+            max_bytes,
+            max_records,
+        )?;
+        let records = child_importable(tail.records);
+        let mut rows = Vec::with_capacity(records.len());
+        for (index, record) in records.into_iter().enumerate() {
+            let sequence = i64::try_from(index + 1)
+                .map_err(|_| "Child import sequence exceeded the store limit".to_string())?;
+            rows.push(imported_event_row(
+                child_owned_id, provider, sequence, record, session.created_at_ms,
+            )?);
+        }
+        let next_cursor = ImportCursor {
+            cutoff_offset: tail.cutoff_offset,
+            reached_start: tail.reached_start,
+            forward_sequence: i64::try_from(rows.len())
+                .map_err(|_| "Child import sequence exceeded the store limit".to_string())?,
+            initial_tail_imported: true,
+            trailing_bytes: tail.trailing_bytes,
+            ..cursor.clone()
+        };
+        commit_child_page(
+            store, parent_owned_id, expected_remote_profile_id, child_owned_id,
+            &cursor, &next_cursor, &rows,
+        )?;
+        return Ok(RefreshedChildImport {
+            added: rows.len(),
+            read_bytes: cursor.forward_offset.saturating_sub(tail.cutoff_offset),
+            has_more_source: file_len > cursor.forward_offset,
+        });
+    }
+    let read_len = (file_len - cursor.forward_offset).min(max_bytes);
+    let bytes = read_range(path, cursor.forward_offset, read_len)?;
+    let trailing_len = u64::try_from(cursor.trailing_bytes.len())
+        .map_err(|_| "Child transcript partial line is too large".to_string())?;
+    let base_offset = cursor
+        .forward_offset
+        .checked_sub(trailing_len)
+        .ok_or_else(|| "Child import cursor is invalid".to_string())?;
+    let mut input = cursor.trailing_bytes.clone();
+    input.extend_from_slice(&bytes);
+    let (records, stopped_at, trailing) = child_forward_records(
+        provider, parent_native_session_id, child_session_id, &input, max_records,
+    );
+    let next_forward_offset = if let Some(line_start) = stopped_at {
+        base_offset
+            .checked_add(u64::try_from(line_start).unwrap_or(u64::MAX))
+            .ok_or_else(|| "Child import offset exceeded the store limit".to_string())?
+    } else {
+        cursor
+            .forward_offset
+            .checked_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+            .ok_or_else(|| "Child import offset exceeded the store limit".to_string())?
+    };
+    let next_trailing = if stopped_at.is_some() {
+        Vec::new()
+    } else {
+        trailing
+    };
+    let mut rows = Vec::with_capacity(records.len());
+    let mut next_sequence = cursor.forward_sequence;
+    for record in records {
+        next_sequence = next_sequence
+            .checked_add(1)
+            .ok_or_else(|| "Child import sequence exceeded the store limit".to_string())?;
+        rows.push(imported_event_row(
+            child_owned_id,
+            provider,
+            next_sequence,
+            record,
+            session.created_at_ms,
+        )?);
+    }
+    let next_cursor = ImportCursor {
+        forward_offset: next_forward_offset,
+        forward_sequence: next_sequence,
+        trailing_bytes: next_trailing,
+        ..cursor.clone()
+    };
+    commit_child_page(
+        store, parent_owned_id, expected_remote_profile_id, child_owned_id,
+        &cursor, &next_cursor, &rows,
+    )?;
+    Ok(RefreshedChildImport {
+        added: rows.len(),
+        read_bytes: bytes.len() as u64,
+        has_more_source: next_forward_offset < file_len,
+    })
+}
+
+fn commit_child_page(
+    store: &SessionStore,
+    parent_owned_id: &str,
+    expected_remote_profile_id: Option<&str>,
+    child_owned_id: &str,
+    cursor: &ImportCursor,
+    next_cursor: &ImportCursor,
+    rows: &[EventRow],
+) -> Result<(), String> {
+    let expected = serde_json::to_string(cursor)
+        .map_err(|error| format!("Could not encode child import cursor: {error}"))?;
+    let next = serde_json::to_string(next_cursor)
+        .map_err(|error| format!("Could not encode child import cursor: {error}"))?;
+    store.commit_child_import_page(
+        parent_owned_id, expected_remote_profile_id, child_owned_id, &expected, &next, rows,
+    ).map_err(|error| error.to_string())
+}
+
+fn child_forward_records(
+    provider: AgentConversationProvider,
+    parent_native_session_id: &str,
+    child_session_id: &str,
+    input: &[u8],
+    max_records: usize,
+) -> (Vec<ProjectedRecord>, Option<usize>, Vec<u8>) {
+    let (lines, trailing) = complete_lines(input, false);
+    let input_start = input.as_ptr() as usize;
+    let mut records = Vec::new();
+    for line in lines {
+        let line_start = line.as_ptr() as usize - input_start;
+        let projected = child_importable(parse_durable_child_line(
+            provider, parent_native_session_id, child_session_id, line,
+        ));
+        if !records.is_empty() && records.len().saturating_add(projected.len()) > max_records {
+            return (records, Some(line_start), Vec::new());
+        }
+        records.extend(projected);
+    }
+    (records, None, trailing)
+}
+
+fn child_importable(records: Vec<ProjectedRecord>) -> Vec<ProjectedRecord> {
+    importable(records)
+        .into_iter()
+        .filter(|record| record.event_type != AgentEventType::UsageUpdated)
+        .collect()
 }
 
 /// Reads the newest page of the transcript into a session that already exists,
@@ -253,6 +595,7 @@ pub fn finish_import_session(
             transcript_path: cursor.transcript_path,
             cutoff_offset: tail.cutoff_offset,
             reached_start: tail.reached_start,
+            ..cursor
         },
     )?;
     store
@@ -311,6 +654,10 @@ pub fn extend_session(
         .native_session_id
         .clone()
         .ok_or_else(|| "Imported session has no native session id".to_string())?;
+    let transcript_session_id = cursor
+        .parent_native_session_id
+        .as_deref()
+        .unwrap_or(&native_session_id);
 
     // Keep reading back until there is something to show or the file runs out.
     // An empty window is not the beginning of a conversation, only a stretch of
@@ -319,9 +666,10 @@ pub fn extend_session(
     let mut reached_start = false;
     let mut records = Vec::new();
     for _ in 0..EXTEND_WINDOW_LIMIT {
-        let tail = read_tail(
+        let tail = read_tail_scoped(
             provider,
-            &native_session_id,
+            transcript_session_id,
+            cursor.child_session_id.as_deref(),
             Path::new(&cursor.transcript_path),
             offset,
             max_bytes,
@@ -329,7 +677,11 @@ pub fn extend_session(
         )?;
         offset = tail.cutoff_offset;
         reached_start = tail.reached_start;
-        records = importable(tail.records);
+        records = if cursor.parent_owned_id.is_some() {
+            child_importable(tail.records)
+        } else {
+            importable(tail.records)
+        };
         if !records.is_empty() || reached_start {
             break;
         }
@@ -346,6 +698,7 @@ pub fn extend_session(
                 .map_err(|_| "Imported event count exceeded the store limit".to_string())?,
         )
         .ok_or_else(|| "Imported event sequence exceeded the store limit".to_string())?;
+    let mut rows = Vec::with_capacity(record_count);
     for (index, record) in records.into_iter().enumerate() {
         let sequence = first_sequence
             .checked_add(
@@ -353,20 +706,40 @@ pub fn extend_session(
                     .map_err(|_| "Imported event sequence exceeded the store limit".to_string())?,
             )
             .ok_or_else(|| "Imported event sequence exceeded the store limit".to_string())?;
-        append_imported_record(
-            store,
+        let row = imported_event_row(
             owned_id,
             enum_from_storage(&session.provider)?,
             sequence,
             record,
             session.created_at_ms,
         )?;
+        if cursor.parent_owned_id.is_some() {
+            rows.push(row);
+        } else {
+            store.append_event(&row).map_err(|error| error.to_string())?;
+        }
     }
     let next_cursor = ImportCursor {
-        transcript_path: cursor.transcript_path,
+        transcript_path: cursor.transcript_path.clone(),
         cutoff_offset: offset,
         reached_start,
+        ..cursor.clone()
     };
+    if let Some(parent_owned_id) = cursor.parent_owned_id.as_deref() {
+        commit_child_page(
+            store,
+            parent_owned_id,
+            cursor.remote_profile_id.as_deref(),
+            owned_id,
+            &cursor,
+            &next_cursor,
+            &rows,
+        )?;
+        return Ok(ExtendedImport {
+            added: record_count,
+            reached_start,
+        });
+    }
     session.extra_json = merge_import_cursor(&session.extra_json, &next_cursor)?;
     store
         .upsert_session(&session)
@@ -443,9 +816,26 @@ fn append_imported_record(
     owned_id: &str,
     provider: AgentConversationProvider,
     sequence: i64,
-    mut record: ProjectedRecord,
+    record: ProjectedRecord,
     fallback_timestamp: i64,
 ) -> Result<(), String> {
+    let row = imported_event_row(
+        owned_id,
+        provider,
+        sequence,
+        record,
+        fallback_timestamp,
+    )?;
+    store.append_event(&row).map_err(|error| error.to_string())
+}
+
+fn imported_event_row(
+    owned_id: &str,
+    provider: AgentConversationProvider,
+    sequence: i64,
+    mut record: ProjectedRecord,
+    fallback_timestamp: i64,
+) -> Result<EventRow, String> {
     let created_at_ms = record_timestamp(&record).unwrap_or(fallback_timestamp);
     let kind = enum_storage_value(record.event_type)?;
     // A message out of a past transcript is stored as the message it is, not as
@@ -470,16 +860,14 @@ fn append_imported_record(
     };
     let payload_json = serde_json::to_string(&event)
         .map_err(|error| format!("Could not encode imported transcript event: {error}"))?;
-    store
-        .append_event(&EventRow {
-            owned_id: owned_id.to_string(),
-            seq: sequence,
-            turn_id: None,
-            kind,
-            payload_json,
-            created_at_ms,
-        })
-        .map_err(|error| error.to_string())
+    Ok(EventRow {
+        owned_id: owned_id.to_string(),
+        seq: sequence,
+        turn_id: None,
+        kind,
+        payload_json,
+        created_at_ms,
+    })
 }
 
 /// Wraps a record as a terminal projection.
@@ -814,6 +1202,201 @@ mod tests {
     }
 
     #[test]
+    fn child_tail_and_forward_append_keep_order_across_partial_reopen() {
+        let fixture = TranscriptFixture::new(6);
+        let initial = read_tail_scoped(
+            fixture_provider(), "parent", Some("child"), &fixture.path,
+            fixture.len(), fixture.line_len() * 4, usize::MAX,
+        ).unwrap();
+        let older = read_tail_scoped(
+            fixture_provider(), "parent", Some("child"), &fixture.path,
+            initial.cutoff_offset, fixture.len(), usize::MAX,
+        ).unwrap();
+        let line = message_line(7);
+        let split = line.len() / 2;
+        let (records, stopped, trailing) = child_forward_records(
+            fixture_provider(), "parent", "child", &line.as_bytes()[..split], usize::MAX,
+        );
+        assert!(records.is_empty());
+        assert!(stopped.is_none());
+        let cursor = ImportCursor { trailing_bytes: trailing, ..ImportCursor::default() };
+        let reopened: ImportCursor = serde_json::from_str(
+            &serde_json::to_string(&cursor).unwrap(),
+        ).unwrap();
+        let mut completed = reopened.trailing_bytes;
+        completed.extend_from_slice(&line.as_bytes()[split..]);
+        let (records, stopped, trailing) = child_forward_records(
+            fixture_provider(), "parent", "child", &completed, usize::MAX,
+        );
+        let ids = item_ids(&older).into_iter()
+            .chain(item_ids(&initial))
+            .chain(records.iter().filter_map(|record| record.item_id.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["item-1", "item-2", "item-3", "item-4", "item-5", "item-6", "item-7"]);
+        assert!(stopped.is_none());
+        assert!(trailing.is_empty());
+    }
+
+    #[test]
+    fn existing_child_import_reopens_without_its_source_transcript() {
+        let fixture = TranscriptFixture::new(1);
+        let store = SessionStore::open_in_memory().unwrap();
+        let parent_owned_id = begin_import_session(
+            &store, fixture_provider(), "parent", &fixture.path,
+            "/tmp/project", None,
+        ).unwrap();
+        let child_owned_id = serde_json::to_string(&("child", &parent_owned_id, "child-1")).unwrap();
+        let mut child = store.get_session(&parent_owned_id).unwrap().unwrap();
+        child.owned_id = child_owned_id.clone();
+        child.native_session_id = Some("child-1".into());
+        store.upsert_child_session(&parent_owned_id, None, &child).unwrap();
+        fs::remove_file(&fixture.path).unwrap();
+
+        assert_eq!(ensure_child_import(
+            &store, &parent_owned_id, None, "child-1",
+        ).unwrap(), child_owned_id);
+    }
+
+    #[test]
+    fn child_selected_before_its_file_exists_gets_a_durable_row_then_imports() {
+        let fixture = TranscriptFixture::new(2);
+        let store = SessionStore::open_in_memory().unwrap();
+        let parent_owned_id = begin_import_session(
+            &store,
+            fixture_provider(),
+            "parent",
+            &fixture.path,
+            "/tmp/project",
+            None,
+        )
+        .unwrap();
+
+        let child_owned_id = ensure_child_import(
+            &store,
+            &parent_owned_id,
+            None,
+            "child-created-later",
+        )
+        .unwrap();
+        let child = store.get_session(&child_owned_id).unwrap().unwrap();
+        let placeholder = import_cursor(&child.extra_json).unwrap();
+        assert!(placeholder.transcript_path.is_empty());
+        assert!(store
+            .list_items_before(&child_owned_id, i64::MAX, 1024, None)
+            .unwrap()
+            .events
+            .is_empty());
+
+        let imported = refresh_child_import_at_location(
+            &store,
+            &parent_owned_id,
+            None,
+            &child_owned_id,
+            &child,
+            placeholder,
+            fixture_provider(),
+            &fixture.path,
+            fixture.len(),
+            fixture.len(),
+            usize::MAX,
+        )
+        .unwrap();
+        assert_eq!(imported.added, 2);
+        assert_eq!(stored_item_ids(&store, &child_owned_id), ["item-1", "item-2"]);
+    }
+
+    #[test]
+    fn child_import_refreshes_tail_and_append_across_store_reopen() {
+        let fixture = TranscriptFixture::new(6);
+        let db_path = std::env::temp_dir().join(format!("mcb-child-store-{}.sqlite", Uuid::new_v4()));
+        let store = SessionStore::open(&db_path).unwrap();
+        let parent_owned_id = begin_import_session(
+            &store, fixture_provider(), "parent", &fixture.path, "/tmp/project", None,
+        ).unwrap();
+        let child_owned_id = serde_json::to_string(&("child", &parent_owned_id, "child")).unwrap();
+        let mut child = store.get_session(&parent_owned_id).unwrap().unwrap();
+        child.owned_id = child_owned_id.clone();
+        child.native_session_id = Some("child".into());
+        let cursor = ImportCursor {
+            transcript_path: fixture.path.to_string_lossy().into_owned(),
+            cutoff_offset: fixture.len(),
+            reached_start: false,
+            parent_native_session_id: Some("parent".into()),
+            child_session_id: Some("child".into()),
+            parent_owned_id: Some(parent_owned_id.clone()),
+            forward_offset: fixture.len(),
+            ..ImportCursor::default()
+        };
+        child.extra_json = merge_import_cursor(&child.extra_json, &cursor).unwrap();
+        store.upsert_child_session(&parent_owned_id, None, &child).unwrap();
+        let initial = refresh_child_import_at_location(
+            &store, &parent_owned_id, None, &child_owned_id, &child, cursor,
+            fixture_provider(), &fixture.path, fixture.len(), fixture.line_len() * 4, usize::MAX,
+        ).unwrap();
+        assert_eq!(initial.added, 3);
+        assert!(initial.read_bytes <= fixture.line_len() * 4);
+        assert!(!initial.has_more_source);
+
+        let append = message_line(7);
+        let split = append.len() / 2;
+        fs::write(&fixture.path, format!("{}{}", fixture.contents, &append[..split])).unwrap();
+        let session = store.get_session(&child_owned_id).unwrap().unwrap();
+        let cursor = import_cursor(&session.extra_json).unwrap();
+        let partial = refresh_child_import_at_location(
+            &store, &parent_owned_id, None, &child_owned_id, &session, cursor,
+            fixture_provider(), &fixture.path, fixture.len() + split as u64,
+            fixture.line_len() * 2, usize::MAX,
+        ).unwrap();
+        assert_eq!(partial.added, 0);
+        assert!(!partial.has_more_source);
+        drop(store);
+
+        fs::write(&fixture.path, format!("{}{}", fixture.contents, append)).unwrap();
+        let store = SessionStore::open(&db_path).unwrap();
+        let session = store.get_session(&child_owned_id).unwrap().unwrap();
+        let cursor = import_cursor(&session.extra_json).unwrap();
+        let completed = refresh_child_import_at_location(
+            &store, &parent_owned_id, None, &child_owned_id, &session, cursor,
+            fixture_provider(), &fixture.path, fixture.len() + append.len() as u64,
+            fixture.line_len() * 2, usize::MAX,
+        ).unwrap();
+        assert_eq!(completed.added, 1);
+        assert!(!completed.has_more_source);
+        let append_more = format!("{}{}{}", fixture.contents, append, message_line(8));
+        let append_more = format!("{}{}", append_more, message_line(9));
+        fs::write(&fixture.path, &append_more).unwrap();
+        let session = store.get_session(&child_owned_id).unwrap().unwrap();
+        let cursor = import_cursor(&session.extra_json).unwrap();
+        let bounded = refresh_child_import_at_location(
+            &store, &parent_owned_id, None, &child_owned_id, &session, cursor,
+            fixture_provider(), &fixture.path, append_more.len() as u64,
+            fixture.line_len() * 4, 1,
+        ).unwrap();
+        assert_eq!(bounded.added, 1);
+        assert!(bounded.has_more_source);
+        let session = store.get_session(&child_owned_id).unwrap().unwrap();
+        let cursor = import_cursor(&session.extra_json).unwrap();
+        let final_page = refresh_child_import_at_location(
+            &store, &parent_owned_id, None, &child_owned_id, &session, cursor,
+            fixture_provider(), &fixture.path, append_more.len() as u64,
+            fixture.line_len() * 4, 1,
+        ).unwrap();
+        assert_eq!(final_page.added, 1);
+        assert!(!final_page.has_more_source);
+        extend_session(&store, &child_owned_id, fixture.len(), usize::MAX).unwrap();
+        assert_eq!(stored_item_ids(&store, &child_owned_id),
+            ["item-1", "item-2", "item-3", "item-4", "item-5", "item-6", "item-7", "item-8", "item-9"]);
+        fs::remove_file(&fixture.path).unwrap();
+        assert_eq!(ensure_child_import(
+            &store, &parent_owned_id, None, "child",
+        ).unwrap(), child_owned_id);
+        assert_eq!(stored_item_ids(&store, &child_owned_id),
+            ["item-1", "item-2", "item-3", "item-4", "item-5", "item-6", "item-7", "item-8", "item-9"]);
+        drop(store);
+        fs::remove_file(&db_path).ok();
+    }
+
+    #[test]
     fn import_of_a_short_transcript_reports_it_reached_the_start() {
         let fixture = TranscriptFixture::new(2);
         let store = SessionStore::open_in_memory().expect("store should open");
@@ -850,6 +1433,13 @@ mod tests {
             usize::MAX,
         )
         .expect("session should import");
+        let mut session = store.get_session(&owned_id).unwrap().unwrap();
+        let mut cursor = import_cursor(&session.extra_json).unwrap();
+        cursor.forward_offset = fixture.line_len();
+        cursor.forward_sequence = 7;
+        cursor.trailing_bytes = vec![b'{'];
+        session.extra_json = merge_import_cursor(&session.extra_json, &cursor).unwrap();
+        store.upsert_session(&session).unwrap();
 
         let added = extend_session(&store, &owned_id, fixture.line_len() * 4, usize::MAX)
             .expect("session should extend");
@@ -860,6 +1450,9 @@ mod tests {
             stored_item_ids(&store, &owned_id),
             ["item-1", "item-2", "item-3", "item-4", "item-5", "item-6"]
         );
+        let cursor = stored_cursor(&store, &owned_id);
+        assert_eq!((cursor.forward_offset, cursor.forward_sequence, cursor.trailing_bytes),
+            (fixture.line_len(), 7, vec![b'{']));
     }
 
     /// Scrolling to the top of any conversation asks for older history. Most
@@ -1139,6 +1732,26 @@ pub fn read_tail(
     max_bytes: u64,
     max_records: usize,
 ) -> Result<ImportedTail, String> {
+    read_tail_scoped(
+        provider,
+        native_session_id,
+        None,
+        path,
+        end_offset,
+        max_bytes,
+        max_records,
+    )
+}
+
+fn read_tail_scoped(
+    provider: AgentConversationProvider,
+    native_session_id: &str,
+    child_session_id: Option<&str>,
+    path: &Path,
+    end_offset: u64,
+    max_bytes: u64,
+    max_records: usize,
+) -> Result<ImportedTail, String> {
     let start = end_offset.saturating_sub(max_bytes);
     let read_len = end_offset - start;
     if read_len == 0 {
@@ -1146,16 +1759,22 @@ pub fn read_tail(
             records: Vec::new(),
             cutoff_offset: end_offset,
             reached_start: end_offset == 0,
+            trailing_bytes: Vec::new(),
         });
     }
 
     let bytes = read_range(path, start, read_len)?;
-    let (lines, _) = complete_lines(&bytes, start > 0);
+    let (lines, trailing_bytes) = complete_lines(&bytes, start > 0);
     let bytes_start = bytes.as_ptr() as usize;
     let mut parsed_lines = lines
         .into_iter()
         .filter_map(|line| {
-            let records = parse_durable_line(provider, native_session_id, line);
+            let records = child_session_id.map_or_else(
+                || parse_durable_line(provider, native_session_id, line),
+                |child_id| {
+                    parse_durable_child_line(provider, native_session_id, child_id, line)
+                },
+            );
             if records.is_empty() {
                 return None;
             }
@@ -1189,5 +1808,6 @@ pub fn read_tail(
         records,
         cutoff_offset,
         reached_start: cutoff_offset == 0,
+        trailing_bytes,
     })
 }

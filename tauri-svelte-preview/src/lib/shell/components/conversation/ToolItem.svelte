@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
+  import { getContext } from 'svelte';
   import Check from '@lucide/svelte/icons/check';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import CircleDot from '@lucide/svelte/icons/circle-dot';
@@ -14,6 +16,8 @@
   import { sanitizeConversationHref } from '$lib/shell/conversation/conversationMessageSafety.ts';
   import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
   import { highlightCode, languageForPath, plainHighlightedLines, type HighlightedLine } from './codeHighlight.ts';
+
+  const disclosure = getContext<ConversationDisclosureContext>(conversationDisclosureContext);
 
   let { item, onFileLink }: {
     item: Extract<ConversationDisplayItem, { kind: 'tool' }>;
@@ -33,7 +37,8 @@
   const output = $derived(item.output && item.output !== item.diff ? item.output.trimEnd() : '');
   const outputLines = $derived(output ? output.split('\n') : []);
   const foldable = $derived(outputLines.length > OUTPUT_FOLD_OVER_LINES);
-  let outputOpen = $state(false);
+  const outputOpen = $derived(disclosure?.get(`${item.itemId}:output`) ?? false);
+  const detailsOpen = $derived(disclosure?.get(`${item.itemId}:details`) ?? false);
   const shownOutput = $derived(
     foldable && !outputOpen ? outputLines.slice(0, OUTPUT_LINES_KEPT).join('\n') : output
   );
@@ -79,6 +84,8 @@
   class:failed={item.state === 'failed'}
   class:running={item.state === 'running'}
   class="tool-item"
+  open={detailsOpen}
+  ontoggle={(event) => { if (event.currentTarget.open !== detailsOpen) disclosure?.set(`${item.itemId}:details`, event.currentTarget.open); }}
   data-testid="timeline-tool-item"
 >
   <summary aria-disabled={!expandable}>
@@ -120,7 +127,7 @@
             data-testid="timeline-tool-output-fold"
             type="button"
             aria-expanded={outputOpen}
-            onclick={() => (outputOpen = !outputOpen)}
+            onclick={() => disclosure?.set(`${item.itemId}:output`, !outputOpen)}
           ><span class="fold-chevron" class:open={outputOpen} aria-hidden="true"><ChevronRight size={13} strokeWidth={1.8} /></span
             >{outputOpen ? 'Show less' : `Show ${hiddenLines.toLocaleString()} more lines`}</button>
         {/if}

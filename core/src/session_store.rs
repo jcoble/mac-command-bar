@@ -764,6 +764,13 @@ pub struct SessionRow {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrivateRemoteChildSource {
+    pub parent_owned_id: String,
+    pub remote_profile_id: String,
+    pub source_owned_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventRow {
     pub owned_id: String,
     pub seq: i64,
@@ -1040,6 +1047,84 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not finish remote history write", error))
     }
 
+    /// Resolves one private remote child by its exact physical SQLite key.
+    pub fn private_remote_child_source(
+        &self,
+        owned_id: &str,
+    ) -> Result<Option<PrivateRemoteChildSource>> {
+        self.lock()?
+            .query_row(
+                "SELECT parent_owned_id, cached_remote_profile_id,
+                        CASE WHEN json_valid(owned_id)
+                             THEN json_extract(owned_id, '$[1]') END
+                 FROM sessions
+                 WHERE owned_id = ?1
+                   AND parent_owned_id IS NOT NULL
+                   AND cached_remote_profile_id IS NOT NULL
+                   AND CASE WHEN json_valid(owned_id)
+                            THEN json_array_length(owned_id) = 2 ELSE 0 END
+                   AND CASE WHEN json_valid(owned_id)
+                            THEN json_extract(owned_id, '$[0]') = cached_remote_profile_id
+                            ELSE 0 END",
+                [owned_id],
+                |row| {
+                    Ok(PrivateRemoteChildSource {
+                        parent_owned_id: row.get(0)?,
+                        remote_profile_id: row.get(1)?,
+                        source_owned_id: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| StoreError::sqlite("could not resolve remote child source", error))
+    }
+
+    pub fn bind_cached_remote_child(
+        &self,
+        parent_owned_id: &str,
+        profile_id: &str,
+        child_owned_id: &str,
+        native_session_id: &str,
+    ) -> Result<()> {
+        let mut connection = self.lock_write()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| StoreError::sqlite("could not begin remote child binding", error))?;
+        let parent_matches: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions
+                 WHERE owned_id = ?1 AND cached_remote_profile_id IS ?2)",
+                params![parent_owned_id, profile_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| StoreError::sqlite("could not check cached child parent", error))?;
+        if !parent_matches {
+            return Err(StoreError::message("cached child parent or source does not match"));
+        }
+        let changed = transaction
+            .execute(
+                "UPDATE sessions
+                 SET parent_owned_id = ?1, native_session_id = ?2
+                 WHERE owned_id = ?3
+                   AND cached_remote_profile_id IS ?4
+                   AND (parent_owned_id IS NULL OR parent_owned_id = ?1)
+                   AND (native_session_id IS NULL OR native_session_id = ?2)",
+                params![
+                    parent_owned_id,
+                    native_session_id,
+                    child_owned_id,
+                    profile_id
+                ],
+            )
+            .map_err(|error| StoreError::sqlite("could not bind cached remote child", error))?;
+        if changed != 1 {
+            return Err(StoreError::message("cached child ownership cannot change"));
+        }
+        transaction
+            .commit()
+            .map_err(|error| StoreError::sqlite("could not finish remote child binding", error))
+    }
+
     pub fn upsert_child_session(
         &self,
         parent_owned_id: &str,
@@ -1072,6 +1157,21 @@ impl SessionStore {
         if ownership_conflict {
             return Err(StoreError::message("child session ownership cannot change"));
         }
+        let existing_matches: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions
+                 WHERE owned_id = ?1 AND parent_owned_id = ?2
+                   AND cached_remote_profile_id IS ?3)",
+                params![child.owned_id, parent_owned_id, expected_remote_profile_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| StoreError::sqlite("could not check existing child session", error))?;
+        if existing_matches {
+            transaction.commit().map_err(|error| {
+                StoreError::sqlite("could not finish existing child session check", error)
+            })?;
+            return Ok(());
+        }
         upsert_session_on(&transaction, child)?;
         let changed = transaction
             .execute(
@@ -1086,6 +1186,82 @@ impl SessionStore {
         transaction
             .commit()
             .map_err(|error| StoreError::sqlite("could not finish child session write", error))
+    }
+
+    /// Atomically appends one bounded child transcript page and advances its import cursor.
+    pub fn commit_child_import_page(
+        &self,
+        parent_owned_id: &str,
+        expected_remote_profile_id: Option<&str>,
+        child_owned_id: &str,
+        expected_import_json: &str,
+        next_import_json: &str,
+        events: &[EventRow],
+    ) -> Result<()> {
+        if events.iter().any(|event| event.owned_id != child_owned_id) {
+            return Err(StoreError::message("child import event ownership does not match"));
+        }
+        let mut connection = self.lock_write()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| StoreError::sqlite("could not begin child import page write", error))?;
+        let matches: bool = transaction
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM sessions AS child
+                    JOIN sessions AS parent ON parent.owned_id = child.parent_owned_id
+                    WHERE parent.owned_id = ?1
+                      AND parent.cached_remote_profile_id IS ?2
+                      AND child.owned_id = ?3
+                      AND child.cached_remote_profile_id IS ?2
+                      AND NOT EXISTS (
+                        SELECT fullkey, type, atom
+                        FROM json_tree(json_extract(child.extra, '$.import'))
+                        EXCEPT
+                        SELECT fullkey, type, atom FROM json_tree(?4)
+                      )
+                      AND NOT EXISTS (
+                        SELECT fullkey, type, atom FROM json_tree(?4)
+                        EXCEPT
+                        SELECT fullkey, type, atom
+                        FROM json_tree(json_extract(child.extra, '$.import'))
+                      )
+                 )",
+                params![
+                    parent_owned_id,
+                    expected_remote_profile_id,
+                    child_owned_id,
+                    expected_import_json
+                ],
+                |row| row.get(0),
+            )
+            .map_err(|error| StoreError::sqlite("could not check child import cursor", error))?;
+        if !matches {
+            return Err(StoreError::message("child import cursor or ownership changed"));
+        }
+        for event in events {
+            insert_chronological_event(&transaction, event)?;
+        }
+        let changed = transaction
+            .execute(
+                "UPDATE sessions
+                 SET extra = json_set(extra, '$.import', json(?1)),
+                     last_activity_at = MAX(last_activity_at, COALESCE(
+                       (SELECT created_at FROM events
+                        WHERE owned_id = ?2 ORDER BY seq DESC LIMIT 1),
+                       last_activity_at
+                     ))
+                 WHERE owned_id = ?2",
+                params![next_import_json, child_owned_id],
+            )
+            .map_err(|error| StoreError::sqlite("could not advance child import cursor", error))?;
+        if changed != 1 {
+            return Err(StoreError::message("child import session was deleted"));
+        }
+        transaction
+            .commit()
+            .map_err(|error| StoreError::sqlite("could not finish child import page write", error))
     }
 
     pub fn purge_remote_history(&self, profile_id: &str) -> Result<()> {
@@ -2344,6 +2520,32 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not list events", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read the event list", error))
+    }
+
+    /// Latest durable child descriptor per child at one captured journal head.
+    pub fn latest_child_events(&self, owned_id: &str, through: i64) -> Result<Vec<EventRow>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "WITH ranked AS (
+                   SELECT owned_id, seq, turn_id, kind, payload, created_at,
+                          ROW_NUMBER() OVER (
+                            PARTITION BY json_extract(payload, '$.payload.childId')
+                            ORDER BY seq DESC
+                          ) AS rank
+                   FROM events
+                   WHERE owned_id = ?1 AND seq <= ?2 AND kind = 'children.updated'
+                     AND json_type(payload, '$.payload.childId') = 'text'
+                 )
+                 SELECT owned_id, seq, turn_id, kind, payload, created_at
+                 FROM ranked WHERE rank = 1 ORDER BY seq ASC",
+            )
+            .map_err(|error| StoreError::sqlite("could not prepare latest child events", error))?;
+        let rows = statement
+            .query_map(params![owned_id, through], event_from_row)
+            .map_err(|error| StoreError::sqlite("could not list latest child events", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read latest child events", error))
     }
 
     /// Latest provider usage for selected sessions, without loading their transcripts.
@@ -3779,6 +3981,37 @@ mod tests {
     }
 
     #[test]
+    fn latest_child_events_returns_one_descriptor_per_child_at_the_captured_head() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&fixture_session("parent", 0)).unwrap();
+        for (seq, child_id, state) in [
+            (1, "claude-child", "running"),
+            (2, "codex-child", "finished"),
+            (3, "claude-child", "finished"),
+            (4, "codex-child", "running"),
+        ] {
+            store
+                .append_event(&item_page_event(
+                    "parent",
+                    seq,
+                    None,
+                    "children.updated",
+                    1,
+                    serde_json::json!({
+                        "kind": "childUpdate",
+                        "childId": child_id,
+                        "parentToolCallId": "parent-tool",
+                        "state": state,
+                    }),
+                ))
+                .unwrap();
+        }
+
+        let latest = store.latest_child_events("parent", 3).unwrap();
+        assert_eq!(latest.iter().map(|row| row.seq).collect::<Vec<_>>(), [2, 3]);
+    }
+
+    #[test]
     fn item_pages_keep_logical_identities_and_directional_cursors() {
         let store = SessionStore::open_in_memory().unwrap();
         store.upsert_session(&fixture_session("logical", 0)).unwrap();
@@ -3921,6 +4154,21 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_local_session_id_is_not_parsed_as_a_remote_child_key() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store
+            .upsert_session(&fixture_session("tsk1344-proof-claude", 1))
+            .unwrap();
+
+        assert_eq!(
+            store
+                .private_remote_child_source("tsk1344-proof-claude")
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn child_session_is_hidden_from_roots_and_cascades_with_its_parent() {
         let store = SessionStore::open_in_memory().unwrap();
         let parent = fixture_session("parent", 1);
@@ -3964,6 +4212,46 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?)),
         ).unwrap();
         assert_eq!(ownership, (Some("remote-parent".into()), Some("workbox".into())));
+    }
+
+    #[test]
+    fn child_import_page_commits_rows_and_cursor_once() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let parent = fixture_session("parent-import", 1);
+        let mut child = fixture_session("child-import", 2);
+        child.extra_json = r#"{"source":"test","import":{"childSessionId":"x","forwardOffset":0}}"#.into();
+        store.upsert_session(&parent).unwrap();
+        store.upsert_child_session("parent-import", None, &child).unwrap();
+        let event = fixture_event("child-import", 1);
+
+        store.commit_child_import_page(
+            "parent-import", None, "child-import",
+            r#"{ "forwardOffset": 0, "childSessionId": "x" }"#,
+            r#"{"childSessionId":"x","forwardOffset":12}"#, std::slice::from_ref(&event),
+        ).unwrap();
+        assert_eq!(store.list_events("child-import", i64::MIN, 10).unwrap(), [event]);
+        let stored = store.get_session("child-import").unwrap().unwrap();
+        let extra: serde_json::Value = serde_json::from_str(&stored.extra_json).unwrap();
+        assert_eq!(extra["source"], "test");
+        assert_eq!(extra["import"]["forwardOffset"], 12);
+
+        store.upsert_child_session("parent-import", None, &child).unwrap();
+        let stored = store.get_session("child-import").unwrap().unwrap();
+        let extra: serde_json::Value = serde_json::from_str(&stored.extra_json).unwrap();
+        assert_eq!(extra["import"]["forwardOffset"], 12);
+
+        assert!(store.commit_child_import_page(
+            "parent-import", None, "child-import", r#"{"forwardOffset":0}"#,
+            r#"{"forwardOffset":12}"#, &[fixture_event("child-import", 2)],
+        ).is_err());
+        assert_eq!(store.list_events("child-import", i64::MIN, 10).unwrap().len(), 1);
+
+        store.delete_session("parent-import").unwrap();
+        assert!(store.commit_child_import_page(
+            "parent-import", None, "child-import", r#"{"childSessionId":"x","forwardOffset":12}"#,
+            r#"{"childSessionId":"x","forwardOffset":13}"#, &[],
+        ).is_err());
+        assert!(store.get_session("child-import").unwrap().is_none());
     }
 
     #[test]

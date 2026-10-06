@@ -44,6 +44,8 @@ pub struct AcpTransport {
     writer: tokio::sync::Mutex<SidecarWriteHalf>,
     process: Mutex<Option<SidecarProcessHandle>>,
     sessions: Arc<Mutex<HashMap<SessionId, AcpSessionState>>>,
+    #[cfg(test)]
+    fail_next_write: std::sync::atomic::AtomicBool,
 }
 
 pub type SessionId = String;
@@ -88,6 +90,8 @@ impl AcpTransport {
             writer: tokio::sync::Mutex::new(writer),
             process: Mutex::new(Some(process_handle)),
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(test)]
+            fail_next_write: std::sync::atomic::AtomicBool::new(false),
         });
         let reader_transport = Arc::downgrade(&transport);
         tokio::spawn(async move {
@@ -143,6 +147,11 @@ impl AcpTransport {
     pub async fn respond(&self, wire_id: Value, result: Value) -> Result<(), AgentRuntimeError> {
         self.write(json!({"jsonrpc": "2.0", "id": wire_id, "result": result}))
             .await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_write_for_test(&self) {
+        self.fail_next_write.store(true, Ordering::Release);
     }
 
     pub async fn stop(&self) {
@@ -309,6 +318,10 @@ impl AcpTransport {
     }
 
     async fn write(&self, frame: Value) -> Result<(), AgentRuntimeError> {
+        #[cfg(test)]
+        if self.fail_next_write.swap(false, Ordering::AcqRel) {
+            return Err(transport_error("injected ACP write failure".to_string()));
+        }
         self.writer
             .lock()
             .await
@@ -511,6 +524,10 @@ impl AcpClient {
                 "jetbrains".to_string(),
                 json!({"air": {"version": 1, "capabilities": ["asyncTasks", "nativeSubagentSessions"]}}),
             )]));
+        }
+        let mut request = json!(request);
+        if provider == AgentConversationProvider::Claude {
+            request["clientCapabilities"]["elicitation"] = json!({"form": {}});
         }
         let result = self.request("initialize", &request).await?;
         self.personal_authentication = result.get("authMethods").and_then(Value::as_array)
@@ -1658,6 +1675,18 @@ while IFS= read -r line; do
               break ;;
           esac
         done
+      elif [ "$fixture" = "child_input_after_parent" ]; then
+        printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"new-session","update":{{"sessionUpdate":"subagent_spawned","subagentSessionId":"child-agent","name":"Reviewer"}}}}}}\n'
+        printf '{{"jsonrpc":"2.0","id":77,"method":"elicitation/create","params":{{"sessionId":"child-agent","mode":"form","message":"Choose a channel","requestedSchema":{{"type":"object","properties":{{"question_0":{{"type":"string","oneOf":[{{"const":"Stable","title":"Stable"}}]}},"question_0_custom":{{"type":"string","title":"Other"}}}}}}}}}}\n'
+        sleep 0.05
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
+      elif [ "$fixture" = "legacy_input" ]; then
+        printf '{{"jsonrpc":"2.0","id":78,"method":"session/request_user_input","params":{{"title":"Choose a channel","fields":[{{"id":"channel","label":"Channel","required":true,"kind":"select","choices":[{{"value":"stable","label":"Stable"}}]}}]}}}}\n'
+        while IFS= read -r response; do
+          printf '%s\n' "$response" >> "$log"
+          case "$response" in *'"id":78'*) break ;; esac
+        done
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
       elif [ "$fixture" = "permission_cancelled" ]; then
         printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"options":[{{"optionId":"allow","name":"Allow","kind":"allow_once"}},{{"optionId":"reject","name":"Reject","kind":"reject_once"}}]}}}}\n'
         while IFS= read -r response; do
@@ -1935,6 +1964,10 @@ done"#,
         assert_eq!(generated.turn_id.as_deref(), Some("turn-direct"));
         assert_eq!(generated.text, "direct response text");
         client.close().await.unwrap();
+        let frames = std::fs::read_to_string(&log).unwrap();
+        let initialize = frames.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|frame| frame["method"] == "initialize").unwrap();
+        assert!(initialize["params"]["clientCapabilities"].get("elicitation").is_none());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2183,6 +2216,7 @@ done"#,
             initialize["params"]["clientCapabilities"]["_meta"]["jetbrains"]["air"]["capabilities"],
             json!(["asyncTasks", "nativeSubagentSessions"])
         );
+        assert_eq!(initialize["params"]["clientCapabilities"]["elicitation"], json!({"form": {}}));
         assert!(frames.contains(r#""method":"session/set_model""#));
         assert!(frames.contains(r#""modelId":"claude-fable-5""#));
         assert!(frames.contains(r#""method":"session/set_mode""#));

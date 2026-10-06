@@ -7,7 +7,7 @@
   import Square from '@lucide/svelte/icons/square';
   import X from '@lucide/svelte/icons/x';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
-  import type { ConversationAttachment, AgentConfigValue, AgentPermissionRequest, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
+  import type { ConversationAttachment, AgentUserInputAction, AgentConfigValue, AgentPermissionRequest, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import type { AgentConversationConfigField, AgentConversationConfigState } from '$lib/shell/conversation/conversationConfig.ts';
   import type { ConversationCommand } from '$lib/shell/conversation/conversationCommandCatalog.ts';
@@ -57,6 +57,8 @@
     pendingApprovalCount?: number;
     pendingInputs?: readonly AgentUserInputRequest[];
     respondingRequestIds?: readonly string[];
+    controlsDisabled?: boolean;
+    sendDisabled?: boolean;
     /** Extra controls for the left of the footer, ahead of Attach. The draft
      * session puts its project and branch pickers here, so a session being set
      * up reads as the same composer as one already running. */
@@ -72,7 +74,7 @@
     onConfigChange?(field: AgentConversationConfigField, value: string): void | Promise<void>;
     onCommandSelected?(command: ConversationCommand): void;
     onApprovalDecision?(requestId: string, optionId: string): void | Promise<void>;
-    onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void | Promise<void>;
+    onInputSubmit?(requestId: string, action: AgentUserInputAction, content: Record<string, AgentConfigValue>): void | Promise<void>;
     onHeightChange?(height: number): void;
   }
 
@@ -100,6 +102,8 @@
     pendingApprovalCount = 1,
     pendingInputs = [],
     respondingRequestIds = [],
+    controlsDisabled = false,
+    sendDisabled = false,
     leadingControls,
     onDraftChange,
     onDraftBlur,
@@ -305,7 +309,7 @@
 
   /** Hand the message off and let the box return to its resting height. */
   function submitPrompt(): void {
-    if (composerLocked) return;
+    if (composerLocked || sendDisabled) return;
     hasOpened = false;
     void onSend?.();
   }
@@ -387,12 +391,14 @@
               approval={pendingApproval}
               pendingCount={pendingApprovalCount}
               responding={respondingRequestIds.includes(pendingApproval.requestId)}
+              disabled={controlsDisabled}
               onDecision={onApprovalDecision}
             />
           {:else}
             <ComposerPendingUserInputPanel
               requests={pendingInputs}
               responding={respondingRequestIds.length > 0}
+              disabled={controlsDisabled}
               onSubmit={onInputSubmit}
             />
           {/if}
@@ -532,10 +538,10 @@
                  right the moment there is something to send. -->
             <button class="round-control mic" type="button" disabled title="Voice input is not available yet" aria-label="Voice input, not available yet"><Mic size={17} /></button>
             {#if sending && (!hasSendableContent || !supportsSteering)}
-              <button class="round-control send stop" data-testid="conversation-stop" type="button" aria-label="Stop generation" onclick={() => void onStop?.()}><Square size={13} fill="currentColor" /></button>
+              <button class="round-control send stop" data-testid="conversation-stop" type="button" aria-label="Stop generation" disabled={controlsDisabled} onclick={() => void onStop?.()}><Square size={13} fill="currentColor" /></button>
             {/if}
             {#if hasSendableContent && (!sending || supportsSteering)}
-              <button class="round-control send" data-testid="conversation-send" type="submit" aria-label={sending ? 'Steer current turn' : 'Send message'}><ArrowUp size={17} strokeWidth={2.2} /></button>
+              <button class="round-control send" data-testid="conversation-send" type="submit" disabled={sendDisabled} aria-label={sending ? 'Steer current turn' : 'Send message'}><ArrowUp size={17} strokeWidth={2.2} /></button>
             {/if}
           </div>
         </div>
