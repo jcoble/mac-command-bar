@@ -6,11 +6,13 @@
 	 * active paint and calls no session, panel, persistence, or native service.
 	 *
 	 * The rail passes one shared timestamp into every row. This row mounts no
-	 * timer or clock subscription. A dot on the provider tile says when the
-	 * session is working, waiting on you, or failed.
+	 * timer or clock subscription. Its seeded activity glyph exists only during
+	 * real work and pauses itself when the row is offscreen. A dot on the
+	 * provider tile says when the session is waiting on you or failed.
 	 */
 	import Server from "@lucide/svelte/icons/server";
 	import { AGENT_ICONS, agentDisplayName } from "$lib/shell/agentIcons.ts";
+	import WorkingSpinner from "$lib/shell/components/conversation/WorkingSpinner.svelte";
 	import {
 		deriveSessionPresence,
 		EMPTY_SESSION_PRESENCE_HISTORY,
@@ -168,7 +170,7 @@
 			title={remote ? `This session runs on a remote machine — ${remoteState}` : undefined}
 		>
 			<ProviderIcon class="thumb-mark" aria-hidden="true" />
-			{#if presence === "working" || presence === "attention" || presence === "failed"}
+			{#if presence === "attention" || presence === "failed"}
 				<span class="status-dot" data-presence={presence} role="img" aria-label={presenceLabel}></span>
 			{/if}
 		</span>
@@ -183,6 +185,11 @@
 				<span data-testid="worktree-agent-title" class="session-title">{label}</span>
 				<span data-testid="worktree-agent-age" class="age">
 					<span class="age-text">{ageText ?? ""}</span>
+					{#if presence === "working"}
+						<span class="working-mark" role="img" aria-label="Working">
+							<WorkingSpinner seed={activeTurnId ?? session.ownedId} size={14} />
+						</span>
+					{/if}
 				</span>
 			</span>
 
@@ -403,6 +410,7 @@
 		flex: 0 0 auto;
 		align-items: center;
 		justify-content: flex-end;
+		gap: 6px;
 		padding-left: 8px;
 		color: var(--color-text-3);
 		font-size: 12px;
@@ -414,6 +422,15 @@
 	.age-text {
 		min-width: 28px;
 		text-align: right;
+	}
+
+	.working-mark {
+		display: inline-grid;
+		width: 14px;
+		height: 14px;
+		flex: 0 0 auto;
+		place-items: center;
+		color: var(--primary);
 	}
 
 	.needs-you {
