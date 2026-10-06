@@ -505,8 +505,10 @@
 			/>
 		</div>
 		<div class="pane-body" class:showing={paneShowing && topTabs.activeKind === "browser"}>
+			<!-- The page is a native view painted above every DOM layer, so it
+			     steps aside (hidden, still live) while Settings covers the window. -->
 			<BrowserPanel
-				visible={paneShowing && topTabs.activeKind === "browser" && toolsRailWidth > 0}
+				visible={paneShowing && topTabs.activeKind === "browser" && toolsRailWidth > 0 && !overlays?.settingsOpen()}
 				panelOpen={paneShowing}
 				root={browserRoot}
 				ownedId={selection.activeOwnedId}
