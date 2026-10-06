@@ -277,7 +277,8 @@ export function applySelectedConversationSnapshotState(
   workspaceOwnedId: string,
   historyOwnedId: string,
   snapshot: AgentConversationSelectionSnapshot,
-  applyControls = true
+  applyControls = true,
+  window?: Parameters<typeof applySelectedPageState>[3]
 ): void {
   const current = !applyControls && conversationSessions[workspaceOwnedId]
     ? conversationSessions[workspaceOwnedId]
@@ -288,7 +289,7 @@ export function applySelectedConversationSnapshotState(
     current.generation = snapshot.connection.generation;
     current.activeTurnId = snapshot.suspended ? undefined : snapshot.activeTurnId;
   }
-  applySelectedPageState(current, snapshot.page, 'snapshot');
+  applySelectedPageState(current, snapshot.page, 'snapshot', window);
 }
 
 function applyConversationEventControls(

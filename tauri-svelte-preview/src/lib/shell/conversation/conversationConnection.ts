@@ -48,6 +48,7 @@ import { usageDropIsCompaction } from './conversationReducer.ts';
 
 const PAGE_BYTES = 512 * 1024;
 const GRAPH_BYTES = 4 * 1024 * 1024;
+const GRAPH_ITEMS = 256;
 const encoder = new TextEncoder();
 
 type Direction = 'older' | 'newer';
@@ -104,7 +105,7 @@ function messageBytes(message: UIMessage): number {
 
 function boundedMessages(messages: UIMessage[], direction: Direction): UIMessage[] {
   let bytes = messages.reduce((total, message) => total + messageBytes(message), 0);
-  while (messages.length > 1 && bytes > GRAPH_BYTES) {
+  while (messages.length > 1 && (bytes > GRAPH_BYTES || messages.length > GRAPH_ITEMS)) {
     const removed = direction === 'older' ? messages.pop() : messages.shift();
     if (removed) bytes -= messageBytes(removed);
   }
@@ -187,7 +188,7 @@ function boundLiveMessages(
     else selection.messageBytes.delete(id);
   }
   let evictedOldest = false;
-  while (messages.length > 1 && selection.graphBytes > GRAPH_BYTES) {
+  while (messages.length > 1 && (selection.graphBytes > GRAPH_BYTES || messages.length > GRAPH_ITEMS)) {
     const [removed, ...retained] = messages;
     selection.graphBytes -= selection.messageBytes.get(removed.id) ?? 0;
     selection.messageBytes.delete(removed.id);
@@ -380,7 +381,8 @@ function snapshotChunks(
     selection.beforeCursor = snapshot.page.watermark + 1;
   }
   selection.afterCursor = snapshot.page.afterCursor;
-  let messages = boundedMessages(messagesFromPage(snapshot.page), 'newer');
+  const pageMessages = messagesFromPage(snapshot.page);
+  let messages = boundedMessages([...pageMessages], 'newer');
   const pending = selection.pendingSend;
   if (pending && !pending.receipt && pending.optimisticId) {
     const optimistic = selection.chat.messages.find((message) => message.id === pending.optimisticId);
@@ -388,11 +390,25 @@ function snapshotChunks(
       messages = boundedMessages([...messages, optimistic], 'newer');
     }
   }
+  selection.beforeCursor = historyPosition(messages.find((message) => historyPosition(message) !== undefined)) ?? selection.beforeCursor;
+  selection.afterCursor = historyPosition(messages.findLast((message) => historyPosition(message) !== undefined)) ?? selection.afterCursor;
+  const retainedIds = new Set(messages.map((message) => message.id));
+  const evicted = pageMessages.some((message) => !retainedIds.has(message.id));
+  resetMessageBytes(selection, messages);
   applySelectedConversationSnapshotState(
     selection.historyOwnedId,
     selection.historyOwnedId,
     snapshot,
-    applyControls
+    applyControls,
+    {
+      beforeCursor: selection.beforeCursor,
+      afterCursor: selection.afterCursor,
+      hasBefore: evicted || hasOlderHistory(snapshot.page),
+      hasAfter: snapshot.page.hasAfter,
+      retainedTurnIds: messages.flatMap((message) =>
+        typeof message.metadata?.turnId === 'string' ? [message.metadata.turnId] : []),
+      transferBytes: selection.graphBytes
+    }
   );
   if (applyControls) {
     const snapshotError = snapshot.pendingEvents.findLast((event) => event.payload.kind === 'error');
