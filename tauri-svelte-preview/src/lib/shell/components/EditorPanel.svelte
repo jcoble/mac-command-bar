@@ -29,6 +29,7 @@
   import { onMount } from 'svelte';
   import Save from '@lucide/svelte/icons/save';
   import X from '@lucide/svelte/icons/x';
+  import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import Folder from '@lucide/svelte/icons/folder';
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import * as Breadcrumb from '$lib/components/ui/breadcrumb/index.js';
@@ -48,7 +49,8 @@
     markdownPreviewDefault,
     type MarkdownView
   } from './editor/markdownPreview.ts';
-  import { IconButton } from '$lib/components/ui/icon-button/index.js';
+  import { buttonVariants } from '$lib/components/ui/button/variants.js';
+  import { cn } from '$lib/utils.js';
   import LanguageIntelligenceControls from './LanguageIntelligenceControls.svelte';
   import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
@@ -251,6 +253,9 @@
     ? [breadcrumbRoot, ...breadcrumbPath.slice(breadcrumbRoot.length + 1).split('/').map((_, index, parts) =>
         `${breadcrumbRoot}/${parts.slice(0, index + 1).join('/')}`)]
     : []);
+  /** Deep paths fold their middle folders into one "…" menu, so the project
+   * name and the file name both stay readable in the header. */
+  const breadcrumbHidden = $derived(breadcrumbParts.length > 4 ? breadcrumbParts.slice(1, -2) : []);
 
   async function openBreadcrumbMenu(directory: string): Promise<void> {
     if (!activeFile || !breadcrumbRoot || !rootAvailable) return;
@@ -1599,56 +1604,76 @@
       <!-- The open file's path on the left, its own controls on the right. The
            language-server switch sits in this editor's status bar. -->
       {#if activeFile && breadcrumbParts.length > 0}
+        <!-- One folder's entries, shown by a segment's own menu and by the
+             folder rows inside the "…" menu. -->
+        {#snippet folderEntries(part: string)}
+          {@const directory = part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part}
+          {#if breadcrumbMenu?.file === activeFile.path && breadcrumbMenu.root === breadcrumbRoot && breadcrumbMenu.directory === directory}
+            {#if breadcrumbMenu.error}
+              <DropdownMenu.Item disabled>{breadcrumbMenu.error}</DropdownMenu.Item>
+            {:else if breadcrumbMenu.entries === null}
+              <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
+            {:else if breadcrumbMenu.entries.filter((entry) => !entry.excluded && (part !== activeFile.path || !entry.isDirectory)).length === 0}
+              <DropdownMenu.Item disabled>No files or folders</DropdownMenu.Item>
+            {:else}
+              {#each breadcrumbMenu.entries.filter((entry) => !entry.excluded && (part !== activeFile.path || !entry.isDirectory)) as entry (entry.path)}
+                <DropdownMenu.Item onSelect={() => chooseBreadcrumbEntry(entry)}>
+                  {#if entry.isDirectory}<Folder class="size-3.5" />{:else}<FileIcon fileName={entry.name} size={13} />{/if}
+                  <span class="truncate">{entry.name}{entry.isDirectory ? '/' : ''}</span>
+                </DropdownMenu.Item>
+              {/each}
+            {/if}
+          {:else}
+            <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
+          {/if}
+        {/snippet}
         <div class="editor-breadcrumb-row">
           <Breadcrumb.Root>
             <Breadcrumb.List class="m-0 list-none flex-nowrap gap-1 p-0 text-[13px]">
               {#each breadcrumbParts as part, index (part)}
-                {#if index > 0}<Breadcrumb.Separator class="flex shrink-0 items-center" />{/if}
-                <Breadcrumb.Item class="min-w-0 shrink-0">
-                  <DropdownMenu.Root onOpenChange={(open) => { if (open) void openBreadcrumbMenu(part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part); }}>
-                    <DropdownMenu.Trigger class="breadcrumb-trigger" aria-label={`Browse ${part.split('/').at(-1)}`}>
-                      {part.split('/').at(-1)}
-                    </DropdownMenu.Trigger>
-                    <DropdownMenu.Content class="max-h-80 min-w-48 max-w-80" align="start">
-                      {#if breadcrumbMenu?.file === activeFile.path && breadcrumbMenu.root === breadcrumbRoot && breadcrumbMenu.directory === (part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part)}
-                        {#if breadcrumbMenu.error}
-                          <DropdownMenu.Item disabled>{breadcrumbMenu.error}</DropdownMenu.Item>
-                        {:else if breadcrumbMenu.entries === null}
-                          <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
-                        {:else if breadcrumbMenu.entries.filter((entry) => !entry.excluded && (part !== activeFile.path || !entry.isDirectory)).length === 0}
-                          <DropdownMenu.Item disabled>No files or folders</DropdownMenu.Item>
-                        {:else}
-                          {#each breadcrumbMenu.entries.filter((entry) => !entry.excluded && (part !== activeFile.path || !entry.isDirectory)) as entry (entry.path)}
-                            <DropdownMenu.Item onSelect={() => chooseBreadcrumbEntry(entry)}>
-                              {#if entry.isDirectory}<Folder class="size-3.5" />{:else}<FileIcon fileName={entry.name} size={13} />{/if}
-                              <span class="truncate">{entry.name}{entry.isDirectory ? '/' : ''}</span>
-                            </DropdownMenu.Item>
+                {#if breadcrumbHidden.includes(part)}
+                  {#if part === breadcrumbHidden[0]}
+                    <Breadcrumb.Separator class="flex shrink-0 items-center" />
+                    <Breadcrumb.Item class="shrink-0">
+                      <DropdownMenu.Root>
+                        <DropdownMenu.Trigger class="breadcrumb-trigger" aria-label="Show hidden folders">…</DropdownMenu.Trigger>
+                        <DropdownMenu.Content class="min-w-48 max-w-80" align="start">
+                          {#each breadcrumbHidden as hidden (hidden)}
+                            <DropdownMenu.Sub onOpenChange={(open) => { if (open) void openBreadcrumbMenu(hidden); }}>
+                              <DropdownMenu.SubTrigger>
+                                <Folder class="size-3.5" />
+                                <span class="truncate">{hidden.split('/').at(-1)}</span>
+                              </DropdownMenu.SubTrigger>
+                              <DropdownMenu.SubContent class="max-h-80 min-w-48 max-w-80">
+                                {@render folderEntries(hidden)}
+                              </DropdownMenu.SubContent>
+                            </DropdownMenu.Sub>
                           {/each}
-                        {/if}
-                      {:else}
-                        <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
-                      {/if}
-                    </DropdownMenu.Content>
-                  </DropdownMenu.Root>
-                </Breadcrumb.Item>
+                        </DropdownMenu.Content>
+                      </DropdownMenu.Root>
+                    </Breadcrumb.Item>
+                  {/if}
+                {:else}
+                  {#if index > 0}<Breadcrumb.Separator class="flex shrink-0 items-center" />{/if}
+                  <!-- The project name and the file name give way first; the
+                       folders between them keep their width. -->
+                  <Breadcrumb.Item class={index === 0 ? 'min-w-0 max-w-36 shrink' : index === breadcrumbParts.length - 1 ? 'min-w-0 shrink' : 'shrink-0'}>
+                    <DropdownMenu.Root onOpenChange={(open) => { if (open) void openBreadcrumbMenu(part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part); }}>
+                      <DropdownMenu.Trigger class="breadcrumb-trigger" aria-label={`Browse ${part.split('/').at(-1)}`}>
+                        {part.split('/').at(-1)}
+                      </DropdownMenu.Trigger>
+                      <DropdownMenu.Content class="max-h-80 min-w-48 max-w-80" align="start">
+                        {@render folderEntries(part)}
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Root>
+                  </Breadcrumb.Item>
+                {/if}
               {/each}
             </Breadcrumb.List>
           </Breadcrumb.Root>
         </div>
       {/if}
       <div class="editor-controls">
-        <IconButton
-          label="Save active file"
-          size="sm"
-          side="bottom"
-          disabled={!activeFile?.dirty || Boolean(activeFile?.conflict) || activeFileReadOnly}
-          onclick={() => void saveActiveFile()}
-        >
-          <Save class="size-3.5" aria-hidden="true" />
-        </IconButton>
-        <IconButton label="Close all open editors" size="sm" side="bottom" onclick={closeAllOpenEditors}>
-          <X class="size-3.5" aria-hidden="true" />
-        </IconButton>
         <!-- Markdown and HTML read two ways, so the file says which one it is on.
              Source is the ordinary editor; Preview is the same document rendered. -->
         {#if activeFileIsMarkdown || activeFileIsHtml}
@@ -1662,6 +1687,29 @@
             />
           </span>
         {/if}
+        <!-- Save and close-all live behind one quiet "more" button; the open
+             files' own close buttons are on their tabs in the top row. -->
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger
+            class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'rounded-full text-muted-foreground')}
+            aria-label="More editor actions"
+          >
+            <Ellipsis class="size-3.5" aria-hidden="true" />
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Content align="end">
+            <DropdownMenu.Item
+              disabled={!activeFile?.dirty || Boolean(activeFile?.conflict) || activeFileReadOnly}
+              onSelect={() => void saveActiveFile()}
+            >
+              <Save class="size-3.5" aria-hidden="true" />
+              Save active file
+            </DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={closeAllOpenEditors}>
+              <X class="size-3.5" aria-hidden="true" />
+              Close all open editors
+            </DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu.Root>
       </div>
     </div>
 
@@ -1761,30 +1809,33 @@
     </div>
 
     <div class="editor-status">
-      <span class="status-path" title={activeFile?.relativePath}><bdi dir="ltr">{activeFile?.relativePath ?? ''}</bdi></span>
-      <div class="status-right">
-        <LanguageIntelligenceControls />
-        <span class="status-detail" title={activeFile?.conflict ?? undefined}>
-          {activeFile?.language ?? ''}
-          {#if editorState.symbols.length > 0}
-            · {editorState.symbols.length}
-            {editorState.symbols.length === 1 ? 'symbol' : 'symbols'}
-          {/if}
-          {#if activeFileReadOnly}
-            · read-only
-          {:else if activeImageMimeType}
-            · preview
-          {:else if activeFile?.saving}
-            · saving
-          {:else if activeFile?.conflict}
-            · conflict
-          {:else if activeFile?.dirty}
-            · unsaved
-          {:else}
-            · editable
-          {/if}
+      <!-- One quiet row: the language and what it knows on the left, the
+           Supercharged switch and the file's state on the right. Only the
+           symbol count gives way when the pane is narrow. -->
+      <b class="status-language">{activeFile?.language ?? ''}</b>
+      {#if editorState.symbols.length > 0}
+        <span class="status-symbols">
+          {editorState.symbols.length}
+          {editorState.symbols.length === 1 ? 'symbol' : 'symbols'}
         </span>
-      </div>
+      {/if}
+      <span class="status-spacer"></span>
+      <LanguageIntelligenceControls />
+      <span class="status-state" title={activeFile?.conflict ?? undefined}>
+        {#if activeFileReadOnly}
+          read-only
+        {:else if activeImageMimeType}
+          preview
+        {:else if activeFile?.saving}
+          saving
+        {:else if activeFile?.conflict}
+          conflict
+        {:else if activeFile?.dirty}
+          unsaved
+        {:else}
+          editable
+        {/if}
+      </span>
     </div>
   {/if}
 </div>
@@ -1874,15 +1925,17 @@
     padding: 0 8px 0 10px;
   }
 
+  /* The trail never scrolls: deep paths fold into "…", and what is left
+   * truncates at the project name and the file name. */
   .editor-breadcrumb-row {
     flex: 1 1 auto;
     min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
+    overflow: hidden;
   }
 
   .editor-breadcrumb-row :global(.breadcrumb-trigger) {
     min-height: 24px;
+    min-width: 0;
     max-width: 240px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2008,43 +2061,43 @@
     background: var(--color-hover);
   }
 
-  /* The footer's segments keep their size. Only the path gives way, and it
-   * gives way from its start, so the file name at its end stays readable. */
+  /* The footer: 12px muted text in one row that never wraps. Everything but
+   * the symbol count keeps its width; the count is cut with an ellipsis. */
   .editor-status {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 12px;
     flex: 0 0 auto;
     box-sizing: border-box;
     height: 32px;
+    min-width: 0;
+    overflow: hidden;
     background: var(--color-surface);
-    color: var(--color-text-2);
-    font-family: var(--font-mono);
+    color: var(--color-text-3);
     font-size: 12px;
+    white-space: nowrap;
     padding: 0 16px;
   }
 
-  .status-path {
+  .editor-status > * {
+    flex: 0 0 auto;
+  }
+
+  .status-language {
+    color: var(--color-text-2);
+    font-weight: 500;
+    text-transform: capitalize;
+  }
+
+  .editor-status > .status-symbols {
     flex: 0 1 auto;
-    min-width: min(16ch, 40%);
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
-    direction: rtl;
-    text-align: left;
   }
 
-  .status-right {
-    display: inline-flex;
-    align-items: center;
-    gap: 10px;
-    flex: 0 0 auto;
-    font-family: var(--font-ui);
-  }
-
-  .status-detail {
-    color: var(--color-text-3);
-    white-space: nowrap;
+  .editor-status > .status-spacer {
+    flex: 1 1 0;
+    min-width: 0;
   }
 </style>
