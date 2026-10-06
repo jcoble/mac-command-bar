@@ -300,7 +300,7 @@ WITH assistant_starts AS (
 ), bounds AS (
   SELECT MIN(first_seq) AS before_cursor,MAX(first_seq) AS after_cursor,
          COALESCE(SUM(required_bytes),0) AS transfer_bytes FROM selected
-), page_facts AS (
+), page_facts AS MATERIALIZED (
   SELECT b.*,
          (EXISTS(SELECT 1 FROM events e WHERE e.owned_id=:owned_id AND e.seq BETWEEN :low AND MIN(:high,b.before_cursor) AND e.seq<b.before_cursor
            AND e.item_id IS NOT NULL AND ((e.kind='content.delta' AND json_extract(e.payload,'$.payload.kind')='assistantDelta') OR (e.kind='item.completed' AND json_extract(e.payload,'$.payload.kind')='assistantMessage'))
