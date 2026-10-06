@@ -73,12 +73,13 @@ export interface SessionSourceControlWorkspace {
   scrollTop: number;
 }
 
-export interface SessionHistoryWorkspace {
-  scope: 'workspace' | 'project' | 'all';
-  openProjectKey: string | null;
-  openWorktreeKeys: string[];
-  expandedKey: string | null;
-  scrollTop: number;
+/** The Tasks panel's search, filters and sort; every value its query reads. */
+export interface SessionTasksWorkspace {
+  search: string;
+  filters: { status: string[]; priority: string[] };
+  projectFilter: string;
+  sortBy: string;
+  sortDirection: string;
 }
 
 export interface SessionWorkspaceFileState {
@@ -135,8 +136,8 @@ export interface SessionWorkspaceSnapshot {
   sourceControlInspectionRoot?: string | null;
   /** Small view state for the lazily mounted Source Control panel. */
   sourceControl?: SessionSourceControlWorkspace;
-  /** Small view state for the lazily mounted History panel. */
-  history?: SessionHistoryWorkspace;
+  /** The Tasks panel's query, so reopening the drawer shows the same list. */
+  tasksView?: SessionTasksWorkspace;
 }
 
 /** Current checkout ownership as the /next route hands it to inspection panels. */
@@ -220,7 +221,6 @@ export function captureWorkspace(input: {
   filesInspectionRoot?: string | null;
   sourceControlInspectionRoot?: string | null;
   sourceControl?: SessionSourceControlWorkspace;
-  history?: SessionHistoryWorkspace;
 }): SessionWorkspaceSnapshot {
   const activePath = input.activePath ?? null;
   // A path with no folder cannot be checked against the session being restored,
@@ -277,8 +277,6 @@ export function captureWorkspace(input: {
   if (sourceControlInspectionRoot) snapshot.sourceControlInspectionRoot = sourceControlInspectionRoot;
   const sourceControl = normalizeSourceControl(input.sourceControl);
   if (sourceControl) snapshot.sourceControl = sourceControl;
-  const history = normalizeHistory(input.history);
-  if (history) snapshot.history = history;
   return snapshot;
 }
 
@@ -478,15 +476,18 @@ function normalizeSourceControl(value: unknown): SessionSourceControlWorkspace |
   };
 }
 
-function normalizeHistory(value: unknown): SessionHistoryWorkspace | null {
+function normalizeTasksView(value: unknown): SessionTasksWorkspace | null {
   if (!isRecord(value)) return null;
-  const scope = value.scope === 'workspace' || value.scope === 'project' ? value.scope : 'all';
+  const filters = isRecord(value.filters) ? value.filters : {};
   return {
-    scope,
-    openProjectKey: pathOf(value.openProjectKey),
-    openWorktreeKeys: [...new Set(stringsOf(value.openWorktreeKeys))],
-    expandedKey: pathOf(value.expandedKey),
-    scrollTop: typeof value.scrollTop === 'number' && value.scrollTop > 0 ? value.scrollTop : 0
+    search: typeof value.search === 'string' ? value.search : '',
+    filters: {
+      status: [...new Set(stringsOf(filters.status))],
+      priority: [...new Set(stringsOf(filters.priority))]
+    },
+    projectFilter: typeof value.projectFilter === 'string' ? value.projectFilter : '',
+    sortBy: value.sortBy === 'title' ? 'title' : 'taskNumber',
+    sortDirection: value.sortDirection === 'asc' ? 'asc' : 'desc'
   };
 }
 
@@ -563,8 +564,8 @@ export function normalizeWorkspaceSnapshot(value: unknown): SessionWorkspaceSnap
   if (sourceControlInspectionRoot) snapshot.sourceControlInspectionRoot = sourceControlInspectionRoot;
   const sourceControl = normalizeSourceControl(entry.sourceControl);
   if (sourceControl) snapshot.sourceControl = sourceControl;
-  const history = normalizeHistory(entry.history);
-  if (history) snapshot.history = history;
+  const tasksView = normalizeTasksView(entry.tasksView);
+  if (tasksView) snapshot.tasksView = tasksView;
   return snapshot;
 }
 

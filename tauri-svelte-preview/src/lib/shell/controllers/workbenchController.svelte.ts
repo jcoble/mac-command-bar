@@ -38,6 +38,13 @@ import {
 
 const SESSIONS_COLLAPSED_KEY = 'shell.sessions.collapsed';
 
+/** Drawer tabs that live behind its ⋯ menu; one at a time gets a tab of its own. */
+export type RightExtraTabId = 'worktrees' | 'run' | 'context' | 'history';
+
+function isRightExtraTab(id: RightTabId): id is RightExtraTabId {
+	return id === 'worktrees' || id === 'run' || id === 'context' || id === 'history';
+}
+
 export interface FrameControls {
 	resetLayout(): void;
 	setRegionWidth(id: ShellRegionId, width: number, limits?: RegionWidthLimits): void;
@@ -51,10 +58,13 @@ export interface FrameControls {
 
 export class WorkbenchController {
 	rightTab = $state<RightTabId>(DEFAULT_RIGHT_TAB);
+	/** The ⋯-menu tab shown in the drawer's tab row, replaced by the next pick.
+	 * Memory only: on restore it follows `rightTab`. */
+	rightExtraTab = $state<RightExtraTabId | null>(null);
 	diffMode = $state<DiffMode>(DEFAULT_DIFF_MODE);
 	sessionsCollapsed = $state(false);
-	/** The right drawer. Closed at launch; it floats over the frame and never
-	 * changes the grid. */
+	/** The right drawer. Closed at launch; it pushes the frame narrower
+	 * beside it and never changes the grid's arrangement. */
 	rightPanelOpen = $state(false);
 	/** The tab pane widened over the chat; never saved, cleared when the pane goes. */
 	expanded = $state(false);
@@ -107,6 +117,7 @@ export class WorkbenchController {
 
 	selectRightTab(id: RightTabId): void {
 		this.rightTab = id;
+		if (isRightExtraTab(id)) this.rightExtraTab = id;
 		this.setRightPanelOpen(true);
 	}
 
@@ -122,6 +133,7 @@ export class WorkbenchController {
 
 	private adoptRightTab(id: RightTabId): void {
 		this.rightTab = id;
+		this.rightExtraTab = isRightExtraTab(id) ? id : null;
 		this.syncRightPanelVisibility();
 		this.syncGitSurfaceVisibility();
 	}

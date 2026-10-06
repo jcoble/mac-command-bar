@@ -404,22 +404,24 @@
 		root={selection.newSession.draftOpen ? "" : selection.durableSessionRoot}
 		rootAvailable={selection.activeRootAvailable}
 		ownedId={selection.activeOwnedId}
-		session={selection.railOwned.find((s) => s.ownedId === selection.activeOwnedId) ?? null}
 		filesRoot={selection.filesProjectionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
 		onExpandedPathsChange={(ownedId, root, paths) => selection.rememberExpandedPaths(ownedId, root, paths)}
+		filesScrollTop={selection.activeWorkspaceSnapshot?.scrollTop ?? 0}
+		onFilesScrollTopChange={(ownedId, scrollTop) => selection.persistWorkspaceState(ownedId, { scrollTop })}
 		filesInspectionRoot={selection.activeWorkspaceSnapshot?.filesInspectionRoot ?? null}
 		sourceControlInspectionRoot={selection.activeWorkspaceSnapshot?.sourceControlInspectionRoot ?? null}
 		onFilesInspectionRootChange={(root) => selection.rememberWorkspaceState({ filesInspectionRoot: root })}
 		onSourceControlInspectionRootChange={(root) => selection.rememberWorkspaceState({ sourceControlInspectionRoot: root })}
 		sourceControlWorkspace={selection.activeWorkspaceSnapshot?.sourceControl}
-		historyWorkspace={selection.activeWorkspaceSnapshot?.history}
 		onSourceControlWorkspaceChange={(ownedId, sourceControl) => {
 			if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ sourceControl });
 		}}
-		onHistoryWorkspaceChange={(ownedId, history) => {
-			if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ history });
+		tasksView={selection.activeWorkspaceSnapshot?.tasksView}
+		onTasksViewChange={(tasksView) => {
+			const ownedId = selection.activeOwnedId;
+			if (ownedId) selection.persistWorkspaceState(ownedId, { tasksView });
 		}}
 		checkoutDiscoveryRoots={selection.filesProjectionRoot ? [selection.filesProjectionRoot] : []}
 		onUseSessionCheckout={selection.controlledSession?.agent === "codex" && selection.controlledSession.origin === "app"
@@ -591,7 +593,12 @@
 		</div>
 		{#if workbench.rightPanelOpen}
 			<aside class="right-drawer" aria-label="Tools">
-				<RightPanelTabs activeId={workbench.rightTab} onSelect={selectRightTab} />
+				<RightPanelTabs
+					activeId={workbench.rightTab}
+					extraId={workbench.rightExtraTab}
+					onSelect={selectRightTab}
+					onClose={() => workbench.setRightPanelOpen(false)}
+				/>
 				<div class="right-drawer-body">
 					{@render drawerArea()}
 				</div>
@@ -643,7 +650,10 @@
 	}
 
 	/* The drawer is a card in the same gutter as the frame's own cards; its
-	   320px plus the 6px gutter is the --drawer-width the chrome row adds. */
+	   320px plus the 6px gutter is the --drawer-width the chrome row adds. The
+	   column takes its full width at once (an animated width would lay the
+	   whole frame out again every frame); only the card slides in, and the
+	   animation ends. */
 	.right-drawer {
 		display: flex;
 		flex: 0 0 320px;
@@ -654,6 +664,20 @@
 		overflow: hidden;
 		background: var(--panel-fade), var(--color-surface);
 		background-repeat: no-repeat;
+		animation: right-drawer-in 160ms ease-out;
+	}
+
+	@keyframes right-drawer-in {
+		from {
+			opacity: 0;
+			transform: translateX(16px);
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.right-drawer {
+			animation: none;
+		}
 	}
 
 	.right-drawer-body {

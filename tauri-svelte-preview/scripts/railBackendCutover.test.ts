@@ -26,7 +26,6 @@ const settingsStore = read('../src/lib/settingsStore.svelte.ts');
 const codeMirrorTheme = read('../src/lib/shell/editor/codeMirrorTheme.ts');
 const codeMirrorSourceEditor = read('../src/lib/CodeMirrorSourceEditor.svelte');
 const xtermFactory = read('../src/lib/shell/xtermFactory.ts');
-const segmentedTabs = read('../src/lib/shell/components/SegmentedTabs.svelte');
 const rightPanel = read('../src/lib/shell/components/RightPanel.svelte');
 const browserPanel = read('../src/lib/shell/panels/browser/BrowserPanel.svelte');
 const browserToolbar = read('../src/lib/shell/panels/browser/BrowserToolbar.svelte');
@@ -131,11 +130,6 @@ assert.equal(
   (browserToolbar.match(/tooltip=\{false\}/g) ?? []).length,
   7,
   'Browser toolbar icons must not mount the tooltip state loop over the native view'
-);
-assert.doesNotMatch(
-  segmentedTabs,
-  /Tooltip\./,
-  'panel tabs must not mount tooltip state over the native Browser view'
 );
 assert.match(page, /onProblemsLocationChange=\{\(location\) => workbench\.applyProblemsLocation\(location\)\}/);
 assert.match(page, /onShowBottomDock=\{\(\) => workbench\.showBottomDock\(\)\}/);

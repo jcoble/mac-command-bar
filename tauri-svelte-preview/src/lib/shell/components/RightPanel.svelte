@@ -2,11 +2,10 @@
   /**
    * RightPanel.svelte — the body of the right drawer.
    *
-   * One panel body fills the drawer under its icon tab strip. The browser is
-   * not here: it is a tab of the top row, in the tab pane. Files keeps one
-   * bounded panel instance for the active session because repeatedly
-   * reconstructing the virtual tree makes WebKit retain allocator pages. Every
-   * other panel mounts only while it is visible.
+   * One panel body fills the drawer under its tab row. The browser is not
+   * here: it is a tab of the top row, in the tab pane. The whole drawer
+   * unmounts when it closes; while it is open Files keeps one bounded panel
+   * instance, and every other panel mounts only while it is visible.
    *
    * No backend IO and no state of its own beyond the layout. Which tab is open
    * is decided by the page (it is remembered per session) and handed in; every
@@ -15,8 +14,8 @@
   import type { RightTabId } from '$lib/shell/workbenchNavigation';
   import type {
     CheckoutScope,
-    SessionHistoryWorkspace,
-    SessionSourceControlWorkspace
+    SessionSourceControlWorkspace,
+    SessionTasksWorkspace
   } from '$lib/shell/sessionWorkspaces';
 
   import AgentsPanel from '$lib/shell/panels/agents/AgentsPanel.svelte';
@@ -27,7 +26,6 @@
   import SourceControlPanel from '$lib/shell/panels/sourceControl/SourceControlPanel.svelte';
   import WorktreesPanel from '$lib/shell/panels/worktrees/WorktreesPanel.svelte';
   import TasksPanel from '$lib/shell/panels/tasks/TasksPanel.svelte';
-  import type { OwnedSession } from '$lib/shell/ownedSessions';
 
   interface Props {
     /** False while the drawer is closed. */
@@ -42,23 +40,24 @@
     checkoutScope?: CheckoutScope;
     /** The active session's ownedId, or null. */
     ownedId: string | null;
-    /** The active session's rail record, shown in the Files header card. */
-    session?: OwnedSession | null;
     /** Optional tree-only projection while rail selection is rebuilt in layers. */
     filesRoot?: string;
     filesOwnedId?: string | null;
     onRootUnavailable?(root: string): void | Promise<void>;
     expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
     onExpandedPathsChange?(ownedId: string, root: string, paths: readonly string[]): void;
+    /** The Files tree's stored scroll offset, applied once when it mounts. */
+    filesScrollTop?: number;
+    onFilesScrollTopChange?(ownedId: string, scrollTop: number): void;
     filesInspectionRoot?: string | null;
     checkoutDiscoveryRoots?: readonly string[];
     sourceControlInspectionRoot?: string | null;
     onFilesInspectionRootChange?(root: string | null): void;
     onSourceControlInspectionRootChange?(root: string | null): void;
     sourceControlWorkspace?: SessionSourceControlWorkspace;
-    historyWorkspace?: SessionHistoryWorkspace;
     onSourceControlWorkspaceChange?(ownedId: string | null, state: SessionSourceControlWorkspace): void;
-    onHistoryWorkspaceChange?(ownedId: string | null, state: SessionHistoryWorkspace): void;
+    tasksView?: SessionTasksWorkspace;
+    onTasksViewChange?(view: SessionTasksWorkspace): void;
     onUseSessionCheckout?(root: string): void | Promise<void>;
   }
   let {
@@ -68,21 +67,22 @@
     rootAvailable = true,
     checkoutScope,
     ownedId,
-    session = null,
     filesRoot,
     filesOwnedId,
     onRootUnavailable,
     expandedPathsByRoot,
     onExpandedPathsChange,
+    filesScrollTop,
+    onFilesScrollTopChange,
     filesInspectionRoot,
     checkoutDiscoveryRoots,
     sourceControlInspectionRoot,
     onFilesInspectionRootChange,
     onSourceControlInspectionRootChange,
     sourceControlWorkspace,
-    historyWorkspace,
     onSourceControlWorkspaceChange,
-    onHistoryWorkspaceChange,
+    tasksView,
+    onTasksViewChange,
     onUseSessionCheckout
   }: Props = $props();
 </script>
@@ -101,11 +101,12 @@
         {onRootUnavailable}
         {expandedPathsByRoot}
         {onExpandedPathsChange}
+        initialScrollTop={filesScrollTop}
+        onScrollTopChange={onFilesScrollTopChange}
         inspectionRoot={filesInspectionRoot}
         onInspectionRootChange={onFilesInspectionRootChange}
         {checkoutDiscoveryRoots}
         {onUseSessionCheckout}
-        {session}
       />
     </div>
     {#if visible && activeId === 'source-control'}
@@ -133,16 +134,10 @@
       <div class="panel-body carded showing"><AgentsPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'history'}
       <div class="panel-body carded showing">
-        <HistoryPanel
-          visible={true}
-          {root}
-          {ownedId}
-          workspaceState={historyWorkspace}
-          onWorkspaceStateChange={onHistoryWorkspaceChange}
-        />
+        <HistoryPanel visible={true} {root} {ownedId} />
       </div>
     {:else if visible && activeId === 'tasks'}
-      <div class="panel-body carded showing"><TasksPanel {root} /></div>
+      <div class="panel-body carded showing"><TasksPanel {root} initialView={tasksView} onViewChange={onTasksViewChange} /></div>
     {/if}
   </div>
 </div>

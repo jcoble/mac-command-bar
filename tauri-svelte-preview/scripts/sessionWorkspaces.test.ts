@@ -91,33 +91,19 @@ test('restore_plan_marks_the_active_path_without_file_contents', () => {
   assert.equal(plan.activePath, '/repo/b.ts');
 });
 
-test('workspace_record_round_trips_bounded_git_and_history_view_state', () => {
+test('workspace_record_round_trips_bounded_git_view_state', () => {
   const snapshot = normalizeWorkspaceSnapshot(captureWorkspace({
     openFiles: [],
     activePath: null,
     selectedPath: null,
     scrollTop: 0,
     rightTab: 'history',
-    sourceControl: { openSectionIds: ['staged', 'changes', 'staged'], scrollTop: 84 },
-    history: {
-      scope: 'project',
-      openProjectKey: '/repo',
-      openWorktreeKeys: ['/repo/worktree'],
-      expandedKey: 'codex:session-a',
-      scrollTop: 240
-    }
+    sourceControl: { openSectionIds: ['staged', 'changes', 'staged'], scrollTop: 84 }
   }));
 
   assert.deepEqual(snapshot?.sourceControl, {
     openSectionIds: ['staged', 'changes'],
     scrollTop: 84
-  });
-  assert.deepEqual(snapshot?.history, {
-    scope: 'project',
-    openProjectKey: '/repo',
-    openWorktreeKeys: ['/repo/worktree'],
-    expandedKey: 'codex:session-a',
-    scrollTop: 240
   });
 });
 
@@ -415,4 +401,65 @@ test('an old center dock record disappears on normalize', () => {
   assert.ok(snapshot);
   assert.equal('center' in snapshot, false);
   assert.equal(snapshot.topTabs, undefined);
+});
+
+const BASE_RECORD = {
+  openPaths: [],
+  activePath: null,
+  selectedPath: null,
+  scrollTop: 0,
+  diffPath: null,
+  diffRoot: null,
+  rightTab: 'tasks'
+};
+
+test('the tasks view round-trips through a stored record', () => {
+  const tasksView = {
+    search: 'drawer',
+    filters: { status: ['Doing'], priority: ['High', 'Low'] },
+    projectFilter: 'Assembly',
+    sortBy: 'title',
+    sortDirection: 'asc'
+  };
+  const snapshot = normalizeWorkspaceSnapshot(JSON.parse(JSON.stringify({ ...BASE_RECORD, tasksView })));
+
+  assert.deepEqual(snapshot?.tasksView, tasksView);
+});
+
+test('junk in a stored tasks view becomes its default', () => {
+  const snapshot = normalizeWorkspaceSnapshot({
+    ...BASE_RECORD,
+    tasksView: {
+      search: 42,
+      filters: { status: ['Doing', 7, 'Doing'], priority: 'High' },
+      projectFilter: null,
+      sortBy: 'createdAt',
+      sortDirection: 'sideways'
+    }
+  });
+
+  assert.deepEqual(snapshot?.tasksView, {
+    search: '',
+    filters: { status: ['Doing'], priority: [] },
+    projectFilter: '',
+    sortBy: 'taskNumber',
+    sortDirection: 'desc'
+  });
+  assert.equal(normalizeWorkspaceSnapshot({ ...BASE_RECORD, tasksView: 'all' })?.tasksView, undefined);
+});
+
+test('the file tree scroll offset round-trips through a stored record', () => {
+  const snapshot = normalizeWorkspaceSnapshot(JSON.parse(JSON.stringify({ ...BASE_RECORD, scrollTop: 336 })));
+
+  assert.equal(snapshot?.scrollTop, 336);
+});
+
+test('an old history panel record disappears on normalize', () => {
+  const snapshot = normalizeWorkspaceSnapshot({
+    ...BASE_RECORD,
+    history: { scope: 'project', openProjectKey: '/repo', openWorktreeKeys: [], expandedKey: null, scrollTop: 240 }
+  });
+
+  assert.ok(snapshot);
+  assert.equal('history' in snapshot, false);
 });

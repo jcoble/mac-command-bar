@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import FileText from '@lucide/svelte/icons/file-text';
   import List from '@lucide/svelte/icons/list';
@@ -6,7 +7,7 @@
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
   import Settings2 from '@lucide/svelte/icons/settings-2';
-  import { onDestroy, onMount, tick, untrack } from 'svelte';
+  import { onDestroy, onMount, untrack } from 'svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { buttonVariants } from '$lib/components/ui/button/index.js';
@@ -15,10 +16,8 @@
   import { FilterPills } from '$lib/components/ui/filter-pills/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
-  import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import * as Select from '$lib/components/ui/select/index.js';
-  import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import {
     clearNotionTaskSettings,
     listNotionTasks,
@@ -30,18 +29,13 @@
   } from '$lib/shell/notionTasks.ts';
   import { connectNotion } from '$lib/shell/notionOAuth.ts';
   import { matchNotionProject } from '$lib/shell/notionProjectMatch.ts';
-  import { readAssemblySettingFromTauri, writeAssemblySettingFromTauri } from '$lib/tauriSource';
+  import type { SessionTasksWorkspace } from '$lib/shell/sessionWorkspaces.ts';
   import { cn } from '$lib/utils.js';
   import NotionTaskViewer from './NotionTaskViewer.svelte';
 
   const PAGE_SIZE = 25;
   const TASK_ROW_HEIGHT = 48;
   const TASK_ROW_OVERSCAN = 5;
-  /** The pills' selection, saved under its own key as the Sessions rail saves its pills. */
-  const TASK_FILTERS_SETTING_KEY = 'tasks.filters';
-  /* The Sessions rail's header buttons: quiet glyphs that turn to the text colour on hover. */
-  const ACTION_CLASS =
-    'text-[var(--color-text-2)] hover:text-foreground hover:bg-[var(--pill-surface-hover)]';
 
   function taskStatusIconClass(status: string): string {
     switch (status.trim().toLowerCase()) {
@@ -64,8 +58,16 @@
     }
   }
 
-  /** The active session's folder; the list follows the Notion project it maps to. */
-  let { root = '' }: { root?: string } = $props();
+  interface Props {
+    /** The active session's folder; the list follows the Notion project it maps to. */
+    root?: string;
+    /** The search, filters and sort this session last used, read once at mount. */
+    initialView?: SessionTasksWorkspace;
+    /** Told every view the list is reloaded for, to save with the session. */
+    onViewChange?(view: SessionTasksWorkspace): void;
+  }
+  let { root = '', initialView, onViewChange }: Props = $props();
+  const restoredView = untrack(() => initialView);
 
   let settings = $state<NotionTaskSettings | null>(null);
   let tasks = $state<NotionTaskRow[]>([]);
@@ -73,14 +75,18 @@
   let statuses = $state<string[]>([]);
   let priorities = $state<string[]>([]);
   /** Selected pill values per group id: `status` and `priority`. Empty means unfiltered. */
-  let filters = $state<Record<string, string[]>>({});
-  let searchDraft = $state('');
-  let search = $state('');
-  let projectFilter = $state('');
-  let sortBy = $state('taskNumber');
-  let sortDirection = $state('desc');
-  let searchOpen = $state(false);
-  let searchInput = $state<HTMLInputElement | null>(null);
+  let filters = $state<Record<string, string[]>>({
+    status: restoredView?.filters.status ?? [],
+    priority: restoredView?.filters.priority ?? []
+  });
+  let searchDraft = $state(restoredView?.search ?? '');
+  let search = $state(restoredView?.search ?? '');
+  let projectFilter = $state(restoredView?.projectFilter ?? '');
+  let sortBy = $state(restoredView?.sortBy ?? 'taskNumber');
+  let sortDirection = $state(restoredView?.sortDirection ?? 'desc');
+  /** A restored project choice wins over the session's own project until that
+   * project first resolves; later changes of it are followed again. */
+  let keepRestoredProject = restoredView !== undefined;
   let loading = $state(true);
   let refreshing = $state(false);
   let saving = $state(false);
@@ -156,6 +162,13 @@
   }
 
   async function reloadCached(): Promise<void> {
+    onViewChange?.({
+      search,
+      filters: { status: [...(filters.status ?? [])], priority: [...(filters.priority ?? [])] },
+      projectFilter,
+      sortBy,
+      sortDirection
+    });
     const owner = generation;
     loading = true;
     error = '';
@@ -168,40 +181,16 @@
     }
   }
 
-  function storedChoices(stored: unknown, groupId: string): string[] {
-    const chosen = stored && typeof stored === 'object' ? (stored as Record<string, unknown>)[groupId] : null;
-    return Array.isArray(chosen) ? chosen.filter((value): value is string => typeof value === 'string') : [];
-  }
-
-  async function restoreFilters(): Promise<void> {
-    try {
-      const stored = await readAssemblySettingFromTauri(TASK_FILTERS_SETTING_KEY);
-      filters = { status: storedChoices(stored, 'status'), priority: storedChoices(stored, 'priority') };
-    } catch {
-      // Filters fall back to none when local settings are unavailable.
-    }
-  }
-
-  /** A new selection starts the list again from its first row and is saved. */
+  /** A new selection starts the list again from its first row. */
   function setFilters(next: Record<string, string[]>): void {
     filters = next;
     if (taskViewport) taskViewport.scrollTop = 0;
-    void writeAssemblySettingFromTauri(TASK_FILTERS_SETTING_KEY, next).catch(() => {
-      // The selection stays in memory when local settings are unavailable.
-    });
   }
 
   function applySearch(event: SubmitEvent): void {
     event.preventDefault();
     search = searchDraft.trim();
     void reloadCached();
-  }
-
-  async function toggleSearch(): Promise<void> {
-    searchOpen = !searchOpen;
-    if (!searchOpen) return;
-    await tick();
-    searchInput?.focus();
   }
 
   function directionLabel(direction: string): string {
@@ -225,8 +214,6 @@
 
   async function initialize(owner: number): Promise<void> {
     try {
-      await restoreFilters();
-      if (owner !== generation) return;
       settings = await readNotionTaskSettings();
       if (owner !== generation) return;
       dataSourceId = settings.dataSourceId;
@@ -329,6 +316,10 @@
   $effect(() => {
     const next = sessionProject;
     untrack(() => {
+      if (keepRestoredProject) {
+        if (next) keepRestoredProject = false;
+        return;
+      }
       if (next === projectFilter) return;
       projectFilter = next;
       void reloadCached();
@@ -377,7 +368,6 @@
     selectedTask = null;
     taskViewport = null;
     taskLoadSentinel = null;
-    searchInput = null;
   });
 </script>
 
@@ -387,112 +377,105 @@
   aria-hidden={selectedTask !== null}
   inert={selectedTask !== null}
 >
-  <PanelHeader title="Tasks" count={tasks.length}>
-    {#snippet actions()}
-      <div class="tasks-actions flex items-center">
-        <IconButton label="Search tasks" size="xs" side="bottom" class={ACTION_CLASS} onclick={() => void toggleSearch()}>
-          <Search class="size-4" aria-hidden="true" />
-        </IconButton>
-        <DropdownMenu.Root>
-          <Tooltip.Root>
-            <Tooltip.Trigger>
-              {#snippet child({ props })}
-                <DropdownMenu.Trigger
-                  {...props}
-                  class={cn(
-                    buttonVariants({ variant: 'ghost', size: 'icon-sm' }),
-                    ACTION_CLASS,
-                    projectFilter && 'text-[var(--color-accent)]'
-                  )}
-                  aria-label="View task options"
-                >
-                  <List class="size-4" aria-hidden="true" />
-                </DropdownMenu.Trigger>
-              {/snippet}
-            </Tooltip.Trigger>
-            <Tooltip.Content side="bottom">View task options</Tooltip.Content>
-          </Tooltip.Root>
-          <DropdownMenu.Content
-            align="end"
-            sideOffset={7}
-            class="flex w-[304px]! flex-col gap-[var(--space-3)] p-[var(--space-4)] text-foreground"
-          >
-            <div class="flex min-h-8 items-center justify-between gap-3">
-              <span class="text-[13px] text-foreground">Sort</span>
-              <Select.Root
-                type="single"
-                value={sortBy}
-                onValueChange={(value) => {
-                  sortBy = value;
-                  void reloadCached();
-                }}
-              >
-                <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Sort tasks">
-                  {sortBy === 'taskNumber' ? 'Task number' : 'Title'}
-                </Select.Trigger>
-                <Select.Content>
-                  <Select.Item value="taskNumber" label="Task number" />
-                  <Select.Item value="title" label="Title" />
-                </Select.Content>
-              </Select.Root>
-            </div>
-            <div class="flex min-h-8 items-center justify-between gap-3">
-              <span class="text-[13px] text-foreground">Direction</span>
-              <Select.Root
-                type="single"
-                value={sortDirection}
-                onValueChange={(value) => {
-                  sortDirection = value;
-                  void reloadCached();
-                }}
-              >
-                <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Sort direction">
-                  {directionLabel(sortDirection)}
-                </Select.Trigger>
-                <Select.Content>
-                  <Select.Item value="asc" label={directionLabel('asc')} />
-                  <Select.Item value="desc" label={directionLabel('desc')} />
-                </Select.Content>
-              </Select.Root>
-            </div>
-            <div class="flex min-h-8 items-center justify-between gap-3">
-              <span class="text-[13px] text-foreground">Project</span>
-              <Select.Root
-                type="single"
-                value={projectFilter || 'all'}
-                onValueChange={(value) => {
-                  projectFilter = value === 'all' ? '' : value;
-                  void reloadCached();
-                }}
-              >
-                <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Filter tasks by project">
-                  {projectFilter || 'All projects'}
-                </Select.Trigger>
-                <Select.Content>
-                  <Select.Item value="all" label="All projects" />
-                  {#each projects as project}<Select.Item value={project} label={project} />{/each}
-                </Select.Content>
-              </Select.Root>
-            </div>
-          </DropdownMenu.Content>
-        </DropdownMenu.Root>
-        <IconButton label="Task settings" size="xs" side="bottom" class={ACTION_CLASS} onclick={() => (showSetup = !showSetup)}>
-          <Settings2 class="size-4" aria-hidden="true" />
-        </IconButton>
-        <IconButton
-          label="Refresh tasks"
-          size="xs"
-          side="bottom"
-          class={ACTION_CLASS}
-          disabled={refreshing || showSetup}
-          onclick={() => void refresh()}
+  <!-- The Codex file-pane header: a row of pill controls, then the search. -->
+  <header class="flex flex-none flex-col gap-2 px-3 pt-3 pb-2" aria-label="Tasks">
+    <div class="flex min-w-0 items-center gap-1">
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger
+          class={cn(
+            buttonVariants({ variant: 'outline', size: 'sm' }),
+            'min-w-0 rounded-full',
+            projectFilter && 'text-[var(--color-accent)]'
+          )}
+          aria-label="View task options"
         >
-          <RefreshCw class="size-4" aria-hidden="true" />
-        </IconButton>
-      </div>
-    {/snippet}
-    {projectFilter || 'All projects'} · Latest successful Notion snapshot
-  </PanelHeader>
+          <List aria-hidden="true" />
+          <span class="truncate">{projectFilter || 'All projects'}</span>
+          <ChevronDown aria-hidden="true" />
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Content
+          align="start"
+          sideOffset={7}
+          class="flex w-[296px]! flex-col gap-[var(--space-3)] p-[var(--space-4)] text-foreground"
+        >
+          <div class="flex min-h-8 items-center justify-between gap-3">
+            <span class="text-[13px] text-foreground">Sort</span>
+            <Select.Root
+              type="single"
+              value={sortBy}
+              onValueChange={(value) => {
+                sortBy = value;
+                void reloadCached();
+              }}
+            >
+              <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Sort tasks">
+                {sortBy === 'taskNumber' ? 'Task number' : 'Title'}
+              </Select.Trigger>
+              <Select.Content>
+                <Select.Item value="taskNumber" label="Task number" />
+                <Select.Item value="title" label="Title" />
+              </Select.Content>
+            </Select.Root>
+          </div>
+          <div class="flex min-h-8 items-center justify-between gap-3">
+            <span class="text-[13px] text-foreground">Direction</span>
+            <Select.Root
+              type="single"
+              value={sortDirection}
+              onValueChange={(value) => {
+                sortDirection = value;
+                void reloadCached();
+              }}
+            >
+              <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Sort direction">
+                {directionLabel(sortDirection)}
+              </Select.Trigger>
+              <Select.Content>
+                <Select.Item value="asc" label={directionLabel('asc')} />
+                <Select.Item value="desc" label={directionLabel('desc')} />
+              </Select.Content>
+            </Select.Root>
+          </div>
+          <div class="flex min-h-8 items-center justify-between gap-3">
+            <span class="text-[13px] text-foreground">Project</span>
+            <Select.Root
+              type="single"
+              value={projectFilter || 'all'}
+              onValueChange={(value) => {
+                projectFilter = value === 'all' ? '' : value;
+                void reloadCached();
+              }}
+            >
+              <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Filter tasks by project">
+                {projectFilter || 'All projects'}
+              </Select.Trigger>
+              <Select.Content>
+                <Select.Item value="all" label="All projects" />
+                {#each projects as project}<Select.Item value={project} label={project} />{/each}
+              </Select.Content>
+            </Select.Root>
+          </div>
+        </DropdownMenu.Content>
+      </DropdownMenu.Root>
+      <span class="flex-1"></span>
+      <IconButton label="Task settings" side="bottom" onclick={() => (showSetup = !showSetup)}>
+        <Settings2 class="size-4" aria-hidden="true" />
+      </IconButton>
+      <IconButton
+        label="Refresh tasks"
+        side="bottom"
+        disabled={refreshing || showSetup}
+        onclick={() => void refresh()}
+      >
+        <RefreshCw class="size-4" aria-hidden="true" />
+      </IconButton>
+    </div>
+    <form class="relative" onsubmit={applySearch}>
+      <Search class="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+      <Input bind:value={searchDraft} class="h-8 pr-10 pl-8" placeholder="Search tasks" aria-label="Search tasks" />
+      <span class="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-xs text-muted-foreground tabular-nums">{tasks.length}</span>
+    </form>
+  </header>
 
   {#if filterGroups.length > 0}
     <div class="tasks-pills px-(--space-4) pb-(--space-2)">
@@ -551,12 +534,6 @@
 
   {#if error}
     <p class="mx-3 mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p>
-  {/if}
-
-  {#if searchOpen}
-    <form class="px-(--space-4) pb-(--space-2)" onsubmit={applySearch}>
-      <Input bind:ref={searchInput} bind:value={searchDraft} placeholder="Search tasks" aria-label="Search tasks" />
-    </form>
   {/if}
 
   <ScrollArea class="min-h-0 flex-1" bind:viewportRef={taskViewport}>
@@ -633,23 +610,5 @@
      scrollbar and the pills under it ignore clicks. */
   .tasks-pills :global([role='group']) {
     scrollbar-width: none;
-  }
-
-  /* The Sessions rail's header group: 29px round buttons in one pill. */
-  .tasks-actions {
-    gap: 1px;
-    padding: 3px;
-    border-radius: var(--radius-pill);
-    background: var(--pill-surface);
-  }
-  .tasks-actions :global(button) {
-    width: 29px;
-    height: 29px;
-    padding: 0;
-    border-radius: var(--radius-pill);
-  }
-  .tasks-actions :global(button svg) {
-    width: 16px;
-    height: 16px;
   }
 </style>

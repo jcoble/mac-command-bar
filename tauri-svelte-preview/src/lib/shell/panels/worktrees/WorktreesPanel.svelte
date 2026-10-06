@@ -35,6 +35,7 @@
    */
   import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Search from '@lucide/svelte/icons/search';
 
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
@@ -239,7 +240,7 @@
         <RefreshCw aria-hidden="true" />
       </IconButton>
     {/snippet}
-    {worktreeManager.activated ? summary : 'Not looked yet'}
+    {#if worktreeManager.projectName}{worktreeManager.projectName} · {/if}{worktreeManager.activated ? summary : 'Not looked yet'}
   </PanelHeader>
 
   {#if !worktreeManager.activated}
@@ -263,9 +264,10 @@
       </IconButton>
     </div>
   {:else}
-    <div class="shrink-0 px-(--space-4) pb-(--space-3)">
+    <div class="relative shrink-0 px-3 pb-2">
+      <Search class="pointer-events-none absolute top-1/2 left-5.5 size-4 -translate-y-[calc(50%+4px)] text-muted-foreground" aria-hidden="true" />
       <Input
-        class="h-9 px-3 text-(length:--text-body)"
+        class="h-8 pl-8 text-(length:--text-body)"
         placeholder="Filter by branch, task, or folder"
         autocomplete="off"
         spellcheck="false"

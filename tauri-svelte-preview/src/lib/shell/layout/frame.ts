@@ -566,7 +566,13 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
       persistSoon();
     },
     layout(width: number, height: number): void {
+      // The grid lays out proportionally, so a narrower frame (the drawer
+      // opening beside it, a smaller window) would take a share from the
+      // sessions rail too. Asking for the rail's width again afterwards puts
+      // the whole change on the center and the pane.
+      const sessions = regionWidth('sessions');
       api.layout(width, height);
+      if (sessions !== null && regionWidth('sessions') !== sessions) setRegionWidth('sessions', sessions);
     },
     dispose(): void {
       disposed = true;
