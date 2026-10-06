@@ -237,7 +237,9 @@ export class SessionSelectionController {
 	}
 
 	rememberWorkspaceState(patch: Partial<SessionWorkspaceSnapshot>): void {
-		this.activeWorkspaceSnapshot = this.editorSessions.rememberWorkspaceState(patch);
+		// A session whose selection failed has no editor owner; keep showing its
+		// saved workspace rather than dropping it on the first panel change.
+		this.activeWorkspaceSnapshot = this.editorSessions.rememberWorkspaceState(patch) ?? this.activeWorkspaceSnapshot;
 	}
 
 	persistWorkspaceState(ownedId: string, patch: Partial<SessionWorkspaceSnapshot>): void {
