@@ -766,7 +766,9 @@
   });
 
   $effect(() => {
-    if (!visible || !root || !ownedId) return;
+    // Pages live while the pane is open, so keep hearing their navigation
+    // while another tab is in front; showing a page doesn't replay it.
+    if (!panelOpen || !root || !ownedId) return;
     // The diagnostics wrapper increments a reactive counter while subscribing.
     // Keep that bookkeeping outside this effect's dependencies or the counter
     // invalidates the effect that just changed it.
