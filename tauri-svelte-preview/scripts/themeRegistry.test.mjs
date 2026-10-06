@@ -56,14 +56,14 @@ function readDeclarations(css) {
 
 // ── The registry offers real themes, and Houston is the one you get ────────
 {
-  assert.equal(DEFAULT_THEME_ID, 'houston', 'Houston is the look the app ships with');
+  assert.equal(DEFAULT_THEME_ID, 'assembly', 'Assembly is the look the app ships with');
   assert.ok(THEMES.length >= 2, 'a chooser with one theme proves nothing');
   assert.deepEqual(
     listThemes().map((theme) => theme.id),
     THEMES.map((theme) => theme.id),
     'listThemes() must hand back the whole roster'
   );
-  assert.equal(getTheme(DEFAULT_THEME_ID).id, 'houston');
+  assert.equal(getTheme(DEFAULT_THEME_ID).id, 'assembly');
   assert.ok(
     THEMES.some((theme) => theme.id === 'dracula'),
     'Dracula ships as the second theme'
@@ -81,12 +81,12 @@ function readDeclarations(css) {
   // A settings file written before themes existed says "dark", and there has
   // never been a light theme. Both must land on the theme the app ships with
   // rather than on nothing at all.
-  assert.equal(resolveThemeId('dark'), 'houston');
-  assert.equal(resolveThemeId('light'), 'houston');
-  assert.equal(resolveThemeId('nonsense'), 'houston');
-  assert.equal(resolveThemeId(undefined), 'houston');
+  assert.equal(resolveThemeId('dark'), 'assembly');
+  assert.equal(resolveThemeId('light'), 'assembly');
+  assert.equal(resolveThemeId('nonsense'), 'assembly');
+  assert.equal(resolveThemeId(undefined), 'assembly');
   assert.equal(resolveThemeId('dracula'), 'dracula');
-  assert.equal(getTheme('nonsense').id, 'houston', 'an unknown id falls back, never throws');
+  assert.equal(getTheme('nonsense').id, 'assembly', 'an unknown id falls back, never throws');
 }
 
 // ── Every theme sets every color the shell reads ───────────────────────────
@@ -125,13 +125,13 @@ function readDeclarations(css) {
   }
 }
 
-// ── Houston still matches the stylesheet the app actually loads ────────────
+// ── The default theme still matches the stylesheet the app actually loads ────────────
 //
 // This is the check that matters most. Houston is a copy of the values in
 // `nextTokens.css`; if someone edits that file the copy has to move with it,
 // or the shell repaints itself the first time a theme is applied.
 {
-  const houston = getTheme('houston');
+  const houston = getTheme(DEFAULT_THEME_ID);
   const stylesheet = readDeclarations(read(NEXT_TOKENS_PATH));
 
   const colorsInStylesheet = [...stylesheet.keys()].filter((name) => name.startsWith('--color-'));

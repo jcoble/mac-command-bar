@@ -54,18 +54,8 @@ body {
   min-height: 100dvh;
   margin: 0;
   overflow: hidden;
-  background:
-    linear-gradient(
-      135deg,
-      color-mix(in srgb, var(--segmented-tab-active) 28%, transparent),
-      transparent 34%
-    ),
-    radial-gradient(
-      circle at 88% 12%,
-      color-mix(in srgb, var(--segmented-tab-active) 20%, transparent),
-      transparent 26%
-    ),
-    var(--color-bg);
+  /* The window is the theme's flat backdrop; panels separate by tone. */
+  background: var(--color-bg);
   color: var(--color-text);
   font-family: inherit;
   line-height: inherit;
@@ -173,7 +163,7 @@ textarea,
 }
 
 /* A field is the exception, and only inside the /next shell: it says it has
-   focus by turning its own border mint (`--focus-border`) rather than by
+   focus by turning its own border the accent colour (`--focus-border`) rather than by
    drawing a ring around itself. The ring above still carries buttons, rows
    and menu items, which have no edge of their own to change. */
 :root.next-shell-document :is(input, textarea):focus-visible {
