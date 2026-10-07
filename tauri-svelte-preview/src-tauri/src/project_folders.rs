@@ -128,6 +128,40 @@ pub(crate) async fn list_folders(path: String) -> Result<FolderListing, String> 
         .map_err(|error| error.to_string())?
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreatedWorktree {
+    pub path: String,
+    pub branch: String,
+}
+
+/// Adds a worktree on a new `assembly-<hex>` branch from `base`, under
+/// `~/dev/work/worktrees/<repo>/<branch>`. A refusal carries git's own words.
+pub(crate) fn create_project_worktree_sync(root: &Path, base: &str) -> Result<CreatedWorktree, String> {
+    let repo = inspect_project_folder_sync(&root.to_string_lossy())?.title;
+    let branch = format!("assembly-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let path = expand_home("~")?.join("dev/work/worktrees").join(repo).join(&branch);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let output = Command::new("git")
+        .arg("-C").arg(root)
+        .args(["worktree", "add", "-b", &branch]).arg(&path).arg(base)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim_end().to_owned());
+    }
+    Ok(CreatedWorktree { path: path.to_string_lossy().into_owned(), branch })
+}
+
+#[tauri::command]
+pub(crate) async fn create_project_worktree(root: String, base: String) -> Result<CreatedWorktree, String> {
+    tauri::async_runtime::spawn_blocking(move || create_project_worktree_sync(Path::new(&root), &base))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 pub(crate) fn new_project_row(machine: String, inspection: ProjectFolderInspection) -> ProjectRow {
     ProjectRow {
         id: uuid::Uuid::new_v4().to_string(),
@@ -184,6 +218,63 @@ mod tests {
 
     fn text(path: &Path) -> &str {
         path.to_str().unwrap()
+    }
+
+    /// Tests that point `HOME` somewhere else take turns.
+    static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Runs `body` with `HOME` set to `home`, then restores it.
+    fn with_home<T>(home: &Path, body: impl FnOnce() -> T) -> T {
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = std::env::var_os("HOME");
+        std::env::set_var("HOME", home);
+        let result = body();
+        match previous {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        result
+    }
+
+    fn repo_with_main(root: &Path) -> PathBuf {
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "first"]);
+        git(&repo, &["remote", "add", "origin", "git@github.com:jcoble/Mac-Command-Bar.git"]);
+        repo
+    }
+
+    #[test]
+    fn create_project_worktree_adds_the_branch_at_the_expected_path() {
+        let root = temp_dir();
+        let repo = repo_with_main(&root);
+        let home = root.join("home");
+        let created = with_home(&home, || create_project_worktree_sync(&repo, "main")).unwrap();
+        let hex = created.branch.strip_prefix("assembly-").unwrap();
+        assert_eq!(hex.len(), 8);
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "{hex}");
+        let expected = home.join("dev/work/worktrees/Mac-Command-Bar").join(&created.branch);
+        assert_eq!(created.path, text(&expected));
+        assert!(expected.is_dir());
+        let listed = Command::new("git").args(["worktree", "list", "--porcelain"]).current_dir(&repo).output().unwrap();
+        let listed = String::from_utf8_lossy(&listed.stdout);
+        assert!(listed.contains(&format!("worktree {}\n", created.path)), "{listed}");
+        assert!(listed.contains(&format!("branch refs/heads/{}", created.branch)), "{listed}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn create_project_worktree_returns_git_stderr_when_the_base_is_missing() {
+        let root = temp_dir();
+        let repo = repo_with_main(&root);
+        let home = root.join("home");
+        let error = with_home(&home, || create_project_worktree_sync(&repo, "no-such-base")).unwrap_err();
+        assert!(error.starts_with("fatal: "), "{error}");
+        assert!(error.contains("no-such-base"), "{error}");
+        let branches = Command::new("git").args(["branch", "--list", "assembly-*"]).current_dir(&repo).output().unwrap();
+        assert!(branches.stdout.is_empty());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -272,14 +363,7 @@ mod tests {
         std::fs::create_dir_all(home.join("zeta")).unwrap();
         std::fs::create_dir_all(home.join("alpha")).unwrap();
         std::fs::write(home.join("file.txt"), "not a folder").unwrap();
-        let previous = std::env::var_os("HOME");
-        std::env::set_var("HOME", &home);
-        let listed = list_folders_sync("~");
-        let nested = list_folders_sync("~/alpha");
-        match previous {
-            Some(value) => std::env::set_var("HOME", value),
-            None => std::env::remove_var("HOME"),
-        }
+        let (listed, nested) = with_home(&home, || (list_folders_sync("~"), list_folders_sync("~/alpha")));
         assert_eq!(
             listed.unwrap(),
             FolderListing {

@@ -288,28 +288,23 @@ const providerConfigs = [
   // });
 }
 
-// This build can list worktrees but has no creation command. Choosing the
-// toggle is therefore an explicit validation failure, never a silent fallback
-// to the project checkout.
+// New worktree is a real choice: the request validates and carries the base
+// branch with `createNewWorktree: true`. The worktree itself is made at the
+// first send, not here.
 {
   const state = {
+    ...defaultThreadStartState({ projectId: 'p1', projectPath: '/Users/me/dev/work/mac-command-bar' }),
     prompt: 'Create the thread-first flow',
-    provider: 'codex',
-    model: 'gpt-5.6-luna',
-    effort: 'max',
-    access: 'on-request',
-    projectPath: '/Users/me/dev/work/mac-command-bar',
-    cwd: '/Users/me/dev/work/mac-command-bar',
-    branch: 'tsk-808-thread',
+    branch: 'main',
+    branchesAvailable: true,
     createNewWorktree: true
   };
-  assert.deepEqual(validateThreadStart(state), [
-    {
-      field: 'worktree',
-      message: 'New worktree creation is not available in this build. Choose an existing checkout.'
-    }
-  ]);
-  assert.equal(buildThreadStartRequest(state), null);
+  assert.deepEqual(validateThreadStart(state), []);
+  const request = buildThreadStartRequest(state);
+  assert.equal(request?.createNewWorktree, true);
+  assert.equal(request?.branch, 'main');
+  assert.equal(request?.projectId, 'p1');
+  assert.deepEqual(validateThreadStart({ ...state, branch: '' }).map((problem) => problem.field), ['branch']);
 }
 
 assert.equal(

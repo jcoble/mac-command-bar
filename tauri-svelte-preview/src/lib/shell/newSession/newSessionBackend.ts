@@ -181,6 +181,22 @@ export async function switchBranch(machine: string, root: string, name: string):
   }
 }
 
+export type CreatedWorktree = { path: string; branch: string };
+
+/** `git worktree add -b assembly-<hex> <path> <base>` on the project's machine,
+ * at the first send of a New worktree draft. A failure carries git's own words. */
+export async function createWorktree(machine: string, root: string, base: string): Promise<BackendAnswer<CreatedWorktree>> {
+  if (!isNativeTauriRuntime()) {
+    return { status: 'unavailable', message: DESKTOP_ONLY_MESSAGE };
+  }
+  try {
+    countInvoke('create_project_worktree');
+    return { status: 'ok', value: await invokeOn<CreatedWorktree>(machine, 'create_project_worktree', { root, base }) };
+  } catch (error) {
+    return { status: 'failed', message: describeError(error) };
+  }
+}
+
 /** This Mac runs `command` itself; a remote machine runs it through its server. */
 async function invokeOn<T>(machine: string, command: string, args: Record<string, unknown>): Promise<T> {
   const { invoke } = await import('@tauri-apps/api/core');

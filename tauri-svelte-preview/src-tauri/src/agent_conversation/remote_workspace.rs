@@ -61,6 +61,12 @@ pub(super) async fn execute(operation: String, args: Value) -> Result<Value, Str
         "list_project_git_refs" => return json(git::list_project_git_refs(arg(&args, "root")?).await?),
         "remove_project_worktree" => return json(git::remove_project_worktree(arg(&args, "root")?, arg(&args, "path")?, arg(&args, "force")?).await?),
         "archive_project_worktree" => return json(git::archive_project_worktree(arg(&args, "root")?, arg(&args, "path")?).await?),
+        "create_project_worktree" => {
+            let (root, base) = (path(&args, "root")?, arg::<String>(&args, "base")?);
+            return tokio::task::spawn_blocking(move || json(crate::project_folders::create_project_worktree_sync(&root, &base)?))
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         // Hosted PR commands run gh here, with the same stale-head guards as the Mac.
         "list_github_pull_requests" => return json(crate::github::list_github_pull_requests(arg(&args, "query")?).await?),
         "read_github_pull_request" => return json(crate::github::read_github_pull_request(arg(&args, "root")?, arg(&args, "number")?).await?),

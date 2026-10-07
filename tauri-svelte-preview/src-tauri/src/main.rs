@@ -5617,6 +5617,7 @@ fn main() {
             agent_conversation::list_projects,
             agent_conversation::add_project,
             project_folders::list_folders,
+            project_folders::create_project_worktree,
             agent_conversation::respond_agent_conversation_approval,
             agent_conversation::respond_agent_conversation_permission,
             agent_conversation::respond_agent_conversation_input,

@@ -57,7 +57,7 @@ export type ThreadStartPickerState = {
 };
 
 export type ThreadStartProblem = {
-  field: 'prompt' | 'project' | 'branch' | 'worktree';
+  field: 'prompt' | 'project' | 'branch';
   message: string;
 };
 
@@ -359,9 +359,8 @@ export function titleFromPrompt(prompt: string, projectPath: string): string {
 }
 
 /**
- * Validate only what can be settled before a backend call. The worktree toggle
- * is intentionally rejected because this build has no create-worktree command;
- * silently using the main checkout would violate the selected location.
+ * Validate only what can be settled before a backend call. In New worktree
+ * mode the branch is the base; the worktree itself is made at the first send.
  */
 export function validateThreadStart(state: ThreadStartPickerState, hasAttachments = false): ThreadStartProblem[] {
   const problems: ThreadStartProblem[] = [];
@@ -384,12 +383,6 @@ export function validateThreadStart(state: ThreadStartPickerState, hasAttachment
   // folder being empty means in the first place.
   if (state.projectPath && state.branchesAvailable && !tidy(state.branch)) {
     problems.push({ field: 'branch', message: 'Choose an existing branch first.' });
-  }
-  if (state.createNewWorktree) {
-    problems.push({
-      field: 'worktree',
-      message: 'New worktree creation is not available in this build. Choose an existing checkout.'
-    });
   }
   return problems;
 }

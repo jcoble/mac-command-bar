@@ -10,7 +10,9 @@
   No Assembly conversation is created here, and opening, switching or closing a
   draft only reads: the project list, folder listings and branch lists. Picking
   a branch only changes the draft; a branch with no checkout is switched to in
-  the project root at the first send, before the session is created. A
+  the project root at the first send, before the session is created. In New
+  worktree mode the branch is the base, and the worktree is added at the first
+  send too; a discarded draft adds nothing. A
   temporary ACP session reads the selected provider's controls; its process
   stops after the read. The surface hands one `ThreadStartPickerState` to
   `onSend` on the first message.
@@ -22,6 +24,7 @@
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Cloud from '@lucide/svelte/icons/cloud';
   import Folder from '@lucide/svelte/icons/folder';
+  import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
   import MessageCircle from '@lucide/svelte/icons/message-circle';
   import Monitor from '@lucide/svelte/icons/monitor';
@@ -55,6 +58,7 @@
     type ThreadStartRequest
   } from '$lib/shell/newSession/threadStartFlow.ts';
   import {
+    createWorktree,
     listGitRefs,
     switchBranch,
     type BackendAnswer,
@@ -264,7 +268,8 @@
       projectPath: project.rootPath,
       cwd: project.rootPath,
       branch: '',
-      branchesAvailable: false
+      branchesAvailable: false,
+      createNewWorktree: false
     });
     if (machineChanged) checkSelectedMachine();
     void loadRefs(project.machine, project.rootPath);
@@ -286,7 +291,8 @@
         projectPath: '',
         cwd,
         branch: '',
-        branchesAvailable: false
+        branchesAvailable: false,
+        createNewWorktree: false
       });
       if (machineChanged) checkSelectedMachine();
     } catch (error) {
@@ -385,10 +391,20 @@
     submitting = true;
     submitError = '';
     try {
-      // A branch with no checkout is switched to in the root now, at the first
-      // send. If git refuses, its message stays on the draft and nothing starts.
+      // A new worktree, or a switch for a branch with no checkout, happens now,
+      // at the first send. If git refuses, its message stays on the draft and
+      // nothing starts.
       const plan = selectedRef ? checkoutPlanFor(draft.projectPath, selectedRef) : null;
-      if (plan?.kind === 'switch') {
+      if (draft.createNewWorktree) {
+        const created = await createWorktree(draftMachine, draft.projectPath, draft.branch);
+        if (stopSignal.aborted) return;
+        if (created.status !== 'ok') {
+          submitError = created.message;
+          return;
+        }
+        request.cwd = created.value.path;
+        request.branch = created.value.branch;
+      } else if (plan?.kind === 'switch') {
         const switched = await switchBranch(draftMachine, plan.root, plan.branch);
         if (stopSignal.aborted) return;
         if (switched.status !== 'ok') {
@@ -546,10 +562,30 @@
   {/if}
 
   {#if selectedProject && gitRefs.length > 0}
-    <span class="draft-machine-label" data-testid="draft-session-workspace">
-      <Folder aria-hidden="true" class="size-3.5" />
-      Current checkout
-    </span>
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger>
+        {#snippet child({ props })}
+          <Button {...props} data-testid="draft-session-workspace" variant="ghost" size="xs" class="draft-control">
+            {#if draft.createNewWorktree}<FolderGit2 aria-hidden="true" class="size-3.5" />{:else}<Folder aria-hidden="true" class="size-3.5" />{/if}
+            {draft.createNewWorktree ? 'New worktree' : 'Current checkout'}
+            <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
+          </Button>
+        {/snippet}
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content class="draft-machine-menu" side="bottom" align="start" sideOffset={8} avoidCollisions collisionPadding={12}>
+        <DropdownMenu.Label>Workspace</DropdownMenu.Label>
+        <DropdownMenu.Item data-testid="draft-session-current-checkout" onSelect={() => updateDraft({ createNewWorktree: false })}>
+          <Folder aria-hidden="true" class="size-4" />
+          <span class="draft-machine-name">Current checkout</span>
+          {#if !draft.createNewWorktree}<Check aria-hidden="true" class="draft-machine-selected size-4" />{/if}
+        </DropdownMenu.Item>
+        <DropdownMenu.Item data-testid="draft-session-new-worktree" onSelect={() => updateDraft({ createNewWorktree: true })}>
+          <FolderGit2 aria-hidden="true" class="size-4" />
+          <span class="draft-machine-name">New worktree</span>
+          {#if draft.createNewWorktree}<Check aria-hidden="true" class="draft-machine-selected size-4" />{/if}
+        </DropdownMenu.Item>
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
     <BranchPicker refs={gitRefs} rootPath={draft.projectPath} branch={draft.branch} onPick={chooseRef} />
   {/if}
 {/snippet}
