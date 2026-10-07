@@ -7,7 +7,7 @@
   import { highlightCode, languageForPath, plainHighlightedLines, type HighlightedLine } from './codeHighlight.ts';
 
   interface Props {
-    item?: Extract<ConversationDisplayItem, { kind: 'file' }>;
+    item: Extract<ConversationDisplayItem, { kind: 'file' }>;
     path?: string;
     diff?: string;
     onFileLink?(path: string): void;
