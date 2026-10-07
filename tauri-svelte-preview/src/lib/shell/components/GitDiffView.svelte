@@ -2,8 +2,9 @@
   /**
    * GitDiffView.svelte — the Changes tab.
    *
-   * Shows every uncommitted change in the session's working copy, file under
-   * file, with the changed-file tree beside it (`MultiFileDiff`). A file
+   * Shows every uncommitted change in the session's working copy — or, in
+   * the Branch scope, everything since the branch left the default branch —
+   * file under file, with the changed-file tree beside it (`MultiFileDiff`). A file
    * picked in Source Control is the same view, scrolled to that file. A file
    * opened from a commit or a pull request is shown on its own.
    *
@@ -11,18 +12,22 @@
    * tab in front, so everything read here is let go of when it is not.
    */
   import { untrack } from 'svelte';
+  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import { buttonVariants } from '$lib/components/ui/button/index.js';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import MultiFileDiff from '$lib/shell/components/git/MultiFileDiff.svelte';
-  import { diffTextOf, parsedDiffOf } from '$lib/shell/git/diffRows';
+  import { diffTextOf, parsedDiffOf, splitDiffByFile } from '$lib/shell/git/diffRows';
+  import { readBranchDiff } from '$lib/shell/git/gitBackendExtra';
   import { gitCommitFiles, gitCommitFilesView } from '$lib/shell/git/gitCommitFilesStore.svelte';
   import { gitPanel } from '$lib/shell/git/gitPanelStore.svelte';
   import { gitService } from '$lib/shell/git/gitService';
   import { requestOpenFile } from '$lib/shell/openFileBus';
   import { isDiffMode, type DiffMode } from '$lib/shell/sessionWorkspaces';
   import { showCenterTab, type OpenPullRequestDiffRequest } from '$lib/shell/workbenchNavigation';
-  import type { SourceGitDiff } from '$lib/tauriSource';
+  import type { ProjectGitStatus, SourceGitDiff } from '$lib/tauriSource';
 
   interface Props {
     rootAvailable?: boolean;
@@ -48,6 +53,13 @@
   const singleMode = $derived(pullRequestDiff !== null || commitSha !== '');
   const single = $derived<SourceGitDiff | null>(pullRequestDiff?.diff ?? (commitSha ? gitPanel.selectedDiff : null));
 
+  /** Uncommitted: the working copy against HEAD. Branch: everything since the
+   * merge base with the default branch, committed or not. */
+  let scope = $state<'uncommitted' | 'branch'>('uncommitted');
+  let branchBase = $state('');
+  let branchError = $state('');
+  let workingIsBranch = false;
+
   let working = $state.raw<SourceGitDiff[]>([]);
   let unreadable = $state.raw<string[]>([]);
   let pending = $state(0);
@@ -63,12 +75,8 @@
       { added: 0, removed: 0 }
     )
   );
-  const scope = $derived(
-    pullRequestDiff
-      ? `${pullRequestDiff.repository} #${pullRequestDiff.number}`
-      : commitSha
-        ? `Commit ${commitSha.slice(0, 7)}`
-        : 'Uncommitted'
+  const singleLabel = $derived(
+    pullRequestDiff ? `${pullRequestDiff.repository} #${pullRequestDiff.number}` : `Commit ${commitSha.slice(0, 7)}`
   );
 
   function put(diff: SourceGitDiff): void {
@@ -76,11 +84,33 @@
   }
 
   /** Read every changed file's diff, a few at a time, the picked one first.
-   * Full file texts are dropped once the diff text is taken from them. */
-  async function readAll(paths: string[]): Promise<void> {
+   * Full file texts are dropped once the diff text is taken from them. In the
+   * Branch scope one read brings every tracked file; only files git does not
+   * track yet are read one by one. */
+  async function readAll(status: ProjectGitStatus, branch: boolean): Promise<void> {
     const id = ++generation;
+    let paths = status.files.map((file) => file.relativePath);
     const wanted = new Set(paths);
-    working = working.filter((file) => wanted.has(file.relativePath));
+    working = branch || workingIsBranch ? [] : working.filter((file) => wanted.has(file.relativePath));
+    workingIsBranch = branch;
+    branchError = '';
+    if (branch) {
+      pending = 1;
+      try {
+        const answer = gitPanel.root ? await readBranchDiff(gitPanel.root) : null;
+        if (id !== generation) return;
+        if (answer) {
+          branchBase = answer.base;
+          working = splitDiffByFile(answer.diff);
+        } else {
+          branchError = 'Comparing with the default branch needs the desktop app.';
+        }
+      } catch (error) {
+        if (id !== generation) return;
+        branchError = error instanceof Error ? error.message : String(error);
+      }
+      paths = status.files.filter((file) => file.status === 'untracked').map((file) => file.relativePath);
+    }
     // A folder of new files is listed by git as `folder/`; there is no single file to read.
     unreadable = paths.filter((path) => path.endsWith('/'));
     const queue = paths.filter((path) => !path.endsWith('/'));
@@ -106,11 +136,13 @@
     await Promise.all(Array.from({ length: READS_AT_ONCE }, worker));
   }
 
-  /** Re-read one file keeping its current text, so a collapsed run of lines can open. */
+  /** Read one file's current text, so a collapsed run of lines can open. The
+   * diff already on screen stays; only the text is added to it. */
   async function loadFullText(path: string): Promise<void> {
     const id = generation;
-    const diff = await gitService.readWorkingDiff(path).catch(() => null);
-    if (diff && id === generation) put({ ...diff, diff: diffTextOf(diff), originalContent: null });
+    const read = await gitService.readWorkingDiff(path).catch(() => null);
+    const shown = working.find((file) => file.relativePath === path);
+    if (read && shown && id === generation) put({ ...shown, modifiedContent: read.modifiedContent });
   }
 
   // The working copy follows the repository status: a new status (after a
@@ -119,13 +151,14 @@
     if (singleMode || !rootAvailable) return;
     const root = gitPanel.root;
     const status = gitPanel.status;
+    const branch = scope === 'branch';
     untrack(() => {
       if (!root) {
         if (sessionRoot) gitService.activate(sessionRoot);
       } else if (!status) {
         if (!gitPanel.statusLoading && !gitPanel.statusError && !gitPanel.desktopOnly) void gitService.refreshStatus();
       } else {
-        void readAll(status.files.map((file) => file.relativePath));
+        void readAll(status, branch);
       }
     });
   });
@@ -143,7 +176,30 @@
 
 <div class="diff-view">
   <header class="bar">
-    <span class="scope">{scope}</span>
+    {#if singleMode}
+      <span class="scope">{singleLabel}</span>
+    {:else}
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger
+          class={buttonVariants({ variant: 'ghost', size: 'sm' })}
+          aria-label="Which changes to show"
+        >
+          {scope === 'branch' ? (branchBase ? `Branch vs ${branchBase}` : 'Branch') : 'Uncommitted'}
+          <ChevronDown aria-hidden="true" />
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Content align="start">
+          <DropdownMenu.RadioGroup
+            value={scope}
+            onValueChange={(value) => {
+              if (value === 'uncommitted' || value === 'branch') scope = value;
+            }}
+          >
+            <DropdownMenu.RadioItem value="uncommitted">Uncommitted</DropdownMenu.RadioItem>
+            <DropdownMenu.RadioItem value="branch">Branch</DropdownMenu.RadioItem>
+          </DropdownMenu.RadioGroup>
+        </DropdownMenu.Content>
+      </DropdownMenu.Root>
+    {/if}
     <span class="counts"><em>+{totals.added}</em> <del>-{totals.removed}</del></span>
     {#if !singleMode && pending > 0}<span class="quiet">Reading {pending} more {pending === 1 ? 'file' : 'files'}…</span>{/if}
     <span class="spacer"></span>
@@ -179,6 +235,9 @@
   {:else if !singleMode && !gitPanel.status}
     <p class="notice">Reading the working copy…</p>
   {:else}
+    {#if !singleMode && scope === 'branch' && branchError}
+      <p class="notice error">{branchError}</p>
+    {/if}
     {#if unreadable.length > 0}
       <p class="notice">Not shown here: {unreadable.join(', ')}</p>
     {/if}

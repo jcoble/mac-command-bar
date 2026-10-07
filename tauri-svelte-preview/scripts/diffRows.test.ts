@@ -3,6 +3,7 @@ import { parseUnifiedDiff } from '../src/lib/shell/git/parseUnifiedDiff.ts';
 import {
   changedFileTree,
   diffTextOf,
+  splitDiffByFile,
   splitRows,
   unifiedRows,
   type DiffRow
@@ -180,6 +181,41 @@ function describe(rows: DiffRow[]): string[] {
     text('diff --git a/new.txt b/new.txt', 'new file mode 100644', '--- /dev/null', '+++ b/new.txt', '@@ -0,0 +1,2 @@', '+a', '+b')
   );
   assert.equal(diffTextOf({ ...base, status: 'modified', diff: 'x', modifiedContent: 'y' }), 'x');
+}
+
+// ── one branch diff cut into files ───────────────────────────────────────────
+{
+  const files = splitDiffByFile(
+    text(
+      'diff --git a/src/a.ts b/src/a.ts',
+      'index 1..2 100644',
+      '--- a/src/a.ts',
+      '+++ b/src/a.ts',
+      '@@ -1 +1 @@',
+      '-one',
+      '+two',
+      'diff --git a/gone.txt b/gone.txt',
+      'deleted file mode 100644',
+      '--- a/gone.txt',
+      '+++ /dev/null',
+      '@@ -1 +0,0 @@',
+      '-bye',
+      'diff --git a/logo.png b/logo.png',
+      'new file mode 100644',
+      'Binary files /dev/null and b/logo.png differ',
+      ''
+    )
+  );
+  assert.deepEqual(
+    files.map((file) => [file.relativePath, file.status, file.isBinary]),
+    [
+      ['src/a.ts', 'modified', false],
+      ['gone.txt', 'deleted', false],
+      ['logo.png', 'added', true]
+    ]
+  );
+  assert.equal(files[0].diff.split('\n').at(-1), '+two', 'each record holds only its own lines');
+  assert.deepEqual(splitDiffByFile(''), []);
 }
 
 console.log('diffRows tests passed');

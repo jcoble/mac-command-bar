@@ -215,3 +215,34 @@ export function parsedDiffOf(file: SourceGitDiff): ParsedDiff {
   }
   return parsed;
 }
+
+/** Cut one multi-file `git diff` into a record per file, in the shape every
+ * other diff read returns. Paths come from the `+++`/`---` lines, or from the
+ * `diff --git` line when a file has no text changes (a binary or a rename). */
+export function splitDiffByFile(text: string): SourceGitDiff[] {
+  const files: SourceGitDiff[] = [];
+  for (const chunk of text.split(/^(?=diff --git )/m)) {
+    if (!chunk.startsWith('diff --git ')) continue;
+    const after = /^\+\+\+ b\/(.*)$/m.exec(chunk)?.[1];
+    const before = /^--- a\/(.*)$/m.exec(chunk)?.[1];
+    const header = / b\/(.*)$/.exec(chunk.split('\n', 1)[0])?.[1];
+    const relativePath = (after ?? before ?? header ?? '').trim();
+    if (!relativePath) continue;
+    const status = /^new file mode/m.test(chunk)
+      ? 'added'
+      : /^deleted file mode/m.test(chunk)
+        ? 'deleted'
+        : /^rename to /m.test(chunk)
+          ? 'renamed'
+          : 'modified';
+    files.push({
+      relativePath,
+      status,
+      diff: chunk.trimEnd(),
+      isBinary: /^(Binary files |GIT binary patch)/m.test(chunk),
+      originalContent: null,
+      modifiedContent: null
+    });
+  }
+  return files;
+}
