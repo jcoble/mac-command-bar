@@ -121,13 +121,16 @@ const rows = [
 
 // The folder never decides the group: a session in an unrelated folder stays in
 // its project, two projects with one name stay apart, and the Project scope
-// keeps only the active group.
+// keeps only the active group. "No project" comes last, as in the rail, even
+// when it holds the newest session.
 {
   const records = [
     record('atlas-main'),
     record('atlas-moved', { canonicalCwd: '/tmp/elsewhere' }),
     record('other-atlas', { projectGroupKey: 'project:other', projectGroupLabel: 'atlas' }),
-    record('plain', { canonicalCwd: '/Users/dev', projectGroupKey: 'none', projectGroupLabel: 'No project' })
+    record('plain', {
+      canonicalCwd: '/Users/dev', projectGroupKey: 'none', projectGroupLabel: 'No project', updatedAt: '2026-08-10T12:00:00Z'
+    })
   ];
   const view = buildSessionHistoryViewModel(records);
   assert.deepEqual(view.projects.map((project) => [project.key, project.name, project.count]).toSorted(), [
@@ -135,6 +138,7 @@ const rows = [
     ['project:other', 'atlas', 1],
     ['repo:github.com/dev/atlas', 'atlas', 2]
   ]);
+  assert.equal(view.projects.at(-1)!.key, 'none');
   assert.deepEqual(
     filterSessionHistoryRecords(records, { scope: 'project', projectKey: ATLAS.projectGroupKey }).map((row) => row.key),
     ['atlas-main', 'atlas-moved']

@@ -51,14 +51,33 @@ fn git_text(dir: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// The absolute git common directory of `dir`: one per repository, shared by
-/// its main checkout and every worktree. `None` outside git, for a folder that
-/// is gone, and for a relative path (which git would read against our own folder).
+/// its main checkout and every worktree. Read from git's own files, so no git
+/// process starts. `None` outside git, for a folder that is gone, and for a
+/// relative path (which would resolve against our own folder).
 fn git_common_dir(dir: &str) -> Option<String> {
     let dir = Path::new(dir);
     if !dir.is_absolute() {
         return None;
     }
-    git_text(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    for folder in std::fs::canonicalize(dir).ok()?.ancestors() {
+        let dot_git = folder.join(".git");
+        let git_dir = if dot_git.is_file() {
+            let text = std::fs::read_to_string(&dot_git).ok()?;
+            folder.join(text.strip_prefix("gitdir:")?.trim())
+        } else if dot_git.join("HEAD").is_file() {
+            // Git skips a `.git` folder that is not a repository, such as an empty one.
+            dot_git
+        } else {
+            continue;
+        };
+        // A worktree's git dir names the shared one, relative to itself or absolute.
+        let common = match std::fs::read_to_string(git_dir.join("commondir")) {
+            Ok(text) => git_dir.join(text.trim()),
+            Err(_) => git_dir,
+        };
+        return std::fs::canonicalize(common).ok().map(|path| path.to_string_lossy().into_owned());
+    }
+    None
 }
 
 fn to_json(value: &impl Serialize) -> Result<String, String> {
@@ -68,7 +87,7 @@ fn to_json(value: &impl Serialize) -> Result<String, String> {
 /// Each folder's local project, as `(folder, project_id)`, for the folders
 /// that have one. The path rules run first, in SQL. The folders they leave
 /// unmatched then join a project whose root shares their git common directory,
-/// again in SQL, after one git call per such folder and per local root.
+/// again in SQL, after reading git's files for each such folder and local root.
 pub(crate) fn match_local_folders(store: &SessionStore, folders: &[String]) -> Result<Vec<(String, String)>, String> {
     let mut matches = store.match_folders_by_path(&to_json(&folders)?).map_err(|error| error.to_string())?;
     let matched: HashSet<&str> = matches.iter().map(|(folder, _)| folder.as_str()).collect();
@@ -461,6 +480,35 @@ mod tests {
         ] {
             assert_eq!(normalize_repo_key(url), expected, "{url}");
         }
+    }
+
+    #[test]
+    fn common_dir_matches_git_without_running_it() {
+        let root = temp_dir();
+        let repo = repo_with_main(&root);
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        let linked = root.join("linked");
+        git(&repo, &["worktree", "add", "-b", "linked", text(&linked)]);
+        let bare = root.join("bare.git");
+        let bare_worktree = root.join("bare-worktree");
+        git(&root, &["init", "--bare", text(&bare)]);
+        git(&bare, &["worktree", "add", text(&bare_worktree)]);
+        for folder in [repo.clone(), repo.join("src"), linked, bare_worktree] {
+            let output = Command::new("git")
+                .arg("-C").arg(&folder)
+                .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+                .output().unwrap();
+            let expected = std::fs::canonicalize(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+            assert_eq!(git_common_dir(text(&folder)).as_deref(), Some(text(&expected)), "{folder:?}");
+        }
+        // Git ignores an empty .git folder, like the one in this machine's home folder.
+        let plain = root.join("plain");
+        let empty_git = root.join("empty-git");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::create_dir_all(empty_git.join(".git")).unwrap();
+        assert_eq!(git_common_dir(text(&plain)), None);
+        assert_eq!(git_common_dir(text(&empty_git)), None);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

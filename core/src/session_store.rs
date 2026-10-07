@@ -780,11 +780,12 @@ pub struct ProjectRow {
 }
 
 /// A session's project group as the rail and History show it: `repo:<repo_key>`
-/// when the project has a remote URL, so both machines' copies of a repository
-/// share one group; `project:<id>` without one; `none` for no project, or an id
-/// this Mac has never seen. `p` is a LEFT JOINed `projects` row.
+/// in lower case when the project has a remote URL, so both machines' copies of
+/// a repository share one group however the URL is cased; `project:<id>` without
+/// one; `none` for no project, or an id this Mac has never seen. `p` is a LEFT
+/// JOINed `projects` row.
 const PROJECT_GROUP_KEY_SQL: &str =
-    "CASE WHEN p.id IS NULL THEN 'none' WHEN p.repo_key <> '' THEN 'repo:' || p.repo_key ELSE 'project:' || p.id END";
+    "CASE WHEN p.id IS NULL THEN 'none' WHEN p.repo_key <> '' THEN 'repo:' || lower(p.repo_key) ELSE 'project:' || p.id END";
 const PROJECT_GROUP_LABEL_SQL: &str = "COALESCE(p.title, 'No project')";
 /// The newest local project creation time the back-fill has already run for.
 const PROJECT_BACKFILL_MARK_KEY: &str = "projects.backfilled-through";
@@ -4658,6 +4659,7 @@ mod tests {
             fixture_project("deep", "local", "/work/repo/packages/app", 20),
             fixture_project("registered-worktree", "local", "/work/wt/registered", 40),
             fixture_project("box-copy", "box", "/home/me/repo", 1),
+            ProjectRow { repo_key: "github.com/A/Repo".to_owned(), ..fixture_project("box-cased", "box", "/home/me/cased", 2) },
             plain,
         ] {
             store.insert_or_get_project(&project).unwrap();
@@ -4685,10 +4687,10 @@ mod tests {
         ).unwrap();
         assert_eq!(by_common_dir, vec![("/work/wt/feature".to_owned(), "repo".to_owned())]);
 
-        // Both machines' copies of one repository share a key; no remote URL keys by id;
-        // no project and an unknown id are both "No project".
+        // Both machines' copies of one repository share a key, whatever the letter case
+        // of its URL; no remote URL keys by id; no project and an unknown id are both "No project".
         let groups = store.project_groups(&serde_json::json!([
-            ["a", "repo"], ["b", "box-copy"], ["c", "plain"], ["d", null], ["e", "gone"]
+            ["a", "repo"], ["b", "box-copy"], ["c", "plain"], ["d", null], ["e", "gone"], ["f", "box-cased"]
         ]).to_string()).unwrap();
         let group = |key: &str, label: &str| (key.to_owned(), label.to_owned());
         assert_eq!(groups.into_iter().map(|(id, key, label)| (id, group(&key, &label))).collect::<Vec<_>>(), vec![
@@ -4697,6 +4699,7 @@ mod tests {
             ("c".to_owned(), group("project:plain", "repo")),
             ("d".to_owned(), group("none", "No project")),
             ("e".to_owned(), group("none", "No project")),
+            ("f".to_owned(), group("repo:github.com/a/repo", "repo")),
         ]);
         assert_eq!(store.list_projects().unwrap().iter().find(|p| p.id == "plain").unwrap().group_key, "project:plain");
     }

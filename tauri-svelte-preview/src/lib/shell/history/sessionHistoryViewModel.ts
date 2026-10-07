@@ -333,6 +333,7 @@ export function buildSessionHistoryViewModel(
     }
   }
 
+  // Groups read newest first, with "No project" last as in the rail.
   const projectGroups = [...projects.entries()].map(([key, project]): SessionHistoryProjectGroup => {
     const worktrees = [...project.worktrees.entries()]
       .map(([worktreeKey, worktree]): SessionHistoryWorktreeGroup => {
@@ -362,7 +363,7 @@ export function buildSessionHistoryViewModel(
       singleCheckout: worktrees.length === 1,
       worktrees
     };
-  }).toSorted(compareGroups);
+  }).toSorted((left, right) => Number(left.key === 'none') - Number(right.key === 'none') || compareGroups(left, right));
 
   // Counted from what was placed, not from what passed the filters: a session
   // whose checkout has been deleted is left out above, and a header claiming it
