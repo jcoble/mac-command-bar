@@ -709,7 +709,7 @@ export function selectConversationChat(
     threadId: historyOwnedId,
     onCustomEvent(name, value) {
       if (selection.controller.signal.aborted) return;
-      if (name === 'assembly:running-tool' || name === 'assembly:stale-markdown'
+      if (name === 'assembly:running-tool' || name === 'assembly:running-tools' || name === 'assembly:stale-markdown'
         || name === 'assembly:message-metadata') {
         selection.chat.setMessages(conversationMessagesAfterCustom(
           selection.chat.messages, name, value
