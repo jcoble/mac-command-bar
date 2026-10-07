@@ -13,6 +13,7 @@ import {
   normalizeMyWorkFilters,
   normalizeMyWorkViewOptions,
   prepareMyWorkSessions,
+  reorderMyWorkSessions,
   type MyWorkGroup
 } from '../src/lib/shell/components/myWorkViewOptions.ts';
 import { sessionRowMenuItems } from '../src/lib/shell/components/sessionRowMenu.ts';
@@ -180,6 +181,31 @@ function shape(groups: MyWorkGroup[]): unknown[] {
   const rename = sessionRowMenuItems({ status: 'done', sessionId: null, worktreePath: null, pinned: false })
     .find((item) => item.id === 'rename');
   assert.deepEqual([rename?.label, rename?.enabled, rename?.disabledReason], ['Rename', true, undefined]);
+}
+
+// Custom order follows the saved order inside each group; a session with no
+// saved place yet goes to the top, newest first.
+{
+  const rows = [
+    session('a', { lastActivity: '2026-08-01T10:00:00.000Z' }),
+    session('b', { lastActivity: '2026-08-02T10:00:00.000Z' }),
+    session('c', { lastActivity: '2026-08-03T10:00:00.000Z', completedAt: '2026-08-03T10:00:00.000Z' }),
+    session('new-old', { lastActivity: '2026-08-04T10:00:00.000Z' }),
+    session('new-new', { lastActivity: '2026-08-05T10:00:00.000Z' })
+  ];
+  const groups = buildMyWorkGroups(rows, { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'manual' }, ['c', 'a', 'b']);
+  assert.deepEqual(shape(groups), [
+    ['working', 'Working', ['new-new', 'new-old', 'a', 'b']],
+    ['done', 'Done', ['c']]
+  ]);
+  assert.equal(normalizeMyWorkViewOptions({ sortBy: 'manual' }).sortBy, 'manual');
+}
+
+// Moving a row reorders its own group and keeps every other saved place.
+{
+  assert.deepEqual(reorderMyWorkSessions(['x', 'a', 'y'], ['a', 'b', 'c'], 'c', 'a', 'before'), ['c', 'a', 'b', 'x', 'y']);
+  assert.deepEqual(reorderMyWorkSessions([], ['a', 'b', 'c'], 'a', 'c', 'after'), ['b', 'c', 'a']);
+  assert.deepEqual(reorderMyWorkSessions([], ['a', 'b', 'c'], 'a', 'a', 'after'), ['a', 'b', 'c']);
 }
 
 // buildMyWorkGroups with neither grouping returns one unlabeled group.

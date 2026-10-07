@@ -12,7 +12,12 @@
 
 	import type { OwnedSession } from "$lib/shell/ownedSessions";
 	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
-	import { buildMyWorkGroups, type MyWorkGroup, type MyWorkViewOptions } from "./myWorkViewOptions.ts";
+	import {
+		buildMyWorkGroups,
+		reorderMyWorkSessions,
+		type MyWorkGroup,
+		type MyWorkViewOptions,
+	} from "./myWorkViewOptions.ts";
 	import SessionRowContextMenu from "./SessionRowContextMenu.svelte";
 	import { sessionRowJump, type SessionRowSurface } from "./sessionRowJump.ts";
 	import { sessionRowMenuItems, type SessionRowMenuAction } from "./sessionRowMenu.ts";
@@ -21,6 +26,10 @@
 	interface Props {
 		sessions: OwnedSession[];
 		options: MyWorkViewOptions;
+		/** The saved Custom order, as owned ids. */
+		manualOrder?: readonly string[];
+		/** A row was dropped; this is the new Custom order to save and show. */
+		onReorder?(order: string[]): void;
 		activeOwnedId?: string | null;
 		onSelectSession?(ownedId: string): void | Promise<void>;
 		onComplete?(ownedId: string): void;
@@ -36,6 +45,8 @@
 	let {
 		sessions,
 		options,
+		manualOrder = [],
+		onReorder,
 		activeOwnedId = null,
 		onSelectSession,
 		onComplete,
@@ -48,7 +59,7 @@
 		onAskRemove,
 	}: Props = $props();
 
-	const groups = $derived(buildMyWorkGroups(sessions, options));
+	const groups = $derived(buildMyWorkGroups(sessions, options, manualOrder));
 	let collapsedGroups = $state<Record<string, boolean>>({});
 	let visualActiveOwnedId = $state<string | null>(null);
 	// One clock for every row's age label, refreshed coarsely; a hidden window skips the write.
@@ -108,6 +119,61 @@
 		event.preventDefault();
 		event.stopPropagation();
 		contextMenu = { session, x: event.clientX, y: event.clientY };
+	}
+
+	// Dragging a row: one set of listeners on the list, none on the rows. A row
+	// can move only within the group it is drawn in.
+	let dragging: { ownedId: string; groupKey: string } | null = null;
+	let dropTarget = $state<{ ownedId: string; position: "before" | "after" } | null>(null);
+
+	function draggedRow(event: DragEvent): HTMLElement | null {
+		return event.target instanceof Element ? event.target.closest<HTMLElement>("[data-owned-id]") : null;
+	}
+
+	function startDrag(event: DragEvent): void {
+		const row = draggedRow(event);
+		const groupKey = row?.parentElement?.dataset.groupKey;
+		if (!row?.dataset.ownedId || !groupKey || !event.dataTransfer) return;
+		dragging = { ownedId: row.dataset.ownedId, groupKey };
+		event.dataTransfer.effectAllowed = "move";
+		event.dataTransfer.setData("text/plain", row.dataset.ownedId);
+	}
+
+	function dragOver(event: DragEvent): void {
+		if (!dragging) return;
+		const row = draggedRow(event);
+		const ownedId = row?.dataset.ownedId;
+		if (!row || !ownedId || ownedId === dragging.ownedId || row.parentElement?.dataset.groupKey !== dragging.groupKey) {
+			if (dropTarget) dropTarget = null;
+			return;
+		}
+		event.preventDefault();
+		const bounds = row.getBoundingClientRect();
+		const position = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+		if (dropTarget?.ownedId !== ownedId || dropTarget.position !== position) dropTarget = { ownedId, position };
+	}
+
+	function drop(event: DragEvent): void {
+		const from = dragging;
+		const to = dropTarget;
+		endDrag();
+		if (!from || !to) return;
+		event.preventDefault();
+		const lists = groups.flatMap((group) => group.subgroups ?? [group]);
+		const group = lists.find((candidate) => candidate.key === from.groupKey);
+		if (!group) return;
+		// Leaving Recent or Name, the Custom order starts from what is on screen.
+		const order =
+			options.sortBy === "manual"
+				? manualOrder
+				: lists.flatMap((list) => list.sessions.map((session) => session.ownedId));
+		const groupIds = group.sessions.map((session) => session.ownedId);
+		onReorder?.(reorderMyWorkSessions(order, groupIds, from.ownedId, to.ownedId, to.position));
+	}
+
+	function endDrag(): void {
+		dragging = null;
+		dropTarget = null;
 	}
 
 	function copyText(value: string | null): void {
@@ -170,7 +236,7 @@
 					{@render section(subgroup, true)}
 				{/each}
 			{:else}
-				<ul class="rows">
+				<ul class="rows" data-group-key={group.key}>
 					{#each group.sessions as session (session.ownedId)}
 						<WorktreeAgentRow
 							{session}
@@ -187,6 +253,7 @@
 								if (title) onRename?.(session.ownedId, title);
 							}}
 							onConnect={() => onConnect?.(session.ownedId)}
+							dropPosition={dropTarget?.ownedId === session.ownedId ? dropTarget.position : null}
 						/>
 					{/each}
 				</ul>
@@ -195,7 +262,15 @@
 	</section>
 {/snippet}
 
-<div data-testid="session-rail" class="session-scroll">
+<div
+	data-testid="session-rail"
+	class="session-scroll"
+	role="presentation"
+	ondragstart={startDrag}
+	ondragover={dragOver}
+	ondrop={drop}
+	ondragend={endDrag}
+>
 	{#each groups as group (group.key)}
 		{@render section(group, false)}
 	{/each}

@@ -41,6 +41,8 @@
 		/** The new name, or `null` when the person backed out or left it unchanged. */
 		onRename?(title: string | null): void;
 		onConnect?(): void;
+		/** Where a dragged row would land against this one, while it is over it. */
+		dropPosition?: "before" | "after" | null;
 	}
 
 	type RowPresence = "working" | "attention" | "idle" | "done" | "failed";
@@ -56,6 +58,7 @@
 		renaming = false,
 		onRename,
 		onConnect,
+		dropPosition = null,
 	}: Props = $props();
 
 	const label = $derived(sessionLabel(session));
@@ -170,6 +173,10 @@
 	data-testid="worktree-agent-row"
 	data-presence={presence}
 	data-shelf={shelf}
+	data-owned-id={session.ownedId}
+	draggable={!renaming}
+	class:drop-before={dropPosition === "before"}
+	class:drop-after={dropPosition === "after"}
 	class:needs-you-row={needsYou}
 	class:selected={active}
 	class="row"
@@ -298,6 +305,26 @@
 		color: var(--foreground);
 		font: inherit;
 		outline: none;
+	}
+
+	/* Where a dragged row will land. Drawn inside the row, since the row's
+	   content-visibility clips anything outside it. */
+	.row.drop-before::before,
+	.row.drop-after::after {
+		content: "";
+		position: absolute;
+		left: 8px;
+		right: 8px;
+		z-index: 3;
+		height: 2px;
+		border-radius: 1px;
+		background: var(--color-accent);
+	}
+	.row.drop-before::before {
+		top: 0;
+	}
+	.row.drop-after::after {
+		bottom: 0;
 	}
 
 	.connect {
