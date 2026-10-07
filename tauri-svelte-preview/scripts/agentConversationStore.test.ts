@@ -394,6 +394,34 @@ test('late attachment reads retain the current page and revoke evicted previews'
   }
 });
 
+test('a stored message that names one attachment twice shows it once', async () => {
+  // Messages saved before late September 2026 can list the same screenshot id
+  // twice. The user card keys its screenshots by id, so a repeat stops it rendering.
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('async function restorePageAttachments('), source.indexOf('function pageAttachments('));
+  const ownedId = 'owned-attachment-repeat';
+  store.ensureConversationSession(ownedId, 'claude');
+  store.setConversationConnection({ ownedId, provider: 'claude', generation: 1, state: 'connected' });
+  const attachment = (id: string) => ({ id, name: `${id}.png`, mimeType: 'image/png', path: `/managed/${id}.png`, previewUrl: `asset://${id}` });
+  const selection = { workspaceOwnedId: ownedId, historyOwnedId: ownedId, controller: new AbortController(), chat: { messages: [{ id: 'user-repeat' }] } };
+  const restore = Function(
+    'isCurrent', 'readSelectedConversationAttachments', 'restoreAttachmentList',
+    'restoreSelectedConversationAttachments', 'discardRestoredAttachments', 'setConversationAttachmentError',
+    `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn restorePageAttachments;`
+  )(() => true, async () => [attachment('a'), attachment('b')], async (unused: string, records: unknown[]) => records,
+    store.restoreSelectedConversationAttachments, () => undefined,
+    (unused: string, message: string) => { throw new Error(message); });
+  try {
+    await restore(selection, new Map([['user-repeat', ['a', 'a', 'b']]]), 1, ['user-repeat']);
+    assert.deepEqual(
+      store.getConversationSession(ownedId).sentAttachments['user-repeat'].map((item: { id: string }) => item.id),
+      ['a', 'b']
+    );
+  } finally {
+    store.evictConversationSession(ownedId);
+  }
+});
+
 test('selected delivery reloads gaps and suppresses controls already in the snapshot', () => {
   const source = readFileSync(
     new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url),
@@ -627,6 +655,7 @@ test('history paging publishes saved rows before import and handles failed or st
   let importFailure = false;
   let staleImport = false;
   let publishedWindow: any;
+  let measured = 0;
   store.ensureConversationSession('history', 'codex');
   const historyState = store.getConversationSession('history');
   historyState.selectedHasBefore = true;
@@ -652,11 +681,11 @@ test('history paging publishes saved rows before import and handles failed or st
     return { added: 1, reachedStart: true };
   }, () => page.items.map((item) => ({ id: item.itemId, metadata: { firstSequence: 1 } })),
   (_existing: unknown, incoming: unknown) => incoming,
-  (_selection: unknown, messages: any) => { published += 1; queueMicrotask(() => { selection.chat.messages = messages; }); },
+  (target: any, messages: any) => { published += 1; target.graphBytes = 10 * messages.length; queueMicrotask(() => { selection.chat.messages = messages; }); },
   () => 1, (value: any) => value.hasBefore || value.hasEarlierTranscript,
   (id: string, value: any, direction: 'older' | 'newer', window: any) => {
     publishedWindow = window; store.applySelectedConversationPageState(id, value, direction, window);
-  }, () => 10,
+  }, () => { measured += 1; return 10; },
   () => historyState, async () => undefined, () => new Map(),
   (_id: string, message: string) => { pageError = message; },
   (value: typeof selection) => { value.ready = new Promise<void>((resolve) => { value.resolveReady = resolve; }); }, EventType);
@@ -665,6 +694,8 @@ test('history paging publishes saved rows before import and handles failed or st
   assert.equal(imports, 0, 'saved local messages do not wait for provider import');
   assert.equal(published, 1);
   assert.equal(publishedWindow.hasAfter, false, 'older page preserves the known live tail');
+  assert.equal(publishedWindow.transferBytes, 10);
+  assert.equal(measured, 0, 'the window size comes from the snapshot that already measured every message');
   assert.equal(loading, false);
   page = { ...page, items: [] };
   await paging('older');
