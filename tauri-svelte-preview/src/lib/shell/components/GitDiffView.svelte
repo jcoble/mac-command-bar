@@ -36,8 +36,17 @@
     mode?: DiffMode;
     onModeChange?: (mode: DiffMode) => void;
     pullRequestDiff?: OpenPullRequestDiffRequest | null;
+    /** Told the +/- totals this view shows, so the tab title can show the same. */
+    onTotals?: (totals: { added: number; removed: number }) => void;
   }
-  let { rootAvailable = true, sessionRoot = '', mode = 'unified', onModeChange, pullRequestDiff = null }: Props = $props();
+  let {
+    rootAvailable = true,
+    sessionRoot = '',
+    mode = 'unified',
+    onModeChange,
+    pullRequestDiff = null,
+    onTotals
+  }: Props = $props();
 
   /** Files read at once. Each read is a few short git processes. */
   const READS_AT_ONCE = 4;
@@ -76,6 +85,7 @@
       { added: 0, removed: 0 }
     )
   );
+  $effect(() => onTotals?.(totals));
   const singleLabel = $derived(
     pullRequestDiff ? `${pullRequestDiff.repository} #${pullRequestDiff.number}` : `Commit ${commitSha.slice(0, 7)}`
   );
