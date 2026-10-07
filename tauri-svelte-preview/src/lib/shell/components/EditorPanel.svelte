@@ -165,6 +165,10 @@
     releaseSessionResources(): void;
   } | null>(null);
   let editorLoadError = $state<string | null>(null);
+  /** The mounted Markdown preview, if any. Its newest edit waits up to 150 ms
+   *  before reaching the store, so every path change, close, save and reread
+   *  below flushes it first. */
+  let markdownPreview = $state<{ flushEdit(): void } | null>(null);
   let loadingEditorComponent = false;
   type CloseRequest = { kind: 'file'; path: string } | { kind: 'all' };
   let closeRequest = $state<CloseRequest | null>(null);
@@ -951,6 +955,7 @@
 
   /** EXPLICIT IO: read one file and show it. */
   async function readFileIntoEditor(record: SourceRecord, externalChange = false): Promise<void> {
+    markdownPreview?.flushEdit();
     const stopSignal = sessionStopController.signal;
     if (stopSignal.aborted || closeActionBusy || !rootAvailable) return;
     const existing = readsInFlight.get(record.path);
@@ -972,6 +977,13 @@
     readsInFlight.set(record.path, { byteCount: record.byteCount, generation, token, work });
     publishSourceReadDiagnostics();
     return work;
+  }
+
+  /** A Markdown preview reports for the file it was opened on, which may no
+   *  longer be the active one. */
+  function updatePreviewDraft(path: string, content: string): void {
+    if (closeActionBusy || readOnlyByPath[path]) return;
+    setEditorFileDraft(path, content);
   }
 
   function updateActiveDraft(content: string): void {
@@ -1048,6 +1060,7 @@
   }
 
   async function saveEditorFile(path: string): Promise<boolean> {
+    markdownPreview?.flushEdit();
     const stopSignal = sessionStopController.signal;
     if (stopSignal.aborted || !rootAvailable) return false;
     const file = editorFileFor(path);
@@ -1123,6 +1136,7 @@
     previewTab = false,
     pinTab = false
   ): boolean {
+    markdownPreview?.flushEdit();
     if (closeActionBusy || !rootAvailable || !path.trim()) return false;
     if (editorState.activePath && editorState.activePath !== path) {
       releaseReadOnlyEditorModel(editorState.activePath);
@@ -1198,6 +1212,7 @@
   }
 
   export function selectFile(path: string): void {
+    markdownPreview?.flushEdit();
     if (closeActionBusy) return;
     if (editorState.activePath && editorState.activePath !== path) {
       releaseImagePreview(editorState.activePath);
@@ -1222,6 +1237,7 @@
   }
 
   function closeFileNow(path: string, discard = false): void {
+    markdownPreview?.flushEdit();
     const disposePath = discard ? path : modelPathToDisposeOnClose(editorFileFor(path));
     closeEditorFile(path);
     markdownScrollByPath.delete(path);
@@ -1244,6 +1260,7 @@
 
   /** Close one file; a file with unsaved changes asks first. */
   export function requestCloseFile(path: string): void {
+    markdownPreview?.flushEdit();
     if (closeActionBusy) return;
     if (editorFileFor(path)?.dirty) {
       closeRequest = { kind: 'file', path };
@@ -1254,6 +1271,7 @@
   }
 
   export function closeOtherFiles(path: string): void {
+    markdownPreview?.flushEdit();
     if (closeActionBusy) return;
     for (const file of editorState.openFiles) {
       if (file.path !== path && !file.dirty) closeFileNow(file.path);
@@ -1261,6 +1279,7 @@
   }
 
   export function closeSavedFiles(): void {
+    markdownPreview?.flushEdit();
     if (closeActionBusy) return;
     for (const file of editorState.openFiles) {
       if (!file.dirty) closeFileNow(file.path);
@@ -1268,6 +1287,7 @@
   }
 
   async function closeAllOpenEditorsNow(): Promise<void> {
+    markdownPreview?.flushEdit();
     const stopSignal = sessionStopController.signal;
     if (stopSignal.aborted) return;
     const generation = sessionResourceGeneration;
@@ -1297,6 +1317,7 @@
   }
 
   function closeAllOpenEditors(): void {
+    markdownPreview?.flushEdit();
     if (closeActionBusy) return;
     if (editorState.openFiles.some((file) => file.dirty)) {
       closeRequest = { kind: 'all' };
@@ -1388,6 +1409,7 @@
   }
 
   export function captureViewStates(paths: readonly string[]): Record<string, object> {
+    markdownPreview?.flushEdit();
     return codeEditor?.captureViewStates(paths) ?? {};
   }
 
@@ -1424,6 +1446,7 @@
   }
 
   export function releaseSessionResources(paths: readonly string[]): void {
+    markdownPreview?.flushEdit();
     const stopSignal = sessionStopController.signal;
     sessionResourceGeneration += 1;
     if (readsInFlight.size > 0) {
@@ -1781,12 +1804,14 @@
       {:else if showing && activeFile?.preview && activeFileIsMarkdown && markdownView === 'rendered'}
         {#key activeFile.path}
           <SourceMarkdownPreview
+            bind:this={markdownPreview}
+            path={activeFile.path}
             content={activeFile.draftContent ?? activeFile.preview.content}
             fileName={activeFile.fileName}
             readOnly={activeFileReadOnly}
             scrollTop={markdownScrollByPath.get(activeFile.path) ?? 0}
             onScroll={(top) => { if (showing) markdownScrollByPath.set(activeFile.path, top); }}
-            onChange={updateActiveDraft}
+            onChange={updatePreviewDraft}
             onSave={() => void saveActiveFile()}
           />
         {/key}

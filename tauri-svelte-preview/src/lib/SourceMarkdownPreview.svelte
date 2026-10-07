@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import type { Editor } from '@milkdown/kit/core';
   import type { Node as ProseNode } from '@milkdown/kit/prose/model';
   import { fenceLanguage, highlightCode } from './shell/components/conversation/codeHighlight';
@@ -12,19 +12,23 @@
    * document hands back the file's own text rather than a re-serialized copy.
    */
   type Props = {
+    /** The file this view was opened on. Edits are always reported for it,
+     *  even if another file has become active by the time they arrive. */
+    path: string;
     content: string;
     fileName: string;
     readOnly?: boolean;
     scrollTop?: number;
     onScroll?: (scrollTop: number) => void;
-    onChange?: (markdown: string) => void;
+    onChange?: (path: string, markdown: string) => void;
     onSave?: () => void;
   };
 
   /** The part of a parsed Markdown (mdast) node the image fix reads. */
   type MarkdownTreeNode = { type: string; title?: string | null; children?: MarkdownTreeNode[] };
 
-  let { content, fileName, readOnly = false, scrollTop = 0, onScroll, onChange, onSave }: Props = $props();
+  let { path, content, fileName, readOnly = false, scrollTop = 0, onScroll, onChange, onSave }: Props = $props();
+  const ownedPath = untrack(() => path);
   let host: HTMLElement;
   let loadError = $state<string | null>(null);
   /** The text the editor last loaded or reported, so its own echo is not loaded back in. */
@@ -32,6 +36,12 @@
   let loadDocument: ((markdown: string) => void) | null = null;
   /** Reports an edit still waiting on the typing pause. */
   let flush = (): void => {};
+
+  /** The panel calls this before it changes, closes, saves or rereads files,
+   *  so an edit made in the last 150 ms is in the store first. */
+  export function flushEdit(): void {
+    flush();
+  }
 
   $effect(() => {
     if (content !== shown) loadDocument?.(content);
@@ -73,7 +83,7 @@
           if (!editor) return;
           const doc = editor.ctx.get(core.editorViewCtx).state.doc;
           shown = baseDoc && doc.eq(baseDoc) ? baseSource : editor.ctx.get(core.serializerCtx)(doc);
-          onChange?.(shown);
+          onChange?.(ownedPath, shown);
         };
         flush = () => {
           if (timer === undefined) return;
@@ -81,9 +91,10 @@
           report();
         };
 
-        // Serializing the whole file on every key would cost a large file real
-        // time, so an edit is reported once typing pauses (or at once on save,
-        // close, or switching back to Source).
+        // Serializing the whole file costs about 6 ms for a 290-line file and
+        // 30 ms for a 2,000-line one, too much for every key, so an edit is
+        // reported once typing pauses. The panel flushes it sooner (flushEdit)
+        // whenever it is about to change, close, save or reread files.
         const reportEdits = utils.$prose(() => new Plugin({
           view: () => ({
             update(view, previous) {
