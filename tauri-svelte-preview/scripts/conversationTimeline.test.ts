@@ -812,3 +812,48 @@ assert.equal(summarizeToolRun([edit, { ...edit, state: 'failed' }]).summary, 'Ed
 assert.equal(summarizeToolRun([edit, { ...edit, itemId: 'repeat' }]).summary, 'Edited a file');
 assert.equal(summarizeToolRun([{ ...edit, path: undefined, metadata: undefined }, { ...edit, itemId: 'unknown', path: undefined, metadata: undefined }]).summary, 'Edited 2 files');
 assert.equal(summarizeToolRun([{ ...unknownTool, state: 'failed' }, { ...edit, state: 'failed' }]).summary, '2 failed calls');
+
+// A background task started in one turn, or between turns, and updated during
+// later ones keeps the turn it started in. It is ordered by its start, so
+// taking a later event's turn put the later turn's id in the middle of the
+// first turn, and the first turn came out as two groups once an older page
+// brought the rest of it in.
+{
+  const turnEvent = (sequence: number, turnId: string | undefined, payload: Record<string, unknown>): AgentConversationEvent =>
+    ({ ...event(sequence, payload, sequence * 1000), ...(turnId ? { turnId } : {}) }) as AgentConversationEvent;
+  const first = 'turn-first';
+  const second = 'turn-second';
+  const third = 'turn-third';
+  const older = [
+    turnEvent(1, first, { kind: 'userMessage', itemId: 'user-first', text: 'Start the workflow' }),
+    turnEvent(2, first, { kind: 'tool', itemId: 'tool-skill', name: 'Skill', state: 'started' }),
+    turnEvent(3, first, { kind: 'tool', itemId: 'tool-skill', name: 'Skill', state: 'completed' }),
+    turnEvent(4, first, { kind: 'tool', itemId: 'background-task:w8', name: 'workflow', state: 'started', summary: 'Recon' }),
+    turnEvent(5, first, { kind: 'tool', itemId: 'tool-read', name: 'Read', state: 'started' }),
+    turnEvent(6, first, { kind: 'tool', itemId: 'tool-read', name: 'Read', state: 'completed' }),
+    turnEvent(7, first, { kind: 'assistantMessage', itemId: 'assistant-first', text: 'It is running.' }),
+    turnEvent(8, undefined, { kind: 'tool', itemId: 'background-task:idle', name: 'monitor', state: 'started', summary: 'Watch' })
+  ];
+  const newest = [
+    turnEvent(4, first, { kind: 'tool', itemId: 'background-task:w8', name: 'workflow', state: 'started', summary: 'Recon' }),
+    turnEvent(8, undefined, { kind: 'tool', itemId: 'background-task:idle', name: 'monitor', state: 'started', summary: 'Watch' }),
+    turnEvent(9, second, { kind: 'userMessage', itemId: 'user-second', text: 'How is it going?' }),
+    turnEvent(10, second, { kind: 'tool', itemId: 'background-task:w8', name: '', state: 'updated', summary: 'Review' }),
+    turnEvent(11, second, { kind: 'assistantMessage', itemId: 'assistant-second', text: 'Still reviewing.' }),
+    turnEvent(12, undefined, { kind: 'tool', itemId: 'background-task:w8', name: '', state: 'failed', summary: 'Stopped' }),
+    turnEvent(13, third, { kind: 'userMessage', itemId: 'user-third', text: 'And now?' }),
+    turnEvent(14, third, { kind: 'tool', itemId: 'background-task:idle', name: '', state: 'completed', summary: 'Done' }),
+    turnEvent(15, third, { kind: 'assistantMessage', itemId: 'assistant-third', text: 'Done.' })
+  ];
+  // Paging older keeps the loaded copy of a message and puts the page above it.
+  const current = conversationMessagesFromEvents(newest);
+  const loaded = new Set(current.map((message) => message.id));
+  const merged = [...conversationMessagesFromEvents(older).filter((message) => !loaded.has(message.id)), ...current];
+  const groups = conversationTurnGroups(conversationDisplayItems(merged));
+  assert.deepEqual(groups.map((group) => group.turnId), [first, second, third],
+    'each turn is one group after an older page loads');
+  assert.ok(groups[0].items.some((item) => item.itemId === 'background-task:w8'),
+    'the background task stays in the turn that started it');
+  assert.ok(groups[0].items.some((item) => item.itemId === 'background-task:idle'),
+    'a task started between turns stays where it started');
+}

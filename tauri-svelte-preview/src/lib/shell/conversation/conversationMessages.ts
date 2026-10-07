@@ -125,7 +125,11 @@ export function conversationChunksFromEvent(
   const prior = metadataOf(existing);
   const metadata: Record<string, AgentConfigValue> = {
     ...prior, ...item.providerMetadata, itemType: item.type,
-    turnId: item.turnId ?? prior.turnId ?? null,
+    // Like its start, an item's turn is set by the event that began it, even
+    // when that was between turns; a background task updated during later
+    // turns must not move into them. A message sent from here has no turn
+    // until it is admitted.
+    turnId: 'turnId' in prior ? prior.turnId : item.turnId ?? null,
     startedAtMs: prior.startedAtMs ?? item.providerMetadata?.startedAtMs ?? event.timestampMs,
     firstSequence: prior.firstSequence ?? item.providerMetadata?.firstSequence ?? event.sequence,
     lastSequence: event.sequence,
