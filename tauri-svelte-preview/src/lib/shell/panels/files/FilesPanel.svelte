@@ -78,6 +78,8 @@
 		onInspectionRootChange?(root: string | null): void;
 		checkoutDiscoveryRoots?: readonly string[];
 		onUseSessionCheckout?(root: string): void | Promise<void>;
+		/** Raised by the page (the `+` menu's "Open file…") to focus the filter. */
+		filterFocusRequest?: number;
 	}
 
 	type PendingEntry = {
@@ -113,7 +115,21 @@
 		onInspectionRootChange,
 		checkoutDiscoveryRoots = [],
 		onUseSessionCheckout,
+		filterFocusRequest = 0,
 	}: Props = $props();
+
+	// A request counts once, and only while the panel is on screen; the filter
+	// field may appear later than the request (first activation), so the effect
+	// waits for it.
+	let filterInput = $state<HTMLInputElement | null>(null);
+	let handledFilterFocus = untrack(() => filterFocusRequest);
+	$effect(() => {
+		const request = filterFocusRequest;
+		const input = filterInput;
+		if (!visible || !input || request <= handledFilterFocus) return;
+		handledFilterFocus = request;
+		input.focus();
+	});
 
 	let inspectedRoot = $state("");
 	let checkouts = $state<RepositoryCheckout[]>([]);
@@ -1039,11 +1055,13 @@
 					value={scopeValue}
 					onValueChange={selectInspectionRoot}
 				>
-					<Select.Trigger size="sm" class="min-w-0 border-transparent bg-secondary pr-2 pl-3 text-[13px] hover:bg-secondary/80 data-[size=sm]:h-7 data-[size=sm]:rounded-full dark:bg-secondary dark:hover:bg-secondary/80 [&>svg:last-child]:size-3" aria-label="Folder this panel reads">
+					<!-- Up to 190px for the folder name; it gives way only down to 120px
+					     when the icon buttons beside it need the room. -->
+					<Select.Trigger size="sm" class="min-w-[120px] max-w-[190px] border-transparent bg-secondary pr-2 pl-3 text-[13px] hover:bg-secondary/80 data-[size=sm]:h-7 data-[size=sm]:rounded-full dark:bg-secondary dark:hover:bg-secondary/80 [&>svg:last-child]:size-3" aria-label="Folder this panel reads">
 						<Folder class="size-[14px] text-muted-foreground" strokeWidth={2} aria-hidden="true" />
 						<span class="min-w-0 truncate">{scopeLabel}{#if readOnlyInspection} · read-only{/if}</span>
 					</Select.Trigger>
-					<Select.Content>
+					<Select.Content class="min-w-[240px]">
 						{#each scopeOptions as option (option.path)}
 							<Select.Item value={option.path} label={option.label} />
 						{/each}
@@ -1103,6 +1121,7 @@
 			<div class="relative">
 				<Search class="pointer-events-none absolute top-1/2 left-3 size-[14px] -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
 				<Input
+					bind:ref={filterInput}
 					type="search"
 					class="h-8 w-full rounded-[var(--radius-md)] border-transparent bg-muted dark:bg-muted pr-3 pl-[34px] text-[13px]"
 					placeholder="Filter files"

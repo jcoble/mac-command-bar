@@ -25,7 +25,9 @@
      geometric webfont draws the same sizes with rounder bowls and flatter stems
      and reads soft next to it. */
   font-family: var(--font-ui);
-  font-size: var(--text-md);
+  /* 1rem stays 16px so every rem size (the type scale, 24/28/32 controls)
+     comes out as written; body text is set to 14px on <body> below. */
+  font-size: 16px;
   line-height: 1.5;
 
   background: var(--color-bg);
@@ -58,6 +60,7 @@ body {
   background: var(--color-bg);
   color: var(--color-text);
   font-family: inherit;
+  font-size: var(--text-md);
   line-height: inherit;
 }
 

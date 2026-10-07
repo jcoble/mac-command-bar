@@ -33,20 +33,14 @@ export const buttonVariants = tv({
 			"icon-lg": "size-9 rounded-full",
 		},
 	},
-	/* The shell's icon button: a round ghost in the muted text colour that
-	   brightens on hover and takes the selected fill while it is pressed. */
+	/* The shell's icon button: a round ghost whose glyph sits just below full
+	   text strength, brightens on hover and takes the selected fill while it is
+	   pressed. */
 	compoundVariants: [
 		{
 			variant: "ghost",
 			size: ["icon", "icon-xs", "icon-sm", "icon-lg"],
-			class: "text-muted-foreground aria-pressed:bg-secondary aria-pressed:text-foreground",
-		},
-		/* Its glyph is 16px in pixels: the root font follows the interface-font
-		   setting, so the rem-based size-4 would come out near 13px. */
-		{
-			variant: "ghost",
-			size: ["icon", "icon-sm", "icon-lg"],
-			class: "[&_svg:not([class*='size-'])]:size-[16px]",
+			class: "text-foreground/80 aria-pressed:bg-secondary aria-pressed:text-foreground",
 		},
 	],
 	defaultVariants: {

@@ -157,6 +157,9 @@ export class WorkbenchController {
 	beginSessionSwitch(): void {
 		this.switching = true;
 		releaseBrowserWorkspace();
+		// The outgoing tabs were already captured; keeping them as remembered
+		// tabs would let the incoming session's pane recreate them.
+		restoreBrowserState(null);
 		// A center-tab round trip keeps the diff ready to return to. A session
 		// switch is the ownership boundary where that selection must be released.
 		gitService.clearSelection();

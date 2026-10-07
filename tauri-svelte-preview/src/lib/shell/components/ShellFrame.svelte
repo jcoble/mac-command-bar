@@ -176,7 +176,7 @@
     overflow: hidden;
     /* Matches the gutter each panel already keeps, so the cards sit inside the
        window rather than running off its edges. */
-    padding: 3px;
+    padding: 4px;
     background: var(--color-bg);
     visibility: hidden; /* anti-flash: revealed when ready */
   }
@@ -268,14 +268,14 @@
        writes `width: 100%; height: 100%` on this element as an inline style,
        which outranks any rule here, so sizes set the ordinary way were thrown
        away while the margin still moved the box: every card overhung its cell
-       by three pixels on the right and along the bottom, and the cell's
+       by its margin on the right and along the bottom, and the cell's
        `overflow: hidden` shaved those two edges off square — taking two of the
        four rounded corners with them. Nothing inline competes with a maximum,
-       so this holds, and the gutter is the same six pixels on all four sides. */
-    max-width: calc(100% - 6px);
-    max-height: calc(100% - 6px);
-    margin: 3px;
-    border-radius: var(--radius-sm);
+       so this holds, and the gutter is the same eight pixels on all four sides. */
+    max-width: calc(100% - 8px);
+    max-height: calc(100% - 8px);
+    margin: 4px;
+    border-radius: var(--radius-md);
     overflow: hidden;
     /* A card is a lit surface, not a flat fill: each one carries a faint
        purple light down from its top edge (`--panel-fade`), gone within the
