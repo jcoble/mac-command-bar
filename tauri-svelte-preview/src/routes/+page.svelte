@@ -84,6 +84,8 @@
 	// place its native view only once the pane really has a size.
 	let toolsRailWidth = $state(0);
 	let pullRequestDiff = $state<OpenPullRequestDiffRequest | null>(null);
+	/** The +/- totals the Changes view last showed; the Changes tab title reads these. */
+	let diffTotals = $state({ added: 0, removed: 0 });
 	let routeDisposal: Promise<void> | null = null;
 	/** The right drawer's card width; its left edge drags it between these. */
 	const DRAWER_MIN_WIDTH = 240;
@@ -195,8 +197,8 @@
 						kind: "diff",
 						label: "Changes",
 						detail: gitPanel.selectedPath || "Working tree changes",
-						additions: gitPanel.status?.additions ?? 0,
-						deletions: gitPanel.status?.deletions ?? 0,
+						additions: diffTotals.added,
+						deletions: diffTotals.removed,
 					},
 				];
 			if (ref.kind === "git-history")
@@ -658,11 +660,12 @@
 		{#if topTabs.activeKind === "diff"}
 			<div class="pane-body showing">
 				<GitDiffView
-					showing={true}
 					rootAvailable={pullRequestDiff !== null || selection.activeRootAvailable}
+					sessionRoot={selection.durableSessionRoot}
 					{pullRequestDiff}
 					mode={workbench.diffMode}
 					onModeChange={(mode) => workbench.setDiffMode(mode)}
+					onTotals={(totals) => (diffTotals = totals)}
 				/>
 			</div>
 		{/if}

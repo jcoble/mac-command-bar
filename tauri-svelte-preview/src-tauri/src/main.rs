@@ -286,6 +286,16 @@ pub(crate) struct SourceGitDiff {
     modified_content: Option<String>,
 }
 
+/// Everything on the checked-out branch since it left the repository's default
+/// branch, as one diff text; the Changes tab splits it per file.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GitBranchDiff {
+    /// The branch compared with, e.g. `origin/main`.
+    base: String,
+    diff: String,
+}
+
 /// One file touched by one commit. Same three fields the working-copy status list
 /// shows for a file, so a commit's file list and the changed-files list render the
 /// same way.
@@ -2446,7 +2456,7 @@ pub(crate) fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus,
             "status",
             "--porcelain=v1",
             "--branch",
-            "--untracked-files=normal",
+            "--untracked-files=all",
         ]),
         "git status",
         bounded_process::LOCAL_COMMAND_TIMEOUT,
@@ -2736,6 +2746,26 @@ fn run_git_with_paths(root: &Path, args: &[&str], paths: &[String]) -> Result<St
     }
 
     run_git_text(root, &git_args)
+}
+
+/// Committed and uncommitted tracked changes on this branch: one `git diff`
+/// from the merge base of HEAD and `origin/HEAD` to the working tree. The app
+/// does not record which branch a worktree was cut from, so the repository's
+/// default branch is the base.
+pub(crate) fn read_git_branch_diff_sync(root: PathBuf) -> Result<GitBranchDiff, String> {
+    validate_git_root(&root)?;
+    let base = run_git_text(&root, &["rev-parse", "--abbrev-ref", "origin/HEAD"])
+        .map_err(|_| "This repository has no origin/HEAD, so there is no default branch to compare with.".to_string())?
+        .trim()
+        .to_string();
+    let merge_base = run_git_text(&root, &["merge-base", "HEAD", base.as_str()])?
+        .trim()
+        .to_string();
+    let diff = run_git_text(
+        &root,
+        &["-c", "core.quotepath=false", "diff", "--no-ext-diff", merge_base.as_str()],
+    )?;
+    Ok(GitBranchDiff { base, diff })
 }
 
 pub(crate) fn read_source_git_diff_sync(
@@ -5499,6 +5529,7 @@ fn main() {
             list_source_lsp_diagnostics_for_root,
             project_git_status,
             read_source_git_diff,
+            read_git_branch_diff,
             stage_git_paths,
             unstage_git_paths,
             commit_git_repository,
@@ -7021,6 +7052,41 @@ mod tests {
         let no_commits = parse_git_branch_header("No commits yet on feature/source-browser");
         assert_eq!(no_commits.branch.as_deref(), Some("feature/source-browser"));
         assert!(!no_commits.has_upstream);
+    }
+
+    #[test]
+    fn branch_diff_covers_commits_and_working_changes_since_the_default_branch() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        let commit = |message: &str| {
+            run_git_for_test(&root, &["add", "."]);
+            run_git_for_test(
+                &root,
+                &["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-m", message],
+            );
+        };
+        run_git_for_test(&root, &["init", "-b", "main"]);
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        commit("initial");
+        run_git_for_test(&root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        run_git_for_test(&root, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        run_git_for_test(&root, &["checkout", "-b", "feature"]);
+        std::fs::write(root.join("a.txt"), "two\n").unwrap();
+        commit("committed change");
+        std::fs::write(root.join("b.txt"), "unstaged\n").unwrap();
+        run_git_for_test(&root, &["add", "-N", "b.txt"]);
+        std::fs::write(root.join("a.txt"), "three\n").unwrap();
+
+        let branch = read_git_branch_diff_sync(root.clone()).unwrap();
+
+        assert_eq!(branch.base, "origin/main");
+        assert!(branch.diff.contains("-one"), "{}", branch.diff);
+        assert!(branch.diff.contains("+three"), "{}", branch.diff);
+        assert!(branch.diff.contains("+unstaged"), "{}", branch.diff);
+
+        run_git_for_test(&root, &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
+        assert!(read_git_branch_diff_sync(root.clone()).unwrap_err().contains("origin/HEAD"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

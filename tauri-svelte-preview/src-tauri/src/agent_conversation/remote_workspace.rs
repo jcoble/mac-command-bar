@@ -46,6 +46,7 @@ pub(super) async fn execute(operation: String, args: Value) -> Result<Value, Str
         "amend_git_commit" => return json(changes::amend_git_commit(arg(&args, "root")?, arg(&args, "message")?).await?),
         "project_git_status" => return json(git::project_git_status(path(&args, "root")?.to_string_lossy().into()).await?),
         "read_source_git_diff" => return json(git::read_source_git_diff(arg(&args, "root")?, arg(&args, "path")?).await?),
+        "read_git_branch_diff" => return json(git::read_git_branch_diff(arg(&args, "root")?).await?),
         "stage_git_paths" => return json(git::stage_git_paths(arg(&args, "root")?, arg(&args, "paths")?).await?),
         "unstage_git_paths" => return json(git::unstage_git_paths(arg(&args, "root")?, arg(&args, "paths")?).await?),
         "commit_git_repository" => return json(git::commit_git_repository(arg(&args, "root")?, arg(&args, "message")?).await?),
