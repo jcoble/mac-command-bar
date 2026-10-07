@@ -70,7 +70,7 @@ export interface ConversationRecentEvent {
 
 export const CONVERSATION_RECENT_EVENT_CAP = 200;
 export const ACTIVE_EVENT_WINDOW_EVENTS = 20_000;
-export const ACTIVE_EVENT_WINDOW_BYTES = 4 * 1024 * 1024; // 4 MiB bounded memory window
+export const ACTIVE_EVENT_WINDOW_BYTES = 4 * 1024 * 1024; // 4 MiB stream race-buffer budget
 
 export interface ConversationWorkspaceState extends ConversationSessionState {
   draft: string;
@@ -254,8 +254,10 @@ function applySelectedPageState(
   current.selectedWatermark = Math.max(current.selectedWatermark, page.watermark);
   current.selectedTransferBytes = window?.transferBytes ?? page.transferBytes;
   current.selectedOversized = window ? window.transferBytes > ACTIVE_EVENT_WINDOW_BYTES : page.oversized;
-  current.selectedLoadingOlder = false;
-  current.selectedLoadingNewer = false;
+  if (direction === 'snapshot') {
+    current.selectedLoadingOlder = false;
+    current.selectedLoadingNewer = false;
+  }
   current.timelineRevision += 1;
 }
 
@@ -378,8 +380,7 @@ export function applySelectedConversationHistoryEventState(
 export function applySelectedConversationLiveWindow(
   ownedId: string,
   retainedTurnIds: readonly string[],
-  transferBytes: number,
-  evictedOldest: boolean
+  transferBytes: number
 ): void {
   const current = conversationSessions[ownedId];
   if (!current) return;
@@ -388,7 +389,6 @@ export function applySelectedConversationLiveWindow(
   current.selectedTurns = current.selectedTurns.filter((turn) => retained.has(turn.turnId));
   current.selectedTransferBytes = transferBytes;
   current.selectedOversized = transferBytes > ACTIVE_EVENT_WINDOW_BYTES;
-  if (evictedOldest) current.selectedHasBefore = true;
 }
 
 export function applySelectedConversationPageState(
@@ -420,11 +420,12 @@ export function setSelectedConversationPageLoading(
 ): boolean {
   const current = conversationSessions[ownedId];
   if (!current) return false;
+  if (loading && (current.selectedLoadingOlder || current.selectedLoadingNewer)) return false;
   if (direction === 'older') {
-    if (loading && (current.selectedLoadingOlder || !current.selectedHasBefore)) return false;
+    if (loading && !current.selectedHasBefore) return false;
     current.selectedLoadingOlder = loading;
   } else {
-    if (loading && (current.selectedLoadingNewer || !current.selectedHasAfter)) return false;
+    if (loading && !current.selectedHasAfter) return false;
     current.selectedLoadingNewer = loading;
   }
   if (loading) current.selectedPageError = '';

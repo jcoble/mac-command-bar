@@ -138,7 +138,7 @@
       }
     }
     previousRuns = nextRuns;
-    if (activityLabel) result.push({ key: 'activity', activity: true });
+    if (activityLabel) result.push({ key: `activity:${result.at(-1)?.key ?? 'empty'}`, activity: true });
     return result;
   });
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
@@ -162,6 +162,7 @@
         getItemKey: (index) => currentRows[index].key,
         estimateSize: (index) => currentRows[index].run || currentRows[index].item?.kind === 'tool' ? 36 : 90,
         paddingStart: topInset, paddingEnd,
+        followOnAppend: following ? 'smooth' : false,
         scrollEndThreshold: following ? 80 : -1
       });
       const keys = new Set(currentRows.map((row) => row.key));
@@ -297,8 +298,6 @@
   });
 
   $effect(() => {
-    void rows;
-    void totalSize;
     void composerHeight;
     if (!follow || hasNewer || restoring || jumping || !host) return;
     const windowId = renderWindowId;

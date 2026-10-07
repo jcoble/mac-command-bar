@@ -48,7 +48,6 @@ import { extendAgentConversationImportFromTauri } from '../../tauriSource.ts';
 import { usageDropIsCompaction } from './conversationReducer.ts';
 
 const PAGE_BYTES = 512 * 1024;
-const GRAPH_BYTES = 4 * 1024 * 1024;
 const encoder = new TextEncoder();
 
 type Direction = 'older' | 'newer';
@@ -101,15 +100,6 @@ function isCurrent(selection: ActiveConversation): boolean {
 
 function messageBytes(message: UIMessage): number {
   return encoder.encode(JSON.stringify(message)).byteLength;
-}
-
-function boundedMessages(messages: UIMessage[], direction: Direction): UIMessage[] {
-  let bytes = messages.reduce((total, message) => total + messageBytes(message), 0);
-  while (messages.length > 1 && bytes > GRAPH_BYTES) {
-    const removed = direction === 'older' ? messages.pop() : messages.shift();
-    if (removed) bytes -= messageBytes(removed);
-  }
-  return messages;
 }
 
 function resetMessageBytes(selection: ActiveConversation, messages: readonly UIMessage[]): void {
@@ -165,19 +155,19 @@ function mergeMessages(
   for (const message of preferred) byId.set(message.id, message);
   const order = direction === 'older' ? [...incoming, ...current] : [...current, ...incoming];
   const seen = new Set<string>();
-  return boundedMessages(order.flatMap((message) => {
+  return order.flatMap((message) => {
     if (seen.has(message.id)) return [];
     seen.add(message.id);
     return [byId.get(message.id)!];
-  }), direction);
+  });
 }
 
-function boundLiveMessages(
+function recordLiveMessages(
   selection: ActiveConversation,
   changedIds: ReadonlySet<string>,
   replaced: boolean
-): StreamChunk[] {
-  let messages = selection.chat.messages;
+): void {
+  const messages = selection.chat.messages;
   if (replaced) resetMessageBytes(selection, messages);
   else for (const id of changedIds) {
     const previous = selection.messageBytes.get(id) ?? 0;
@@ -187,31 +177,13 @@ function boundLiveMessages(
     if (message) selection.messageBytes.set(id, next);
     else selection.messageBytes.delete(id);
   }
-  let evictedOldest = false;
-  while (messages.length > 1 && selection.graphBytes > GRAPH_BYTES) {
-    const [removed, ...retained] = messages;
-    selection.graphBytes -= selection.messageBytes.get(removed.id) ?? 0;
-    selection.messageBytes.delete(removed.id);
-    messages = retained;
-    evictedOldest = true;
-  }
-  const replacement = evictedOldest ? conversationSnapshotChunks(messages) : [];
-  if (evictedOldest) {
-    resetMessageBytes(selection, messages);
-    const generation = getConversationSession(selection.historyOwnedId)?.generation ?? 0;
-    restoreSelectedConversationAttachments(
-      selection.historyOwnedId, {}, generation, messages.map((message) => message.id)
-    );
-  }
   selection.beforeCursor = historyPosition(messages[0]) ?? selection.beforeCursor;
   applySelectedConversationLiveWindow(
     selection.historyOwnedId,
     messages.flatMap((message) => typeof message.metadata?.turnId === 'string'
       ? [message.metadata.turnId] : []),
-    selection.graphBytes,
-    evictedOldest
+    selection.graphBytes
   );
-  return replacement;
 }
 
 function isTerminal(event: AgentConversationEvent, turnId: string): boolean {
@@ -268,9 +240,7 @@ function enqueueFactory(signal: AbortSignal, selection: ActiveConversation): {
                 }
                 yield chunk;
               }
-              for (const replacement of boundLiveMessages(selection, changedIds, replaced)) {
-                yield replacement;
-              }
+              recordLiveMessages(selection, changedIds, replaced);
             } else {
               yield item;
             }
@@ -382,18 +352,24 @@ function snapshotChunks(
   }
   selection.afterCursor = snapshot.page.afterCursor;
   const pageMessages = messagesFromPage(snapshot.page);
-  let messages = boundedMessages([...pageMessages], 'newer');
+  const current = getConversationSession(selection.historyOwnedId);
+  const prefixEnd = selection.chat.messages.findIndex((message) => message.id === pageMessages[0]?.id);
+  const prefix = prefixEnd > 0 ? selection.chat.messages.slice(0, prefixEnd) : [];
+  let messages = [...prefix, ...pageMessages];
+  // A latest snapshot that overlaps loaded history refreshes its tail and keeps the earlier pages.
+  if (prefix.length) snapshot = { ...snapshot, page: { ...snapshot.page,
+    turns: [...new Map([...(current?.selectedTurns ?? []), ...snapshot.page.turns]
+      .map((turn) => [turn.turnId, turn])).values()]
+  } };
   const pending = selection.pendingSend;
   if (pending && !pending.receipt && pending.optimisticId) {
     const optimistic = selection.chat.messages.find((message) => message.id === pending.optimisticId);
     if (optimistic && !messages.some((message) => message.id === optimistic.id)) {
-      messages = boundedMessages([...messages, optimistic], 'newer');
+      messages.push(optimistic);
     }
   }
   selection.beforeCursor = historyPosition(messages.find((message) => historyPosition(message) !== undefined)) ?? selection.beforeCursor;
   selection.afterCursor = historyPosition(messages.findLast((message) => historyPosition(message) !== undefined)) ?? selection.afterCursor;
-  const retainedIds = new Set(messages.map((message) => message.id));
-  const evicted = pageMessages.some((message) => !retainedIds.has(message.id));
   resetMessageBytes(selection, messages);
   applySelectedConversationSnapshotState(
     selection.historyOwnedId,
@@ -403,7 +379,7 @@ function snapshotChunks(
     {
       beforeCursor: selection.beforeCursor,
       afterCursor: selection.afterCursor,
-      hasBefore: evicted || hasOlderHistory(snapshot.page),
+      hasBefore: prefix.length ? current?.selectedHasBefore ?? hasOlderHistory(snapshot.page) : hasOlderHistory(snapshot.page),
       hasAfter: snapshot.page.hasAfter,
       retainedTurnIds: messages.flatMap((message) =>
         typeof message.metadata?.turnId === 'string' ? [message.metadata.turnId] : []),
@@ -861,12 +837,6 @@ export async function pageSelectedConversation(direction: Direction, historyOwne
           selection.historyOwnedId, cursor, PAGE_BYTES, selection.controller.signal
         );
     if (!page || !isCurrent(selection)) return;
-    if (direction === 'newer' && !page.hasAfter) {
-      if (!selection.resolveReady) resetReady(selection);
-      await selection.resubscribe?.();
-      await selection.ready;
-      return;
-    }
     if (direction === 'older' && page.items.length === 0 && !page.hasBefore && page.hasEarlierTranscript) {
       const extended = await extendAgentConversationImportFromTauri(
         selection.historyOwnedId,
@@ -883,23 +853,22 @@ export async function pageSelectedConversation(direction: Direction, historyOwne
         page = { ...page, hasEarlierTranscript: false };
       }
     }
-    const previousIds = new Set(selection.chat.messages.map((message) => message.id));
+    const current = getConversationSession(selection.historyOwnedId);
     const messages = mergeMessages(
       selection.chat.messages,
       messagesFromPage(page),
       direction
     );
     if (!selection.push) return;
+    resetReady(selection);
     pushMessagesSnapshot(selection, messages, selection.push);
-    const retainedIds = new Set(messages.map((message) => message.id));
-    const evictedPrevious = [...previousIds].some((id) => !retainedIds.has(id));
     selection.beforeCursor = historyPosition(messages[0]) ?? page.beforeCursor;
     selection.afterCursor = historyPosition(messages.at(-1)) ?? page.afterCursor;
     applySelectedConversationPageState(selection.historyOwnedId, page, direction, {
       beforeCursor: selection.beforeCursor,
       afterCursor: selection.afterCursor,
-      hasBefore: direction === 'older' ? hasOlderHistory(page) : evictedPrevious || hasOlderHistory(page),
-      hasAfter: direction === 'newer' ? page.hasAfter : evictedPrevious || page.hasAfter,
+      hasBefore: direction === 'older' ? hasOlderHistory(page) : current?.selectedHasBefore ?? hasOlderHistory(page),
+      hasAfter: direction === 'newer' ? page.hasAfter : current?.selectedHasAfter ?? page.hasAfter,
       retainedTurnIds: messages.flatMap((message) =>
         typeof message.metadata?.turnId === 'string' ? [message.metadata.turnId] : []
       ),
@@ -912,6 +881,15 @@ export async function pageSelectedConversation(direction: Direction, historyOwne
       generation,
       messages.map((message) => message.id)
     );
+    // Keep paging locked until this page is consumed; the next merge must see its messages.
+    selection.push({ type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: selection.historyOwnedId } as StreamChunk);
+    await selection.ready;
+    if (!isCurrent(selection)) return;
+    if (direction === 'newer' && !page.hasAfter) {
+      resetReady(selection);
+      await selection.resubscribe?.();
+      await selection.ready;
+    }
   } catch (error) {
     if (isCurrent(selection)) {
       const detail = typeof error === 'string' ? error

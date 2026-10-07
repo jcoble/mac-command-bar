@@ -465,12 +465,12 @@ test('live turn facts stay stable and prune with the retained graph', () => {
   assert.deepEqual(store.getConversationSession(ownedId).selectedTurns, [{
     turnId: 'turn-1', startedAtMs: 100, endedAtMs: 200, terminalState: 'completed'
   }]);
-  store.applySelectedConversationLiveWindow(ownedId, [], 0, true);
+  store.applySelectedConversationLiveWindow(ownedId, [], 0);
   assert.deepEqual(store.getConversationSession(ownedId).selectedTurns, []);
-  assert.equal(store.getConversationSession(ownedId).selectedHasBefore, true);
+  assert.equal(store.getConversationSession(ownedId).selectedHasBefore, false);
 });
 
-test('older windows withhold live content and the live graph stays byte bounded', async () => {
+test('history gaps withhold live content and admitted messages stay retained', async () => {
   const source = readFileSync(
     new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url),
     'utf8'
@@ -513,106 +513,70 @@ test('older windows withhold live content and the live graph stays byte bounded'
   }, (item: unknown) => terminalPushed.push(item));
   assert.equal(terminalPushed[0]?.type, EventType.RUN_FINISHED, 'terminal settles while older content is shown');
 
-  const boundsBlock = source.slice(
-    source.indexOf('function messageBytes('),
-    source.indexOf('function messagesFromPage(')
-  );
+  const merge = Function(`${stripTypeScriptTypes(source.slice(
+    source.indexOf('function mergeMessages('), source.indexOf('function recordLiveMessages(')
+  ), { mode: 'strip' })}\nreturn mergeMessages;`)();
+  const large = Array.from({ length: 300 }, (_, index) => ({
+    id: `message-${index}`, role: 'assistant', parts: [{ type: 'text', content: 'x'.repeat(16 * 1024) }],
+    metadata: { firstSequence: index + 1, turnId: `turn-${index}` }
+  }));
+  assert.ok(new TextEncoder().encode(JSON.stringify(large)).byteLength > 4 * 1024 * 1024);
+  assert.deepEqual(merge(large.slice(150), large.slice(0, 151), 'older'), large);
+  assert.deepEqual(merge(large.slice(0, 151), large.slice(150), 'newer'), large);
+  const changed = { ...large[150], parts: [{ type: 'text', content: 'updated' }] };
+  assert.equal(merge([changed], [large[150]], 'older')[0], changed);
+  assert.equal(merge([large[150]], [changed], 'newer')[0], changed);
+
   let encodes = 0;
-  const measuringEncoder = { encode(value: string) { encodes += 1; return new TextEncoder().encode(value); } };
-  const bounded = Function(
-    'encoder', 'GRAPH_BYTES',
-    `${stripTypeScriptTypes(boundsBlock, { mode: 'strip' })}\nreturn boundedMessages;`
-  )(measuringEncoder, 4 * 1024 * 1024);
-  const messages = Array.from({ length: 5 }, (_, index) => ({
-    id: `message-${index}`, role: 'assistant',
-    parts: [{ type: 'text', content: 'x'.repeat(1024 * 1024) }], metadata: {}
-  }));
-  const originalLength = messages.length;
-  const retained = bounded(messages, 'newer');
-  assert.ok(retained.length < originalLength);
-  assert.equal(retained.at(-1)?.id, 'message-4');
-  assert.ok(retained.reduce((total: number, message: unknown) =>
-    total + new TextEncoder().encode(JSON.stringify(message)).byteLength, 0
-  ) <= 4 * 1024 * 1024);
-
-  const tiny = Array.from({ length: 300 }, (_, index) => ({
-    id: `tiny-${index}`, role: 'assistant', parts: [{ type: 'text', content: 'small' }],
-    metadata: { firstSequence: index + 1 }
-  }));
-  const olderItems = bounded([...tiny], 'older');
-  const newerItems = bounded([...tiny], 'newer');
-  assert.equal(olderItems.length, 300, 'small messages use the byte budget without a count cap');
-  assert.equal(newerItems.length, 300);
-  const large = tiny.map((row) => ({ ...row, parts: [{ type: 'text', content: 'x'.repeat(16 * 1024) }] }));
-  const olderLarge = bounded([...large], 'older');
-  const newerLarge = bounded([...large], 'newer');
-  assert.equal(olderLarge[0].id, 'tiny-0', 'older paging evicts the newest edge');
-  assert.equal(newerLarge.at(-1).id, 'tiny-299', 'newer paging evicts the oldest edge');
-  for (const retained of [olderLarge, newerLarge]) {
-    assert.ok(retained.length < large.length);
-    assert.ok(retained.reduce((sum: number, row: unknown) => sum + new TextEncoder().encode(JSON.stringify(row)).byteLength, 0) <= 4 * 1024 * 1024);
-  }
-
-  const small = messages.slice(0, 2).map((message) => ({ ...message, parts: [{ type: 'text', content: 'small' }] }));
-  const sizes = new Map(small.map((message) => [message.id, new TextEncoder().encode(JSON.stringify(message)).byteLength]));
-  encodes = 0;
-  const liveBoundsBlock = source.slice(
-    source.indexOf('function boundLiveMessages('), source.indexOf('function isTerminal(')
-  );
-  const boundLive = Function(
-    'encoder', 'GRAPH_BYTES', 'messageBytes', 'pushMessagesSnapshot', 'getConversationSession',
-    'restoreSelectedConversationAttachments', 'applySelectedConversationLiveWindow', 'historyPosition',
-    'conversationSnapshotChunks', 'resetMessageBytes',
-    `${stripTypeScriptTypes(liveBoundsBlock, { mode: 'strip' })}\nreturn boundLiveMessages;`
-  )(measuringEncoder, 4 * 1024 * 1024,
-    (message: unknown) => measuringEncoder.encode(JSON.stringify(message)).byteLength,
-    () => undefined, () => ({ generation: 1 }), () => undefined,
-    () => undefined, (message: { metadata?: { firstSequence?: number } } | undefined) => message?.metadata?.firstSequence,
-    conversationSnapshotChunks, (selection: any, rows: any[]) => {
-      selection.messageBytes = new Map(rows.map((row) => [row.id, new TextEncoder().encode(JSON.stringify(row)).byteLength]));
-      selection.graphBytes = [...selection.messageBytes.values()].reduce((sum: number, bytes: any) => sum + bytes, 0);
-    });
-  boundLive({
-    chat: { messages: small }, messageBytes: sizes,
-    graphBytes: [...sizes.values()].reduce((sum, bytes) => sum + bytes, 0),
-    workspaceOwnedId: 'owned-window', beforeCursor: 0
-  }, new Set([small[1].id]), false);
-  assert.equal(encodes, 1, 'one changed live message is remeasured without rescanning the graph');
-
+  const bytes = (message: unknown) => { encodes += 1; return new TextEncoder().encode(JSON.stringify(message)).byteLength; };
+  const recordLive = Function(
+    'messageBytes', 'applySelectedConversationLiveWindow', 'historyPosition', 'resetMessageBytes',
+    `${stripTypeScriptTypes(source.slice(source.indexOf('function recordLiveMessages('),
+      source.indexOf('function isTerminal(')), { mode: 'strip' })}\nreturn recordLiveMessages;`
+  )(bytes, () => undefined, (message: any) => message?.metadata?.firstSequence, () => undefined);
+  const sizes = new Map(large.map((row) => [row.id, bytes(row)]));
   const liveSelection = {
-    chat: { messages: large }, messageBytes: new Map(large.map((row) => [row.id, new TextEncoder().encode(JSON.stringify(row)).byteLength])),
-    graphBytes: large.reduce((sum, row) => sum + new TextEncoder().encode(JSON.stringify(row)).byteLength, 0), workspaceOwnedId: 'owned-window', beforeCursor: 1
+    chat: { messages: large }, messageBytes: sizes,
+    graphBytes: [...sizes.values()].reduce((sum, size) => sum + size, 0), historyOwnedId: 'owned-window', beforeCursor: 1
   };
-  const liveReplacement = boundLive(liveSelection, new Set(), false);
-  assert.deepEqual(liveReplacement[0].messages, newerLarge);
-  assert.equal(liveSelection.beforeCursor, newerLarge[0].metadata.firstSequence);
+  encodes = 0;
+  recordLive(liveSelection, new Set([large[299].id]), false);
+  assert.equal(encodes, 1, 'one changed live message is remeasured without rescanning the graph');
+  assert.equal(liveSelection.chat.messages, large);
+  assert.ok(liveSelection.graphBytes > 4 * 1024 * 1024);
+  assert.equal(liveSelection.beforeCursor, 1);
+
   let snapshotWindow: any;
+  let snapshotTurns: any;
+  let snapshotMessages: any;
+  const oldTurn = { turnId: 'turn-0', startedAtMs: 1 };
+  const finishedTurn = { turnId: 'turn-299', endedAtMs: 3 };
   const snapshotBlock = source.slice(source.indexOf('function snapshotChunks('), source.indexOf('function admitInitialSnapshot('));
   const admitSnapshot = Function(
-    'messagesFromPage', 'boundedMessages', 'historyPosition', 'hasOlderHistory', 'resetMessageBytes',
+    'messagesFromPage', 'getConversationSession', 'historyPosition', 'hasOlderHistory', 'resetMessageBytes',
     'applySelectedConversationSnapshotState', 'pushMessagesSnapshot', 'EventType', 'restorePageAttachments', 'pageAttachments',
     `${stripTypeScriptTypes(snapshotBlock, { mode: 'strip' })}\nreturn snapshotChunks;`
-  )(() => large, bounded, (message: any) => message?.metadata?.firstSequence, () => false,
-    (selection: any, rows: any[]) => { selection.graphBytes = rows.reduce((sum, row) => sum + new TextEncoder().encode(JSON.stringify(row)).byteLength, 0); },
-    (_workspace: string, _history: string, _snapshot: unknown, _controls: boolean, window: unknown) => { snapshotWindow = window; },
-    () => undefined, EventType, () => undefined, () => []);
-  const snapshotSelection: any = { historyOwnedId: 'owned-window', pendingSend: null };
-  admitSnapshot(snapshotSelection, { page: { beforeCursor: 1, afterCursor: 300, hasAfter: false, events: [], turns: [] }, connection: { generation: 1 } }, () => undefined, false);
-  assert.equal(snapshotSelection.beforeCursor, newerLarge[0].metadata.firstSequence);
-  assert.equal(snapshotWindow.beforeCursor, newerLarge[0].metadata.firstSequence);
+  )((page: any) => page.items, () => ({ selectedHasBefore: false, selectedTurns: [oldTurn, { turnId: 'turn-299' }] }),
+    (message: any) => message?.metadata?.firstSequence, (page: any) => page.hasBefore,
+    (selection: any, rows: any[]) => { selection.graphBytes = rows.reduce((sum, row) => sum + bytes(row), 0); },
+    (_workspace: string, _history: string, snapshot: any, _controls: boolean, window: unknown) => {
+      snapshotWindow = window; snapshotTurns = snapshot.page.turns;
+    }, (_selection: unknown, rows: unknown) => { snapshotMessages = rows; }, EventType, () => undefined, () => []);
+  const snapshotSelection: any = { historyOwnedId: 'owned-window', pendingSend: null, chat: { messages: large } };
+  admitSnapshot(snapshotSelection, { page: { items: large.slice(250), beforeCursor: 251, afterCursor: 300,
+    hasBefore: true, hasAfter: false, events: [], turns: [finishedTurn] }, connection: { generation: 1 } }, () => undefined, false);
+  assert.deepEqual(snapshotMessages, large, 'overlapping latest refresh retains all earlier pages');
+  assert.deepEqual(snapshotTurns, [oldTurn, finishedTurn], 'earlier facts survive; incoming turn facts win');
+  assert.equal(snapshotWindow.beforeCursor, 1);
   assert.equal(snapshotWindow.afterCursor, 300);
-  assert.equal(snapshotWindow.hasBefore, true, 'snapshot trim remains pageable');
+  assert.equal(snapshotWindow.hasBefore, false, 'known beginning survives latest refresh');
   assert.equal(snapshotWindow.transferBytes, snapshotSelection.graphBytes);
-
-  const reachLatest = source.indexOf("if (direction === 'newer' && !page.hasAfter)");
-  assert.ok(reachLatest > 0 && reachLatest < source.indexOf('const previousIds =', reachLatest));
-  assert.match(source.slice(reachLatest, source.indexOf('const previousIds =', reachLatest)), /resubscribe/);
 
   const enqueueBlock = source.slice(
     source.indexOf('function enqueueFactory('), source.indexOf('function resetReady(')
   );
   const enqueueFactory = Function(
-    'conversationChunksFromEvent', 'boundLiveMessages', 'EventType',
+    'conversationChunksFromEvent', 'recordLiveMessages', 'EventType',
     `${stripTypeScriptTypes(enqueueBlock, { mode: 'strip' })}\nreturn enqueueFactory;`
   )(
     (_messages: unknown[], nativeEvent: AgentConversationEvent) => [{
@@ -620,8 +584,7 @@ test('older windows withhold live content and the live graph stays byte bounded'
       messageId: nativeEvent.payload.itemId,
       delta: nativeEvent.payload.delta
     }],
-    (_selection: unknown, changedIds: Set<string>) => changedIds.has('first')
-      ? [{ type: EventType.MESSAGES_SNAPSHOT, messages: [] }] : [],
+    () => undefined,
     EventType
   );
   const controller = new AbortController();
@@ -630,7 +593,6 @@ test('older windows withhold live content and the live graph stays byte bounded'
   queued.push({ nativeEvent: { ...event, sequence: 3, payload: { kind: 'assistantDelta', itemId: 'second', delta: 'two' } } });
   const iterator = queued.stream()[Symbol.asyncIterator]();
   assert.deepEqual((await iterator.next()).value, { type: EventType.TEXT_MESSAGE_CONTENT, messageId: 'first', delta: 'one' });
-  assert.equal((await iterator.next()).value.type, EventType.MESSAGES_SNAPSHOT);
   assert.deepEqual((await iterator.next()).value, { type: EventType.TEXT_MESSAGE_CONTENT, messageId: 'second', delta: 'two' });
   controller.abort();
   await iterator.return?.();
@@ -642,8 +604,19 @@ test('history paging publishes saved rows before import and handles failed or st
     source.indexOf('export function selectedConversationHistoryOwnedId(')).replace('export async function', 'async function');
   const saved = { id: 'saved', metadata: { firstSequence: 1 } };
   const selection = { historyOwnedId: 'history', beforeCursor: 2, afterCursor: 2,
-    controller: new AbortController(), chat: { messages: [saved] }, push: () => undefined };
-  let page = { items: [{ itemId: 'saved' }], events: [], hasBefore: false,
+    controller: new AbortController(), chat: { messages: [saved] },
+    push: (chunk: any) => setTimeout(() => {
+      assert.equal(historyState.selectedLoadingOlder || historyState.selectedLoadingNewer, true,
+        'actual store stays locked until the client consumes the page');
+      assert.equal(store.setSelectedConversationPageLoading('history', 'older', true), false);
+      assert.equal(store.setSelectedConversationPageLoading('history', 'newer', true), false);
+      if (chunk.name === 'assembly:snapshot-ready') selection.resolveReady();
+    }, 0),
+    ready: Promise.resolve(), resolveReady: () => undefined, resubscribe: async () => {
+      assert.equal(selection.chat.messages.at(-1)?.id, 'latest', 'last page is consumed before live resubscription');
+      selection.resolveReady();
+    } };
+  let page = { items: [{ itemId: 'saved' }], events: [], turns: [], watermark: 1, transferBytes: 10, oversized: false, hasBefore: false,
     hasAfter: true, hasEarlierTranscript: true, beforeCursor: 1, afterCursor: 1 };
   let current = true;
   let loading = false;
@@ -653,6 +626,11 @@ test('history paging publishes saved rows before import and handles failed or st
   let readFailure = false;
   let importFailure = false;
   let staleImport = false;
+  let publishedWindow: any;
+  store.ensureConversationSession('history', 'codex');
+  const historyState = store.getConversationSession('history');
+  historyState.selectedHasBefore = true;
+  historyState.selectedHasAfter = false;
   const read = async () => {
     if (readFailure) throw { message: 'Saved page could not be read' };
     return page;
@@ -661,29 +639,38 @@ test('history paging publishes saved rows before import and handles failed or st
     'readOlderSelectedConversationItems', 'readNewerSelectedConversationItems', 'isCurrent',
     'extendAgentConversationImportFromTauri', 'messagesFromPage', 'mergeMessages', 'pushMessagesSnapshot',
     'historyPosition', 'hasOlderHistory', 'applySelectedConversationPageState', 'messageBytes',
-    'getConversationSession', 'restorePageAttachments', 'pageAttachments', 'setSelectedConversationPageError',
+    'getConversationSession', 'restorePageAttachments', 'pageAttachments', 'setSelectedConversationPageError', 'resetReady', 'EventType',
     `${stripTypeScriptTypes(body, { mode: 'strip' })}\nreturn pageSelectedConversation;`
-  )(selection, null, 512 * 1024, (_id: string, _direction: string, value: boolean) => {
-    loading = value; if (value) pageError = ''; return true;
+  )(selection, null, 512 * 1024, (id: string, direction: 'older' | 'newer', value: boolean) => {
+    loading = value; if (value) pageError = '';
+    return store.setSelectedConversationPageLoading(id, direction, value);
   }, read, read, () => current, async () => {
     imports += 1;
     if (importFailure) throw { message: 'Remote machine is not connected' };
     if (staleImport) { current = false; return { added: 0, reachedStart: true }; }
     page = { ...page, items: [{ itemId: 'saved' }] };
     return { added: 1, reachedStart: true };
-  }, () => [saved], (_existing: unknown, incoming: unknown) => incoming,
-  () => { published += 1; }, () => 1, () => true, () => undefined, () => 10,
-  () => ({ generation: 1 }), async () => undefined, () => new Map(),
-  (_id: string, message: string) => { pageError = message; });
+  }, () => page.items.map((item) => ({ id: item.itemId, metadata: { firstSequence: 1 } })),
+  (_existing: unknown, incoming: unknown) => incoming,
+  (_selection: unknown, messages: any) => { published += 1; queueMicrotask(() => { selection.chat.messages = messages; }); },
+  () => 1, (value: any) => value.hasBefore || value.hasEarlierTranscript,
+  (id: string, value: any, direction: 'older' | 'newer', window: any) => {
+    publishedWindow = window; store.applySelectedConversationPageState(id, value, direction, window);
+  }, () => 10,
+  () => historyState, async () => undefined, () => new Map(),
+  (_id: string, message: string) => { pageError = message; },
+  (value: typeof selection) => { value.ready = new Promise<void>((resolve) => { value.resolveReady = resolve; }); }, EventType);
 
   await paging('older');
   assert.equal(imports, 0, 'saved local messages do not wait for provider import');
   assert.equal(published, 1);
+  assert.equal(publishedWindow.hasAfter, false, 'older page preserves the known live tail');
   assert.equal(loading, false);
   page = { ...page, items: [] };
   await paging('older');
   assert.equal(imports, 1, 'empty earlier boundary still imports');
   assert.equal(published, 2);
+  historyState.selectedHasBefore = true;
   readFailure = true;
   await paging('older');
   assert.match(pageError, /Could not load older messages: Saved page could not be read/);
@@ -702,6 +689,14 @@ test('history paging publishes saved rows before import and handles failed or st
   await paging('older');
   assert.equal(published, 2, 'an old selection cannot publish an import completion');
   assert.equal(pageError, '');
+  current = true; staleImport = false;
+  store.setSelectedConversationPageLoading('history', 'older', false);
+  historyState.selectedHasAfter = true;
+  page = { ...page, items: [{ itemId: 'latest' }], hasAfter: false, hasEarlierTranscript: false };
+  await paging('newer');
+  assert.equal(publishedWindow.hasBefore, true, 'newer page preserves the earlier boundary');
+  assert.equal(publishedWindow.hasAfter, false);
+  assert.equal(loading, false);
 });
 
 test('saved anchor admission keeps current authority and ignores a stale Jump failure', async () => {
