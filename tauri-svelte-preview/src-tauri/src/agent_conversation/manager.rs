@@ -212,10 +212,14 @@ pub struct ManagedAgentSession {
     created_at_ms: u128,
     last_activity_ms: u128,
     live_tool_calls: HashSet<String>,
-    /// The reply the agent is streaming: its message id and the text of the
-    /// deltas stored for it so far.
-    streaming_reply: Option<(String, String)>,
+    /// The reply the agent is streaming: its message id, the text of the
+    /// deltas stored for it so far, and the autonomous turn it belongs to.
+    streaming_reply: Option<(String, String, Option<String>)>,
     background_work: HashSet<String>,
+    /// The journal turn for Claude's own work between two prompts — the
+    /// replies it writes when a background sub-agent or command finishes.
+    /// It lasts from the first such update until Claude Code reports idle.
+    autonomous_turn_id: Option<String>,
     child_rollout_scan: Option<tokio::task::JoinHandle<()>>,
     child_rollout_parent_path: Option<PathBuf>,
     codex_children: HashMap<String, CodexChildRollout>,
@@ -1728,6 +1732,7 @@ impl AgentRuntimeManager {
                 live_tool_calls: HashSet::new(),
                 streaming_reply: None,
                 background_work: HashSet::new(),
+                autonomous_turn_id: None,
                 child_rollout_scan: None,
                 child_rollout_parent_path: None,
                 codex_children: HashMap::new(),
@@ -4788,6 +4793,7 @@ fn recovered_session_from_row(
         live_tool_calls: HashSet::new(),
         streaming_reply: None,
         background_work: HashSet::new(),
+        autonomous_turn_id: None,
         child_rollout_scan: None,
         child_rollout_parent_path: None,
         codex_children: HashMap::new(),
@@ -5253,24 +5259,28 @@ fn record_finished_reply(
     session: &mut ManagedAgentSession,
     emitter: &Arc<Mutex<Option<ConversationEmitter>>>,
 ) {
-    let Some((item_id, text)) = session
+    let Some((item_id, text, autonomous_turn_id)) = session
         .streaming_reply
         .take()
-        .filter(|(_, text)| !text.is_empty())
+        .filter(|(_, text, _)| !text.is_empty())
     else {
         return;
     };
-    if let Err(error) = record_payload_for_session_and_dispatch(
+    match record_payload_for_session_with_lifecycle(
         session,
-        emitter,
         AgentConversationPayload::AssistantMessage {
             item_id,
             text,
             completed: true,
             blocks: None,
         },
+        None,
+        autonomous_turn_id,
     ) {
-        crate::debug_log::stderr_log!("Could not record the finished reply: {error}");
+        Ok(event) => dispatch_event(emitter, &event),
+        Err(error) => {
+            crate::debug_log::stderr_log!("Could not record the finished reply: {error}")
+        }
     }
 }
 
@@ -5477,6 +5487,16 @@ async fn pump_inbound(
                     if child_content {
                         break 'update false;
                     }
+                    if let Some(state) = claude_session_state(session, &params) {
+                        if state == "idle" {
+                            record_finished_reply(session, &emitter);
+                            session.background_work.remove(CLAUDE_SESSION_RUNNING);
+                            session.autonomous_turn_id = None;
+                        } else {
+                            session.background_work.insert(CLAUDE_SESSION_RUNNING.to_string());
+                        }
+                        break 'update session_is_quiescent(session);
+                    }
                     let mut reached_quiescence = update_raw_liveness(session, &params);
                     if let Some(payload) = stopped_background_task_payload(&mut session.background_work, &params) {
                         reached_quiescence |= session_is_quiescent(session);
@@ -5543,7 +5563,12 @@ async fn pump_inbound(
                     {
                         break 'update reached_quiescence;
                     }
-                    if session.active_turn_id.is_none() && !replay {
+                    // Claude's own work between prompts, tagged by the adapter,
+                    // is journaled under the autonomous turn.
+                    let out_of_turn = session.provider == AgentConversationProvider::Claude
+                        && params.pointer("/update/_meta/jetbrains/air/outOfTurn")
+                            == Some(&Value::Bool(true));
+                    if session.active_turn_id.is_none() && !replay && !out_of_turn {
                         crate::debug_log::stderr_log!(
                             "[debug] Dropping ACP session update without an active conversation turn"
                         );
@@ -5552,9 +5577,17 @@ async fn pump_inbound(
                     if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
                         break 'update reached_quiescence;
                     }
+                    let autonomous_turn_id = out_of_turn.then(|| {
+                        session
+                            .autonomous_turn_id
+                            .get_or_insert_with(|| format!("turn-{}", uuid::Uuid::new_v4()))
+                            .clone()
+                    });
                     let Some(payload) = payload_from_session_update_for_turn(
                         &params,
-                        session.active_turn_id.as_deref(),
+                        autonomous_turn_id
+                            .as_deref()
+                            .or(session.active_turn_id.as_deref()),
                     ) else {
                         break 'update reached_quiescence;
                     };
@@ -5564,19 +5597,27 @@ async fn pump_inbound(
                         if session
                             .streaming_reply
                             .as_ref()
-                            .is_some_and(|(streaming, _)| streaming != item_id)
+                            .is_some_and(|(streaming, _, _)| streaming != item_id)
                         {
                             record_finished_reply(session, &emitter);
                         }
                     }
-                    match record_payload_for_session_and_dispatch(session, &emitter, payload) {
+                    match record_payload_for_session_with_lifecycle(
+                        session,
+                        payload,
+                        None,
+                        autonomous_turn_id.clone(),
+                    ) {
                         Ok(event) => {
+                            dispatch_event(&emitter, &event);
                             if let AgentConversationPayload::AssistantDelta { item_id, delta } =
                                 event.payload
                             {
                                 session
                                     .streaming_reply
-                                    .get_or_insert_with(|| (item_id, String::new()))
+                                    .get_or_insert_with(|| {
+                                        (item_id, String::new(), autonomous_turn_id)
+                                    })
                                     .1
                                     .push_str(&delta);
                             }
@@ -5828,6 +5869,7 @@ async fn settle_closed_transport(
                 }
             }
             record_finished_reply(session, &emitter);
+            session.autonomous_turn_id = None;
             if let Some(turn_id) = session.active_turn_id.take() {
                 let _ = record_payload_for_session_and_dispatch(
                     session,
@@ -7842,6 +7884,23 @@ fn session_is_checkout_quiescent(session: &ManagedAgentSession) -> bool {
         && session.background_work.is_empty()
 }
 
+/// Background work held while Claude Code reports it is running.
+const CLAUDE_SESSION_RUNNING: &str = "claude-session:running";
+
+/// The Claude Code state the Claude adapter forwards once the client declared
+/// `backgroundSubagents`: `running` or `requires_action` while Claude works,
+/// `idle` once nothing is left — background sub-agents included.
+fn claude_session_state<'a>(session: &ManagedAgentSession, params: &'a Value) -> Option<&'a str> {
+    if session.provider != AgentConversationProvider::Claude
+        || session_update_kind(params) != Some("session_info_update")
+    {
+        return None;
+    }
+    params
+        .pointer("/update/_meta/jetbrains/air/sessionState")
+        .and_then(Value::as_str)
+}
+
 fn session_is_quiescent(session: &ManagedAgentSession) -> bool {
     session.state == AgentRuntimeState::Ready
         && session.active_turn_id.is_none()
@@ -9282,6 +9341,446 @@ mod tests {
             .await
             .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    // Claude adapter markers for background sub-agents (TSK-1394). The
+    // `*_feed` fixture writes every line the test appends to its feed file to
+    // the client, so these drive the real update loop.
+    fn feed(fixture: &FixtureManager, frames: &[Value]) {
+        use std::io::Write as _;
+        let name = fixture.owned_id.trim_start_matches("owned-");
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(fixture.root.join(format!("{name}.jsonl.feed")))
+            .unwrap();
+        for frame in frames {
+            writeln!(file, "{frame}").unwrap();
+        }
+    }
+
+    fn root_update(update: Value) -> Value {
+        json!({"jsonrpc": "2.0", "method": "session/update",
+            "params": {"sessionId": "new-session", "update": update}})
+    }
+
+    fn claude_state(state: &str) -> Value {
+        root_update(json!({"sessionUpdate": "session_info_update",
+            "_meta": {"jetbrains": {"air": {"sessionState": state}}}}))
+    }
+
+    fn reply_chunk(message_id: &str, text: &str, out_of_turn: bool) -> Value {
+        let mut update = json!({"sessionUpdate": "agent_message_chunk", "messageId": message_id,
+            "content": {"type": "text", "text": text}});
+        if out_of_turn {
+            update["_meta"] = json!({"jetbrains": {"air": {"outOfTurn": true}}});
+        }
+        root_update(update)
+    }
+
+    fn child_spawned(child: &str) -> Value {
+        root_update(json!({"sessionUpdate": "subagent_spawned",
+            "subagentSessionId": child, "name": "Reviewer"}))
+    }
+
+    fn child_state(child: &str, state: &str) -> Value {
+        root_update(json!({"sessionUpdate": "subagent_state_update",
+            "subagentSessionId": child, "state": state}))
+    }
+
+    async fn prompt_result(fixture: &FixtureManager) -> Value {
+        let name = fixture.owned_id.trim_start_matches("owned-");
+        let log = fixture.root.join(format!("{name}.jsonl"));
+        wait_until(|| {
+            fs::read_to_string(&log).is_ok_and(|log| log.contains(r#""method":"session/prompt""#))
+        })
+        .await;
+        let prompt: Value = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .filter(|line| line.contains(r#""method":"session/prompt""#))
+            .last()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .unwrap();
+        json!({"jsonrpc": "2.0", "id": prompt["id"],
+            "result": {"turnId": prompt["params"]["turnId"], "stopReason": "end_turn"}})
+    }
+
+    type SeenEvents = Arc<Mutex<Vec<AgentConversationEvent>>>;
+
+    async fn feed_fixture(
+        name: &str,
+        provider: AgentConversationProvider,
+    ) -> (FixtureManager, SeenEvents) {
+        let fixture = fixture_manager_with_provider(name, provider, None).await;
+        let seen: SeenEvents = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+        (fixture, seen)
+    }
+
+    /// The journal turn of each streamed piece of `text`.
+    fn delta_turns(seen: &SeenEvents, text: &str) -> Vec<Option<String>> {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                matches!(&event.payload, AgentConversationPayload::AssistantDelta { delta, .. } if delta == text)
+            })
+            .map(|event| event.turn_id.clone())
+            .collect()
+    }
+
+    /// The journal turn of the finished reply whose text is `text`.
+    fn finished_turn(seen: &SeenEvents, text: &str) -> Option<Option<String>> {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .find(|event| {
+                matches!(&event.payload, AgentConversationPayload::AssistantMessage { text: t, completed: true, .. } if t == text)
+            })
+            .map(|event| event.turn_id.clone())
+    }
+
+    fn autonomous_turn(fixture: &FixtureManager) -> Option<String> {
+        fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
+            .autonomous_turn_id
+            .clone()
+    }
+
+    fn claude_running(fixture: &FixtureManager) -> bool {
+        fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
+            .background_work
+            .contains("claude-session:running")
+    }
+
+    /// The runtime is gone. The suspended session then leaves memory, so its
+    /// fields are not read after this.
+    fn suspended(fixture: &FixtureManager) -> bool {
+        fixture.manager.resource_roots().is_empty()
+    }
+
+    /// Gives the update loop time to handle what was fed.
+    async fn settle() {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+
+    async fn finish(fixture: FixtureManager) {
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_session_running_blocks_suspend_until_idle() {
+        let (fixture, _) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        feed(&fixture, &[claude_state("running")]);
+        wait_until(|| claude_running(&fixture)).await;
+        assert!(!fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap());
+        assert!(!suspended(&fixture));
+        feed(&fixture, &[claude_state("idle")]);
+        wait_until(|| suspended(&fixture)).await;
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn child_terminal_while_cli_running_does_not_suspend() {
+        let (fixture, _) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        feed(
+            &fixture,
+            &[
+                claude_state("running"),
+                child_spawned("agent-a"),
+                child_state("agent-a", "completed"),
+            ],
+        );
+        wait_until(|| {
+            fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
+                .claude_children
+                .get("agent-a")
+                .is_some_and(|child| child.state == "finished")
+        })
+        .await;
+        settle().await;
+        assert!(!suspended(&fixture), "Claude Code still runs the follow-up");
+        feed(&fixture, &[claude_state("idle")]);
+        wait_until(|| suspended(&fixture)).await;
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn out_of_turn_tagged_update_journals_under_autonomous_turn() {
+        let (fixture, seen) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        feed(
+            &fixture,
+            &[
+                claude_state("running"),
+                reply_chunk("m-auto", "late summary", true),
+                claude_state("idle"),
+            ],
+        );
+        wait_until(|| suspended(&fixture)).await;
+        let turns = delta_turns(&seen, "late summary");
+        assert_eq!(turns.len(), 1);
+        let autonomous = turns[0].clone().expect("the summary has a journal turn");
+        assert!(autonomous.starts_with("turn-"));
+        assert_eq!(finished_turn(&seen, "late summary"), Some(Some(autonomous.clone())));
+        assert!(!seen.lock().unwrap().iter().any(|event| matches!(
+            &event.payload,
+            AgentConversationPayload::Turn { turn_id, .. } if *turn_id == autonomous
+        )));
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn autonomous_update_during_active_user_turn_keeps_both_turns_separate() {
+        let (fixture, seen) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await
+            .expect("prompt starts");
+        let user_turn = fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
+            .active_turn_id
+            .clone()
+            .expect("the prompt opens a turn");
+        let result = prompt_result(&fixture).await;
+        feed(
+            &fixture,
+            &[
+                claude_state("running"),
+                reply_chunk("m-user", "answer", false),
+                reply_chunk("m-auto", "summary", true),
+                result,
+            ],
+        );
+        wait_until(|| completed_turns(&seen) == 1).await;
+        assert_eq!(delta_turns(&seen, "answer"), vec![Some(user_turn.clone())]);
+        let autonomous = delta_turns(&seen, "summary");
+        assert_eq!(autonomous.len(), 1);
+        let autonomous = autonomous[0].clone().expect("the summary has a journal turn");
+        assert_ne!(autonomous, user_turn);
+        assert_eq!(finished_turn(&seen, "answer"), Some(Some(user_turn)));
+        assert_eq!(finished_turn(&seen, "summary"), Some(Some(autonomous)));
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn idle_closes_autonomous_turn_and_next_bracket_gets_new_id() {
+        let (fixture, seen) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        // A child still running keeps the runtime up across the idle.
+        feed(
+            &fixture,
+            &[
+                child_spawned("keeper"),
+                claude_state("running"),
+                reply_chunk("m-1", "first result", true),
+                reply_chunk("m-2", "second result", true),
+                claude_state("idle"),
+                claude_state("running"),
+                reply_chunk("m-3", "next bracket", true),
+            ],
+        );
+        wait_until(|| delta_turns(&seen, "next bracket").len() == 1).await;
+        let first = delta_turns(&seen, "first result")[0].clone().unwrap();
+        assert_eq!(delta_turns(&seen, "second result"), vec![Some(first.clone())]);
+        assert_eq!(finished_turn(&seen, "second result"), Some(Some(first.clone())));
+        let next = delta_turns(&seen, "next bracket")[0].clone().unwrap();
+        assert_ne!(next, first);
+        assert_eq!(autonomous_turn(&fixture), Some(next));
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stop_and_send_ignore_autonomous_turn() {
+        let (fixture, seen) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        feed(
+            &fixture,
+            &[claude_state("running"), reply_chunk("m-auto", "summary", true)],
+        );
+        wait_until(|| delta_turns(&seen, "summary").len() == 1).await;
+        let autonomous = delta_turns(&seen, "summary")[0].clone().unwrap();
+        fixture
+            .manager
+            .cancel_turn(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("Stop with no prompt turn");
+        assert!(!suspended(&fixture));
+        assert_eq!(autonomous_turn(&fixture), Some(autonomous.clone()));
+        let log = fs::read_to_string(fixture.root.join("suspend_claude_feed.jsonl")).unwrap();
+        assert!(!log.contains(r#""method":"session/cancel""#));
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("next"))
+            .await
+            .expect("send while Claude works on its own");
+        let user_turn = fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
+            .active_turn_id
+            .clone()
+            .expect("the prompt opens its own turn");
+        assert_ne!(user_turn, autonomous);
+        assert_eq!(autonomous_turn(&fixture), Some(autonomous));
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_out_of_turn_update_still_dropped() {
+        let (fixture, seen) = feed_fixture("suspend_codex_feed", AgentConversationProvider::Codex).await;
+        feed(
+            &fixture,
+            &[claude_state("running"), reply_chunk("m-auto", "summary", true)],
+        );
+        settle().await;
+        assert!(delta_turns(&seen, "summary").is_empty());
+        assert!(!claude_running(&fixture));
+        assert_eq!(autonomous_turn(&fixture), None);
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn two_children_and_duplicate_terminal_suspend_only_at_idle() {
+        let (fixture, _) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        feed(
+            &fixture,
+            &[
+                claude_state("running"),
+                child_spawned("agent-a"),
+                child_spawned("agent-b"),
+                child_state("agent-a", "completed"),
+                child_state("agent-a", "completed"),
+                child_state("agent-b", "completed"),
+            ],
+        );
+        wait_until(|| {
+            fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
+                .claude_children
+                .get("agent-b")
+                .is_some_and(|child| child.state == "finished")
+        })
+        .await;
+        settle().await;
+        assert!(!suspended(&fixture));
+        feed(&fixture, &[claude_state("idle")]);
+        wait_until(|| suspended(&fixture)).await;
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelled_child_then_idle_suspends() {
+        let (fixture, _) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        feed(
+            &fixture,
+            &[
+                claude_state("running"),
+                child_spawned("agent-a"),
+                child_state("agent-a", "cancelled"),
+            ],
+        );
+        wait_until(|| {
+            fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
+                .claude_children
+                .get("agent-a")
+                .is_some_and(|child| child.state == "cancelled")
+        })
+        .await;
+        settle().await;
+        assert!(!suspended(&fixture));
+        feed(&fixture, &[claude_state("idle")]);
+        wait_until(|| suspended(&fixture)).await;
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn autonomous_requires_action_keeps_runtime_and_group() {
+        let (fixture, seen) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        feed(
+            &fixture,
+            &[claude_state("running"), reply_chunk("m-1", "before approval", true)],
+        );
+        wait_until(|| delta_turns(&seen, "before approval").len() == 1).await;
+        let autonomous = delta_turns(&seen, "before approval")[0].clone().unwrap();
+        feed(&fixture, &[claude_state("requires_action")]);
+        settle().await;
+        assert!(!suspended(&fixture));
+        feed(
+            &fixture,
+            &[reply_chunk("m-2", "after approval", true), claude_state("idle")],
+        );
+        wait_until(|| suspended(&fixture)).await;
+        assert_eq!(delta_turns(&seen, "after approval"), vec![Some(autonomous.clone())]);
+        assert_eq!(finished_turn(&seen, "before approval"), Some(Some(autonomous.clone())));
+        assert_eq!(finished_turn(&seen, "after approval"), Some(Some(autonomous)));
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn autonomous_error_then_idle_clears_group_and_suspends() {
+        let (fixture, seen) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        feed(
+            &fixture,
+            &[
+                claude_state("running"),
+                reply_chunk("m-err", "API Error: overloaded", true),
+            ],
+        );
+        wait_until(|| autonomous_turn(&fixture).is_some()).await;
+        let autonomous = autonomous_turn(&fixture);
+        feed(&fixture, &[claude_state("idle")]);
+        wait_until(|| suspended(&fixture)).await;
+        assert_eq!(finished_turn(&seen, "API Error: overloaded"), Some(autonomous));
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancel_without_turn_then_idle_clears_group_and_suspends() {
+        let (fixture, _) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        feed(
+            &fixture,
+            &[claude_state("running"), reply_chunk("m-auto", "summary", true)],
+        );
+        wait_until(|| autonomous_turn(&fixture).is_some()).await;
+        fixture
+            .manager
+            .cancel_turn(&fixture.owned_id, fixture.generation)
+            .await
+            .expect("Stop with no prompt turn");
+        assert!(!suspended(&fixture));
+        assert!(autonomous_turn(&fixture).is_some());
+        feed(&fixture, &[claude_state("idle")]);
+        wait_until(|| suspended(&fixture)).await;
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transport_closed_clears_autonomous_turn_and_running_marker() {
+        let (fixture, _) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        feed(
+            &fixture,
+            &[claude_state("running"), reply_chunk("m-auto", "summary", true)],
+        );
+        wait_until(|| claude_running(&fixture) && autonomous_turn(&fixture).is_some()).await;
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("exit"))
+            .await
+            .expect("prompt starts");
+        wait_until(|| {
+            fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
+                .transport
+                .is_none()
+        })
+        .await;
+        assert_eq!(autonomous_turn(&fixture), None);
+        assert!(!claude_running(&fixture));
+        finish(fixture).await;
     }
 
     #[test]
