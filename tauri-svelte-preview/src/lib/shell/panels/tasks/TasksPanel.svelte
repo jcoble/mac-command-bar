@@ -89,8 +89,9 @@
   let sortBy = $state(restoredView?.sortBy ?? 'taskNumber');
   let sortDirection = $state(restoredView?.sortDirection ?? 'desc');
   /** A restored project choice wins over the session's own project until that
-   * project first resolves; later changes of it are followed again. */
-  let keepRestoredProject = restoredView !== undefined;
+   * project first resolves; later changes of it are followed again. A restored
+   * "All projects" is not a choice: the list still defaults to the open project. */
+  let keepRestoredProject = Boolean(restoredView?.projectFilter);
   let loading = $state(true);
   let refreshing = $state(false);
   let saving = $state(false);
