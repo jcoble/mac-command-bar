@@ -11,7 +11,7 @@
    * Reads go through `gitService`; the tab is only in the page while it is the
    * tab in front, so everything read here is let go of when it is not.
    */
-  import { untrack } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import { buttonVariants } from '$lib/components/ui/button/index.js';
@@ -64,6 +64,7 @@
   let unreadable = $state.raw<string[]>([]);
   let pending = $state(0);
   let generation = 0;
+  let view = $state<MultiFileDiff | null>(null);
 
   const files = $derived(singleMode ? (single ? [single] : []) : working);
   const totals = $derived(
@@ -89,6 +90,7 @@
    * track yet are read one by one. */
   async function readAll(status: ProjectGitStatus, branch: boolean): Promise<void> {
     const id = ++generation;
+    view?.reset();
     let paths = status.files.map((file) => file.relativePath);
     const wanted = new Set(paths);
     working = branch || workingIsBranch ? [] : working.filter((file) => wanted.has(file.relativePath));
@@ -111,9 +113,8 @@
       }
       paths = status.files.filter((file) => file.status === 'untracked').map((file) => file.relativePath);
     }
-    // A folder of new files is listed by git as `folder/`; there is no single file to read.
-    unreadable = paths.filter((path) => path.endsWith('/'));
-    const queue = paths.filter((path) => !path.endsWith('/'));
+    unreadable = [];
+    const queue = paths;
     const first = queue.indexOf(gitPanel.selectedPath);
     if (first > 0) queue.unshift(...queue.splice(first, 1));
     pending = queue.length;
@@ -144,6 +145,11 @@
     const shown = working.find((file) => file.relativePath === path);
     if (read && shown && id === generation) put({ ...shown, modifiedContent: read.modifiedContent });
   }
+
+  // Closing the tab stops the readers after the file each is on.
+  onDestroy(() => {
+    generation += 1;
+  });
 
   // The working copy follows the repository status: a new status (after a
   // commit, a stage, a refresh) means the diffs are read again.
@@ -242,6 +248,7 @@
       <p class="notice">Not shown here: {unreadable.join(', ')}</p>
     {/if}
     <MultiFileDiff
+      bind:this={view}
       {files}
       {mode}
       focusPath={singleMode ? '' : gitPanel.selectedPath}

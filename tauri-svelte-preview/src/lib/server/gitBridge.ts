@@ -453,7 +453,7 @@ export async function readGitStatus(root: string): Promise<GitBridgeStatus> {
     'status',
     '--porcelain=v1',
     '--branch',
-    '--untracked-files=normal'
+    '--untracked-files=all'
   ]);
   return parseGitStatus(output);
 }

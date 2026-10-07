@@ -118,6 +118,14 @@
     }
   }
 
+  /** Forget opened bars and text reads: the caller is about to hand over a
+   * new set of files. Which sections are drawn is kept, because the observer
+   * does not report a section already in view a second time. */
+  export function reset(): void {
+    expanded = {};
+    textRequested = {};
+  }
+
   function jumpTo(path: string): void {
     activePath = path;
     sections[path]?.scrollIntoView({ block: 'start' });
