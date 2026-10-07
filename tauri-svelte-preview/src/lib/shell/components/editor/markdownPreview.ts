@@ -36,3 +36,13 @@ export function markdownPreviewDefault(
   if (!isMarkdownFile(fileName)) return 'raw';
   return origin === 'strip' ? 'raw' : 'rendered';
 }
+
+const FRONTMATTER = /^---\r?\n(?:.*\r?\n)*?(?:---|\.\.\.)[ \t]*(?:\r?\n|$)(?:[ \t]*\r?\n)*/;
+
+/** A YAML front matter block at the very start of a file, with the blank lines
+ *  after it, and the rest. The rich view edits only the rest: Markdown reads
+ *  the block as a rule and a heading and would rewrite it on save. */
+export function splitFrontmatter(markdown: string): { frontmatter: string; body: string } {
+  const frontmatter = FRONTMATTER.exec(markdown)?.[0] ?? '';
+  return { frontmatter, body: markdown.slice(frontmatter.length) };
+}

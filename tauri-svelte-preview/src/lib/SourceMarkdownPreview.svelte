@@ -3,6 +3,7 @@
   import type { Editor } from '@milkdown/kit/core';
   import type { Node as ProseNode } from '@milkdown/kit/prose/model';
   import { fenceLanguage, highlightCode } from './shell/components/conversation/codeHighlight';
+  import { splitFrontmatter } from './shell/components/editor/markdownPreview';
 
   /**
    * The Markdown file as a document you can edit in place (Milkdown). The
@@ -76,13 +77,14 @@
 
         let applying = false;
         let baseSource = content;
+        let { frontmatter, body } = splitFrontmatter(baseSource);
         let baseDoc: ProseNode | null = null;
 
         const report = () => {
           timer = undefined;
           if (!editor) return;
           const doc = editor.ctx.get(core.editorViewCtx).state.doc;
-          shown = baseDoc && doc.eq(baseDoc) ? baseSource : editor.ctx.get(core.serializerCtx)(doc);
+          shown = baseDoc && doc.eq(baseDoc) ? baseSource : frontmatter + editor.ctx.get(core.serializerCtx)(doc);
           onChange?.(ownedPath, shown);
         };
         flush = () => {
@@ -151,7 +153,7 @@
         const created = await core.Editor.make()
           .config((ctx) => {
             ctx.set(core.rootCtx, host);
-            ctx.set(core.defaultValueCtx, baseSource);
+            ctx.set(core.defaultValueCtx, body);
             ctx.update(core.editorViewOptionsCtx, (options) => ({
               ...options,
               editable: () => !readOnly,
@@ -169,7 +171,7 @@
             }));
             // Write lists and tables the way people usually type them, so saving
             // an edit does not restyle the rest of the file.
-            ctx.update(core.remarkStringifyOptionsCtx, (options) => ({ ...options, bullet: '-' as const }));
+            ctx.update(core.remarkStringifyOptionsCtx, (options) => ({ ...options, bullet: '-' as const, rule: '-' as const }));
             ctx.set(remarkGFMPlugin.options.key, { tablePipeAlign: false });
           })
           .use(imageTitles)
@@ -189,8 +191,9 @@
         loadDocument = (markdown) => {
           clearTimeout(timer);
           timer = undefined;
+          ({ frontmatter, body } = splitFrontmatter(markdown));
           applying = true;
-          created.action(utils.replaceAll(markdown, true));
+          created.action(utils.replaceAll(body, true));
           applying = false;
           baseSource = markdown;
           baseDoc = created.ctx.get(core.editorViewCtx).state.doc;
