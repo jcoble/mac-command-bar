@@ -586,7 +586,7 @@
         </DropdownMenu.Item>
       </DropdownMenu.Content>
     </DropdownMenu.Root>
-    <BranchPicker refs={gitRefs} rootPath={draft.projectPath} branch={draft.branch} onPick={chooseRef} />
+    <BranchPicker refs={gitRefs} rootPath={draft.projectPath} branch={draft.branch} onPick={chooseRef} focusAfterPick={() => composer?.focus()} />
   {/if}
 {/snippet}
 

@@ -19,15 +19,19 @@
     rootPath: string;
     branch: string;
     onPick: (ref: ProjectGitRef) => void;
+    /** Takes focus once the menu has closed after a pick. */
+    focusAfterPick: () => void;
   }
 
-  let { refs, rootPath, branch, onPick }: Props = $props();
+  let { refs, rootPath, branch, onPick, focusAfterPick }: Props = $props();
 
   let open = $state(false);
   let search = $state('');
+  let picked = false;
   const filtered = $derived(filterThreadStartGitRefs(refs, search));
 
   function pick(ref: ProjectGitRef): void {
+    picked = true;
     onPick(ref);
     open = false;
   }
@@ -43,7 +47,21 @@
       </Button>
     {/snippet}
   </Popover.Trigger>
-  <Popover.Content side="top" align="end" sideOffset={8} collisionPadding={12} class="w-[min(440px,calc(100vw-32px))] gap-0 p-0">
+  <!-- After a pick, focus goes to the composer instead of back to the trigger. -->
+  <Popover.Content
+    side="top"
+    align="end"
+    sideOffset={8}
+    collisionPadding={12}
+    class="w-[min(440px,calc(100vw-32px))] gap-0 p-0"
+    onCloseAutoFocus={(event) => {
+      if (picked) {
+        event.preventDefault();
+        focusAfterPick();
+      }
+      picked = false;
+    }}
+  >
     <Command.Root shouldFilter={false} value={branch}>
       <Command.Input data-testid="draft-session-ref-search" placeholder="Search branches" bind:value={search} />
       <Command.List class="max-h-[360px]">
