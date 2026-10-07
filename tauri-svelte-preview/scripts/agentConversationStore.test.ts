@@ -1630,6 +1630,49 @@ await test('selected refresh reports failure and releases buffered terminal even
   }
 });
 
+await test('a session the backend has not started yet still reports its empty chat ready', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('function createConnection('), source.indexOf('export function selectConversationChat('));
+  const enqueueFactory = () => {
+    const items: unknown[] = [];
+    let wake: (() => void) | null = null;
+    return {
+      push(item: unknown) { items.push(item); wake?.(); },
+      async *stream() {
+        for (;;) {
+          if (items.length) yield items.shift();
+          else await new Promise<void>((resolve) => { wake = resolve; });
+        }
+      }
+    };
+  };
+  for (const started of [false, true]) {
+    const dependencies = {
+      enqueueFactory,
+      PAGE_BYTES: 1024,
+      EventType,
+      // The backend answers null for a session with no row yet, so no snapshot is delivered.
+      subscribeSelectedConversation: async (input: { onSnapshot: (snapshot: unknown) => void }) => {
+        if (started) input.onSnapshot({ page: 'saved' });
+        return () => {};
+      },
+      admitInitialSnapshot: (_selection: unknown, _snapshot: unknown, push: (item: unknown) => void) => push('admitted snapshot'),
+      emitEvent: () => undefined
+    };
+    const createConnection = Function(...Object.keys(dependencies), `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn createConnection;`)(...Object.values(dependencies));
+    const selection = { workspaceOwnedId: 'new-session', historyOwnedId: 'new-session', controller: new AbortController() };
+    const stream = createConnection(selection).subscribe()[Symbol.asyncIterator]();
+    const first = await Promise.race([
+      stream.next().then((result: IteratorResult<unknown>) => result.value),
+      new Promise((resolve) => setImmediate(() => setImmediate(() => resolve('nothing yielded'))))
+    ]);
+    if (started) assert.equal(first, 'admitted snapshot', 'a found session is admitted from its snapshot');
+    else assert.deepEqual(first, { type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: 'new-session' });
+    selection.controller.abort();
+    await stream.return?.();
+  }
+});
+
 await test('displayed child state is isolated and eviction preserves parent controls and previews', () => {
   store.ensureConversationSession('drill-parent', 'codex');
   store.ensureConversationSession('drill-child-history', 'codex');

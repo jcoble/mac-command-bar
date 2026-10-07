@@ -560,17 +560,27 @@ function createConnection(selection: ActiveConversation): SubscribeConnectionAda
           opening = opening.then(async () => {
             dispose();
             dispose = () => {};
+            let found = false;
             const next = await subscribeSelectedConversation({
               workspaceOwnedId: selection.workspaceOwnedId,
               ownedId: selection.historyOwnedId,
               maxBytes: PAGE_BYTES,
               signal: joined.signal,
-              onSnapshot: (snapshot) => admitInitialSnapshot(selection, snapshot, queue.push),
+              onSnapshot: (snapshot) => {
+                found = true;
+                admitInitialSnapshot(selection, snapshot, queue.push);
+              },
               onEvent: (event) => emitEvent(selection, event, queue.push),
               onError: (error) => queue.push({ error })
             });
             if (joined.signal.aborted) next();
-            else dispose = next;
+            else {
+              dispose = next;
+              // A new session has no backend row until its first send starts it, so
+              // there is no snapshot. Its empty chat is ready now; the started
+              // session's first event reloads the real snapshot.
+              if (!found) queue.push({ type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: selection.historyOwnedId } as StreamChunk);
+            }
           });
           return opening;
         };
