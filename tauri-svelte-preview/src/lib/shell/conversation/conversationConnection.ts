@@ -309,7 +309,8 @@ async function restorePageAttachments(
       }
       const byId = new Map(restored.map((attachment) => [attachment.id, attachment]));
       for (const [itemId, attachmentIds] of wanted) {
-        byItem[itemId] = attachmentIds.flatMap((id) => byId.get(id) ?? []);
+        // Some stored messages name one screenshot twice; show it once.
+        byItem[itemId] = [...new Set(attachmentIds)].flatMap((id) => byId.get(id) ?? []);
       }
     }
     if (isCurrent(selection)) {

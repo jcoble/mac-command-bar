@@ -394,6 +394,34 @@ test('late attachment reads retain the current page and revoke evicted previews'
   }
 });
 
+test('a stored message that names one attachment twice shows it once', async () => {
+  // Messages saved before late September 2026 can list the same screenshot id
+  // twice. The user card keys its screenshots by id, so a repeat stops it rendering.
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('async function restorePageAttachments('), source.indexOf('function pageAttachments('));
+  const ownedId = 'owned-attachment-repeat';
+  store.ensureConversationSession(ownedId, 'claude');
+  store.setConversationConnection({ ownedId, provider: 'claude', generation: 1, state: 'connected' });
+  const attachment = (id: string) => ({ id, name: `${id}.png`, mimeType: 'image/png', path: `/managed/${id}.png`, previewUrl: `asset://${id}` });
+  const selection = { workspaceOwnedId: ownedId, historyOwnedId: ownedId, controller: new AbortController(), chat: { messages: [{ id: 'user-repeat' }] } };
+  const restore = Function(
+    'isCurrent', 'readSelectedConversationAttachments', 'restoreAttachmentList',
+    'restoreSelectedConversationAttachments', 'discardRestoredAttachments', 'setConversationAttachmentError',
+    `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn restorePageAttachments;`
+  )(() => true, async () => [attachment('a'), attachment('b')], async (unused: string, records: unknown[]) => records,
+    store.restoreSelectedConversationAttachments, () => undefined,
+    (unused: string, message: string) => { throw new Error(message); });
+  try {
+    await restore(selection, new Map([['user-repeat', ['a', 'a', 'b']]]), 1, ['user-repeat']);
+    assert.deepEqual(
+      store.getConversationSession(ownedId).sentAttachments['user-repeat'].map((item: { id: string }) => item.id),
+      ['a', 'b']
+    );
+  } finally {
+    store.evictConversationSession(ownedId);
+  }
+});
+
 test('selected delivery reloads gaps and suppresses controls already in the snapshot', () => {
   const source = readFileSync(
     new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url),
