@@ -42,6 +42,7 @@
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import SettingsSelect from '$lib/shell/components/SettingsSelect.svelte';
   import ProviderUpdateControl from '$lib/shell/components/ProviderUpdateControl.svelte';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { Slider } from '$lib/components/ui/slider/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import {
@@ -1071,7 +1072,7 @@
       disabled={appUpdateState.phase === 'checking' || appUpdateState.phase === 'installing'}
       onclick={() => void checkForAppUpdate(updateOwner.signal)}
     >
-      {appUpdateState.phase === 'checking' ? 'Checking…' : 'Check now'}
+      {#if appUpdateState.phase === 'checking'}<WorkingSpinner size={12} />Checking…{:else}Check now{/if}
     </Button>
     {#if appUpdateState.message}
       <p class="text-right text-[12px] leading-[1.4] text-[var(--color-text-2)]">
@@ -1088,7 +1089,7 @@
     disabled={appUpdateState.phase !== 'available'}
     onclick={() => void installAppUpdate(updateOwner.signal)}
   >
-    {appUpdateState.phase === 'installing' ? 'Installing…' : 'Install and restart'}
+    {#if appUpdateState.phase === 'installing'}<WorkingSpinner size={12} />Installing…{:else}Install and restart{/if}
   </Button>
 {/snippet}
 

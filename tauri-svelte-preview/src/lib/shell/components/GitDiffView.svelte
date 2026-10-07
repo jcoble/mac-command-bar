@@ -18,6 +18,7 @@
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import MultiFileDiff from '$lib/shell/components/git/MultiFileDiff.svelte';
   import { diffTextOf, parsedDiffOf, splitDiffByFile } from '$lib/shell/git/diffRows';
   import { readBranchDiff } from '$lib/shell/git/gitBackendExtra';
@@ -206,7 +207,7 @@
       </DropdownMenu.Root>
     {/if}
     <span class="counts"><em>+{totals.added}</em> <del>-{totals.removed}</del></span>
-    {#if !singleMode && pending > 0}<span class="quiet">Reading {pending} more {pending === 1 ? 'file' : 'files'}…</span>{/if}
+    {#if !singleMode && pending > 0}<span class="quiet"><WorkingSpinner size={12} /> Reading {pending} more {pending === 1 ? 'file' : 'files'}…</span>{/if}
     <span class="spacer"></span>
     <SegmentedControl
       size="sm"
@@ -227,7 +228,7 @@
   {#if !rootAvailable}
     <p class="notice">Checkout/Worktree deleted.</p>
   {:else if singleMode && gitPanel.diffLoading}
-    <p class="notice">Reading the changes…</p>
+    <p class="notice"><WorkingSpinner size={12} /> Reading the changes…</p>
   {:else if singleMode && gitPanel.diffError}
     <p class="notice error">{gitPanel.diffError}</p>
   {:else if !singleMode && gitPanel.statusError}
@@ -237,9 +238,9 @@
   {:else if !singleMode && !gitPanel.root && !sessionRoot}
     <p class="notice">Pick a session with a project folder to see its changes.</p>
   {:else if !singleMode && !gitPanel.status}
-    <p class="notice">Reading the working copy…</p>
+    <p class="notice"><WorkingSpinner size={12} /> Reading the working copy…</p>
   {:else if !singleMode && files.length === 0 && pending > 0}
-    <p class="notice">Reading the changes…</p>
+    <p class="notice"><WorkingSpinner size={12} /> Reading the changes…</p>
   {:else}
     {#if !singleMode && scope === 'branch' && branchError}
       <p class="notice error">{branchError}</p>

@@ -26,6 +26,7 @@
 		selectBrowserPageTab,
 	} from "$lib/shell/browser/browserStore.svelte";
 	import PendingFirstMessage from "$lib/shell/components/conversation/PendingFirstMessage.svelte";
+	import WorkingSpinner from "$lib/shell/components/conversation/WorkingSpinner.svelte";
 	import ConversationSurface from "$lib/shell/components/ConversationSurface.svelte";
 	import DockPanel from "$lib/shell/components/DockPanel.svelte";
 	import EditorPanel from "$lib/shell/components/EditorPanel.svelte";
@@ -578,15 +579,15 @@
 				aria-label={selection.selectionError ? "Conversation unavailable" : "Loading conversation"}
 			>
 				{#if selection.newSession.pendingFirstMessage?.ownedId === selection.activeOwnedId}
-					<PendingFirstMessage text={selection.newSession.pendingFirstMessage.text} />
+					<PendingFirstMessage text={selection.newSession.pendingFirstMessage.text} seed={selection.newSession.pendingFirstMessage.ownedId} />
 				{:else if selection.selectionError}
 					<p>{selection.selectionError}</p>
 					{#if selection.disconnectedRemoteProfileId || selection.connectingRemote}
 						<Button disabled={selection.connectingRemote} onclick={() => void connectSelectedRemote()}
-							>{selection.connectingRemote ? "Connecting…" : "Connect"}</Button
+							>{#if selection.connectingRemote}<WorkingSpinner size={14} />Connecting…{:else}Connect{/if}</Button
 						>
 					{/if}
-				{:else}<p>Loading conversation…</p>{/if}
+				{:else}<p><WorkingSpinner size={14} /> Loading conversation…</p>{/if}
 			</div>
 		{:else if !selection.activeOwnedId}
 			<div class="conversation-data-isolation" aria-label="No session selected">

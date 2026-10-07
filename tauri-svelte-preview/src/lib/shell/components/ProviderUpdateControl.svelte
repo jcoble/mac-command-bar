@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import LoaderCircle from '@lucide/svelte/icons/loader-circle';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import {
@@ -28,7 +28,7 @@
       disabled={updateState.phase === 'checking' || updateState.phase === 'installing'}
       onclick={() => void checkForProviderUpdates(owner.signal, updateState, profileId)}
     >
-      {updateState.phase === 'checking' ? 'Checking…' : 'Check now'}
+      {#if updateState.phase === 'checking'}<WorkingSpinner size={12} />Checking…{:else}Check now{/if}
     </Button>
     {#if updateState.status?.restartRequired}
       <Button variant="secondary" size="sm" disabled={updateState.phase === 'installing'} onclick={() => void restartProviders(updateState, profileId)}>
@@ -39,7 +39,7 @@
   {#if updateState.status}
     {#each updateState.status.providers as provider (provider.provider)}
       <div class="flex items-center gap-2 text-[12px]">
-        {#if updateState.installingProvider === provider.provider}<LoaderCircle aria-label={`Downloading ${provider.provider} adapter`} class="size-4 animate-spin" />{/if}
+        {#if updateState.installingProvider === provider.provider}<span class="inline-flex" role="status" aria-label={`Downloading ${provider.provider} adapter`}><WorkingSpinner /></span>{/if}
         <span>{provider.provider === 'antigravity' ? 'Antigravity' : provider.provider}: {provider.currentVersion ?? 'Not installed'} → {provider.availableVersion}</span>
         {#if provider.updateAvailable}
           <Button variant="secondary" size="sm" disabled={updateState.phase === 'installing'} onclick={() => void installProviderUpdates(provider.provider, owner.signal, updateState, profileId)}>

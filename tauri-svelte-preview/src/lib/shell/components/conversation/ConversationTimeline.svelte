@@ -532,10 +532,10 @@
 
 <div class="timeline-wrap" data-testid="conversation-timeline-wrap" style={`--composer-height:${composerHeight}px`}>
   {#if pageError}<p role="alert" class="px-2 py-2 text-sm text-muted-foreground">{pageError}</p>{/if}
-  {#if loadingOlder}<p class="older-loading" data-testid="conversation-older-loading" role="status"><span class="older-spinner" aria-hidden="true"></span>Loading earlier messages</p>{/if}
+  {#if loadingOlder}<p class="older-loading" data-testid="conversation-older-loading" role="status"><WorkingSpinner size={12} />Loading earlier messages</p>{/if}
   <div class="timeline-scroll" tabindex="0" data-testid="conversation-timeline-scroll" bind:this={host} onscroll={handleScroll} onwheel={handleWheel} use:readerInput>
     {#if renderedItems.length === 0}
-      {#if pendingFirstMessage}<PendingFirstMessage text={pendingFirstMessage} />{:else}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
+      {#if pendingFirstMessage}<PendingFirstMessage text={pendingFirstMessage} seed={conversationId} />{:else}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
     {/if}
     <div class="timeline-list" data-testid="conversation-timeline-list" style:height={`${totalSize}px`}>
       {#each virtualRows as virtualRow (virtualRow.key)}
@@ -566,7 +566,7 @@
             {/if}
             {#if row.item}<TimelineItem item={row.item} {assistantLabel} {onApprovalDecision} {onFileLink} {onPlanOpen} />{/if}
             {#if row.edit}<TurnFileCard path={row.edit.path} added={row.edit.added} removed={row.edit.removed} onReview={onFileLink} />{/if}
-            {#if row.activity}<div class="working-row" data-testid="conversation-working-indicator" role="status"><WorkingSpinner /><span>{activityLabel}…</span></div>{/if}
+            {#if row.activity}<div class="working-row" data-testid="conversation-working-indicator" role="status"><WorkingSpinner seed={conversationId} /><span>{activityLabel}…</span></div>{/if}
           </div>
       {/each}
     </div>
@@ -579,9 +579,6 @@
   .older-loading{position:absolute;top:calc(var(--center-head-height, 0px) + 6px);left:0;right:0;z-index:2;display:flex;align-items:center;justify-content:center;gap:6px;margin:0;font-size:12px;color:var(--color-text-2);pointer-events:none;animation:older-appear 1ms 300ms backwards}
   /* A page read from the local copy lands well inside 300 ms; only a slow one shows this. */
   @keyframes older-appear{from{opacity:0}}
-  .older-spinner{width:11px;height:11px;border:1.5px solid color-mix(in srgb,var(--color-text-3) 45%,transparent);border-top-color:var(--color-text-2);border-radius:50%;animation:older-spin 700ms linear infinite}
-  @keyframes older-spin{to{transform:rotate(360deg)}}
-  @media (prefers-reduced-motion: reduce){.older-spinner{animation:none;border-top-color:color-mix(in srgb,var(--color-text-3) 45%,transparent)}}
   .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:none;padding:0 28px;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
   .timeline-list{flex:none;position:relative;width:min(820px,100%);min-height:1px;margin:0 auto}
   .turn-row{position:absolute;top:0;left:0;display:flex;flex-direction:column;gap:12px;width:100%;padding-bottom:12px}

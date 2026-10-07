@@ -1,4 +1,5 @@
 <script lang="ts">
+	import WorkingSpinner from "$lib/shell/components/conversation/WorkingSpinner.svelte";
 		import { dev } from "$app/environment";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import * as ContextMenu from "$lib/components/ui/context-menu/index.js";
@@ -1222,7 +1223,7 @@
 			onscroll={(event) => (treeScrollTop = event.currentTarget.scrollTop)}
 		>
 				{#if renderedRows.length === 0}
-					<p class="tree-empty">{searchLoading ? "Searching files…" : "Nothing matches that search."}</p>
+					<p class="tree-empty">{#if searchLoading}<WorkingSpinner size={12} /> Searching files…{:else}Nothing matches that search.{/if}</p>
 				{:else}
 					<!-- One canvas whose height never changes as you scroll, with each row
 					     transformed into place. Resizing spacer divs on every scroll instead
@@ -1297,7 +1298,7 @@
 	{#if treeVisible && searching && searchNextCursor !== null}
 		<div class="search-more">
 			<Button size="sm" variant="ghost" disabled={searchLoading} onclick={loadMoreSearchResults}>
-				{searchLoading ? "Loading…" : "Load more"}
+				{#if searchLoading}<WorkingSpinner size={12} />Loading…{:else}Load more{/if}
 			</Button>
 		</div>
 	{/if}

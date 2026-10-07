@@ -5,6 +5,7 @@
    * Threads / Comments / Reviews / Checks column) or a Changes page (every
    * changed file stacked in the multi-file diff).
    */
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { untrack } from 'svelte';
   import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
@@ -618,7 +619,7 @@
               {#if detail?.createdAt}<span title={exactLocalTime(detail.createdAt)}>{age(detail.createdAt)} ago</span>{/if}
               {#if detail?.headBranch || pr.headBranch}<span aria-hidden="true">·</span><span class="branches">{detail?.headBranch || pr.headBranch}<ArrowRight size={13} aria-hidden="true" />{detail?.baseBranch || pr.baseBranch}</span>{/if}
             </div>
-            {#if detailLoading}<p class="notice">Loading pull request…</p>{/if}
+            {#if detailLoading}<p class="notice"><WorkingSpinner size={12} /> Loading pull request…</p>{/if}
             {#if postedUrl}<p class="notice" role="status">Comment posted. <a href={postedUrl} target="_blank" rel="noreferrer">View it on GitHub</a></p>{/if}
             {#if mergedUrl}<p class="notice" role="status">Pull request merged. <a href={mergedUrl} target="_blank" rel="noreferrer">View it on GitHub</a></p>{/if}
             {#if detail}
@@ -681,7 +682,7 @@
                     {detail.mergeable === 'MERGEABLE' ? 'This branch has no conflicts with the base branch.' : detail.mergeable === 'CONFLICTING' ? 'This branch has conflicts with the base branch.' : 'GitHub is still checking whether this branch can merge.'}
                   </div>
                   <div class="merge-controls">
-                    <Button size="sm" disabled={!canMerge} onclick={previewMerge}>{merging ? 'Merging…' : 'Merge pull request'}</Button>
+                    <Button size="sm" disabled={!canMerge} onclick={previewMerge}>{#if merging}<WorkingSpinner size={12} /> Merging…{:else}Merge pull request{/if}</Button>
                     <span>using</span>
                     <Select.Root type="single" value={mergeMethod} disabled={merging} onValueChange={(value) => { mergeMethod = value as GithubMergeRequest['method']; }}>
                       <Select.Trigger size="sm" aria-label="Merge method">{mergeMethodLabel(mergeMethod)}</Select.Trigger>
@@ -744,7 +745,7 @@
         fileFooter={lineDrafts}
       />
     {:else if detailLoading}
-      <p class="notice page-notice">Loading pull request…</p>
+      <p class="notice page-notice"><WorkingSpinner size={12} /> Loading pull request…</p>
     {/if}
   {:else}
     <div class="list-view">
@@ -774,7 +775,7 @@
         <p class="notice" role="status">github.com/{linkMissing.repository} is not a project in Assembly, so #{linkMissing.number} cannot open here. Add the repository as a project, or <a href={`https://github.com/${linkMissing.repository}/pull/${linkMissing.number}`} target="_blank" rel="noreferrer">open it on GitHub</a>.</p>
       {/if}
       {#if error}<p class="notice error" role="alert">{error}</p>{/if}
-      {#if loading && items.length === 0}<p class="notice">Loading pull requests…</p>{/if}
+      {#if loading && items.length === 0}<p class="notice"><WorkingSpinner size={12} /> Loading pull requests…</p>{/if}
       {#if loaded && items.length === 0 && !loading && !error}<p class="notice">No pull requests match these filters.</p>{/if}
       <div class="rows">
         {#each items as item (`${item.repository}#${item.number}`)}
@@ -787,7 +788,7 @@
             <span class="row-side">{@render avatar(item.author)}{#if item.updatedAt}<span title={exactLocalTime(item.updatedAt)}>{age(item.updatedAt)} ago</span>{/if}</span>
           </button>
         {/each}
-        {#if cursor}<Button variant="ghost" size="sm" class="mt-2" disabled={loading} onclick={() => void load(false)}>{loading ? 'Loading…' : `Load more · ${items.length} of ${totalCount}`}</Button>{/if}
+        {#if cursor}<Button variant="ghost" size="sm" class="mt-2" disabled={loading} onclick={() => void load(false)}>{#if loading}<WorkingSpinner size={12} /> Loading…{:else}Load more · {items.length} of {totalCount}{/if}</Button>{/if}
       </div>
     </div>
   {/if}

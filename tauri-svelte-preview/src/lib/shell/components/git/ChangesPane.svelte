@@ -23,7 +23,6 @@
   import Plus from '@lucide/svelte/icons/plus';
   import SquareArrowOutUpRight from '@lucide/svelte/icons/square-arrow-out-up-right';
   import Sparkles from '@lucide/svelte/icons/sparkles';
-  import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import {
@@ -39,6 +38,7 @@
   import { absolutePathWithin, type GitService } from '$lib/shell/git/gitService';
   import { requestOpenFile } from '$lib/shell/openFileBus';
   import { cn } from '$lib/utils';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import type { ProjectGitFileStatus } from '$lib/tauriSource';
 
   interface Props {
@@ -204,7 +204,7 @@
           data-testid="generate-commit-message"
         >
           {#if generatingCommitMessage}
-            <LoaderCircle class="size-3 animate-spin" aria-hidden="true" />
+            <WorkingSpinner size={12} />
             Generating…
           {:else}
             <Sparkles class="size-3" aria-hidden="true" />
@@ -247,7 +247,7 @@
 
       {#if groups.length === 0}
         <p class="px-1 py-1 text-[13px] leading-[18px] text-[var(--color-text-2)]">
-          {panel.statusLoading ? 'Reading the repository…' : 'Nothing has changed yet.'}
+          {#if panel.statusLoading}<WorkingSpinner size={12} /> Reading the repository…{:else}Nothing has changed yet.{/if}
         </p>
       {/if}
 
