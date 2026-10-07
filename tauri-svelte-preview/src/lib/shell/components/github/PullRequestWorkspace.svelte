@@ -225,6 +225,8 @@
         detailError = 'The PR changed. Your unposted comment was cleared; look at the new changes before commenting.';
       }
       if (replyTarget && previousHeadSha !== result.headSha) { replyTarget = null; replyBody = ''; pendingReply = null; }
+      // Line comments go out in a review, which GitHub takes only while the PR is open.
+      if (result.state !== 'OPEN') { draftLines = []; lineTarget = null; lineBody = ''; }
     } catch (reason) {
       if (current === detailGeneration) detailError = reason instanceof Error ? reason.message : String(reason);
     } finally {
@@ -425,12 +427,17 @@
     pendingReply = null;
     posting = true;
     detailError = null;
+    // Another PR opened (or Back) while posting moves the generation on; then leave it alone.
+    const generation = detailGeneration;
     try {
-      postedUrl = await replyGithubPullRequestCommentFromTauri({ root: pr.localRoot, number: pr.number, expectedHeadSha: reply.headSha, commentId: reply.commentId, body: reply.body });
+      const url = await replyGithubPullRequestCommentFromTauri({ root: pr.localRoot, number: pr.number, expectedHeadSha: reply.headSha, commentId: reply.commentId, body: reply.body });
+      if (generation !== detailGeneration) return;
+      postedUrl = url;
       replyTarget = null;
       replyBody = '';
       await loadDetail(pr.localRoot, pr.number);
     } catch (reason) {
+      if (generation !== detailGeneration) return;
       detailError = reason instanceof Error ? reason.message : String(reason);
       postUncertain = /uncertain|not confirmed/i.test(detailError);
     } finally {
@@ -463,11 +470,15 @@
     pendingComment = null;
     posting = true;
     detailError = null;
+    const generation = detailGeneration;
     try {
-      postedUrl = await commentGithubPullRequestFromTauri({ root: pr.localRoot, number: pr.number, body });
+      const url = await commentGithubPullRequestFromTauri({ root: pr.localRoot, number: pr.number, body });
+      if (generation !== detailGeneration) return;
+      postedUrl = url;
       cancelDraft();
       await loadDetail(pr.localRoot, pr.number);
     } catch (reason) {
+      if (generation !== detailGeneration) return;
       detailError = reason instanceof Error ? reason.message : String(reason);
       postUncertain = /uncertain|not confirmed/i.test(detailError);
     } finally {
@@ -481,11 +492,15 @@
     posting = true;
     detailError = null;
     pendingReview = null;
+    const generation = detailGeneration;
     try {
-      postedUrl = await submitGithubPullRequestReviewFromTauri(submission);
+      const url = await submitGithubPullRequestReviewFromTauri(submission);
+      if (generation !== detailGeneration) return;
+      postedUrl = url;
       cancelDraft();
-      if (pullRequestSelection.selected) await loadDetail(pullRequestSelection.selected.localRoot, pullRequestSelection.selected.number);
+      await loadDetail(submission.root, submission.number);
     } catch (reason) {
+      if (generation !== detailGeneration) return;
       detailError = reason instanceof Error ? reason.message : String(reason);
       postUncertain = /uncertain|not confirmed/i.test(detailError);
     } finally {
