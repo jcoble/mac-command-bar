@@ -15,7 +15,13 @@
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
-  import SquareArrowOutUpRight from '@lucide/svelte/icons/square-arrow-out-up-right';
+  import Ellipsis from '@lucide/svelte/icons/ellipsis';
+  import Eye from '@lucide/svelte/icons/eye';
+  import EyeOff from '@lucide/svelte/icons/eye-off';
+  import Plus from '@lucide/svelte/icons/plus';
+  import type { Snippet } from 'svelte';
+  import { Button } from '$lib/components/ui/button/index.js';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import FileIcon from '$lib/shell/components/explorer/FileIcon.svelte';
@@ -41,8 +47,16 @@
     /** Read the file's full current text so a collapsed run of lines can open.
      * Absent when each file already carries its text or none can be had. */
     onLoadFullText?: (relativePath: string) => void;
+    /** Files marked viewed: their lines fold away and their tree row dims.
+     * Bind it to keep the marks beyond this component's life. */
+    viewed?: Record<string, true>;
+    /** Start a comment on a line: LEFT is the old side, RIGHT the new one.
+     * When present, hovering a line offers a button for it. */
+    onLineComment?: (relativePath: string, side: 'LEFT' | 'RIGHT', line: number) => void;
+    /** Drawn under a file's lines, e.g. the comment being written on it. */
+    fileFooter?: Snippet<[string]>;
   }
-  let { files, mode, focusPath = '', onOpenLine, onLoadFullText }: Props = $props();
+  let { files, mode, focusPath = '', onOpenLine, onLoadFullText, viewed = $bindable({}), onLineComment, fileFooter }: Props = $props();
 
   /** Long files are cut so one huge diff cannot stall the tab. */
   const MAX_ROWS = 2000;
@@ -180,6 +194,11 @@
     return line.kind === 'added' ? '+' : line.kind === 'removed' ? '-' : ' ';
   }
 
+  function toggleViewed(path: string): void {
+    if (viewed[path]) delete viewed[path];
+    else viewed[path] = true;
+  }
+
   function gapText(count: number | null): string {
     if (count === null) return 'More unchanged lines may follow';
     return `${count} unmodified ${count === 1 ? 'line' : 'lines'}`;
@@ -188,6 +207,12 @@
 
 {#snippet code(line: DiffLine, spans: Map<DiffLine, HighlightedLine>)}
   {#if line.kind === 'note'}<span class="note">{line.text}</span>{:else}{#each spans.get(line) ?? [] as span}<span class={span.className}>{span.value}</span>{/each}{/if}
+{/snippet}
+
+{#snippet addComment(path: string, side: 'LEFT' | 'RIGHT', line: number | null)}
+  {#if onLineComment && line !== null}
+    <button type="button" class="add-comment" aria-label={`Comment on line ${line}`} title="Comment on this line" onclick={() => onLineComment?.(path, side, line)}><Plus size={12} aria-hidden="true" /></button>
+  {/if}
 {/snippet}
 
 {#snippet gapBar(file: SourceGitDiff, row: DiffRow | SplitRow, showText: boolean)}
@@ -214,13 +239,24 @@
           <FileIcon fileName={nameOf(file.relativePath)} />
           <span class="file-path" title={file.relativePath}><span class="dir">{folderOf(file.relativePath)}</span>{nameOf(file.relativePath)}</span>
           <span class="counts"><em>+{parsed.addedCount}</em> <del>-{parsed.removedCount}</del></span>
-          {#if onOpenLine}
-            <IconButton label="Open file" size="xs" onclick={() => onOpenLine?.(file.relativePath, null)}>
-              <SquareArrowOutUpRight size={14} />
-            </IconButton>
-          {/if}
+          <IconButton label={viewed[file.relativePath] ? 'Mark as not viewed' : 'Mark as viewed'} size="xs" onclick={() => toggleViewed(file.relativePath)}>
+            {#if viewed[file.relativePath]}<EyeOff size={14} />{:else}<Eye size={14} />{/if}
+          </IconButton>
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger>
+              {#snippet child({ props })}
+                <Button {...props} variant="ghost" size="icon-xs" class="min-h-7 min-w-7" aria-label="More file actions" title="More file actions"><Ellipsis size={14} /></Button>
+              {/snippet}
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content align="end">
+              {#if onOpenLine}<DropdownMenu.Item onSelect={() => onOpenLine?.(file.relativePath, null)}>Open in editor</DropdownMenu.Item>{/if}
+              <DropdownMenu.Item onSelect={() => void navigator.clipboard.writeText(file.relativePath)}>Copy path</DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
         </header>
-        {#if file.isBinary || parsed.isBinary}
+        {#if viewed[file.relativePath]}
+          <!-- Viewed: the lines fold away until the mark is taken off. -->
+        {:else if file.isBinary || parsed.isBinary}
           <p class="notice">Binary file, so there is no line-by-line comparison.</p>
         {:else if parsed.isEmpty}
           <p class="notice">No line changes to show.</p>
@@ -238,7 +274,7 @@
                       {@const line = side === 'left' ? row.left : row.right}
                       {#if line}
                         <div class="row {line.kind}" role="presentation" ondblclick={() => onOpenLine?.(file.relativePath, line.afterLine ?? line.beforeLine)}>
-                          <span class="gutter one">{(side === 'left' ? line.beforeLine : line.afterLine) ?? ''}</span>
+                          <span class="gutter one">{@render addComment(file.relativePath, side === 'left' ? 'LEFT' : 'RIGHT', side === 'left' ? line.beforeLine : line.afterLine)}{(side === 'left' ? line.beforeLine : line.afterLine) ?? ''}</span>
                           <span class="text">{@render code(line, spans)}</span>
                         </div>
                       {:else}
@@ -258,7 +294,7 @@
               {#each rows as row, index (index)}
                 {#if row.kind === 'line'}
                   <div class="row {row.line.kind}" role="presentation" ondblclick={() => onOpenLine?.(file.relativePath, row.line.afterLine ?? row.line.beforeLine)}>
-                    <span class="gutter"><span>{row.line.beforeLine ?? ''}</span><span>{row.line.afterLine ?? ''}</span><span class="mark">{marker(row.line)}</span></span>
+                    <span class="gutter">{@render addComment(file.relativePath, row.line.kind === 'removed' ? 'LEFT' : 'RIGHT', row.line.kind === 'removed' ? row.line.beforeLine : row.line.afterLine)}<span>{row.line.beforeLine ?? ''}</span><span>{row.line.afterLine ?? ''}</span><span class="mark">{marker(row.line)}</span></span>
                     <span class="text">{@render code(row.line, spans)}</span>
                   </div>
                 {:else}
@@ -269,9 +305,10 @@
           </div>
           {/if}
         {/if}
-        {#if rows.length === MAX_ROWS && !parsed.isEmpty}
+        {#if rows.length === MAX_ROWS && !parsed.isEmpty && !viewed[file.relativePath]}
           <p class="notice">Showing the first {MAX_ROWS} lines of this file's changes.</p>
         {/if}
+        {@render fileFooter?.(file.relativePath)}
       </section>
     {:else}
       <p class="notice">{filter ? 'No changed file matches the filter.' : 'No changes.'}</p>
@@ -303,6 +340,7 @@
             type="button"
             class="tree-row"
             class:active={activePath === entry.path}
+            class:viewed={viewed[entry.path]}
             style:padding-left={`${8 + entry.depth * 12}px`}
             title={entry.path}
             onclick={() => jumpTo(entry.path)}
@@ -463,6 +501,29 @@
     border-left-color: var(--color-bad);
   }
 
+  /* The comment button sits over the gutter's left edge and shows on hover. */
+  .add-comment {
+    position: absolute;
+    left: 2px;
+    top: 2px;
+    display: grid;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: var(--color-live);
+    color: var(--color-bg);
+    cursor: pointer;
+    opacity: 0;
+  }
+
+  .row:hover .add-comment,
+  .add-comment:focus-visible {
+    opacity: 1;
+  }
+
   .gutter > span {
     width: 44px;
     text-align: right;
@@ -579,6 +640,10 @@
   .tree-row.active {
     background: var(--color-selected);
     color: var(--color-text);
+  }
+
+  .tree-row.viewed {
+    opacity: 0.5;
   }
 
   .tree-row.folder {

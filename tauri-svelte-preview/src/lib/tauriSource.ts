@@ -311,6 +311,12 @@ export type GithubReviewReply = {
   body: string;
 };
 
+export type GithubIssueComment = {
+  root: string;
+  number: number;
+  body: string;
+};
+
 export type GithubMergeRequest = {
   root: string;
   number: number;
@@ -1740,6 +1746,12 @@ export async function submitGithubPullRequestReviewFromTauri(
   if (!isTauriRuntime()) throw new Error('Reviews can only be submitted from the desktop app.');
   const { invoke } = await import('./workspaceInvoke');
   return invoke<string>('submit_github_pull_request_review', { submission });
+}
+
+export async function commentGithubPullRequestFromTauri(comment: GithubIssueComment): Promise<string> {
+  if (!isTauriRuntime()) throw new Error('Comments can only be posted from the desktop app.');
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<string>('comment_github_pull_request', { comment });
 }
 
 export async function replyGithubPullRequestCommentFromTauri(

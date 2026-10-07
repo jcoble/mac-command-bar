@@ -178,6 +178,16 @@ pub struct GithubReviewReply {
     body: String,
 }
 
+/// A conversation comment: it goes on the pull request in any state, like
+/// GitHub's own "Leave a comment" box.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubIssueComment {
+    root: String,
+    number: u64,
+    body: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubMergeRequest {
@@ -226,6 +236,13 @@ pub async fn reply_github_pull_request_comment(reply: GithubReviewReply) -> Resu
 }
 
 #[tauri::command]
+pub async fn comment_github_pull_request(comment: GithubIssueComment) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || comment_sync(comment))
+        .await
+        .map_err(|error| format!("Pull request comment task failed: {error}"))?
+}
+
+#[tauri::command]
 pub async fn merge_github_pull_request(request: GithubMergeRequest) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || merge_sync(request))
         .await
@@ -261,6 +278,24 @@ fn merge_sync(request: GithubMergeRequest) -> Result<String, String> {
         return Err("Merge outcome is uncertain. Refresh the PR before trying again.".to_string());
     }
     Ok(detail.url)
+}
+
+fn comment_sync(comment: GithubIssueComment) -> Result<String, String> {
+    if comment.number == 0 || comment.body.trim().is_empty() || comment.body.len() > 20_000 {
+        return Err("Invalid pull request comment".to_string());
+    }
+    let (repository, root) = repository_for_root(Path::new(&comment.root))?;
+    let endpoint = format!("repos/{repository}/issues/{}/comments", comment.number);
+    let bytes = serde_json::to_vec(&json!({"body": comment.body.trim()})).map_err(|error| error.to_string())?;
+    let output = bounded_process::output_with_input(
+        Command::new("gh").current_dir(&root).args(["api", "--method", "POST", &endpoint, "--input", "-"]),
+        "Comment on GitHub pull request",
+        bounded_process::NETWORK_COMMAND_TIMEOUT,
+        Some(&bytes),
+    ).map_err(|error| format!("Comment outcome is uncertain: {error}. Refresh the PR before trying again."))?;
+    if !output.status.success() { return Err(format!("Comment was not confirmed: {}. Refresh the PR before trying again.", brief_stderr(&output.stderr))); }
+    let value: Value = serde_json::from_slice(&output.stdout).map_err(|_| "Comment outcome is uncertain. Refresh the PR before trying again.".to_string())?;
+    value.get("html_url").and_then(Value::as_str).map(str::to_string).ok_or_else(|| "Comment outcome is uncertain. Refresh the PR before trying again.".to_string())
 }
 
 fn reply_comment_sync(reply: GithubReviewReply) -> Result<String, String> {
@@ -642,6 +677,14 @@ mod tests {
         assert_eq!(encode_file_path("src/hello world#1.ts").unwrap(), "src/hello%20world%231.ts");
         assert!(encode_file_path("../secret").is_err());
         assert!(encode_file_path("/absolute").is_err());
+    }
+
+    #[test]
+    fn comment_rejects_an_empty_or_oversized_body_before_accessing_github() {
+        let comment = |number: u64, body: String| GithubIssueComment { root: "/nonexistent".to_string(), number, body };
+        assert_eq!(comment_sync(comment(7, "  \n ".to_string())).unwrap_err(), "Invalid pull request comment");
+        assert_eq!(comment_sync(comment(7, "x".repeat(20_001))).unwrap_err(), "Invalid pull request comment");
+        assert_eq!(comment_sync(comment(0, "hello".to_string())).unwrap_err(), "Invalid pull request comment");
     }
 
     #[test]

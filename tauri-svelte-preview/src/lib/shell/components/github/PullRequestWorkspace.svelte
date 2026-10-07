@@ -9,7 +9,9 @@
   import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
   import { parseRemoteWorkspacePath, remoteWorkspacePath, sessionWorkspaceRoot } from '$lib/workspacePaths';
+  import { requestOpenFile } from '$lib/shell/openFileBus';
   import {
+    commentGithubPullRequestFromTauri,
     listGithubPullRequestsFromTauri,
     mergeGithubPullRequestFromTauri,
     readGithubPullRequestFromTauri,
@@ -89,6 +91,13 @@
   /** Head versions of files whose collapsed lines were opened on the Changes page. */
   let fullTexts = $state<Record<string, string>>({});
   let diffView = $state<MultiFileDiff>();
+  /** Files marked viewed on the Changes page, for this pull request only. */
+  let viewedFiles = $state<Record<string, true>>({});
+  /** Line comments waiting to go out with the next review, and the one being written. */
+  let draftLines = $state<GithubReviewSubmission['comments']>([]);
+  let lineTarget = $state<{ path: string; side: 'LEFT' | 'RIGHT'; line: number } | null>(null);
+  let lineBody = $state('');
+  let pendingComment = $state<{ body: string } | null>(null);
   let linkCopied = $state(false);
   let draftSummary = $state('');
   let draftHeadSha = $state('');
@@ -212,8 +221,7 @@
         Object.assign(selected, { repository: result.repository, title: result.title, url: result.url, author: result.author, state: result.state, isDraft: result.isDraft, headBranch: result.headBranch, baseBranch: result.baseBranch });
       }
       if (draftHeadSha && draftHeadSha !== result.headSha) {
-        draftSummary = '';
-        draftHeadSha = '';
+        cancelDraft();
         detailError = 'The PR changed. Your unposted comment was cleared; look at the new changes before commenting.';
       }
       if (replyTarget && previousHeadSha !== result.headSha) { replyTarget = null; replyBody = ''; pendingReply = null; }
@@ -318,8 +326,9 @@
   }
 
   function resetPullRequestState(): void {
-    draftSummary = '';
-    draftHeadSha = '';
+    cancelDraft();
+    viewedFiles = {};
+    pendingComment = null;
     replyTarget = null;
     replyBody = '';
     pendingReply = null;
@@ -353,21 +362,49 @@
     draftSummary = '';
     draftHeadSha = '';
     pendingReview = null;
+    draftLines = [];
+    lineTarget = null;
+    lineBody = '';
   }
 
-  async function draftWithHelper(): Promise<void> {
-    if (!detail || helperDrafting) return;
+  function startLineDraft(path: string, side: 'LEFT' | 'RIGHT', line: number): void {
+    lineTarget = { path, side, line };
+    lineBody = '';
+  }
+
+  function saveLineDraft(): void {
+    if (!detail || !lineTarget || !lineBody.trim()) return;
+    draftHeadSha = detail.headSha;
+    draftLines = [...draftLines, { ...lineTarget, body: lineBody.trim() }];
+    lineTarget = null;
+    lineBody = '';
+  }
+
+  /** The file as it is in the project's own checkout, which may be on another branch. */
+  function openFile(path: string, line: number | null): void {
+    const root = detail?.localRoot;
+    if (!root) return;
+    requestOpenFile({ path: `${root.replace(/\/+$/, '')}/${path}`, projectRoot: root, line: line && line > 0 ? line : undefined });
+  }
+
+  async function draftWithHelper(target: 'overall' | 'line'): Promise<void> {
+    if (!detail || helperDrafting || (target === 'line' && !lineTarget)) return;
     const pr = detail;
+    const line = lineTarget;
     const patchBudget = Math.floor(24_000 / Math.max(pr.files.length, 1));
-    const context = `Target: overall review\n${pr.files.map((file) => `File: ${file.path}\n${file.patch?.slice(0, patchBudget) ?? 'No text patch available.'}`).join('\n\n')}`;
+    const context = line && target === 'line'
+      ? `Target: ${line.path}:${line.line} (${line.side})\n${pr.files.find((file) => file.path === line.path)?.patch ?? 'No text patch available.'}`
+      : `Target: overall review\n${pr.files.map((file) => `File: ${file.path}\n${file.patch?.slice(0, patchBudget) ?? 'No text patch available.'}`).join('\n\n')}`;
     const input = `Repository: ${pr.repository}\nPR #${pr.number}: ${pr.title}\nDescription: ${pr.body.slice(0, 4000)}\n\n${context.slice(0, 28_000)}`;
     helperDrafting = true;
     detailError = null;
     try {
       const draft = await runHelperJobFromTauri('review', input);
       if (detail?.repository !== pr.repository || detail?.number !== pr.number || detail?.headSha !== pr.headSha) return;
+      if (target === 'line' && (lineTarget?.path !== line?.path || lineTarget?.line !== line?.line)) return;
       draftHeadSha = pr.headSha;
-      draftSummary = draft.trim();
+      if (target === 'line') lineBody = draft.trim();
+      else draftSummary = draft.trim();
     } catch (reason) {
       detailError = reason instanceof Error ? reason.message : String(reason);
     } finally {
@@ -401,10 +438,41 @@
     }
   }
 
-  function previewReview(): void {
+  /** Line comments go out as one review; without them the text is a plain
+   * conversation comment, which GitHub takes in any state. */
+  function previewPost(): void {
     if (!detail || !draftSummary.trim() || posting || postUncertain) return;
     postedUrl = '';
-    pendingReview = { root: detail.localRoot, number: detail.number, expectedHeadSha: draftHeadSha || detail.headSha, body: draftSummary.trim(), comments: [] };
+    if (draftLines.length === 0) {
+      pendingComment = { body: draftSummary.trim() };
+      return;
+    }
+    pendingReview = {
+      root: detail.localRoot,
+      number: detail.number,
+      expectedHeadSha: draftHeadSha || detail.headSha,
+      body: draftSummary.trim(),
+      comments: draftLines.map((line) => ({ ...line, body: line.body.trim() })).filter((line) => line.body)
+    };
+  }
+
+  async function confirmComment(): Promise<void> {
+    if (!detail || !pendingComment || posting) return;
+    const pr = detail;
+    const body = pendingComment.body;
+    pendingComment = null;
+    posting = true;
+    detailError = null;
+    try {
+      postedUrl = await commentGithubPullRequestFromTauri({ root: pr.localRoot, number: pr.number, body });
+      cancelDraft();
+      await loadDetail(pr.localRoot, pr.number);
+    } catch (reason) {
+      detailError = reason instanceof Error ? reason.message : String(reason);
+      postUncertain = /uncertain|not confirmed/i.test(detailError);
+    } finally {
+      posting = false;
+    }
   }
 
   async function confirmReview(): Promise<void> {
@@ -483,6 +551,23 @@
   {:else}<GitPullRequest {size} aria-hidden="true" />{/if}
 {/snippet}
 
+{#snippet lineDrafts(path: string)}
+  {#each draftLines as line, index (index)}
+    {#if line.path === path}<div class="line-draft in-diff"><strong>Line {line.line}</strong><span class="truncate">{line.body}</span><Button variant="ghost" size="sm" onclick={() => (draftLines = draftLines.filter((_, row) => row !== index))}>Remove</Button></div>{/if}
+  {/each}
+  {#if lineTarget?.path === path}
+    <div class="composer in-diff" role="group" aria-label="Line comment">
+      <strong>Comment on line {lineTarget.line} ({lineTarget.side === 'LEFT' ? 'old' : 'new'} side)</strong>
+      <textarea aria-label="Line review comment" rows="3" placeholder="Write a comment for this line" bind:value={lineBody}></textarea>
+      <div class="composer-actions">
+        <Button variant="secondary" size="sm" disabled={!lineBody.trim()} onclick={saveLineDraft}>Add to review</Button>
+        <Button variant="ghost" size="sm" disabled={helperDrafting} onclick={() => void draftWithHelper('line')}>{helperDrafting ? 'Drafting…' : 'Draft with Helper'}</Button>
+        <Button variant="ghost" size="sm" onclick={() => { lineTarget = null; lineBody = ''; }}>Cancel</Button>
+      </div>
+    </div>
+  {/if}
+{/snippet}
+
 {#snippet avatar(login: string)}
   {#if login}<img class="avatar" src={avatarUrl(login)} alt="" width="20" height="20" loading="lazy" decoding="async" referrerpolicy="no-referrer" />{/if}
 {/snippet}
@@ -559,14 +644,18 @@
                   </div>
                 {/if}
               </section>
+              <section class="composer" aria-label="Comment">
+                <textarea aria-label="Comment" rows="2" placeholder="Leave a comment" bind:value={draftSummary} oninput={() => { if (detail && draftSummary.trim()) draftHeadSha = detail.headSha; }}></textarea>
+                {#each draftLines as line, index (index)}
+                  <div class="line-draft"><strong>{line.path}:{line.line}</strong><span class="truncate">{line.body}</span><Button variant="ghost" size="sm" onclick={() => (draftLines = draftLines.filter((_, row) => row !== index))}>Remove</Button></div>
+                {/each}
+                <div class="composer-actions">
+                  <Button variant="secondary" size="sm" disabled={!draftSummary.trim() || posting || postUncertain} onclick={previewPost}>{draftLines.length ? `Post review · ${draftLines.length} line ${draftLines.length === 1 ? 'comment' : 'comments'}` : 'Comment'}</Button>
+                  <Button variant="ghost" size="sm" disabled={helperDrafting} onclick={() => void draftWithHelper('overall')}>{helperDrafting ? 'Drafting…' : 'Draft with Helper'}</Button>
+                  {#if draftSummary.trim() || draftLines.length}<Button variant="ghost" size="sm" onclick={cancelDraft}>Discard</Button>{/if}
+                </div>
+              </section>
               {#if detail.state === 'OPEN'}
-                <section class="composer" aria-label="Comment">
-                  <textarea aria-label="Comment" rows="2" placeholder="Leave a comment" bind:value={draftSummary} oninput={() => { if (detail && draftSummary.trim()) draftHeadSha = detail.headSha; }}></textarea>
-                  <div class="composer-actions">
-                    <Button variant="secondary" size="sm" disabled={!draftSummary.trim() || posting || postUncertain} onclick={previewReview}>Comment</Button>
-                    <Button variant="ghost" size="sm" disabled={helperDrafting} onclick={() => void draftWithHelper()}>{helperDrafting ? 'Drafting…' : 'Draft with Helper'}</Button>
-                  </div>
-                </section>
                 <section class="merge-card" aria-label="Merge pull request">
                   <div class="merge-fact">
                     <span class:merge-good={detail.checks.length > 0 && detail.checks.every((check) => checkTone(check) === 'good')} aria-hidden="true">{detail.checks.length > 0 && detail.checks.every((check) => checkTone(check) === 'good') ? '✓' : '•'}</span>
@@ -628,7 +717,17 @@
       </div>
     {:else if detail}
       {#if detail.moreFiles}<p class="notice page-notice">Showing the first 100 files. Open GitHub to see the rest.</p>{/if}
-      <MultiFileDiff bind:this={diffView} files={changedFiles} mode={diffMode} onLoadFullText={(path) => void loadFullText(path)} />
+      {#if draftLines.length}<p class="notice page-notice">{draftLines.length} line {draftLines.length === 1 ? 'comment' : 'comments'} in your review. Post {draftLines.length === 1 ? 'it' : 'them'} from <button type="button" class="link-button" onclick={() => (page = 'summary')}>Summary</button>.</p>{/if}
+      <MultiFileDiff
+        bind:this={diffView}
+        bind:viewed={viewedFiles}
+        files={changedFiles}
+        mode={diffMode}
+        onOpenLine={openFile}
+        onLoadFullText={(path) => void loadFullText(path)}
+        onLineComment={detail.state === 'OPEN' ? startLineDraft : undefined}
+        fileFooter={lineDrafts}
+      />
     {:else if detailLoading}
       <p class="notice page-notice">Loading pull request…</p>
     {/if}
@@ -679,12 +778,24 @@
   {/if}
   {#if pendingReview}
     <div class="confirm-backdrop" role="presentation">
-      <div class="confirm-review" role="dialog" aria-modal="true" aria-label="Confirm comment">
-        <h3>Post this comment?</h3>
+      <div class="confirm-review" role="dialog" aria-modal="true" aria-label="Confirm review">
+        <h3>Post this review?</h3>
         <p><strong>{pullRequestSelection.selected?.repository} #{pendingReview.number}</strong> · head {pendingReview.expectedHeadSha.slice(0, 10)}</p>
         <pre>{pendingReview.body}</pre>
+        {#each pendingReview.comments as line, index (index)}<p><strong>{line.path}:{line.line}</strong> {line.body}</p>{/each}
         <p>GitHub will notify participants. Assembly will check the PR head again before posting.</p>
         <div class="confirm-actions"><Button variant="ghost" size="sm" onclick={() => (pendingReview = null)}>Cancel</Button><Button size="sm" onclick={() => void confirmReview()}>Post to GitHub</Button></div>
+      </div>
+    </div>
+  {/if}
+  {#if pendingComment}
+    <div class="confirm-backdrop" role="presentation">
+      <div class="confirm-review" role="dialog" aria-modal="true" aria-label="Confirm comment">
+        <h3>Post this comment?</h3>
+        <p><strong>{pullRequestSelection.selected?.repository} #{pullRequestSelection.selected?.number}</strong></p>
+        <pre>{pendingComment.body}</pre>
+        <p>GitHub will notify participants.</p>
+        <div class="confirm-actions"><Button variant="ghost" size="sm" onclick={() => (pendingComment = null)}>Cancel</Button><Button size="sm" onclick={() => void confirmComment()}>Post to GitHub</Button></div>
       </div>
     </div>
   {/if}
@@ -706,7 +817,7 @@
         <p><strong>{pendingMerge.repository} #{pendingMerge.number}</strong> · {pendingMerge.title}</p>
         <p><code>{pendingMerge.headBranch}</code> into <code>{pendingMerge.baseBranch}</code> using {mergeMethodLabel(pendingMerge.method)}.</p>
         <p>Head {pendingMerge.expectedHeadSha.slice(0, 10)} · base {pendingMerge.expectedBaseSha.slice(0, 10)}</p>
-        {#if draftSummary.trim()}<p>Your unposted comment will be cleared if the merge succeeds.</p>{/if}
+        {#if draftSummary.trim() || draftLines.length}<p>Your unposted comment will be cleared if the merge succeeds.</p>{/if}
         <p>Assembly checks the PR again before asking GitHub to merge it. GitHub enforces the repository's merge rules.</p>
         <div class="confirm-actions"><Button variant="ghost" size="sm" onclick={() => (pendingMerge = null)}>Cancel</Button><Button size="sm" onclick={() => void confirmMerge()}>Merge on GitHub</Button></div>
       </div>
@@ -759,6 +870,9 @@
   .composer{display:flex;flex-direction:column;gap:var(--space-2);margin-top:var(--space-4);border-radius:12px;background:var(--color-surface);padding:var(--space-3)}.composer strong{font-size:12px}
   .composer textarea{display:block;width:100%;resize:none;min-height:44px;background:transparent;border:0;color:var(--color-text);padding:var(--space-1);font:var(--text-body)/1.5 inherit}.composer textarea:focus-visible{outline:none}.composer:focus-within{box-shadow:0 0 0 1px var(--color-focus)}
   .composer-actions{display:flex;align-items:center;gap:var(--space-2)}
+  .line-draft{display:flex;align-items:center;gap:var(--space-2);min-width:0;font-size:var(--text-quiet);color:var(--color-text-2)}.line-draft strong{flex:none;font:12px ui-monospace,monospace;color:var(--color-text-3)}
+  .in-diff{margin:var(--space-2) var(--space-3)}
+  .link-button{border:0;padding:0;background:none;color:var(--color-live);font:inherit;cursor:pointer;text-decoration:underline}
   .merge-card{margin-top:var(--space-4);border-radius:12px;background:var(--color-surface);overflow:hidden;font-size:var(--text-quiet)}
   .merge-fact{display:flex;align-items:center;gap:var(--space-3);margin:0;padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--color-border)}
   .merge-fact span{color:var(--color-text-3);font-size:15px}.merge-fact span.merge-good{color:var(--color-good)}
