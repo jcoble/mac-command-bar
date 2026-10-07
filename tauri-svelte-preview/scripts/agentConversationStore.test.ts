@@ -655,6 +655,7 @@ test('history paging publishes saved rows before import and handles failed or st
   let importFailure = false;
   let staleImport = false;
   let publishedWindow: any;
+  let measured = 0;
   store.ensureConversationSession('history', 'codex');
   const historyState = store.getConversationSession('history');
   historyState.selectedHasBefore = true;
@@ -680,11 +681,11 @@ test('history paging publishes saved rows before import and handles failed or st
     return { added: 1, reachedStart: true };
   }, () => page.items.map((item) => ({ id: item.itemId, metadata: { firstSequence: 1 } })),
   (_existing: unknown, incoming: unknown) => incoming,
-  (_selection: unknown, messages: any) => { published += 1; queueMicrotask(() => { selection.chat.messages = messages; }); },
+  (target: any, messages: any) => { published += 1; target.graphBytes = 10 * messages.length; queueMicrotask(() => { selection.chat.messages = messages; }); },
   () => 1, (value: any) => value.hasBefore || value.hasEarlierTranscript,
   (id: string, value: any, direction: 'older' | 'newer', window: any) => {
     publishedWindow = window; store.applySelectedConversationPageState(id, value, direction, window);
-  }, () => 10,
+  }, () => { measured += 1; return 10; },
   () => historyState, async () => undefined, () => new Map(),
   (_id: string, message: string) => { pageError = message; },
   (value: typeof selection) => { value.ready = new Promise<void>((resolve) => { value.resolveReady = resolve; }); }, EventType);
@@ -693,6 +694,8 @@ test('history paging publishes saved rows before import and handles failed or st
   assert.equal(imports, 0, 'saved local messages do not wait for provider import');
   assert.equal(published, 1);
   assert.equal(publishedWindow.hasAfter, false, 'older page preserves the known live tail');
+  assert.equal(publishedWindow.transferBytes, 10);
+  assert.equal(measured, 0, 'the window size comes from the snapshot that already measured every message');
   assert.equal(loading, false);
   page = { ...page, items: [] };
   await paging('older');
