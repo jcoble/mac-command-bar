@@ -98,8 +98,17 @@ function isCurrent(selection: ActiveConversation): boolean {
   return !selection.controller.signal.aborted && (active === selection || childActive === selection);
 }
 
+// Each history snapshot copies every message but keeps its part objects, so a
+// part's size is measured once. A changed part is a new object.
+const partBytes = new WeakMap<object, number>();
+
 function messageBytes(message: UIMessage): number {
-  return encoder.encode(JSON.stringify(message)).byteLength;
+  const shell = encoder.encode(JSON.stringify({ ...message, parts: [] })).byteLength;
+  return message.parts.reduce((total, part) => {
+    let bytes = partBytes.get(part);
+    if (bytes === undefined) partBytes.set(part, bytes = encoder.encode(JSON.stringify(part)).byteLength);
+    return total + bytes;
+  }, shell + Math.max(0, message.parts.length - 1));
 }
 
 function resetMessageBytes(selection: ActiveConversation, messages: readonly UIMessage[]): void {
