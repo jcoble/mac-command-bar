@@ -363,8 +363,9 @@
 				persistTabs();
 				return;
 			}
-			topTabs.forget(key);
-			editorPanel?.requestCloseFile(ref.id);
+			// Closing reports an edit still waiting in a Markdown preview first;
+			// if that makes the file dirty, the dialog opens and the tab stays.
+			if (editorPanel?.requestCloseFile(ref.id) !== false) topTabs.forget(key);
 		} else {
 			topTabs.forget(key);
 			if (ref.kind === "browser") closeBrowserPageTab(ref.id);

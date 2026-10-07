@@ -1258,16 +1258,23 @@
     readOnlyByPath = remaining;
   }
 
-  /** Close one file; a file with unsaved changes asks first. */
-  export function requestCloseFile(path: string): void {
+  /** Close one file; a file with unsaved changes asks first. True only when
+   *  the file closed now. */
+  export function requestCloseFile(path: string): boolean {
     markdownPreview?.flushEdit();
-    if (closeActionBusy) return;
+    if (closeActionBusy) return false;
     if (editorFileFor(path)?.dirty) {
       closeRequest = { kind: 'file', path };
       closeDialogOpen = true;
-      return;
+      return false;
     }
     closeFileNow(path);
+    return true;
+  }
+
+  /** Puts a Markdown preview's waiting edit in the store now. */
+  export function flushPendingEdits(): void {
+    markdownPreview?.flushEdit();
   }
 
   export function closeOtherFiles(path: string): void {
@@ -1505,6 +1512,7 @@
   }
 
   async function reloadConflictedFile(): Promise<void> {
+    markdownPreview?.flushEdit();
     const file = activeEditorFile();
     if (!file?.preview) return;
     const generation = sessionResourceGeneration;
