@@ -315,18 +315,21 @@
     if (!searchInput.trim() && searchedText) void load(true);
   }
 
-  /** A link names a repository; find the project that has it as its remote. */
+  /** A link names a repository; find the project that has it as its remote.
+   * The link stays stored while it resolves, so a newer link replaces it and
+   * this one gives up once its await returns. */
   async function openLink(link: PullRequestLink): Promise<void> {
     linkMissing = null;
     const sameRepository = (repository: string) => repository.toLowerCase() === link.repository.toLowerCase();
     const listed = items.find((item) => sameRepository(item.repository) && item.number === link.number);
+    if (!listed) await hydrateProjects();
+    if (pullRequestSelection.link !== link) return; // a newer link arrived meanwhile
+    pullRequestSelection.link = null;
     if (listed) {
       selectPullRequest(listed);
       return;
     }
-    await hydrateProjects();
     const project = projectRegistry.projects.find((candidate) => candidate.repoKey.toLowerCase() === `github.com/${link.repository}`.toLowerCase());
-    if (pullRequestSelection.link) return; // a newer link arrived meanwhile
     if (!project) {
       linkMissing = link;
       return;
@@ -526,9 +529,7 @@
   });
   $effect(() => {
     const link = pullRequestSelection.link;
-    if (!link) return;
-    pullRequestSelection.link = null;
-    untrack(() => void openLink(link));
+    if (link) untrack(() => void openLink(link));
   });
   $effect(() => {
     const currentDetail = detail;
