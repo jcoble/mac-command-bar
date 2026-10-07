@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { untrack } from 'svelte';
   import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
@@ -445,7 +446,7 @@
       {#each remoteRoots as root (root)}<option value={root}>{root.split('/').filter(Boolean).at(-1)} (remote)</option>{/each}
     </select>
     {#if error}<p class="notice error" role="alert">{error}</p>{/if}
-    {#if loading && items.length === 0}<p class="notice">Loading pull requests…</p>{/if}
+    {#if loading && items.length === 0}<p class="notice"><WorkingSpinner size={12} /> Loading pull requests…</p>{/if}
     {#if loaded && items.length === 0 && !loading && !error}<p class="notice">No pull requests match this view.</p>{/if}
     <div class="rows">
       {#each items as item (`${item.repository}#${item.number}`)}
@@ -455,7 +456,7 @@
         </button>
       {/each}
     </div>
-    {#if cursor}<button type="button" class="more" disabled={loading} onclick={() => void load(false)}>{loading ? 'Loading…' : `Load more · ${items.length} of ${totalCount}`}</button>{/if}
+    {#if cursor}<button type="button" class="more" disabled={loading} onclick={() => void load(false)}>{#if loading}<WorkingSpinner size={12} /> Loading…{:else}Load more · {items.length} of {totalCount}{/if}</button>{/if}
   </aside>
   <section class="detail" aria-label="Selected pull request">
     {#if pullRequestSelection.selected}
@@ -468,7 +469,7 @@
         </div>
         <div class="pr-actions">
           <a class="action primary" href={pullRequestSelection.selected.url} target="_blank" rel="noreferrer">Open on GitHub</a>
-          <button type="button" class="action" disabled={detailLoading || posting} onclick={() => { const target = pullRequestSelection.selected; if (target) void loadDetail(target.localRoot, target.number); }}>{detailLoading ? 'Refreshing…' : 'Refresh'}</button>
+          <button type="button" class="action" disabled={detailLoading || posting} onclick={() => { const target = pullRequestSelection.selected; if (target) void loadDetail(target.localRoot, target.number); }}>{#if detailLoading}<WorkingSpinner size={12} /> Refreshing…{:else}Refresh{/if}</button>
         </div>
         {#if detail}
           <p class="pr-facts">
@@ -483,7 +484,7 @@
         <button type="button" class:active={detailTab === 'checks'} onclick={() => detailTab = 'checks'}>Checks{#if detail}<span class="count">{detail.checks.length}</span>{/if}</button>
         <button type="button" class:active={detailTab === 'files'} onclick={() => detailTab = 'files'}>Files changed{#if detail}<span class="count">{detail.files.length}{detail.moreFiles ? '+' : ''}</span>{/if}</button>
       </nav>
-      {#if detailLoading}<p class="notice">Loading pull request details…</p>{/if}
+      {#if detailLoading}<p class="notice"><WorkingSpinner size={12} /> Loading pull request details…</p>{/if}
       {#if detailError}<p class="notice error" role="alert">{detailError}</p>{/if}
       {#if postedUrl}<p class="notice" role="status">Review posted. <a href={postedUrl} target="_blank" rel="noreferrer">View it on GitHub</a></p>{/if}
       {#if mergedUrl}<p class="notice" role="status">Pull request merged. <a href={mergedUrl} target="_blank" rel="noreferrer">View it on GitHub</a></p>{/if}
@@ -529,10 +530,10 @@
                     <button type="button" class:active={diffMode === 'unified'} aria-pressed={diffMode === 'unified'} onclick={() => diffMode = 'unified'}>Unified</button>
                     <button type="button" class:active={diffMode === 'side-by-side'} aria-pressed={diffMode === 'side-by-side'} onclick={() => diffMode = 'side-by-side'}>Side by side</button>
                   </div>
-                  <button type="button" class="open-full-diff" disabled={openingDiff} onclick={() => void openFullDiff()} title="Open this file in the full-width Diff tab">{openingDiff ? 'Opening diff…' : 'Open in Diff tab ↗'}</button>
+                  <button type="button" class="open-full-diff" disabled={openingDiff} onclick={() => void openFullDiff()} title="Open this file in the full-width Diff tab">{#if openingDiff}<WorkingSpinner size={12} /> Opening diff…{:else}Open in Diff tab ↗{/if}</button>
                 </div>
                 {#if diffMode === 'side-by-side'}
-                  {#if fileLoading}<p class="notice">Loading both file versions…</p>
+                  {#if fileLoading}<p class="notice"><WorkingSpinner size={12} /> Loading both file versions…</p>
                   {:else if fileError}<p class="notice error" role="alert">{fileError}</p>
                   {:else if fileVersions && DiffEditor}<p class="notice">Click a changed line to draft a comment.</p><div class="native-diff"><DiffEditor root={detail.localRoot} relativePath={selectedFile.path} originalContent={fileVersions.originalContent} modifiedContent={fileVersions.modifiedContent} onReviewLine={startSideBySideDraft} /></div>{/if}
                 {:else if parsedFile && !parsedFile.isEmpty && !parsedFile.isBinary}

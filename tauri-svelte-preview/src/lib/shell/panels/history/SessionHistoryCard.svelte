@@ -348,7 +348,7 @@
           </IconButton>
         </div>
         {#if detailsLoading}
-          <p class={QUIET_LINE}>Loading session details…</p>
+          <p class={QUIET_LINE}><WorkingSpinner size={12} /> Loading session details…</p>
         {:else if firstPrompt}
           <ScrollArea type="always" class="first-prompt-scroll">
             <p class="m-0 whitespace-pre-wrap pr-2 text-(length:--text-quiet) leading-relaxed">
@@ -386,7 +386,7 @@
           <Collapsible.Content>
             <div class="flex flex-col gap-(--space-2) pt-(--space-2)">
               {#if detailsLoading}
-                <p class={QUIET_LINE}>Loading turns…</p>
+                <p class={QUIET_LINE}><WorkingSpinner size={12} /> Loading turns…</p>
               {:else if turns.length === 0}
                 <p class={QUIET_LINE}>No turns were stored for this session.</p>
               {:else}

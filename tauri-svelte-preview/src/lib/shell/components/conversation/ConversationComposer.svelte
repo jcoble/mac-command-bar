@@ -18,6 +18,7 @@
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import AgentCommandMenu from './AgentCommandMenu.svelte';
   import AttachmentLightbox from './AttachmentLightbox.svelte';
+  import WorkingSpinner from './WorkingSpinner.svelte';
   import ComposerBannerStack, { type ComposerBannerItem } from './ComposerBannerStack.svelte';
   import ComposerConfigMenu from './ComposerConfigMenu.svelte';
   import PlanChip, { type PlanFileChanges } from './PlanChip.svelte';
@@ -409,7 +410,7 @@
         {#if attachments.length || pendingImageCount}
           <div class="attachments" data-testid="conversation-attachment-previews">
             {#each Array(pendingImageCount) as _}
-              <figure><div class="attachment-preview pending-image" role="status" aria-label="Loading image"><span class="pending-spinner"></span></div><figcaption><strong>Loading image</strong></figcaption></figure>
+              <figure><div class="attachment-preview pending-image" role="status" aria-label="Loading image"><WorkingSpinner size={18} /></div><figcaption><strong>Loading image</strong></figcaption></figure>
             {/each}
             {#each attachments as attachment (attachment.id)}
               <figure data-testid="conversation-attachment-preview">
@@ -659,8 +660,6 @@
   .attachments figure { display: grid; grid-template-columns: 60px minmax(0, 1fr); column-gap: 8px; min-width: 210px; max-width: 280px; margin: 0; padding: var(--composer-attachment-inset); border: 1px solid var(--composer-attachment-border); border-radius: var(--radius-md); background: var(--composer-attachment-surface); }
   .attachment-preview { position: relative; grid-row: span 2; width: 60px; height: 52px; }
   .pending-image{display:grid;place-items:center}
-  .pending-spinner{width:17px;height:17px;border:2px solid color-mix(in srgb,var(--color-text-2) 35%,transparent);border-top-color:var(--color-text);border-radius:50%;animation:pending-spin .7s linear infinite}
-  @keyframes pending-spin{to{transform:rotate(360deg)}}
   .attachment-remove { position: absolute; top: 3px; right: 3px; display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: var(--radius-pill); background: var(--composer-attachment-scrim); color: var(--color-text); cursor: pointer; }
   .attachment-remove:hover { background: var(--color-bad-bg); color: var(--color-bad); }
   .attachment-remove:focus-visible, .attachment-annotate:focus-visible { outline: 2px solid var(--color-focus-solid); outline-offset: 1px; }

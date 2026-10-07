@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import FileText from '@lucide/svelte/icons/file-text';
@@ -536,7 +537,7 @@
               <Button variant="ghost" disabled={saving} onclick={() => void disconnect()}>Disconnect</Button>
             {/if}
             <Button disabled={saving || (!settings?.hasToken && !token.trim())} onclick={() => void saveSetup()}>
-              {saving ? 'Connecting…' : 'Connect developer token'}
+              {#if saving}<WorkingSpinner size={14} />Connecting…{:else}Connect developer token{/if}
             </Button>
           </div>
         </div>
@@ -550,7 +551,9 @@
 
   <ScrollArea class="min-h-0 flex-1" bind:viewportRef={taskViewport}>
     {#if loading && tasks.length === 0}
-      <EmptyState title="Loading tasks…" body="Reading the last successful local snapshot." />
+      <EmptyState title="Loading tasks…" body="Reading the last successful local snapshot.">
+        {#snippet icon()}<WorkingSpinner size={24} />{/snippet}
+      </EmptyState>
     {:else if tasks.length === 0}
       <EmptyState
         title={showSetup

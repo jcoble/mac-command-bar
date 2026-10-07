@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   /**
    * UtilityStrip.svelte — the slim always-visible strip along the bottom of the
    * right panel.
@@ -124,7 +125,7 @@
       </span>
     {:else}
       <span class="label">Resources</span>
-      <span class="status-text">{status}</span>
+      <span class="status-text">{#if resourceSampleState.loading}<WorkingSpinner size={12} /> {/if}{status}</span>
     {/if}
     {#if ownershipValues.length}
       <span class="values ownership-summary">

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   /**
    * ResourceManagerPanel.svelte — what is running, what it has been doing, and
    * where the disk went.
@@ -157,7 +158,7 @@
         onclick={() => void refreshResourceSample()}
         disabled={resourceSampleState.loading}
       >
-        {resourceSampleState.loading ? 'Reading…' : 'Refresh'}
+        {#if resourceSampleState.loading}<WorkingSpinner size={12} /> Reading…{:else}Refresh{/if}
       </button>
       <button
         type="button"
@@ -361,7 +362,7 @@
         {/if}
       </section>
     {:else if resourceSampleState.loading}
-      <p class="message">Reading the live process tree…</p>
+      <p class="message"><WorkingSpinner size={12} /> Reading the live process tree…</p>
     {:else}
       <p class="message">Resource usage is available in the desktop app.</p>
     {/if}
@@ -383,7 +384,7 @@
 
       {#if diskOpen}
         {#if resourceDiskState.loading && !diskView}
-          <p class="message disk-message">Measuring the known large folders…</p>
+          <p class="message disk-message"><WorkingSpinner size={12} /> Measuring the known large folders…</p>
         {/if}
         {#if resourceDiskState.error}
           <p class="message error disk-message">{resourceDiskState.error}</p>
@@ -403,7 +404,7 @@
               onclick={() => void loadResourceDiskUsage(true)}
               disabled={resourceDiskState.loading}
             >
-              {resourceDiskState.loading ? 'Measuring…' : 'Measure again'}
+              {#if resourceDiskState.loading}<WorkingSpinner size={12} /> Measuring…{:else}Measure again{/if}
             </button>
           </p>
           {#each diskView.sections as section (section.id)}

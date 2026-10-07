@@ -28,7 +28,7 @@
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
   import MessageCircle from '@lucide/svelte/icons/message-circle';
   import Monitor from '@lucide/svelte/icons/monitor';
-  import LoaderCircle from '@lucide/svelte/icons/loader-circle';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import X from '@lucide/svelte/icons/x';
 
   import { Button } from '$lib/components/ui/button/index.js';
@@ -635,7 +635,7 @@
 
   {#if pickerUpdates.status?.providers.find((item) => item.provider === draft.provider)?.currentVersion === null}
     <div class="draft-adapter-action" data-testid="draft-provider-install-offer">
-      {#if pickerUpdates.phase === 'installing'}<LoaderCircle aria-label="Downloading adapter" class="size-4 animate-spin" />{/if}
+      {#if pickerUpdates.phase === 'installing'}<span class="inline-flex" role="status" aria-label="Downloading adapter"><WorkingSpinner /></span>{/if}
       <span>{displayProvider(draft.provider)} is not installed on {draft.executionEnvironment === 'remote' ? 'the remote machine' : 'this machine'}.</span>
       <Button variant="secondary" size="sm" disabled={pickerUpdates.phase === 'installing'} onclick={() => void installProviderUpdates(draft.provider, stopSignal, pickerUpdates, draft.executionEnvironment === 'remote' ? draft.remoteProfileId ?? undefined : undefined)}>
         {pickerUpdates.phase === 'installing' ? 'Installing…' : 'Install'}

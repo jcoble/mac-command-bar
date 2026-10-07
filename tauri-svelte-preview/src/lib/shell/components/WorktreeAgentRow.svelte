@@ -187,7 +187,7 @@
 					<span class="age-text">{ageText ?? ""}</span>
 					{#if presence === "working"}
 						<span class="working-mark" role="img" aria-label="Working">
-							<WorkingSpinner size={14} />
+							<WorkingSpinner size={14} seed={session.ownedId} />
 						</span>
 					{/if}
 				</span>

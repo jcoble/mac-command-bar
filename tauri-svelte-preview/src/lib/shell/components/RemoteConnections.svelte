@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import ProviderUpdateControl from './ProviderUpdateControl.svelte';
+  import WorkingSpinner from './conversation/WorkingSpinner.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { hydrateOwned, rail } from '$lib/shell/stores/sessionRailStore.svelte';
@@ -175,11 +176,11 @@
 {#snippet operationStatus()}
   {#if transfer}
     <div class="transfer" role="status">
-      <span>Downloading backend on {transfer.machine}</span>
+      <span class="busy-line"><WorkingSpinner size={12} />Downloading backend on {transfer.machine}</span>
       <progress value={transfer.bytes} max={transfer.total}></progress>
       <small>{transferDetail(transfer)}</small>
     </div>
-  {:else if status}<p role="status">{status}</p>{/if}
+  {:else if status}<p class="busy-line" role="status">{#if busy}<WorkingSpinner size={12} />{/if}{status}</p>{/if}
   {#if error}<p role="alert">{error}</p>{/if}
 {/snippet}
 
@@ -264,4 +265,5 @@
   .connection-actions { justify-content: flex-end; }
   .transfer { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
   .transfer progress { width: 100%; height: 6px; accent-color: var(--color-accent); }
+  .busy-line { display: flex; align-items: center; gap: 6px; }
 </style>

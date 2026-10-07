@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   /**
    * CommitTimeline.svelte — the commits under the changed files.
    *
@@ -208,7 +209,7 @@
   </div>
 
   {#if panel.historyLoading}
-    <p class="px-2 py-1 text-sm text-muted-foreground">Reading the history…</p>
+    <p class="px-2 py-1 text-sm text-muted-foreground"><WorkingSpinner size={14} /> Reading the history…</p>
   {:else if panel.historyError !== ''}
     <p class="px-2 py-1 text-sm text-[var(--color-bad)]">{panel.historyError}</p>
   {:else if panel.history.length === 0}
@@ -311,7 +312,7 @@
           onclick={() => void service.loadMoreHistory()}
           disabled={panel.historyLoadingMore}
         >
-          {panel.historyLoadingMore ? 'Reading older commits…' : 'Load more'}
+          {#if panel.historyLoadingMore}<WorkingSpinner size={12} />Reading older commits…{:else}Load more{/if}
         </Button>
       </div>
     {/if}

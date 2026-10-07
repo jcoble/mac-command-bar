@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   /**
    * GitDiffView.svelte — what changed in the file the source-control panel has
    * selected.
@@ -171,7 +172,7 @@
     </header>
 
     {#if !pullRequestDiff && gitPanel.diffLoading}
-      <p class="notice">Reading the changes…</p>
+      <p class="notice"><WorkingSpinner size={12} /> Reading the changes…</p>
     {:else if !pullRequestDiff && gitPanel.diffError}
       <p class="notice error">{gitPanel.diffError}</p>
     {:else if !parsed}
@@ -210,7 +211,7 @@
         {:else if diffEditorLoadError}
           <p class="notice error">Could not start the diff editor: {diffEditorLoadError}</p>
         {:else}
-          <p class="notice">Starting the diff editor…</p>
+          <p class="notice"><WorkingSpinner size={12} /> Starting the diff editor…</p>
         {/if}
         </div>
       {:else}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   /**
    * WorktreeDetail.svelte — what is open under one worktree row.
    *
@@ -255,7 +256,7 @@
     {/if}
     {#if busy}
       <p class="m-0 text-(length:--text-quiet) leading-normal text-muted-foreground">
-        Starting a session…
+        <WorkingSpinner size={12} /> Starting a session…
       </p>
     {/if}
 
