@@ -34,7 +34,8 @@
   import RemoteConnections from '$lib/shell/components/RemoteConnections.svelte';
   import AddProjectDialog from '$lib/shell/projects/AddProjectDialog.svelte';
   import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte.ts';
-  import { projectBadge, projectMachineLabel, visibleProjects } from '$lib/shell/projects/projects.ts';
+  import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
+  import { defaultDraftProjectId, projectBadge, projectMachineLabel, visibleProjects } from '$lib/shell/projects/projects.ts';
   import { checkForProviderUpdates, installProviderUpdates, restartProviders, type ProviderUpdateState } from '$lib/shell/providerUpdateService.svelte';
   import ConversationComposer from '$lib/shell/components/conversation/ConversationComposer.svelte';
   import type { ConversationAttachment } from '$lib/shell/conversation/conversationTypes.ts';
@@ -70,14 +71,12 @@
   } from '$lib/tauriSource.ts';
 
   interface Props {
-    /** The project the draft opens in; null or a hidden project opens "No project". */
-    presetProjectId: string | null;
     stopSignal: AbortSignal;
     onSend: (request: ThreadStartRequest, images: File[]) => void | Promise<void>;
     onClose: () => void;
   }
 
-  let { presetProjectId, stopSignal, onSend, onClose }: Props = $props();
+  let { stopSignal, onSend, onClose }: Props = $props();
 
   const PROVIDERS: readonly ThreadStartProvider[] = ['codex', 'claude', 'antigravity'];
   /** This build has no create-worktree command, so only existing checkouts. */
@@ -419,7 +418,9 @@
     await Promise.all([hydrateProjects(), hydrateRemoteAssembly(owner)]);
     if (stopSignal.aborted || !owner.active || sequence !== loadSequence) return;
     if (projectRegistry.error) submitError = projectRegistry.error;
-    const preset = projects.find((project) => project.id === presetProjectId) ?? null;
+    // The active session's project, else the most recent session's, among the visible ones.
+    const presetId = defaultDraftProjectId(projects, rail.owned, rail.activeOwnedId);
+    const preset = projects.find((project) => project.id === presetId) ?? null;
     hydrated = true;
     if (preset) selectProject(preset);
     else void selectNoProject('local');

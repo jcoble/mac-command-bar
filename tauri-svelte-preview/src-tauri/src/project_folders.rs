@@ -48,7 +48,11 @@ fn git_text(dir: &Path, args: &[&str]) -> Option<String> {
 
 /// Checks a folder before it becomes a project. Reads only; never runs `git init`.
 pub(crate) fn inspect_project_folder_sync(path: &str) -> Result<ProjectFolderInspection, String> {
-    let canonical = std::fs::canonicalize(expand_home(path)?)
+    let requested = expand_home(path)?;
+    if !requested.is_absolute() {
+        return Err("Folder path must be absolute".into());
+    }
+    let canonical = std::fs::canonicalize(requested)
         .map_err(|_| "That folder does not exist.".to_string())?;
     if !canonical.is_dir() {
         return Err("That path is a file. Choose a folder.".into());
@@ -225,6 +229,8 @@ mod tests {
             }
         );
         assert!(!folder.join(".git").exists());
+        // A relative path would resolve against the process's working folder.
+        assert_eq!(inspect_project_folder_sync("src").unwrap_err(), "Folder path must be absolute");
         std::fs::remove_dir_all(root).unwrap();
     }
 

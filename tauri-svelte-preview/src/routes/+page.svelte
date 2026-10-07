@@ -525,7 +525,6 @@
 		{/if}
 		{#if selection.newSession.draftOpen}
 			<DraftSessionSurface
-				presetProjectId={selection.newSession.draftProjectId}
 				stopSignal={selection.newSession.stopSignal}
 				onSend={startNewSession}
 				onClose={() => selection.newSession.close()}

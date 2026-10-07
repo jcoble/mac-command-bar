@@ -6,9 +6,8 @@
 
 import { addProjectFromTauri, listProjectsFromTauri, type ProjectRecord } from '../../tauriSource.ts';
 
-export const projectRegistry = $state<{ projects: ProjectRecord[]; hydrated: boolean; error: string }>({
+export const projectRegistry = $state<{ projects: ProjectRecord[]; error: string }>({
   projects: [],
-  hydrated: false,
   error: ''
 });
 
@@ -19,8 +18,6 @@ export async function hydrateProjects(): Promise<void> {
     projectRegistry.error = '';
   } catch (error) {
     projectRegistry.error = error instanceof Error ? error.message : String(error);
-  } finally {
-    projectRegistry.hydrated = true;
   }
 }
 
@@ -31,8 +28,4 @@ export async function addProject(machine: string, path: string): Promise<Project
     projectRegistry.projects = [...projectRegistry.projects, project];
   }
   return project;
-}
-
-export function projectById(id: string | null): ProjectRecord | null {
-  return projectRegistry.projects.find((project) => project.id === id) ?? null;
 }

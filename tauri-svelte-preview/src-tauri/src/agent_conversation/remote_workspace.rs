@@ -19,7 +19,8 @@ fn json(value: impl Serialize) -> Result<Value, String> {
 }
 
 pub(super) async fn execute(operation: String, args: Value) -> Result<Value, String> {
-    // Both accept `~`, so they run before the absolute-path check below.
+    // Both accept `~`, so they run before the absolute-path check below and
+    // apply that check themselves after expanding it.
     if operation == "list_folders" || operation == "inspect_project_folder" {
         let requested: String = arg(&args, "path")?;
         return tokio::task::spawn_blocking(move || match operation.as_str() {

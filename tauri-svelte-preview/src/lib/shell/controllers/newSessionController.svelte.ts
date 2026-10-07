@@ -7,8 +7,6 @@ import {
 } from '../conversation/conversationStore.svelte';
 import { ensureStructuredConversation, flushConversationSessionDraft, persistConversationSessionDraft, saveConversationClipboardImage, sendStructuredMessage } from '../conversation/conversationService';
 import type { ThreadStartRequest } from '../newSession/threadStartFlow';
-import { defaultDraftProjectId } from '../projects/projects';
-import { projectRegistry } from '../projects/projectRegistry.svelte';
 import {
 	createFreshSession,
 	ownedSessionMetaForBackend,
@@ -30,11 +28,6 @@ export class NewSessionController {
 
 	get stopSignal(): AbortSignal {
 		return this.draftWork.signal;
-	}
-
-	/** The project a new draft starts in: the active session's, else the most recent one's. */
-	get draftProjectId(): string | null {
-		return defaultDraftProjectId(projectRegistry.projects, rail.owned, rail.activeOwnedId);
 	}
 
 	open(): void {
