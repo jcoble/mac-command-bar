@@ -236,9 +236,9 @@
     if (sequence !== loadSequence) return;
     gitRefs = answer.status === 'ok' ? answer.value : [];
     if (answer.status === 'unavailable') refsMessage = answer.message;
-    const first = gitRefs.find((ref) => ref.isCurrent)
-      ?? gitRefs.find((ref) => ref.checkoutPath)
-      ?? null;
+    // Only the root's own branch: a detached root keeps the root, never some
+    // other worktree's checkout.
+    const first = gitRefs.find((ref) => ref.isCurrent) ?? null;
     updateDraft({
       cwd: first?.checkoutPath ?? projectPath,
       branch: first?.name ?? '',
