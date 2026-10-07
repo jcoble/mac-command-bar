@@ -13,7 +13,7 @@ use crate::bounded_process;
 const MAX_ROOTS: usize = 32;
 const MAX_PAGE_SIZE: u16 = 30;
 const MAX_RESPONSE_BYTES: usize = 2_000_000;
-const SEARCH_QUERY: &str = "query($query:String!,$first:Int!,$after:String){search(query:$query,type:ISSUE,first:$first,after:$after){issueCount pageInfo{hasNextPage endCursor} nodes{... on PullRequest{number title url isDraft updatedAt state headRefName baseRefName repository{nameWithOwner} author{login}}}}}";
+const SEARCH_QUERY: &str = "query($query:String!,$first:Int!,$after:String){search(query:$query,type:ISSUE_ADVANCED,first:$first,after:$after){issueCount pageInfo{hasNextPage endCursor} nodes{... on PullRequest{number title url isDraft updatedAt state headRefName baseRefName repository{nameWithOwner} author{login}}}}}";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -564,9 +564,11 @@ fn parse_github_remote(remote: &str) -> Result<String, String> {
 /// syntax, so `head:`/`author:` work); the repositories stay server-side. A
 /// `repo:` the person types only widens the search, and rows from repositories
 /// outside the known projects are dropped when the response is parsed.
+/// Advanced search joins terms with AND, so several repositories form one OR group.
 fn build_search_query(repositories: &BTreeMap<String, PathBuf>, search: &str) -> String {
+    let repos = repositories.keys().map(|name| format!("repo:{name}")).collect::<Vec<_>>();
     let mut terms = vec!["is:pr".to_string()];
-    terms.extend(repositories.keys().map(|name| format!("repo:{name}")));
+    terms.push(if repos.len() > 1 { format!("({})", repos.join(" OR ")) } else { repos.join(" ") });
     if !search.is_empty() {
         terms.push(search.to_string());
     }
@@ -631,6 +633,8 @@ mod tests {
         let repositories = BTreeMap::from([("owner/repo".to_string(), PathBuf::from("/repo"))]);
         assert_eq!(build_search_query(&repositories, "is:merged head:fix sort:updated-desc"), "is:pr repo:owner/repo is:merged head:fix sort:updated-desc");
         assert_eq!(build_search_query(&repositories, ""), "is:pr repo:owner/repo");
+        let two = BTreeMap::from([("owner/one".to_string(), PathBuf::from("/one")), ("owner/two".to_string(), PathBuf::from("/two"))]);
+        assert_eq!(build_search_query(&two, "is:open"), "is:pr (repo:owner/one OR repo:owner/two) is:open");
     }
 
     #[test]

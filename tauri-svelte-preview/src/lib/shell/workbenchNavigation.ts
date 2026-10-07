@@ -15,7 +15,6 @@
  * showing a browser tab is what registers the handler that can place its view.
  */
 import type { ConversationAttachment } from './conversation/conversationTypes.ts';
-import type { SourceGitDiff } from '../tauriSource.ts';
 import { requestOpenFile, type OpenFileRequest } from './openFileBus.ts';
 
 /** The chat and the five kinds of tab the top tab row can bring forward. */
@@ -59,13 +58,6 @@ export interface OpenDiffRequest {
   relativePath: string;
 }
 
-export interface OpenPullRequestDiffRequest {
-  projectRoot: string;
-  repository: string;
-  number: number;
-  diff: SourceGitDiff;
-}
-
 export interface OpenUrlRequest {
   url: string;
 }
@@ -103,7 +95,6 @@ export interface WorkbenchNavigationHandlers {
   showCenterTab(id: CenterTabId): void;
   showRightTab(id: RightTabId): void;
   openDiff(request: OpenDiffRequest): void | Promise<void>;
-  openPullRequestDiff(request: OpenPullRequestDiffRequest): void;
   openFileTimeline(request: OpenDiffRequest): void | boolean | Promise<void | boolean>;
   openUrl(request: OpenUrlRequest): void | Promise<void>;
   openPullRequest(link: PullRequestLink): void;
@@ -159,12 +150,6 @@ export function openFileInEditor(request: OpenFileRequest): void {
 /** Show one file's changes after the selected diff belongs to that file. */
 export async function openDiffForFile(request: OpenDiffRequest): Promise<void> {
   await handlers.openDiff?.(request);
-  showCenterTab('diff');
-}
-
-/** Show a hosted PR comparison in the existing center Diff tab. */
-export function openPullRequestDiff(request: OpenPullRequestDiffRequest): void {
-  handlers.openPullRequestDiff?.(request);
   showCenterTab('diff');
 }
 

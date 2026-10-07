@@ -244,8 +244,6 @@
         <span><strong>{frontend.editorSourceReadsInFlight}</strong> source reads</span>
         <span><strong>{frontend.editorSourceReadsInvalidated}</strong> stale source reads</span>
         <span><strong>{frontend.editorSourceReadBytesInFlight}</strong> source-read bytes</span>
-        <span><strong>{frontend.mergeViews}</strong> mounted MergeViews</span>
-        <span><strong>{frontend.mergeDocBytes}</strong> diff bytes</span>
         <span><strong>{frontend.elementVisibilityWatchers}</strong> visibility watchers</span>
         <span><strong>{frontend.railElapsedWatchers}</strong> rail watchers</span>
         <span><strong>{frontend.semanticWaitingSpots}</strong> semantic waits</span>

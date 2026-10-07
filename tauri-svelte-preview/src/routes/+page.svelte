@@ -61,7 +61,7 @@
 	import { ownedSessionMetaForBackend } from "$lib/shell/ownedSessions";
 	import { diffPathFor } from "$lib/shell/sessionWorkspaces";
 	import { setOwnedSessionStatus, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
-	import type { CenterTabId, OpenPullRequestDiffRequest } from "$lib/shell/workbenchNavigation";
+	import type { CenterTabId } from "$lib/shell/workbenchNavigation";
 	import { clearWorkbenchNavigation, registerWorkbenchNavigation } from "$lib/shell/workbenchNavigation";
 	import { updateAgentConversationSessionMetaFromTauri } from "$lib/tauriSource";
 
@@ -83,7 +83,6 @@
 	// Zero until the frame reports the pane's laid-out width: the browser may
 	// place its native view only once the pane really has a size.
 	let toolsRailWidth = $state(0);
-	let pullRequestDiff = $state<OpenPullRequestDiffRequest | null>(null);
 	let routeDisposal: Promise<void> | null = null;
 	/** The right drawer's card width; its left edge drags it between these. */
 	const DRAWER_MIN_WIDTH = 240;
@@ -243,15 +242,10 @@
 			showRightTab: selectRightTab,
 			openDiff: async (request) => {
 				if (!selection.activeRootAvailable) return;
-				pullRequestDiff = null;
 				await gitService.showStoredDiff(request.projectRoot, request.relativePath);
 			},
 			openPullRequest: (link) => {
 				pullRequestSelection.link = link;
-			},
-			openPullRequestDiff: (request) => {
-				pullRequestDiff = request;
-				workbench.setDiffMode("side-by-side");
 			},
 			openFileTimeline: async (request) => {
 				const ownedId = selection.activeOwnedId;
@@ -313,7 +307,6 @@
 
 	async function selectSession(ownedId: string): Promise<void> {
 		if (selection.activeOwnedId === ownedId && selection.activeWorkspaceSnapshot !== null) return;
-		pullRequestDiff = null;
 		if (selection.activeOwnedId !== null) {
 			selection.rememberWorkspaceState(workbench.captureSessionState());
 		}
@@ -371,10 +364,8 @@
 		} else {
 			topTabs.forget(key);
 			if (ref.kind === "browser") closeBrowserPageTab(ref.id);
-			else if (ref.kind === "diff") {
-				pullRequestDiff = null;
-				gitService.clearSelection();
-			} else if (ref.kind === "pull-requests") pullRequestSelection.selected = null;
+			else if (ref.kind === "diff") gitService.clearSelection();
+			else if (ref.kind === "pull-requests") pullRequestSelection.selected = null;
 		}
 		persistTabs();
 	}
@@ -620,9 +611,8 @@
 		{#if topTabs.activeKind === "diff"}
 			<div class="pane-body showing">
 				<GitDiffView
-					rootAvailable={pullRequestDiff !== null || selection.activeRootAvailable}
+					rootAvailable={selection.activeRootAvailable}
 					sessionRoot={selection.durableSessionRoot}
-					{pullRequestDiff}
 					mode={workbench.diffMode}
 					onModeChange={(mode) => workbench.setDiffMode(mode)}
 				/>

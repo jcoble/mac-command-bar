@@ -13,12 +13,27 @@ assert.equal(pullRequestSearchQuery('all', 'everyone', ''), 'sort:updated-desc')
 assert.equal(pullRequestSearchQuery('all', 'mine', ''), 'author:@me sort:updated-desc');
 assert.equal(pullRequestSearchQuery('merged', 'needs-review', ''), 'is:merged review-requested:@me sort:updated-desc');
 
-// Typed text is GitHub search syntax, not a quoted phrase, so qualifiers work.
+// A plain word matches the title or body, the head branch (by prefix), or the
+// author, so a branch name or a login typed on its own finds its pull requests.
 assert.equal(
-  pullRequestSearchQuery('all', 'everyone', 'head:cdx/selected-provider-progress'),
-  'head:cdx/selected-provider-progress sort:updated-desc'
+  pullRequestSearchQuery('open', 'mine', '  adapter   jcoble \n'),
+  'is:open author:@me (adapter OR head:adapter OR author:adapter) (jcoble OR head:jcoble OR author:jcoble) sort:updated-desc'
 );
-assert.equal(pullRequestSearchQuery('open', 'mine', '  adapter   selected \n'), 'is:open author:@me adapter selected sort:updated-desc');
-assert.equal(pullRequestSearchQuery('all', 'everyone', '#111'), '#111 sort:updated-desc');
+assert.equal(
+  pullRequestSearchQuery('all', 'everyone', 'cdx/selected-provider'),
+  '(cdx/selected-provider OR head:cdx/selected-provider OR author:cdx/selected-provider) sort:updated-desc'
+);
+
+// Anything else is GitHub search syntax and passes through untouched: a
+// qualifier, or every word of a quoted phrase.
+assert.equal(pullRequestSearchQuery('all', 'everyone', 'head:fix label:bug'), 'head:fix label:bug sort:updated-desc');
+assert.equal(
+  pullRequestSearchQuery('all', 'everyone', '"selected adapter" show'),
+  '"selected adapter" (show OR head:show OR author:show) sort:updated-desc'
+);
+
+// A number names one pull request, so it is found whatever its state or author.
+assert.equal(pullRequestSearchQuery('open', 'mine', '111'), '111 sort:updated-desc');
+assert.equal(pullRequestSearchQuery('open', 'needs-review', ' #111 '), '111 sort:updated-desc');
 
 console.log('pullRequestSearch: ok');

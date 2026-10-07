@@ -37,8 +37,6 @@ export const resourceDiagnostics = $state({
   editorSourceReadsInFlight: 0,
   editorSourceReadsInvalidated: 0,
   editorSourceReadBytesInFlight: 0,
-  mergeViews: 0,
-  mergeDocBytes: 0,
   elementVisibilityWatchers: 0,
   elementVisibilityObserverActive: false,
   railElapsedWatchers: 0,
@@ -347,16 +345,6 @@ export function setEditorSourceReadDiagnostics(count: number, invalidated: numbe
   resourceDiagnostics.editorSourceReadsInFlight = Math.max(0, Math.trunc(count));
   resourceDiagnostics.editorSourceReadsInvalidated = Math.max(0, Math.trunc(invalidated));
   resourceDiagnostics.editorSourceReadBytesInFlight = Math.max(0, Math.trunc(bytes));
-}
-
-export function addMergeView(delta: 1 | -1): void {
-  if (!resourceDiagnosticsDev) return;
-  resourceDiagnostics.mergeViews = Math.max(0, resourceDiagnostics.mergeViews + delta);
-}
-
-export function setMergeDocBytes(bytes: number): void {
-  if (!resourceDiagnosticsDev) return;
-  resourceDiagnostics.mergeDocBytes = Math.max(0, Math.trunc(bytes));
 }
 
 export function setElementVisibilityDiagnostics(watchers: number, observerActive: boolean): void {
