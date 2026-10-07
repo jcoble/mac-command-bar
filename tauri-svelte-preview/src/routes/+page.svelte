@@ -60,7 +60,7 @@
 	import type { ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow";
 	import { ownedSessionMetaForBackend, type OwnedSession } from "$lib/shell/ownedSessions";
 	import { diffPathFor } from "$lib/shell/sessionWorkspaces";
-	import { setOwnedSessionStatus, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
+	import { ownedSessionStatusPatch, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
 	import type { CenterTabId, OpenPullRequestDiffRequest } from "$lib/shell/workbenchNavigation";
 	import { clearWorkbenchNavigation, registerWorkbenchNavigation } from "$lib/shell/workbenchNavigation";
 	import { updateAgentConversationSessionMetaFromTauri } from "$lib/tauriSource";
@@ -103,26 +103,14 @@
 	let popupOpen = $state(false);
 
 	async function changeSessionStatus(ownedId: string, status: "working" | "done" | "settled"): Promise<void> {
-		const before = selection.railOwned.find((session) => session.ownedId === ownedId);
-		const updated = setOwnedSessionStatus(ownedId, status, new Date());
-		if (!before || !updated) return;
-		try {
-			await updateAgentConversationSessionMetaFromTauri({
-				ownedId,
-				model: null,
-				effort: null,
-				meta: ownedSessionMetaForBackend(updated),
-			});
-		} catch (error) {
-			updateOwnedSession(ownedId, { completedAt: before.completedAt, settledAt: before.settledAt });
-			console.error("Could not change session status", error);
-		}
+		const session = selection.railOwned.find((row) => row.ownedId === ownedId);
+		if (session) await saveSessionChange(ownedId, ownedSessionStatusPatch(session, status, new Date()));
 	}
 
 	/** Saves a person's own change to a session row, and puts it back if the save fails. */
 	async function saveSessionChange(
 		ownedId: string,
-		patch: Partial<Pick<OwnedSession, "pinnedAt" | "title">>,
+		patch: Partial<Pick<OwnedSession, "completedAt" | "settledAt" | "pinnedAt" | "title">>,
 	): Promise<void> {
 		const before = selection.railOwned.find((session) => session.ownedId === ownedId);
 		if (!before) return;
@@ -136,10 +124,8 @@
 				meta: ownedSessionMetaForBackend(updated),
 			});
 		} catch (error) {
-			updateOwnedSession(ownedId, {
-				...("pinnedAt" in patch ? { pinnedAt: before.pinnedAt ?? null } : {}),
-				...("title" in patch ? { title: before.title } : {}),
-			});
+			const keys = Object.keys(patch) as (keyof typeof patch)[];
+			updateOwnedSession(ownedId, Object.fromEntries(keys.map((key) => [key, before[key]])));
 			console.error("Could not save the session change", error);
 		}
 	}

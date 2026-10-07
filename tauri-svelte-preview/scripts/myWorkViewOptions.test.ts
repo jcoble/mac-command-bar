@@ -19,7 +19,7 @@ import {
 import { sessionRowMenuItems } from '../src/lib/shell/components/sessionRowMenu.ts';
 import type { OwnedSession } from '../src/lib/shell/ownedSessions.ts';
 import { ownedSessionMetaForBackend } from '../src/lib/shell/ownedSessions.ts';
-import { hydrateOwned, rail, setOwnedSessionStatus, updateOwnedSession } from '../src/lib/shell/stores/sessionRailStore.svelte.ts';
+import { hydrateOwned, ownedSessionStatusPatch, rail, updateOwnedSession } from '../src/lib/shell/stores/sessionRailStore.svelte.ts';
 
 function session(ownedId: string, extra: Record<string, unknown> = {}): OwnedSession {
   return {
@@ -280,17 +280,21 @@ function shape(groups: MyWorkGroup[]): unknown[] {
     ? execFileSync('git', ['show', `${process.env.STATUS_TEST_BASE}:tauri-svelte-preview/src/routes/+page.svelte`], { encoding: 'utf8' })
     : readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
   const ast = parse(route, { modern: true });
-  const action = ast.instance?.content.body.find((node) => node.type === 'FunctionDeclaration'
-    && node.id?.name === 'changeSessionStatus');
-  assert.ok(action, 'route status action exists');
+  // A status change is a thin call into the route's one save-and-undo path.
+  const actions = ['changeSessionStatus', 'saveSessionChange'].map((name) => {
+    const action = ast.instance?.content.body.find((node) => node.type === 'FunctionDeclaration'
+      && node.id?.name === name);
+    assert.ok(action, `route ${name} exists`);
+    return route.slice(action.start, action.end);
+  });
   const saves: Array<{ ownedId: string; completedAt: string | null; settledAt: string | null }> = [];
-  const actionCode = ts.transpileModule(route.slice(action.start, action.end), {
+  const actionCode = ts.transpileModule(actions.join('\n'), {
     compilerOptions: { target: ts.ScriptTarget.ES2022 }
   }).outputText;
-  const changeSessionStatus = new Function('selection', 'setOwnedSessionStatus',
+  const changeSessionStatus = new Function('selection', 'ownedSessionStatusPatch',
     'updateOwnedSession', 'ownedSessionMetaForBackend', 'updateAgentConversationSessionMetaFromTauri',
     `${actionCode}; return changeSessionStatus;`)(
-      { get railOwned() { return rail.owned; } }, setOwnedSessionStatus, updateOwnedSession,
+      { get railOwned() { return rail.owned; } }, ownedSessionStatusPatch, updateOwnedSession,
       ownedSessionMetaForBackend,
       async ({ ownedId, meta }: { ownedId: string; meta: { completedAt: string | null; settledAt: string | null } }) => {
         saves.push({ ownedId, completedAt: meta.completedAt, settledAt: meta.settledAt });
