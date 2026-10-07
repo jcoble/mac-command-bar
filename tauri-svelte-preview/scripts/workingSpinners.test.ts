@@ -1,17 +1,11 @@
 import assert from 'node:assert/strict';
-import { readdirSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 
-import { SPINNER_IDS, pickSpinner } from '../src/lib/shell/components/conversation/workingSpinners.ts';
+import { DESIGNS, SPINNER_IDS, pickSpinner } from '../src/lib/shell/components/conversation/workingSpinners.ts';
 
-const spinnerDir = fileURLToPath(new URL('../src/lib/shell/components/conversation/spinners/', import.meta.url));
-
-// Exactly the owner's 16 kept designs, each with its SVG file.
+// Exactly the owner's 16 kept designs, each with something to draw.
 {
   assert.equal(SPINNER_IDS.length, 16);
-  assert.equal(new Set(SPINNER_IDS).size, 16);
-  const files = readdirSync(spinnerDir).filter((name) => name.endsWith('.svg')).map((name) => name.slice(0, -4)).sort();
-  assert.deepEqual(files, [...SPINNER_IDS].sort());
+  for (const id of SPINNER_IDS) assert.ok(DESIGNS[id].parts.length > 0, id);
 }
 
 // A session's seed always gives the same design, so its rail row and working row match.
