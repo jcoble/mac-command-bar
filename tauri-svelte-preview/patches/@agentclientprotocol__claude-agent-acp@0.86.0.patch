@@ -231,6 +231,35 @@ index 38cf467bf66db1b1fb0af32ad7174fda35b88b90..65de33f390400ab2bd20ca44944ab088
  export const AIR_SESSION_FAILURE_CAPABILITY = "sessionFailure";
  export const AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY = "recommendedValue";
  export const AIR_DIFF_PATCH_CAPABILITY = "diffPatch";
+diff --git a/dist/native-subagents.js b/dist/native-subagents.js
+index 52c398271fc1907b8d3198c8247e736e79dfc9e4..08efe58b3d154a3b205863e4e2d2af88dd875ba4 100644
+--- a/dist/native-subagents.js
++++ b/dist/native-subagents.js
+@@ -242,8 +242,10 @@ export class NativeSubagentRuntime {
+     /**
+      * The route of the work that a child tool call started, for example an async
+      * task. The route sends each update to the child generation that owned the
+-     * tool call when the work started, and drops the update after that child
+-     * finished. `undefined` means that the root session owns the tool call.
++     * tool call when the work started. After that child finished, an async task
++     * update still goes to it, so the client sees work the child left running
++     * end; any other update is dropped. `undefined` means that the root session
++     * owns the tool call.
+      * `eagerSessionId` is the session where a permission request created the
+      * tool call before the stream routed it.
+      */
+@@ -252,7 +254,10 @@ export class NativeSubagentRuntime {
+             return undefined;
+         const owner = this.childByToolCall.get(toolCallId) ??
+             (eagerSessionId ? this.childOfSession(eagerSessionId) : undefined);
+-        return owner && ((notification) => this.toChild(owner, notification, undefined));
++        return (owner &&
++            ((notification) => String(notification.update.sessionUpdate).startsWith("async_task_")
++                ? { ...notification, sessionId: owner.sessionId }
++                : this.toChild(owner, notification, undefined)));
+     }
+     rememberToolCallOwner(toolCallId, child) {
+         this.childByToolCall.delete(toolCallId);
 diff --git a/dist/permissions/options/tools.js b/dist/permissions/options/tools.js
 index 3ca1365e30d9c7469186ab46e1cc6c968531e3a1..c679fcb00d3d08fe92099999889ba1a60d897cc7 100644
 --- a/dist/permissions/options/tools.js

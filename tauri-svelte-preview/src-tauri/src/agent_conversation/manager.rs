@@ -220,6 +220,8 @@ pub struct ManagedAgentSession {
     /// replies it writes when a background sub-agent or command finishes.
     /// It lasts from the first such update until Claude Code reports idle.
     autonomous_turn_id: Option<String>,
+    /// The Claude adapter forwards Claude Code's running and idle state.
+    claude_reports_state: bool,
     child_rollout_scan: Option<tokio::task::JoinHandle<()>>,
     child_rollout_parent_path: Option<PathBuf>,
     codex_children: HashMap<String, CodexChildRollout>,
@@ -1733,6 +1735,7 @@ impl AgentRuntimeManager {
                 streaming_reply: None,
                 background_work: HashSet::new(),
                 autonomous_turn_id: None,
+                claude_reports_state: false,
                 child_rollout_scan: None,
                 child_rollout_parent_path: None,
                 codex_children: HashMap::new(),
@@ -4794,6 +4797,7 @@ fn recovered_session_from_row(
         streaming_reply: None,
         background_work: HashSet::new(),
         autonomous_turn_id: None,
+        claude_reports_state: false,
         child_rollout_scan: None,
         child_rollout_parent_path: None,
         codex_children: HashMap::new(),
@@ -5485,9 +5489,15 @@ async fn pump_inbound(
                     // Native child content belongs to the child's provider transcript.
                     // The parent journal carries only spawn/state metadata.
                     if child_content {
+                        // A shell a sub-agent started can outlive it, so its
+                        // task still keeps the runtime.
+                        if session_update_kind(&params).is_some_and(|kind| kind.starts_with("async_task_")) {
+                            break 'update update_raw_liveness(session, &params);
+                        }
                         break 'update false;
                     }
                     if let Some(state) = claude_session_state(session, &params) {
+                        session.claude_reports_state = true;
                         if state == "idle" {
                             record_finished_reply(session, &emitter);
                             session.background_work.remove(CLAUDE_SESSION_RUNNING);
@@ -5499,6 +5509,7 @@ async fn pump_inbound(
                     }
                     let mut reached_quiescence = update_raw_liveness(session, &params);
                     if let Some(payload) = stopped_background_task_payload(&mut session.background_work, &params) {
+                        expect_claude_wake(session);
                         reached_quiescence |= session_is_quiescent(session);
                         if session.writer_lease.owner == AgentWriterLeaseOwner::Structured {
                             if let Err(error) = record_payload_for_session_and_dispatch(session, &emitter, payload) {
@@ -5870,6 +5881,7 @@ async fn settle_closed_transport(
             }
             record_finished_reply(session, &emitter);
             session.autonomous_turn_id = None;
+            session.claude_reports_state = false;
             if let Some(turn_id) = session.active_turn_id.take() {
                 let _ = record_payload_for_session_and_dispatch(
                     session,
@@ -6209,7 +6221,9 @@ fn claude_native_child_payload(
     );
     let work_id = format!("claude-child:{child_id}");
     if terminal {
-        session.background_work.remove(&work_id);
+        if session.background_work.remove(&work_id) {
+            expect_claude_wake(session);
+        }
     } else {
         session.background_work.insert(work_id);
     }
@@ -6332,12 +6346,14 @@ fn update_raw_liveness(session: &mut ManagedAgentSession, params: &Value) -> boo
     } else {
         return false;
     };
-    if terminal {
-        target.remove(&identifier);
-    } else {
+    if !terminal {
         target.insert(identifier);
+        return false;
     }
-    terminal && session_is_quiescent(session)
+    if target.remove(&identifier) && !kind.contains("tool") {
+        expect_claude_wake(session);
+    }
+    session_is_quiescent(session)
 }
 
 fn stopped_background_task_payload(
@@ -7886,6 +7902,15 @@ fn session_is_checkout_quiescent(session: &ManagedAgentSession) -> bool {
 
 /// Background work held while Claude Code reports it is running.
 const CLAUDE_SESSION_RUNNING: &str = "claude-session:running";
+
+/// Claude Code wakes the agent that owned finished background work — a shell,
+/// or a sub-agent — to report it, even after it reported idle. Until its next
+/// idle the session still has work in hand.
+fn expect_claude_wake(session: &mut ManagedAgentSession) {
+    if session.claude_reports_state {
+        session.background_work.insert(CLAUDE_SESSION_RUNNING.to_string());
+    }
+}
 
 /// The Claude Code state the Claude adapter forwards once the client declared
 /// `backgroundSubagents`: `running` or `requires_action` while Claude works,
@@ -9780,6 +9805,108 @@ mod tests {
         .await;
         assert_eq!(autonomous_turn(&fixture), None);
         assert!(!claude_running(&fixture));
+        finish(fixture).await;
+    }
+
+    fn async_task(session_id: &str, task: &str, state: Option<&str>) -> Value {
+        let update = match state {
+            None => json!({"sessionUpdate": "async_task_spawned", "asyncTaskId": task,
+                "name": "sleep 60", "taskType": "shell"}),
+            Some(state) => json!({"sessionUpdate": "async_task_state_update",
+                "asyncTaskId": task, "state": state}),
+        };
+        json!({"jsonrpc": "2.0", "method": "session/update",
+            "params": {"sessionId": session_id, "update": update}})
+    }
+
+    fn holds_work(fixture: &FixtureManager, id: &str) -> bool {
+        fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
+            .background_work
+            .contains(id)
+    }
+
+    /// The child is finished, or the session already left memory because it
+    /// suspended; the assertion after the wait tells the two apart.
+    fn child_finished(fixture: &FixtureManager, child: &str) -> bool {
+        fixture.manager.sessions.lock().unwrap().get(&fixture.owned_id).map_or(true, |session| {
+            session.claude_children.get(child).is_some_and(|child| child.state == "finished")
+        })
+    }
+
+    // A sub-agent can finish while a shell it started keeps running. Claude Code
+    // reports idle then, and wakes the sub-agent and the parent when the shell
+    // ends; the runtime has to outlive both.
+    #[tokio::test(flavor = "current_thread")]
+    async fn child_owned_shell_keeps_runtime_until_the_wake_idle() {
+        let (fixture, _) =
+            feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        feed(
+            &fixture,
+            &[
+                claude_state("running"),
+                child_spawned("agent-a"),
+                async_task("agent-a", "shell-1", None),
+                child_state("agent-a", "completed"),
+                claude_state("idle"),
+            ],
+        );
+        wait_until(|| child_finished(&fixture, "agent-a")).await;
+        settle().await;
+        assert!(!suspended(&fixture), "the sub-agent's shell still runs");
+        assert!(holds_work(&fixture, "background-task:shell-1"));
+        feed(
+            &fixture,
+            &[
+                async_task("agent-a", "shell-1", Some("completed")),
+                child_spawned("agent-a:generation:2"),
+                child_state("agent-a:generation:2", "completed"),
+            ],
+        );
+        wait_until(|| child_finished(&fixture, "agent-a:generation:2")).await;
+        settle().await;
+        assert!(!suspended(&fixture), "Claude Code still owes the parent its report");
+        feed(&fixture, &[claude_state("running"), claude_state("idle")]);
+        wait_until(|| suspended(&fixture)).await;
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn root_shell_end_while_idle_waits_for_the_wake() {
+        let (fixture, _) =
+            feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        feed(
+            &fixture,
+            &[
+                claude_state("running"),
+                async_task("new-session", "shell-1", None),
+                claude_state("idle"),
+            ],
+        );
+        wait_until(|| holds_work(&fixture, "background-task:shell-1")).await;
+        settle().await;
+        assert!(!suspended(&fixture), "the shell still runs");
+        feed(&fixture, &[async_task("new-session", "shell-1", Some("completed"))]);
+        settle().await;
+        assert!(!suspended(&fixture), "Claude Code still owes the report of the shell");
+        feed(&fixture, &[claude_state("running"), claude_state("idle")]);
+        wait_until(|| suspended(&fixture)).await;
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_background_task_end_owes_no_wake() {
+        let (fixture, _) =
+            feed_fixture("suspend_codex_feed", AgentConversationProvider::Codex).await;
+        feed(
+            &fixture,
+            &[
+                claude_state("running"),
+                async_task("new-session", "task-1", None),
+            ],
+        );
+        wait_until(|| holds_work(&fixture, "background-task:task-1")).await;
+        feed(&fixture, &[async_task("new-session", "task-1", Some("completed"))]);
+        wait_until(|| suspended(&fixture)).await;
         finish(fixture).await;
     }
 
