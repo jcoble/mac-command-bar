@@ -595,6 +595,7 @@ mod tests {
                 title: None,
                 title_source: None,
                 project: None,
+                project_id: None,
                 state: "idle".to_owned(),
                 suspended: false,
                 created_at_ms: 1_000,

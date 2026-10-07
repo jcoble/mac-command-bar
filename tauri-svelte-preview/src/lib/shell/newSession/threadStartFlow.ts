@@ -45,6 +45,8 @@ export type ThreadStartPickerState = {
   model: string;
   effort: string;
   access: string;
+  /** The registry project, or null for "No project". */
+  projectId: string | null;
   projectPath: string;
   cwd: string;
   branch: string;
@@ -67,6 +69,7 @@ export type ThreadStartRequest = {
   model: string | null;
   reasoningEffort: string | null;
   approvalPolicy: string | null;
+  projectId: string | null;
   projectPath: string | null;
   cwd: string;
   branch: string;
@@ -77,11 +80,6 @@ export type ThreadStartRequest = {
 export type ThreadStartGitRef = {
   name: string;
   checkoutPath: string | null;
-};
-
-export type ThreadStartProject = {
-  path: string;
-  name: string;
 };
 
 const PROVIDER_ORDER: readonly ThreadStartProvider[] = ['codex', 'claude', 'antigravity'];
@@ -160,18 +158,6 @@ function tidy(value: string | null | undefined): string {
 
 function unique(values: readonly string[]): string[] {
   return [...new Set(values.map(tidy).filter(Boolean))];
-}
-
-export function deriveThreadStartProjects(paths: readonly string[]): ThreadStartProject[] {
-  return unique(paths)
-    .filter((path) => path.startsWith('/'))
-    .map((path) => ({
-      path: path === '/' ? path : path.replace(/\/+$/, ''),
-      name: path.split('/').filter(Boolean).at(-1) ?? path
-    }))
-    .filter((project, index, projects) =>
-      projects.findIndex((candidate) => candidate.path === project.path) === index
-    );
 }
 
 export function filterThreadStartGitRefs<T extends Pick<ThreadStartGitRef, 'name'>>(
@@ -280,6 +266,7 @@ function firstConfiguredModel(
 
 /** The values painted when the pane first opens. No session is created here. */
 export function defaultThreadStartState(input: {
+  projectId?: string | null;
   projectPath: string;
   cwd?: string;
   branch?: string;
@@ -305,6 +292,7 @@ export function defaultThreadStartState(input: {
       || (hasLiveCatalog ? (effortChoices[0] ?? '') : FALLBACK_EFFORTS[provider]),
     access: choiceAmong(config?.approvalPolicy, accessChoices)
       || (hasLiveCatalog ? (accessChoices[0] ?? '') : FALLBACK_ACCESS[provider]),
+    projectId: input.projectId ?? null,
     projectPath: tidy(input.projectPath),
     cwd: tidy(input.cwd) || tidy(input.projectPath),
     branch: tidy(input.branch),
@@ -407,6 +395,7 @@ export function buildThreadStartRequest(
     // approval control, and a session asked to change one refuses the message
     // that carried the request.
     approvalPolicy: state.provider === 'antigravity' ? null : (tidy(state.access) || null),
+    projectId: state.projectId ?? null,
     projectPath: tidy(state.projectPath) || null,
     cwd: tidy(state.cwd),
     branch: tidy(state.branch),

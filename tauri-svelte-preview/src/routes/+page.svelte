@@ -525,8 +525,7 @@
 		{/if}
 		{#if selection.newSession.draftOpen}
 			<DraftSessionSurface
-				sessionRoots={selection.newSession.sessionRoots}
-				presetProjectPath={selection.newSession.draftProjectPath}
+				presetProjectId={selection.newSession.draftProjectId}
 				stopSignal={selection.newSession.stopSignal}
 				onSend={startNewSession}
 				onClose={() => selection.newSession.close()}

@@ -51,7 +51,6 @@ for (const call of [
   'listGitRefs(projectPath)',
   'deployRemoteAssemblyFromTauri(remoteProfile)',
   'pickProjectFolder()',
-  'initProjectRepository(draft.projectPath)',
   'loadRefs(draft.projectPath)',
   'onSend(request)',
   'hydrate()',

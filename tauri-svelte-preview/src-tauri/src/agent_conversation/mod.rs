@@ -299,6 +299,47 @@ pub async fn write_assembly_setting(
     command_result(manager.write_app_setting(&setting_key, &value_json))
 }
 
+fn project_record(row: mcb_core::session_store::ProjectRow) -> protocol::ProjectRecord {
+    protocol::ProjectRecord {
+        id: row.id,
+        machine: row.machine,
+        root_path: row.root_path,
+        title: row.title,
+        repo_key: row.repo_key,
+        created_at_ms: row.created_at_ms,
+    }
+}
+
+#[tauri::command]
+pub async fn list_projects(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+) -> Result<Vec<protocol::ProjectRecord>, String> {
+    Ok(manager.list_projects()?.into_iter().map(project_record).collect())
+}
+
+#[tauri::command]
+/// Inspects the folder on the machine that owns it, then registers it. Adding
+/// the same folder again returns the project already registered.
+pub async fn add_project(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    machine: String,
+    path: String,
+) -> Result<protocol::ProjectRecord, String> {
+    let inspection: crate::project_folders::ProjectFolderInspection = if machine == "local" {
+        tauri::async_runtime::spawn_blocking(move || crate::project_folders::inspect_project_folder_sync(&path))
+            .await
+            .map_err(|error| error.to_string())??
+    } else {
+        let value = remote
+            .workspace_operation(&machine, "inspect_project_folder".into(), serde_json::json!({ "path": path }))
+            .await?;
+        serde_json::from_value(value).map_err(|error| error.to_string())?
+    };
+    let row = crate::project_folders::new_project_row(machine, inspection);
+    Ok(project_record(manager.add_project(row)?))
+}
+
 #[tauri::command]
 pub async fn read_assembly_setting(
     manager: tauri::State<'_, AgentRuntimeManager>,

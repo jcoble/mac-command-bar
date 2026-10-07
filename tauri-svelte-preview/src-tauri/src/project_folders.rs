@@ -1,0 +1,322 @@
+//! Folders that become projects: inspecting one, listing a machine's folders,
+//! and the one-time import of the project roots saved by older versions.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use mcb_core::session_store::ProjectRow;
+use serde::{Deserialize, Serialize};
+
+use crate::agent_conversation::manager::AgentRuntimeManager;
+
+/// Settings written by versions before the project registry. Read once by
+/// `import_saved_project_roots`, then deleted.
+const SAVED_ROOTS_KEY: &str = "new-session.custom-project-roots";
+const LAST_ROOT_KEY: &str = "new-session.last-project-root";
+const MAX_LISTED_FOLDERS: usize = 500;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProjectFolderInspection {
+    pub root_path: String,
+    pub title: String,
+    pub repo_key: String,
+    pub is_git: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct FolderListing {
+    pub path: String,
+    pub directories: Vec<String>,
+    pub truncated: bool,
+}
+
+/// Turns `~`, `~/x` and an empty path into paths under `$HOME`.
+fn expand_home(path: &str) -> Result<PathBuf, String> {
+    if path.is_empty() || path == "~" || path.starts_with("~/") {
+        let home = std::env::var("HOME").map_err(|_| "The home folder is unavailable.".to_string())?;
+        return Ok(PathBuf::from(home).join(path.strip_prefix('~').unwrap_or("").trim_start_matches('/')));
+    }
+    Ok(PathBuf::from(path))
+}
+
+fn git_text(dir: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
+    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// Checks a folder before it becomes a project. Reads only; never runs `git init`.
+pub(crate) fn inspect_project_folder_sync(path: &str) -> Result<ProjectFolderInspection, String> {
+    let canonical = std::fs::canonicalize(expand_home(path)?)
+        .map_err(|_| "That folder does not exist.".to_string())?;
+    if !canonical.is_dir() {
+        return Err("That path is a file. Choose a folder.".into());
+    }
+    if git_text(&canonical, &["rev-parse", "--is-inside-git-dir"]).as_deref() == Some("true") {
+        return Err("This is git's internal folder. Choose the repository folder instead.".into());
+    }
+    let root_path = canonical.to_string_lossy().into_owned();
+    let folder_name = canonical
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| root_path.clone());
+    let Some(top) = git_text(&canonical, &["rev-parse", "--show-toplevel"]) else {
+        return Ok(ProjectFolderInspection { root_path, title: folder_name, repo_key: String::new(), is_git: false });
+    };
+    if top != root_path {
+        return Err(format!("This folder is inside the repository at {top}. Choose that folder instead."));
+    }
+    let url = git_text(&canonical, &["config", "--get", "remote.upstream.url"])
+        .or_else(|| git_text(&canonical, &["config", "--get", "remote.origin.url"]))
+        .unwrap_or_default();
+    let repo_key = normalize_repo_key(&url);
+    let title = match repo_key.rsplit('/').next() {
+        Some(last) if !repo_key.is_empty() => last.to_owned(),
+        _ => folder_name,
+    };
+    Ok(ProjectFolderInspection { root_path, title, repo_key, is_git: true })
+}
+
+/// `host/owner/repo` for https, ssh and `user@host:path` remote URLs; `''` otherwise.
+pub(crate) fn normalize_repo_key(url: &str) -> String {
+    let url = url.trim();
+    let (host, path) = if let Some(rest) = url.strip_prefix("https://").or_else(|| url.strip_prefix("ssh://")) {
+        let Some((authority, path)) = rest.split_once('/') else { return String::new() };
+        let host = authority.rsplit('@').next().unwrap_or("");
+        (host.split(':').next().unwrap_or(""), path)
+    } else if let Some((user_host, path)) = url.split_once(':').filter(|(left, _)| left.contains('@') && !left.contains('/')) {
+        (user_host.rsplit('@').next().unwrap_or(""), path)
+    } else {
+        return String::new();
+    };
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path).trim_end_matches('/');
+    if host.is_empty() || path.is_empty() {
+        return String::new();
+    }
+    format!("{}/{path}", host.to_lowercase())
+}
+
+/// The folders directly inside `path`, sorted, at most 500.
+pub(crate) fn list_folders_sync(path: &str) -> Result<FolderListing, String> {
+    let requested = expand_home(path)?;
+    if !requested.is_absolute() {
+        return Err("Folder path must be absolute".into());
+    }
+    let root = std::fs::canonicalize(requested).map_err(|e| e.to_string())?;
+    let mut directories = Vec::new();
+    for entry in std::fs::read_dir(&root).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.path().is_dir() { directories.push(entry.file_name().to_string_lossy().into_owned()); }
+        if directories.len() > MAX_LISTED_FOLDERS { break; }
+    }
+    let truncated = directories.len() > MAX_LISTED_FOLDERS;
+    directories.truncate(MAX_LISTED_FOLDERS);
+    directories.sort();
+    Ok(FolderListing { path: root.to_string_lossy().into_owned(), directories, truncated })
+}
+
+#[tauri::command]
+pub(crate) async fn list_folders(path: String) -> Result<FolderListing, String> {
+    tauri::async_runtime::spawn_blocking(move || list_folders_sync(&path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+pub(crate) fn new_project_row(machine: String, inspection: ProjectFolderInspection) -> ProjectRow {
+    ProjectRow {
+        id: uuid::Uuid::new_v4().to_string(),
+        machine,
+        root_path: inspection.root_path,
+        title: inspection.title,
+        repo_key: inspection.repo_key,
+        created_at_ms: chrono::Utc::now().timestamp_millis(),
+    }
+}
+
+/// Turns the project roots saved by older versions into local projects, then
+/// deletes the old settings so this runs once.
+pub(crate) fn import_saved_project_roots(manager: &AgentRuntimeManager) -> Result<(), String> {
+    let Some(saved) = manager.read_app_setting(SAVED_ROOTS_KEY)? else {
+        return Ok(());
+    };
+    let entries = serde_json::from_str::<serde_json::Value>(&saved).unwrap_or_default();
+    for path in entries.as_array().into_iter().flatten().filter_map(|entry| entry.get("path")?.as_str()) {
+        if !path.starts_with('/') {
+            continue;
+        }
+        match inspect_project_folder_sync(path) {
+            Ok(inspection) => {
+                manager.add_project(new_project_row("local".into(), inspection))?;
+            }
+            Err(reason) => crate::debug_log::stderr_log!("skipped saved project root {path}: {reason}"),
+        }
+    }
+    for key in [SAVED_ROOTS_KEY, LAST_ROOT_KEY] {
+        manager.store().delete_app_setting(key).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    const GIT_INTERNAL: &str = "This is git's internal folder. Choose the repository folder instead.";
+
+    fn temp_dir() -> PathBuf {
+        let path = std::env::temp_dir().join(format!("assembly-projects-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::canonicalize(path).unwrap()
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let output = Command::new("git").args(args).current_dir(dir).output().unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    fn text(path: &Path) -> &str {
+        path.to_str().unwrap()
+    }
+
+    #[test]
+    fn inspect_refuses_git_internal_folders() {
+        let root = temp_dir();
+        let repo = root.join("repo");
+        let bare = root.join("bare.git");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        git(&root, &["init", "--bare", text(&bare)]);
+        for folder in [repo.join(".git"), repo.join(".git/refs"), bare] {
+            assert_eq!(inspect_project_folder_sync(text(&folder)).unwrap_err(), GIT_INTERNAL, "{folder:?}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inspect_refuses_a_subfolder_of_a_repository() {
+        let repo = temp_dir();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        let error = inspect_project_folder_sync(text(&repo.join("src"))).unwrap_err();
+        assert_eq!(
+            error,
+            format!("This folder is inside the repository at {}. Choose that folder instead.", repo.display())
+        );
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[test]
+    fn inspect_accepts_a_plain_folder_without_creating_git() {
+        let root = temp_dir();
+        let folder = root.join("notes");
+        std::fs::create_dir_all(&folder).unwrap();
+        let inspection = inspect_project_folder_sync(text(&folder)).unwrap();
+        assert_eq!(
+            inspection,
+            ProjectFolderInspection {
+                root_path: text(&folder).to_owned(),
+                title: "notes".to_owned(),
+                repo_key: String::new(),
+                is_git: false,
+            }
+        );
+        assert!(!folder.join(".git").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inspect_reads_title_and_repo_key_from_upstream_then_origin() {
+        let root = temp_dir();
+        let repo = root.join("main");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["remote", "add", "origin", "git@github.com:jcoble/Mac-Command-Bar.git"]);
+        let inspection = inspect_project_folder_sync(&format!("{}/", text(&repo))).unwrap();
+        assert_eq!(inspection.root_path, text(&repo));
+        assert_eq!(inspection.title, "Mac-Command-Bar");
+        assert_eq!(inspection.repo_key, "github.com/jcoble/Mac-Command-Bar");
+        assert!(inspection.is_git);
+        git(&repo, &["remote", "add", "upstream", "https://github.com/other/x"]);
+        let inspection = inspect_project_folder_sync(text(&repo)).unwrap();
+        assert_eq!(inspection.repo_key, "github.com/other/x");
+        assert_eq!(inspection.title, "x");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn normalize_repo_key_handles_https_ssh_and_scp() {
+        for (url, expected) in [
+            ("https://user@GitHub.com/a/b.git", "github.com/a/b"),
+            ("ssh://git@github.com:22/a/b", "github.com/a/b"),
+            ("git@github.com:a/b.git", "github.com/a/b"),
+            ("/srv/repo.git", ""),
+            ("", ""),
+        ] {
+            assert_eq!(normalize_repo_key(url), expected, "{url}");
+        }
+    }
+
+    #[test]
+    fn list_folders_expands_home_and_lists_only_directories() {
+        let home = temp_dir();
+        std::fs::create_dir_all(home.join("zeta")).unwrap();
+        std::fs::create_dir_all(home.join("alpha")).unwrap();
+        std::fs::write(home.join("file.txt"), "not a folder").unwrap();
+        let previous = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
+        let listed = list_folders_sync("~");
+        let nested = list_folders_sync("~/alpha");
+        match previous {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        assert_eq!(
+            listed.unwrap(),
+            FolderListing {
+                path: text(&home).to_owned(),
+                directories: vec!["alpha".to_owned(), "zeta".to_owned()],
+                truncated: false,
+            }
+        );
+        assert_eq!(nested.unwrap().path, text(&home.join("alpha")));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn import_saved_project_roots_adds_valid_folders_and_deletes_the_keys() {
+        let root = temp_dir();
+        let repo = root.join("repo");
+        let plain = root.join("plain");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        let manager = crate::agent_conversation::manager::AgentRuntimeManager::new(
+            crate::agent_conversation::providers::ProviderRegistry::default(),
+        );
+        let saved = serde_json::json!([
+            { "id": "a", "name": "Repo", "path": text(&repo) },
+            { "id": "b", "name": "Plain", "path": text(&plain) },
+            { "id": "c", "name": "Missing", "path": text(&root.join("missing")) },
+            { "id": "d", "name": "Relative", "path": "relative/folder" },
+        ]);
+        manager.write_app_setting(SAVED_ROOTS_KEY, &saved.to_string()).unwrap();
+        manager.write_app_setting(LAST_ROOT_KEY, "\"/somewhere\"").unwrap();
+
+        import_saved_project_roots(&manager).unwrap();
+        let projects = manager.list_projects().unwrap();
+        let mut paths: Vec<_> = projects.iter().map(|project| project.root_path.clone()).collect();
+        paths.sort();
+        assert_eq!(paths, vec![text(&plain).to_owned(), text(&repo).to_owned()]);
+        assert!(projects.iter().all(|project| project.machine == "local"));
+        assert_eq!(manager.read_app_setting(SAVED_ROOTS_KEY).unwrap(), None);
+        assert_eq!(manager.read_app_setting(LAST_ROOT_KEY).unwrap(), None);
+
+        import_saved_project_roots(&manager).unwrap();
+        assert_eq!(manager.list_projects().unwrap(), projects);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

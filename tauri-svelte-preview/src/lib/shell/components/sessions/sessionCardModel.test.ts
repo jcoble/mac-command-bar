@@ -25,6 +25,7 @@ function session(overrides: Partial<OwnedSession> = {}): OwnedSession {
     source: 'scanned',
     title: 'A session',
     projectPath: '/Users/someone/dev/work/mac-command-bar',
+    projectId: null,
     cwd: '/Users/someone/dev/work/mac-command-bar',
     resumeCommand: null,
     nativeSessionId: null,

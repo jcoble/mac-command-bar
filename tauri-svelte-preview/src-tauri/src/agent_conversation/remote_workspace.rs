@@ -18,13 +18,16 @@ fn json(value: impl Serialize) -> Result<Value, String> {
     serde_json::to_value(value).map_err(|error| error.to_string())
 }
 
-pub(super) async fn execute(operation: String, mut args: Value) -> Result<Value, String> {
-    if operation == "list_remote_directories" {
+pub(super) async fn execute(operation: String, args: Value) -> Result<Value, String> {
+    // Both accept `~`, so they run before the absolute-path check below.
+    if operation == "list_folders" || operation == "inspect_project_folder" {
         let requested: String = arg(&args, "path")?;
-        if requested == "~" || requested.starts_with("~/") || requested.is_empty() {
-            let home = std::env::var("HOME").map_err(|_| "Remote home is unavailable")?;
-            args["path"] = Value::String(format!("{home}/{}", requested.strip_prefix("~/").unwrap_or("")));
-        }
+        return tokio::task::spawn_blocking(move || match operation.as_str() {
+            "list_folders" => json(crate::project_folders::list_folders_sync(&requested)?),
+            _ => json(crate::project_folders::inspect_project_folder_sync(&requested)?),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
     }
     for key in ["root", "path", "directory", "source", "target"] {
         if args.get(key).is_some() { path(&args, key)?; }
@@ -55,14 +58,6 @@ pub(super) async fn execute(operation: String, mut args: Value) -> Result<Value,
         "list_project_worktrees" => return json(git::list_project_worktrees(arg(&args, "root")?).await?),
         "list_repository_checkouts" => return json(git::list_repository_checkouts(arg(&args, "roots")?).await?),
         "list_project_git_refs" => return json(git::list_project_git_refs(arg(&args, "root")?).await?),
-        "init_project_repository" => {
-            let root = path(&args, "root")?;
-            git::init_project_repository(root.to_string_lossy().into_owned()).await?;
-            if !root.join(".git").exists() {
-                return Err("The new folder is inside an existing Git repository; choose another parent folder.".into());
-            }
-            return json(());
-        }
         "remove_project_worktree" => return json(git::remove_project_worktree(arg(&args, "root")?, arg(&args, "path")?, arg(&args, "force")?).await?),
         "archive_project_worktree" => return json(git::archive_project_worktree(arg(&args, "root")?, arg(&args, "path")?).await?),
         // Hosted PR commands run gh here, with the same stale-head guards as the Mac.
@@ -77,19 +72,6 @@ pub(super) async fn execute(operation: String, mut args: Value) -> Result<Value,
     tokio::task::spawn_blocking(move || {
         let cancellation = crate::SourceScanCancellation::until(std::time::Instant::now() + std::time::Duration::from_secs(14));
         match operation.as_str() {
-            "list_remote_directories" => {
-                let root = std::fs::canonicalize(path(&args, "path")?).map_err(|e| e.to_string())?;
-                let mut directories = Vec::new();
-                for entry in std::fs::read_dir(&root).map_err(|e| e.to_string())? {
-                    let entry = entry.map_err(|e| e.to_string())?;
-                    if entry.path().is_dir() { directories.push(entry.file_name().to_string_lossy().into_owned()); }
-                    if directories.len() > 500 { break; }
-                }
-                let truncated = directories.len() > 500;
-                directories.truncate(500);
-                directories.sort();
-                json(serde_json::json!({"path": root, "directories": directories, "truncated": truncated}))
-            }
             "validate_project_root" => json(crate::validate_project_root_sync_while(path(&args, "path")?, || cancellation.ensure_active().is_ok())),
             "list_source_directory" => json(crate::list_source_directory_sync_with_cancellation(path(&args, "root")?, path(&args, "directory")?, arg::<Option<bool>>(&args, "includeExcluded")?.unwrap_or(false), cancellation)?),
             "list_source_files" => json(crate::list_source_files_sync_with_cancellation(path(&args, "root")?, arg::<Option<usize>>(&args, "limit")?.unwrap_or(crate::DEFAULT_SOURCE_LIST_LIMIT), arg(&args, "query")?, cancellation)?),
@@ -148,6 +130,11 @@ mod tests {
     async fn remote_workspace_reads_writes_and_git_use_requested_root() {
         let root = std::env::temp_dir().join(format!("assembly-workspace-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
         let file = root.join("hello.txt");
         let run = async {
             execute("workspace_write_text".into(), serde_json::json!({"path": file, "content": "remote content"})).await.unwrap();
@@ -161,8 +148,6 @@ mod tests {
             assert_eq!(saved["content"], "updated remote content");
             let listing = execute("list_source_directory".into(), serde_json::json!({"root": root, "directory": root})).await.unwrap();
             assert!(listing.as_array().unwrap().iter().any(|entry| entry["path"] == file.to_string_lossy().as_ref()));
-            execute("init_project_repository".into(), serde_json::json!({"root": root})).await.unwrap();
-            assert!(root.join(".git").is_dir());
             let status = execute("project_git_status".into(), serde_json::json!({"root": root})).await.unwrap();
             assert!(status.to_string().contains("hello.txt"));
         };
@@ -173,23 +158,6 @@ mod tests {
     async fn unsupported_and_relative_workspace_requests_are_rejected() {
         assert!(execute("run_terminal_command".into(), serde_json::json!({"root": "/tmp"})).await.unwrap_err().contains("not available"));
         assert!(execute("workspace_write_text".into(), serde_json::json!({"path": "relative", "content": "no"})).await.unwrap_err().contains("absolute"));
-    }
-    #[tokio::test]
-    async fn remote_project_init_reports_inherited_repository_instead_of_success() {
-        let root = std::env::temp_dir().join(format!("assembly-workspace-{}", uuid::Uuid::new_v4()));
-        let nested = root.join("nested-project");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::process::Command::new("git")
-            .args(["init", "-b", "main"])
-            .current_dir(&root)
-            .output()
-            .unwrap();
-        let error = execute("init_project_repository".into(), serde_json::json!({"root": nested}))
-            .await
-            .unwrap_err();
-        assert!(error.contains("inside an existing Git repository"));
-        assert!(!nested.join(".git").exists());
-        std::fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test]
     async fn github_requests_reach_the_hosted_pr_validation() {

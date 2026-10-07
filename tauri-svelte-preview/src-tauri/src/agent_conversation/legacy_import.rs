@@ -71,6 +71,7 @@ pub fn import_if_store_empty(store: &SessionStore, directory: &Path) -> Result<u
                 title: optional_string(value, &["title"]),
                 title_source: None,
                 project: optional_string(value, &["project", "projectName"]),
+                project_id: None,
                 state: state.to_string(),
                 suspended: state == "suspended",
                 created_at_ms: now,

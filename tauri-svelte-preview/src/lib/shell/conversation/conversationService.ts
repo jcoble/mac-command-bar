@@ -1134,6 +1134,8 @@ export async function ensureStructuredConversation(input: {
   nativeSessionId?: string | null;
   nativeSessionMode?: 'resume' | 'load';
   reasoningEffort?: string | null;
+  /** The registry project; the backend records it once, on the first ensure. */
+  projectId?: string | null;
   signal?: AbortSignal;
 }): Promise<AgentConversationConnection | null> {
   if (input.signal?.aborted) return null;
@@ -1177,6 +1179,7 @@ async function ensureStructuredConversationOnce(
     nativeSessionId?: string | null;
     nativeSessionMode: 'resume' | 'load';
     reasoningEffort?: string | null;
+    projectId?: string | null;
   },
   token: object,
   signal: AbortSignal
@@ -1294,6 +1297,7 @@ export async function sendStructuredMessage(
         cwd: owned.cwd,
         nativeSessionId: owned.nativeSessionId,
         nativeSessionMode,
+        projectId: owned.projectId,
         reasoningEffort: startConfig
           ? startConfig.reasoningEffort
           : state.agentConfig.reasoningEffort

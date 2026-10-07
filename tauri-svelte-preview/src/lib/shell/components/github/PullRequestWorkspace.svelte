@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { hydrate, knownRoots } from '$lib/shell/newSession/projectRootsStore.svelte';
+  import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
   import { parseRemoteWorkspacePath, sessionWorkspaceRoot } from '$lib/workspacePaths';
   import {
@@ -70,7 +70,7 @@
   let detailGeneration = 0;
   let fileGeneration = 0;
 
-  const roots = $derived(knownRoots());
+  const roots = $derived(projectRegistry.projects.filter((project) => project.machine === 'local'));
   // Remote projects come from the rail's sessions; each one is searched on its own machine.
   const remoteRoots = $derived([...new Set(rail.owned.filter((session) => session.executionEnvironment === 'remote').map(sessionWorkspaceRoot).filter(Boolean))]);
   const selectedFile = $derived(detail?.files.find((file) => file.path === selectedFilePath) ?? null);
@@ -213,9 +213,9 @@
     loading = true;
     error = null;
     try {
-      await hydrate();
+      await hydrateProjects();
       const page = await listGithubPullRequestsFromTauri({
-        roots: parseRemoteWorkspacePath(projectFilter) ? [projectFilter] : knownRoots().map((root) => root.path),
+        roots: parseRemoteWorkspacePath(projectFilter) ? [projectFilter] : roots.map((root) => root.rootPath),
         mode,
         projectFilter: projectFilter || null,
         search: search || null,
@@ -441,7 +441,7 @@
     <form onsubmit={applySearch}><input aria-label="Search pull requests" placeholder="Search pull requests" bind:value={searchInput}><button type="submit">Search</button></form>
     <select aria-label="Filter by project" bind:value={projectFilter} onchange={() => void load(true)}>
       <option value="">All local projects</option>
-      {#each roots as root (root.path)}<option value={root.path}>{root.name}</option>{/each}
+      {#each roots as root (root.id)}<option value={root.rootPath}>{root.title}</option>{/each}
       {#each remoteRoots as root (root)}<option value={root}>{root.split('/').filter(Boolean).at(-1)} (remote)</option>{/each}
     </select>
     {#if error}<p class="notice error" role="alert">{error}</p>{/if}

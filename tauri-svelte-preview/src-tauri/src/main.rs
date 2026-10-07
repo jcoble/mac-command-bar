@@ -51,6 +51,7 @@ mod notion_oauth;
 mod notion_tasks;
 mod orchestration;
 mod product_identity;
+mod project_folders;
 mod projection_streams;
 mod resources;
 mod resources_disk;
@@ -2986,43 +2987,6 @@ pub(crate) fn list_project_git_refs_sync(root: PathBuf) -> Result<Vec<ProjectGit
     Ok(classify_project_git_refs(refs, current.trim(), &checkouts))
 }
 
-pub(crate) fn init_project_repository_sync(root: PathBuf) -> Result<(), String> {
-    if root.to_string_lossy().trim().is_empty() {
-        return Err("Choose a project folder first.".to_string());
-    }
-    if !root.exists() {
-        return Err("That project folder does not exist.".to_string());
-    }
-    if !root.is_dir() {
-        return Err("That project path is not a folder.".to_string());
-    }
-    if run_git_text(&root, &["rev-parse", "--is-inside-work-tree"])
-        .is_ok_and(|inside| inside.trim() == "true")
-    {
-        return Ok(());
-    }
-
-    let init = Command::new("git")
-        .current_dir(&root)
-        .args(["init", "-b", "main"])
-        .output()
-        .map_err(|error| format!("Git could not be started: {error}"))?;
-    if !init.status.success() {
-        return Err(String::from_utf8_lossy(&init.stderr).into_owned());
-    }
-
-    let commit = Command::new("git")
-        .current_dir(&root)
-        .args(["commit", "--allow-empty", "-m", "Initial commit"])
-        .output()
-        .map_err(|error| format!("Git could not be started: {error}"))?;
-    if !commit.status.success() {
-        return Err(String::from_utf8_lossy(&commit.stderr).into_owned());
-    }
-
-    Ok(())
-}
-
 /// `force = false` is the everyday remove: it refuses anything that would lose work.
 /// `force = true` is the "I know, delete it anyway" remove: it unlocks the worktree if
 /// it is locked, deletes it even when files are uncommitted or commits are unmerged, and
@@ -5352,6 +5316,7 @@ fn main() {
                 })?,
                 &session_db_path,
             )?;
+            project_folders::import_saved_project_roots(&agent_runtime)?;
             if let Some(settings) = agent_runtime.read_app_setting(LANGUAGE_SERVER_SETTINGS_KEY)? {
                 lsp::restore_language_server_settings(&settings)?;
             }
@@ -5568,7 +5533,6 @@ fn main() {
             list_project_worktrees,
             list_repository_checkouts,
             list_project_git_refs,
-            init_project_repository,
             remove_project_worktree,
             archive_project_worktree,
             list_git_repository_summaries,
@@ -5650,6 +5614,9 @@ fn main() {
             agent_conversation::clear_agent_conversation_workspace_tabs,
             agent_conversation::write_assembly_setting,
             agent_conversation::read_assembly_setting,
+            agent_conversation::list_projects,
+            agent_conversation::add_project,
+            project_folders::list_folders,
             agent_conversation::respond_agent_conversation_approval,
             agent_conversation::respond_agent_conversation_permission,
             agent_conversation::respond_agent_conversation_input,
@@ -5810,56 +5777,6 @@ mod tests {
         assert_eq!(classified.len(), 500);
         assert!(classified[0].is_default);
         assert!(classified[0].is_current);
-    }
-
-    #[test]
-    fn a_plain_folder_becomes_a_repository_on_main() {
-        let root = unique_temp_root();
-        std::fs::create_dir_all(&root).unwrap();
-
-        with_test_git_identity(|| init_project_repository_sync(root.clone())).unwrap();
-
-        assert!(root.join(".git").exists());
-        assert_eq!(
-            git_text_for_test(&root, &["rev-parse", "--abbrev-ref", "HEAD"]),
-            "main"
-        );
-        assert_eq!(
-            git_text_for_test(&root, &["rev-list", "--count", "HEAD"]),
-            "1"
-        );
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn an_existing_repository_is_left_alone() {
-        let root = unique_temp_root();
-        std::fs::create_dir_all(&root).unwrap();
-
-        with_test_git_identity(|| init_project_repository_sync(root.clone())).unwrap();
-        init_project_repository_sync(root.clone()).unwrap();
-
-        assert_eq!(
-            git_text_for_test(&root, &["rev-list", "--count", "HEAD"]),
-            "1"
-        );
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn a_project_folder_inside_an_existing_repository_is_left_alone() {
-        let root = unique_temp_root();
-        let nested = root.join("nested-project");
-        std::fs::create_dir_all(&nested).unwrap();
-
-        with_test_git_identity(|| init_project_repository_sync(root.clone())).unwrap();
-        init_project_repository_sync(nested.clone()).unwrap();
-
-        assert!(!nested.join(".git").exists());
-
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -9124,50 +9041,5 @@ mod tests {
             "git {args:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-    }
-
-    fn git_text_for_test(root: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(args)
-            .output()
-            .unwrap_or_else(|error| panic!("could not run git {args:?}: {error}"));
-        assert!(
-            output.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    }
-
-    fn with_test_git_identity<T>(action: impl FnOnce() -> T) -> T {
-        static GIT_TEMPLATE_LOCK: Mutex<()> = Mutex::new(());
-        let _guard = GIT_TEMPLATE_LOCK.lock().unwrap();
-        let template = unique_temp_root();
-        std::fs::create_dir_all(&template).unwrap();
-        for (key, value) in [
-            ("user.name", "Test User"),
-            ("user.email", "test@example.invalid"),
-        ] {
-            let output = Command::new("git")
-                .args(["config", "--file"])
-                .arg(template.join("config"))
-                .args([key, value])
-                .output()
-                .unwrap();
-            assert!(output.status.success());
-        }
-
-        let previous = std::env::var_os("GIT_TEMPLATE_DIR");
-        std::env::set_var("GIT_TEMPLATE_DIR", &template);
-        let result = action();
-        if let Some(previous) = previous {
-            std::env::set_var("GIT_TEMPLATE_DIR", previous);
-        } else {
-            std::env::remove_var("GIT_TEMPLATE_DIR");
-        }
-        std::fs::remove_dir_all(template).unwrap();
-        result
     }
 }

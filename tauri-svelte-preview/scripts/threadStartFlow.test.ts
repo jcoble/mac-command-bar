@@ -5,7 +5,6 @@ import {
   buildThreadStartRequest,
   canSelectThreadStartGitRef,
   defaultThreadStartState,
-  deriveThreadStartProjects,
   effortChoicesFor,
   filterThreadStartGitRefs,
   groupProviderModels,
@@ -14,17 +13,24 @@ import {
 } from '../src/lib/shell/newSession/threadStartFlow.ts';
 import { sessionTitleFromPrompt } from '../src/lib/shell/sessionStrip.ts';
 
+// The draft's project travels to the first send.
 {
-  const projects = deriveThreadStartProjects([
-    '/Users/me/dev/alpha/',
-    '/Users/me/dev/beta',
-    '/Users/me/dev/alpha',
-    'relative/path'
-  ]);
-  assert.deepEqual(projects, [
-    { path: '/Users/me/dev/alpha', name: 'alpha' },
-    { path: '/Users/me/dev/beta', name: 'beta' }
-  ]);
+  const state = defaultThreadStartState({
+    projectId: 'project-1',
+    projectPath: '/Users/me/dev/alpha',
+    branch: 'main'
+  });
+  assert.equal(state.projectId, 'project-1');
+  assert.equal(buildThreadStartRequest({ ...state, prompt: 'hello' })?.projectId, 'project-1');
+}
+
+// "No project" starts in the machine's home folder and names no project.
+{
+  const state = defaultThreadStartState({ projectId: null, projectPath: '', cwd: '/home/user' });
+  const request = buildThreadStartRequest({ ...state, prompt: 'hello' });
+  assert.equal(request?.projectId, null);
+  assert.equal(request?.projectPath, null);
+  assert.equal(request?.cwd, '/home/user');
 }
 
 // A current Codex ACP catalog encodes effort in each model id and uses its own
