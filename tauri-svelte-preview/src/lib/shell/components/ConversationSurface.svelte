@@ -710,7 +710,7 @@
         }}
         timelineRevision={conversation.timelineRevision}
         anchorRequest={sendAnchorRequest}
-        activeTurnId={conversation.activeTurnId ?? null}
+        {activeTurnId}
         turnFacts={conversation.selectedTurns}
         {localTurnActive}
         {activityLabel}

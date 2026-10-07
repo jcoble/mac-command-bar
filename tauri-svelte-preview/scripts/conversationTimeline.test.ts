@@ -8,6 +8,8 @@ import {
   formatWorkedFor,
   latestPlan,
   toolFilePath,
+  summarizeToolRun,
+  summarizeCompletedWork,
   turnActivityLabel,
   turnFileChanges,
   USER_MESSAGE_FOLD_LINES,
@@ -786,3 +788,27 @@ console.log('conversationTimeline: turn activity label passed');
 }
 
 console.log('conversationTimeline: journal turn ids passed');
+
+// Real provider names and structured arguments determine file labels and summaries.
+for (const name of ['Read', 'file_read']) {
+  const read = toolWithoutPath(name, 'description');
+  assert.equal(read.toolKind, 'fetch');
+  assert.equal(toolFilePath({ ...read, metadata: { rawInput: '{"file_path":"src/example.ts"}' } }), 'src/example.ts');
+  assert.equal(toolFilePath({ ...read, metadata: { rawInput: '{partial' } }), '');
+  assert.equal(toolFilePath({ ...read, path: 'actual.ts', metadata: { path: 'other.ts' } }), 'actual.ts');
+}
+const unknownTool = { ...toolWithoutPath('mcp__tasks__run_search', 'read and edit a file'), state: 'completed' as const };
+assert.equal(summarizeToolRun([unknownTool]).summary, 'Used a tool');
+assert.equal(summarizeToolRun([unknownTool, { ...unknownTool, itemId: 'other' }]).summary, 'Used tools');
+assert.equal(summarizeCompletedWork([unknownTool]), null);
+const completedRead = { ...readWithPath, state: 'completed' as const };
+assert.equal(summarizeCompletedWork([completedRead, unknownTool]), 'Read a file, used a tool');
+assert.equal(summarizeCompletedWork([completedRead, { ...unknownTool, state: 'failed' }]), null);
+const edit = { ...completedRead, toolKind: 'file-edit' as const };
+assert.equal(summarizeCompletedWork([edit]), 'Edited a file');
+assert.equal(summarizeCompletedWork([{ ...edit, state: 'running' }]), null);
+
+assert.equal(summarizeToolRun([edit, { ...edit, state: 'failed' }]).summary, 'Edited a file, 1 failed call');
+assert.equal(summarizeToolRun([edit, { ...edit, itemId: 'repeat' }]).summary, 'Edited a file');
+assert.equal(summarizeToolRun([{ ...edit, path: undefined, metadata: undefined }, { ...edit, itemId: 'unknown', path: undefined, metadata: undefined }]).summary, 'Edited 2 files');
+assert.equal(summarizeToolRun([{ ...unknownTool, state: 'failed' }, { ...edit, state: 'failed' }]).summary, '2 failed calls');

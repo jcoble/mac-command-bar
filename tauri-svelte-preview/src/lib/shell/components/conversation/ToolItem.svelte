@@ -3,6 +3,7 @@
   import { getContext } from 'svelte';
   import Check from '@lucide/svelte/icons/check';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import FileText from '@lucide/svelte/icons/file-text';
   import CircleDot from '@lucide/svelte/icons/circle-dot';
   import FilePenLine from '@lucide/svelte/icons/file-pen-line';
   import Globe2 from '@lucide/svelte/icons/globe-2';
@@ -12,10 +13,10 @@
   import Wrench from '@lucide/svelte/icons/wrench';
   import X from '@lucide/svelte/icons/x';
   import FileChangeItem from './FileChangeItem.svelte';
-  import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { toolFilePath, type ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import { sanitizeConversationHref } from '$lib/shell/conversation/conversationMessageSafety.ts';
   import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
-  import { highlightCode, languageForPath, plainHighlightedLines, type HighlightedLine } from './codeHighlight.ts';
+  import { highlightCode, languageForPath } from './codeHighlight.ts';
 
   const disclosure = getContext<ConversationDisclosureContext>(conversationDisclosureContext);
 
@@ -24,34 +25,16 @@
     onFileLink?(path: string): void;
   } = $props();
 
-  /**
-   * How much output a row shows before it folds. A result over 20 lines is
-   * past the point where reading it in place is the plan, so the row keeps the
-   * first 12 — enough to see what kind of answer came back — and says how many
-   * it is holding. Below 20 there is nothing worth hiding: a control that folds
-   * six lines away costs more than the six lines.
-   */
-  const OUTPUT_FOLD_OVER_LINES = 20;
-  const OUTPUT_LINES_KEPT = 12;
-
   const input = $derived.by(() => {
     const value = item.metadata?.rawInput ?? (item.toolKind === 'command' ? item.summary : undefined);
     return value == null ? '' : typeof value === 'string' ? value : JSON.stringify(value, null, 2);
   });
   const output = $derived(item.output && item.output !== item.diff ? item.output.trimEnd() : '');
-  const outputLines = $derived(output ? output.split('\n') : []);
-  const foldable = $derived(outputLines.length > OUTPUT_FOLD_OVER_LINES);
-  const outputOpen = $derived(disclosure?.get(`${item.itemId}:output`) ?? false);
   const detailsOpen = $derived(disclosure?.get(`${item.itemId}:details`) ?? false);
-  const shownOutput = $derived(
-    foldable && !outputOpen ? outputLines.slice(0, OUTPUT_LINES_KEPT).join('\n') : output
-  );
-  const hiddenLines = $derived(outputLines.length - OUTPUT_LINES_KEPT);
-  /* Output that is a file — what Read hands back, what Edit shows — is
-     coloured in the file's language. A command's output is whatever it
-     printed and stays as printed. Plain until the editor answers. */
-  const language = $derived(languageForPath(item.path));
-  const shownLines = $derived(highlightCode(shownOutput, language));
+  const filePath = $derived(toolFilePath(item));
+  const fileAction = $derived(item.toolKind === 'file-edit' || (item.toolKind === 'fetch' && !!filePath && !/^https?:/i.test(filePath)));
+  const label = $derived(fileAction ? item.toolKind === 'file-edit' ? 'Edited' : 'Read' : item.title);
+  const shownLines = $derived(detailsOpen ? highlightCode(output, languageForPath(filePath)) : []);
   /* Call arguments remain inspectable even when the tool returns no output. */
   const expandable = $derived(!!(input || output || item.diff));
   const statusLabel = $derived(
@@ -63,10 +46,11 @@
    * first line of output is the fallback when there is no summary.
    */
   const preview = $derived(
-    (item.summary || output.split('\n', 1)[0] || item.path || '').replace(/\s+/g, ' ').trim()
+    fileAction && filePath ? filePath.split(/[\\/]/).pop() ?? filePath
+      : (item.summary || output.split('\n', 1)[0] || '').replace(/\s+/g, ' ').trim()
   );
   const targetUrl = $derived.by(() => {
-    const href = item.path ? sanitizeConversationHref(item.path) : null;
+    const href = filePath ? sanitizeConversationHref(filePath) : null;
     return href && /^https?:/i.test(href) ? href : '';
   });
 
@@ -77,7 +61,7 @@
       text: tool.diff ?? '',
       completed: tool.state === 'completed',
       timestampMs: tool.timestampMs,
-      metadata: { path: tool.path ?? '', diff: tool.diff ?? '' }
+      metadata: { path: toolFilePath(tool), diff: tool.diff ?? '' }
     };
   }
 </script>
@@ -96,18 +80,19 @@
     <span class="tool-icon" aria-hidden="true">
       {#if item.toolKind === 'command'}<Terminal size={14} strokeWidth={1.8} />
       {:else if item.toolKind === 'file-edit'}<FilePenLine size={14} strokeWidth={1.8} />
+      {:else if fileAction}<FileText size={14} strokeWidth={1.8} />
       {:else if item.toolKind === 'search'}<Search size={14} strokeWidth={1.8} />
       {:else if item.toolKind === 'fetch'}<Globe2 size={14} strokeWidth={1.8} />
       {:else}<Wrench size={14} strokeWidth={1.8} />{/if}
     </span>
-    <strong title={item.title}>{item.title}</strong>
+    <strong title={item.title}>{label}</strong>
     {#if preview}
       {#if targetUrl}
         <a class="preview target-link" href={targetUrl} onclick={(event) => { event.stopPropagation(); event.preventDefault(); void openUrlInBrowser({ url: targetUrl }); }}>{preview}</a>
-      {:else if item.path && onFileLink && (item.toolKind === 'file-edit' || item.toolKind === 'fetch')}
-        <button class="preview target-link" type="button" title={item.path} onclick={(event) => { event.stopPropagation(); onFileLink?.(item.path ?? ''); }}>{preview}</button>
+      {:else if fileAction && filePath && onFileLink}
+        <button class="preview target-link" type="button" title={filePath} onclick={(event) => { event.stopPropagation(); onFileLink?.(filePath); }}>{preview}</button>
       {:else}
-        <span class="preview">{preview}</span>
+        <span class="preview" title={fileAction ? filePath : preview}>{preview}</span>
       {/if}
     {/if}
     <!-- How the call ended, as one mark: done, failed, or still owed an answer. -->
@@ -119,8 +104,9 @@
     </span>
   </summary>
 
-  {#if expandable}
-    <div class="tool-body" data-testid="timeline-tool-body">
+  {#if detailsOpen && expandable}
+    <div data-tool-scroll class="tool-body" data-testid="timeline-tool-body">
+      {#if item.metadata?.name}<span>Tool: {item.metadata.name}</span>{/if}
       {#if input}
         <span>Input</span>
         <pre><code>{input}</code></pre>
@@ -128,16 +114,6 @@
       {#if item.diff}<FileChangeItem item={fileDisplayItem(item)} {onFileLink} />{/if}
       {#if output}
         <pre data-testid="timeline-tool-output"><code>{#each shownLines as line, index}{#if index > 0}{'\n'}{/if}{#each line as span}<span class={span.className}>{span.value}</span>{/each}{/each}</code></pre>
-        {#if foldable}
-          <button
-            class="fold-more"
-            data-testid="timeline-tool-output-fold"
-            type="button"
-            aria-expanded={outputOpen}
-            onclick={() => disclosure?.set(`${item.itemId}:output`, !outputOpen)}
-          ><span class="fold-chevron" class:open={outputOpen} aria-hidden="true"><ChevronRight size={13} strokeWidth={1.8} /></span
-            >{outputOpen ? 'Show less' : `Show ${hiddenLines.toLocaleString()} more lines`}</button>
-        {/if}
       {/if}
     </div>
   {/if}
@@ -147,9 +123,9 @@
   /* A collapsed row is just a row: no border, no fill, nothing that makes a
      run of tool calls look like a stack of cards. The box appears when the row
      is opened and its output needs a container. */
-  .tool-item{border:1px solid transparent;border-radius:10px}
+  .tool-item{border:1px solid transparent;border-radius:10px;box-sizing:border-box}
   .tool-item[open]{border-color:color-mix(in srgb,var(--color-border) 62%,transparent);background:color-mix(in srgb,var(--color-surface) 45%,var(--color-bg) 55%)}
-  summary{display:flex;align-items:center;gap:9px;min-height:30px;padding:2px 8px;border-radius:10px;cursor:pointer;list-style:none}
+  summary{display:flex;align-items:center;gap:9px;height:34px;box-sizing:border-box;padding:2px 8px;border-radius:10px;cursor:pointer;list-style:none}
   summary::-webkit-details-marker{display:none}
   summary:hover{background:color-mix(in srgb,var(--color-hover) 55%,transparent)}
   summary:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:-2px}
@@ -174,14 +150,8 @@
   .failed pre{border-color:color-mix(in srgb,var(--color-bad) 38%,transparent);background:color-mix(in srgb,var(--color-bad) 7%,var(--color-bg))}
   .running .status-mark,.running .tool-icon{color:var(--color-accent)}
 
-  .tool-body{display:grid;gap:7px;padding:0 10px 10px 34px;max-height:240px;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent}
-  /* The output box used to be a fixed 16rem window on however much there was,
-     which told a reader nothing about the size of what they were scrolling and
-     put a second scroll region in the middle of the page. It now shows a
-     bounded number of lines and says how many it is holding, so the height on
-     screen is the height of what is being shown. Long lines run sideways
-     inside the box rather than wrapping mid-word; the pane never widens. */
-  pre{max-height:260px;overflow-y:auto;overflow-x:auto;margin:0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--color-border) 55%,transparent);border-radius:8px;background:color-mix(in srgb,var(--color-surface) 30%,var(--color-bg));white-space:pre;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior-x:contain}
+  .tool-body{display:grid;gap:7px;padding:0 10px 10px 34px;max-height:180px;box-sizing:border-box;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent}
+  pre{margin:0;padding:8px 10px;border:1px solid color-mix(in srgb,var(--color-border) 55%,transparent);border-radius:8px;background:color-mix(in srgb,var(--color-surface) 30%,var(--color-bg));white-space:pre;width:max-content;min-width:100%;box-sizing:border-box}
   code{font:13px/1.55 var(--font-mono)}
   .keyword{color:var(--color-accent)}
   .string{color:var(--color-good)}
@@ -189,18 +159,8 @@
   .number{color:var(--color-attention)}
   .type{color:var(--color-live)}
   .plain{color:inherit}
-  /* The same chevron the row header uses, so the control reads as one more
-     thing that opens rather than as a caption under the box. */
-  .fold-more{display:inline-flex;align-items:center;gap:5px;justify-self:start;min-height:24px;padding:2px 8px;margin-left:-8px;border:0;border-radius:6px;background:transparent;color:var(--color-text-2);font-size:12px;text-align:left;cursor:pointer}
-  .fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
-  .fold-chevron.open{transform:rotate(90deg)}
-  .fold-more:hover{background:color-mix(in srgb,var(--color-hover) 55%,transparent);color:var(--color-text)}
-  .fold-more:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:1px}
-
   @media (prefers-reduced-motion:no-preference){
     .chevron{transition:transform .14s ease}
     summary{transition:background .14s ease}
-    .fold-more{transition:background .14s ease,color .14s ease}
-    .fold-chevron{transition:transform .14s ease}
   }
 </style>

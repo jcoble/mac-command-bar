@@ -164,17 +164,20 @@ export function conversationFileLinkProvenance(
  */
 export function toolFilePath(item: Extract<ConversationDisplayItem, { kind: 'tool' }>): string {
   const meta = item.metadata as Record<string, unknown> | undefined;
-  const fallback = item.path ?? '';
-  if (!meta) return fallback;
-  const rawArgs = (meta.args || meta.arguments || meta.parameters || meta.input || meta.rawInput) as Record<string, unknown> | undefined;
+  if (item.path?.trim()) return item.path.trim();
+  if (!meta) return '';
+  let rawArgs: unknown = meta.args ?? meta.arguments ?? meta.parameters ?? meta.input ?? meta.rawInput;
+  if (typeof rawArgs === 'string') {
+    try { rawArgs = JSON.parse(rawArgs); } catch { rawArgs = undefined; }
+  }
   const direct = meta.AbsolutePath || meta.TargetFile || meta.filePath || meta.file_path || meta.path || meta.file || meta.target;
   if (typeof direct === 'string' && direct.trim()) return direct.trim();
-  if (rawArgs) {
-    const fromArgs = rawArgs.AbsolutePath || rawArgs.TargetFile || rawArgs.filePath || rawArgs.file_path || rawArgs.path || rawArgs.file || rawArgs.target;
+  if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) {
+    const args = rawArgs as Record<string, unknown>;
+    const fromArgs = args.AbsolutePath || args.TargetFile || args.filePath || args.file_path || args.path || args.file || args.target;
     if (typeof fromArgs === 'string' && fromArgs.trim()) return fromArgs.trim();
   }
-  if (typeof meta.path === 'string' && meta.path.trim()) return meta.path.trim();
-  return fallback;
+  return '';
 }
 
 const FOLDABLE_TURN_KINDS = new Set<ConversationDisplayItem['kind']>([
@@ -339,30 +342,33 @@ export function summarizeToolRun(items: readonly ConversationDisplayItem[]): {
   icon: 'pencil' | 'book' | 'terminal' | 'search' | 'sparkles';
 } {
   let editCount = 0;
+  const editedPaths = new Set<string>();
+  let failedCount = 0;
   let readCount = 0;
   let commandCount = 0;
   let searchCount = 0;
   let reasoningCount = 0;
+  let toolCount = 0;
 
   for (const item of items) {
+    if (item.kind === 'tool' && item.state === 'failed') { failedCount += 1; continue; }
     if (item.kind === 'file' || item.kind === 'fileEdits' || (item.kind === 'tool' && item.toolKind === 'file-edit')) {
-      if (item.kind === 'fileEdits') editCount += item.edits.length;
-      else editCount += 1;
-    } else if (item.kind === 'command' || (item.kind === 'tool' && (item.toolKind === 'command' || item.title?.toLowerCase().includes('command') || item.title?.toLowerCase().includes('run') || item.title?.toLowerCase() === 'bash'))) {
+      const paths = item.kind === 'fileEdits' ? item.edits.map((edit) => edit.path)
+        : [item.kind === 'tool' ? toolFilePath(item) : metadataString(item.metadata, ['path'])];
+      for (const path of paths) {
+        if (!path || !editedPaths.has(path)) editCount += 1;
+        if (path) editedPaths.add(path);
+      }
+    } else if (item.kind === 'command' || (item.kind === 'tool' && item.toolKind === 'command')) {
       commandCount += 1;
-    } else if (item.kind === 'tool' && (item.toolKind === 'search' || item.title?.toLowerCase().includes('search') || item.title?.toLowerCase().includes('grep') || item.title?.toLowerCase().includes('glob') || item.title?.toLowerCase().includes('find'))) {
+    } else if (item.kind === 'tool' && item.toolKind === 'search') {
       searchCount += 1;
-    } else if (item.kind === 'tool' && (item.toolKind === 'fetch' || item.title?.toLowerCase().startsWith('read') || item.title?.toLowerCase().startsWith('view') || item.title?.toLowerCase() === 'cat')) {
+    } else if (item.kind === 'tool' && item.toolKind === 'fetch' && toolFilePath(item) && !/^https?:/i.test(toolFilePath(item))) {
       readCount += 1;
     } else if (item.kind === 'reasoning') {
       reasoningCount += 1;
     } else if (item.kind === 'tool') {
-      const name = item.title?.toLowerCase() ?? '';
-      if (name === 'edit' || name === 'write' || name.includes('edit') || name.includes('write')) editCount += 1;
-      else if (name === 'read' || name === 'view' || name.includes('read') || name.includes('view')) readCount += 1;
-      else if (name === 'bash' || name === 'sh' || name.includes('cmd') || name.includes('command') || name.includes('exec') || name.includes('run')) commandCount += 1;
-      else if (name === 'grep' || name === 'glob' || name.includes('search') || name.includes('find')) searchCount += 1;
-      else commandCount += 1;
+      toolCount += 1;
     }
   }
 
@@ -379,6 +385,11 @@ export function summarizeToolRun(items: readonly ConversationDisplayItem[]): {
   if (searchCount === 1) parts.push('searched codebase');
   else if (searchCount > 1) parts.push('searched files');
 
+  if (toolCount === 1) parts.push('used a tool');
+  else if (toolCount > 1) parts.push('used tools');
+
+  if (failedCount > 0) parts.push(`${failedCount} failed ${failedCount === 1 ? 'call' : 'calls'}`);
+
   if (parts.length === 0) {
     if (reasoningCount > 0) return { summary: 'Thinking', icon: 'sparkles' };
     return { summary: 'Worked', icon: 'sparkles' };
@@ -394,6 +405,16 @@ export function summarizeToolRun(items: readonly ConversationDisplayItem[]): {
   else if (searchCount > 0) icon = 'search';
 
   return { summary, icon };
+}
+
+/** Summarize recorded successful work; native facts own turn completion. */
+export function summarizeCompletedWork(items: readonly ConversationDisplayItem[]): string | null {
+  const actions = items.flatMap((item) => item.kind === 'toolRun' ? item.items : [item])
+    .filter((item) => item.kind === 'tool' ? item.state === 'completed'
+      : (item.kind === 'command' || item.kind === 'file' || item.kind === 'fileEdits') && item.completed === true);
+  const hasEdit = actions.some((item) => item.kind === 'file' || item.kind === 'fileEdits'
+    || (item.kind === 'tool' && item.toolKind === 'file-edit'));
+  return actions.length >= 2 || hasEdit ? summarizeToolRun(actions).summary : null;
 }
 
 /** What a running turn is doing, read from the newest row of the transcript.
@@ -714,6 +735,7 @@ function toolKindOf(...values: unknown[]): ConversationToolKind {
       case 'web-search':
       case 'websearch':
       case 'image-view':
+      case 'file-read':
       case 'read-file':
       case 'view-file':
       case 'read-url-content':

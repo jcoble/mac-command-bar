@@ -9,13 +9,15 @@
   import Search from '@lucide/svelte/icons/search';
   import Sparkles from '@lucide/svelte/icons/sparkles';
   import type { AgentConversationTurnFacts } from '$lib/shell/conversation/conversationTypes.ts';
-  import { conversationTurnGroups, foldToolRuns, type ConversationTurnGroup, type ConversationDisplayItem, type ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { conversationTurnGroups, foldToolRuns, summarizeCompletedWork, toolFilePath, type ConversationTurnGroup, type ConversationDisplayItem, type ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
   import { USER_SEND_ANCHOR_OFFSET_PX, type ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import type { ConversationViewState } from '$lib/shell/sessionWorkspaces.ts';
   import { conversationItemHasVisibleContent } from '$lib/shell/conversation/conversationItemVisibility.ts';
   import { setConversationTimelineDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
   import TimelineItem from './TimelineItem.svelte';
+  import ConversationToolGroup from './ConversationToolGroup.svelte';
+  import ConversationTurnElapsed from './ConversationTurnElapsed.svelte';
   import TurnFileCard from './TurnFileCard.svelte';
   import PendingFirstMessage from './PendingFirstMessage.svelte';
   import WorkingSpinner from './WorkingSpinner.svelte';
@@ -89,13 +91,14 @@
     run?: Extract<ConversationDisplayItem, { kind: 'toolRun' }>;
     edit?: { path: string; added: number; removed: number };
     activity?: boolean;
+    workSummary?: string;
   };
-  // Only the preceding bounded window's native IDs are needed to retain run identity.
+  // Retain a run's identity when older calls are prepended to that same run.
   let previousRunWindow = '';
   let previousRuns: { id: string; nativeItemIds: readonly string[] }[] = [];
   function runOpen(run: Extract<ConversationDisplayItem, { kind: 'toolRun' }>): boolean {
-    return disclosures[`${run.itemId}:run`]
-      ?? disclosures[`tool-run:${run.items[0]?.itemId}:run`] ?? !run.completed;
+    return disclosures[`${run.itemId}:open`]
+      ?? (run.turnId === activeTurnId && run.items.at(-1)?.itemId === renderedItems.at(-1)?.itemId);
   }
   const rows = $derived.by((): Row[] => {
     if (previousRunWindow !== renderWindowId) {
@@ -109,7 +112,13 @@
     const seeds = new Set(foldedGroups.flatMap(({ items }) =>
       items.filter((item) => item.kind === 'toolRun').map((item) => item.itemId)));
     for (const { group, items: groupedItems } of foldedGroups) {
+      const summary = group.completed ? summarizeCompletedWork(group.items) : null;
+      let headingAdded = false;
       for (const item of groupedItems) {
+        if ((group.running || group.completed) && !headingAdded && item.kind !== 'user') {
+          result.push({ key: `turn-work:${group.turnId}`, group, workSummary: summary ?? '' });
+          headingAdded = true;
+        }
         let run: Row['run'];
         if (item.kind === 'toolRun') {
           const nativeItemIds = item.items.map((child) => child.itemId);
@@ -120,21 +129,17 @@
           const id = previous?.id ?? item.itemId;
           claimed.add(id);
           nextRuns.push({ id, nativeItemIds });
-          run = { ...item, itemId: id };
+          run = { ...item, itemId: id, turnId: group.turnId };
         }
         if (run) {
-          const open = runOpen(run);
-          result.push({ key: run.itemId, group, run,
-            anchorItemId: open ? undefined : run.items[0]?.itemId });
-          if (open) for (const child of run.items) {
-            result.push({ key: child.itemId, anchorItemId: child.itemId, group, item: child });
-          }
+          result.push({ key: run.itemId, group, run, anchorItemId: run.items[0]?.itemId });
         } else {
           result.push({ key: item.itemId, anchorItemId: item.itemId, group, item });
         }
       }
-      if (group.completed) for (const edit of getTurnFileEdits(group)) {
-        result.push({ key: `turn-file:${group.turnId}:${edit.path}`, group, edit });
+      if (group.completed) {
+        const edits = getTurnFileEdits(group);
+        for (const edit of edits) result.push({ key: `turn-file:${group.turnId}:${edit.path}`, group, edit });
       }
     }
     previousRuns = nextRuns;
@@ -222,7 +227,13 @@
             edits.push({ path: edit.path, added: edit.added, removed: edit.removed });
           }
         }
-      } else if (item.kind === 'file') {
+      } else if (item.kind === 'tool' && item.state === 'completed' && item.toolKind === 'file-edit') {
+        const path = toolFilePath(item);
+        if (path && !seenPaths.has(path)) {
+          seenPaths.add(path);
+          edits.push({ path, ...countDiffLines(item.diff ?? '') });
+        }
+      } else if (item.kind === 'file' && item.completed) {
         const p = typeof item.metadata?.path === 'string' ? item.metadata.path : '';
         if (p && !seenPaths.has(p)) {
           seenPaths.add(p);
@@ -308,7 +319,7 @@
 
   function restoreAnchor(anchor: NonNullable<ConversationViewState['anchor']>): boolean {
     const index = rows.findIndex((row) => row.anchorItemId === anchor.itemId
-      || (row.run && !runOpen(row.run) && row.run.items.some((item) => item.itemId === anchor.itemId)));
+      || row.run?.items.some((item) => item.itemId === anchor.itemId));
     if (index < 0) return false;
     return positionRow(rows[index].key, anchor.offsetPx);
   }
@@ -336,7 +347,7 @@
     const node = host?.querySelector<HTMLElement>(`[data-run-id="${CSS.escape(key)}"]`);
     const offsetPx = node && host ? node.getBoundingClientRect().top - host.getBoundingClientRect().top : null;
     follow = false;
-    disclosures = { ...disclosures, [`${key}:run`]: !runOpen(run) };
+    disclosures = { ...disclosures, [`${key}:open`]: !runOpen(run) };
     const windowId = renderWindowId;
     void tick().then(() => {
       if (windowId !== renderWindowId) return;
@@ -346,14 +357,31 @@
     });
   }
 
+  let disclosureWindow = '';
+  let previousLiveTail: string | undefined;
+  let previousActiveTurn: string | null = null;
   $effect(() => {
-    const initial = rows.flatMap((row) => {
-      if (!row.run) return [];
-      const open = runOpen(row.run);
-      return [`${row.run.itemId}:run`, `tool-run:${row.run.items[0]?.itemId}:run`]
-        .filter((key) => disclosures[key] !== open).map((key) => [key, open] as const);
-    });
-    if (initial.length) disclosures = { ...disclosures, ...Object.fromEntries(initial) };
+    const tail = renderedItems.at(-1)?.itemId;
+    const currentRows = rows;
+    const turn = activeTurnId;
+    if (disclosureWindow === renderWindowId && previousActiveTurn
+      && (tail !== previousLiveTail || turn !== previousActiveTurn)) {
+      const finishedRuns = currentRows.filter((row) => row.run?.completed
+        && row.group?.turnId === previousActiveTurn
+        && (turn !== previousActiveTurn || row.run.items.at(-1)?.itemId !== tail));
+      untrack(() => {
+        const next = { ...disclosures };
+        let changed = false;
+        for (const { run } of finishedRuns) {
+          const key = `${run!.itemId}:open`;
+          if (next[key]) { next[key] = false; changed = true; }
+        }
+        if (changed) disclosures = next;
+      });
+    }
+    disclosureWindow = renderWindowId;
+    previousLiveTail = tail;
+    previousActiveTurn = turn;
   });
 
   function requestPage(older: boolean): void {
@@ -387,6 +415,7 @@
     if (direction) requestPage(direction === 'older');
   }
   function handleWheel(event: WheelEvent): void {
+    if (event.target instanceof Element && event.target.closest('[data-tool-scroll]')) return;
     anchoredSendItemId = null;
     userDirection = event.deltaY < 0 ? 'older' : 'newer';
     if (event.deltaY < 0) {
@@ -403,6 +432,7 @@
   function readerInput(node: HTMLDivElement) {
     const interactive = 'input, textarea, select, button, a, [contenteditable], [role="button"]';
     const pointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest('[data-tool-scroll]')) return;
       if (!(event.target instanceof Element && event.target.closest(interactive))) {
         node.focus({ preventScroll: true });
       }
@@ -413,13 +443,15 @@
       follow = false;
     };
     const pointerUp = () => { dragging = false; };
-    const touchStart = () => {
+    const touchStart = (event: TouchEvent) => {
+      if (event.target instanceof Element && event.target.closest('[data-tool-scroll]')) return;
       dragging = true;
       lastScrollTop = node.scrollTop;
       anchoredSendItemId = null;
       follow = false;
     };
     const keydown = (event: KeyboardEvent) => {
+      if (event.target instanceof Element && event.target.closest('[data-tool-scroll]')) return;
       if (event.target instanceof Element && event.target.closest(interactive)) return;
       const older = ['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey);
       const newer = ['ArrowDown', 'PageDown', 'End'].includes(event.key) || (event.key === ' ' && !event.shiftKey);
@@ -495,6 +527,7 @@
     setConversationTimelineDiagnostics(rows.length, virtualRows.length, $virtualizer.elementsCache.size, $virtualizer.itemSizeCache.size);
     return () => setConversationTimelineDiagnostics(0, 0, 0, 0);
   });
+
 </script>
 
 <div class="timeline-wrap" data-testid="conversation-timeline-wrap" style={`--composer-height:${composerHeight}px`}>
@@ -520,6 +553,16 @@
                 <span class="run-summary">{row.run.summary}</span>
                 <span class="turn-fold-chevron" class:open={runOpen(row.run)} aria-hidden="true"><ChevronRight size={13} /></span>
               </button>
+              {#if runOpen(row.run)}
+                <ConversationToolGroup items={row.run.items} active={!!row.group?.running}
+                  {assistantLabel} {onApprovalDecision} {onFileLink} {onPlanOpen} />
+              {/if}
+            {/if}
+            {#if row.workSummary !== undefined && row.group}
+              <div class="work-summary" data-testid="conversation-work-summary">
+                <span class="work-duration"><ConversationTurnElapsed running={row.group.running} completed={row.group.completed} startedAtMs={row.group.startedAtMs} elapsedMs={row.group.elapsedMs} /></span>
+                {#if row.workSummary}<span>{row.workSummary}</span>{/if}
+              </div>
             {/if}
             {#if row.item}<TimelineItem item={row.item} {assistantLabel} {onApprovalDecision} {onFileLink} {onPlanOpen} />{/if}
             {#if row.edit}<TurnFileCard path={row.edit.path} added={row.edit.added} removed={row.edit.removed} onReview={onFileLink} />{/if}
@@ -542,7 +585,9 @@
   .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:none;padding:0 28px;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
   .timeline-list{flex:none;position:relative;width:min(820px,100%);min-height:1px;margin:0 auto}
   .turn-row{position:absolute;top:0;left:0;display:flex;flex-direction:column;gap:12px;width:100%;padding-bottom:12px}
-  .turn-row.compact-tool{padding-bottom:4px}
+  .turn-row.compact-tool{gap:0;padding-bottom:6px}
+  .work-summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 16px;border-top:1px solid var(--color-border);padding-top:12px;color:var(--color-text-2);font-size:13px}
+  .work-duration{flex:none;font-variant-numeric:tabular-nums}
   .turn-fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
   .turn-fold-chevron.open{transform:rotate(90deg)}
   .run-header{display:flex;align-items:center;gap:8px;min-height:30px;padding:3px 6px;border:0;border-radius:8px;background:transparent;color:var(--color-text-2);font-size:13px;text-align:left;cursor:pointer}
