@@ -620,8 +620,8 @@
 		{#if topTabs.activeKind === "diff"}
 			<div class="pane-body showing">
 				<GitDiffView
-					showing={true}
 					rootAvailable={pullRequestDiff !== null || selection.activeRootAvailable}
+					sessionRoot={selection.durableSessionRoot}
 					{pullRequestDiff}
 					mode={workbench.diffMode}
 					onModeChange={(mode) => workbench.setDiffMode(mode)}

@@ -29,6 +29,7 @@ const editorSessionSource = readFileSync(
   'utf8'
 );
 const diffSource = readFileSync(path.join(here, '..', 'GitDiffView.svelte'), 'utf8');
+const multiDiffSource = readFileSync(path.join(here, '..', 'git', 'MultiFileDiff.svelte'), 'utf8');
 const controlsSource = readFileSync(
   path.join(here, '..', 'LanguageIntelligenceControls.svelte'),
   'utf8'
@@ -123,13 +124,9 @@ test('file tabs scroll while the complete right-side control group stays pinned'
   );
 });
 
-test('a diff hunk opens the file in the editor at its line', () => {
+test('a diff line opens the file in the editor at its line', () => {
   assert.match(diffSource, /import \{ requestOpenFile \} from '\$lib\/shell\/openFileBus'/);
-  assert.match(diffSource, /onclick=\{\(\) => openAtLine\(hunk\.afterStart\)\}/);
   assert.match(diffSource, /requestOpenFile\(\{/);
-  assert.match(
-    diffSource,
-    /onOpenLine=\{openAtLine\}/,
-    'the real diff editor must offer the same jump as the plain fallback'
-  );
+  assert.match(diffSource, /onOpenLine=\{pullRequestDiff \? undefined : openAt\}/);
+  assert.match(multiDiffSource, /ondblclick=\{\(\) => onOpenLine\?\.\(file\.relativePath, row\.line\.afterLine \?\? row\.line\.beforeLine\)\}/);
 });
