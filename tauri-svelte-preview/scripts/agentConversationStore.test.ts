@@ -412,6 +412,35 @@ test('late attachment reads retain the current page and revoke evicted previews'
   }
 });
 
+test('message sizes are exact and reuse parts already measured', () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('function isCurrent('), source.indexOf('function resetMessageBytes('));
+  const encoder = new TextEncoder();
+  let stringified: unknown[] = [];
+  const countingJson = { stringify: (value: unknown) => { stringified.push(value); return JSON.stringify(value); } };
+  const messageBytes = Function('encoder', 'JSON', `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn messageBytes;`)(encoder, countingJson);
+  const messages = [
+    { id: 'empty', role: 'assistant', parts: [], metadata: { turnId: 'turn-1' } },
+    { id: 'one', role: 'user', parts: [{ type: 'text', content: 'Look at this — café ✓ 漢字 🙂' }] },
+    { id: 'many', role: 'assistant', metadata: { firstSequence: 4 }, parts: [
+      { type: 'thinking', content: 'Plan' },
+      { type: 'tool-call', id: 'call-1', name: 'Read', arguments: '{"path":"/a"}', state: 'input-complete', output: { text: 'ü' } },
+      { type: 'text', content: 'Done.' }
+    ] }
+  ];
+  for (const message of messages) {
+    assert.equal(messageBytes(message), encoder.encode(JSON.stringify(message)).byteLength, message.id);
+  }
+  // A history snapshot hands back copied messages that keep the same part objects.
+  stringified = [];
+  const copies = messages.map((message) => ({ ...message, parts: [...message.parts] }));
+  for (const copy of copies) messageBytes(copy);
+  const parts = new Set<unknown>(messages.flatMap((message) => message.parts));
+  const reserialized = stringified.filter((value) => parts.has(value)
+    || ((value as { parts?: unknown[] }).parts ?? []).some((part) => parts.has(part)));
+  assert.equal(reserialized.length, 0, 'known parts are not serialized again');
+});
+
 test('a stored message that names one attachment twice shows it once', async () => {
   // Messages saved before late September 2026 can list the same screenshot id
   // twice. The user card keys its screenshots by id, so a repeat stops it rendering.
