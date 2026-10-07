@@ -171,7 +171,7 @@
   }
 </script>
 
-<section class="flex h-full min-h-0 flex-col" data-testid="agents-panel">
+<section class="agents-panel flex h-full min-h-0 flex-col" data-testid="agents-panel">
   <PanelHeader title="Agents" count={view === 'session' && rows.length > 0 ? rows.length : null} />
   <div class="px-2 pb-2">
     <SegmentedControl
@@ -257,3 +257,18 @@
     </ScrollArea>
   {/if}
 </section>
+
+<style>
+  /* The drawer is a few hundred pixels wide, so the shared chat components
+     are tightened here only. The main chat keeps its own spacing. */
+  .agents-panel :global(.timeline-scroll){padding:0 10px}
+  .agents-panel :global(article .turn-body){overflow-wrap:anywhere}
+  .agents-panel :global(article.user){max-width:100%;padding:8px 12px;border-radius:var(--radius-lg)}
+  .agents-panel :global(article.user .turn-body){font-size:13px}
+  .agents-panel :global(article .turn-body ul),
+  .agents-panel :global(article .turn-body ol){padding-left:16px}
+  .agents-panel :global(article .turn-body li){padding-left:2px}
+  .agents-panel :global(article .file-link){display:inline}
+  .agents-panel :global(.tool-item summary){padding:2px 4px}
+  .agents-panel :global(.tool-item .tool-body){padding:0 6px 8px}
+</style>
