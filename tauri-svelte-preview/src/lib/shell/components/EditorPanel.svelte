@@ -230,9 +230,15 @@
   /** Inspection root for read-only tabs; a path alone is not enough context. */
   let readOnlyByPath = $state<Record<string, string>>({});
   const activeFileReadOnly = $derived(Boolean(activeFile && readOnlyByPath[activeFile.path]));
-  let breadcrumbFolder = $state<{ file: string; root: string; path: string } | null>(null);
-  let breadcrumbMenu = $state<{ file: string; root: string; directory: string; entries: SourceDirectoryEntry[] | null; error: string | null } | null>(null);
+  /** The breadcrumb menus open right now, outermost first: depth 0 is a
+   * segment's menu (or a folder row of the "…" menu), each deeper entry a
+   * folder's submenu. Only open menus hold entries; closing one drops it and
+   * everything below it, and a new file or root drops them all. */
+  let breadcrumbChain = $state<{ directory: string; opening: number; entries: SourceDirectoryEntry[] | null; error: string | null }[]>([]);
   let breadcrumbMenuGeneration = 0;
+  /** Numbers each menu opening, so a late answer for a folder that was closed
+   * and opened again cannot fill the newer opening. */
+  let breadcrumbOpenings = 0;
   let breadcrumbOwner = '';
   const breadcrumbRoot = $derived(activeFile
     ? (readOnlyByPath[activeFile.path] || editorState.projectRoot || '')
@@ -241,14 +247,17 @@
     const owner = `${breadcrumbRoot}\0${activeFile?.path ?? ''}`;
     if (owner === breadcrumbOwner) return;
     breadcrumbOwner = owner;
-    breadcrumbFolder = null;
-    breadcrumbMenu = null;
+    breadcrumbChain = [];
     breadcrumbMenuGeneration += 1;
   });
   const breadcrumbPath = $derived(activeFile && breadcrumbRoot && activeFile.path.startsWith(`${breadcrumbRoot}/`)
-    ? (breadcrumbFolder?.file === activeFile.path && breadcrumbFolder.root === breadcrumbRoot
-        ? breadcrumbFolder.path : activeFile.path)
+    ? activeFile.path
     : '');
+  /** Wide enough for long names; long folders scroll inside the menu. */
+  const BREADCRUMB_MENU = 'w-auto min-w-56 max-w-[min(40rem,80vw)] max-h-[60vh] overflow-y-auto';
+  /** Submenus are portaled out of their scrolling parent, so they take the
+   * shell theme scope and the top-level menu's layer with them. */
+  const BREADCRUMB_SUBMENU = `${BREADCRUMB_MENU} next-shell z-[250]`;
   const breadcrumbParts = $derived(breadcrumbPath
     ? [breadcrumbRoot, ...breadcrumbPath.slice(breadcrumbRoot.length + 1).split('/').map((_, index, parts) =>
         `${breadcrumbRoot}/${parts.slice(0, index + 1).join('/')}`)]
@@ -257,32 +266,34 @@
    * name and the file name both stay readable in the header. */
   const breadcrumbHidden = $derived(breadcrumbParts.length > 4 ? breadcrumbParts.slice(1, -2) : []);
 
-  async function openBreadcrumbMenu(directory: string): Promise<void> {
+  async function openBreadcrumbMenu(directory: string, depth: number): Promise<void> {
     if (!activeFile || !breadcrumbRoot || !rootAvailable) return;
     const file = activeFile.path;
     const root = breadcrumbRoot;
-    const generation = ++breadcrumbMenuGeneration;
-    breadcrumbMenu = { file, root, directory, entries: null, error: null };
+    // Bumped only when the file or root changes, so a sibling submenu opening
+    // does not discard a parent menu's answer still on its way.
+    const generation = breadcrumbMenuGeneration;
+    const opening = ++breadcrumbOpenings;
+    breadcrumbChain = [...breadcrumbChain.slice(0, depth), { directory, opening, entries: null, error: null }];
+    const current = () => generation === breadcrumbMenuGeneration && activeFile?.path === file && breadcrumbRoot === root && breadcrumbChain[depth]?.opening === opening;
+    let answer: { entries: SourceDirectoryEntry[]; error: string | null };
     try {
-      const entries = await listSourceDirectoryFromTauri(root, directory);
-      if (generation === breadcrumbMenuGeneration && activeFile?.path === file && breadcrumbRoot === root && breadcrumbMenu?.directory === directory) {
-        breadcrumbMenu = { file, root, directory, entries: entries ?? [], error: null };
-      }
+      answer = { entries: (await listSourceDirectoryFromTauri(root, directory)) ?? [], error: null };
     } catch (error) {
-      if (generation === breadcrumbMenuGeneration && activeFile?.path === file && breadcrumbRoot === root && breadcrumbMenu?.directory === directory) {
-        breadcrumbMenu = { file, root, directory, entries: [], error: describeError(error) };
-      }
+      answer = { entries: [], error: describeError(error) };
     }
+    if (current()) breadcrumbChain = breadcrumbChain.map((menu, index) => (index === depth ? { directory, opening, ...answer } : menu));
   }
 
-  function chooseBreadcrumbEntry(entry: SourceDirectoryEntry): void {
-    if (!activeFile || !breadcrumbRoot) return;
-    if (entry.isDirectory) {
-      breadcrumbFolder = { file: activeFile.path, root: breadcrumbRoot, path: entry.path };
-    } else {
-      handleOpenFileRequest({ path: entry.path, projectRoot: breadcrumbRoot, readOnly: activeFileReadOnly });
-      breadcrumbFolder = null;
-    }
+  /** Close only the menu that is still this directory's: a sibling submenu may
+   * already have taken its depth. */
+  function closeBreadcrumbMenu(directory: string, depth: number): void {
+    if (breadcrumbChain[depth]?.directory === directory) breadcrumbChain = breadcrumbChain.slice(0, depth);
+  }
+
+  function openBreadcrumbFile(entry: SourceDirectoryEntry): void {
+    if (!breadcrumbRoot) return;
+    handleOpenFileRequest({ path: entry.path, projectRoot: breadcrumbRoot, readOnly: activeFileReadOnly });
   }
   const activeServerEnabled = $derived.by(() => {
     const language = activeFile?.language?.toLowerCase();
@@ -1604,27 +1615,38 @@
       <!-- The open file's path on the left, its own controls on the right. The
            language-server switch sits in this editor's status bar. -->
       {#if activeFile && breadcrumbParts.length > 0}
-        <!-- One folder's entries, shown by a segment's own menu and by the
-             folder rows inside the "…" menu. -->
-        {#snippet folderEntries(part: string)}
-          {@const directory = part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part}
-          {#if breadcrumbMenu?.file === activeFile.path && breadcrumbMenu.root === breadcrumbRoot && breadcrumbMenu.directory === directory}
-            {#if breadcrumbMenu.error}
-              <DropdownMenu.Item disabled>{breadcrumbMenu.error}</DropdownMenu.Item>
-            {:else if breadcrumbMenu.entries === null}
-              <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
-            {:else if breadcrumbMenu.entries.filter((entry) => !entry.excluded && (part !== activeFile.path || !entry.isDirectory)).length === 0}
-              <DropdownMenu.Item disabled>No files or folders</DropdownMenu.Item>
-            {:else}
-              {#each breadcrumbMenu.entries.filter((entry) => !entry.excluded && (part !== activeFile.path || !entry.isDirectory)) as entry (entry.path)}
-                <DropdownMenu.Item onSelect={() => chooseBreadcrumbEntry(entry)}>
-                  {#if entry.isDirectory}<Folder class="size-3.5" />{:else}<FileIcon fileName={entry.name} size={13} />{/if}
-                  <span class="truncate">{entry.name}{entry.isDirectory ? '/' : ''}</span>
-                </DropdownMenu.Item>
-              {/each}
-            {/if}
-          {:else}
+        <!-- One folder's folders and files, at one depth of the open menu chain.
+             A folder row opens its own submenu, so any depth is reachable
+             without leaving the menu; a file row opens the file. -->
+        {#snippet folderEntries(directory: string, depth: number)}
+          {@const menu = breadcrumbChain[depth]}
+          {#if menu?.directory !== directory || menu.entries === null}
             <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
+          {:else if menu.error}
+            <DropdownMenu.Item disabled>{menu.error}</DropdownMenu.Item>
+          {:else if menu.entries.every((entry) => entry.excluded)}
+            <DropdownMenu.Item disabled>No files or folders</DropdownMenu.Item>
+          {:else}
+            {#each menu.entries.filter((entry) => !entry.excluded) as entry (entry.path)}
+              {#if entry.isDirectory}
+                <DropdownMenu.Sub onOpenChange={(open) => { if (open) void openBreadcrumbMenu(entry.path, depth + 1); else closeBreadcrumbMenu(entry.path, depth + 1); }}>
+                  <DropdownMenu.SubTrigger>
+                    <Folder class="size-[14px]" />
+                    <span class="truncate">{entry.name}</span>
+                  </DropdownMenu.SubTrigger>
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.SubContent class={BREADCRUMB_SUBMENU}>
+                      {@render folderEntries(entry.path, depth + 1)}
+                    </DropdownMenu.SubContent>
+                  </DropdownMenu.Portal>
+                </DropdownMenu.Sub>
+              {:else}
+                <DropdownMenu.Item onSelect={() => openBreadcrumbFile(entry)}>
+                  <FileIcon fileName={entry.name} size={14} />
+                  <span class="truncate">{entry.name}</span>
+                </DropdownMenu.Item>
+              {/if}
+            {/each}
           {/if}
         {/snippet}
         <div class="editor-breadcrumb-row">
@@ -1637,16 +1659,18 @@
                     <Breadcrumb.Item class="shrink-0">
                       <DropdownMenu.Root>
                         <DropdownMenu.Trigger class="breadcrumb-trigger" aria-label="Show hidden folders">…</DropdownMenu.Trigger>
-                        <DropdownMenu.Content class="min-w-48 max-w-80" align="start">
+                        <DropdownMenu.Content class={BREADCRUMB_MENU} align="start">
                           {#each breadcrumbHidden as hidden (hidden)}
-                            <DropdownMenu.Sub onOpenChange={(open) => { if (open) void openBreadcrumbMenu(hidden); }}>
+                            <DropdownMenu.Sub onOpenChange={(open) => { if (open) void openBreadcrumbMenu(hidden, 0); else closeBreadcrumbMenu(hidden, 0); }}>
                               <DropdownMenu.SubTrigger>
-                                <Folder class="size-3.5" />
+                                <Folder class="size-[14px]" />
                                 <span class="truncate">{hidden.split('/').at(-1)}</span>
                               </DropdownMenu.SubTrigger>
-                              <DropdownMenu.SubContent class="max-h-80 min-w-48 max-w-80">
-                                {@render folderEntries(hidden)}
-                              </DropdownMenu.SubContent>
+                              <DropdownMenu.Portal>
+                                <DropdownMenu.SubContent class={BREADCRUMB_SUBMENU}>
+                                  {@render folderEntries(hidden, 0)}
+                                </DropdownMenu.SubContent>
+                              </DropdownMenu.Portal>
                             </DropdownMenu.Sub>
                           {/each}
                         </DropdownMenu.Content>
@@ -1654,16 +1678,18 @@
                     </Breadcrumb.Item>
                   {/if}
                 {:else}
+                  {@const directory = part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part}
+                  <!-- The file's own segment browses the folder it sits in. -->
                   {#if index > 0}<Breadcrumb.Separator class="flex shrink-0 items-center" />{/if}
                   <!-- The project name and the file name give way first; the
                        folders between them keep their width. -->
                   <Breadcrumb.Item class={index === 0 ? 'min-w-0 max-w-36 shrink' : index === breadcrumbParts.length - 1 ? 'min-w-0 shrink' : 'shrink-0'}>
-                    <DropdownMenu.Root onOpenChange={(open) => { if (open) void openBreadcrumbMenu(part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part); }}>
+                    <DropdownMenu.Root onOpenChange={(open) => { if (open) void openBreadcrumbMenu(directory, 0); else closeBreadcrumbMenu(directory, 0); }}>
                       <DropdownMenu.Trigger class="breadcrumb-trigger" aria-label={`Browse ${part.split('/').at(-1)}`}>
                         {part.split('/').at(-1)}
                       </DropdownMenu.Trigger>
-                      <DropdownMenu.Content class="max-h-80 min-w-48 max-w-80" align="start">
-                        {@render folderEntries(part)}
+                      <DropdownMenu.Content class={BREADCRUMB_MENU} align="start">
+                        {@render folderEntries(directory, 0)}
                       </DropdownMenu.Content>
                     </DropdownMenu.Root>
                   </Breadcrumb.Item>

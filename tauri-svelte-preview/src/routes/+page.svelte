@@ -39,7 +39,7 @@
 	import SessionsColumn from "$lib/shell/components/SessionsColumn.svelte";
 	import ShellFrame from "$lib/shell/components/ShellFrame.svelte";
 	import ShellOverlays from "$lib/shell/components/ShellOverlays.svelte";
-	import TopTabRow, { type TopTabView } from "$lib/shell/components/TopTabRow.svelte";
+	import TopTabRow, { type NewTabKind, type TopTabView } from "$lib/shell/components/TopTabRow.svelte";
 	import type { UtilityId } from "$lib/shell/components/utilityStrip";
 	import UtilityStrip from "$lib/shell/components/UtilityStrip.svelte";
 	import { sendStructuredMessage } from "$lib/shell/conversation/conversationService";
@@ -90,6 +90,8 @@
 	const DRAWER_MAX_WIDTH = 640;
 	let drawerWidth = $state(320);
 	let drawerDrag: { x: number; width: number } | null = null;
+	/** Bumped to ask the Files drawer to focus its filter. */
+	let filesFilterFocus = $state(0);
 
 	/**
 	 * Any open menu, list, card or dialog. The browser page is a native view
@@ -211,12 +213,25 @@
 		});
 	});
 
-	onMount(() => {
+	// Only the native browser needs to step aside for DOM popups, so the page is
+	// watched only while a browser tab is on screen: a whole-document query on
+	// every DOM change would otherwise run for the life of the app.
+	$effect(() => {
+		if (!paneShowing || topTabs.activeKind !== "browser" || toolsRailWidth <= 0) {
+			popupOpen = false;
+			return;
+		}
 		// Popups mount and unmount as DOM nodes, wherever they are drawn.
-		const popups = new MutationObserver(() => {
+		const report = () => {
 			popupOpen = document.querySelector(POPUP_SELECTOR) !== null;
-		});
+		};
+		const popups = new MutationObserver(report);
 		popups.observe(document.body, { childList: true, subtree: true });
+		report();
+		return () => popups.disconnect();
+	});
+
+	onMount(() => {
 		const historyStop = new AbortController();
 		const releaseSessionRowJump = registerSessionRowJumpTarget({
 			selectSession,
@@ -268,8 +283,6 @@
 		void historyHost.rescan(historyStop.signal);
 
 		return () => {
-			popups.disconnect();
-			popupOpen = false;
 			historyStop.abort();
 			historyHost.release();
 			releaseSessionRowJump();
@@ -388,6 +401,25 @@
 		persistTabs();
 	}
 
+	/** The `+` menu: one of the top-row kinds, or a file picked from the Files drawer. */
+	async function openFromMenu(kind: NewTabKind): Promise<void> {
+		if (kind === "browser") return openNewBrowserTab();
+		if (kind === "file") {
+			selectRightTab("files");
+			filesFilterFocus += 1;
+			return;
+		}
+		if (kind === "git-history") {
+			// Clearing the path may re-read History; a session switch meanwhile
+			// must not open the tab in the session that arrived.
+			const ownedId = selection.activeOwnedId;
+			const root = selection.durableSessionRoot;
+			await gitService.clearHistoryPath();
+			if (selection.activeOwnedId !== ownedId || selection.durableSessionRoot !== root) return;
+		} else if (kind === "pull-requests") pullRequestSelection.selected = null;
+		selectCenterTab(kind);
+	}
+
 	function selectRightTab(id: Parameters<WorkbenchController["selectRightTab"]>[0]): void {
 		workbench.selectRightTab(id);
 		const ownedId = selection.activeOwnedId;
@@ -451,6 +483,7 @@
 		ownedId={selection.activeOwnedId}
 		filesRoot={selection.filesProjectionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
+		filesFilterFocusRequest={filesFilterFocus}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
 		onExpandedPathsChange={(ownedId, root, paths) => selection.rememberExpandedPaths(ownedId, root, paths)}
 		filesInspectionRoot={selection.activeWorkspaceSnapshot?.filesInspectionRoot ?? null}
@@ -599,7 +632,7 @@
 	class="next-shell"
 	style:--sessions-rail-width={`${sessionsRailWidth}px`}
 	style:--tools-rail-width={`${toolsRailWidth}px`}
-	style:--drawer-width={workbench.rightPanelOpen ? `${drawerWidth + 6}px` : "0px"}
+	style:--drawer-width={workbench.rightPanelOpen ? `${drawerWidth + 8}px` : "0px"}
 	oncontextmenu={(event) => {
 		const target = event.target instanceof Element ? event.target : null;
 		if (target?.closest('input, textarea, [contenteditable="true"]')) return;
@@ -619,7 +652,7 @@
 			onSelect={selectTopTab}
 			onClose={closeTopTab}
 			onSelectChat={() => selectCenterTab("session")}
-			onNewBrowserTab={openNewBrowserTab}
+			onOpen={(kind) => void openFromMenu(kind)}
 			onToggleExpanded={() => workbench.setExpanded(!workbench.expanded)}
 			onToggleDrawer={() => workbench.toggleRightPanel()}
 			editorActions={{
@@ -729,7 +762,7 @@
 	}
 
 	/* The drawer is a card in the same gutter as the frame's own cards; its
-	   width (320px until its left edge is dragged) plus the 6px gutter is the
+	   width (320px until its left edge is dragged) plus the 8px gutter is the
 	   --drawer-width the chrome row adds. The
 	   column takes its full width at once (an animated width would lay the
 	   whole frame out again every frame); only the card slides in, and the
@@ -740,8 +773,8 @@
 		flex-direction: column;
 		min-height: 0;
 		position: relative;
-		margin: 6px 6px 6px 0;
-		border-radius: var(--radius-sm);
+		margin: 8px 8px 8px 0;
+		border-radius: var(--radius-md);
 		overflow: hidden;
 		background: var(--panel-fade), var(--color-surface);
 		background-repeat: no-repeat;
@@ -805,13 +838,11 @@
 		flex: 0 0 calc(var(--center-head-row-height) + 6px);
 		align-items: center;
 		min-height: 0;
-		border-bottom: 1px solid var(--color-border);
 		background: var(--color-bg);
 	}
 
 	.window-sessions-cap {
 		height: 100%;
-		border-right: 1px solid var(--color-border);
 	}
 
 	.sessions-region {

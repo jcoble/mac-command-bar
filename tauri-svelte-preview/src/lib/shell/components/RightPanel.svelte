@@ -44,6 +44,8 @@
     /** Optional tree-only projection while rail selection is rebuilt in layers. */
     filesRoot?: string;
     filesOwnedId?: string | null;
+    /** Bumped by the page to focus the Files filter. */
+    filesFilterFocusRequest?: number;
     onRootUnavailable?(root: string): void | Promise<void>;
     expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
     onExpandedPathsChange?(ownedId: string, root: string, paths: readonly string[]): void;
@@ -67,6 +69,7 @@
     ownedId,
     filesRoot,
     filesOwnedId,
+    filesFilterFocusRequest = 0,
     onRootUnavailable,
     expandedPathsByRoot,
     onExpandedPathsChange,
@@ -94,6 +97,7 @@
         visible={visible && activeId === 'files'}
         root={filesRoot ?? root}
         ownedId={filesOwnedId === undefined ? ownedId : filesOwnedId}
+        filterFocusRequest={filesFilterFocusRequest}
         {onRootUnavailable}
         {expandedPathsByRoot}
         {onExpandedPathsChange}

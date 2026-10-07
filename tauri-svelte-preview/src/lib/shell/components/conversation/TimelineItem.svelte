@@ -56,7 +56,7 @@
     {:else if item.kind === 'input'}<UserInputItem {item} />
     {:else if item.kind === 'error'}<ErrorItem {item} />
     {:else if item.kind === 'compaction'}<CompactionItem {item} />
-    {:else}<div class="unknown-item" data-testid="timeline-unknown-item">{item.text}</div>{/if}
+    {:else if item.kind === 'unknown'}<div class="unknown-item" data-testid="timeline-unknown-item">{item.text}</div>{/if}
   </div>
 {/if}
 

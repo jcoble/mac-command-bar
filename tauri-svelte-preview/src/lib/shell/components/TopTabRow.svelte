@@ -17,6 +17,9 @@
     additions?: number;
     deletions?: number;
   }
+
+  /** What the `+` menu can open. */
+  export type NewTabKind = 'browser' | 'diff' | 'git-history' | 'pull-requests' | 'file';
 </script>
 
 <script lang="ts">
@@ -28,7 +31,8 @@
    * pane sits beside the chat it is the title over the chat column; while the
    * pane is expanded it is the first tab, and clicking it collapses the pane.
    * After it: one tab per open file, browser page, Changes, History and Pull
-   * requests, then `+` (new browser tab), expand, and the drawer toggle.
+   * requests, then `+` (a menu: browser page, Changes, History, Pull requests
+   * or a file from the Files drawer), expand, and the drawer toggle.
    *
    * Tabs keep their natural width up to 180px; once they no longer fit, the
    * row scrolls rather than squeezing them. Hover details are the native `title`
@@ -38,6 +42,7 @@
    * click is handed back out.
    */
   import { untrack } from 'svelte';
+  import FileSearch from '@lucide/svelte/icons/file-search';
   import GitBranch from '@lucide/svelte/icons/git-branch';
   import GitCommitHorizontal from '@lucide/svelte/icons/git-commit-horizontal';
   import GitPullRequest from '@lucide/svelte/icons/git-pull-request';
@@ -51,6 +56,7 @@
 
   import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { Separator } from '$lib/components/ui/separator/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import { cn } from '$lib/utils.js';
@@ -69,7 +75,7 @@
     onSelect(key: string): void;
     onClose(key: string): void;
     onSelectChat(): void;
-    onNewBrowserTab(): void;
+    onOpen(kind: NewTabKind): void;
     onToggleExpanded(): void;
     onToggleDrawer(): void;
     editorActions: {
@@ -90,7 +96,7 @@
     onSelect,
     onClose,
     onSelectChat,
-    onNewBrowserTab,
+    onOpen,
     onToggleExpanded,
     onToggleDrawer,
     editorActions
@@ -102,6 +108,18 @@
     'git-history': GitCommitHorizontal,
     'pull-requests': GitPullRequest
   } as const;
+
+  const NEW_TAB_ITEMS = [
+    { kind: 'browser', label: 'New browser tab', icon: Globe },
+    { kind: 'diff', label: 'Changes', icon: GitBranch },
+    { kind: 'git-history', label: 'Source control history', icon: GitCommitHorizontal },
+    { kind: 'pull-requests', label: 'Pull requests', icon: GitPullRequest },
+    { kind: 'file', label: 'Open file…', icon: FileSearch }
+  ] as const;
+
+  // Picking an item opens a new surface (or focuses the Files filter), so the
+  // menu must not hand focus back to `+` as it closes; Escape still does.
+  let newTabPicked = false;
 
   let track = $state<HTMLElement | null>(null);
 
@@ -138,7 +156,7 @@
     class={cn(
       'group relative flex h-[30px] max-w-[180px] shrink-0 items-center gap-2 rounded-[6px] pl-3 text-[13px] transition-colors',
       active || tab.dirty ? 'pr-1.5' : 'pr-3',
-      active ? 'bg-card text-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+      active ? 'bg-secondary text-foreground' : 'text-foreground/70 hover:bg-accent hover:text-foreground'
     )}
     data-active={active}
   >
@@ -197,7 +215,7 @@
       type="button"
       class={cn(
         'flex h-[30px] min-w-0 items-center gap-2 rounded-[6px] px-3 text-[13px] transition-colors',
-        expanded ? 'max-w-[224px] text-foreground hover:bg-accent/50' : 'bg-card text-foreground'
+        expanded ? 'max-w-[224px] text-foreground hover:bg-accent' : 'bg-secondary text-foreground'
       )}
       title={chatTitle}
       aria-label={expanded ? `Chat: ${chatTitle}. Collapse the pane` : `Chat: ${chatTitle}`}
@@ -252,17 +270,36 @@
       {/each}
     </div>
 
-    <Tooltip.Root>
-      <Tooltip.Trigger
-        class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'flex-none')}
-        aria-label="New browser tab"
-        disabled={!canOpenBrowser}
-        onclick={onNewBrowserTab}
+    <!-- A menu (role="menu"), so the live browser page steps aside while it is open. -->
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'flex-none')} aria-label="Open a tab">
+        <Plus aria-hidden="true" />
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content
+        side="bottom"
+        align="start"
+        class="w-56"
+        onCloseAutoFocus={(event) => {
+          if (newTabPicked) event.preventDefault();
+          newTabPicked = false;
+        }}
       >
-        <Plus class="size-[14px]" aria-hidden="true" />
-      </Tooltip.Trigger>
-      <Tooltip.Content side="bottom">New browser tab</Tooltip.Content>
-    </Tooltip.Root>
+        <DropdownMenu.Group>
+          {#each NEW_TAB_ITEMS as item (item.kind)}
+            <DropdownMenu.Item
+              disabled={item.kind === 'browser' && !canOpenBrowser}
+              onSelect={() => {
+                newTabPicked = true;
+                onOpen(item.kind);
+              }}
+            >
+              <item.icon aria-hidden="true" />
+              {item.label}
+            </DropdownMenu.Item>
+          {/each}
+        </DropdownMenu.Group>
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
 
     <div class="ml-auto flex flex-none items-center gap-1">
       <Separator orientation="vertical" class="mx-1 h-[14px]" />
@@ -273,7 +310,7 @@
             aria-label={expanded ? 'Collapse the pane' : 'Expand the pane'}
             onclick={onToggleExpanded}
           >
-            {#if expanded}<Minimize2 class="size-[14px]" aria-hidden="true" />{:else}<Maximize2 class="size-[14px]" aria-hidden="true" />{/if}
+            {#if expanded}<Minimize2 aria-hidden="true" />{:else}<Maximize2 aria-hidden="true" />{/if}
           </Tooltip.Trigger>
           <Tooltip.Content side="bottom">{expanded ? 'Collapse' : 'Expand'}</Tooltip.Content>
         </Tooltip.Root>
@@ -285,7 +322,7 @@
           aria-pressed={drawerOpen}
           onclick={onToggleDrawer}
         >
-          <PanelRight class="size-[14px]" aria-hidden="true" />
+          <PanelRight aria-hidden="true" />
         </Tooltip.Trigger>
         <Tooltip.Content side="bottom">{drawerOpen ? 'Close side panel' : 'Open side panel'}</Tooltip.Content>
       </Tooltip.Root>
