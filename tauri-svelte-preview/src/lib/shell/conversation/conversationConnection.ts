@@ -309,7 +309,8 @@ async function restorePageAttachments(
       }
       const byId = new Map(restored.map((attachment) => [attachment.id, attachment]));
       for (const [itemId, attachmentIds] of wanted) {
-        byItem[itemId] = attachmentIds.flatMap((id) => byId.get(id) ?? []);
+        // Some stored messages name one screenshot twice; show it once.
+        byItem[itemId] = [...new Set(attachmentIds)].flatMap((id) => byId.get(id) ?? []);
       }
     }
     if (isCurrent(selection)) {
@@ -708,7 +709,7 @@ export function selectConversationChat(
     threadId: historyOwnedId,
     onCustomEvent(name, value) {
       if (selection.controller.signal.aborted) return;
-      if (name === 'assembly:running-tool' || name === 'assembly:stale-markdown'
+      if (name === 'assembly:running-tool' || name === 'assembly:running-tools' || name === 'assembly:stale-markdown'
         || name === 'assembly:message-metadata') {
         selection.chat.setMessages(conversationMessagesAfterCustom(
           selection.chat.messages, name, value
@@ -887,7 +888,9 @@ export async function pageSelectedConversation(direction: Direction, historyOwne
       retainedTurnIds: messages.flatMap((message) =>
         typeof message.metadata?.turnId === 'string' ? [message.metadata.turnId] : []
       ),
-      transferBytes: messages.reduce((total, message) => total + messageBytes(message), 0)
+      // The snapshot above already measured every message; measuring the
+      // whole history again cost as much as the snapshot on each page.
+      transferBytes: selection.graphBytes
     });
     const generation = getConversationSession(selection.historyOwnedId)?.generation ?? 0;
     void restorePageAttachments(
