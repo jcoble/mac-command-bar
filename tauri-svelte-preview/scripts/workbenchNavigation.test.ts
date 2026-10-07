@@ -9,6 +9,7 @@ import {
   openDiffForFile,
   openFileInEditor,
   openUrlInBrowser,
+  parseGithubPullRequestUrl,
   registerBrowserUrlNavigation,
   registerWorkbenchNavigation,
   sendToSession,
@@ -175,6 +176,42 @@ const releaseBrowser = registerBrowserUrlNavigation((request) => {
 });
 assert.deepEqual(trace, ['center:browser', 'url:https://notion.test/setup']);
 releaseBrowser();
+
+// ── A GitHub pull request link opens the Pull requests tab, not the browser ──
+
+assert.deepEqual(parseGithubPullRequestUrl('https://github.com/jcoble/mac-command-bar/pull/111'), { repository: 'jcoble/mac-command-bar', number: 111 });
+assert.deepEqual(parseGithubPullRequestUrl('https://github.com/o/r.js/pull/7/files?w=1#diff-1'), { repository: 'o/r.js', number: 7 });
+assert.deepEqual(parseGithubPullRequestUrl('https://www.github.com/o/r/pull/3/'), { repository: 'o/r', number: 3 });
+for (const url of [
+  'https://github.com/o/r/issues/3',
+  'https://github.com/o/r/pull/0',
+  'https://github.com/o/r/pull/12abc',
+  'https://github.com/o/r/pulls',
+  'https://github.com.evil.test/o/r/pull/3',
+  'https://gist.github.com/o/r/pull/3',
+  'file:///github.com/o/r/pull/3',
+  'not a url'
+]) {
+  assert.equal(parseGithubPullRequestUrl(url), null, url);
+}
+
+clearWorkbenchNavigation();
+trace = [];
+registerWorkbenchNavigation({
+  showCenterTab: (id) => trace.push(`center:${id}`),
+  openUrl: (request) => {
+    trace.push(`url:${request.url}`);
+  },
+  openPullRequest: (link) => {
+    trace.push(`pr:${link.repository}#${link.number}`);
+  }
+});
+await openUrlInBrowser({ url: 'https://github.com/o/r/pull/42' });
+assert.deepEqual(trace, ['pr:o/r#42', 'center:pull-requests'], 'the pull request is chosen, then its tab comes forward; the browser is untouched');
+trace = [];
+await openUrlInBrowser({ url: 'https://github.com/o/r/issues/42' });
+assert.deepEqual(trace, ['center:browser', 'url:https://github.com/o/r/issues/42'], 'other GitHub links still open in the browser');
+clearWorkbenchNavigation();
 
 assert.equal(RIGHT_TAB_IDS.length, 8);
 assert.equal(CENTER_TAB_IDS.length, 6);

@@ -5550,6 +5550,7 @@ fn main() {
             github::read_github_pull_request_file,
             github::submit_github_pull_request_review,
             github::reply_github_pull_request_comment,
+            github::comment_github_pull_request,
             github::merge_github_pull_request,
             git_workspace::discard_git_paths,
             git_workspace::discard_all_git_changes,

@@ -74,6 +74,7 @@ pub(super) async fn execute(operation: String, args: Value) -> Result<Value, Str
         "read_github_pull_request_file" => return json(crate::github::read_github_pull_request_file(arg(&args, "query")?).await?),
         "submit_github_pull_request_review" => return json(crate::github::submit_github_pull_request_review(arg(&args, "submission")?).await?),
         "reply_github_pull_request_comment" => return json(crate::github::reply_github_pull_request_comment(arg(&args, "reply")?).await?),
+        "comment_github_pull_request" => return json(crate::github::comment_github_pull_request(arg(&args, "comment")?).await?),
         "merge_github_pull_request" => return json(crate::github::merge_github_pull_request(arg(&args, "request")?).await?),
         _ => {}
     }
