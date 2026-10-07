@@ -1950,9 +1950,8 @@ export function createAgentConversationRequestId(): number {
   return latestAgentConversationRequest;
 }
 
-export async function cancelAgentConversationRequestFromTauri(requestId: number,
-  signal?: AbortSignal): Promise<void> {
-  if (!isTauriRuntime() || signal?.aborted) return;
+export async function cancelAgentConversationRequestFromTauri(requestId: number): Promise<void> {
+  if (!isTauriRuntime()) return;
   const { invoke } = await import('./workspaceInvoke');
   await invoke('cancel_agent_conversation_request', { requestId });
 }
@@ -1994,7 +1993,7 @@ export async function readAgentConversationSelectionFromTauri(
 ): Promise<AgentConversationSelectionSnapshot | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
   const requestId = createAgentConversationRequestId();
-  const cancel = (): void => { void cancelAgentConversationRequestFromTauri(requestId, signal); };
+  const cancel = (): void => { void cancelAgentConversationRequestFromTauri(requestId); };
   signal?.addEventListener('abort', cancel, { once: true });
   try {
     if (signal?.aborted) return null;
@@ -2053,12 +2052,12 @@ export async function listRemoteAgentConversationSessionsFromTauri(
   const requestId = createAgentConversationRequestId();
   const { invoke } = await import('./workspaceInvoke');
   const cancel = (): void => {
-    void cancelAgentConversationRequestFromTauri(requestId, signal);
+    void cancelAgentConversationRequestFromTauri(requestId);
   };
   signal?.addEventListener('abort', cancel, { once: true });
   try {
     if (signal?.aborted) {
-      await cancelAgentConversationRequestFromTauri(requestId, signal);
+      await cancelAgentConversationRequestFromTauri(requestId);
       return null;
     }
     return await invoke<AgentConversationSessionRecord[]>('list_remote_agent_conversation_sessions', {
@@ -2866,8 +2865,8 @@ export async function findSourceLspCodeActionsFromTauri(
 
 export async function findSourceLspSignatureHelpFromTauri(
   preview: SourcePreview,
-  request: SourceLspLookupRequest
-  , signal: AbortSignal
+  request: SourceLspLookupRequest,
+  signal?: AbortSignal
 ): Promise<SourceSignatureHelp | null> {
   if (!isTauriRuntime() || signal?.aborted) {
     return null;
@@ -2882,8 +2881,8 @@ export async function findSourceLspSignatureHelpFromTauri(
 
 export async function findSourceLspInlayHintsFromTauri(
   preview: SourcePreview,
-  request: SourceLspLookupRequest
-  , signal: AbortSignal
+  request: SourceLspLookupRequest,
+  signal?: AbortSignal
 ): Promise<SourceInlayHint[] | null> {
   if (!isTauriRuntime() || signal?.aborted) {
     return null;
@@ -2898,7 +2897,8 @@ export async function findSourceLspInlayHintsFromTauri(
 
 export async function findSourceLspSemanticTokensFromTauri(
   preview: SourcePreview,
-  request: SourceLspLookupRequest ,signal: AbortSignal
+  request: SourceLspLookupRequest,
+  signal?: AbortSignal
 ): Promise<SourceSemanticToken[] | null> {
   if (!isTauriRuntime() || signal?.aborted) {
     return null;
@@ -2913,7 +2913,8 @@ export async function findSourceLspSemanticTokensFromTauri(
 
 export async function findSourceLspHoverFromTauri(
   preview: SourcePreview,
-  request: SourceLspLookupRequest   ,signal: AbortSignal
+  request: SourceLspLookupRequest,
+  signal?: AbortSignal
 ): Promise<SourceLspHover | null> {
   if (!isTauriRuntime() || signal?.aborted) {
     return null;
@@ -2943,7 +2944,8 @@ export async function findSourceLspSymbolsFromTauri(
 
 export async function findSourceLspWorkspaceSymbolsFromTauri(
   preview: SourcePreview,
-  request: SourceLspWorkspaceSymbolRequest ,signal: AbortSignal
+  request: SourceLspWorkspaceSymbolRequest,
+  signal?: AbortSignal
 ): Promise<SourceWorkspaceSymbol[] | null> {
   if (!isTauriRuntime() || signal?.aborted) {
     return null;
