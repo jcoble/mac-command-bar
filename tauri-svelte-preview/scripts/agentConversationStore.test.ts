@@ -1673,6 +1673,34 @@ await test('a session the backend has not started yet still reports its empty ch
   }
 });
 
+await test('a sent message draws below the history it was sent after', () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('export function sendSelectedConversationMessage('), source.indexOf('export async function refreshSelectedConversationChat('))
+    .replace('export ', '');
+  const processor = new StreamProcessor();
+  processor.setMessages(conversationMessagesFromEvents([{
+    ownedId: 'owned-sent', provider: 'claude', generation: 1, sequence: 1, timestampMs: Date.now() - 60_000,
+    payload: { kind: 'userMessage', itemId: 'user-earlier', text: 'Earlier', completed: true }
+  }] as any));
+  const active = {
+    workspaceOwnedId: 'owned-sent',
+    pendingAdmission: null,
+    chat: {
+      // The chat draws its own copy of the message the moment it is sent, as TanStack does.
+      sendMessage(input: { content: any; metadata?: Record<string, unknown> }) {
+        processor.addUserMessage(input.content, undefined, input.metadata);
+        return new Promise(() => {});
+      }
+    }
+  };
+  const send = Function('active', 'rejectPendingAdmission',
+    `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn sendSelectedConversationMessage;`)(active, () => {});
+  void send('owned-sent', 'Next question');
+  const shown = conversationDisplayItems(processor.getMessages());
+  assert.deepEqual(shown.map((item) => item.kind === 'user' ? item.text : item.kind), ['Earlier', 'Next question'],
+    'the sent copy is the newest row, so the send anchor scrolls to it rather than to the top of the history');
+});
+
 await test('displayed child state is isolated and eviction preserves parent controls and previews', () => {
   store.ensureConversationSession('drill-parent', 'codex');
   store.ensureConversationSession('drill-child-history', 'codex');

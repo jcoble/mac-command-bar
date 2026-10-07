@@ -801,7 +801,12 @@ export function sendSelectedConversationMessage(
   });
   const admission = { resolve, reject };
   selection.pendingAdmission = admission;
-  void selection.chat.sendMessage({ content: [{ type: 'text', content: text }] })
+  // The timeline orders rows by start time. Without one, the chat's own copy of
+  // the message drew above the whole history, and the send anchor scrolled there.
+  void selection.chat.sendMessage({
+    content: [{ type: 'text', content: text }],
+    metadata: { itemType: 'user-message', startedAtMs: Date.now() }
+  })
     .catch((error) => rejectPendingAdmission(selection, error))
     .finally(() => {
       if (selection.pendingAdmission === admission) {
