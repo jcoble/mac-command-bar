@@ -55,15 +55,10 @@ const startNewSession = functionSource(
 assert.match(surface, /data-testid="draft-session-surface"/);
 assert.match(surface, /<ConversationComposer/);
 assert.match(surface, /data-testid="draft-session-project"/);
-assert.match(surface, /data-testid="draft-session-branch"/);
 assert.match(surface, /data-testid="draft-session-provider"/);
 assert.match(surface, /data-testid="draft-session-new-project"/);
-assert.match(surface, /data-testid="draft-session-ref-search"/);
-assert.match(surface, /Showing \{filteredRefs\.visible\.length\} of \{filteredRefs\.total\} branches/);
-assert.match(surface, /disabled=\{!canSelectThreadStartGitRef\(ref, canCreateWorktree\)\}/);
 // A project with no repository behind it answers with nothing, so the reply is
 // read as a list only when it really is one — see newSessionGitRefs.test.ts.
-assert.match(backend, /invoke<ProjectGitRef\[] \| null>\('list_project_git_refs'/);
 assert.match(backend, /Array\.isArray\(refs\) \? refs : \[]/);
 assert.match(nativeSourceControl, /async fn list_project_git_refs\(/);
 assert.match(nativeSource, /list_project_git_refs,/);

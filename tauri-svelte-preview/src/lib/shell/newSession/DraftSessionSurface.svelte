@@ -8,7 +8,9 @@
   branch sit in the row under the composer.
 
   No Assembly conversation is created here, and opening, switching or closing a
-  draft only reads: the project list, folder listings and branch lists. A
+  draft only reads: the project list, folder listings and branch lists. Picking
+  a branch only changes the draft; a branch with no checkout is switched to in
+  the project root at the first send, before the session is created. A
   temporary ACP session reads the selected provider's controls; its process
   stops after the read. The surface hands one `ThreadStartPickerState` to
   `onSend` on the first message.
@@ -19,20 +21,19 @@
   import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Cloud from '@lucide/svelte/icons/cloud';
+  import Folder from '@lucide/svelte/icons/folder';
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
-  import GitBranch from '@lucide/svelte/icons/git-branch';
   import MessageCircle from '@lucide/svelte/icons/message-circle';
-  import Search from '@lucide/svelte/icons/search';
   import Monitor from '@lucide/svelte/icons/monitor';
   import LoaderCircle from '@lucide/svelte/icons/loader-circle';
   import X from '@lucide/svelte/icons/x';
 
   import { Button } from '$lib/components/ui/button/index.js';
-  import { Input } from '$lib/components/ui/input/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import PendingFirstMessage from '$lib/shell/components/conversation/PendingFirstMessage.svelte';
   import RemoteConnections from '$lib/shell/components/RemoteConnections.svelte';
   import AddProjectDialog from '$lib/shell/projects/AddProjectDialog.svelte';
+  import BranchPicker from '$lib/shell/newSession/BranchPicker.svelte';
   import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { defaultDraftProjectId, projectBadge, projectMachineLabel, visibleProjects } from '$lib/shell/projects/projects.ts';
@@ -45,10 +46,9 @@
   } from '$lib/shell/conversation/conversationConfig.ts';
   import {
     buildThreadStartRequest,
-    canSelectThreadStartGitRef,
+    checkoutPlanFor,
     defaultThreadStartState,
     displayProvider,
-    filterThreadStartGitRefs,
     validateThreadStart,
     type ThreadStartPickerState,
     type ThreadStartProvider,
@@ -56,6 +56,7 @@
   } from '$lib/shell/newSession/threadStartFlow.ts';
   import {
     listGitRefs,
+    switchBranch,
     type BackendAnswer,
     type ProjectGitRef
   } from '$lib/shell/newSession/newSessionBackend.ts';
@@ -79,8 +80,6 @@
   let { stopSignal, onSend, onClose }: Props = $props();
 
   const PROVIDERS: readonly ThreadStartProvider[] = ['codex', 'claude', 'antigravity'];
-  /** This build has no create-worktree command, so only existing checkouts. */
-  const canCreateWorktree = false;
 
   // The preset is applied on mount after the registry is read; this is only
   // what the first frame paints.
@@ -89,9 +88,7 @@
   );
   let composer = $state<{ focus(): void } | null>(null);
   let gitRefs = $state<ProjectGitRef[]>([]);
-  let refsLoading = $state(false);
   let refsMessage = $state<string | null>(null);
-  let refSearch = $state('');
   let submitting = $state(false);
   let stagedImages = $state<Array<{ file: File; attachment: ConversationAttachment }>>([]);
   let attachmentError = $state('');
@@ -128,7 +125,6 @@
   ].join('\u0000'));
   const currentCatalog = $derived(catalogKey === selectedCatalogKey ? catalogConfig : null);
   const problems = $derived(validateThreadStart(draft, stagedImages.length > 0));
-  const filteredRefs = $derived(filterThreadStartGitRefs(gitRefs, refSearch));
   const selectedRef = $derived(gitRefs.find((ref) => ref.name === draft.branch) ?? null);
   const selectedRemoteProfile = $derived(
     remoteAssembly.profiles.find((profile) => profile.id === draft.remoteProfileId) ?? null
@@ -220,27 +216,24 @@
     };
   });
 
-  /** Reads the branches of a local project. Only reads: a folder with no
-   * repository simply has no branches. */
-  async function loadRefs(projectPath: string): Promise<void> {
+  /** Reads the branches of a project on its own machine. Only reads: a folder
+   * with no repository simply has no branches. */
+  async function loadRefs(machine: string, projectPath: string): Promise<void> {
     const sequence = ++loadSequence;
     if (stopSignal.aborted) return;
-    refsLoading = true;
     refsMessage = null;
     let answer: BackendAnswer<ProjectGitRef[]>;
     try {
-      answer = await listGitRefs(projectPath);
+      answer = await listGitRefs(machine, projectPath);
       if (stopSignal.aborted) return;
     } catch (error) {
       if (!stopSignal.aborted && sequence === loadSequence) {
-        refsLoading = false;
         gitRefs = [];
         refsMessage = describeError(error);
       }
       return;
     }
     if (sequence !== loadSequence) return;
-    refsLoading = false;
     gitRefs = answer.status === 'ok' ? answer.value : [];
     if (answer.status === 'unavailable') refsMessage = answer.message;
     const first = gitRefs.find((ref) => ref.isCurrent)
@@ -256,12 +249,10 @@
   function clearRefs(): void {
     loadSequence += 1;
     gitRefs = [];
-    refsLoading = false;
     refsMessage = null;
-    refSearch = '';
   }
 
-  /** The machine comes from the project; a remote project runs from its root. */
+  /** The machine comes from the project. */
   function selectProject(project: ProjectRecord): void {
     const remote = project.machine !== 'local';
     const machineChanged = project.machine !== draftMachine;
@@ -276,7 +267,7 @@
       branchesAvailable: false
     });
     if (machineChanged) checkSelectedMachine();
-    if (!remote) void loadRefs(project.rootPath);
+    void loadRefs(project.machine, project.rootPath);
   }
 
   /** A plain conversation on `machine`, started in that machine's home folder. */
@@ -365,9 +356,9 @@
     if (!pickerUpdates.status && pickerUpdates.phase !== 'checking') checkSelectedMachine();
   }
 
+  /** Only the draft changes; a switch, if one is needed, waits for the first send. */
   function chooseRef(ref: ProjectGitRef): void {
-    if (!canSelectThreadStartGitRef(ref, canCreateWorktree)) return;
-    updateDraft({ cwd: ref.checkoutPath ?? draft.projectPath, branch: ref.name });
+    updateDraft({ cwd: checkoutPlanFor(draft.projectPath, ref).cwd, branch: ref.name });
   }
 
   function changeConfig(field: AgentConversationConfigField, value: string): void {
@@ -394,6 +385,17 @@
     submitting = true;
     submitError = '';
     try {
+      // A branch with no checkout is switched to in the root now, at the first
+      // send. If git refuses, its message stays on the draft and nothing starts.
+      const plan = selectedRef ? checkoutPlanFor(draft.projectPath, selectedRef) : null;
+      if (plan?.kind === 'switch') {
+        const switched = await switchBranch(draftMachine, plan.root, plan.branch);
+        if (stopSignal.aborted) return;
+        if (switched.status !== 'ok') {
+          submitError = switched.message;
+          return;
+        }
+      }
       await onSend(request, stagedImages.map((item) => item.file));
     } catch (error) {
       if (!stopSignal.aborted) submitError = describeError(error);
@@ -543,69 +545,14 @@
     </DropdownMenu.Root>
   {/if}
 
-  <DropdownMenu.Root onOpenChange={(open) => { if (!open) refSearch = ''; }}>
-    <DropdownMenu.Trigger>
-      {#snippet child({ props })}
-        <Button {...props} disabled={draft.executionEnvironment === 'remote' || !draft.projectPath} data-testid="draft-session-branch" variant="ghost" size="xs" class="draft-control draft-branch">
-          <GitBranch aria-hidden="true" class="size-3.5" />
-          <span class="truncate">{(selectedRef?.name ?? draft.branch) || 'Choose a branch'}</span>
-          <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
-        </Button>
-      {/snippet}
-    </DropdownMenu.Trigger>
-    <DropdownMenu.Content
-      side="top"
-      align="start"
-      sideOffset={8}
-      avoidCollisions
-      collisionPadding={12}
-      class="max-h-[430px] w-[min(440px,calc(100vw-32px))] overflow-y-auto"
-    >
-      <div class="draft-ref-search">
-        <Search aria-hidden="true" class="size-3.5" />
-        <Input
-          data-testid="draft-session-ref-search"
-          aria-label="Search branches"
-          placeholder="Search branches"
-          bind:value={refSearch}
-          onclick={(event) => event.stopPropagation()}
-          onkeydown={(event) => event.stopPropagation()}
-          class="h-[30px] border-0 bg-transparent shadow-none"
-        />
-      </div>
-      <DropdownMenu.Separator />
-      {#if refsLoading}
-        <DropdownMenu.Item disabled>Reading branches…</DropdownMenu.Item>
-      {:else}
-        {#each filteredRefs.visible as ref (ref.name)}
-          <DropdownMenu.Item
-            data-testid={`draft-session-ref-${ref.name}`}
-            disabled={!canSelectThreadStartGitRef(ref, canCreateWorktree)}
-            title={canSelectThreadStartGitRef(ref, canCreateWorktree)
-              ? ref.checkoutPath ?? undefined
-              : 'needs a worktree'}
-            onSelect={() => chooseRef(ref)}
-          >
-            <span class="draft-check">
-              {#if draft.branch === ref.name}<Check aria-hidden="true" class="size-3.5" />{/if}
-            </span>
-            <span class="draft-ref-name">{ref.name}</span>
-            <span class="draft-ref-tags">
-              {#if ref.isCurrent}<span>current</span>{/if}
-              {#if ref.isDefault}<span>default</span>{/if}
-              {#if !canSelectThreadStartGitRef(ref, canCreateWorktree)}<small>needs a worktree</small>{/if}
-            </span>
-          </DropdownMenu.Item>
-        {/each}
-        {#if filteredRefs.total === 0}<DropdownMenu.Item disabled>No matching branches</DropdownMenu.Item>{/if}
-      {/if}
-      {#if filteredRefs.total > filteredRefs.visible.length}
-        <div class="draft-ref-footer">
-          Showing {filteredRefs.visible.length} of {filteredRefs.total} branches
-        </div>
-      {/if}
-    </DropdownMenu.Content>
-  </DropdownMenu.Root>{/snippet}
+  {#if selectedProject && gitRefs.length > 0}
+    <span class="draft-machine-label" data-testid="draft-session-workspace">
+      <Folder aria-hidden="true" class="size-3.5" />
+      Current checkout
+    </span>
+    <BranchPicker refs={gitRefs} rootPath={draft.projectPath} branch={draft.branch} onPick={chooseRef} />
+  {/if}
+{/snippet}
 
 <section class="draft-surface" class:centred={!submitting && !remoteSetupOpen} data-testid="draft-session-surface" aria-label="New session">
   <div class="draft-topline">
@@ -914,40 +861,4 @@
     color: var(--color-accent);
   }
 
-  .draft-ref-search {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding: 4px 5px;
-    color: var(--secondary-label);
-  }
-
-  .draft-ref-name {
-    min-width: 0;
-    flex: 1 1 auto;
-    overflow: hidden;
-    color: var(--color-text);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .draft-ref-tags { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; }
-
-  .draft-ref-tags span {
-    padding: 1px 5px;
-    border: 1px solid var(--color-border);
-    border-radius: 4px;
-    color: var(--secondary-label);
-    font-size: 12px;
-    line-height: 1.4;
-  }
-
-  .draft-ref-tags small { color: var(--secondary-label); font-size: 12px; }
-
-  .draft-ref-footer {
-    padding: 7px 8px 4px;
-    border-top: 1px solid var(--color-border);
-    color: var(--secondary-label);
-    font-size: 12px;
-  }
 </style>

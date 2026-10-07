@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   accessChoicesFor,
   buildThreadStartRequest,
-  canSelectThreadStartGitRef,
+  checkoutPlanFor,
   defaultThreadStartState,
   effortChoicesFor,
   filterThreadStartGitRefs,
@@ -74,9 +74,31 @@ import { sessionTitleFromPrompt } from '../src/lib/shell/sessionStrip.ts';
   assert.equal(all.total, 120);
   const searched = filterThreadStartGitRefs(refs, 'feature/119');
   assert.deepEqual(searched.visible.map((ref) => ref.name), ['feature/119']);
-  assert.equal(canSelectThreadStartGitRef(refs[0], false), true);
-  assert.equal(canSelectThreadStartGitRef(refs[2], false), false);
-  assert.equal(canSelectThreadStartGitRef(refs[2], true), true);
+}
+
+// Picking a branch decides what the first send does; nothing runs at the pick.
+{
+  const root = '/Users/me/dev/alpha';
+  assert.deepEqual(
+    checkoutPlanFor(root, { name: 'main', isCurrent: true, checkoutPath: root }),
+    { kind: 'none', cwd: root },
+    'the branch the root is on needs no git command'
+  );
+  assert.deepEqual(
+    checkoutPlanFor(root, { name: 'feature', isCurrent: false, checkoutPath: '/Users/me/dev/worktrees/alpha/feature' }),
+    { kind: 'none', cwd: '/Users/me/dev/worktrees/alpha/feature' },
+    'a branch checked out elsewhere points the session at that worktree'
+  );
+  assert.deepEqual(
+    checkoutPlanFor(root, { name: 'idle', isCurrent: false, checkoutPath: null }),
+    { kind: 'switch', root, branch: 'idle', cwd: root },
+    'a branch with no checkout is switched to in the root'
+  );
+  assert.deepEqual(
+    checkoutPlanFor(root, { name: 'main', isCurrent: false, checkoutPath: root }),
+    { kind: 'none', cwd: root },
+    "the root's own checkout needs no git command"
+  );
 }
 
 const providerConfigs = [

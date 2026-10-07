@@ -132,7 +132,6 @@ assert.match(page, /selectCenterTab\("session"\);\s*\n\s*workbench\.rightTab = "
 assert.match(surface, /<ConversationComposer/);
 assert.match(surface, /data-testid="draft-session-provider"/);
 assert.match(surface, /data-testid="draft-session-project"/);
-assert.match(surface, /data-testid="draft-session-branch"/);
 assert.match(surface, /onConfigChange=\{changeConfig\}/);
 
 // Nothing in the draft surface may create a session or touch the rail.

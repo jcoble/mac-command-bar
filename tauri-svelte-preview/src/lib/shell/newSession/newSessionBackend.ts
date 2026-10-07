@@ -2,7 +2,7 @@
  * newSessionBackend.ts — the ONLY place the new-session thread pane talks to the
  * outside world.
  *
- * Three questions, three functions: which folder did the user choose in the
+ * Three questions and one action: which folder did the user choose in the
  * system dialog, is a typed-in folder really a project, and which checkouts
  * does this project have. Nothing here runs at import, nothing polls, nothing
  * runs from an `$effect`; the thread pane calls them when the user does something.
@@ -140,8 +140,9 @@ export async function listWorktrees(root: string): Promise<BackendAnswer<Project
   }
 }
 
-/** Every local branch, newest commit first, with checkout locations attached. */
-export async function listGitRefs(root: string): Promise<BackendAnswer<ProjectGitRef[]>> {
+/** Every local branch on the project's machine, newest commit first, with
+ * checkout locations attached. */
+export async function listGitRefs(machine: string, root: string): Promise<BackendAnswer<ProjectGitRef[]>> {
   const trimmed = root.trim();
   if (!trimmed) {
     return { status: 'failed', message: 'Choose a project folder first.' };
@@ -151,8 +152,7 @@ export async function listGitRefs(root: string): Promise<BackendAnswer<ProjectGi
   }
   try {
     countInvoke('list_project_git_refs');
-    const { invoke } = await import('@tauri-apps/api/core');
-    const refs = await invoke<ProjectGitRef[] | null>('list_project_git_refs', { root: trimmed });
+    const refs = await invokeOn<ProjectGitRef[] | null>(machine, 'list_project_git_refs', { root: trimmed });
     // A folder with no git repository behind it answers with nothing rather
     // than an empty list. That is "no branches", not a list, and handing the
     // non-list straight to the branch picker throws while the picker is opening
@@ -164,4 +164,26 @@ export async function listGitRefs(root: string): Promise<BackendAnswer<ProjectGi
       message: `The branches for this project could not be listed: ${describeError(error)}`
     };
   }
+}
+
+/** `git switch <name>` in `root` on the project's machine. The only write this
+ * pane makes, and only at the first send. A failure carries git's own words. */
+export async function switchBranch(machine: string, root: string, name: string): Promise<BackendAnswer<null>> {
+  if (!isNativeTauriRuntime()) {
+    return { status: 'unavailable', message: DESKTOP_ONLY_MESSAGE };
+  }
+  try {
+    countInvoke('switch_git_branch');
+    await invokeOn(machine, 'switch_git_branch', { root, name });
+    return { status: 'ok', value: null };
+  } catch (error) {
+    return { status: 'failed', message: describeError(error) };
+  }
+}
+
+/** This Mac runs `command` itself; a remote machine runs it through its server. */
+async function invokeOn<T>(machine: string, command: string, args: Record<string, unknown>): Promise<T> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  if (machine === 'local') return invoke<T>(command, args);
+  return invoke<T>('remote_workspace', { profileId: machine, operation: command, args });
 }

@@ -172,11 +172,27 @@ export function filterThreadStartGitRefs<T extends Pick<ThreadStartGitRef, 'name
   return { visible: matches.slice(0, Math.max(0, limit)), total: matches.length };
 }
 
-export function canSelectThreadStartGitRef(
-  ref: ThreadStartGitRef,
-  canCreateWorktree: boolean
-): boolean {
-  return Boolean(ref.checkoutPath) || canCreateWorktree;
+export type ThreadStartCheckoutPlan =
+  | { kind: 'none'; cwd: string }
+  | { kind: 'switch'; root: string; branch: string; cwd: string };
+
+/**
+ * What the first send does for the picked branch. Picking runs nothing: a
+ * branch already checked out (in the root or another worktree) is used where
+ * it is, and any other branch is switched to in the root at the first send.
+ */
+export function checkoutPlanFor(
+  rootPath: string,
+  ref: ThreadStartGitRef & { isCurrent: boolean }
+): ThreadStartCheckoutPlan {
+  if (ref.isCurrent || ref.checkoutPath) return { kind: 'none', cwd: ref.checkoutPath ?? rootPath };
+  return { kind: 'switch', root: rootPath, branch: ref.name, cwd: rootPath };
+}
+
+/** The quiet note beside a branch in the picker. */
+export function refNote(ref: ThreadStartGitRef & { isCurrent: boolean }, rootPath: string): string {
+  if (ref.isCurrent) return 'current';
+  return ref.checkoutPath && ref.checkoutPath !== rootPath ? 'in another worktree' : '';
 }
 
 function modelLabel(model: string): string {
