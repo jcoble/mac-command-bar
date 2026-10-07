@@ -4,7 +4,13 @@
  * nothing itself and never polls.
  */
 
-import { addProjectFromTauri, listProjectsFromTauri, type ProjectRecord } from '../../tauriSource.ts';
+import {
+  addProjectFromTauri,
+  listAgentConversationSessionsFromTauri,
+  listProjectsFromTauri,
+  type ProjectRecord
+} from '../../tauriSource.ts';
+import { updateOwnedSession } from '../stores/sessionRailStore.svelte.ts';
 
 export const projectRegistry = $state<{ projects: ProjectRecord[]; error: string }>({
   projects: [],
@@ -21,11 +27,23 @@ export async function hydrateProjects(): Promise<void> {
   }
 }
 
-/** Inspects and registers a folder; adding the same folder again returns the same project. */
+/**
+ * Inspects and registers a folder; adding the same folder again returns the same project.
+ * A local add also files older local sessions under it in SQL, so the rail takes their new groups.
+ */
 export async function addProject(machine: string, path: string): Promise<ProjectRecord> {
   const project = await addProjectFromTauri(machine, path);
   if (!projectRegistry.projects.some((existing) => existing.id === project.id)) {
     projectRegistry.projects = [...projectRegistry.projects, project];
+  }
+  if (machine === 'local') {
+    for (const record of (await listAgentConversationSessionsFromTauri()) ?? []) {
+      updateOwnedSession(record.ownedId, {
+        projectId: record.projectId,
+        projectGroupKey: record.projectGroupKey,
+        projectGroupLabel: record.projectGroupLabel
+      });
+    }
   }
   return project;
 }

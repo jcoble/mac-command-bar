@@ -8,9 +8,12 @@
 	 * from the view options, which is also how a person groups by project instead.
 	 */
 	import ChevronRight from "@lucide/svelte/icons/chevron-right";
+	import MessageCircle from "@lucide/svelte/icons/message-circle";
 	import { onMount } from "svelte";
 
+	import { Badge } from "$lib/components/ui/badge";
 	import type { OwnedSession } from "$lib/shell/ownedSessions";
+	import { projectBadge } from "$lib/shell/projects/projects";
 	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
 	import {
 		buildMyWorkGroups,
@@ -77,7 +80,7 @@
 			? sessionRowMenuItems({
 					status: deriveOwnedLibraryState(contextMenu.session),
 					sessionId: contextMenu.session.nativeSessionId || contextMenu.session.ownedId,
-					worktreePath: contextMenu.session.cwd || contextMenu.session.projectPath || null,
+					worktreePath: contextMenu.session.cwd || null,
 					pinned: Boolean(contextMenu.session.pinnedAt),
 				})
 			: [],
@@ -192,7 +195,7 @@
 		else if (action === "unsettle") onUnsettle?.(session.ownedId);
 		else if (action === "pin" || action === "unpin") onPin?.(session.ownedId, action === "pin");
 		else if (action === "copy-session-id") copyText(session.nativeSessionId || session.ownedId);
-		else if (action === "copy-worktree-path") copyText(session.cwd || session.projectPath || null);
+		else if (action === "copy-worktree-path") copyText(session.cwd || null);
 		else if (action === "open-in-editor") void jumpTo(session, "editor");
 		else if (action === "open-source-control") void jumpTo(session, "source-control");
 		else if (action === "delete") onAskRemove?.(session.ownedId);
@@ -203,6 +206,10 @@
      heading and the project sections inside it. -->
 {#snippet section(group: MyWorkGroup, nested: boolean)}
 	{@const needsYouCount = group.sessions.filter(sessionNeedsYou).length}
+	<!-- Project headings sit at the top level, or inside each status when both
+	     groupings are on. The Pinned section is not a project. -->
+	{@const projectHeading =
+		options.groupByProject && (nested || !options.groupByStatus) && group.key !== "pinned"}
 	<section data-testid="session-rail-section" data-group-key={group.key} class:collapsed={!isOpen(group.key)}>
 		{#if group.label}
 			<button
@@ -210,12 +217,21 @@
 				type="button"
 				class="section-heading"
 				class:nested
+				class:project={projectHeading}
 				aria-expanded={isOpen(group.key)}
 				onclick={() => toggleGroup(group.key)}
 			>
 				<!-- One chevron that turns, rather than two that swap: the quarter
            turn is what tells a person the section answered them. -->
 				<ChevronRight class="chevron" aria-hidden="true" />
+				<!-- Inside a status the key reads "<status>::none". -->
+				{#if projectHeading && (group.key === "none" || group.key.endsWith("::none"))}
+					<MessageCircle class="group-icon" aria-hidden="true" />
+				{:else if projectHeading}
+					<Badge variant="outline" class="h-4 rounded-sm px-1 font-mono text-[10px]" aria-hidden="true">
+						{projectBadge(group.label)}
+					</Badge>
+				{/if}
 				<span class="name">{group.label}</span>
 				<span data-testid="session-rail-section-count" class="count">{group.sessions.length}</span>
 				{#if needsYouCount > 0}
@@ -339,6 +355,19 @@
 		text-transform: uppercase;
 		text-align: left;
 		cursor: pointer;
+	}
+
+	/* A project heading reads as the project's own name, in its own case. */
+	.section-heading.project {
+		color: var(--foreground);
+		font-size: 12px;
+		letter-spacing: normal;
+		text-transform: none;
+	}
+	.section-heading :global(.group-icon) {
+		width: 14px;
+		height: 14px;
+		flex: 0 0 auto;
 	}
 
 	/* A project heading inside a status: indented under it, and not sticky, so

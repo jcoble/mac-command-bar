@@ -5,7 +5,7 @@
  * projection from backend records and refreshes conversation state from stored
  * snapshots/events; this module performs no I/O.
  */
-import type { AgentSession } from '../../tauriSource.ts';
+import type { AgentSession, RemoteAssemblyProfile } from '../../tauriSource.ts';
 import type { ConversationWorkspaceState } from '../conversation/conversationStore.svelte.ts';
 import type { OwnedSession } from '../ownedSessions.ts';
 import type { SessionWorkspaceSnapshot } from '../sessionWorkspaces.ts';
@@ -34,13 +34,16 @@ export const rail = $state<{
   scanning: boolean;
   error: string | null;
   remoteConnections: Record<string, RemoteConnectionState>;
+  /** The saved remote machines, so a row can name the machine it runs on. */
+  remoteProfiles: RemoteAssemblyProfile[];
 }>({
   owned: [],
   available: [],
   activeOwnedId: null,
   scanning: false,
   error: null,
-  remoteConnections: {}
+  remoteConnections: {},
+  remoteProfiles: []
 });
 
 /** One machine's state, keyed by the profile id a remote session carries. */

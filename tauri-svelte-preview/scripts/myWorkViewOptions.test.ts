@@ -24,7 +24,8 @@ function session(ownedId: string, extra: Record<string, unknown> = {}): OwnedSes
   return {
     ownedId,
     title: ownedId,
-    projectPath: '/work/mac-command-bar',
+    projectGroupKey: 'repo:github.com/me/mac-command-bar',
+    projectGroupLabel: 'mac-command-bar',
     cwd: '/work/mac-command-bar',
     agent: 'claude',
     executionEnvironment: 'local',
@@ -44,20 +45,15 @@ function shape(groups: MyWorkGroup[]): unknown[] {
   ]);
 }
 
-// Project identity comes from the workspace root basename, preferring the
-// explicit project path and tolerating a trailing slash.
+// The project group is the one SQL gave the record. A new folder or branch does
+// not move a session, because neither takes part.
 {
+  const home = { key: 'repo:github.com/me/mac-command-bar', label: 'mac-command-bar' };
+  assert.deepEqual(myWorkProject(session('one')), home);
+  assert.deepEqual(myWorkProject(session('moved', { cwd: '/work/worktrees/other', branch: 'feature' })), home);
   assert.deepEqual(
-    myWorkProject(session('one', { projectPath: '/work/projects/Assembly/', cwd: '/wrong' })),
-    { key: '/work/projects/Assembly', label: 'Assembly' }
-  );
-  assert.deepEqual(
-    myWorkProject(session('two', { projectPath: null, cwd: '/work/fallback' })),
-    { key: '/work/fallback', label: 'fallback' }
-  );
-  assert.deepEqual(
-    myWorkProject(session('three', { projectPath: 'No Project recorded', cwd: ' ', agent: 'codex', viaCmux: false })),
-    { key: 'provider:codex', label: 'codex' }
+    myWorkProject(session('plain', { projectGroupKey: 'none', projectGroupLabel: 'No project' })),
+    { key: 'none', label: 'No project' }
   );
 }
 
@@ -80,24 +76,25 @@ function shape(groups: MyWorkGroup[]): unknown[] {
   );
 }
 
-// Project sections use the full path as identity, so two same-named folders
-// do not collapse into one section.
+// Project sections are keyed by the group key, so two same-named projects stay
+// apart; projects read A to Z and "No project" comes last.
 {
+  const one = { projectGroupKey: 'project:one', projectGroupLabel: 'shared' };
   const groups = buildMyWorkGroups(
     [
-      session('working', { projectPath: '/one/shared' }),
-      session('done', { projectPath: '/two/shared', completedAt: '2026-08-09T10:00:00.000Z' }),
-      session('settled', {
-        projectPath: '/one/shared',
-        completedAt: '2026-08-08T10:00:00.000Z',
-        settledAt: '2026-08-09T12:00:00.000Z'
-      })
+      session('working', one),
+      session('plain', { projectGroupKey: 'none', projectGroupLabel: 'No project' }),
+      session('done', { projectGroupKey: 'project:two', projectGroupLabel: 'shared', completedAt: '2026-08-09T10:00:00.000Z' }),
+      session('settled', { ...one, completedAt: '2026-08-08T10:00:00.000Z', settledAt: '2026-08-09T12:00:00.000Z' }),
+      session('alpha', { projectGroupKey: 'repo:github.com/me/alpha', projectGroupLabel: 'alpha' })
     ],
     { ...DEFAULT_MY_WORK_VIEW_OPTIONS, groupByProject: true, groupByStatus: false }
   );
   assert.deepEqual(shape(groups), [
-    ['/one/shared', 'shared', ['settled', 'working']],
-    ['/two/shared', 'shared', ['done']]
+    ['repo:github.com/me/alpha', 'alpha', ['alpha']],
+    ['project:one', 'shared', ['settled', 'working']],
+    ['project:two', 'shared', ['done']],
+    ['none', 'No project', ['plain']]
   ]);
 }
 
@@ -121,26 +118,29 @@ function shape(groups: MyWorkGroup[]): unknown[] {
 
 // buildMyWorkGroups puts Working/Done/Settled outside and splits each by project
 // when both groupings are on, so marking a session done moves it down to Done.
+// The project sections inside a status use the SQL group key, with "No project" last.
 {
   const groups = buildMyWorkGroups(
     [
-      session('z-working', { projectPath: '/one/zeta', title: 'a' }),
-      session('a-settled', { projectPath: '/two/alpha', title: 'b', settledAt: '2026-08-09T12:00:00.000Z' }),
-      session('a-working', { projectPath: '/two/alpha', title: 'c' }),
-      session('a-done', { projectPath: '/two/alpha', title: 'd', completedAt: '2026-08-09T10:00:00.000Z' })
+      session('z-working', { projectGroupKey: 'project:zeta', projectGroupLabel: 'zeta', title: 'a' }),
+      session('a-settled', { projectGroupKey: 'project:alpha', projectGroupLabel: 'alpha', title: 'b', settledAt: '2026-08-09T12:00:00.000Z' }),
+      session('a-working', { projectGroupKey: 'project:alpha', projectGroupLabel: 'alpha', title: 'c' }),
+      session('a-done', { projectGroupKey: 'project:alpha', projectGroupLabel: 'alpha', title: 'd', completedAt: '2026-08-09T10:00:00.000Z' }),
+      session('n-working', { projectGroupKey: 'none', projectGroupLabel: 'No project', title: 'e' })
     ],
     { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc', groupByProject: true, groupByStatus: true }
   );
   assert.deepEqual(shape(groups), [
-    ['working', 'Working', ['z-working', 'a-working'], [
-      ['working::/two/alpha', 'alpha', ['a-working']],
-      ['working::/one/zeta', 'zeta', ['z-working']]
+    ['working', 'Working', ['z-working', 'a-working', 'n-working'], [
+      ['working::project:alpha', 'alpha', ['a-working']],
+      ['working::project:zeta', 'zeta', ['z-working']],
+      ['working::none', 'No project', ['n-working']]
     ]],
     ['done', 'Done', ['a-done'], [
-      ['done::/two/alpha', 'alpha', ['a-done']]
+      ['done::project:alpha', 'alpha', ['a-done']]
     ]],
     ['settled', 'Settled', ['a-settled'], [
-      ['settled::/two/alpha', 'alpha', ['a-settled']]
+      ['settled::project:alpha', 'alpha', ['a-settled']]
     ]]
   ]);
 }
@@ -153,13 +153,20 @@ function shape(groups: MyWorkGroup[]): unknown[] {
     session('pinned-done', { title: 'b', completedAt: '2026-08-09T10:00:00.000Z', pinnedAt: '2026-10-07T10:00:00.000Z' }),
     session('pinned-working', { title: 'c', pinnedAt: '2026-10-07T11:00:00.000Z' })
   ];
-  const byStatus = buildMyWorkGroups(rows, { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc' });
+  const byProject = buildMyWorkGroups(rows, { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc' });
+  assert.deepEqual(shape(byProject), [
+    ['pinned', 'Pinned', ['pinned-done', 'pinned-working']],
+    ['repo:github.com/me/mac-command-bar', 'mac-command-bar', ['working']]
+  ]);
+  const byStatus = buildMyWorkGroups(rows, {
+    ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc', groupByProject: false, groupByStatus: true
+  });
   assert.deepEqual(shape(byStatus), [
     ['pinned', 'Pinned', ['pinned-done', 'pinned-working']],
     ['working', 'Working', ['working']]
   ]);
   const ungrouped = buildMyWorkGroups(rows, {
-    ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc', groupByStatus: false
+    ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc', groupByProject: false, groupByStatus: false
   });
   assert.deepEqual(shape(ungrouped), [
     ['pinned', 'Pinned', ['pinned-done', 'pinned-working']],
@@ -177,7 +184,11 @@ function shape(groups: MyWorkGroup[]): unknown[] {
     session('new-old', { lastActivity: '2026-08-04T10:00:00.000Z' }),
     session('new-new', { lastActivity: '2026-08-05T10:00:00.000Z' })
   ];
-  const groups = buildMyWorkGroups(rows, { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'manual' }, ['c', 'a', 'b']);
+  const groups = buildMyWorkGroups(
+    rows,
+    { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'manual', groupByProject: false, groupByStatus: true },
+    ['c', 'a', 'b']
+  );
   assert.deepEqual(shape(groups), [
     ['working', 'Working', ['new-new', 'new-old', 'a', 'b']],
     ['done', 'Done', ['c']]
@@ -218,12 +229,14 @@ function shape(groups: MyWorkGroup[]): unknown[] {
   assert.deepEqual(grouping({ groupBy: 'project' }), [true, false]);
   assert.deepEqual(grouping({ groupBy: 'status' }), [false, true]);
   assert.deepEqual(grouping({ groupBy: 'none' }), [false, false]);
-  assert.deepEqual(grouping({ groupBy: 'wrong' }), [false, true]);
-  assert.deepEqual(grouping({}), [false, true]);
+  // Nothing saved: a new install groups by project. A saved choice keeps its own values.
+  assert.deepEqual(grouping({ groupBy: 'wrong' }), [true, false]);
+  assert.deepEqual(grouping({}), [true, false]);
+  assert.deepEqual(grouping({ groupByProject: false, groupByStatus: true }), [false, true]);
   assert.deepEqual(grouping({ groupBy: 'status', groupByProject: true, groupByStatus: false }), [true, false]);
   assert.deepEqual(normalizeMyWorkViewOptions({ groupBy: 'wrong', sortBy: 'name' }), {
-    groupByProject: false,
-    groupByStatus: true,
+    groupByProject: true,
+    groupByStatus: false,
     sortBy: 'name',
     sortDirection: 'asc'
   });

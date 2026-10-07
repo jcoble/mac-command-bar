@@ -139,7 +139,7 @@
   const threads = $derived.by(() => {
     if (!detail) return [];
     const { number, localRoot } = detail;
-    return rail.owned.filter((session) => session.pullRequest === `PR #${number}` && (session.projectPath === localRoot || sessionWorkspaceRoot(session) === localRoot));
+    return rail.owned.filter((session) => session.pullRequest === `PR #${number}` && sessionWorkspaceRoot(session) === localRoot);
   });
   const activity = $derived(detail ? activityRows(detail) : []);
   const canMerge = $derived(detail?.state === 'OPEN' && !detail.isDraft && detail.mergeable === 'MERGEABLE' && !detailLoading && !posting && !merging && !mergeUncertain);

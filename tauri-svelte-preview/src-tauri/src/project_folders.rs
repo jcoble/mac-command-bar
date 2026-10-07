@@ -1,10 +1,14 @@
 //! Folders that become projects: inspecting one, listing a machine's folders,
-//! and the one-time import of the project roots saved by older versions.
+//! the one-time import of the project roots saved by older versions, and
+//! matching session folders to this Mac's projects.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
-use mcb_core::session_store::ProjectRow;
+use mcb_core::scanners::sessions::AgentSessionRecord;
+use mcb_core::session_store::{ProjectRow, SessionStore};
 use serde::{Deserialize, Serialize};
 
 use crate::agent_conversation::manager::AgentRuntimeManager;
@@ -44,6 +48,126 @@ fn expand_home(path: &str) -> Result<PathBuf, String> {
 fn git_text(dir: &Path, args: &[&str]) -> Option<String> {
     let output = Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// The absolute git common directory of `dir`: one per repository, shared by
+/// its main checkout and every worktree. Read from git's own files, so no git
+/// process starts. `None` outside git, for a folder that is gone, and for a
+/// relative path (which would resolve against our own folder).
+fn git_common_dir(dir: &str) -> Option<String> {
+    let dir = Path::new(dir);
+    if !dir.is_absolute() {
+        return None;
+    }
+    for folder in std::fs::canonicalize(dir).ok()?.ancestors() {
+        let dot_git = folder.join(".git");
+        let git_dir = if dot_git.is_file() {
+            let text = std::fs::read_to_string(&dot_git).ok()?;
+            folder.join(text.strip_prefix("gitdir:")?.trim())
+        } else if dot_git.join("HEAD").is_file() {
+            // Git skips a `.git` folder that is not a repository, such as an empty one.
+            dot_git
+        } else {
+            continue;
+        };
+        // A worktree's git dir names the shared one, relative to itself or absolute.
+        let common = match std::fs::read_to_string(git_dir.join("commondir")) {
+            Ok(text) => git_dir.join(text.trim()),
+            Err(_) => git_dir,
+        };
+        return std::fs::canonicalize(common).ok().map(|path| path.to_string_lossy().into_owned());
+    }
+    None
+}
+
+fn to_json(value: &impl Serialize) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|error| error.to_string())
+}
+
+/// Each folder's local project, as `(folder, project_id)`, for the folders
+/// that have one. The path rules run first, in SQL. The folders they leave
+/// unmatched then join a project whose root shares their git common directory,
+/// again in SQL, after reading git's files for each such folder and local root.
+pub(crate) fn match_local_folders(store: &SessionStore, folders: &[String]) -> Result<Vec<(String, String)>, String> {
+    let mut matches = store.match_folders_by_path(&to_json(&folders)?).map_err(|error| error.to_string())?;
+    let matched: HashSet<&str> = matches.iter().map(|(folder, _)| folder.as_str()).collect();
+    let leftovers: Vec<(&str, String)> = folders
+        .iter()
+        .map(String::as_str)
+        .filter(|folder| !matched.contains(folder))
+        .filter_map(|folder| Some((folder, git_common_dir(folder)?)))
+        .collect();
+    if leftovers.is_empty() {
+        return Ok(matches);
+    }
+    let roots: Vec<(String, String)> = store
+        .local_project_roots()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter_map(|root| {
+            let common = git_common_dir(&root)?;
+            Some((root, common))
+        })
+        .collect();
+    let by_common_dir = store
+        .match_folders_by_common_dir(&to_json(&leftovers)?, &to_json(&roots)?)
+        .map_err(|error| error.to_string())?;
+    matches.extend(by_common_dir);
+    Ok(matches)
+}
+
+/// Files older local sessions under their projects when a local project was
+/// added since the last run (amendment A1); otherwise it returns before any
+/// UPDATE or git call. Either way it writes one line to backend.log.
+pub(crate) fn backfill_local_session_projects(store: &SessionStore) -> Result<(), String> {
+    let started = Instant::now();
+    let Some(newest) = store.project_newer_than_backfill().map_err(|error| error.to_string())? else {
+        crate::debug_log::stderr_log!("project back-fill: no new projects");
+        return Ok(());
+    };
+    let folders = store.unassigned_local_session_cwds().map_err(|error| error.to_string())?;
+    let matches = match_local_folders(store, &folders)?;
+    let filed = store.assign_session_projects(&to_json(&matches)?).map_err(|error| error.to_string())?;
+    store.mark_project_backfill(newest).map_err(|error| error.to_string())?;
+    crate::debug_log::stderr_log!(
+        "project back-fill: filed {filed} sessions; {} of {} folders matched; {} ms",
+        matches.len(),
+        folders.len(),
+        started.elapsed().as_millis()
+    );
+    Ok(())
+}
+
+/// Puts each scanned session's project group on it: its folder matched the
+/// same way as the back-fill, then the group from one SQL statement over the
+/// distinct folders. A session with no folder gets the group of no project.
+pub(crate) fn attach_scanned_project_groups(store: &SessionStore, sessions: &mut [AgentSessionRecord]) -> Result<(), String> {
+    let folders: Vec<String> = sessions
+        .iter()
+        .filter_map(|session| session.project_path.clone())
+        .filter(|folder| !folder.is_empty())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let matches: HashMap<String, String> = match_local_folders(store, &folders)?.into_iter().collect();
+    let pairs: Vec<(&str, Option<&str>)> = folders
+        .iter()
+        .map(|folder| (folder.as_str(), matches.get(folder).map(String::as_str)))
+        .chain([("", None)])
+        .collect();
+    let groups: HashMap<String, (String, String)> = store
+        .project_groups(&to_json(&pairs)?)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|(folder, key, label)| (folder, (key, label)))
+        .collect();
+    for session in sessions.iter_mut() {
+        if let Some((key, label)) = groups.get(session.project_path.as_deref().unwrap_or("")) {
+            session.project_group_key.clone_from(key);
+            session.project_group_label.clone_from(label);
+        }
+    }
+    Ok(())
 }
 
 /// Checks a folder before it becomes a project. Reads only; never runs `git init`.
@@ -169,6 +293,8 @@ pub(crate) fn new_project_row(machine: String, inspection: ProjectFolderInspecti
         title: inspection.title,
         repo_key: inspection.repo_key,
         created_at_ms: chrono::Utc::now().timestamp_millis(),
+        // Computed by the store when the row is read back.
+        group_key: String::new(),
     }
 }
 
@@ -357,6 +483,35 @@ mod tests {
     }
 
     #[test]
+    fn common_dir_matches_git_without_running_it() {
+        let root = temp_dir();
+        let repo = repo_with_main(&root);
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        let linked = root.join("linked");
+        git(&repo, &["worktree", "add", "-b", "linked", text(&linked)]);
+        let bare = root.join("bare.git");
+        let bare_worktree = root.join("bare-worktree");
+        git(&root, &["init", "--bare", text(&bare)]);
+        git(&bare, &["worktree", "add", text(&bare_worktree)]);
+        for folder in [repo.clone(), repo.join("src"), linked, bare_worktree] {
+            let output = Command::new("git")
+                .arg("-C").arg(&folder)
+                .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+                .output().unwrap();
+            let expected = std::fs::canonicalize(String::from_utf8_lossy(&output.stdout).trim()).unwrap();
+            assert_eq!(git_common_dir(text(&folder)).as_deref(), Some(text(&expected)), "{folder:?}");
+        }
+        // Git ignores an empty .git folder, like the one in this machine's home folder.
+        let plain = root.join("plain");
+        let empty_git = root.join("empty-git");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::create_dir_all(empty_git.join(".git")).unwrap();
+        assert_eq!(git_common_dir(text(&plain)), None);
+        assert_eq!(git_common_dir(text(&empty_git)), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn list_folders_expands_home_and_lists_only_directories() {
         let home = temp_dir();
         std::fs::create_dir_all(home.join("zeta")).unwrap();
@@ -373,6 +528,45 @@ mod tests {
         );
         assert_eq!(nested.unwrap().path, text(&home.join("alpha")));
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    fn unfiled_session(owned_id: &str, cwd: &Path) -> mcb_core::session_store::SessionRow {
+        mcb_core::session_store::SessionRow {
+            owned_id: owned_id.into(), native_session_id: None, provider: "codex".into(), model: None, effort: None,
+            cwd: text(cwd).into(), worktree: None, branch: None, title: None, title_source: None, project: None,
+            project_id: None, state: "ready".into(), suspended: false, created_at_ms: 1, last_activity_at_ms: 1,
+            extra_json: "{}".into(),
+        }
+    }
+
+    #[test]
+    fn backfill_files_worktree_and_subfolder_sessions_once_per_new_project() {
+        let root = temp_dir();
+        let repo = repo_with_main(&root);
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        let worktree = root.join("worktrees/feature");
+        git(&repo, &["worktree", "add", "-b", "feature", text(&worktree)]);
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let store = SessionStore::open_in_memory().unwrap();
+        for (id, cwd) in [("worktree", &worktree), ("subfolder", &repo.join("src")), ("elsewhere", &elsewhere)] {
+            store.upsert_session(&unfiled_session(id, cwd)).unwrap();
+        }
+        let project = store
+            .insert_or_get_project(&new_project_row("local".into(), inspect_project_folder_sync(text(&repo)).unwrap()))
+            .unwrap();
+
+        backfill_local_session_projects(&store).unwrap();
+        let project_of = |id: &str| store.get_session(id).unwrap().unwrap().project_id;
+        assert_eq!(project_of("worktree").as_deref(), Some(project.id.as_str()), "joined by git common dir");
+        assert_eq!(project_of("subfolder").as_deref(), Some(project.id.as_str()), "joined by path");
+        assert_eq!(project_of("elsewhere"), None);
+
+        // No newer project: the rerun stops before matching, so a new unfiled row stays unfiled.
+        store.upsert_session(&unfiled_session("later", &worktree)).unwrap();
+        backfill_local_session_projects(&store).unwrap();
+        assert_eq!(project_of("later"), None);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

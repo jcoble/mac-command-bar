@@ -3,12 +3,16 @@ import assert from 'node:assert/strict';
 import {
   buildSessionHistoryViewModel,
   createSessionHistoryCollapseState,
+  filterSessionHistoryRecords,
   isSessionHistoryGroupOpen,
   toggleSessionHistoryGroup,
   visibleSessionHistoryRows
 } from '../src/lib/shell/history/sessionHistoryViewModel.ts';
+import type { SessionLibraryRecord } from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
 
-function record(key, input = {}) {
+const ATLAS = { projectGroupKey: 'repo:github.com/dev/atlas', projectGroupLabel: 'atlas' };
+
+function record(key: string, input: Record<string, unknown> = {}): SessionLibraryRecord {
   return {
     key,
     source: 'provider',
@@ -18,7 +22,7 @@ function record(key, input = {}) {
     canonicalCwd: '/Users/dev/work/atlas',
     title: `Session ${key}`,
     description: null,
-    projectPath: '/Users/dev/work/atlas',
+    ...ATLAS,
     model: null,
     state: 'resumable',
     runtimeState: null,
@@ -30,7 +34,7 @@ function record(key, input = {}) {
     owned: null,
     available: null,
     ...input
-  };
+  } as unknown as SessionLibraryRecord;
 }
 
 const rows = [
@@ -41,7 +45,6 @@ const rows = [
   }),
   record('atlas-lane-old', {
     canonicalCwd: '/Users/dev/work/worktrees/atlas/feature-one',
-    projectPath: '/Users/dev/work/worktrees/atlas/feature-one',
     title: 'Investigate the cache',
     firstPrompt: 'Investigate cache invalidation in the editor',
     updatedAt: '2026-08-09T12:00:00Z',
@@ -49,7 +52,6 @@ const rows = [
   }),
   record('atlas-lane-new', {
     canonicalCwd: '/Users/dev/work/worktrees/atlas/feature-one',
-    projectPath: '/Users/dev/work/worktrees/atlas/feature-one',
     title: 'Finish the cache repair',
     updatedAt: '2026-08-10T12:00:00Z',
     messageCount: 11
@@ -57,7 +59,8 @@ const rows = [
   record('beacon', {
     provider: 'beta',
     canonicalCwd: '/Users/dev/work/beacon',
-    projectPath: '/Users/dev/work/beacon',
+    projectGroupKey: 'project:beacon',
+    projectGroupLabel: 'beacon',
     title: '',
     nativeSessionId: 'beacon',
     firstPrompt: 'Trace the first visible message',
@@ -69,7 +72,8 @@ const rows = [
     ownedId: 'cedar-live',
     provider: 'beta',
     canonicalCwd: '/Users/dev/work/cedar',
-    projectPath: '/Users/dev/work/cedar',
+    projectGroupKey: 'project:cedar',
+    projectGroupLabel: 'cedar',
     title: 'Keep the live session visible',
     state: 'working',
     runtimeState: 'working',
@@ -78,8 +82,9 @@ const rows = [
   })
 ];
 
-// Projects and worktrees are counted from the filtered rows. Shared-root
-// worktrees resolve back to their repository, and activity orders every level.
+// Projects and worktrees are counted from the filtered rows. Rows group by the
+// key SQL gave them, so a repository's worktrees sit under it, and activity
+// orders every level.
 {
   const view = buildSessionHistoryViewModel(rows);
   assert.equal(view.totalCount, 5);
@@ -100,10 +105,10 @@ const rows = [
     'atlas-lane-old'
   ]);
 
-  const beacon = view.projects.find((project) => project.name === 'beacon');
+  const beacon = view.projects.find((project) => project.name === 'beacon')!;
   assert.equal(beacon.singleCheckout, true);
   assert.equal(beacon.worktrees[0].rows[0].displayTitle, 'Trace the first visible message');
-  assert.equal(view.projects.find((project) => project.name === 'cedar').worktrees[0].rows[0].statusHint, 'Live');
+  assert.equal(view.projects.find((project) => project.name === 'cedar')!.worktrees[0].rows[0].statusHint, 'Live');
 }
 
 // Search covers the displayed content plus project and worktree identity.
@@ -114,19 +119,31 @@ const rows = [
   assert.equal(buildSessionHistoryViewModel(rows, { query: 'atlas' }).totalCount, 3);
 }
 
-// A session recorded against the shared worktree container still belongs to
-// the same repository as sessions from its main checkout.
+// The folder never decides the group: a session in an unrelated folder stays in
+// its project, two projects with one name stay apart, and the Project scope
+// keeps only the active group. "No project" comes last, as in the rail, even
+// when it holds the newest session.
 {
-  const view = buildSessionHistoryViewModel([
+  const records = [
     record('atlas-main'),
-    record('atlas-container', {
-      canonicalCwd: '/Users/dev/work/worktrees/atlas',
-      projectPath: '/Users/dev/work/worktrees/atlas'
+    record('atlas-moved', { canonicalCwd: '/tmp/elsewhere' }),
+    record('other-atlas', { projectGroupKey: 'project:other', projectGroupLabel: 'atlas' }),
+    record('plain', {
+      canonicalCwd: '/Users/dev', projectGroupKey: 'none', projectGroupLabel: 'No project', updatedAt: '2026-08-10T12:00:00Z'
     })
+  ];
+  const view = buildSessionHistoryViewModel(records);
+  assert.deepEqual(view.projects.map((project) => [project.key, project.name, project.count]).toSorted(), [
+    ['none', 'No project', 1],
+    ['project:other', 'atlas', 1],
+    ['repo:github.com/dev/atlas', 'atlas', 2]
   ]);
-  assert.equal(view.projects.length, 1);
-  assert.equal(view.projects[0].name, 'atlas');
-  assert.equal(view.projects[0].count, 2);
+  assert.equal(view.projects.at(-1)!.key, 'none');
+  assert.deepEqual(
+    filterSessionHistoryRecords(records, { scope: 'project', projectKey: ATLAS.projectGroupKey }).map((row) => row.key),
+    ['atlas-main', 'atlas-moved']
+  );
+  assert.deepEqual(filterSessionHistoryRecords(records, { scope: 'project', projectKey: null }), []);
 }
 
 // Provider filtering is exact, keeps a stable provider roster, and recomputes
@@ -145,24 +162,19 @@ const rows = [
 // deleted worktree's historical sessions remain visible beside live checkouts.
 {
   const view = buildSessionHistoryViewModel([
-    record('nested-main', {
-      canonicalCwd: '/Users/dev/work/atlas/packages/app',
-      projectPath: '/Users/dev/work/atlas/packages/app',
-      projectRoot: '/Users/dev/work/atlas'
-    }),
-    record('deleted-lane', {
-      canonicalCwd: '/Users/dev/work/worktrees/atlas/deleted-lane',
-      projectPath: '/Users/dev/work/worktrees/atlas/deleted-lane',
-      projectRoot: '/Users/dev/work/atlas'
-    })
+    record('nested-main', { canonicalCwd: '/Users/dev/work/atlas/packages/app' }),
+    record('deleted-lane', { canonicalCwd: '/Users/dev/work/worktrees/atlas/deleted-lane' })
   ], {
+    // Keyed by group. A group no session names adds nothing: its label comes from the sessions.
     checkouts: {
-      '/Users/dev/work/atlas': [
+      [ATLAS.projectGroupKey]: [
         { path: '/Users/dev/work/atlas', branch: 'main', isMain: true },
         { path: '/Users/dev/work/worktrees/atlas/live-lane', branch: 'live', isMain: false }
-      ]
+      ],
+      'project:unseen': [{ path: '/Users/dev/work/unseen', branch: 'main', isMain: true }]
     }
   });
+  assert.equal(view.projects.length, 1);
   assert.deepEqual(view.projects[0].worktrees.map((worktree) => [worktree.name, worktree.count]), [
     ['atlas', 1],
     ['deleted-lane', 1],
@@ -175,8 +187,8 @@ const rows = [
 // project still hides every row below it.
 {
   const view = buildSessionHistoryViewModel(rows);
-  const atlas = view.projects.find((project) => project.name === 'atlas');
-  const feature = atlas.worktrees.find((worktree) => worktree.name === 'feature-one');
+  const atlas = view.projects.find((project) => project.name === 'atlas')!;
+  const feature = atlas.worktrees.find((worktree) => worktree.name === 'feature-one')!;
   const initial = createSessionHistoryCollapseState();
   const projectOpen = toggleSessionHistoryGroup(initial, 'project', atlas.key);
   const worktreeOpen = toggleSessionHistoryGroup(projectOpen, 'worktree', feature.key);

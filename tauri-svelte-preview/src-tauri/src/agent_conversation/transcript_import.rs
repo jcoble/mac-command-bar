@@ -161,6 +161,12 @@ pub fn begin_import_session(
     };
     let extra_json =
         merge_import_cursor(&super::manager::imported_session_extra(provider)?, &cursor)?;
+    // The folder's project as of now, matched like the back-fill: a project added
+    // after History scanned this transcript still counts.
+    let project_id = crate::project_folders::match_local_folders(store, &[cwd.to_string()])?
+        .into_iter()
+        .next()
+        .map(|(_, project_id)| project_id);
     let session = SessionRow {
         owned_id: owned_id.clone(),
         native_session_id: Some(native_session_id.to_string()),
@@ -175,7 +181,7 @@ pub fn begin_import_session(
             .filter(|title| !title.is_empty()),
         title_source: None,
         project: None,
-        project_id: None,
+        project_id,
         state: "ready".to_string(),
         suspended: false,
         created_at_ms: last_activity_at_ms,

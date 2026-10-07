@@ -471,12 +471,12 @@ export type AgentSession = {
    */
   latestTurns?: AgentSessionTurn[];
   /**
-   * The repository this session's folder belongs to, as git reported it during
-   * the scan. The History panel groups on this, so a repository's main checkout
-   * and its worktrees sit together under the project folder's name. Left out
-   * when the folder is gone from disk or was never in a repository.
+   * The project group the scan command matched this session's folder to, in
+   * SQL against the project registry: `repo:<key>`, `project:<id>` or `none`,
+   * and the label History shows for it.
    */
-  projectRoot?: string | null;
+  projectGroupKey: string;
+  projectGroupLabel: string;
 };
 
 /** One remembered turn of a scanned session: who spoke, and what they said. */
@@ -523,6 +523,9 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   backgroundTaskIds?: string[];
   nativeSessionId: string | null;
   projectId: string | null;
+  /** The session's project group, computed in SQL on this Mac: `repo:<key>`, `project:<id>` or `none`. */
+  projectGroupKey: string;
+  projectGroupLabel: string;
 };
 
 export type ExecutionEnvironment = 'local' | 'remote';
@@ -3113,7 +3116,8 @@ async function postLocalSourceBridge<T>(
   return body as T;
 }
 
-export type ProjectRecord = { id: string; machine: string; rootPath: string; title: string; repoKey: string; createdAtMs: number };
+/** A registered project. `groupKey` is the rail group its sessions share, computed in SQL. */
+export type ProjectRecord = { id: string; machine: string; rootPath: string; title: string; repoKey: string; createdAtMs: number; groupKey: string };
 export type FolderListing = { path: string; directories: string[]; truncated: boolean };
 
 export async function listProjectsFromTauri(): Promise<ProjectRecord[]> {

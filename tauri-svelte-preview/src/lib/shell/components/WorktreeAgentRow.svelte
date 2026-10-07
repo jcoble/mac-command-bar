@@ -1,6 +1,6 @@
 <script lang="ts">
 	/**
-	 * One session in the rail: project and status, title and model, branch.
+	 * One session in the rail: status, title, the machine it runs on and its branch.
 	 *
 	 * The row currently owns one visual-only click. It changes the rail's local
 	 * active paint and calls no session, panel, persistence, or native service.
@@ -8,9 +8,10 @@
 	 * The rail passes one shared timestamp into every row. This row mounts no
 	 * timer or clock subscription. Its seeded activity glyph exists only during
 	 * real work and pauses itself when the row is offscreen. A dot on the
-	 * provider tile says when the session is waiting on you or failed.
+	 * provider tile says when the session is waiting on you or failed, and a
+	 * cloud in its corner marks a session on a remote machine.
 	 */
-	import Server from "@lucide/svelte/icons/server";
+	import Cloud from "@lucide/svelte/icons/cloud";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import { AGENT_ICONS, agentDisplayName } from "$lib/shell/agentIcons.ts";
 	import WorkingSpinner from "$lib/shell/components/conversation/WorkingSpinner.svelte";
@@ -20,7 +21,8 @@
 		sessionPresenceHistory,
 	} from "$lib/shell/conversation/sessionPresence.ts";
 	import { presentAgentError } from "$lib/shell/errorPresentation";
-	import { resolveOwnedSessionProject, type OwnedSession } from "$lib/shell/ownedSessions";
+	import type { OwnedSession } from "$lib/shell/ownedSessions";
+	import { projectMachineLabel } from "$lib/shell/projects/projects";
 	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
 	import { sessionLabel } from "$lib/shell/sessionStrip";
 	import { rail } from "$lib/shell/stores/sessionRailStore.svelte";
@@ -63,8 +65,6 @@
 
 	const label = $derived(sessionLabel(session));
 	const shelf = $derived(deriveOwnedLibraryState(session));
-	const projectInfo = $derived(resolveOwnedSessionProject(session));
-	const project = $derived(projectInfo.label);
 	const presentedError = $derived(session.lastError ? presentAgentError(session.lastError) : null);
 
 	const presenceHistory = $derived($sessionPresenceHistory[session.ownedId] ?? EMPTY_SESSION_PRESENCE_HISTORY);
@@ -137,6 +137,8 @@
 	const remoteState = $derived(
 		remote ? (rail.remoteConnections[session.remoteProfileId ?? ""] ?? "disconnected") : null,
 	);
+	/** "This Mac" or the saved profile's name; the group heading already names the project. */
+	const machine = $derived(projectMachineLabel(remote ? (session.remoteProfileId ?? "") : "local", rail.remoteProfiles));
 
 	// ── The age, and the working indicator in the rail ─────────────────────────
 	/**
@@ -204,8 +206,12 @@
 			title={remote ? `This session runs on a remote machine — ${remoteState}` : undefined}
 		>
 			<ProviderIcon class="thumb-mark" aria-hidden="true" />
+			{#if remote}
+				<span class="cloud-mark" data-state={remoteState} aria-hidden="true"><Cloud /></span>
+			{/if}
 			{#if presence === "attention" || presence === "failed"}
-				<span class="status-dot" data-presence={presence} role="img" aria-label={presenceLabel}></span>
+				<!-- The cloud holds the bottom corner of a remote tile, so the dot moves up. -->
+				<span class="status-dot" class:top={remote} data-presence={presence} role="img" aria-label={presenceLabel}></span>
 			{/if}
 		</span>
 
@@ -228,17 +234,9 @@
 			</span>
 
 			<span class="line line-meta">
-				<!-- The machine, as a small glyph ahead of the project rather than a
-                   badge on the tile: a remote session is told apart at a glance
-                   and the tile stays clean. The tile's label carries it in words. -->
-				{#if remote}
-					<span class="remote-mark" data-state={remoteState} aria-hidden="true">
-						<Server />
-					</span>
-				{/if}
-				<span data-testid="worktree-agent-meta" class="project">{project}</span>
+				<span data-testid="worktree-agent-meta" class="machine">{machine}</span>
 				{#if session.branch}
-					<span class="sep" aria-hidden="true">·</span>
+					<span class="sep" aria-hidden="true">•</span>
 					<span class="branch">{session.branch}</span>
 				{/if}
 
@@ -407,31 +405,48 @@
 		border-color: var(--secondary);
 	}
 
-	/* The remote glyph leads the second line, bare, at the line's text size.
-     Static: its colour changes only when the machine's state does, and it
-     never animates. */
-	.remote-mark {
-		display: inline-flex;
-		flex: 0 0 auto;
-		color: var(--muted-foreground);
+	.status-dot.top {
+		top: -2px;
+		bottom: auto;
 	}
 
-	.remote-mark :global(svg) {
-		width: 11px;
-		height: 11px;
+	/* The cloud in a remote tile's bottom corner, cut out of the tile like the
+     dot. Static: its colour changes only when the machine's state does, and it
+     never animates. */
+	.cloud-mark {
+		position: absolute;
+		right: -3px;
+		bottom: -3px;
+		display: flex;
+		width: 15px;
+		height: 15px;
+		align-items: center;
+		justify-content: center;
+		border-radius: 50%;
+		background: var(--card);
+		color: var(--color-idle);
+	}
+
+	.cloud-mark :global(svg) {
+		width: 10px;
+		height: 10px;
+	}
+
+	.row:hover .cloud-mark {
+		background: var(--accent);
+	}
+
+	.row.selected .cloud-mark {
+		background: var(--secondary);
 	}
 
 	/* One state, told in colour as well as in the label and tooltip above. */
-	.remote-mark[data-state="connected"] {
+	.cloud-mark[data-state="connected"] {
 		color: var(--color-good);
 	}
 
-	.remote-mark[data-state="reconnecting"] {
+	.cloud-mark[data-state="reconnecting"] {
 		color: var(--color-attention);
-	}
-
-	.remote-mark[data-state="disconnected"] {
-		color: var(--color-idle);
 	}
 
 	/* The two marks their vendors publish in a colour wear it here. The rest
@@ -473,7 +488,7 @@
 		line-height: 16px;
 	}
 
-	.project {
+	.machine {
 		min-width: 0;
 		flex: 0 1 auto;
 		overflow: hidden;
@@ -483,9 +498,9 @@
 		white-space: nowrap;
 	}
 
-	/* The branch, at the project's size. Not monospaced: this
+	/* The branch, at the machine's size. Not monospaced: this
      line is read, not compared character by character, and a mono face at this
-     size is both wider and harder to read in a rail this narrow. The project
+     size is both wider and harder to read in a rail this narrow. The machine
      gives way first, because it repeats down the whole list and the branch is
      what tells one row from the next. */
 	.sep {

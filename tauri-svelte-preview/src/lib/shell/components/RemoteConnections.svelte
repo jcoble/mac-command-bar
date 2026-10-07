@@ -50,6 +50,7 @@
 
   function apply(next: RemoteAssemblyEnvironment) {
     environment = next;
+    rail.remoteProfiles = next.profiles;
     onChange?.(next);
   }
 

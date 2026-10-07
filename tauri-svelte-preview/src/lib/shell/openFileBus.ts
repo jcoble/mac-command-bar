@@ -79,7 +79,7 @@ export function requestOpenConversationFile(
   reference: string,
   provenance?: ConversationFileLinkProvenance
 ): string | null {
-  const sessionRoot = (active.cwd || active.projectPath || '').replace(/\/+$/, '');
+  const sessionRoot = active.cwd.replace(/\/+$/, '');
   const { path, line } = splitConversationFileReference(reference);
   const candidate = normalizeConversationFileHref(path);
   const recordedPath = provenance?.path ? normalizeConversationFileHref(provenance.path) : '';
