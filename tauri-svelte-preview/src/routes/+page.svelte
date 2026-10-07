@@ -58,9 +58,9 @@
 	import { registerSessionHistoryHost } from "$lib/shell/history/sessionHistoryHost";
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
 	import type { ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow";
-	import { ownedSessionMetaForBackend } from "$lib/shell/ownedSessions";
+	import { ownedSessionMetaForBackend, type OwnedSession } from "$lib/shell/ownedSessions";
 	import { diffPathFor } from "$lib/shell/sessionWorkspaces";
-	import { setOwnedSessionStatus, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
+	import { ownedSessionStatusPatch, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
 	import type { CenterTabId, OpenPullRequestDiffRequest } from "$lib/shell/workbenchNavigation";
 	import { clearWorkbenchNavigation, registerWorkbenchNavigation } from "$lib/shell/workbenchNavigation";
 	import { updateAgentConversationSessionMetaFromTauri } from "$lib/tauriSource";
@@ -105,20 +105,49 @@
 	let popupOpen = $state(false);
 
 	async function changeSessionStatus(ownedId: string, status: "working" | "done" | "settled"): Promise<void> {
+		const session = selection.railOwned.find((row) => row.ownedId === ownedId);
+		if (session) await saveSessionChange(ownedId, ownedSessionStatusPatch(session, status, new Date()));
+	}
+
+	/** The last metadata write queued for each row; a row's writes go out one at a time. */
+	const sessionSaves = new Map<string, Promise<void>>();
+
+	/**
+	 * Saves a person's own change to a session row. The row changes at once; the
+	 * write waits for that row's earlier writes and sends the row as it is when
+	 * the write starts. A failed write puts back only the fields still showing
+	 * its own value, so it never undoes a newer change.
+	 */
+	function saveSessionChange(
+		ownedId: string,
+		patch: Partial<Pick<OwnedSession, "completedAt" | "settledAt" | "pinnedAt" | "title">>,
+	): Promise<void> {
 		const before = selection.railOwned.find((session) => session.ownedId === ownedId);
-		const updated = setOwnedSessionStatus(ownedId, status, new Date());
-		if (!before || !updated) return;
-		try {
-			await updateAgentConversationSessionMetaFromTauri({
-				ownedId,
-				model: null,
-				effort: null,
-				meta: ownedSessionMetaForBackend(updated),
-			});
-		} catch (error) {
-			updateOwnedSession(ownedId, { completedAt: before.completedAt, settledAt: before.settledAt });
-			console.error("Could not change session status", error);
-		}
+		if (!before) return Promise.resolve();
+		const keys = Object.keys(patch) as (keyof typeof patch)[];
+		updateOwnedSession(ownedId, patch);
+		const write = (sessionSaves.get(ownedId) ?? Promise.resolve()).then(async () => {
+			const current = selection.railOwned.find((session) => session.ownedId === ownedId);
+			if (!current) return;
+			try {
+				await updateAgentConversationSessionMetaFromTauri({
+					ownedId,
+					model: null,
+					effort: null,
+					meta: ownedSessionMetaForBackend(current),
+				});
+			} catch (error) {
+				const latest = selection.railOwned.find((session) => session.ownedId === ownedId);
+				const stillOurs = keys.filter((key) => latest && Object.is(latest[key], patch[key]));
+				updateOwnedSession(ownedId, Object.fromEntries(stillOurs.map((key) => [key, before[key]])));
+				console.error("Could not save the session change", error);
+			}
+		});
+		sessionSaves.set(ownedId, write);
+		void write.finally(() => {
+			if (sessionSaves.get(ownedId) === write) sessionSaves.delete(ownedId);
+		});
+		return write;
 	}
 
 	if (import.meta.hot) {
@@ -328,6 +357,14 @@
 		if (profileId) await refreshRemoteConnection(profileId);
 	}
 
+	/** A row's Connect: the same connect as the conversation pane's, for that row's session. */
+	async function connectSessionRow(ownedId: string): Promise<void> {
+		await selectSession(ownedId);
+		// Another row may have been chosen while this one was opening.
+		if (selection.activeOwnedId !== ownedId) return;
+		await connectSelectedRemote();
+	}
+
 	async function refreshRemoteConnection(profileId: string): Promise<void> {
 		if (!(await selection.refreshRemoteConnection(profileId))) return;
 		await restoreSelectedWorkbench();
@@ -471,6 +508,10 @@
 				onReopen={(ownedId) => void changeSessionStatus(ownedId, "working")}
 				onSettle={(ownedId) => void changeSessionStatus(ownedId, "settled")}
 				onUnsettle={(ownedId) => void changeSessionStatus(ownedId, "done")}
+				onPin={(ownedId, pinned) =>
+					void saveSessionChange(ownedId, { pinnedAt: pinned ? new Date().toISOString() : null })}
+				onRename={(ownedId, title) => void saveSessionChange(ownedId, { title })}
+				onConnect={(ownedId) => void connectSessionRow(ownedId)}
 			/>
 		</div>
 	</div>
