@@ -165,6 +165,24 @@ assert.notEqual(a, b);
   assert.equal(running?.parts.some((part) => part.type === 'tool-result'), false);
   assert.equal(running?.metadata?.lastSequence, 7);
 
+  // A page with many unfinished historical tools must publish a constant number
+  // of message arrays, while keeping each native tool's state and output.
+  assert.ok(runningCall?.type === 'tool-call');
+  const retained = Array.from({ length: 200 }, (_, index) => ({
+    id: 'running-' + index, role: 'assistant' as const, metadata: running?.metadata,
+    parts: [{ ...runningCall, id: 'running-' + index }]
+  }));
+  const pageChunks = conversationSnapshotChunks(retained);
+  assert.equal(pageChunks.length, 2, 'one snapshot and one restoration batch regardless of tool count');
+  let publications = 0;
+  const paged = new StreamProcessor({ events: { onMessagesChange: () => { publications++; } } });
+  for (const chunk of pageChunks) {
+    if (chunk.type === EventType.CUSTOM) paged.setMessages(conversationMessagesAfterCustom(paged.getMessages(), chunk.name, chunk.value));
+    else paged.processChunk(chunk);
+  }
+  assert.equal(publications, 2, 'history admission must not republish once per running tool');
+  assert.deepEqual(paged.getMessages(), retained);
+
   const optimistic = new StreamProcessor();
   optimistic.addUserMessage('Hello', 'optimistic');
   for (const chunk of conversationSnapshotChunks(optimistic.getMessages().map((message) => ({ ...message, id: 'native-user' })))) {

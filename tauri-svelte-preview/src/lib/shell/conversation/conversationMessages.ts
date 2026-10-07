@@ -89,22 +89,16 @@ function nativeCustomChunk(name: string, value: unknown): StreamChunk {
   return { type: EventType.CUSTOM, name, value } as StreamChunk;
 }
 
-/** Replace a complete retained window, then restore native authority for tools
- * that are still running. The SDK intentionally carries richer pre-snapshot
- * tool state, which must not let an old terminal result beat a running page. */
+/** Reset the SDK stream once, then restore native running-tool authority in one
+ * update. Per-tool replacements repeatedly rebuilt the whole retained history. */
 export function conversationSnapshotChunks(messages: readonly UIMessage[]): StreamChunk[] {
-  return [{
-    type: EventType.MESSAGES_SNAPSHOT,
-    messages: [...messages]
-  } as StreamChunk, ...messages.flatMap((message) => message.parts.flatMap((part) =>
-    part.type === 'tool-call' && part.state !== 'complete' && part.state !== 'error'
-      ? [nativeCustomChunk('assembly:running-tool', {
-          itemId: message.id,
-          toolCall: part,
-          metadata: message.metadata
-        })]
-      : []
-  ))];
+  const running = messages.flatMap((message) => {
+    const toolCalls = message.parts.filter((part) => part.type === 'tool-call'
+      && part.state !== 'complete' && part.state !== 'error');
+    return toolCalls.length ? [{ itemId: message.id, toolCalls, metadata: message.metadata }] : [];
+  });
+  return [{ type: EventType.MESSAGES_SNAPSHOT, messages: [...messages] } as StreamChunk,
+    ...(running.length ? [nativeCustomChunk('assembly:running-tools', running)] : [])];
 }
 
 /** Translate one native event into the standard chunks owned by TanStack. */
@@ -228,26 +222,30 @@ export function conversationMessagesAfterCustom(
   const patch = value as {
     itemId?: unknown;
     output?: unknown;
-    toolCall?: UIMessage['parts'][number];
+    toolCalls?: UIMessage['parts'];
     metadata?: UIMessage['metadata'];
   };
-  if (typeof patch.itemId !== 'string') return [...messages];
-  if (name === 'assembly:running-tool') {
+  if (name === 'assembly:running-tool' || name === 'assembly:running-tools') {
+    const patches = new Map((name === 'assembly:running-tools' ? value as typeof patch[] : [patch])
+      .map((entry) => [entry.itemId, entry]));
     return messages.map((message) => {
-      if (message.id !== patch.itemId) return message;
-      const authoritative = patch.toolCall?.type === 'tool-call' ? patch.toolCall : null;
+      const current = patches.get(message.id);
+      if (!current) return message;
       return {
         ...message,
-        ...(patch.metadata ? { metadata: patch.metadata } : {}),
+        ...(current.metadata ? { metadata: current.metadata } : {}),
         parts: message.parts.reduce<UIMessage['parts']>((parts, part) => {
-          if (part.type === 'tool-result' && authoritative && part.toolCallId === authoritative.id) return parts;
+          const callId = part.type === 'tool-result' ? part.toolCallId : part.type === 'tool-call' ? part.id : null;
+          const authoritative = current.toolCalls?.find((call) => call.type === 'tool-call' && call.id === callId);
+          if (part.type === 'tool-result' && authoritative) return parts;
           if (part.type !== 'tool-call') return [...parts, part];
-          if (authoritative && part.id !== authoritative.id) return [...parts, part];
-          return [...parts, authoritative ?? { ...part, output: patch.output, state: 'input-complete' as const }];
+          if (current.toolCalls && !authoritative) return [...parts, part];
+          return [...parts, authoritative ?? { ...part, output: current.output, state: 'input-complete' as const }];
         }, [])
       };
     });
   }
+  if (typeof patch.itemId !== 'string') return [...messages];
   if (name === 'assembly:message-metadata') {
     return messages.map((message) => message.id === patch.itemId
       ? { ...message, metadata: { ...message.metadata, ...patch.metadata } }
