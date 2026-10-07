@@ -221,8 +221,9 @@ function groupUnpinned(prepared: OwnedSession[], options: MyWorkViewOptions): My
 
 /**
  * The saved custom order after `draggedId` is dropped before or after
- * `targetId`. `groupIds` is the dropped-into group as it is drawn; places of
- * sessions outside that group are kept, since order only matters within one.
+ * `targetId`. `groupIds` is the dropped-into group as it is drawn. The group's
+ * sessions are rewritten into the places they already hold, so every other
+ * place is kept; group sessions with no place yet are added at the end.
  */
 export function reorderMyWorkSessions(
   order: readonly string[],
@@ -231,12 +232,16 @@ export function reorderMyWorkSessions(
   targetId: string,
   position: 'before' | 'after'
 ): string[] {
-  const rest = order.filter((ownedId) => !groupIds.includes(ownedId));
+  if (draggedId === targetId || !groupIds.includes(draggedId) || !groupIds.includes(targetId)) {
+    return [...order];
+  }
   const moved = groupIds.filter((ownedId) => ownedId !== draggedId);
   const target = moved.indexOf(targetId);
-  if (target === -1) return [...groupIds, ...rest];
   moved.splice(position === 'after' ? target + 1 : target, 0, draggedId);
-  return [...moved, ...rest];
+  const inGroup = new Set(groupIds);
+  const places = [...order, ...groupIds.filter((ownedId) => !order.includes(ownedId))];
+  let next = 0;
+  return places.map((ownedId) => (inGroup.has(ownedId) ? moved[next++] : ownedId));
 }
 
 function isSort(value: unknown): value is MyWorkSort {

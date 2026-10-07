@@ -107,27 +107,45 @@
 		if (session) await saveSessionChange(ownedId, ownedSessionStatusPatch(session, status, new Date()));
 	}
 
-	/** Saves a person's own change to a session row, and puts it back if the save fails. */
-	async function saveSessionChange(
+	/** The last metadata write queued for each row; a row's writes go out one at a time. */
+	const sessionSaves = new Map<string, Promise<void>>();
+
+	/**
+	 * Saves a person's own change to a session row. The row changes at once; the
+	 * write waits for that row's earlier writes and sends the row as it is when
+	 * the write starts. A failed write puts back only the fields still showing
+	 * its own value, so it never undoes a newer change.
+	 */
+	function saveSessionChange(
 		ownedId: string,
 		patch: Partial<Pick<OwnedSession, "completedAt" | "settledAt" | "pinnedAt" | "title">>,
 	): Promise<void> {
 		const before = selection.railOwned.find((session) => session.ownedId === ownedId);
-		if (!before) return;
-		const updated = { ...before, ...patch };
+		if (!before) return Promise.resolve();
+		const keys = Object.keys(patch) as (keyof typeof patch)[];
 		updateOwnedSession(ownedId, patch);
-		try {
-			await updateAgentConversationSessionMetaFromTauri({
-				ownedId,
-				model: null,
-				effort: null,
-				meta: ownedSessionMetaForBackend(updated),
-			});
-		} catch (error) {
-			const keys = Object.keys(patch) as (keyof typeof patch)[];
-			updateOwnedSession(ownedId, Object.fromEntries(keys.map((key) => [key, before[key]])));
-			console.error("Could not save the session change", error);
-		}
+		const write = (sessionSaves.get(ownedId) ?? Promise.resolve()).then(async () => {
+			const current = selection.railOwned.find((session) => session.ownedId === ownedId);
+			if (!current) return;
+			try {
+				await updateAgentConversationSessionMetaFromTauri({
+					ownedId,
+					model: null,
+					effort: null,
+					meta: ownedSessionMetaForBackend(current),
+				});
+			} catch (error) {
+				const latest = selection.railOwned.find((session) => session.ownedId === ownedId);
+				const stillOurs = keys.filter((key) => latest && Object.is(latest[key], patch[key]));
+				updateOwnedSession(ownedId, Object.fromEntries(stillOurs.map((key) => [key, before[key]])));
+				console.error("Could not save the session change", error);
+			}
+		});
+		sessionSaves.set(ownedId, write);
+		void write.finally(() => {
+			if (sessionSaves.get(ownedId) === write) sessionSaves.delete(ownedId);
+		});
+		return write;
 	}
 
 	if (import.meta.hot) {
@@ -340,6 +358,8 @@
 	/** A row's Connect: the same connect as the conversation pane's, for that row's session. */
 	async function connectSessionRow(ownedId: string): Promise<void> {
 		await selectSession(ownedId);
+		// Another row may have been chosen while this one was opening.
+		if (selection.activeOwnedId !== ownedId) return;
 		await connectSelectedRemote();
 	}
 

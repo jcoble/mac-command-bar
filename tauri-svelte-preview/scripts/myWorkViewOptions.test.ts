@@ -16,7 +16,6 @@ import {
   reorderMyWorkSessions,
   type MyWorkGroup
 } from '../src/lib/shell/components/myWorkViewOptions.ts';
-import { sessionRowMenuItems } from '../src/lib/shell/components/sessionRowMenu.ts';
 import type { OwnedSession } from '../src/lib/shell/ownedSessions.ts';
 import { ownedSessionMetaForBackend } from '../src/lib/shell/ownedSessions.ts';
 import { hydrateOwned, ownedSessionStatusPatch, rail, updateOwnedSession } from '../src/lib/shell/stores/sessionRailStore.svelte.ts';
@@ -168,21 +167,6 @@ function shape(groups: MyWorkGroup[]): unknown[] {
   ]);
 }
 
-// The row menu offers Pin to top, or Unpin once pinned.
-{
-  const pinItem = (pinned: boolean) => sessionRowMenuItems({ status: 'working', sessionId: 'x', worktreePath: null, pinned })
-    .find((item) => item.id === 'pin' || item.id === 'unpin');
-  assert.deepEqual([pinItem(false)?.id, pinItem(false)?.label, pinItem(false)?.enabled], ['pin', 'Pin to top', true]);
-  assert.deepEqual([pinItem(true)?.id, pinItem(true)?.label, pinItem(true)?.enabled], ['unpin', 'Unpin', true]);
-}
-
-// Rename is a working item on the row menu.
-{
-  const rename = sessionRowMenuItems({ status: 'done', sessionId: null, worktreePath: null, pinned: false })
-    .find((item) => item.id === 'rename');
-  assert.deepEqual([rename?.label, rename?.enabled, rename?.disabledReason], ['Rename', true, undefined]);
-}
-
 // Custom order follows the saved order inside each group; a session with no
 // saved place yet goes to the top, newest first.
 {
@@ -201,11 +185,19 @@ function shape(groups: MyWorkGroup[]): unknown[] {
   assert.equal(normalizeMyWorkViewOptions({ sortBy: 'manual' }).sortBy, 'manual');
 }
 
-// Moving a row reorders its own group and keeps every other saved place.
+// Moving a row reorders its own group within that group's existing places,
+// so the other groups keep theirs.
 {
-  assert.deepEqual(reorderMyWorkSessions(['x', 'a', 'y'], ['a', 'b', 'c'], 'c', 'a', 'before'), ['c', 'a', 'b', 'x', 'y']);
-  assert.deepEqual(reorderMyWorkSessions([], ['a', 'b', 'c'], 'a', 'c', 'after'), ['b', 'c', 'a']);
-  assert.deepEqual(reorderMyWorkSessions([], ['a', 'b', 'c'], 'a', 'a', 'after'), ['a', 'b', 'c']);
+  const seeded = ['w1', 'w2', 'd1', 'd2', 's1'];
+  assert.deepEqual(reorderMyWorkSessions(seeded, ['d1', 'd2'], 'd2', 'd1', 'before'), ['w1', 'w2', 'd2', 'd1', 's1']);
+  // A place saved for a session no longer shown is kept.
+  assert.deepEqual(reorderMyWorkSessions(['gone', 'a', 'x', 'b'], ['a', 'b'], 'b', 'a', 'before'), ['gone', 'b', 'x', 'a']);
+  // Group sessions with no saved place yet are added at the end, in drawn order.
+  assert.deepEqual(reorderMyWorkSessions(['x'], ['a', 'b', 'c'], 'a', 'c', 'after'), ['x', 'b', 'c', 'a']);
+  // Nothing changes when the dragged or target row is not in the group.
+  assert.deepEqual(reorderMyWorkSessions(seeded, ['d1', 'd2'], 'w1', 'd1', 'before'), seeded);
+  assert.deepEqual(reorderMyWorkSessions(seeded, ['d1', 'd2'], 'd1', 'w1', 'before'), seeded);
+  assert.deepEqual(reorderMyWorkSessions(seeded, ['d1', 'd2'], 'd1', 'd1', 'after'), seeded);
 }
 
 // buildMyWorkGroups with neither grouping returns one unlabeled group.
@@ -280,26 +272,68 @@ function shape(groups: MyWorkGroup[]): unknown[] {
     ? execFileSync('git', ['show', `${process.env.STATUS_TEST_BASE}:tauri-svelte-preview/src/routes/+page.svelte`], { encoding: 'utf8' })
     : readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
   const ast = parse(route, { modern: true });
-  // A status change is a thin call into the route's one save-and-undo path.
-  const actions = ['changeSessionStatus', 'saveSessionChange'].map((name) => {
-    const action = ast.instance?.content.body.find((node) => node.type === 'FunctionDeclaration'
-      && node.id?.name === name);
-    assert.ok(action, `route ${name} exists`);
-    return route.slice(action.start, action.end);
-  });
-  const saves: Array<{ ownedId: string; completedAt: string | null; settledAt: string | null }> = [];
-  const actionCode = ts.transpileModule(actions.join('\n'), {
-    compilerOptions: { target: ts.ScriptTarget.ES2022 }
-  }).outputText;
-  const changeSessionStatus = new Function('selection', 'ownedSessionStatusPatch',
-    'updateOwnedSession', 'ownedSessionMetaForBackend', 'updateAgentConversationSessionMetaFromTauri',
-    `${actionCode}; return changeSessionStatus;`)(
+  // Every row change goes through the route's one save path: its per-row write
+  // chain and the two functions that use it.
+  type MetaWrite = { ownedId: string; meta: { completedAt: string | null; settledAt: string | null; title: string | null; pinnedAt: string | null } };
+  const routeCode = ts.transpileModule(['sessionSaves', 'changeSessionStatus', 'saveSessionChange'].map((name) => {
+    const node = ast.instance?.content.body.find((candidate) =>
+      (candidate.type === 'FunctionDeclaration' && candidate.id?.name === name)
+      || (candidate.type === 'VariableDeclaration' && candidate.declarations[0]?.id.type === 'Identifier'
+        && candidate.declarations[0].id.name === name));
+    assert.ok(node, `route ${name} exists`);
+    return route.slice(node.start, node.end);
+  }).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const loadRouteSaves = (writeMeta: (input: MetaWrite) => Promise<void>) => new Function('selection',
+    'ownedSessionStatusPatch', 'updateOwnedSession', 'ownedSessionMetaForBackend',
+    'updateAgentConversationSessionMetaFromTauri',
+    `${routeCode}; return { changeSessionStatus, saveSessionChange };`)(
       { get railOwned() { return rail.owned; } }, ownedSessionStatusPatch, updateOwnedSession,
-      ownedSessionMetaForBackend,
-      async ({ ownedId, meta }: { ownedId: string; meta: { completedAt: string | null; settledAt: string | null } }) => {
-        saves.push({ ownedId, completedAt: meta.completedAt, settledAt: meta.settledAt });
-      }
-    ) as (ownedId: string, status: string) => Promise<void>;
+      ownedSessionMetaForBackend, writeMeta
+    ) as {
+      changeSessionStatus(ownedId: string, status: string): Promise<void>;
+      saveSessionChange(ownedId: string, patch: Partial<OwnedSession>): Promise<void>;
+    };
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  // Writes for one row go out one at a time, each sending the row as it is
+  // then, so a rename followed by a pin keeps both; a failed older rename does
+  // not put back a title over a newer one.
+  {
+    const sent: MetaWrite[] = [];
+    const pending: Array<{ resolve(): void; reject(error: Error): void }> = [];
+    const { saveSessionChange } = loadRouteSaves((input) => {
+      sent.push(input);
+      return new Promise<void>((resolve, reject) => pending.push({ resolve, reject }));
+    });
+    hydrateOwned([session('row', { title: 'A' })]);
+    const rename = saveSessionChange('row', { title: 'B' });
+    const pin = saveSessionChange('row', { pinnedAt: '2026-10-07T10:00:00.000Z' });
+    await settle();
+    assert.equal(sent.length, 1, 'the pin waits for the rename');
+    pending[0].resolve();
+    await rename;
+    await settle();
+    assert.deepEqual([sent[1].meta.title, sent[1].meta.pinnedAt], ['B', '2026-10-07T10:00:00.000Z']);
+    pending[1].resolve();
+    await pin;
+    assert.deepEqual([rail.owned[0].title, rail.owned[0].pinnedAt], ['B', '2026-10-07T10:00:00.000Z']);
+
+    const older = saveSessionChange('row', { title: 'C' });
+    const newer = saveSessionChange('row', { title: 'D' });
+    await settle();
+    pending[2].reject(new Error('refused'));
+    await older;
+    assert.equal(rail.owned[0].title, 'D', 'a failed older rename leaves the newer title');
+    await settle();
+    assert.equal(sent[3].meta.title, 'D');
+    pending[3].resolve();
+    await newer;
+  }
+
+  const saves: Array<{ ownedId: string; completedAt: string | null; settledAt: string | null }> = [];
+  const { changeSessionStatus } = loadRouteSaves(async ({ ownedId, meta }) => {
+    saves.push({ ownedId, completedAt: meta.completedAt, settledAt: meta.settledAt });
+  });
   let column: { attributes: Array<{ name?: string; value?: { expression?: { start: number; end: number } } }> } | undefined;
   function findColumn(node: unknown): void {
     if (!node || typeof node !== 'object') return;
@@ -319,7 +353,7 @@ function shape(groups: MyWorkGroup[]): unknown[] {
       changeSessionStatus
     ) as (id: string) => void;
     callback(ownedId);
-    await Promise.resolve();
+    await settle();
   };
   hydrateOwned([session('working'), session('done'), session('settled')]);
   await invoke('onComplete', 'done');

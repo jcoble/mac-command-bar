@@ -156,8 +156,11 @@
 	// Enter, Escape and the blur that follows the field leaving can each end one
 	// rename; only the first one counts.
 	let renameEnded = false;
+	// The field takes the name once, when it opens, so a title arriving while a
+	// person types cannot replace what they typed.
 	function startRename(input: HTMLInputElement): void {
 		renameEnded = false;
+		input.value = label;
 		input.focus();
 		input.select();
 	}
@@ -263,7 +266,6 @@
 		<input
 			data-testid="worktree-agent-rename"
 			class="rename"
-			value={label}
 			aria-label="Session name"
 			use:startRename
 			onkeydown={(event) => {
