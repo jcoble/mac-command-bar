@@ -141,9 +141,8 @@ pub(crate) fn create_project_worktree_sync(root: &Path, base: &str) -> Result<Cr
     let repo = inspect_project_folder_sync(&root.to_string_lossy())?.title;
     let branch = format!("assembly-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
     let path = expand_home("~")?.join("dev/work/worktrees").join(repo).join(&branch);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
+    // Making the folder first means a permissions failure stops before git creates the branch.
+    std::fs::create_dir_all(&path).map_err(|error| error.to_string())?;
     let output = Command::new("git")
         .arg("-C").arg(root)
         .args(["worktree", "add", "-b", &branch]).arg(&path).arg(base)
