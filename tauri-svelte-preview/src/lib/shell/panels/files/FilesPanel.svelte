@@ -1143,7 +1143,7 @@
 				title="Loading files…"
 				body="Reading the selected session's project folder."
 			>
-				{#snippet icon()}<WorkingSpinner size={24} />{/snippet}
+				{#snippet icon()}<FolderTree />{/snippet}
 			</EmptyState>
 		{:else}
 			<EmptyState title="No session selected" body="Pick a session to view its files.">
