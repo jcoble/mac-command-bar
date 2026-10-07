@@ -1,12 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { DESIGNS, pickSpinner, type Part } from './workingSpinners';
+  import { DESIGNS, pickSpinner, type Design, type Part } from './workingSpinners';
 
   let { size = 16, seed }: { size?: number; seed?: string } = $props();
   // A session's design follows its seed; an unseeded spinner picks once and keeps it while mounted.
   const randomDesign = pickSpinner();
   const id = $derived(seed === undefined ? randomDesign : pickSpinner(seed));
-  const design = $derived(DESIGNS[id]);
+  const design: Design = $derived(DESIGNS[id]);
   let host = $state<HTMLSpanElement>();
   let visible = $state(false);
   let documentVisible = $state(false);
