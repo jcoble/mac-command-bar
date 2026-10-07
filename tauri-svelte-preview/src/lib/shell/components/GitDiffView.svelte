@@ -27,7 +27,6 @@
   import { gitService } from '$lib/shell/git/gitService';
   import { requestOpenFile } from '$lib/shell/openFileBus';
   import { isDiffMode, type DiffMode } from '$lib/shell/sessionWorkspaces';
-  import { showCenterTab, type OpenPullRequestDiffRequest } from '$lib/shell/workbenchNavigation';
   import type { ProjectGitStatus, SourceGitDiff } from '$lib/tauriSource';
 
   interface Props {
@@ -36,18 +35,10 @@
     sessionRoot?: string;
     mode?: DiffMode;
     onModeChange?: (mode: DiffMode) => void;
-    pullRequestDiff?: OpenPullRequestDiffRequest | null;
     /** Told the +/- totals this view shows, so the tab title can show the same. */
     onTotals?: (totals: { added: number; removed: number }) => void;
   }
-  let {
-    rootAvailable = true,
-    sessionRoot = '',
-    mode = 'unified',
-    onModeChange,
-    pullRequestDiff = null,
-    onTotals
-  }: Props = $props();
+  let { rootAvailable = true, sessionRoot = '', mode = 'unified', onModeChange, onTotals }: Props = $props();
 
   /** Files read at once. Each read is a few short git processes. */
   const READS_AT_ONCE = 4;
@@ -59,9 +50,9 @@
   const commitSha = $derived(
     gitPanel.diffOwner ? gitCommitFilesView(gitCommitFiles, gitPanel.diffOwner).selectedCommitSha : ''
   );
-  /** A commit's or a pull request's file is shown on its own, not as part of the working copy. */
-  const singleMode = $derived(pullRequestDiff !== null || commitSha !== '');
-  const single = $derived<SourceGitDiff | null>(pullRequestDiff?.diff ?? (commitSha ? gitPanel.selectedDiff : null));
+  /** A commit's file is shown on its own, not as part of the working copy. */
+  const singleMode = $derived(commitSha !== '');
+  const single = $derived<SourceGitDiff | null>(commitSha ? gitPanel.selectedDiff : null);
 
   /** Uncommitted: the working copy against HEAD. Branch: everything since the
    * merge base with the default branch, committed or not. */
@@ -87,9 +78,7 @@
     )
   );
   $effect(() => onTotals?.(totals));
-  const singleLabel = $derived(
-    pullRequestDiff ? `${pullRequestDiff.repository} #${pullRequestDiff.number}` : `Commit ${commitSha.slice(0, 7)}`
-  );
+  const singleLabel = $derived(`Commit ${commitSha.slice(0, 7)}`);
 
   function put(diff: SourceGitDiff): void {
     working = [...working.filter((file) => file.relativePath !== diff.relativePath), diff];
@@ -220,9 +209,6 @@
     <span class="counts"><em>+{totals.added}</em> <del>-{totals.removed}</del></span>
     {#if !singleMode && pending > 0}<span class="quiet"><WorkingSpinner size={12} /> Reading {pending} more {pending === 1 ? 'file' : 'files'}…</span>{/if}
     <span class="spacer"></span>
-    {#if pullRequestDiff}
-      <button type="button" class="back" onclick={() => showCenterTab('pull-requests')}>Back to PR</button>
-    {/if}
     <SegmentedControl
       size="sm"
       items={MODES}
@@ -241,9 +227,9 @@
 
   {#if !rootAvailable}
     <p class="notice">Checkout/Worktree deleted.</p>
-  {:else if singleMode && !pullRequestDiff && gitPanel.diffLoading}
+  {:else if singleMode && gitPanel.diffLoading}
     <p class="notice"><WorkingSpinner size={12} /> Reading the changes…</p>
-  {:else if singleMode && !pullRequestDiff && gitPanel.diffError}
+  {:else if singleMode && gitPanel.diffError}
     <p class="notice error">{gitPanel.diffError}</p>
   {:else if !singleMode && gitPanel.statusError}
     <p class="notice error">{gitPanel.statusError}</p>
@@ -267,7 +253,7 @@
       {files}
       {mode}
       focusPath={singleMode || pending > 0 ? '' : gitPanel.selectedPath}
-      onOpenLine={pullRequestDiff ? undefined : openAt}
+      onOpenLine={openAt}
       onLoadFullText={singleMode ? undefined : (path) => void loadFullText(path)}
     />
   {/if}
@@ -322,27 +308,6 @@
 
   .spacer {
     flex: 1 1 auto;
-  }
-
-  .back {
-    min-height: 28px;
-    padding: 0 12px;
-    border: 0;
-    border-radius: 999px;
-    background: var(--color-surface);
-    color: var(--color-text-2);
-    cursor: pointer;
-    font: inherit;
-  }
-
-  .back:hover {
-    background: var(--color-hover);
-    color: var(--color-text);
-  }
-
-  .back:focus-visible {
-    outline: 2px solid var(--color-focus-solid);
-    outline-offset: 1px;
   }
 
   .notice {

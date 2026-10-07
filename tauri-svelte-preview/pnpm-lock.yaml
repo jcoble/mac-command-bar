@@ -79,9 +79,6 @@ importers:
       '@codemirror/lsp-client':
         specifier: 6.2.5
         version: 6.2.5
-      '@codemirror/merge':
-        specifier: 6.12.2
-        version: 6.12.2
       '@codemirror/search':
         specifier: 6.7.1
         version: 6.7.1
@@ -190,9 +187,6 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
-      codemirror:
-        specifier: 6.0.2
-        version: 6.0.2
       dockview-core:
         specifier: ^6.6.1
         version: 6.6.1
@@ -404,9 +398,6 @@ packages:
 
   '@codemirror/lsp-client@6.2.5':
     resolution: {integrity: sha512-1EqhGRmCZOV7Me+rRuwwkTuvkNoD4Nz6UcE1yx5gdwTVTLD4D9xIy48MJc0LeBQGFLn/HNRW/pHmet4EAEkJFQ==}
-
-  '@codemirror/merge@6.12.2':
-    resolution: {integrity: sha512-V8JvyAPjHbPupqP7BeMcsdsYCbyPij74jxIbaIJDORI+VZzW44zFmon8bF+oxGWvOKhcRmkiUMXd8MxHr3YA2w==}
 
   '@codemirror/search@6.7.1':
     resolution: {integrity: sha512-uMe5UO6PamJtSHrXhhHOzSX3ReWtiJrva6GnPMwSOrZtiExb5X5eExhr2OUZQVvdxPsKpY3Ro2mFbQadpPWmHA==}
@@ -1136,9 +1127,6 @@ packages:
 
   code-red@1.0.4:
     resolution: {integrity: sha512-7qJWqItLA8/VPVlKJlFXU+NBlo/qyfs39aJcuMT/2ere32ZqvF5OSxgdM5xOfJJ7O429gg2HM47y8v9P+9wrNw==}
-
-  codemirror@6.0.2:
-    resolution: {integrity: sha512-VhydHotNW5w1UGK0Qj96BwSk/Zqbp9WbnyK2W/eVMv4QyF41INRGpjUhFJY7/uDNuudSc33a/PKr4iDqRduvHw==}
 
   content-disposition@1.1.0:
     resolution: {integrity: sha512-5jRCH9Z/+DRP7rkvY83B+yGIGX96OYdJmzngqnw2SBSxqCFPd0w2km3s5iawpGX8krnwSGmF0FW5Nhr0Hfai3g==}
@@ -2286,14 +2274,6 @@ snapshots:
       marked: 15.0.12
       vscode-languageserver-protocol: 3.17.5
 
-  '@codemirror/merge@6.12.2':
-    dependencies:
-      '@codemirror/language': 6.12.4
-      '@codemirror/state': 6.7.1
-      '@codemirror/view': 6.43.9
-      '@lezer/highlight': 1.2.3
-      style-mod: 4.1.3
-
   '@codemirror/search@6.7.1':
     dependencies:
       '@codemirror/state': 6.7.1
@@ -3004,16 +2984,6 @@ snapshots:
       acorn: 8.16.0
       estree-walker: 3.0.3
       periscopic: 3.1.0
-
-  codemirror@6.0.2:
-    dependencies:
-      '@codemirror/autocomplete': 6.20.3
-      '@codemirror/commands': 6.11.0
-      '@codemirror/language': 6.12.4
-      '@codemirror/lint': 6.9.7
-      '@codemirror/search': 6.7.1
-      '@codemirror/state': 6.7.1
-      '@codemirror/view': 6.43.9
 
   content-disposition@1.1.0: {}
 

@@ -9,7 +9,7 @@ import {
   formatMonthDayTime,
   formatMonthDayYear
 } from '../src/lib/shell/dateFormat.ts';
-import { exactLocalTime, formatLastActivity } from '../src/lib/shell/relativeTime.ts';
+import { exactLocalTime, formatAge, formatLastActivity } from '../src/lib/shell/relativeTime.ts';
 
 /**
  * These tests build every stamp in LOCAL time, on purpose. The whole point of
@@ -132,6 +132,24 @@ for (const relativePath of [
   assert.equal(exactLocalTime(null), '');
   assert.equal(exactLocalTime(''), '');
   assert.equal(exactLocalTime('not a date'), '');
+}
+
+// formatAge — the short distance GitHub prints beside pull request events.
+{
+  const now = new Date('2026-10-07T12:00:00Z');
+  const before = (ms: number) => new Date(now.getTime() - ms).toISOString();
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  assert.equal(formatAge(before(30_000), now), 'now');
+  assert.equal(formatAge(before(5 * minute), now), '5m');
+  assert.equal(formatAge(before(3 * hour), now), '3h');
+  assert.equal(formatAge(before(2 * day), now), '2d');
+  assert.equal(formatAge(before(8 * day), now), '1w');
+  assert.equal(formatAge(before(40 * day), now), '1mo');
+  assert.equal(formatAge(before(400 * day), now), '1y');
+  assert.equal(formatAge(before(-minute), now), 'now');
+  assert.equal(formatAge('', now), '');
 }
 
 console.log('relativeTime: all tests passed');

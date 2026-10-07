@@ -245,8 +245,8 @@ export type GithubPullRequestPage = {
 
 export type GithubPullRequestQuery = {
   roots: string[];
-  mode: 'open' | 'mine' | 'needs-review';
   projectFilter: string | null;
+  /** GitHub search terms after `is:pr` and the repositories; see pullRequestSearch.ts. */
   search: string | null;
   cursor: string | null;
   pageSize: number;
@@ -268,6 +268,11 @@ export type GithubPullRequestDetail = {
   isDraft: boolean;
   mergeable: string;
   reviewDecision: string;
+  createdAt: string;
+  mergedAt: string;
+  mergedBy: string;
+  closedAt: string;
+  commits: Array<{ oid: string; headline: string; author: string; committedAt: string }>;
   comments: Array<{ id: string; author: string; body: string; createdAt: string; path: string | null; line: number | null; side: string | null; replyToId: number | null }>;
   reviews: Array<{ author: string; body: string; state: string; submittedAt: string }>;
   reviewers: string[];
@@ -303,6 +308,12 @@ export type GithubReviewReply = {
   number: number;
   expectedHeadSha: string;
   commentId: number;
+  body: string;
+};
+
+export type GithubIssueComment = {
+  root: string;
+  number: number;
   body: string;
 };
 
@@ -1736,6 +1747,12 @@ export async function submitGithubPullRequestReviewFromTauri(
   if (!isTauriRuntime()) throw new Error('Reviews can only be submitted from the desktop app.');
   const { invoke } = await import('./workspaceInvoke');
   return invoke<string>('submit_github_pull_request_review', { submission });
+}
+
+export async function commentGithubPullRequestFromTauri(comment: GithubIssueComment): Promise<string> {
+  if (!isTauriRuntime()) throw new Error('Comments can only be posted from the desktop app.');
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<string>('comment_github_pull_request', { comment });
 }
 
 export async function replyGithubPullRequestCommentFromTauri(
