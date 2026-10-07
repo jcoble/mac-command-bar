@@ -20,7 +20,6 @@ import { captureConversationWorkspace } from '../conversation/conversationStore.
 
 export type EditorPanelLifecycle = {
 	captureViewStates(paths: readonly string[]): Record<string, object>;
-	flushPendingEdits(): void;
 	workspaceOwnedPaths(): string[];
 	restoreViewStates(files: readonly { path: string; viewState?: object }[]): void;
 	releaseSessionResources(paths: readonly string[]): void;
@@ -181,7 +180,6 @@ export class EditorSessionController {
 	/** Drops file-backed editor state after the session moves to another checkout. */
 	async resetForCheckoutChange(stopSignal: AbortSignal): Promise<void> {
 		if (stopSignal.aborted) return;
-		this.panel?.flushPendingEdits();
 		await this.clearActiveEditors();
 		if (stopSignal.aborted) return;
 		this.releaseActiveEditorResources();
@@ -198,14 +196,12 @@ export class EditorSessionController {
 		const panel = this.panel;
 		const ownedPaths = panel?.workspaceOwnedPaths()
 			?? editorState.openFiles.map((file) => file.path);
-		// Capturing view states also flushes a Markdown preview's waiting edit
-		// into the store, so it runs before the open files are read.
-		const viewStates = panel?.captureViewStates(ownedPaths);
 		const ownedPathSet = new Set(ownedPaths);
 		const openFiles = editorState.openFiles.filter((file) => ownedPathSet.has(file.path));
 		const activePath = editorState.activePath && ownedPathSet.has(editorState.activePath)
 			? editorState.activePath
 			: openFiles.at(-1)?.path ?? null;
+		const viewStates = panel?.captureViewStates(ownedPaths);
 		const capturedConversation = captureConversationWorkspace(ownedId) ?? this.activeSnapshot?.conversation;
 		const conversation = attachmentIds && capturedConversation ? { ...capturedConversation, attachmentIds: [...attachmentIds] } : capturedConversation;
 

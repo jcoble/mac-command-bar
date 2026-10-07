@@ -47,12 +47,13 @@
     isHtmlFile,
     isMarkdownFile,
     markdownPreviewDefault,
+    rasterImageMimeType,
     type MarkdownView
   } from './editor/markdownPreview.ts';
   import { buttonVariants } from '$lib/components/ui/button/variants.js';
   import { cn } from '$lib/utils.js';
   import LanguageIntelligenceControls from './LanguageIntelligenceControls.svelte';
-  import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
+  import type SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import { workspaceKey } from '$lib/shell/editor/languageIntelligenceMode';
   import {
@@ -157,6 +158,8 @@
 
   type CodeEditorComponent = typeof CodeMirrorSourceEditor;
   let CodeEditor = $state<CodeEditorComponent | null>(null);
+  /** Loaded the first time a Markdown file is shown as Preview. */
+  let MarkdownPreview = $state<typeof SourceMarkdownPreview | null>(null);
   let codeEditor = $state<{
     captureViewStates(paths: readonly string[]): Record<string, object>;
     disposeTabModel(path: string): boolean;
@@ -165,10 +168,6 @@
     releaseSessionResources(): void;
   } | null>(null);
   let editorLoadError = $state<string | null>(null);
-  /** The mounted Markdown preview, if any. Its newest edit waits up to 150 ms
-   *  before reaching the store, so every path change, close, save and reread
-   *  below flushes it first. */
-  let markdownPreview = $state<{ flushEdit(): void } | null>(null);
   let loadingEditorComponent = false;
   type CloseRequest = { kind: 'file'; path: string } | { kind: 'all' };
   let closeRequest = $state<CloseRequest | null>(null);
@@ -361,6 +360,11 @@
       ? (markdownViewByPath[activeFile.path] ?? 'raw')
       : 'raw'
   );
+  /** Preview covers the source editor, which stays mounted behind it so the
+   *  file keeps its undo history and scroll position. */
+  const markdownPreviewShown = $derived(
+    Boolean(showing && activeFile?.preview && activeFileIsMarkdown && markdownView === 'rendered')
+  );
   const MARKDOWN_VIEW_ITEMS = [
     { value: 'raw', label: 'Source' },
     { value: 'rendered', label: 'Preview' }
@@ -385,18 +389,6 @@
     if (!markdownViewByPath[path]) return;
     const { [path]: _released, ...rest } = markdownViewByPath;
     markdownViewByPath = rest;
-  }
-
-  function rasterImageMimeType(fileName: string | null | undefined): string | null {
-    const extension = fileName?.split('.').at(-1)?.toLowerCase();
-    if (extension === 'png') return 'image/png';
-    if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg';
-    if (extension === 'gif') return 'image/gif';
-    if (extension === 'webp') return 'image/webp';
-    if (extension === 'bmp') return 'image/bmp';
-    if (extension === 'ico') return 'image/x-icon';
-    if (extension === 'avif') return 'image/avif';
-    return null;
   }
 
   function releaseImagePreview(path?: string): void {
@@ -671,6 +663,15 @@
     const language = upgradeUnknownLanguage(record.path, record.language);
     return language === record.language ? record : { ...record, language };
   }
+
+  /** Download the Markdown preview the first time a file is shown that way. */
+  $effect(() => {
+    if (!markdownPreviewShown || MarkdownPreview) return;
+    import('$lib/SourceMarkdownPreview.svelte').then(
+      (module) => { if (!destroyed) MarkdownPreview = module.default; },
+      (error) => { if (!destroyed) editorLoadError = `Could not start the Markdown preview: ${describeError(error)}`; }
+    );
+  });
 
   /** Download the code editor the first time it is needed. */
   async function ensureCodeEditor(): Promise<void> {
@@ -955,7 +956,6 @@
 
   /** EXPLICIT IO: read one file and show it. */
   async function readFileIntoEditor(record: SourceRecord, externalChange = false): Promise<void> {
-    markdownPreview?.flushEdit();
     const stopSignal = sessionStopController.signal;
     if (stopSignal.aborted || closeActionBusy || !rootAvailable) return;
     const existing = readsInFlight.get(record.path);
@@ -977,13 +977,6 @@
     readsInFlight.set(record.path, { byteCount: record.byteCount, generation, token, work });
     publishSourceReadDiagnostics();
     return work;
-  }
-
-  /** A Markdown preview reports for the file it was opened on, which may no
-   *  longer be the active one. */
-  function updatePreviewDraft(path: string, content: string): void {
-    if (closeActionBusy || readOnlyByPath[path]) return;
-    setEditorFileDraft(path, content);
   }
 
   function updateActiveDraft(content: string): void {
@@ -1060,7 +1053,6 @@
   }
 
   async function saveEditorFile(path: string): Promise<boolean> {
-    markdownPreview?.flushEdit();
     const stopSignal = sessionStopController.signal;
     if (stopSignal.aborted || !rootAvailable) return false;
     const file = editorFileFor(path);
@@ -1136,7 +1128,6 @@
     previewTab = false,
     pinTab = false
   ): boolean {
-    markdownPreview?.flushEdit();
     if (closeActionBusy || !rootAvailable || !path.trim()) return false;
     if (editorState.activePath && editorState.activePath !== path) {
       releaseReadOnlyEditorModel(editorState.activePath);
@@ -1212,7 +1203,6 @@
   }
 
   export function selectFile(path: string): void {
-    markdownPreview?.flushEdit();
     if (closeActionBusy) return;
     if (editorState.activePath && editorState.activePath !== path) {
       releaseImagePreview(editorState.activePath);
@@ -1237,7 +1227,6 @@
   }
 
   function closeFileNow(path: string, discard = false): void {
-    markdownPreview?.flushEdit();
     const disposePath = discard ? path : modelPathToDisposeOnClose(editorFileFor(path));
     closeEditorFile(path);
     markdownScrollByPath.delete(path);
@@ -1258,27 +1247,18 @@
     readOnlyByPath = remaining;
   }
 
-  /** Close one file; a file with unsaved changes asks first. True only when
-   *  the file closed now. */
-  export function requestCloseFile(path: string): boolean {
-    markdownPreview?.flushEdit();
-    if (closeActionBusy) return false;
+  /** Close one file; a file with unsaved changes asks first. */
+  export function requestCloseFile(path: string): void {
+    if (closeActionBusy) return;
     if (editorFileFor(path)?.dirty) {
       closeRequest = { kind: 'file', path };
       closeDialogOpen = true;
-      return false;
+      return;
     }
     closeFileNow(path);
-    return true;
-  }
-
-  /** Puts a Markdown preview's waiting edit in the store now. */
-  export function flushPendingEdits(): void {
-    markdownPreview?.flushEdit();
   }
 
   export function closeOtherFiles(path: string): void {
-    markdownPreview?.flushEdit();
     if (closeActionBusy) return;
     for (const file of editorState.openFiles) {
       if (file.path !== path && !file.dirty) closeFileNow(file.path);
@@ -1286,7 +1266,6 @@
   }
 
   export function closeSavedFiles(): void {
-    markdownPreview?.flushEdit();
     if (closeActionBusy) return;
     for (const file of editorState.openFiles) {
       if (!file.dirty) closeFileNow(file.path);
@@ -1294,7 +1273,6 @@
   }
 
   async function closeAllOpenEditorsNow(): Promise<void> {
-    markdownPreview?.flushEdit();
     const stopSignal = sessionStopController.signal;
     if (stopSignal.aborted) return;
     const generation = sessionResourceGeneration;
@@ -1324,7 +1302,6 @@
   }
 
   function closeAllOpenEditors(): void {
-    markdownPreview?.flushEdit();
     if (closeActionBusy) return;
     if (editorState.openFiles.some((file) => file.dirty)) {
       closeRequest = { kind: 'all' };
@@ -1416,7 +1393,6 @@
   }
 
   export function captureViewStates(paths: readonly string[]): Record<string, object> {
-    markdownPreview?.flushEdit();
     return codeEditor?.captureViewStates(paths) ?? {};
   }
 
@@ -1453,7 +1429,6 @@
   }
 
   export function releaseSessionResources(paths: readonly string[]): void {
-    markdownPreview?.flushEdit();
     const stopSignal = sessionStopController.signal;
     sessionResourceGeneration += 1;
     if (readsInFlight.size > 0) {
@@ -1512,7 +1487,6 @@
   }
 
   async function reloadConflictedFile(): Promise<void> {
-    markdownPreview?.flushEdit();
     const file = activeEditorFile();
     if (!file?.preview) return;
     const generation = sessionResourceGeneration;
@@ -1809,20 +1783,6 @@
         {:else}
           <p class="canvas-message">Reading {activeFile.fileName}…</p>
         {/if}
-      {:else if showing && activeFile?.preview && activeFileIsMarkdown && markdownView === 'rendered'}
-        {#key activeFile.path}
-          <SourceMarkdownPreview
-            bind:this={markdownPreview}
-            path={activeFile.path}
-            content={activeFile.draftContent ?? activeFile.preview.content}
-            fileName={activeFile.fileName}
-            readOnly={activeFileReadOnly}
-            scrollTop={markdownScrollByPath.get(activeFile.path) ?? 0}
-            onScroll={(top) => { if (showing) markdownScrollByPath.set(activeFile.path, top); }}
-            onChange={updatePreviewDraft}
-            onSave={() => void saveActiveFile()}
-          />
-        {/key}
       {:else if showing && activeFile?.preview && activeFileIsHtml && markdownView === 'rendered'}
         <!-- Scripts run so script-drawn pages render, but the frame keeps an
              opaque origin: never pair allow-scripts with allow-same-origin, or
@@ -1834,6 +1794,7 @@
           srcdoc={activeFile.draftContent ?? activeFile.preview.content}
         ></iframe>
       {:else if activeFile && activePreview}
+        <div class="code-editor-slot" class:behind-preview={markdownPreviewShown}>
         {#if CodeEditor}
           <CodeEditor
             bind:this={codeEditor}
@@ -1862,6 +1823,23 @@
           />
         {:else}
           <p class="canvas-message">Starting the code editor…</p>
+        {/if}
+        </div>
+        {#if markdownPreviewShown && activeFile.preview && MarkdownPreview}
+          {#key activeFile.path}
+            <MarkdownPreview
+              path={activeFile.path}
+              content={activeFile.draftContent ?? activeFile.preview.content}
+              fileName={activeFile.fileName}
+              readOnly={activeFileReadOnly}
+              scrollTop={markdownScrollByPath.get(activeFile.path) ?? 0}
+              onScroll={(top) => { if (showing) markdownScrollByPath.set(activeFile.path, top); }}
+              onChange={updateActiveDraft}
+              onSave={() => void saveActiveFile()}
+            />
+          {/key}
+        {:else if markdownPreviewShown}
+          <p class="canvas-message">Starting the preview…</p>
         {/if}
       {:else}
         <p class="canvas-message">Reading {activeFile?.fileName ?? 'file'}…</p>
@@ -2035,6 +2013,19 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .code-editor-slot {
+    display: contents;
+  }
+
+  /* Kept laid out (so its scroll position survives) but not painted and not
+     reachable by pointer or keyboard while Preview covers it. */
+  .code-editor-slot.behind-preview {
+    position: absolute;
+    inset: 0;
+    display: block;
+    visibility: hidden;
   }
 
   .editor-conflict {

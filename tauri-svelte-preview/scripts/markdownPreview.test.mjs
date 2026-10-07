@@ -9,8 +9,13 @@ import { readFileSync } from 'node:fs';
 
 import {
   isMarkdownFile,
+  markdownImageTarget,
   markdownPreviewDefault,
-  splitFrontmatter
+  frontmatterRows,
+  splitFrontmatter,
+  taskCheckboxOffsets,
+  toggleTaskAt,
+  toggleTaskCheckbox
 } from '../src/lib/shell/components/editor/markdownPreview.ts';
 
 // --- which files are Markdown ---------------------------------------------
@@ -51,7 +56,7 @@ assert.equal(
   'the rule is pure: same input, same answer'
 );
 
-// --- front matter stays out of the rich editor ------------------------------
+// --- front matter is shown apart from the document ----------------------------
 
 {
   const file = '---\ntitle: Notes\ntags: [a, b]\n---\n\n# Notes\n\nBody.\n';
@@ -77,6 +82,109 @@ assert.deepEqual(
 );
 assert.deepEqual(splitFrontmatter(''), { frontmatter: '', body: '' });
 
+// --- front matter shows as a small table -------------------------------------
+
+assert.deepEqual(
+  frontmatterRows('---\ntitle: Notes\ntags: [a, b]\ndate: 2026-10-07\n---\n\n'),
+  [['title', 'Notes'], ['tags', '[a, b]'], ['date', '2026-10-07']],
+  'one row per top-level key, the value as written'
+);
+assert.deepEqual(
+  frontmatterRows('---\r\nname: x\r\nauthors:\r\n  - Ann\r\n  - Bo\r\n# a comment\r\nurl: "https://a.b/c: d"\r\n...\r\n'),
+  [['name', 'x'], ['authors', '- Ann\n- Bo'], ['url', '"https://a.b/c: d"']],
+  'nested lines belong to the key above them; comments are skipped; the first colon splits'
+);
+assert.deepEqual(frontmatterRows(''), [], 'no front matter, no rows');
+
+// --- task checkboxes map to one character in the file -------------------------
+
+{
+  const file = [
+    '---',
+    'todo: "- [ ] not a task"',
+    '---',
+    '- [ ] one',
+    '- [x] two',
+    '  - [X] nested',
+    '1. [ ] ordered',
+    '2) [x] ordered paren',
+    '> - [ ] quoted',
+    '> > * [ ] twice quoted',
+    '+ [ ] plus',
+    '```md',
+    '- [ ] inside a fence',
+    '```',
+    '~~~',
+    '- [x] inside a tilde fence',
+    '~~~',
+    '- [ ]no space after is not a task',
+    '- [ ]   ',
+    '- [y] not a box',
+    'text - [ ] mid-line is not a task',
+    '- [ ] last'
+  ].join('\n');
+  const offsets = taskCheckboxOffsets(file);
+  const marks = offsets.map((offset) => file.slice(offset - 1, offset + 2));
+  assert.deepEqual(
+    marks,
+    ['[ ]', '[x]', '[X]', '[ ]', '[x]', '[ ]', '[ ]', '[ ]', '[ ]'],
+    'every task item in document order, and nothing in front matter, fences or non-task lines'
+  );
+  const lines = offsets.map((offset) => file.slice(file.lastIndexOf('\n', offset) + 1, file.indexOf('\n', offset) === -1 ? undefined : file.indexOf('\n', offset)));
+  assert.deepEqual(lines, [
+    '- [ ] one', '- [x] two', '  - [X] nested', '1. [ ] ordered', '2) [x] ordered paren',
+    '> - [ ] quoted', '> > * [ ] twice quoted', '+ [ ] plus', '- [ ] last'
+  ]);
+}
+{
+  const crlf = '- [ ] a\r\n- [x] b\r\n';
+  assert.deepEqual(taskCheckboxOffsets(crlf), [3, 12], 'CRLF line endings keep exact offsets');
+}
+{
+  const nested = '- outer\n\n  ```\n  - [ ] fenced inside an item\n  ```\n- [ ] real\n';
+  assert.equal(taskCheckboxOffsets(nested).length, 1, 'a fence indented inside a list item still hides its lines');
+}
+
+{
+  const file = '# Plan\n\n- [ ] write\n- [x] test\n\nEnd.\n';
+  const [first, second] = taskCheckboxOffsets(file);
+  const checkedFirst = toggleTaskCheckbox(file, first);
+  const changed = [...file].filter((char, index) => checkedFirst[index] !== char);
+  assert.equal(checkedFirst.length, file.length, 'the file keeps its length');
+  assert.deepEqual(changed, [' '], 'exactly one character changes');
+  assert.equal(checkedFirst, '# Plan\n\n- [x] write\n- [x] test\n\nEnd.\n');
+  assert.equal(toggleTaskCheckbox(file, second), '# Plan\n\n- [ ] write\n- [ ] test\n\nEnd.\n', 'x clears');
+  assert.equal(toggleTaskCheckbox(toggleTaskCheckbox(file, first), first), file, 'two clicks give back the file byte for byte');
+  assert.equal(toggleTaskCheckbox('- [X] a', 3), '- [ ] a', 'a capital X clears too');
+  assert.throws(() => toggleTaskCheckbox(file, 0), /checkbox/, 'an offset that is not inside [ ] is refused');
+}
+
+// --- a click on a rendered box ----------------------------------------------
+
+{
+  const file = '- [ ] one\n- [x] two\n';
+  assert.equal(toggleTaskAt(file, 0, 2, true), '- [x] one\n- [x] two\n', 'ticking the first box writes its x');
+  assert.equal(toggleTaskAt(file, 1, 2, false), '- [ ] one\n- [ ] two\n', 'clearing the second box writes its space');
+  assert.equal(toggleTaskAt(file, 0, 3, true), null, 'more boxes on screen than in the file: refused');
+  assert.equal(toggleTaskAt(file, 2, 2, true), null, 'a box past the last one: refused');
+  assert.equal(toggleTaskAt(file, 1, 2, true), null, 'the file already holds the state the box now shows: refused');
+}
+
+// --- where an image in a Markdown file comes from ------------------------------
+
+const doc = '/Users/me/project/docs/guide.md';
+assert.deepEqual(markdownImageTarget(doc, 'img/shot.png'), { kind: 'file', path: '/Users/me/project/docs/img/shot.png' });
+assert.deepEqual(markdownImageTarget(doc, './img/shot.png'), { kind: 'file', path: '/Users/me/project/docs/img/shot.png' });
+assert.deepEqual(markdownImageTarget(doc, '../assets/logo.svg'), { kind: 'file', path: '/Users/me/project/assets/logo.svg' });
+assert.deepEqual(markdownImageTarget(doc, '/tmp/abs.png'), { kind: 'file', path: '/tmp/abs.png' }, 'an absolute path is used as it is');
+assert.deepEqual(markdownImageTarget(doc, 'my%20shot.png?raw=1#top'), { kind: 'file', path: '/Users/me/project/docs/my shot.png' }, 'escapes decode; query and hash drop');
+assert.deepEqual(markdownImageTarget(doc, 'https://example.com/a.png'), { kind: 'https', url: 'https://example.com/a.png' });
+assert.deepEqual(markdownImageTarget(doc, 'HTTP://example.com/a.png'), { kind: 'http', url: 'HTTP://example.com/a.png' });
+assert.equal(markdownImageTarget(doc, ''), null);
+assert.equal(markdownImageTarget(doc, undefined), null, 'the sanitizer removed an unsafe URL');
+assert.equal(markdownImageTarget(doc, 'data:image/png;base64,AAAA'), null);
+assert.equal(markdownImageTarget(doc, '#anchor'), null);
+
 // --- the wiring ------------------------------------------------------------
 
 const panel = readFileSync(
@@ -91,8 +199,8 @@ assert.match(
 );
 assert.match(
   panel,
-  /import SourceMarkdownPreview from '\$lib\/SourceMarkdownPreview\.svelte'/,
-  'the rendered view reuses the app markdown viewer instead of a new one'
+  /import\('\$lib\/SourceMarkdownPreview\.svelte'\)/,
+  'the rendered view is the app markdown viewer, loaded the first time it is shown'
 );
 assert.match(
   panel,

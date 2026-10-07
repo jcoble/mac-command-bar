@@ -186,6 +186,8 @@
   const codeLens = new Compartment();
   const sessionViewStates = new Map<string, StoredViewState>();
   const sessionEditorStates = new Map<string, EditorState>();
+  /** The disk revision of the file the view last loaded. */
+  let shownRevision = '';
   /** How many tabs' editor states one session keeps; oldest go first. */
   const retainedEditorStateLimit = 24;
   let themeGeneration = 0;
@@ -967,6 +969,7 @@
     applyingContent = true;
     view.setState(nextState);
     applyingContent = false;
+    shownRevision = preview.revision;
     setCodeMirrorDocBytes(textBytes(doc));
     onSymbolsChange?.(extractSourceSymbols(preview, doc));
     view.dispatch(setDiagnostics(view.state, diagnosticsFor(view.state)));
@@ -1043,11 +1046,27 @@
 
   $effect(() => {
     const next = desiredContent();
-    if (!view || preview.path !== currentPath || view.state.doc.toString() === next) return;
+    const revision = preview.revision;
+    if (!view || preview.path !== currentPath) return;
+    // A change made elsewhere to the same disk revision (a Preview checkbox
+    // click) is an edit: it joins undo. Loading or rereading the file is not.
+    const isEdit = revision === shownRevision;
+    shownRevision = revision;
+    const current = view.state.doc.toString();
+    if (current === next) return;
+    // Replace only the part that differs, so earlier undo steps still apply.
+    let from = 0;
+    const shorter = Math.min(current.length, next.length);
+    while (from < shorter && current.charCodeAt(from) === next.charCodeAt(from)) from += 1;
+    let same = 0;
+    while (
+      same < shorter - from
+      && current.charCodeAt(current.length - 1 - same) === next.charCodeAt(next.length - 1 - same)
+    ) same += 1;
     applyingContent = true;
     view.dispatch({
-      changes: { from: 0, to: view.state.doc.length, insert: next },
-      annotations: Transaction.addToHistory.of(false)
+      changes: { from, to: current.length - same, insert: next.slice(from, next.length - same) },
+      annotations: Transaction.addToHistory.of(isEdit)
     });
     applyingContent = false;
     setCodeMirrorDocBytes(textBytes(next));
