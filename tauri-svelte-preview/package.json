@@ -120,7 +120,7 @@
     "test:usage-view-model": "node --experimental-strip-types scripts/usageViewModel.test.ts",
     "test:space-view-model": "node --experimental-strip-types scripts/spaceViewModel.test.mjs",
     "test:code-highlight": "node --experimental-strip-types scripts/codeHighlight.test.ts",
-    "test:markdown-preview": "node --experimental-strip-types scripts/markdownPreview.test.mjs",
+    "test:markdown-preview": "node --experimental-strip-types scripts/markdownPreview.test.ts",
     "test:notion-project-match": "node --experimental-strip-types src/lib/shell/notionProjectMatch.test.ts"
   },
   "dependencies": {

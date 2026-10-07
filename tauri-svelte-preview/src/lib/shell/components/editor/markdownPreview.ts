@@ -64,34 +64,65 @@ export function frontmatterRows(frontmatter: string): [string, string][] {
   return rows;
 }
 
-const QUOTES = '(?:[ \\t]*>[ \\t]?)*[ \\t]*';
-const FENCE_OPEN = new RegExp(`^${QUOTES}(?:(?:[-*+]|\\d{1,9}[.)])[ \\t]+)?(\`{3,}|~{3,})`);
-const FENCE_CLOSE = new RegExp(`^${QUOTES}(\`{3,}|~{3,})[ \\t]*$`);
-const TASK_ITEM = new RegExp(`^(${QUOTES}(?:[-*+]|\\d{1,9}[.)])[ \\t]+)\\[[ xX]\\] +\\S`);
+/** The parts of a Markdown token the checkbox walk reads. */
+export type MarkdownBlockToken = {
+  type: string;
+  raw?: string;
+  task?: boolean;
+  block?: boolean;
+  tokens?: readonly MarkdownBlockToken[];
+  items?: readonly MarkdownBlockToken[];
+};
 
-/** Where each task-list checkbox is in the file, in document order: the offset
- *  of the character between "[" and "]". Front matter and fenced code are
- *  skipped. Preview refuses a click when this list and the rendered boxes
- *  disagree, so an odd file can never have the wrong box changed. */
-export function taskCheckboxOffsets(markdown: string): number[] {
-  const offsets: number[] = [];
-  let fence: string | null = null;
-  let start = splitFrontmatter(markdown).frontmatter.length;
-  while (start < markdown.length) {
-    const newline = markdown.indexOf('\n', start);
-    const end = newline === -1 ? markdown.length : newline;
-    const line = markdown.slice(start, end).replace(/\r$/, '');
-    if (fence) {
-      const close = FENCE_CLOSE.exec(line);
-      if (close && close[1][0] === fence[0] && close[1].length >= fence.length) fence = null;
-    } else {
-      const open = FENCE_OPEN.exec(line);
-      const task = open ? null : TASK_ITEM.exec(line);
-      if (open) fence = open[1];
-      else if (task) offsets.push(start + task[1].length + 1);
-    }
-    start = end + 1;
+/** Blocks whose lines are shown as written, so a task-looking line in them is
+ *  not a task. Inline HTML (no `block` flag) sits inside a line and is skipped. */
+const VERBATIM_BLOCKS = new Set(['code', 'html', 'mermaid', 'blockKatex']);
+
+/** Where each rendered task checkbox is in `source`, in the order the Preview
+ *  draws them: the offset of the character between "[" and "]". The tasks come
+ *  from `tokens`, the parse the Preview rendered, and each is placed on the next
+ *  source line that ends with its first line (the rest of that line may only be
+ *  indentation and ">" quote marks). Verbatim blocks are stepped over the same
+ *  way. A task that cannot be placed ends the list, so the count no longer
+ *  matches the boxes on screen and the click is refused. */
+export function taskCheckboxOffsets(source: string, tokens: readonly MarkdownBlockToken[]): number[] {
+  const lines: { start: number; text: string }[] = [];
+  for (const match of source.matchAll(/[^\r\n]*(?:\r\n|\r|\n|$)/g)) {
+    if (match[0] === '' && match.index === source.length && lines.length > 0) break;
+    lines.push({ start: match.index, text: match[0].replace(/[\r\n]+$/, '') });
   }
+  const offsets: number[] = [];
+  let next = 0;
+  const place = (raw: string): number => {
+    const first = raw.split('\n', 1)[0];
+    for (let index = next; index < lines.length; index++) {
+      const { text } = lines[index];
+      if (text.endsWith(first) && /^[ \t>]*$/.test(text.slice(0, text.length - first.length))) return index;
+    }
+    return -1;
+  };
+  const walk = (list: readonly MarkdownBlockToken[]): boolean => {
+    for (const token of list) {
+      if (token.type === 'list_item' && token.raw) {
+        const index = place(token.raw);
+        if (index < 0) return false;
+        if (token.task) {
+          const line = lines[index];
+          offsets.push(line.start + line.text.length - token.raw.split('\n', 1)[0].length + token.raw.indexOf('[') + 1);
+        }
+        next = index + 1;
+      } else if (VERBATIM_BLOCKS.has(token.type) && (token.type !== 'html' || token.block) && token.raw?.trim()) {
+        const index = place(token.raw.replace(/^\n+/, ''));
+        if (index < 0) return false;
+        next = index + token.raw.replace(/^\n+/, '').replace(/\n+$/, '').split('\n').length;
+        continue;
+      }
+      if (token.items && !walk(token.items)) return false;
+      if (token.tokens && !walk(token.tokens)) return false;
+    }
+    return true;
+  };
+  walk(tokens);
   return offsets;
 }
 
@@ -106,10 +137,10 @@ export function toggleTaskCheckbox(markdown: string, offset: number): string {
 }
 
 /** The file after a click on the index-th task box on screen, which now shows
- *  `nowChecked`; null when the boxes on screen and the file disagree, so the
- *  click is refused rather than changing the wrong box. */
-export function toggleTaskAt(markdown: string, index: number, boxesOnScreen: number, nowChecked: boolean): string | null {
-  const offsets = taskCheckboxOffsets(markdown);
+ *  `nowChecked`, given where the rendered tasks are (`taskCheckboxOffsets`);
+ *  null when the boxes on screen and those places disagree, so the click is
+ *  refused rather than changing the wrong box. */
+export function toggleTaskAt(markdown: string, offsets: readonly number[], index: number, boxesOnScreen: number, nowChecked: boolean): string | null {
   const offset = offsets[index];
   if (offsets.length !== boxesOnScreen || offset === undefined || (markdown[offset] !== ' ') === nowChecked) return null;
   return toggleTaskCheckbox(markdown, offset);
@@ -119,9 +150,11 @@ export type MarkdownImageTarget =
   | { kind: 'file'; path: string }
   | { kind: 'https' | 'http'; url: string };
 
-/** Where an image in a Markdown file comes from: a file on disk (a relative
- *  path is resolved from the Markdown file's folder) or a web address. */
-export function markdownImageTarget(markdownPath: string, href: string | undefined): MarkdownImageTarget | null {
+/** Where an image in a Markdown file comes from: a file inside the project
+ *  (a relative path, resolved from the Markdown file's folder) or a web
+ *  address. Absolute paths, paths that climb out of the project, and any local
+ *  image when there is no project give null, so the alt text shows instead. */
+export function markdownImageTarget(markdownPath: string, projectRoot: string | null | undefined, href: string | undefined): MarkdownImageTarget | null {
   const value = href?.trim() ?? '';
   if (/^https:/i.test(value)) return { kind: 'https', url: value };
   if (/^http:/i.test(value)) return { kind: 'http', url: value };
@@ -132,12 +165,15 @@ export function markdownImageTarget(markdownPath: string, href: string | undefin
   } catch {
     // A malformed escape stays as written.
   }
-  const parts = path.startsWith('/') ? [] : markdownPath.split('/').slice(0, -1);
+  if (path.startsWith('/') || !projectRoot) return null;
+  const parts = markdownPath.split('/').slice(0, -1);
   for (const part of path.split('/')) {
     if (part === '..') parts.pop();
     else if (part && part !== '.') parts.push(part);
   }
-  return { kind: 'file', path: `/${parts.filter(Boolean).join('/')}` };
+  const file = `/${parts.filter(Boolean).join('/')}`;
+  const rootDir = `${projectRoot.replace(/\/+$/, '')}/`;
+  return file.startsWith(rootDir) ? { kind: 'file', path: file } : null;
 }
 
 /** The image type of a file the app shows as a picture, from its name. */

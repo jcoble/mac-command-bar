@@ -26,18 +26,19 @@
     // and media do not.
     html: allowHtmlOnly([
       'a', 'abbr', 'b', 'blockquote', 'br', 'code', 'dd', 'del', 'details', 'div', 'dl', 'dt', 'em',
-      'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'kbd', 'li', 'mark', 'ol', 'p', 'picture',
-      'pre', 's', 'samp', 'small', 'source', 'span', 'strong', 'sub', 'summary', 'sup', 'table',
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'kbd', 'li', 'mark', 'ol', 'p',
+      'pre', 's', 'samp', 'small', 'span', 'strong', 'sub', 'summary', 'sup', 'table',
       'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'u', 'ul', 'var'
     ])
   };
 
   /** The library's code renderer, coloured by the app's own highlighter
-   *  (the one chat uses), which knows Rust, C#, Swift and the rest. */
+   *  (the one chat uses), which knows Rust, C#, Swift and the rest. An
+   *  indented code block arrives with no language at all. */
   const highlighter: CodeHighlighter = {
-    hasLang: (lang) => fenceLanguage(lang) !== 'plaintext',
+    hasLang: (lang) => fenceLanguage(lang ?? '') !== 'plaintext',
     highlight: (code, lang) => {
-      const lines = highlightCode(code, fenceLanguage(lang)).map((line) =>
+      const lines = highlightCode(code, fenceLanguage(lang ?? '')).map((line) =>
         line.map((span) => span.className === 'plain'
           ? escapeHtml(span.value)
           : `<span class="${span.className}">${escapeHtml(span.value)}</span>`).join(''));
@@ -70,7 +71,9 @@
     markdownImageTarget,
     rasterImageMimeType,
     splitFrontmatter,
-    toggleTaskAt
+    taskCheckboxOffsets,
+    toggleTaskAt,
+    type MarkdownBlockToken
   } from './shell/components/editor/markdownPreview';
   import { readSourceImageFromTauri } from './tauriSource';
 
@@ -82,6 +85,8 @@
   type Props = {
     /** The file on disk; local images are found from its folder. */
     path: string;
+    /** The session's project; local images outside it are not read. */
+    projectRoot: string | null;
     content: string;
     fileName: string;
     readOnly?: boolean;
@@ -91,7 +96,7 @@
     onSave?: () => void;
   };
 
-  let { path, content, fileName, readOnly = false, scrollTop = 0, onScroll, onChange, onSave }: Props = $props();
+  let { path, projectRoot, content, fileName, readOnly = false, scrollTop = 0, onScroll, onChange, onSave }: Props = $props();
   let host: HTMLElement;
   const Image = defaultRenderers.image;
 
@@ -113,12 +118,18 @@
     return url;
   }
 
+  /** The tokens the library last rendered, and the text it parsed them from. */
+  let rendered: { body: string; tokens: readonly MarkdownBlockToken[] } | null = null;
+
   // The click's own toggle stands: cancelling it would let the browser put the
   // old state back after Svelte had already drawn the new one.
   function toggleTask(event: MouseEvent): void {
     const box = event.currentTarget as HTMLInputElement;
     const boxes = [...host.querySelectorAll<HTMLInputElement>('input.md-task')];
-    const next = toggleTaskAt(content, boxes.indexOf(box), boxes.length, box.checked);
+    const offsets = rendered?.body === parts.body
+      ? taskCheckboxOffsets(parts.body, rendered.tokens).map((offset) => offset + parts.frontmatter.length)
+      : [];
+    const next = toggleTaskAt(content, offsets, boxes.indexOf(box), boxes.length, box.checked);
     if (next === null) box.checked = !box.checked;
     else onChange?.(next);
   }
@@ -157,7 +168,12 @@
         </tbody>
       </table>
     {/if}
-    <SvelteMarkdown source={parts.body} {extensions} {renderers}>
+    <SvelteMarkdown
+      source={parts.body}
+      {extensions}
+      {renderers}
+      parsed={(tokens) => { rendered = { body: parts.body, tokens }; }}
+    >
       {#snippet listitem(props: ListItemSnippetProps)}
         <li class:task-item={props.task}>{#if props.task}<input
               type="checkbox"
@@ -209,7 +225,7 @@
 {/snippet}
 
 {#snippet picture(href: string | undefined, alt: string, title: string | undefined, attributes?: Record<string, unknown>)}
-  {@const target = markdownImageTarget(path, href)}
+  {@const target = markdownImageTarget(path, projectRoot, href)}
   {#if target?.kind === 'https'}
     {@render img(target.url, alt, title, attributes)}
   {:else if target?.kind === 'file'}
@@ -238,6 +254,9 @@
     min-width: 0;
     min-height: 0;
     overflow: auto;
+    /* Raw HTML may carry a style attribute; containment keeps anything it
+       positions or paints (even position: fixed) inside the preview. */
+    contain: layout paint;
     outline: none;
     color: var(--color-text);
     background: var(--color-bg);

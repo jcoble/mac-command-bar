@@ -1829,6 +1829,7 @@
           {#key activeFile.path}
             <MarkdownPreview
               path={activeFile.path}
+              projectRoot={editorState.projectRoot}
               content={activeFile.draftContent ?? activeFile.preview.content}
               fileName={activeFile.fileName}
               readOnly={activeFileReadOnly}
