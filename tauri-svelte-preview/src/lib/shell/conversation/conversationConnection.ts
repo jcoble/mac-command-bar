@@ -98,8 +98,17 @@ function isCurrent(selection: ActiveConversation): boolean {
   return !selection.controller.signal.aborted && (active === selection || childActive === selection);
 }
 
+// Each history snapshot copies every message but keeps its part objects, so a
+// part's size is measured once. A changed part is a new object.
+const partBytes = new WeakMap<object, number>();
+
 function messageBytes(message: UIMessage): number {
-  return encoder.encode(JSON.stringify(message)).byteLength;
+  const shell = encoder.encode(JSON.stringify({ ...message, parts: [] })).byteLength;
+  return message.parts.reduce((total, part) => {
+    let bytes = partBytes.get(part);
+    if (bytes === undefined) partBytes.set(part, bytes = encoder.encode(JSON.stringify(part)).byteLength);
+    return total + bytes;
+  }, shell + Math.max(0, message.parts.length - 1));
 }
 
 function resetMessageBytes(selection: ActiveConversation, messages: readonly UIMessage[]): void {
@@ -309,7 +318,8 @@ async function restorePageAttachments(
       }
       const byId = new Map(restored.map((attachment) => [attachment.id, attachment]));
       for (const [itemId, attachmentIds] of wanted) {
-        byItem[itemId] = attachmentIds.flatMap((id) => byId.get(id) ?? []);
+        // Some stored messages name one screenshot twice; show it once.
+        byItem[itemId] = [...new Set(attachmentIds)].flatMap((id) => byId.get(id) ?? []);
       }
     }
     if (isCurrent(selection)) {
@@ -708,7 +718,7 @@ export function selectConversationChat(
     threadId: historyOwnedId,
     onCustomEvent(name, value) {
       if (selection.controller.signal.aborted) return;
-      if (name === 'assembly:running-tool' || name === 'assembly:stale-markdown'
+      if (name === 'assembly:running-tool' || name === 'assembly:running-tools' || name === 'assembly:stale-markdown'
         || name === 'assembly:message-metadata') {
         selection.chat.setMessages(conversationMessagesAfterCustom(
           selection.chat.messages, name, value
@@ -887,7 +897,9 @@ export async function pageSelectedConversation(direction: Direction, historyOwne
       retainedTurnIds: messages.flatMap((message) =>
         typeof message.metadata?.turnId === 'string' ? [message.metadata.turnId] : []
       ),
-      transferBytes: messages.reduce((total, message) => total + messageBytes(message), 0)
+      // The snapshot above already measured every message; measuring the
+      // whole history again cost as much as the snapshot on each page.
+      transferBytes: selection.graphBytes
     });
     const generation = getConversationSession(selection.historyOwnedId)?.generation ?? 0;
     void restorePageAttachments(

@@ -165,6 +165,24 @@ assert.notEqual(a, b);
   assert.equal(running?.parts.some((part) => part.type === 'tool-result'), false);
   assert.equal(running?.metadata?.lastSequence, 7);
 
+  // A page with many unfinished historical tools must publish a constant number
+  // of message arrays, while keeping each native tool's state and output.
+  assert.ok(runningCall?.type === 'tool-call');
+  const retained = Array.from({ length: 200 }, (_, index) => ({
+    id: 'running-' + index, role: 'assistant' as const, metadata: running?.metadata,
+    parts: [{ ...runningCall, id: 'running-' + index }]
+  }));
+  const pageChunks = conversationSnapshotChunks(retained);
+  assert.equal(pageChunks.length, 2, 'one snapshot and one restoration batch regardless of tool count');
+  let publications = 0;
+  const paged = new StreamProcessor({ events: { onMessagesChange: () => { publications++; } } });
+  for (const chunk of pageChunks) {
+    if (chunk.type === EventType.CUSTOM) paged.setMessages(conversationMessagesAfterCustom(paged.getMessages(), chunk.name, chunk.value));
+    else paged.processChunk(chunk);
+  }
+  assert.equal(publications, 2, 'history admission must not republish once per running tool');
+  assert.deepEqual(paged.getMessages(), retained);
+
   const optimistic = new StreamProcessor();
   optimistic.addUserMessage('Hello', 'optimistic');
   for (const chunk of conversationSnapshotChunks(optimistic.getMessages().map((message) => ({ ...message, id: 'native-user' })))) {
@@ -391,6 +409,63 @@ test('late attachment reads retain the current page and revoke evicted previews'
   } finally {
     store.evictConversationSession(ownedId);
     URL.revokeObjectURL = originalRevoke;
+  }
+});
+
+test('message sizes are exact and reuse parts already measured', () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('function isCurrent('), source.indexOf('function resetMessageBytes('));
+  const encoder = new TextEncoder();
+  let stringified: unknown[] = [];
+  const countingJson = { stringify: (value: unknown) => { stringified.push(value); return JSON.stringify(value); } };
+  const messageBytes = Function('encoder', 'JSON', `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn messageBytes;`)(encoder, countingJson);
+  const messages = [
+    { id: 'empty', role: 'assistant', parts: [], metadata: { turnId: 'turn-1' } },
+    { id: 'one', role: 'user', parts: [{ type: 'text', content: 'Look at this — café ✓ 漢字 🙂' }] },
+    { id: 'many', role: 'assistant', metadata: { firstSequence: 4 }, parts: [
+      { type: 'thinking', content: 'Plan' },
+      { type: 'tool-call', id: 'call-1', name: 'Read', arguments: '{"path":"/a"}', state: 'input-complete', output: { text: 'ü' } },
+      { type: 'text', content: 'Done.' }
+    ] }
+  ];
+  for (const message of messages) {
+    assert.equal(messageBytes(message), encoder.encode(JSON.stringify(message)).byteLength, message.id);
+  }
+  // A history snapshot hands back copied messages that keep the same part objects.
+  stringified = [];
+  const copies = messages.map((message) => ({ ...message, parts: [...message.parts] }));
+  for (const copy of copies) messageBytes(copy);
+  const parts = new Set<unknown>(messages.flatMap((message) => message.parts));
+  const reserialized = stringified.filter((value) => parts.has(value)
+    || ((value as { parts?: unknown[] }).parts ?? []).some((part) => parts.has(part)));
+  assert.equal(reserialized.length, 0, 'known parts are not serialized again');
+});
+
+test('a stored message that names one attachment twice shows it once', async () => {
+  // Messages saved before late September 2026 can list the same screenshot id
+  // twice. The user card keys its screenshots by id, so a repeat stops it rendering.
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('async function restorePageAttachments('), source.indexOf('function pageAttachments('));
+  const ownedId = 'owned-attachment-repeat';
+  store.ensureConversationSession(ownedId, 'claude');
+  store.setConversationConnection({ ownedId, provider: 'claude', generation: 1, state: 'connected' });
+  const attachment = (id: string) => ({ id, name: `${id}.png`, mimeType: 'image/png', path: `/managed/${id}.png`, previewUrl: `asset://${id}` });
+  const selection = { workspaceOwnedId: ownedId, historyOwnedId: ownedId, controller: new AbortController(), chat: { messages: [{ id: 'user-repeat' }] } };
+  const restore = Function(
+    'isCurrent', 'readSelectedConversationAttachments', 'restoreAttachmentList',
+    'restoreSelectedConversationAttachments', 'discardRestoredAttachments', 'setConversationAttachmentError',
+    `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn restorePageAttachments;`
+  )(() => true, async () => [attachment('a'), attachment('b')], async (unused: string, records: unknown[]) => records,
+    store.restoreSelectedConversationAttachments, () => undefined,
+    (unused: string, message: string) => { throw new Error(message); });
+  try {
+    await restore(selection, new Map([['user-repeat', ['a', 'a', 'b']]]), 1, ['user-repeat']);
+    assert.deepEqual(
+      store.getConversationSession(ownedId).sentAttachments['user-repeat'].map((item: { id: string }) => item.id),
+      ['a', 'b']
+    );
+  } finally {
+    store.evictConversationSession(ownedId);
   }
 });
 
@@ -627,6 +702,7 @@ test('history paging publishes saved rows before import and handles failed or st
   let importFailure = false;
   let staleImport = false;
   let publishedWindow: any;
+  let measured = 0;
   store.ensureConversationSession('history', 'codex');
   const historyState = store.getConversationSession('history');
   historyState.selectedHasBefore = true;
@@ -652,11 +728,11 @@ test('history paging publishes saved rows before import and handles failed or st
     return { added: 1, reachedStart: true };
   }, () => page.items.map((item) => ({ id: item.itemId, metadata: { firstSequence: 1 } })),
   (_existing: unknown, incoming: unknown) => incoming,
-  (_selection: unknown, messages: any) => { published += 1; queueMicrotask(() => { selection.chat.messages = messages; }); },
+  (target: any, messages: any) => { published += 1; target.graphBytes = 10 * messages.length; queueMicrotask(() => { selection.chat.messages = messages; }); },
   () => 1, (value: any) => value.hasBefore || value.hasEarlierTranscript,
   (id: string, value: any, direction: 'older' | 'newer', window: any) => {
     publishedWindow = window; store.applySelectedConversationPageState(id, value, direction, window);
-  }, () => 10,
+  }, () => { measured += 1; return 10; },
   () => historyState, async () => undefined, () => new Map(),
   (_id: string, message: string) => { pageError = message; },
   (value: typeof selection) => { value.ready = new Promise<void>((resolve) => { value.resolveReady = resolve; }); }, EventType);
@@ -665,6 +741,8 @@ test('history paging publishes saved rows before import and handles failed or st
   assert.equal(imports, 0, 'saved local messages do not wait for provider import');
   assert.equal(published, 1);
   assert.equal(publishedWindow.hasAfter, false, 'older page preserves the known live tail');
+  assert.equal(publishedWindow.transferBytes, 10);
+  assert.equal(measured, 0, 'the window size comes from the snapshot that already measured every message');
   assert.equal(loading, false);
   page = { ...page, items: [] };
   await paging('older');
