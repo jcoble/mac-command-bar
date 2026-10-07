@@ -19,7 +19,6 @@ const SEARCH_QUERY: &str = "query($query:String!,$first:Int!,$after:String){sear
 #[serde(rename_all = "camelCase")]
 pub struct GithubPullRequestQuery {
     pub roots: Vec<String>,
-    pub mode: String,
     pub project_filter: Option<String>,
     pub search: Option<String>,
     pub cursor: Option<String>,
@@ -83,6 +82,15 @@ pub struct GithubCheck {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GithubCommit {
+    pub oid: String,
+    pub headline: String,
+    pub author: String,
+    pub committed_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GithubFile {
     pub path: String,
     pub previous_path: Option<String>,
@@ -110,6 +118,11 @@ pub struct GithubPullRequestDetail {
     pub is_draft: bool,
     pub mergeable: String,
     pub review_decision: String,
+    pub created_at: String,
+    pub merged_at: String,
+    pub merged_by: String,
+    pub closed_at: String,
+    pub commits: Vec<GithubCommit>,
     pub comments: Vec<GithubComment>,
     pub reviews: Vec<GithubReview>,
     pub reviewers: Vec<String>,
@@ -363,7 +376,7 @@ fn read_detail_sync(root: &Path, number: u64) -> Result<GithubPullRequestDetail,
     let (repository, canonical_root) = repository_for_root(root)?;
     let view = run_gh_json(
         &canonical_root,
-        &["pr", "view", &number.to_string(), "-R", &repository, "--json", "number,title,body,url,author,headRefName,baseRefName,headRefOid,baseRefOid,state,isDraft,mergeable,reviewDecision,comments,reviews,reviewRequests,statusCheckRollup"],
+        &["pr", "view", &number.to_string(), "-R", &repository, "--json", "number,title,body,url,author,headRefName,baseRefName,headRefOid,baseRefOid,state,isDraft,mergeable,reviewDecision,createdAt,mergedAt,mergedBy,closedAt,commits,comments,reviews,reviewRequests,statusCheckRollup"],
         "GitHub pull request detail",
     )?;
     if view.get("number").and_then(Value::as_u64) != Some(number) {
@@ -386,6 +399,12 @@ fn read_detail_sync(root: &Path, number: u64) -> Result<GithubPullRequestDetail,
         body: string_at(row, "/body"),
         state: string_at(row, "/state"),
         submitted_at: string_at(row, "/submittedAt"),
+    }).collect()).unwrap_or_default();
+    let commits = view.get("commits").and_then(Value::as_array).map(|rows| rows.iter().map(|row| GithubCommit {
+        oid: string_at(row, "/oid"),
+        headline: string_at(row, "/messageHeadline"),
+        author: string_at(row, "/authors/0/login"),
+        committed_at: string_at(row, "/committedDate"),
     }).collect()).unwrap_or_default();
     let reviewers = view.get("reviewRequests").and_then(Value::as_array).map(|rows| rows.iter().filter_map(|row| row.get("login").or_else(|| row.get("name")).and_then(Value::as_str).map(str::to_string)).collect()).unwrap_or_default();
     let checks = view.get("statusCheckRollup").and_then(Value::as_array).map(|rows| rows.iter().map(|row| GithubCheck {
@@ -418,6 +437,11 @@ fn read_detail_sync(root: &Path, number: u64) -> Result<GithubPullRequestDetail,
         is_draft: view.get("isDraft").and_then(Value::as_bool).unwrap_or(false),
         mergeable: string_at(&view, "/mergeable"),
         review_decision: string_at(&view, "/reviewDecision"),
+        created_at: string_at(&view, "/createdAt"),
+        merged_at: string_at(&view, "/mergedAt"),
+        merged_by: string_at(&view, "/mergedBy/login"),
+        closed_at: string_at(&view, "/closedAt"),
+        commits,
         comments,
         reviews,
         reviewers,
@@ -461,9 +485,6 @@ fn list_sync(query: GithubPullRequestQuery) -> Result<GithubPullRequestPage, Str
     if query.roots.is_empty() || query.roots.len() > MAX_ROOTS {
         return Err("Choose between one and 32 known project folders".to_string());
     }
-    if !matches!(query.mode.as_str(), "open" | "mine" | "needs-review") {
-        return Err("Unknown pull request filter".to_string());
-    }
     if query.cursor.as_ref().is_some_and(|cursor| cursor.len() > 512) {
         return Err("Pull request page cursor is too long".to_string());
     }
@@ -486,7 +507,7 @@ fn list_sync(query: GithubPullRequestQuery) -> Result<GithubPullRequestPage, Str
         return Err("No selected project has a GitHub origin remote".to_string());
     }
 
-    let search_query = build_search_query(&repositories, &query.mode, search);
+    let search_query = build_search_query(&repositories, search);
     let input = json!({
         "query": SEARCH_QUERY,
         "variables": {
@@ -539,16 +560,15 @@ fn parse_github_remote(remote: &str) -> Result<String, String> {
     Ok(format!("{}/{}", parts[0], parts[1]))
 }
 
-fn build_search_query(repositories: &BTreeMap<String, PathBuf>, mode: &str, search: &str) -> String {
-    let mut terms = vec!["is:pr".to_string(), "is:open".to_string()];
-    match mode {
-        "mine" => terms.push("author:@me".to_string()),
-        "needs-review" => terms.push("review-requested:@me".to_string()),
-        _ => {}
-    }
+/// The front end builds the state, scope, sort and text terms (GitHub search
+/// syntax, so `head:`/`author:` work); the repositories stay server-side. A
+/// `repo:` the person types only widens the search, and rows from repositories
+/// outside the known projects are dropped when the response is parsed.
+fn build_search_query(repositories: &BTreeMap<String, PathBuf>, search: &str) -> String {
+    let mut terms = vec!["is:pr".to_string()];
     terms.extend(repositories.keys().map(|name| format!("repo:{name}")));
     if !search.is_empty() {
-        terms.push(format!("\"{}\"", search.replace(['\\', '"'], " ")));
+        terms.push(search.to_string());
     }
     terms.join(" ")
 }
@@ -607,9 +627,10 @@ mod tests {
     }
 
     #[test]
-    fn search_modes_keep_repositories_server_side() {
+    fn search_keeps_repositories_server_side_and_passes_terms_through() {
         let repositories = BTreeMap::from([("owner/repo".to_string(), PathBuf::from("/repo"))]);
-        assert_eq!(build_search_query(&repositories, "needs-review", "fix"), "is:pr is:open review-requested:@me repo:owner/repo \"fix\"");
+        assert_eq!(build_search_query(&repositories, "is:merged head:fix sort:updated-desc"), "is:pr repo:owner/repo is:merged head:fix sort:updated-desc");
+        assert_eq!(build_search_query(&repositories, ""), "is:pr repo:owner/repo");
     }
 
     #[test]

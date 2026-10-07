@@ -74,6 +74,7 @@
     "test:workspace-code-lens": "node --experimental-strip-types scripts/workspaceCodeLens.test.ts",
     "test:git-panel-store": "node --experimental-strip-types scripts/gitPanelStore.test.ts",
     "test:pr-list": "node --experimental-strip-types scripts/prList.test.mjs",
+    "test:pull-request-search": "node --experimental-strip-types scripts/pullRequestSearch.test.ts",
     "test:git-discard-confirm": "node --experimental-strip-types scripts/gitDiscardConfirm.test.mjs",
     "test:git-branch-picker": "node --experimental-strip-types scripts/gitBranchPicker.test.mjs",
     "test:git-working-tree-actions": "node --experimental-strip-types scripts/gitWorkingTreeActions.test.mjs",

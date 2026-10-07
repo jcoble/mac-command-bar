@@ -70,6 +70,13 @@ export interface OpenUrlRequest {
   url: string;
 }
 
+/** One pull request, named the way its github.com link names it. */
+export interface PullRequestLink {
+  /** `owner/repo` */
+  repository: string;
+  number: number;
+}
+
 export interface ComposerHandoff {
   ownedId: string;
   attachments?: ConversationAttachment[];
@@ -99,6 +106,7 @@ export interface WorkbenchNavigationHandlers {
   openPullRequestDiff(request: OpenPullRequestDiffRequest): void;
   openFileTimeline(request: OpenDiffRequest): void | boolean | Promise<void | boolean>;
   openUrl(request: OpenUrlRequest): void | Promise<void>;
+  openPullRequest(link: PullRequestLink): void;
   focusComposer(handoff: ComposerHandoff): void | Promise<void>;
   sendToSession(request: SendToSessionRequest): Promise<void>;
   startSession(request: StartSessionRequest): Promise<string | null>;
@@ -167,9 +175,31 @@ export async function openFileTimeline(request: OpenDiffRequest): Promise<void> 
   showCenterTab('git-history');
 }
 
+/** `https://github.com/<owner>/<repo>/pull/<n>` (any trailing path, query or
+ * fragment) as a pull request; anything else is null. */
+export function parseGithubPullRequestUrl(url: string): PullRequestLink | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (!/^https?:$/.test(parsed.protocol) || !/^(www\.)?github\.com$/i.test(parsed.hostname)) return null;
+  const match = /^\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(\/|$)/.exec(parsed.pathname);
+  const number = match ? Number(match[3]) : 0;
+  return match && number > 0 ? { repository: `${match[1]}/${match[2]}`, number } : null;
+}
+
 /** Point the browser at a URL. A browser tab is put on screen first: the
- * browser only loads while it is the tab in front. */
+ * browser only loads while it is the tab in front. A GitHub pull request link
+ * opens that pull request in the Pull requests tab instead. */
 export async function openUrlInBrowser(request: OpenUrlRequest): Promise<void> {
+  const pullRequest = handlers.openPullRequest ? parseGithubPullRequestUrl(request.url) : null;
+  if (pullRequest) {
+    handlers.openPullRequest?.(pullRequest);
+    showCenterTab('pull-requests');
+    return;
+  }
   showCenterTab('browser');
   const openUrl = handlers.openUrl;
   if (openUrl) {

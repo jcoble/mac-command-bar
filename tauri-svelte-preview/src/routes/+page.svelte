@@ -246,6 +246,9 @@
 				pullRequestDiff = null;
 				await gitService.showStoredDiff(request.projectRoot, request.relativePath);
 			},
+			openPullRequest: (link) => {
+				pullRequestSelection.link = link;
+			},
 			openPullRequestDiff: (request) => {
 				pullRequestDiff = request;
 				workbench.setDiffMode("side-by-side");
