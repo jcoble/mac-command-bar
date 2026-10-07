@@ -175,6 +175,13 @@ function shape(groups: MyWorkGroup[]): unknown[] {
   assert.deepEqual([pinItem(true)?.id, pinItem(true)?.label, pinItem(true)?.enabled], ['unpin', 'Unpin', true]);
 }
 
+// Rename is a working item on the row menu.
+{
+  const rename = sessionRowMenuItems({ status: 'done', sessionId: null, worktreePath: null, pinned: false })
+    .find((item) => item.id === 'rename');
+  assert.deepEqual([rename?.label, rename?.enabled, rename?.disabledReason], ['Rename', true, undefined]);
+}
+
 // buildMyWorkGroups with neither grouping returns one unlabeled group.
 {
   const groups = buildMyWorkGroups(

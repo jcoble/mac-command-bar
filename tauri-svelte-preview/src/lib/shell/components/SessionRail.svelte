@@ -28,6 +28,8 @@
 		onSettle?(ownedId: string): void;
 		onUnsettle?(ownedId: string): void;
 		onPin?(ownedId: string, pinned: boolean): void;
+		onRename?(ownedId: string, title: string): void;
+		onConnect?(ownedId: string): void;
 		onAskRemove?(ownedId: string): void;
 	}
 
@@ -41,6 +43,8 @@
 		onSettle,
 		onUnsettle,
 		onPin,
+		onRename,
+		onConnect,
 		onAskRemove,
 	}: Props = $props();
 
@@ -56,6 +60,7 @@
 		return () => window.clearInterval(tick);
 	});
 	let contextMenu = $state<{ session: OwnedSession; x: number; y: number } | null>(null);
+	let renamingOwnedId = $state<string | null>(null);
 	const contextMenuItems = $derived(
 		contextMenu
 			? sessionRowMenuItems({
@@ -114,7 +119,8 @@
 		const session = contextMenu?.session;
 		contextMenu = null;
 		if (!session) return;
-		if (action === "mark-done") onComplete?.(session.ownedId);
+		if (action === "rename") renamingOwnedId = session.ownedId;
+		else if (action === "mark-done") onComplete?.(session.ownedId);
 		else if (action === "reopen") onReopen?.(session.ownedId);
 		else if (action === "archive") onSettle?.(session.ownedId);
 		else if (action === "unsettle") onUnsettle?.(session.ownedId);
@@ -175,6 +181,12 @@
 							onOpenEditor={() => void jumpTo(session, "editor")}
 							onOpenSourceControl={() => void jumpTo(session, "source-control")}
 							onContextMenu={(event) => openContextMenu(event, session)}
+							renaming={session.ownedId === renamingOwnedId}
+							onRename={(title) => {
+								renamingOwnedId = null;
+								if (title) onRename?.(session.ownedId, title);
+							}}
+							onConnect={() => onConnect?.(session.ownedId)}
 						/>
 					{/each}
 				</ul>

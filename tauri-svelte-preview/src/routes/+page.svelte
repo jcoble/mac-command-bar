@@ -120,7 +120,10 @@
 	}
 
 	/** Saves a person's own change to a session row, and puts it back if the save fails. */
-	async function saveSessionChange(ownedId: string, patch: Pick<OwnedSession, "pinnedAt">): Promise<void> {
+	async function saveSessionChange(
+		ownedId: string,
+		patch: Partial<Pick<OwnedSession, "pinnedAt" | "title">>,
+	): Promise<void> {
 		const before = selection.railOwned.find((session) => session.ownedId === ownedId);
 		if (!before) return;
 		const updated = { ...before, ...patch };
@@ -133,7 +136,10 @@
 				meta: ownedSessionMetaForBackend(updated),
 			});
 		} catch (error) {
-			updateOwnedSession(ownedId, { pinnedAt: before.pinnedAt ?? null });
+			updateOwnedSession(ownedId, {
+				...("pinnedAt" in patch ? { pinnedAt: before.pinnedAt ?? null } : {}),
+				...("title" in patch ? { title: before.title } : {}),
+			});
 			console.error("Could not save the session change", error);
 		}
 	}
@@ -345,6 +351,12 @@
 		if (profileId) await refreshRemoteConnection(profileId);
 	}
 
+	/** A row's Connect: the same connect as the conversation pane's, for that row's session. */
+	async function connectSessionRow(ownedId: string): Promise<void> {
+		await selectSession(ownedId);
+		await connectSelectedRemote();
+	}
+
 	async function refreshRemoteConnection(profileId: string): Promise<void> {
 		if (!(await selection.refreshRemoteConnection(profileId))) return;
 		await restoreSelectedWorkbench();
@@ -490,6 +502,8 @@
 				onUnsettle={(ownedId) => void changeSessionStatus(ownedId, "done")}
 				onPin={(ownedId, pinned) =>
 					void saveSessionChange(ownedId, { pinnedAt: pinned ? new Date().toISOString() : null })}
+				onRename={(ownedId, title) => void saveSessionChange(ownedId, { title })}
+				onConnect={(ownedId) => void connectSessionRow(ownedId)}
 			/>
 		</div>
 	</div>

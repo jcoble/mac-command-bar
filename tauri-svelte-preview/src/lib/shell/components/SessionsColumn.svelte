@@ -57,6 +57,8 @@
     onSettle?(ownedId: string): void;
     onUnsettle?(ownedId: string): void;
     onPin?(ownedId: string, pinned: boolean): void;
+    onRename?(ownedId: string, title: string): void;
+    onConnect?(ownedId: string): void;
     onAskRemove?(ownedId: string): void;
   }
 
@@ -72,6 +74,8 @@
     onSettle,
     onUnsettle,
     onPin,
+    onRename,
+    onConnect,
     onAskRemove
   }: Props = $props();
 
@@ -404,6 +408,8 @@
           {onSettle}
           {onUnsettle}
           {onPin}
+          {onRename}
+          {onConnect}
           {onAskRemove}
         />
       </div>

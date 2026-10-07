@@ -11,6 +11,7 @@
 	 * provider tile says when the session is waiting on you or failed.
 	 */
 	import Server from "@lucide/svelte/icons/server";
+	import { Button } from "$lib/components/ui/button/index.js";
 	import { AGENT_ICONS, agentDisplayName } from "$lib/shell/agentIcons.ts";
 	import WorkingSpinner from "$lib/shell/components/conversation/WorkingSpinner.svelte";
 	import {
@@ -35,6 +36,11 @@
 		onOpenEditor?(): void;
 		onOpenSourceControl?(): void;
 		onContextMenu?(event: MouseEvent): void;
+		/** The row shows a name field over its title while this is on. */
+		renaming?: boolean;
+		/** The new name, or `null` when the person backed out or left it unchanged. */
+		onRename?(title: string | null): void;
+		onConnect?(): void;
 	}
 
 	type RowPresence = "working" | "attention" | "idle" | "done" | "failed";
@@ -47,6 +53,9 @@
 		onOpenEditor,
 		onOpenSourceControl,
 		onContextMenu,
+		renaming = false,
+		onRename,
+		onConnect,
 	}: Props = $props();
 
 	const label = $derived(sessionLabel(session));
@@ -140,6 +149,21 @@
 	);
 	const ageMs = $derived(startedAtMs === null ? null : Math.max(0, nowMs - startedAtMs));
 	const ageText = $derived(ageMs === null ? null : formatRailElapsed(ageMs));
+
+	// Enter, Escape and the blur that follows the field leaving can each end one
+	// rename; only the first one counts.
+	let renameEnded = false;
+	function startRename(input: HTMLInputElement): void {
+		renameEnded = false;
+		input.focus();
+		input.select();
+	}
+	function endRename(input: HTMLInputElement, keep: boolean): void {
+		if (renameEnded) return;
+		renameEnded = true;
+		const next = input.value.trim();
+		onRename?.(keep && next && next !== label ? next : null);
+	}
 </script>
 
 <li
@@ -227,9 +251,62 @@
 			</span>
 		</span>
 	</SessionRowVisual>
+
+	{#if renaming}
+		<input
+			data-testid="worktree-agent-rename"
+			class="rename"
+			value={label}
+			aria-label="Session name"
+			use:startRename
+			onkeydown={(event) => {
+				if (event.key === "Enter") endRename(event.currentTarget, true);
+				else if (event.key === "Escape") endRename(event.currentTarget, false);
+			}}
+			onblur={(event) => endRename(event.currentTarget, true)}
+		/>
+	{/if}
+
+	<!-- A remote session whose machine is not connected offers the connection
+	     right on its row. It sits beside the row button, never inside it. -->
+	{#if remote && remoteState !== "connected" && onConnect}
+		<span class="connect">
+			<Button
+				data-testid="worktree-agent-connect"
+				size="xs"
+				variant="outline"
+				disabled={remoteState === "reconnecting"}
+				onclick={onConnect}>{remoteState === "reconnecting" ? "Connecting…" : "Connect"}</Button
+			>
+		</span>
+	{/if}
 </li>
 
 <style>
+	/* The name field covers the title line: past the 32px tile and its gap. */
+	.rename {
+		position: absolute;
+		top: 6px;
+		left: 60px;
+		right: 16px;
+		z-index: 2;
+		height: 22px;
+		padding: 0 6px;
+		border: 1px solid var(--focus-border);
+		border-radius: var(--radius-sm);
+		background: var(--card);
+		color: var(--foreground);
+		font: inherit;
+		outline: none;
+	}
+
+	.connect {
+		position: absolute;
+		right: 16px;
+		bottom: 6px;
+		z-index: 2;
+	}
+
 	.row {
 		position: relative;
 		display: block;

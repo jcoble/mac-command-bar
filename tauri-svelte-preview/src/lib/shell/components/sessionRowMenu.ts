@@ -53,8 +53,7 @@ const NO_BACKEND = 'Not available yet';
 
 export function sessionRowMenuItems(input: SessionRowMenuInput): SessionRowMenuItem[] {
   const items: SessionRowMenuItem[] = [
-    // follow-up: no command writes a session title yet.
-    { id: 'rename', label: 'Rename', enabled: false, disabledReason: NO_BACKEND },
+    { id: 'rename', label: 'Rename', enabled: true },
     // follow-up: no command reassigns a session to another project yet.
     { id: 'move-to-project', label: 'Move to project', enabled: false, disabledReason: NO_BACKEND },
     input.pinned
