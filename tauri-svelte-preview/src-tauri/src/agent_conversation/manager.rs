@@ -10269,6 +10269,41 @@ mod tests {
     }
 
     #[test]
+    fn pinned_session_survives_manager_restart() {
+        let root = temp_root();
+        let database = root.join("sessions.db");
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+        let connection = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "owned-pinned",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap()
+            .0;
+        manager
+            .update_session_meta(UpdateAgentConversationSessionMetaRequest {
+                owned_id: connection.owned_id.clone(),
+                model: None,
+                effort: None,
+                meta: AgentConversationSessionMeta {
+                    pinned_at: Some("2026-10-07T10:00:00.000Z".into()),
+                    ..AgentConversationSessionMeta::default()
+                },
+            })
+            .expect("pin the session");
+        drop(manager);
+
+        let recovered = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+        assert_eq!(
+            recovered.list_sessions().unwrap()[0].meta.pinned_at.as_deref(),
+            Some("2026-10-07T10:00:00.000Z")
+        );
+        drop(recovered);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn session_draft_survives_manager_restart_and_clears() {
         let root = temp_root();
         let database = root.join("sessions.db");

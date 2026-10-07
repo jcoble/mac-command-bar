@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   /**
    * WorktreesPanel.svelte — the Worktrees tab of the right column.
    *
@@ -237,7 +238,7 @@
         disabled={!worktreeManager.activated || worktreeManager.loading}
         onclick={() => void refresh()}
       >
-        <RefreshCw aria-hidden="true" />
+        {#if worktreeManager.loading}<WorkingSpinner />{:else}<RefreshCw aria-hidden="true" />{/if}
       </IconButton>
     {/snippet}
     {#if worktreeManager.projectName}{worktreeManager.projectName} · {/if}{worktreeManager.activated ? summary : 'Not looked yet'}

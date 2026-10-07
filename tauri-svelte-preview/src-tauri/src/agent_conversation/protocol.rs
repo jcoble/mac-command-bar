@@ -839,6 +839,8 @@ pub struct AgentConversationSessionMeta {
     pub resume_command: Option<String>,
     pub completed_at: Option<String>,
     pub settled_at: Option<String>,
+    /// When the person pinned the session to the top of the rail; `None` when unpinned.
+    pub pinned_at: Option<String>,
     pub task_id: Option<String>,
     pub pull_request: Option<String>,
     pub message_count: Option<u64>,

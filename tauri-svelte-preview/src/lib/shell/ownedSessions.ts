@@ -90,6 +90,8 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
    * `null`.
    */
   settledAt: string | null;
+  /** When the user pinned this session to the top of the rail; absent or `null` when unpinned. */
+  pinnedAt?: string | null;
   /**
    * What the scanner worked out about the session — the branch it is on, the
    * task it belongs to, the pull request it opened. Copied off the scanned
@@ -283,6 +285,7 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
     lastRuntimeError: null,
     completedAt: record.completedAt,
     settledAt: record.settledAt,
+    pinnedAt: record.pinnedAt ?? null,
     // The rail prints the branch straight into the row, so anything that is not
     // a name has to stop here rather than reach the row as "[object Object]".
     // The two constructors below already read it this way.
@@ -309,6 +312,7 @@ export function ownedSessionMetaForBackend(session: OwnedSession): AgentConversa
     resumeCommand: session.resumeCommand,
     completedAt: session.completedAt,
     settledAt: session.settledAt,
+    pinnedAt: session.pinnedAt ?? null,
     taskId: session.taskId,
     pullRequest: session.pullRequest,
     messageCount: session.messageCount,

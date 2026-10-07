@@ -117,6 +117,8 @@
   --color-bad: #f15e6c;
   --color-attention: #f3c969;
   --color-idle: #a7a7a7;
+  /* A merged pull request, in GitHub's purple so it reads the same as there. */
+  --color-merged: #a371f7;
   --color-status-idle: #a7a7a7;
 
   /* ------------------------------------------------------------------

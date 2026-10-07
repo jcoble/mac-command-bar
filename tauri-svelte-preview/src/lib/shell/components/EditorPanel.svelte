@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { parseRemoteWorkspacePath, workspaceChangePath } from '$lib/workspacePaths';
   /**
    * EditorPanel.svelte — the /next code-reading panel.
@@ -47,12 +48,13 @@
     isHtmlFile,
     isMarkdownFile,
     markdownPreviewDefault,
+    rasterImageMimeType,
     type MarkdownView
   } from './editor/markdownPreview.ts';
   import { buttonVariants } from '$lib/components/ui/button/variants.js';
   import { cn } from '$lib/utils.js';
   import LanguageIntelligenceControls from './LanguageIntelligenceControls.svelte';
-  import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
+  import type SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import { workspaceKey } from '$lib/shell/editor/languageIntelligenceMode';
   import {
@@ -157,6 +159,8 @@
 
   type CodeEditorComponent = typeof CodeMirrorSourceEditor;
   let CodeEditor = $state<CodeEditorComponent | null>(null);
+  /** Loaded the first time a Markdown file is shown as Preview. */
+  let MarkdownPreview = $state<typeof SourceMarkdownPreview | null>(null);
   let codeEditor = $state<{
     captureViewStates(paths: readonly string[]): Record<string, object>;
     disposeTabModel(path: string): boolean;
@@ -357,6 +361,11 @@
       ? (markdownViewByPath[activeFile.path] ?? 'raw')
       : 'raw'
   );
+  /** Preview covers the source editor, which stays mounted behind it so the
+   *  file keeps its undo history and scroll position. */
+  const markdownPreviewShown = $derived(
+    Boolean(showing && activeFile?.preview && activeFileIsMarkdown && markdownView === 'rendered')
+  );
   const MARKDOWN_VIEW_ITEMS = [
     { value: 'raw', label: 'Source' },
     { value: 'rendered', label: 'Preview' }
@@ -381,18 +390,6 @@
     if (!markdownViewByPath[path]) return;
     const { [path]: _released, ...rest } = markdownViewByPath;
     markdownViewByPath = rest;
-  }
-
-  function rasterImageMimeType(fileName: string | null | undefined): string | null {
-    const extension = fileName?.split('.').at(-1)?.toLowerCase();
-    if (extension === 'png') return 'image/png';
-    if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg';
-    if (extension === 'gif') return 'image/gif';
-    if (extension === 'webp') return 'image/webp';
-    if (extension === 'bmp') return 'image/bmp';
-    if (extension === 'ico') return 'image/x-icon';
-    if (extension === 'avif') return 'image/avif';
-    return null;
   }
 
   function releaseImagePreview(path?: string): void {
@@ -667,6 +664,15 @@
     const language = upgradeUnknownLanguage(record.path, record.language);
     return language === record.language ? record : { ...record, language };
   }
+
+  /** Download the Markdown preview the first time a file is shown that way. */
+  $effect(() => {
+    if (!markdownPreviewShown || MarkdownPreview) return;
+    import('$lib/SourceMarkdownPreview.svelte').then(
+      (module) => { if (!destroyed) MarkdownPreview = module.default; },
+      (error) => { if (!destroyed) editorLoadError = `Could not start the Markdown preview: ${describeError(error)}`; }
+    );
+  });
 
   /** Download the code editor the first time it is needed. */
   async function ensureCodeEditor(): Promise<void> {
@@ -1621,7 +1627,7 @@
         {#snippet folderEntries(directory: string, depth: number)}
           {@const menu = breadcrumbChain[depth]}
           {#if menu?.directory !== directory || menu.entries === null}
-            <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
+            <DropdownMenu.Item disabled><WorkingSpinner size={12} />Loading…</DropdownMenu.Item>
           {:else if menu.error}
             <DropdownMenu.Item disabled>{menu.error}</DropdownMenu.Item>
           {:else if menu.entries.every((entry) => entry.excluded)}
@@ -1778,17 +1784,6 @@
         {:else}
           <p class="canvas-message">Reading {activeFile.fileName}…</p>
         {/if}
-      {:else if showing && activeFile?.preview && activeFileIsMarkdown && markdownView === 'rendered'}
-        {#key activeFile.path}
-          <SourceMarkdownPreview
-            content={activeFile.draftContent ?? activeFile.preview.content}
-            fileName={activeFile.fileName}
-            relativePath={activeFile.relativePath}
-            dirty={activeFile.dirty ?? false}
-            scrollTop={markdownScrollByPath.get(activeFile.path) ?? 0}
-            onScroll={(top) => { if (showing) markdownScrollByPath.set(activeFile.path, top); }}
-          />
-        {/key}
       {:else if showing && activeFile?.preview && activeFileIsHtml && markdownView === 'rendered'}
         <!-- Scripts run so script-drawn pages render, but the frame keeps an
              opaque origin: never pair allow-scripts with allow-same-origin, or
@@ -1800,6 +1795,7 @@
           srcdoc={activeFile.draftContent ?? activeFile.preview.content}
         ></iframe>
       {:else if activeFile && activePreview}
+        <div class="code-editor-slot" class:behind-preview={markdownPreviewShown}>
         {#if CodeEditor}
           <CodeEditor
             bind:this={codeEditor}
@@ -1827,10 +1823,28 @@
             onDotnetTestRequest={onStartWorkspaceCommand ? () => runDotnetWorkspace('test') : undefined}
           />
         {:else}
-          <p class="canvas-message">Starting the code editor…</p>
+          <p class="canvas-message"><WorkingSpinner size={14} /> Starting the code editor…</p>
+        {/if}
+        </div>
+        {#if markdownPreviewShown && activeFile.preview && MarkdownPreview}
+          {#key activeFile.path}
+            <MarkdownPreview
+              path={activeFile.path}
+              projectRoot={editorState.projectRoot}
+              content={activeFile.draftContent ?? activeFile.preview.content}
+              fileName={activeFile.fileName}
+              readOnly={activeFileReadOnly}
+              scrollTop={markdownScrollByPath.get(activeFile.path) ?? 0}
+              onScroll={(top) => { if (showing) markdownScrollByPath.set(activeFile.path, top); }}
+              onChange={updateActiveDraft}
+              onSave={() => void saveActiveFile()}
+            />
+          {/key}
+        {:else if markdownPreviewShown}
+          <p class="canvas-message">Starting the preview…</p>
         {/if}
       {:else}
-        <p class="canvas-message">Reading {activeFile?.fileName ?? 'file'}…</p>
+        <p class="canvas-message"><WorkingSpinner size={14} /> Reading {activeFile?.fileName ?? 'file'}…</p>
       {/if}
     </div>
 
@@ -2001,6 +2015,19 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .code-editor-slot {
+    display: contents;
+  }
+
+  /* Kept laid out (so its scroll position survives) but not painted and not
+     reachable by pointer or keyboard while Preview covers it. */
+  .code-editor-slot.behind-preview {
+    position: absolute;
+    inset: 0;
+    display: block;
+    visibility: hidden;
   }
 
   .editor-conflict {

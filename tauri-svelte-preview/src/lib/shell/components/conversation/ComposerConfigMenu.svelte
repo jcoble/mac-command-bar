@@ -21,6 +21,7 @@
   Every label comes from `agentConfigLabels.ts`; nothing here invents wording.
 -->
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ShieldCheck from '@lucide/svelte/icons/shield-check';
@@ -145,7 +146,7 @@
     <!-- Which model, thinking how hard. -->
     <div class="config-right">
     {#if saving}
-      <span class="text-primary text-[13px]" data-testid="conversation-config-saving">Saving…</span>
+      <span class="text-primary text-[13px]" data-testid="conversation-config-saving"><WorkingSpinner size={12} /> Saving…</span>
     {/if}
     {#if error}
       <span

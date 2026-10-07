@@ -46,6 +46,7 @@ pub(super) async fn execute(operation: String, args: Value) -> Result<Value, Str
         "amend_git_commit" => return json(changes::amend_git_commit(arg(&args, "root")?, arg(&args, "message")?).await?),
         "project_git_status" => return json(git::project_git_status(path(&args, "root")?.to_string_lossy().into()).await?),
         "read_source_git_diff" => return json(git::read_source_git_diff(arg(&args, "root")?, arg(&args, "path")?).await?),
+        "read_git_branch_diff" => return json(git::read_git_branch_diff(arg(&args, "root")?).await?),
         "stage_git_paths" => return json(git::stage_git_paths(arg(&args, "root")?, arg(&args, "paths")?).await?),
         "unstage_git_paths" => return json(git::unstage_git_paths(arg(&args, "root")?, arg(&args, "paths")?).await?),
         "commit_git_repository" => return json(git::commit_git_repository(arg(&args, "root")?, arg(&args, "message")?).await?),
@@ -73,6 +74,7 @@ pub(super) async fn execute(operation: String, args: Value) -> Result<Value, Str
         "read_github_pull_request_file" => return json(crate::github::read_github_pull_request_file(arg(&args, "query")?).await?),
         "submit_github_pull_request_review" => return json(crate::github::submit_github_pull_request_review(arg(&args, "submission")?).await?),
         "reply_github_pull_request_comment" => return json(crate::github::reply_github_pull_request_comment(arg(&args, "reply")?).await?),
+        "comment_github_pull_request" => return json(crate::github::comment_github_pull_request(arg(&args, "comment")?).await?),
         "merge_github_pull_request" => return json(crate::github::merge_github_pull_request(arg(&args, "request")?).await?),
         _ => {}
     }

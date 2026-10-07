@@ -4,7 +4,6 @@
   import Check from '@lucide/svelte/icons/check';
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import GitBranch from '@lucide/svelte/icons/git-branch';
-  import LoaderCircle from '@lucide/svelte/icons/loader-circle';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Sparkles from '@lucide/svelte/icons/sparkles';
   import X from '@lucide/svelte/icons/x';
@@ -36,6 +35,7 @@
     type PullRequestFlowModel
   } from './prFlow';
   import { cn } from '$lib/utils';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
 
   interface AgentIdentity {
     ownedId: string;
@@ -237,7 +237,7 @@
 
     {#if model.state === 'generating'}
       <div class="mt-2 flex items-center gap-2 rounded-[7px] bg-[var(--color-elevated)] px-2.5 py-2 text-[12px] text-[var(--color-text-2)]" data-testid="pr-generating-state" aria-live="polite">
-        <LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />
+        <WorkingSpinner size={14} />
         <span>Generating title &amp; description...</span>
       </div>
     {/if}
@@ -297,7 +297,7 @@
           onclick={() => void createPullRequest()}
           data-testid="pr-create"
         >
-          {#if busy}<LoaderCircle class="size-3.5 animate-spin" aria-hidden="true" />{/if}
+          {#if busy}<WorkingSpinner size={14} />{/if}
           {pullRequestActionLabel(model)}
         </button>
       </div>

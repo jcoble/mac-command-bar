@@ -13,6 +13,7 @@
     type UsageDisplayMode
   } from './usageCurrent.ts';
   import UsageWorkspace from './UsageWorkspace.svelte';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import type { ProviderUsageSnapshot } from './usageTypes.ts';
 
   interface Props { provider?: string | null; instanceId?: string | null; }
@@ -144,8 +145,7 @@
           <h2>Usage</h2>
         </div>
         <button class="refresh-button" type="button" onclick={() => void refresh()} disabled={menuLoading}>
-          <RefreshCw size={13} class={menuLoading ? 'spinning' : undefined} aria-hidden="true" />
-          {menuLoading ? 'Refreshing…' : 'Refresh'}
+          {#if menuLoading}<WorkingSpinner size={13} />Refreshing…{:else}<RefreshCw size={13} aria-hidden="true" />Refresh{/if}
         </button>
       </header>
 
@@ -293,9 +293,6 @@
     background: var(--color-surface);
     box-shadow: var(--shadow-lg);
   }
-  .refresh-button :global(.spinning) { animation: spin 0.85s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: reduce) { .refresh-button :global(.spinning) { animation: none; } }
   @media (max-width: 700px) {
     .modal-backdrop { padding: 10px; }
     .modal-surface { width: calc(100vw - 20px); min-width: 0; max-height: calc(100vh - 20px); }

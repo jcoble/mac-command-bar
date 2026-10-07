@@ -15,7 +15,12 @@
 	import type { OwnedSession } from "$lib/shell/ownedSessions";
 	import { projectBadge } from "$lib/shell/projects/projects";
 	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
-	import { buildMyWorkGroups, type MyWorkGroup, type MyWorkViewOptions } from "./myWorkViewOptions.ts";
+	import {
+		buildMyWorkGroups,
+		reorderMyWorkSessions,
+		type MyWorkGroup,
+		type MyWorkViewOptions,
+	} from "./myWorkViewOptions.ts";
 	import SessionRowContextMenu from "./SessionRowContextMenu.svelte";
 	import { sessionRowJump, type SessionRowSurface } from "./sessionRowJump.ts";
 	import { sessionRowMenuItems, type SessionRowMenuAction } from "./sessionRowMenu.ts";
@@ -24,28 +29,40 @@
 	interface Props {
 		sessions: OwnedSession[];
 		options: MyWorkViewOptions;
+		/** The saved Custom order, as owned ids. */
+		manualOrder?: readonly string[];
+		/** A row was dropped; this is the new Custom order to save and show. */
+		onReorder?(order: string[]): void;
 		activeOwnedId?: string | null;
 		onSelectSession?(ownedId: string): void | Promise<void>;
 		onComplete?(ownedId: string): void;
 		onReopen?(ownedId: string): void;
 		onSettle?(ownedId: string): void;
 		onUnsettle?(ownedId: string): void;
+		onPin?(ownedId: string, pinned: boolean): void;
+		onRename?(ownedId: string, title: string): void;
+		onConnect?(ownedId: string): void;
 		onAskRemove?(ownedId: string): void;
 	}
 
 	let {
 		sessions,
 		options,
+		manualOrder = [],
+		onReorder,
 		activeOwnedId = null,
 		onSelectSession,
 		onComplete,
 		onReopen,
 		onSettle,
 		onUnsettle,
+		onPin,
+		onRename,
+		onConnect,
 		onAskRemove,
 	}: Props = $props();
 
-	const groups = $derived(buildMyWorkGroups(sessions, options));
+	const groups = $derived(buildMyWorkGroups(sessions, options, manualOrder));
 	let collapsedGroups = $state<Record<string, boolean>>({});
 	let visualActiveOwnedId = $state<string | null>(null);
 	// One clock for every row's age label, refreshed coarsely; a hidden window skips the write.
@@ -57,12 +74,14 @@
 		return () => window.clearInterval(tick);
 	});
 	let contextMenu = $state<{ session: OwnedSession; x: number; y: number } | null>(null);
+	let renamingOwnedId = $state<string | null>(null);
 	const contextMenuItems = $derived(
 		contextMenu
 			? sessionRowMenuItems({
 					status: deriveOwnedLibraryState(contextMenu.session),
 					sessionId: contextMenu.session.nativeSessionId || contextMenu.session.ownedId,
 					worktreePath: contextMenu.session.cwd || null,
+					pinned: Boolean(contextMenu.session.pinnedAt),
 				})
 			: [],
 	);
@@ -80,8 +99,9 @@
 		);
 	}
 
+	/** Settled is the archive, so it starts shut until a person opens it. */
 	function isOpen(key: string): boolean {
-		return collapsedGroups[key] !== true;
+		return !(collapsedGroups[key] ?? key === "settled");
 	}
 
 	function toggleGroup(key: string): void {
@@ -104,6 +124,61 @@
 		contextMenu = { session, x: event.clientX, y: event.clientY };
 	}
 
+	// Dragging a row: one set of listeners on the list, none on the rows. A row
+	// can move only within the group it is drawn in.
+	let dragging: { ownedId: string; groupKey: string } | null = null;
+	let dropTarget = $state<{ ownedId: string; position: "before" | "after" } | null>(null);
+
+	function draggedRow(event: DragEvent): HTMLElement | null {
+		return event.target instanceof Element ? event.target.closest<HTMLElement>("[data-owned-id]") : null;
+	}
+
+	function startDrag(event: DragEvent): void {
+		const row = draggedRow(event);
+		const groupKey = row?.parentElement?.dataset.groupKey;
+		if (!row?.dataset.ownedId || !groupKey || !event.dataTransfer) return;
+		dragging = { ownedId: row.dataset.ownedId, groupKey };
+		event.dataTransfer.effectAllowed = "move";
+		event.dataTransfer.setData("text/plain", row.dataset.ownedId);
+	}
+
+	function dragOver(event: DragEvent): void {
+		if (!dragging) return;
+		const row = draggedRow(event);
+		const ownedId = row?.dataset.ownedId;
+		if (!row || !ownedId || ownedId === dragging.ownedId || row.parentElement?.dataset.groupKey !== dragging.groupKey) {
+			if (dropTarget) dropTarget = null;
+			return;
+		}
+		event.preventDefault();
+		const bounds = row.getBoundingClientRect();
+		const position = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+		if (dropTarget?.ownedId !== ownedId || dropTarget.position !== position) dropTarget = { ownedId, position };
+	}
+
+	function drop(event: DragEvent): void {
+		const from = dragging;
+		const to = dropTarget;
+		endDrag();
+		if (!from || !to) return;
+		event.preventDefault();
+		const lists = groups.flatMap((group) => group.subgroups ?? [group]);
+		const group = lists.find((candidate) => candidate.key === from.groupKey);
+		if (!group) return;
+		// Leaving Recent or Name, the Custom order starts from what is on screen.
+		const order =
+			options.sortBy === "manual"
+				? manualOrder
+				: lists.flatMap((list) => list.sessions.map((session) => session.ownedId));
+		const groupIds = group.sessions.map((session) => session.ownedId);
+		onReorder?.(reorderMyWorkSessions(order, groupIds, from.ownedId, to.ownedId, to.position));
+	}
+
+	function endDrag(): void {
+		dragging = null;
+		dropTarget = null;
+	}
+
 	function copyText(value: string | null): void {
 		if (!value || !navigator.clipboard?.writeText) return;
 		void navigator.clipboard.writeText(value);
@@ -113,10 +188,12 @@
 		const session = contextMenu?.session;
 		contextMenu = null;
 		if (!session) return;
-		if (action === "mark-done") onComplete?.(session.ownedId);
+		if (action === "rename") renamingOwnedId = session.ownedId;
+		else if (action === "mark-done") onComplete?.(session.ownedId);
 		else if (action === "reopen") onReopen?.(session.ownedId);
 		else if (action === "archive") onSettle?.(session.ownedId);
 		else if (action === "unsettle") onUnsettle?.(session.ownedId);
+		else if (action === "pin" || action === "unpin") onPin?.(session.ownedId, action === "pin");
 		else if (action === "copy-session-id") copyText(session.nativeSessionId || session.ownedId);
 		else if (action === "copy-worktree-path") copyText(session.cwd || null);
 		else if (action === "open-in-editor") void jumpTo(session, "editor");
@@ -125,12 +202,14 @@
 	}
 </script>
 
-<!-- A section is a heading and its rows, or, with both groupings on, a project
-     heading and the status sections inside it. -->
+<!-- A section is a heading and its rows, or, with both groupings on, a status
+     heading and the project sections inside it. -->
 {#snippet section(group: MyWorkGroup, nested: boolean)}
 	{@const needsYouCount = group.sessions.filter(sessionNeedsYou).length}
-	<!-- With project grouping on, the top-level headings are projects; status headings stay as they were. -->
-	{@const projectHeading = options.groupByProject && !nested}
+	<!-- Project headings sit at the top level, or inside each status when both
+	     groupings are on. The Pinned section is not a project. -->
+	{@const projectHeading =
+		options.groupByProject && (nested || !options.groupByStatus) && group.key !== "pinned"}
 	<section data-testid="session-rail-section" data-group-key={group.key} class:collapsed={!isOpen(group.key)}>
 		{#if group.label}
 			<button
@@ -145,7 +224,8 @@
 				<!-- One chevron that turns, rather than two that swap: the quarter
            turn is what tells a person the section answered them. -->
 				<ChevronRight class="chevron" aria-hidden="true" />
-				{#if projectHeading && group.key === "none"}
+				<!-- Inside a status the key reads "<status>::none". -->
+				{#if projectHeading && (group.key === "none" || group.key.endsWith("::none"))}
 					<MessageCircle class="group-icon" aria-hidden="true" />
 				{:else if projectHeading}
 					<Badge variant="outline" class="h-4 rounded-sm px-1 font-mono text-[10px]" aria-hidden="true">
@@ -172,7 +252,7 @@
 					{@render section(subgroup, true)}
 				{/each}
 			{:else}
-				<ul class="rows">
+				<ul class="rows" data-group-key={group.key}>
 					{#each group.sessions as session (session.ownedId)}
 						<WorktreeAgentRow
 							{session}
@@ -183,6 +263,13 @@
 							onOpenEditor={() => void jumpTo(session, "editor")}
 							onOpenSourceControl={() => void jumpTo(session, "source-control")}
 							onContextMenu={(event) => openContextMenu(event, session)}
+							renaming={session.ownedId === renamingOwnedId}
+							onRename={(title) => {
+								renamingOwnedId = null;
+								if (title) onRename?.(session.ownedId, title);
+							}}
+							onConnect={() => onConnect?.(session.ownedId)}
+							dropPosition={dropTarget?.ownedId === session.ownedId ? dropTarget.position : null}
 						/>
 					{/each}
 				</ul>
@@ -191,7 +278,15 @@
 	</section>
 {/snippet}
 
-<div data-testid="session-rail" class="session-scroll">
+<div
+	data-testid="session-rail"
+	class="session-scroll"
+	role="presentation"
+	ondragstart={startDrag}
+	ondragover={dragOver}
+	ondrop={drop}
+	ondragend={endDrag}
+>
 	{#each groups as group (group.key)}
 		{@render section(group, false)}
 	{/each}
@@ -275,8 +370,8 @@
 		flex: 0 0 auto;
 	}
 
-	/* A status heading inside a project: indented under it, and not sticky, so
-     it scrolls away under the project heading rather than stacking on it. */
+	/* A project heading inside a status: indented under it, and not sticky, so
+     it scrolls away under the status heading rather than stacking on it. */
 	.section-heading.nested {
 		position: static;
 		padding-left: 32px;

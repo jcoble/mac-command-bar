@@ -25,6 +25,7 @@
   import Drama from '@lucide/svelte/icons/drama';
 
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { refresh, stopAll, stopSession } from '$lib/shell/processes/playwrightService';
   import {
     playwrightState,
@@ -188,7 +189,7 @@
           </p>
         {/if}
       {:else if playwrightState.loading}
-        <p class="state loading">Looking for Playwright processes…</p>
+        <p class="state"><WorkingSpinner size={12} /> Looking for Playwright processes…</p>
       {:else if playwrightState.activated}
         <p class="state">No Playwright processes are running.</p>
       {:else}
@@ -547,20 +548,6 @@
     color: var(--color-bad);
   }
 
-  .state.loading {
-    animation: playwright-fade 1.4s ease-in-out infinite;
-  }
-
-  @keyframes playwright-fade {
-    0%,
-    100% {
-      opacity: 0.5;
-    }
-    50% {
-      opacity: 0.9;
-    }
-  }
-
   .retry {
     margin-left: 6px;
     border: 0;
@@ -580,9 +567,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .state.loading {
-      animation: none;
-    }
     .chevron {
       transition: none;
     }

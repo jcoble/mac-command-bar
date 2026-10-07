@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Check from '@lucide/svelte/icons/check';
   import ExternalLink from '@lucide/svelte/icons/external-link';
@@ -90,7 +91,7 @@
         <div class="mt-(--space-4) flex flex-wrap gap-(--space-2) text-(length:--text-quiet) text-muted-foreground">
           <Select.Root type="single" value={status} onValueChange={(value) => void changeStatus(value)} disabled={savingStatus}>
             <Select.Trigger size="sm" class="rounded-full px-2.5 font-medium text-foreground" aria-label="Change task status">
-              {savingStatus ? 'Saving…' : status}
+              {#if savingStatus}<WorkingSpinner size={12} />Saving…{:else}{status}{/if}
             </Select.Trigger>
             <Select.Content>
               {#each statusOptions as option}<Select.Item value={option} label={option} />{/each}
@@ -105,7 +106,7 @@
       <section class="mt-(--space-3) min-w-0 rounded-(--radius-md) bg-card px-(--space-4) py-(--space-4) shadow-(--shadow-sm)">
         <h3 class="text-xl font-semibold text-foreground">Details</h3>
         {#if loading}
-          <p class="mt-(--space-5) text-(length:--text-heading) text-muted-foreground">Loading task…</p>
+          <p class="mt-(--space-5) text-(length:--text-heading) text-muted-foreground"><WorkingSpinner size={14} /> Loading task…</p>
         {:else if error}
           <p class="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>
         {:else if blocks.length === 0}
