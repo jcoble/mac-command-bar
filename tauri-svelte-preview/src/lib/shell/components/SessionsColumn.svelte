@@ -56,6 +56,7 @@
     onReopen?(ownedId: string): void;
     onSettle?(ownedId: string): void;
     onUnsettle?(ownedId: string): void;
+    onPin?(ownedId: string, pinned: boolean): void;
     onAskRemove?(ownedId: string): void;
   }
 
@@ -70,6 +71,7 @@
     onReopen,
     onSettle,
     onUnsettle,
+    onPin,
     onAskRemove
   }: Props = $props();
 
@@ -401,6 +403,7 @@
           {onReopen}
           {onSettle}
           {onUnsettle}
+          {onPin}
           {onAskRemove}
         />
       </div>

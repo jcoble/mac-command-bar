@@ -12,6 +12,8 @@ import type { MyWorkStatus } from './myWorkViewOptions.ts';
 export type SessionRowMenuAction =
   | 'rename'
   | 'move-to-project'
+  | 'pin'
+  | 'unpin'
   | 'mark-done'
   | 'reopen'
   | 'archive'
@@ -43,6 +45,8 @@ export interface SessionRowMenuInput {
   sessionId: string | null;
   /** The checkout the session runs in, when it has one. */
   worktreePath: string | null;
+  /** Whether the session is pinned to the top of the rail. */
+  pinned: boolean;
 }
 
 const NO_BACKEND = 'Not available yet';
@@ -52,7 +56,10 @@ export function sessionRowMenuItems(input: SessionRowMenuInput): SessionRowMenuI
     // follow-up: no command writes a session title yet.
     { id: 'rename', label: 'Rename', enabled: false, disabledReason: NO_BACKEND },
     // follow-up: no command reassigns a session to another project yet.
-    { id: 'move-to-project', label: 'Move to project', enabled: false, disabledReason: NO_BACKEND }
+    { id: 'move-to-project', label: 'Move to project', enabled: false, disabledReason: NO_BACKEND },
+    input.pinned
+      ? { id: 'unpin', label: 'Unpin', enabled: true }
+      : { id: 'pin', label: 'Pin to top', enabled: true }
   ];
 
   // The lifecycle moves the rail already performs, in the order a session

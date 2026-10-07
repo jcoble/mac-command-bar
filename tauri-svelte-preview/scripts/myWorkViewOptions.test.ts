@@ -15,6 +15,7 @@ import {
   prepareMyWorkSessions,
   type MyWorkGroup
 } from '../src/lib/shell/components/myWorkViewOptions.ts';
+import { sessionRowMenuItems } from '../src/lib/shell/components/sessionRowMenu.ts';
 import type { OwnedSession } from '../src/lib/shell/ownedSessions.ts';
 import { ownedSessionMetaForBackend } from '../src/lib/shell/ownedSessions.ts';
 import { hydrateOwned, rail, setOwnedSessionStatus, updateOwnedSession } from '../src/lib/shell/stores/sessionRailStore.svelte.ts';
@@ -142,6 +143,36 @@ function shape(groups: MyWorkGroup[]): unknown[] {
       ['settled::/two/alpha', 'alpha', ['a-settled']]
     ]]
   ]);
+}
+
+// Pinned sessions leave their own section for a Pinned section at the top,
+// whatever the grouping and whatever their status, until they are unpinned.
+{
+  const rows = [
+    session('working', { title: 'a' }),
+    session('pinned-done', { title: 'b', completedAt: '2026-08-09T10:00:00.000Z', pinnedAt: '2026-10-07T10:00:00.000Z' }),
+    session('pinned-working', { title: 'c', pinnedAt: '2026-10-07T11:00:00.000Z' })
+  ];
+  const byStatus = buildMyWorkGroups(rows, { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc' });
+  assert.deepEqual(shape(byStatus), [
+    ['pinned', 'Pinned', ['pinned-done', 'pinned-working']],
+    ['working', 'Working', ['working']]
+  ]);
+  const ungrouped = buildMyWorkGroups(rows, {
+    ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc', groupByStatus: false
+  });
+  assert.deepEqual(shape(ungrouped), [
+    ['pinned', 'Pinned', ['pinned-done', 'pinned-working']],
+    ['all', '', ['working']]
+  ]);
+}
+
+// The row menu offers Pin to top, or Unpin once pinned.
+{
+  const pinItem = (pinned: boolean) => sessionRowMenuItems({ status: 'working', sessionId: 'x', worktreePath: null, pinned })
+    .find((item) => item.id === 'pin' || item.id === 'unpin');
+  assert.deepEqual([pinItem(false)?.id, pinItem(false)?.label, pinItem(false)?.enabled], ['pin', 'Pin to top', true]);
+  assert.deepEqual([pinItem(true)?.id, pinItem(true)?.label, pinItem(true)?.enabled], ['unpin', 'Unpin', true]);
 }
 
 // buildMyWorkGroups with neither grouping returns one unlabeled group.

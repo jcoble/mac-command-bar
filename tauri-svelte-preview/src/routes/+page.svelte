@@ -58,7 +58,7 @@
 	import { registerSessionHistoryHost } from "$lib/shell/history/sessionHistoryHost";
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
 	import type { ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow";
-	import { ownedSessionMetaForBackend } from "$lib/shell/ownedSessions";
+	import { ownedSessionMetaForBackend, type OwnedSession } from "$lib/shell/ownedSessions";
 	import { diffPathFor } from "$lib/shell/sessionWorkspaces";
 	import { setOwnedSessionStatus, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
 	import type { CenterTabId, OpenPullRequestDiffRequest } from "$lib/shell/workbenchNavigation";
@@ -116,6 +116,25 @@
 		} catch (error) {
 			updateOwnedSession(ownedId, { completedAt: before.completedAt, settledAt: before.settledAt });
 			console.error("Could not change session status", error);
+		}
+	}
+
+	/** Saves a person's own change to a session row, and puts it back if the save fails. */
+	async function saveSessionChange(ownedId: string, patch: Pick<OwnedSession, "pinnedAt">): Promise<void> {
+		const before = selection.railOwned.find((session) => session.ownedId === ownedId);
+		if (!before) return;
+		const updated = { ...before, ...patch };
+		updateOwnedSession(ownedId, patch);
+		try {
+			await updateAgentConversationSessionMetaFromTauri({
+				ownedId,
+				model: null,
+				effort: null,
+				meta: ownedSessionMetaForBackend(updated),
+			});
+		} catch (error) {
+			updateOwnedSession(ownedId, { pinnedAt: before.pinnedAt ?? null });
+			console.error("Could not save the session change", error);
 		}
 	}
 
@@ -469,6 +488,8 @@
 				onReopen={(ownedId) => void changeSessionStatus(ownedId, "working")}
 				onSettle={(ownedId) => void changeSessionStatus(ownedId, "settled")}
 				onUnsettle={(ownedId) => void changeSessionStatus(ownedId, "done")}
+				onPin={(ownedId, pinned) =>
+					void saveSessionChange(ownedId, { pinnedAt: pinned ? new Date().toISOString() : null })}
 			/>
 		</div>
 	</div>

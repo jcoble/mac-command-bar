@@ -27,6 +27,7 @@
 		onReopen?(ownedId: string): void;
 		onSettle?(ownedId: string): void;
 		onUnsettle?(ownedId: string): void;
+		onPin?(ownedId: string, pinned: boolean): void;
 		onAskRemove?(ownedId: string): void;
 	}
 
@@ -39,6 +40,7 @@
 		onReopen,
 		onSettle,
 		onUnsettle,
+		onPin,
 		onAskRemove,
 	}: Props = $props();
 
@@ -60,6 +62,7 @@
 					status: deriveOwnedLibraryState(contextMenu.session),
 					sessionId: contextMenu.session.nativeSessionId || contextMenu.session.ownedId,
 					worktreePath: contextMenu.session.cwd || contextMenu.session.projectPath || null,
+					pinned: Boolean(contextMenu.session.pinnedAt),
 				})
 			: [],
 	);
@@ -115,6 +118,7 @@
 		else if (action === "reopen") onReopen?.(session.ownedId);
 		else if (action === "archive") onSettle?.(session.ownedId);
 		else if (action === "unsettle") onUnsettle?.(session.ownedId);
+		else if (action === "pin" || action === "unpin") onPin?.(session.ownedId, action === "pin");
 		else if (action === "copy-session-id") copyText(session.nativeSessionId || session.ownedId);
 		else if (action === "copy-worktree-path") copyText(session.cwd || session.projectPath || null);
 		else if (action === "open-in-editor") void jumpTo(session, "editor");

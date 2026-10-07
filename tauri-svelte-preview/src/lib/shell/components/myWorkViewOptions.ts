@@ -180,7 +180,15 @@ export function buildMyWorkGroups(
   sessions: OwnedSession[],
   options: MyWorkViewOptions
 ): MyWorkGroup[] {
-  const prepared = prepareMyWorkSessions(sessions, options);
+  const sorted = prepareMyWorkSessions(sessions, options);
+  // Pinned sessions sit in their own section at the top, whatever their status.
+  const pinned = sorted.filter((session) => session.pinnedAt);
+  const prepared = pinned.length ? sorted.filter((session) => !session.pinnedAt) : sorted;
+  const groups = groupUnpinned(prepared, options);
+  return pinned.length ? [{ key: 'pinned', label: 'Pinned', sessions: pinned }, ...groups] : groups;
+}
+
+function groupUnpinned(prepared: OwnedSession[], options: MyWorkViewOptions): MyWorkGroup[] {
   if (options.groupByProject && options.groupByStatus) {
     return groupSessions(prepared, 'status').map((status) => ({
       ...status,
