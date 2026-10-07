@@ -1,224 +1,397 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { parseSafeMarkdown, type SafeInlinePart, type SafeListItem, type SafeMarkdownBlock } from './shell/conversation/conversationMessageSafety';
-  import { fenceLanguage, highlightCode, plainHighlightedLines } from './shell/components/conversation/codeHighlight';
-  import { sourceMarkdownPreviewTextSummary } from './sourceMarkdownPreview';
+  import type { Editor } from '@milkdown/kit/core';
+  import type { Node as ProseNode } from '@milkdown/kit/prose/model';
+  import { fenceLanguage, highlightCode } from './shell/components/conversation/codeHighlight';
 
+  /**
+   * The Markdown file as a document you can edit in place (Milkdown). The
+   * editor is downloaded the first time a Markdown file is shown this way and is
+   * destroyed when this view goes away. Only real edits are reported: loading or
+   * reloading the file never marks it modified, and undoing back to the loaded
+   * document hands back the file's own text rather than a re-serialized copy.
+   */
   type Props = {
     content: string;
     fileName: string;
-    relativePath: string;
-    dirty?: boolean;
+    readOnly?: boolean;
     scrollTop?: number;
     onScroll?: (scrollTop: number) => void;
+    onChange?: (markdown: string) => void;
+    onSave?: () => void;
   };
 
-  let { content, fileName, relativePath, dirty = false, scrollTop = 0, onScroll }: Props = $props();
-  let documentElement: HTMLElement;
-  onMount(() => { documentElement.scrollTop = scrollTop; });
-  let blocks = $derived(parseSafeMarkdown(content));
-  let summary = $derived(sourceMarkdownPreviewTextSummary(content) || 'Empty Markdown file');
-  const highlightReady = true;
+  /** The part of a parsed Markdown (mdast) node the image fix reads. */
+  type MarkdownTreeNode = { type: string; title?: string | null; children?: MarkdownTreeNode[] };
+
+  let { content, fileName, readOnly = false, scrollTop = 0, onScroll, onChange, onSave }: Props = $props();
+  let host: HTMLElement;
+  let loadError = $state<string | null>(null);
+  /** The text the editor last loaded or reported, so its own echo is not loaded back in. */
+  let shown = '';
+  let loadDocument: ((markdown: string) => void) | null = null;
+  /** Reports an edit still waiting on the typing pause. */
+  let flush = (): void => {};
+
+  $effect(() => {
+    if (content !== shown) loadDocument?.(content);
+  });
+
+  onMount(() => {
+    let editor: Editor | null = null;
+    let destroyed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 's') return;
+      event.preventDefault();
+      flush();
+      onSave?.();
+    };
+    host.addEventListener('keydown', onKeyDown);
+
+    void (async () => {
+      try {
+        const [core, { commonmark }, { gfm, remarkGFMPlugin }, { history }, utils, { Plugin }, { Decoration, DecorationSet }] =
+          await Promise.all([
+            import('@milkdown/kit/core'),
+            import('@milkdown/kit/preset/commonmark'),
+            import('@milkdown/kit/preset/gfm'),
+            import('@milkdown/kit/plugin/history'),
+            import('@milkdown/kit/utils'),
+            import('@milkdown/kit/prose/state'),
+            import('@milkdown/kit/prose/view'),
+            import('@milkdown/kit/prose/view/style/prosemirror.css')
+          ]);
+        if (destroyed) return;
+
+        let applying = false;
+        let baseSource = content;
+        let baseDoc: ProseNode | null = null;
+
+        const report = () => {
+          timer = undefined;
+          if (!editor) return;
+          const doc = editor.ctx.get(core.editorViewCtx).state.doc;
+          shown = baseDoc && doc.eq(baseDoc) ? baseSource : editor.ctx.get(core.serializerCtx)(doc);
+          onChange?.(shown);
+        };
+        flush = () => {
+          if (timer === undefined) return;
+          clearTimeout(timer);
+          report();
+        };
+
+        // Serializing the whole file on every key would cost a large file real
+        // time, so an edit is reported once typing pauses (or at once on save,
+        // close, or switching back to Source).
+        const reportEdits = utils.$prose(() => new Plugin({
+          view: () => ({
+            update(view, previous) {
+              if (applying || view.state.doc.eq(previous.doc)) return;
+              clearTimeout(timer);
+              timer = setTimeout(report, 150);
+            }
+          })
+        }));
+
+        // Milkdown 7.22.2 hands an image with no title to the schema as a null
+        // title, which the schema rejects, so the image vanishes from the
+        // document and from the next save. An absent title becomes ''.
+        const imageTitles = utils.$remark('imageTitles', () => () => (tree: MarkdownTreeNode) => {
+          const visit = (node: MarkdownTreeNode): void => {
+            if (node.type === 'image' && node.title == null) node.title = '';
+            node.children?.forEach(visit);
+          };
+          visit(tree);
+        });
+
+        // Code blocks are coloured by the same scanner the old viewer used.
+        const decorate = (doc: ProseNode) => {
+          const decorations: ReturnType<typeof Decoration.inline>[] = [];
+          doc.descendants((node, position) => {
+            if (node.type.name !== 'code_block') return true;
+            let offset = position + 1;
+            highlightCode(node.textContent, fenceLanguage(String(node.attrs.language ?? ''))).forEach((line, index) => {
+              if (index > 0) offset += 1;
+              for (const span of line) {
+                if (span.className !== 'plain' && span.value) {
+                  decorations.push(Decoration.inline(offset, offset + span.value.length, { class: span.className }));
+                }
+                offset += span.value.length;
+              }
+            });
+            return false;
+          });
+          return DecorationSet.create(doc, decorations);
+        };
+        const highlight = utils.$prose(() => new Plugin({
+          state: {
+            init: (_config, state) => decorate(state.doc),
+            apply: (transaction, previous: ReturnType<typeof decorate>) =>
+              transaction.docChanged ? decorate(transaction.doc) : previous
+          },
+          props: {
+            decorations(state) {
+              return this.getState(state);
+            }
+          }
+        }));
+
+        const created = await core.Editor.make()
+          .config((ctx) => {
+            ctx.set(core.rootCtx, host);
+            ctx.set(core.defaultValueCtx, baseSource);
+            ctx.update(core.editorViewOptionsCtx, (options) => ({
+              ...options,
+              editable: () => !readOnly,
+              // An image shows as its text and never fetches: a file's remote
+              // image must not phone home when the file is opened.
+              nodeViews: {
+                image: (node) => {
+                  const dom = document.createElement('span');
+                  dom.className = 'markdown-image';
+                  dom.textContent = String(node.attrs.alt || node.attrs.src || 'image');
+                  dom.title = String(node.attrs.src ?? '');
+                  return { dom };
+                }
+              }
+            }));
+            // Write lists and tables the way people usually type them, so saving
+            // an edit does not restyle the rest of the file.
+            ctx.update(core.remarkStringifyOptionsCtx, (options) => ({ ...options, bullet: '-' as const }));
+            ctx.set(remarkGFMPlugin.options.key, { tablePipeAlign: false });
+          })
+          .use(imageTitles)
+          .use(commonmark)
+          .use(gfm)
+          .use(history)
+          .use(reportEdits)
+          .use(highlight)
+          .create();
+        if (destroyed) {
+          await created.destroy();
+          return;
+        }
+        editor = created;
+        shown = baseSource;
+        baseDoc = created.ctx.get(core.editorViewCtx).state.doc;
+        loadDocument = (markdown) => {
+          clearTimeout(timer);
+          timer = undefined;
+          applying = true;
+          created.action(utils.replaceAll(markdown, true));
+          applying = false;
+          baseSource = markdown;
+          baseDoc = created.ctx.get(core.editorViewCtx).state.doc;
+          shown = markdown;
+        };
+        if (content !== shown) loadDocument(content);
+        host.scrollTop = scrollTop;
+      } catch (error) {
+        if (!destroyed) loadError = `Could not open the Markdown editor: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    })();
+
+    return () => {
+      destroyed = true;
+      flush();
+      loadDocument = null;
+      flush = () => {};
+      host.removeEventListener('keydown', onKeyDown);
+      void editor?.destroy();
+    };
+  });
 </script>
 
-<section
-  class="source-markdown-preview"
-  aria-label={`Preview ${fileName}`}
-  title={`${relativePath}${dirty ? ' (modified)' : ''}`}
->
-  <div class="source-markdown-preview-header">
-    <strong>{fileName}</strong>
-    <span>{summary}</span>
-  </div>
-  <article class="source-markdown-preview-document selectable" bind:this={documentElement} onscroll={() => onScroll?.(documentElement.scrollTop)}>
-    {#each blocks as block}{@render node(block)}{/each}
-  </article>
+<section class="markdown-document" aria-label={`Preview ${fileName}`}>
+  {#if loadError}<p class="markdown-document-error">{loadError}</p>{/if}
+  <div
+    class="markdown-document-scroll selectable"
+    bind:this={host}
+    onscroll={() => onScroll?.(host.scrollTop)}
+  ></div>
 </section>
 
-{#snippet node(block: SafeMarkdownBlock)}
-  {#if block.kind === 'code'}
-    {@render codeBlock(block)}
-  {:else if block.kind === 'heading'}
-    <svelte:element this={`h${Math.min(block.level, 6)}`} class={`heading level-${Math.min(block.level, 4)}`}>{#each block.parts as part}{@render inline(part)}{/each}</svelte:element>
-  {:else if block.kind === 'quote'}
-    <blockquote>{#each block.blocks as inner}{@render node(inner)}{/each}</blockquote>
-  {:else if block.kind === 'rule'}
-    <hr />
-  {:else if block.kind === 'list'}
-    {#if block.ordered}<ol>{#each block.items as entry}{@render row(entry)}{/each}</ol>
-    {:else}<ul>{#each block.items as entry}{@render row(entry)}{/each}</ul>{/if}
-  {:else if block.kind === 'table'}
-    <div class="table-scroll"><table><thead><tr>{#each block.headers as cell}<th>{#each cell as part}{@render inline(part)}{/each}</th>{/each}</tr></thead><tbody>{#each block.rows as tableRow}<tr>{#each tableRow as cell}<td>{#each cell as part}{@render inline(part)}{/each}</td>{/each}</tr>{/each}</tbody></table></div>
-  {:else}
-    <p>{#each block.parts as part}{@render inline(part)}{/each}</p>
-  {/if}
-{/snippet}
-
-{#snippet codeBlock(block: Extract<SafeMarkdownBlock, { kind: 'code' }>)}
-  {@const lines = highlightReady ? highlightCode(block.value, fenceLanguage(block.language)) : plainHighlightedLines(block.value)}
-  <pre data-testid="source-markdown-code-block"><code>{#each lines as line, lineIndex}{#if lineIndex > 0}{'\n'}{/if}{#each line as span}<span class={span.className}>{span.value}</span>{/each}{/each}</code></pre>
-{/snippet}
-
-{#snippet row(entry: SafeListItem)}
-  <li class:task-row={entry.task}>{#if entry.task}<input type="checkbox" checked={entry.checked} disabled />{/if}{#each entry.parts as part}{@render inline(part)}{/each}{#each entry.blocks as inner}{@render node(inner)}{/each}</li>
-{/snippet}
-
-{#snippet inline(part: SafeInlinePart)}
-  {#if part.kind === 'strong'}<strong>{#each part.parts as inner}{@render inline(inner)}{/each}</strong>
-  {:else if part.kind === 'emphasis'}<em>{#each part.parts as inner}{@render inline(inner)}{/each}</em>
-  {:else if part.kind === 'strike'}<del>{#each part.parts as inner}{@render inline(inner)}{/each}</del>
-  {:else if part.kind === 'code'}<code>{part.value}</code>
-  {:else if part.kind === 'link'}<a href={part.href} target="_blank" rel="noreferrer">{#each part.parts as inner}{@render inline(inner)}{/each}</a>
-  {:else if part.kind === 'image'}<a href={part.href} target="_blank" rel="noreferrer">{part.alt}</a>
-  {:else if part.kind === 'file-link'}<span class="file-link" title={part.path}>{#each part.parts as inner}{@render inline(inner)}{/each}</span>
-  {:else}{part.value}{/if}
-{/snippet}
-
 <style>
-  .source-markdown-preview {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+  .markdown-document {
+    display: flex;
+    flex-direction: column;
     width: 100%;
     height: 100%;
     min-width: 0;
     min-height: 0;
-    overflow: hidden;
-    color: #d7dfdd;
-    background: #131617;
+    color: var(--color-text);
+    background: var(--color-bg);
   }
 
-  .source-markdown-preview-header {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-    height: 28px;
-    padding: 0 12px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-    background: rgba(255, 255, 255, 0.025);
+  .markdown-document-error {
+    margin: 0;
+    padding: var(--space-2) var(--space-4);
+    color: var(--color-bad);
+    font-size: var(--text-quiet);
   }
 
-  .source-markdown-preview-header strong,
-  .source-markdown-preview-header span {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .source-markdown-preview-header strong {
-    color: #edf5f3;
-    font-size: 12px;
-    font-weight: 820;
-  }
-
-  .source-markdown-preview-header span {
-    color: #8f9996;
-    font-size: 10px;
-    font-weight: 720;
-  }
-
-  .source-markdown-preview-document {
-    min-width: 0;
+  .markdown-document-scroll {
+    flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
-    padding: 20px 28px 36px;
-    line-height: 1.58;
-    scrollbar-color: rgba(174, 184, 181, 0.54) rgba(255, 255, 255, 0.045);
-    scrollbar-gutter: stable;
     scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
   }
 
-  .source-markdown-preview-document :global(h1),
-  .source-markdown-preview-document :global(h2),
-  .source-markdown-preview-document :global(h3),
-  .source-markdown-preview-document :global(h4),
-  .source-markdown-preview-document :global(h5),
-  .source-markdown-preview-document :global(h6) {
-    margin: 0 0 12px;
-    color: #eff8f6;
-    font-weight: 820;
-    letter-spacing: 0;
+  .markdown-document-scroll :global(.ProseMirror) {
+    max-width: 860px;
+    min-height: 100%;
+    margin: 0 auto;
+    padding: var(--space-5) var(--space-6) var(--space-6);
+    font-size: var(--text-body);
+    line-height: 1.6;
+    outline: none;
+    caret-color: var(--color-accent);
   }
 
-  .source-markdown-preview-document :global(h1) {
-    padding-bottom: 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  .markdown-document-scroll :global(.ProseMirror > :first-child) { margin-top: 0; }
+
+  .markdown-document-scroll :global(h1),
+  .markdown-document-scroll :global(h2),
+  .markdown-document-scroll :global(h3),
+  .markdown-document-scroll :global(h4),
+  .markdown-document-scroll :global(h5),
+  .markdown-document-scroll :global(h6) {
+    margin: var(--space-5) 0 var(--space-3);
+    color: var(--color-text);
+    font-weight: var(--text-heading-weight);
+    line-height: 1.3;
+  }
+
+  .markdown-document-scroll :global(h1) {
+    padding-bottom: var(--space-2);
+    border-bottom: 1px solid var(--color-border);
     font-size: 24px;
   }
 
-  .source-markdown-preview-document :global(h2) {
-    margin-top: 26px;
-    font-size: 19px;
+  .markdown-document-scroll :global(h2) { font-size: 19px; }
+  .markdown-document-scroll :global(h3) { font-size: var(--text-heading); }
+  .markdown-document-scroll :global(h4),
+  .markdown-document-scroll :global(h5),
+  .markdown-document-scroll :global(h6) { font-size: var(--text-body); }
+
+  .markdown-document-scroll :global(p),
+  .markdown-document-scroll :global(ul),
+  .markdown-document-scroll :global(ol),
+  .markdown-document-scroll :global(blockquote),
+  .markdown-document-scroll :global(pre),
+  .markdown-document-scroll :global(table) {
+    margin: 0 0 var(--space-3);
   }
 
-  .source-markdown-preview-document :global(h3) {
-    margin-top: 22px;
-    font-size: 16px;
+  .markdown-document-scroll :global(ul),
+  .markdown-document-scroll :global(ol) { padding-left: var(--space-5); }
+  .markdown-document-scroll :global(li > p) { margin: 0; }
+  .markdown-document-scroll :global(li + li) { margin-top: var(--space-1); }
+
+  .markdown-document-scroll :global(li[data-item-type='task']) {
+    position: relative;
+    list-style: none;
   }
 
-  .source-markdown-preview-document :global(p),
-  .source-markdown-preview-document :global(ul),
-  .source-markdown-preview-document :global(blockquote),
-  .source-markdown-preview-document :global(pre) {
-    margin: 0 0 14px;
+  .markdown-document-scroll :global(li[data-item-type='task']::before) {
+    position: absolute;
+    top: 0.3em;
+    left: -20px;
+    width: 12px;
+    height: 12px;
+    border: 1px solid var(--color-field-border);
+    border-radius: var(--radius-xs);
+    content: '';
   }
 
-  .source-markdown-preview-document :global(ul) {
-    padding-left: 22px;
+  .markdown-document-scroll :global(li[data-item-type='task'][data-checked='true']::before) {
+    border-color: var(--color-accent);
+    background: var(--color-accent);
   }
 
-  .source-markdown-preview-document :global(li + li) {
-    margin-top: 4px;
+  .markdown-document-scroll :global(li[data-item-type='task'][data-checked='true']) {
+    color: var(--color-text-2);
   }
 
-  .source-markdown-preview-document :global(a) {
-    color: #82e6d5;
-    text-decoration: none;
-  }
-
-  .source-markdown-preview-document :global(a:hover),
-  .source-markdown-preview-document :global(a:focus-visible) {
-    color: #bff7ef;
+  .markdown-document-scroll :global(a) {
+    color: var(--color-accent);
     text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
   }
 
-  .source-markdown-preview-document :global(code) {
+  .markdown-document-scroll :global(code) {
     padding: 1px 4px;
-    border-radius: 4px;
-    color: #aeeede;
-    background: rgba(92, 226, 207, 0.09);
+    border-radius: var(--radius-xs);
+    background: var(--color-elevated);
     font-family: var(--font-mono);
-    font-size: 0.92em;
+    font-size: 0.9em;
   }
 
-  .source-markdown-preview-document :global(pre) {
+  .markdown-document-scroll :global(pre) {
     overflow: auto;
-    padding: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 6px;
-    background: rgba(4, 7, 8, 0.62);
-  }
-
-  .source-markdown-preview-document :global(pre code) {
-    display: block;
-    padding: 0;
-    color: #dce8e5;
-    background: transparent;
+    padding: var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--color-surface) 34%, var(--color-bg));
+    font: 13px/1.6 var(--font-mono);
     white-space: pre;
   }
 
-  .source-markdown-preview-document :global(.keyword) { color: #82e6d5; }
-  .source-markdown-preview-document :global(.string) { color: #a8e6a2; }
-  .source-markdown-preview-document :global(.comment) { color: #8f9996; font-style: italic; }
-  .source-markdown-preview-document :global(.number) { color: #f4c77a; }
-  .source-markdown-preview-document :global(.type) { color: #9fd4ff; }
+  .markdown-document-scroll :global(pre code) {
+    padding: 0;
+    background: transparent;
+    font: inherit;
+  }
 
-  .source-markdown-preview-document :global(blockquote) {
-    padding: 8px 12px;
-    border-left: 3px solid rgba(92, 226, 207, 0.42);
-    color: #b7c3bf;
-    background: rgba(92, 226, 207, 0.06);
+  .markdown-document-scroll :global(.keyword) { color: var(--color-accent); }
+  .markdown-document-scroll :global(.string) { color: var(--color-good); }
+  .markdown-document-scroll :global(.comment) { color: var(--color-text-3); font-style: italic; }
+  .markdown-document-scroll :global(.number) { color: var(--color-attention); }
+  .markdown-document-scroll :global(.type) { color: var(--color-live); }
+
+  .markdown-document-scroll :global(blockquote) {
+    padding: var(--space-1) var(--space-3);
+    border-left: 3px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+    color: var(--color-text-2);
+  }
+
+  .markdown-document-scroll :global(hr) {
+    margin: var(--space-5) 0;
+    border: 0;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .markdown-document-scroll :global(table) {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+  }
+
+  .markdown-document-scroll :global(th),
+  .markdown-document-scroll :global(td) {
+    padding: var(--space-1) var(--space-3);
+    border: 1px solid var(--color-border);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .markdown-document-scroll :global(th > p),
+  .markdown-document-scroll :global(td > p) { margin: 0; }
+
+  .markdown-document-scroll :global(th) {
+    background: var(--color-surface);
+    font-weight: 600;
+  }
+
+  .markdown-document-scroll :global(.markdown-image) {
+    color: var(--color-text-2);
+    text-decoration: underline dotted;
+  }
+
+  .markdown-document-scroll :global(.ProseMirror-selectednode) {
+    outline: 2px solid var(--color-focus);
   }
 </style>

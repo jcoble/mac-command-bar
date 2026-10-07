@@ -1783,10 +1783,11 @@
           <SourceMarkdownPreview
             content={activeFile.draftContent ?? activeFile.preview.content}
             fileName={activeFile.fileName}
-            relativePath={activeFile.relativePath}
-            dirty={activeFile.dirty ?? false}
+            readOnly={activeFileReadOnly}
             scrollTop={markdownScrollByPath.get(activeFile.path) ?? 0}
             onScroll={(top) => { if (showing) markdownScrollByPath.set(activeFile.path, top); }}
+            onChange={updateActiveDraft}
+            onSave={() => void saveActiveFile()}
           />
         {/key}
       {:else if showing && activeFile?.preview && activeFileIsHtml && markdownView === 'rendered'}
