@@ -11,6 +11,7 @@ import {
 	createFreshSession,
 	ownedSessionMetaForBackend,
 } from '../ownedSessions';
+import { projectRegistry } from '../projects/projectRegistry.svelte';
 import { shellPanels } from '../shellPanels';
 import {
 	addOwnedSession,
@@ -58,6 +59,7 @@ export class NewSessionController {
 		const stopSignal = this.stopSignal;
 		if (stopSignal.aborted) throw new Error('the new session draft was closed');
 
+		const project = projectRegistry.projects.find((candidate) => candidate.id === request.projectId);
 		const owned = {
 			...createFreshSession({
 				cwd: request.cwd,
@@ -66,8 +68,9 @@ export class NewSessionController {
 				remoteProfileId: request.remoteProfileId,
 			}),
 			agent: request.provider,
-			projectPath: request.projectPath,
 			projectId: request.projectId,
+			projectGroupKey: project?.groupKey ?? 'none',
+			projectGroupLabel: project?.title ?? 'No project',
 			branch: request.branch,
 			resumeCommand: null,
 			origin: 'app' as const,

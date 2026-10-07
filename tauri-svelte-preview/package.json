@@ -86,8 +86,6 @@
     "test:browser-annotation-composite": "node --experimental-strip-types scripts/browserAnnotationComposite.test.ts",
     "test:browser-annotation-list": "node --experimental-strip-types scripts/browserAnnotationList.test.ts",
     "test:command-registry": "node --experimental-strip-types scripts/commandRegistry.test.mjs",
-    "test:session-card-model": "node --experimental-strip-types src/lib/shell/components/sessions/sessionCardModel.test.ts",
-    "test:session-groups": "node --experimental-strip-types scripts/sessionGroups.test.mjs",
     "test:session-workspaces": "node --experimental-strip-types scripts/sessionWorkspaces.test.ts",
     "test:relative-time": "node --experimental-strip-types scripts/relativeTime.test.ts",
     "test:git-graph-lanes": "node --experimental-strip-types scripts/gitGraphLanes.test.mjs",

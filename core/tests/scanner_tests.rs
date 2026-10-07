@@ -353,7 +353,8 @@ fn merges_duplicate_agent_session_records_by_provider_and_id() {
             message_count: None,
             latest_turn_preview: None,
             latest_turns: Vec::new(),
-            project_root: None,
+            project_group_key: String::new(),
+            project_group_label: String::new(),
         },
         AgentSessionRecord {
             provider: "claude".to_string(),
@@ -375,7 +376,8 @@ fn merges_duplicate_agent_session_records_by_provider_and_id() {
             message_count: None,
             latest_turn_preview: None,
             latest_turns: Vec::new(),
-            project_root: None,
+            project_group_key: String::new(),
+            project_group_label: String::new(),
         },
     ]);
 

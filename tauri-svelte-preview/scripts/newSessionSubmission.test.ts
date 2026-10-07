@@ -92,7 +92,8 @@ assert.deepEqual(validateThreadStart({ ...request, prompt: request.prompt }), []
 assert.match(startNewSession, /async start\([\s\S]*?request: ThreadStartRequest[\s\S]*?\): Promise<string>/);
 assert.match(startNewSession, /return owned\.ownedId;/);
 assert.match(startNewSession, /createFreshSession\(\{[\s\S]*?cwd: request\.cwd,[\s\S]*?title: request\.title/);
-assert.match(startNewSession, /projectPath: request\.projectPath/);
+// The new row sits in its project's rail group before the first reply.
+assert.match(startNewSession, /projectGroupKey: project\?\.groupKey \?\? 'none'/);
 assert.match(startNewSession, /branch: request\.branch/);
 assert.match(startNewSession, /await selectSession\(owned\.ownedId\)/);
 assert.doesNotMatch(startNewSession, /ensureStructuredConversation|setAgentConversationConfig\(/);

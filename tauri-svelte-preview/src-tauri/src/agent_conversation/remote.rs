@@ -884,6 +884,8 @@ impl RemoteConnectionManager {
         if let Some(client) = self.client.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clients.get_mut(&profile.id) {
             client.profile = Some(profile.clone());
         }
+        // Grouped after caching, so the cache holds the server's records as sent.
+        super::attach_project_groups(&self.store, &mut sessions)?;
         Ok(RemoteConnectionResult { profile, sessions, replaced_profile_id })
     }
 
@@ -3873,6 +3875,8 @@ mod connection_tests {
             background_task_ids: Vec::new(),
             native_session_id: Some(format!("native-{owned_id}")),
             project_id: None,
+            project_group_key: String::new(),
+            project_group_label: String::new(),
             meta: super::super::protocol::AgentConversationSessionMeta {
                 title: Some(format!("Session {owned_id}")),
                 ..Default::default()

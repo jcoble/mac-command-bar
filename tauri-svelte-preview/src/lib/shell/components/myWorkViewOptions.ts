@@ -2,7 +2,7 @@
  * Pure view-model for the My Work rail. Components own drawing and interaction;
  * this module owns the durable option shape plus filtering, sorting and grouping.
  */
-import { resolveOwnedSessionProject, type OwnedSession } from '../ownedSessions.ts';
+import type { OwnedSession } from '../ownedSessions.ts';
 
 export type MyWorkSort = 'recent' | 'name';
 export type MyWorkSortDirection = 'asc' | 'desc';
@@ -40,9 +40,10 @@ export const NATURAL_SORT_DIRECTION: Record<MyWorkSort, MyWorkSortDirection> = {
   name: 'asc'
 };
 
+/** For new installs only: a saved choice keeps its own values (normalizeMyWorkViewOptions). */
 export const DEFAULT_MY_WORK_VIEW_OPTIONS: MyWorkViewOptions = {
-  groupByProject: false,
-  groupByStatus: true,
+  groupByProject: true,
+  groupByStatus: false,
   sortBy: 'recent',
   sortDirection: NATURAL_SORT_DIRECTION.recent
 };
@@ -100,15 +101,11 @@ export function myWorkStatus(
   return 'working';
 }
 
-/** Folder basename used as the project identity shown in the rail. */
+/** The project group SQL gave the session: its key and the label the header shows. */
 export function myWorkProject(
-  session: Pick<OwnedSession, 'projectPath' | 'cwd' | 'agent' | 'viaCmux'>
+  session: Pick<OwnedSession, 'projectGroupKey' | 'projectGroupLabel'>
 ): { key: string; label: string } {
-  const resolved = resolveOwnedSessionProject(session);
-  return {
-    key: resolved.path || `provider:${resolved.label}`,
-    label: resolved.label
-  };
+  return { key: session.projectGroupKey, label: session.projectGroupLabel };
 }
 
 function activityRank(session: OwnedSession): number {
@@ -171,8 +168,11 @@ function groupSessions(sessions: OwnedSession[], by: 'status' | 'project'): MyWo
       return group ? [group] : [];
     });
   }
-  return [...groups.values()].sort((left, right) =>
-    left.label.localeCompare(right.label, undefined, { sensitivity: 'base' })
+  // "No project" goes last; projects read A to Z.
+  return [...groups.values()].sort(
+    (left, right) =>
+      Number(left.key === 'none') - Number(right.key === 'none') ||
+      left.label.localeCompare(right.label, undefined, { sensitivity: 'base' })
   );
 }
 

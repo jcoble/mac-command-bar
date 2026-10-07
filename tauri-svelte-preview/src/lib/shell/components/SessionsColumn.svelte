@@ -21,7 +21,7 @@
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-  import { resolveOwnedSessionProject, type OwnedSession } from '$lib/shell/ownedSessions';
+  import type { OwnedSession } from '$lib/shell/ownedSessions';
   import { AGENT_ICONS } from '$lib/shell/agentIcons';
   import { openSessionLibrary } from '$lib/shell/sessionLibrary/sessionLibraryNavigation';
   import SessionRail from './SessionRail.svelte';
@@ -178,7 +178,7 @@
     if (!needle) return byPills;
     return byPills.filter((session) => {
       const title = sessionLabel(session).toLowerCase();
-      const project = resolveOwnedSessionProject(session).label.toLowerCase();
+      const project = session.projectGroupLabel.toLowerCase();
       return title.includes(needle) || project.includes(needle);
     });
   });

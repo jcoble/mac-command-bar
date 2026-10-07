@@ -5317,6 +5317,8 @@ fn main() {
                 &session_db_path,
             )?;
             project_folders::import_saved_project_roots(&agent_runtime)?;
+            // Before any list: older local sessions join projects added since the last run.
+            project_folders::backfill_local_session_projects(agent_runtime.store())?;
             if let Some(settings) = agent_runtime.read_app_setting(LANGUAGE_SERVER_SETTINGS_KEY)? {
                 lsp::restore_language_server_settings(&settings)?;
             }

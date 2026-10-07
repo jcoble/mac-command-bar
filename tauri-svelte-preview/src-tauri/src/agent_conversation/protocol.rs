@@ -878,6 +878,13 @@ pub struct AgentConversationSessionRecord {
     pub native_session_id: Option<String>,
     #[serde(default)]
     pub project_id: Option<String>,
+    /// The rail group the desktop computed in SQL from `project_id`, and its
+    /// label. Empty, and left off the wire, wherever no desktop grouped the
+    /// record (a remote server never does), so protocol 13 is unchanged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_group_key: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_group_label: String,
     #[serde(flatten)]
     pub meta: AgentConversationSessionMeta,
 }
@@ -892,6 +899,8 @@ pub struct ProjectRecord {
     pub title: String,
     pub repo_key: String,
     pub created_at_ms: i64,
+    /// The rail group its sessions share, computed in SQL.
+    pub group_key: String,
 }
 
 #[cfg(test)]
@@ -928,13 +937,18 @@ mod contract_tests {
             background_task_ids: Vec::new(),
             native_session_id: None,
             project_id: Some("p1".into()),
+            project_group_key: String::new(),
+            project_group_label: String::new(),
             meta: AgentConversationSessionMeta::default(),
         };
         let value = serde_json::to_value(&record).unwrap();
         assert_eq!(value["projectId"], "p1");
         assert!(value.get("meta").is_none());
+        // Ungrouped, as a remote server sends it: the protocol-13 wire has no group fields.
+        assert!(value.get("projectGroupKey").is_none() && value.get("projectGroupLabel").is_none());
         let read_back: AgentConversationSessionRecord = serde_json::from_value(value).unwrap();
         assert_eq!(read_back.project_id.as_deref(), Some("p1"));
+        assert_eq!(read_back.project_group_key, "");
     }
 
     #[test]

@@ -3424,6 +3424,9 @@ impl AgentRuntimeManager {
                     background_task_ids,
                     native_session_id,
                     project_id: row.project_id,
+                    // Filled by the list command, in one SQL statement for the whole list.
+                    project_group_key: String::new(),
+                    project_group_label: String::new(),
                     meta,
                 })
             })
