@@ -19,7 +19,7 @@ export interface MyWorkGroup {
   key: string;
   label: string;
   sessions: OwnedSession[];
-  /** Status sections inside a project, when both groupings are on. */
+  /** Project sections inside a status, when both groupings are on. */
   subgroups?: MyWorkGroup[];
 }
 
@@ -182,11 +182,11 @@ export function buildMyWorkGroups(
 ): MyWorkGroup[] {
   const prepared = prepareMyWorkSessions(sessions, options);
   if (options.groupByProject && options.groupByStatus) {
-    return groupSessions(prepared, 'project').map((project) => ({
-      ...project,
-      subgroups: groupSessions(project.sessions, 'status').map((status) => ({
-        ...status,
-        key: `${project.key}::${status.key}`
+    return groupSessions(prepared, 'status').map((status) => ({
+      ...status,
+      subgroups: groupSessions(status.sessions, 'project').map((project) => ({
+        ...project,
+        key: `${status.key}::${project.key}`
       }))
     }));
   }

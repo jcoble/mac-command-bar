@@ -118,7 +118,8 @@ function shape(groups: MyWorkGroup[]): unknown[] {
   ]);
 }
 
-// buildMyWorkGroups nests Working/Done/Settled under each project when both groupings are on.
+// buildMyWorkGroups puts Working/Done/Settled outside and splits each by project
+// when both groupings are on, so marking a session done moves it down to Done.
 {
   const groups = buildMyWorkGroups(
     [
@@ -130,13 +131,15 @@ function shape(groups: MyWorkGroup[]): unknown[] {
     { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc', groupByProject: true, groupByStatus: true }
   );
   assert.deepEqual(shape(groups), [
-    ['/two/alpha', 'alpha', ['a-settled', 'a-working', 'a-done'], [
-      ['/two/alpha::working', 'Working', ['a-working']],
-      ['/two/alpha::done', 'Done', ['a-done']],
-      ['/two/alpha::settled', 'Settled', ['a-settled']]
+    ['working', 'Working', ['z-working', 'a-working'], [
+      ['working::/two/alpha', 'alpha', ['a-working']],
+      ['working::/one/zeta', 'zeta', ['z-working']]
     ]],
-    ['/one/zeta', 'zeta', ['z-working'], [
-      ['/one/zeta::working', 'Working', ['z-working']]
+    ['done', 'Done', ['a-done'], [
+      ['done::/two/alpha', 'alpha', ['a-done']]
+    ]],
+    ['settled', 'Settled', ['a-settled'], [
+      ['settled::/two/alpha', 'alpha', ['a-settled']]
     ]]
   ]);
 }

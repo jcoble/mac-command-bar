@@ -77,8 +77,9 @@
 		);
 	}
 
+	/** Settled is the archive, so it starts shut until a person opens it. */
 	function isOpen(key: string): boolean {
-		return collapsedGroups[key] !== true;
+		return !(collapsedGroups[key] ?? key === "settled");
 	}
 
 	function toggleGroup(key: string): void {
@@ -122,8 +123,8 @@
 	}
 </script>
 
-<!-- A section is a heading and its rows, or, with both groupings on, a project
-     heading and the status sections inside it. -->
+<!-- A section is a heading and its rows, or, with both groupings on, a status
+     heading and the project sections inside it. -->
 {#snippet section(group: MyWorkGroup, nested: boolean)}
 	{@const needsYouCount = group.sessions.filter(sessionNeedsYou).length}
 	<section data-testid="session-rail-section" data-group-key={group.key} class:collapsed={!isOpen(group.key)}>
@@ -249,8 +250,8 @@
 		cursor: pointer;
 	}
 
-	/* A status heading inside a project: indented under it, and not sticky, so
-     it scrolls away under the project heading rather than stacking on it. */
+	/* A project heading inside a status: indented under it, and not sticky, so
+     it scrolls away under the status heading rather than stacking on it. */
 	.section-heading.nested {
 		position: static;
 		padding-left: 32px;
