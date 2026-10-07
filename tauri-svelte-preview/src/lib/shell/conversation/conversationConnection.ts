@@ -49,7 +49,6 @@ import { usageDropIsCompaction } from './conversationReducer.ts';
 
 const PAGE_BYTES = 512 * 1024;
 const GRAPH_BYTES = 4 * 1024 * 1024;
-const GRAPH_ITEMS = 256;
 const encoder = new TextEncoder();
 
 type Direction = 'older' | 'newer';
@@ -106,7 +105,7 @@ function messageBytes(message: UIMessage): number {
 
 function boundedMessages(messages: UIMessage[], direction: Direction): UIMessage[] {
   let bytes = messages.reduce((total, message) => total + messageBytes(message), 0);
-  while (messages.length > 1 && (bytes > GRAPH_BYTES || messages.length > GRAPH_ITEMS)) {
+  while (messages.length > 1 && bytes > GRAPH_BYTES) {
     const removed = direction === 'older' ? messages.pop() : messages.shift();
     if (removed) bytes -= messageBytes(removed);
   }
@@ -189,7 +188,7 @@ function boundLiveMessages(
     else selection.messageBytes.delete(id);
   }
   let evictedOldest = false;
-  while (messages.length > 1 && (selection.graphBytes > GRAPH_BYTES || messages.length > GRAPH_ITEMS)) {
+  while (messages.length > 1 && selection.graphBytes > GRAPH_BYTES) {
     const [removed, ...retained] = messages;
     selection.graphBytes -= selection.messageBytes.get(removed.id) ?? 0;
     selection.messageBytes.delete(removed.id);

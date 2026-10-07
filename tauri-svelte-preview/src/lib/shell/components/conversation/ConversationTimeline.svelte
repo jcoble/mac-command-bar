@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick, untrack, setContext } from 'svelte';
+  import { createVirtualizer } from '@tanstack/svelte-virtual';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import BookOpen from '@lucide/svelte/icons/book-open';
@@ -140,28 +141,48 @@
     if (activityLabel) result.push({ key: 'activity', activity: true });
     return result;
   });
-  let viewportHeight = $state(0);
-  const footer = $derived(Math.max(composerHeight, 120) + 60);
-  function atEnd(): boolean {
-    return !!host && host.scrollHeight - host.scrollTop - host.clientHeight <= 80;
-  }
-  function scrollToEnd(): void {
-    host?.scrollTo({ top: host.scrollHeight });
-  }
+  const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: 0, getScrollElement: () => host, estimateSize: () => 90, overscan: 3,
+    anchorTo: 'end', followOnAppend: false, scrollEndThreshold: -1
+  });
+  const virtualRows = $derived($virtualizer.getVirtualItems());
+  const totalSize = $derived($virtualizer.getTotalSize());
+  const viewportHeight = $derived($virtualizer.scrollRect?.height ?? 0);
+
+  $effect.pre(() => {
+    const currentRows = rows;
+    const element = host;
+    const following = follow && !hasNewer && !restoring && !jumping;
+    const topInset = element ? Number.parseFloat(getComputedStyle(element).getPropertyValue('--center-head-height')) || 0 : 0;
+    const footer = Math.max(composerHeight, 120) + 60;
+    const paddingEnd = anchoredSendItemId ? Math.max(viewportHeight, footer) : footer;
+    untrack(() => {
+      $virtualizer.setOptions({
+        count: currentRows.length, getScrollElement: () => element,
+        getItemKey: (index) => currentRows[index].key,
+        estimateSize: (index) => currentRows[index].run || currentRows[index].item?.kind === 'tool' ? 36 : 90,
+        paddingStart: topInset, paddingEnd,
+        scrollEndThreshold: following ? 80 : -1
+      });
+      const keys = new Set(currentRows.map((row) => row.key));
+      for (const key of $virtualizer.itemSizeCache.keys()) {
+        if (!keys.has(String(key))) $virtualizer.itemSizeCache.delete(key);
+      }
+    });
+  });
+
+  function atEnd(): boolean { return $virtualizer.isAtEnd(80); }
+  function scrollToEnd(): void { $virtualizer.scrollToEnd(); }
   function positionRow(key: string, offsetPx: number): boolean {
-    const node = host?.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(key)}"]`);
-    if (!host || !node) return false;
-    host.scrollTo({ top: host.scrollTop + node.getBoundingClientRect().top - host.getBoundingClientRect().top - offsetPx });
+    const index = rows.findIndex((row) => row.key === key);
+    if (index < 0) return false;
+    $virtualizer.setOptions({ scrollPaddingStart: offsetPx });
+    $virtualizer.scrollToIndex(index, { align: 'start' });
     return true;
   }
-  function observeContent(node: HTMLDivElement) {
-    const observer = new ResizeObserver(() => {
-      viewportHeight = host?.clientHeight ?? 0;
-      if (follow && !hasNewer && !restoring && !jumping) scrollToEnd();
-    });
-    observer.observe(node);
-    if (host) observer.observe(host);
-    return { destroy() { observer.disconnect(); } };
+  function measureRow(node: HTMLDivElement) {
+    $virtualizer.measureElement(node);
+    return { destroy() { $virtualizer.measureElement(null); } };
   }
 
   setContext<ConversationDisclosureContext>(conversationDisclosureContext, {
@@ -272,14 +293,17 @@
     pageRequest = null;
     jumping = false;
     seenSendRequest = anchorRequest?.requestId ?? 0;
+    untrack(() => $virtualizer.measure());
   });
 
   $effect(() => {
+    void rows;
+    void totalSize;
     void composerHeight;
-    if (!follow || restoring || !host) return;
+    if (!follow || hasNewer || restoring || jumping || !host) return;
     const windowId = renderWindowId;
     void tick().then(() => {
-      if (windowId === renderWindowId && follow && !hasNewer && !restoring) scrollToEnd();
+      if (windowId === renderWindowId && follow && !hasNewer && !restoring && !jumping) scrollToEnd();
     });
   });
 
@@ -469,7 +493,7 @@
     if (!restoring) untrack(saveView);
   });
   $effect(() => {
-    setConversationTimelineDiagnostics(rows.length, rows.length, 0, 0);
+    setConversationTimelineDiagnostics(rows.length, virtualRows.length, $virtualizer.elementsCache.size, $virtualizer.itemSizeCache.size);
     return () => setConversationTimelineDiagnostics(0, 0, 0, 0);
   });
 </script>
@@ -481,9 +505,10 @@
     {#if renderedItems.length === 0}
       {#if pendingFirstMessage}<PendingFirstMessage text={pendingFirstMessage} />{:else}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
     {/if}
-    <div class="timeline-list" data-testid="conversation-timeline-list" style:padding-bottom={`${anchoredSendItemId ? Math.max(viewportHeight, footer) : footer}px`} use:observeContent>
-      {#each rows as row (row.key)}
-          <div class="turn-row" class:compact-tool={row.item?.kind === 'tool' || !!row.run} data-row-key={row.key} data-anchor-item-id={row.anchorItemId} data-turn-id={row.group?.turnId} data-testid="conversation-timeline-row">
+    <div class="timeline-list" data-testid="conversation-timeline-list" style:height={`${totalSize}px`}>
+      {#each virtualRows as virtualRow (virtualRow.key)}
+        {@const row = rows[virtualRow.index]}
+          <div class="turn-row" data-index={virtualRow.index} style:transform={`translateY(${virtualRow.start}px)`} use:measureRow class:compact-tool={row.item?.kind === 'tool' || !!row.run} data-row-key={row.key} data-anchor-item-id={row.anchorItemId} data-turn-id={row.group?.turnId} data-testid="conversation-timeline-row">
             {#if row.run}
               <button class="run-header" data-run-id={row.run.itemId} type="button" aria-expanded={runOpen(row.run)} onclick={() => toggleRun(row.run!)}>
                 <span class="run-icon" aria-hidden="true">
@@ -515,10 +540,10 @@
   .older-spinner{width:11px;height:11px;border:1.5px solid color-mix(in srgb,var(--color-text-3) 45%,transparent);border-top-color:var(--color-text-2);border-radius:50%;animation:older-spin 700ms linear infinite}
   @keyframes older-spin{to{transform:rotate(360deg)}}
   @media (prefers-reduced-motion: reduce){.older-spinner{animation:none;border-top-color:color-mix(in srgb,var(--color-text-3) 45%,transparent)}}
-  .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:auto;padding:0 28px;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
-  .timeline-list{flex:none;position:relative;width:min(820px,100%);min-height:1px;margin:0 auto;padding-top:var(--center-head-height,0px)}
-  .turn-row{display:flex;flex-direction:column;gap:12px;width:100%;padding-bottom:12px}
-  .turn-row.compact-tool{padding-bottom:0}
+  .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:none;padding:0 28px;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}
+  .timeline-list{flex:none;position:relative;width:min(820px,100%);min-height:1px;margin:0 auto}
+  .turn-row{position:absolute;top:0;left:0;display:flex;flex-direction:column;gap:12px;width:100%;padding-bottom:12px}
+  .turn-row.compact-tool{padding-bottom:4px}
   .turn-fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
   .turn-fold-chevron.open{transform:rotate(90deg)}
   .run-header{display:flex;align-items:center;gap:8px;min-height:30px;padding:3px 6px;border:0;border-radius:8px;background:transparent;color:var(--color-text-2);font-size:13px;text-align:left;cursor:pointer}

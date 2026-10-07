@@ -520,9 +520,9 @@ test('older windows withhold live content and the live graph stays byte bounded'
   let encodes = 0;
   const measuringEncoder = { encode(value: string) { encodes += 1; return new TextEncoder().encode(value); } };
   const bounded = Function(
-    'encoder', 'GRAPH_BYTES', 'GRAPH_ITEMS',
+    'encoder', 'GRAPH_BYTES',
     `${stripTypeScriptTypes(boundsBlock, { mode: 'strip' })}\nreturn boundedMessages;`
-  )(measuringEncoder, 4 * 1024 * 1024, 256);
+  )(measuringEncoder, 4 * 1024 * 1024);
   const messages = Array.from({ length: 5 }, (_, index) => ({
     id: `message-${index}`, role: 'assistant',
     parts: [{ type: 'text', content: 'x'.repeat(1024 * 1024) }], metadata: {}
@@ -541,10 +541,17 @@ test('older windows withhold live content and the live graph stays byte bounded'
   }));
   const olderItems = bounded([...tiny], 'older');
   const newerItems = bounded([...tiny], 'newer');
-  assert.equal(olderItems.length, 256);
-  assert.equal(olderItems.at(-1)?.id, 'tiny-255');
-  assert.equal(newerItems.length, 256);
-  assert.equal(newerItems[0]?.id, 'tiny-44');
+  assert.equal(olderItems.length, 300, 'small messages use the byte budget without a count cap');
+  assert.equal(newerItems.length, 300);
+  const large = tiny.map((row) => ({ ...row, parts: [{ type: 'text', content: 'x'.repeat(16 * 1024) }] }));
+  const olderLarge = bounded([...large], 'older');
+  const newerLarge = bounded([...large], 'newer');
+  assert.equal(olderLarge[0].id, 'tiny-0', 'older paging evicts the newest edge');
+  assert.equal(newerLarge.at(-1).id, 'tiny-299', 'newer paging evicts the oldest edge');
+  for (const retained of [olderLarge, newerLarge]) {
+    assert.ok(retained.length < large.length);
+    assert.ok(retained.reduce((sum: number, row: unknown) => sum + new TextEncoder().encode(JSON.stringify(row)).byteLength, 0) <= 4 * 1024 * 1024);
+  }
 
   const small = messages.slice(0, 2).map((message) => ({ ...message, parts: [{ type: 'text', content: 'small' }] }));
   const sizes = new Map(small.map((message) => [message.id, new TextEncoder().encode(JSON.stringify(message)).byteLength]));
@@ -553,11 +560,11 @@ test('older windows withhold live content and the live graph stays byte bounded'
     source.indexOf('function boundLiveMessages('), source.indexOf('function isTerminal(')
   );
   const boundLive = Function(
-    'encoder', 'GRAPH_BYTES', 'GRAPH_ITEMS', 'messageBytes', 'pushMessagesSnapshot', 'getConversationSession',
+    'encoder', 'GRAPH_BYTES', 'messageBytes', 'pushMessagesSnapshot', 'getConversationSession',
     'restoreSelectedConversationAttachments', 'applySelectedConversationLiveWindow', 'historyPosition',
     'conversationSnapshotChunks', 'resetMessageBytes',
     `${stripTypeScriptTypes(liveBoundsBlock, { mode: 'strip' })}\nreturn boundLiveMessages;`
-  )(measuringEncoder, 4 * 1024 * 1024, 256,
+  )(measuringEncoder, 4 * 1024 * 1024,
     (message: unknown) => measuringEncoder.encode(JSON.stringify(message)).byteLength,
     () => undefined, () => ({ generation: 1 }), () => undefined,
     () => undefined, (message: { metadata?: { firstSequence?: number } } | undefined) => message?.metadata?.firstSequence,
@@ -573,27 +580,26 @@ test('older windows withhold live content and the live graph stays byte bounded'
   assert.equal(encodes, 1, 'one changed live message is remeasured without rescanning the graph');
 
   const liveSelection = {
-    chat: { messages: tiny }, messageBytes: new Map(tiny.map((row) => [row.id, 100])),
-    graphBytes: tiny.length * 100, workspaceOwnedId: 'owned-window', beforeCursor: 1
+    chat: { messages: large }, messageBytes: new Map(large.map((row) => [row.id, new TextEncoder().encode(JSON.stringify(row)).byteLength])),
+    graphBytes: large.reduce((sum, row) => sum + new TextEncoder().encode(JSON.stringify(row)).byteLength, 0), workspaceOwnedId: 'owned-window', beforeCursor: 1
   };
   const liveReplacement = boundLive(liveSelection, new Set(), false);
-  assert.equal(liveReplacement[0].messages.length, 256);
-  assert.equal(liveReplacement[0].messages[0].id, 'tiny-44');
-  assert.equal(liveSelection.beforeCursor, 45);
+  assert.deepEqual(liveReplacement[0].messages, newerLarge);
+  assert.equal(liveSelection.beforeCursor, newerLarge[0].metadata.firstSequence);
   let snapshotWindow: any;
   const snapshotBlock = source.slice(source.indexOf('function snapshotChunks('), source.indexOf('function admitInitialSnapshot('));
   const admitSnapshot = Function(
     'messagesFromPage', 'boundedMessages', 'historyPosition', 'hasOlderHistory', 'resetMessageBytes',
     'applySelectedConversationSnapshotState', 'pushMessagesSnapshot', 'EventType', 'restorePageAttachments', 'pageAttachments',
     `${stripTypeScriptTypes(snapshotBlock, { mode: 'strip' })}\nreturn snapshotChunks;`
-  )(() => tiny, bounded, (message: any) => message?.metadata?.firstSequence, () => false,
+  )(() => large, bounded, (message: any) => message?.metadata?.firstSequence, () => false,
     (selection: any, rows: any[]) => { selection.graphBytes = rows.reduce((sum, row) => sum + new TextEncoder().encode(JSON.stringify(row)).byteLength, 0); },
     (_workspace: string, _history: string, _snapshot: unknown, _controls: boolean, window: unknown) => { snapshotWindow = window; },
     () => undefined, EventType, () => undefined, () => []);
   const snapshotSelection: any = { historyOwnedId: 'owned-window', pendingSend: null };
   admitSnapshot(snapshotSelection, { page: { beforeCursor: 1, afterCursor: 300, hasAfter: false, events: [], turns: [] }, connection: { generation: 1 } }, () => undefined, false);
-  assert.equal(snapshotSelection.beforeCursor, 45);
-  assert.equal(snapshotWindow.beforeCursor, 45);
+  assert.equal(snapshotSelection.beforeCursor, newerLarge[0].metadata.firstSequence);
+  assert.equal(snapshotWindow.beforeCursor, newerLarge[0].metadata.firstSequence);
   assert.equal(snapshotWindow.afterCursor, 300);
   assert.equal(snapshotWindow.hasBefore, true, 'snapshot trim remains pageable');
   assert.equal(snapshotWindow.transferBytes, snapshotSelection.graphBytes);
