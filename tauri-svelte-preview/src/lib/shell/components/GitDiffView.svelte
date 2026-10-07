@@ -34,8 +34,10 @@
     sessionRoot?: string;
     mode?: DiffMode;
     onModeChange?: (mode: DiffMode) => void;
+    /** Told the +/- totals this view shows, so the tab title can show the same. */
+    onTotals?: (totals: { added: number; removed: number }) => void;
   }
-  let { rootAvailable = true, sessionRoot = '', mode = 'unified', onModeChange }: Props = $props();
+  let { rootAvailable = true, sessionRoot = '', mode = 'unified', onModeChange, onTotals }: Props = $props();
 
   /** Files read at once. Each read is a few short git processes. */
   const READS_AT_ONCE = 4;
@@ -74,6 +76,7 @@
       { added: 0, removed: 0 }
     )
   );
+  $effect(() => onTotals?.(totals));
   const singleLabel = $derived(`Commit ${commitSha.slice(0, 7)}`);
 
   function put(diff: SourceGitDiff): void {
@@ -186,7 +189,7 @@
           class={buttonVariants({ variant: 'ghost', size: 'sm' })}
           aria-label="Which changes to show"
         >
-          {scope === 'branch' ? (branchBase ? `Branch vs ${branchBase}` : 'Branch') : 'Uncommitted'}
+          {scope === 'branch' ? (branchBase && !branchError ? `Branch vs ${branchBase}` : 'Branch') : 'Uncommitted'}
           <ChevronDown aria-hidden="true" />
         </DropdownMenu.Trigger>
         <DropdownMenu.Content align="start">
@@ -231,8 +234,12 @@
     <p class="notice error">{gitPanel.statusError}</p>
   {:else if !singleMode && gitPanel.desktopOnly}
     <p class="notice">Reading the working copy needs the desktop app.</p>
+  {:else if !singleMode && !gitPanel.root && !sessionRoot}
+    <p class="notice">Pick a session with a project folder to see its changes.</p>
   {:else if !singleMode && !gitPanel.status}
     <p class="notice">Reading the working copy…</p>
+  {:else if !singleMode && files.length === 0 && pending > 0}
+    <p class="notice">Reading the changes…</p>
   {:else}
     {#if !singleMode && scope === 'branch' && branchError}
       <p class="notice error">{branchError}</p>
@@ -244,7 +251,7 @@
       bind:this={view}
       {files}
       {mode}
-      focusPath={singleMode ? '' : gitPanel.selectedPath}
+      focusPath={singleMode || pending > 0 ? '' : gitPanel.selectedPath}
       onOpenLine={openAt}
       onLoadFullText={singleMode ? undefined : (path) => void loadFullText(path)}
     />

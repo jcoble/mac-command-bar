@@ -497,6 +497,7 @@ export type AgentConversationSessionMeta = {
   resumeCommand: string | null;
   completedAt: string | null;
   settledAt: string | null;
+  pinnedAt: string | null;
   taskId: string | null;
   pullRequest: string | null;
   messageCount: number | null;

@@ -142,7 +142,12 @@
 
   function jumpTo(path: string): void {
     activePath = path;
-    sections[path]?.scrollIntoView({ block: 'start' });
+    const section = sections[path];
+    section?.scrollIntoView({ block: 'start' });
+    // Files drawn around the target after the jump can change height (a
+    // sideways scrollbar appears) and push it off the top; align once more
+    // after they are drawn.
+    requestAnimationFrame(() => requestAnimationFrame(() => section?.scrollIntoView({ block: 'start' })));
   }
 
   /** Jump once per requested file, as soon as its section exists — not again
@@ -437,15 +442,21 @@
     background: var(--color-border);
   }
 
-  .split > .scroll {
-    background: var(--color-bg);
-  }
-
   .scroll {
     overflow-x: auto;
     overscroll-behavior-x: contain;
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  /* The sideways scrollbar always keeps its room: in a grid row WebKit does
+   * not grow a side for a scrollbar that appears later, so the bar covered
+   * the last line and a vertical scrollbar showed up. After `.scroll`, which
+   * it overrides. */
+  .split > .scroll {
+    overflow-x: scroll;
+    overflow-y: hidden;
+    background: var(--color-bg);
   }
 
   /* As wide as the longest line, so a changed line keeps its tint all the way

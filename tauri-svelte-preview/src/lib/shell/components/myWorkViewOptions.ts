@@ -4,7 +4,8 @@
  */
 import { resolveOwnedSessionProject, type OwnedSession } from '../ownedSessions.ts';
 
-export type MyWorkSort = 'recent' | 'name';
+/** `manual` is the order a person dragged the rows into. */
+export type MyWorkSort = 'recent' | 'name' | 'manual';
 export type MyWorkSortDirection = 'asc' | 'desc';
 export type MyWorkStatus = 'working' | 'done' | 'settled';
 
@@ -19,7 +20,7 @@ export interface MyWorkGroup {
   key: string;
   label: string;
   sessions: OwnedSession[];
-  /** Status sections inside a project, when both groupings are on. */
+  /** Project sections inside a status, when both groupings are on. */
   subgroups?: MyWorkGroup[];
 }
 
@@ -37,7 +38,8 @@ export const MY_WORK_STATUSES: readonly MyWorkStatus[] = ['working', 'done', 'se
  */
 export const NATURAL_SORT_DIRECTION: Record<MyWorkSort, MyWorkSortDirection> = {
   recent: 'desc',
-  name: 'asc'
+  name: 'asc',
+  manual: 'asc'
 };
 
 export const DEFAULT_MY_WORK_VIEW_OPTIONS: MyWorkViewOptions = {
@@ -82,6 +84,7 @@ export function myWorkSortDirectionLabel(
   sortBy: MyWorkSort,
   direction: MyWorkSortDirection
 ): string {
+  if (sortBy === 'manual') return 'Custom order';
   if (sortBy === 'name') return direction === 'asc' ? 'A to Z' : 'Z to A';
   return direction === 'desc' ? 'Newest first' : 'Oldest first';
 }
@@ -133,11 +136,23 @@ export function matchesMyWorkFilters(session: OwnedSession, filters: MyWorkFilte
 
 export function prepareMyWorkSessions(
   sessions: OwnedSession[],
-  options: Pick<MyWorkViewOptions, 'sortBy'> & Partial<Pick<MyWorkViewOptions, 'sortDirection'>>
+  options: Pick<MyWorkViewOptions, 'sortBy'> & Partial<Pick<MyWorkViewOptions, 'sortDirection'>>,
+  manualOrder: readonly string[] = []
 ): OwnedSession[] {
   const indexed = sessions.map((session, index) => ({ session, index }));
   const direction = options.sortDirection ?? NATURAL_SORT_DIRECTION[options.sortBy];
   const flip = direction === 'asc' ? 1 : -1;
+
+  if (options.sortBy === 'manual') {
+    // A session with no saved place yet (-1) sits on top, newest first.
+    const place = new Map(manualOrder.map((ownedId, index) => [ownedId, index]));
+    const rank = (session: OwnedSession) => place.get(session.ownedId) ?? -1;
+    indexed.sort((left, right) =>
+      rank(left.session) - rank(right.session)
+      || activityRank(right.session) - activityRank(left.session)
+      || left.index - right.index);
+    return indexed.map(({ session }) => session);
+  }
 
   indexed.sort((left, right) => {
     // Compared one way round and turned over afterwards, so both directions
@@ -178,15 +193,24 @@ function groupSessions(sessions: OwnedSession[], by: 'status' | 'project'): MyWo
 
 export function buildMyWorkGroups(
   sessions: OwnedSession[],
-  options: MyWorkViewOptions
+  options: MyWorkViewOptions,
+  manualOrder: readonly string[] = []
 ): MyWorkGroup[] {
-  const prepared = prepareMyWorkSessions(sessions, options);
+  const sorted = prepareMyWorkSessions(sessions, options, manualOrder);
+  // Pinned sessions sit in their own section at the top, whatever their status.
+  const pinned = sorted.filter((session) => session.pinnedAt);
+  const prepared = pinned.length ? sorted.filter((session) => !session.pinnedAt) : sorted;
+  const groups = groupUnpinned(prepared, options);
+  return pinned.length ? [{ key: 'pinned', label: 'Pinned', sessions: pinned }, ...groups] : groups;
+}
+
+function groupUnpinned(prepared: OwnedSession[], options: MyWorkViewOptions): MyWorkGroup[] {
   if (options.groupByProject && options.groupByStatus) {
-    return groupSessions(prepared, 'project').map((project) => ({
-      ...project,
-      subgroups: groupSessions(project.sessions, 'status').map((status) => ({
-        ...status,
-        key: `${project.key}::${status.key}`
+    return groupSessions(prepared, 'status').map((status) => ({
+      ...status,
+      subgroups: groupSessions(status.sessions, 'project').map((project) => ({
+        ...project,
+        key: `${status.key}::${project.key}`
       }))
     }));
   }
@@ -195,8 +219,33 @@ export function buildMyWorkGroups(
   return [{ key: 'all', label: '', sessions: prepared }];
 }
 
+/**
+ * The saved custom order after `draggedId` is dropped before or after
+ * `targetId`. `groupIds` is the dropped-into group as it is drawn. The group's
+ * sessions are rewritten into the places they already hold, so every other
+ * place is kept; group sessions with no place yet are added at the end.
+ */
+export function reorderMyWorkSessions(
+  order: readonly string[],
+  groupIds: readonly string[],
+  draggedId: string,
+  targetId: string,
+  position: 'before' | 'after'
+): string[] {
+  if (draggedId === targetId || !groupIds.includes(draggedId) || !groupIds.includes(targetId)) {
+    return [...order];
+  }
+  const moved = groupIds.filter((ownedId) => ownedId !== draggedId);
+  const target = moved.indexOf(targetId);
+  moved.splice(position === 'after' ? target + 1 : target, 0, draggedId);
+  const inGroup = new Set(groupIds);
+  const places = [...order, ...groupIds.filter((ownedId) => !order.includes(ownedId))];
+  let next = 0;
+  return places.map((ownedId) => (inGroup.has(ownedId) ? moved[next++] : ownedId));
+}
+
 function isSort(value: unknown): value is MyWorkSort {
-  return value === 'recent' || value === 'name';
+  return value === 'recent' || value === 'name' || value === 'manual';
 }
 
 function isSortDirection(value: unknown): value is MyWorkSortDirection {

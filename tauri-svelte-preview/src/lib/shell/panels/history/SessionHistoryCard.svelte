@@ -269,15 +269,18 @@
         <DropdownMenu.Root bind:open={menuOpen}>
           <DropdownMenu.Trigger>
             {#snippet child({ props })}
-              <IconButton
+              <!-- Button, not IconButton: IconButton drops the trigger's props, which left the menu off-screen. -->
+              <Button
                 {...props}
-                label="More actions"
-                side="bottom"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="More actions"
+                title="More actions"
                 class="rounded-md bg-transparent text-[var(--color-text)] shadow-none
                        hover:bg-accent/60 hover:text-foreground"
               >
                 <Ellipsis />
-              </IconButton>
+              </Button>
             {/snippet}
           </DropdownMenu.Trigger>
           <DropdownMenu.Content class="w-56" align="end">
