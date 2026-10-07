@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TSK-1345 — Projects technical design (refreshed 6 Oct 2026)</title>
+<style>
+  :root { --bg:#111; --card:#1a1a1a; --text:#e8e8e8; --muted:#a0a0a0; --line:#2c2c2c; --mint:#5fd3b3; --warn:#e8b45a; --bad:#e06c6c; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.55 -apple-system, system-ui, "Segoe UI", sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:32px 24px 64px; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  h2 { font-size:18px; margin:36px 0 10px; padding-top:12px; border-top:1px solid var(--line); }
+  h3 { font-size:15px; margin:20px 0 6px; }
+  p, li { color:var(--text); }
+  .sub { color:var(--muted); margin:0 0 20px; }
+  .card { background:var(--card); border-radius:12px; padding:14px 18px; margin:12px 0; }
+  .lead { font-size:15px; }
+  table { width:100%; border-collapse:collapse; margin:8px 0 12px; font-size:13px; }
+  th, td { text-align:left; vertical-align:top; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; }
+  code { font:12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; color:#d6d6ff; }
+  pre { background:#0b0b0b; border-radius:8px; padding:12px; overflow:auto; font:12px/1.5 ui-monospace, Menlo, monospace; }
+  .v { color:var(--mint); font-weight:600; font-size:11px; }
+  .a { color:var(--warn); font-weight:600; font-size:11px; }
+  .tag { display:inline-block; padding:1px 7px; border-radius:999px; background:#262626; color:var(--muted); font-size:11px; margin-right:4px; }
+  .flow { display:flex; gap:8px; flex-wrap:wrap; align-items:stretch; margin:10px 0; }
+  .flow div { background:var(--card); border-radius:10px; padding:10px 12px; flex:1 1 180px; }
+  .flow b { display:block; margin-bottom:4px; }
+  .q { border-left:3px solid var(--warn); }
+  .risk { border-left:3px solid var(--bad); }
+</style>
+</head>
+<body>
+<main>
+<h1>TSK-1345 — Projects become the identity of a session</h1>
+<p class="sub">Refreshed technical design · 6 October 2026 · branch <code>tsk-1345-projects-v2</code> · base <code>tsk-1389-ui-pass</code> @ <code>52af4e430</code>. Replaces the 1 October design (written against <code>ad11d88f2</code>). PR&nbsp;1 implementation spec: <code>docs/superpowers/specs/2026-10-06-tsk-1345-pr1-spec.md</code>. Visual approval artifact: <code>2026-10-01-tsk-1345-projects-mockup.html</code>.</p>
+
+<p>Receipt labels: <span class="v">VERIFIED</span> = read by this lane at the cited lines. <span class="a">ASSUMED</span> = reported by a read-only recon pass in this lane and not re-read line by line.</p>
+
+<div class="card lead">
+<p><b>The model (owner decisions, binding).</b> A <b>project</b> is one folder on one machine. A session records its project once, at creation, and never changes it. Branch and worktree are separate, changeable facts about the session. The sidebar and history group and filter by project, and copies of the same repository on different machines share one group, matched by the repository's remote URL. New sessions pick a project, then Current checkout or New worktree, then a branch. Nothing runs <code>git init</code> or <code>git worktree add</code> without an explicit user action, and opening a draft changes nothing on disk.</p>
+<p><b>Shared contract with TSK-1344 (chat).</b> Every session carries five separate facts: the Assembly session id (<code>ownedId</code>), the project id, the owning machine (<code>executionEnvironment</code> + <code>remoteProfileId</code>), the physical checkout path (<code>cwd</code>), and the provider-native session id. The chat keys on <code>ownedId</code> only. A project name or folder path is never a chat identity.</p>
+</div>
+
+<h2>1. What changed since 1 October</h2>
+<table>
+<tr><th>Area</th><th>1 Oct said</th><th>Now</th></tr>
+<tr><td>Session schema</td><td>v14, migrate to 15</td><td><code>SCHEMA_VERSION = 19</code> (<code>core/src/session_store.rs:15</code> <span class="v">VERIFIED</span>). PR 1 migrates 19 → 20. Migrations are one <code>match version</code> whose arms jump straight to the current version, plus idempotent column helpers that run on every open (<code>session_store.rs:1302-1786</code> <span class="v">VERIFIED</span>). <code>main-architecture-explained.html:1361</code> still says 18 and <code>:1152</code> says 15; both are fixed in PR 1's commit.</td></tr>
+<tr><td>Remote protocol</td><td>7 → 8</td><td><code>PROTOCOL_VERSION = 12</code> (<code>remote.rs:43</code> <span class="v">VERIFIED</span>). PR 1 bumps to 13. TSK-1344 also bumps this constant; the two must be sequenced.</td></tr>
+<tr><td>Session row</td><td>cwd/worktree/branch/project, no id</td><td>Unchanged in shape: <code>SessionRow</code> at <code>session_store.rs:743-764</code>; the upsert overwrites every column (<code>:3541-3587</code>); the decoder reads by index (<code>:3645-3664</code>) <span class="v">VERIFIED</span>. <code>project</code> is a free-text path label, filled from <code>rail_meta.project</code> (<code>manager.rs:4639</code> <span class="v">VERIFIED</span>).</td></tr>
+<tr><td>Ensure</td><td>manager.rs:993-1055</td><td><code>ensure_inner</code> at <code>manager.rs:1574-1739</code>; a new generation copies <code>rail_meta</code> from the prior session (<code>:1724-1727</code>) and persists once (<code>:1737</code>) <span class="v">VERIFIED</span>. Remote ensure is forwarded whole and re-run as local on the remote host (<code>remote.rs:3120-3126</code> <span class="v">VERIFIED</span>).</td></tr>
+<tr><td>Session record</td><td>protocol.rs:729-780</td><td><code>AgentConversationSessionRecord</code> at <code>protocol.rs:856-879</code>, with <code>meta</code> flattened; <code>UpdateAgentConversationSessionMetaRequest</code> replaces the whole meta (<code>:847-854</code>; <code>manager.rs:3562</code> <span class="a">ASSUMED</span>). So <code>project_id</code> must <b>not</b> live in meta, or a meta write could change it.</td></tr>
+<tr><td>Remote folder picking</td><td>remote_workspace.rs:21-118</td><td><code>remote_workspace.rs</code> is now a generic "same operation name, run on the owning machine" dispatcher (<code>:21-118</code> <span class="v">VERIFIED</span>); <code>workspaceInvoke.ts:5-11</code> routes local versus remote by argument <span class="v">VERIFIED</span>. <code>list_remote_directories</code> exists only remotely (<code>:80-92</code>); there is no local folder-listing command <span class="a">ASSUMED</span>.</td></tr>
+<tr><td>Automatic <code>git init</code> (TSK-1377)</td><td>"delete automatic git init from send"</td><td>Worse than recorded: <b>selecting or merely opening a draft on a project runs <code>git init -b main</code> and an empty commit</b>. <code>loadRefs</code> calls <code>initProjectRepository</code> first (<code>DraftSessionSurface.svelte:234-253</code>), and <code>hydrateDraft</code> calls <code>loadRefs</code> on open (<code>:483</code>); send repeats it (<code>:427-436</code>); the banner says so (<code>:704</code>). Rust side <code>main.rs:2989-3024</code> <span class="v">VERIFIED</span>. PR 1 deletes all of it.</td></tr>
+<tr><td>Draft surface</td><td>Pickers in the composer</td><td>Pickers are one <code>leadingControls</code> snippet rendered <b>above</b> the capsule (<code>ConversationComposer.svelte:63-66,366-370</code> <span class="v">VERIFIED</span>). Machine menu, provider menu, remote "No project" + <code>RemoteDirectoryPicker</code>, local project menu, branch menu (<code>DraftSessionSurface.svelte:505-699</code> <span class="v">VERIFIED</span>). <code>canCreateWorktree = false</code> (<code>:91-92</code>). No "What should we build in" heading exists yet.</td></tr>
+<tr><td>Composer / chat</td><td>—</td><td>The composer is still the in-house <code>ConversationComposer.svelte</code>; TanStack (<code>@tanstack/ai-svelte/ui</code>) is used by <code>ConversationSurface.svelte</code> for the transcript <span class="a">ASSUMED</span>. Projects only touch the draft's controls and the ensure request, not chat state.</td></tr>
+<tr><td>Rail</td><td>SessionsColumn / WorktreeAgentRow</td><td>Redesigned: <code>SessionsColumn.svelte</code> (468 lines; Provider/Status/Location pills), <code>SessionRail.svelte</code> (362; group header = label + count, no badge), <code>WorktreeAgentRow.svelte</code> (508; second line = Server glyph + project + branch, no machine name) <span class="a">ASSUMED</span>. Grouping still keys on <code>projectPath || cwd</code> (<code>ownedSessions.ts:194-203</code> <span class="v">VERIFIED</span>; <code>myWorkViewOptions.ts:104-112</code> <span class="a">ASSUMED</span>). PR 2 territory.</td></tr>
+<tr><td>Project roots</td><td>app_settings keys</td><td>Same (1a imports the saved ones once, D10): <code>new-session.custom-project-roots</code> and <code>new-session.last-project-root</code> (<code>projectRootsStore.svelte.ts:39,42</code>); importers are the draft, <code>newSessionController.svelte.ts:10</code> and <code>PullRequestWorkspace.svelte:3</code> <span class="a">ASSUMED</span>. The controller also feeds rail session folders in as roots (<code>newSessionController.svelte.ts:39-43</code> <span class="v">VERIFIED</span>).</td></tr>
+<tr><td>Route</td><td><code>routes/next/+page.svelte</code></td><td>Gone. The shell route is <code>routes/+page.svelte</code>; the draft mounts at <code>:526-533</code> <span class="v">VERIFIED</span>.</td></tr>
+<tr><td>UI kit</td><td>—</td><td><code>src/lib/components/ui/</code> has dropdown-menu, dialog, input, button and others, but <b>no <code>command</code> or <code>popover</code></b> <span class="a">ASSUMED</span>. Owner, 6 Oct: new UI uses stock shadcn-svelte parts, added with the CLI.</td></tr>
+</table>
+
+<h2>2. Decisions</h2>
+<p><b>Owner answers, 6 October 2026 (binding):</b> Q1 — first-message worktree creation is in PR 1 as sub-PR 1c. Q2 — all project records live in the Mac app's database (D1). Q3 — in a new draft the Current-checkout branch switch happens on first send (D8).</p>
+<table>
+<tr><th>#</th><th>Decision</th><th>Why</th></tr>
+<tr><td>D1</td><td><b>Owner-approved deviation from T3.</b> The project registry is one <code>projects</code> table in the <b>desktop app's</b> <code>sessions.db</code>, one row per (machine, folder), for local and remote copies alike. Remote machines store only each session's <code>project_id</code>. (T3 keeps each machine's projects on that machine.)</td><td>The registry is always readable, including while a remote machine is offline, so PR 2 can derive every session's group with SQL on the desktop alone. No remote commands, remote tables or offline cache are needed for projects.</td></tr>
+<tr><td>D2</td><td>The same <code>SessionStore</code> schema runs everywhere, so the remote host's database also has an empty <code>projects</code> table.</td><td>Avoids a second opener or a "client-only" flag. An empty table costs nothing.</td></tr>
+<tr><td>D3</td><td><code>sessions.project_id</code> is write-once in SQL: the upsert sets <code>project_id = COALESCE(sessions.project_id, excluded.project_id)</code>.</td><td>The store itself enforces "a session's project never changes", whatever path writes the row (ensure, meta update, startup normalization).</td></tr>
+<tr><td>D4</td><td>A project folder must be an existing directory that is <b>not</b> inside Git's own data (<code>git rev-parse --is-inside-git-dir</code> is <code>true</code>) and, if it is in a repository, <b>is</b> that repository's top level. A bare repository root is refused like any Git-data folder.</td><td>Resolves the 1 Oct conflict C1 without an exception: the mockup (screens 3 and 3b) adds a checkout folder such as <code>~/dev/work/worktrees/mac-command-bar/main</code> and refuses <code>~/dev/work/mac-command-bar/worktrees/main</code>. A sub-folder project would make checkout and worktree rules ambiguous.</td></tr>
+<tr><td>D5</td><td>Title = the repository name from the remote URL (last path segment, no <code>.git</code>), else the folder name. Badge = first letters of the first and last word, or first and last letter of a single word (mac-command-bar → MB, EdiPlatform → EM).</td><td>The workbox checkout folder is named <code>main</code>; the mockup shows "mac-command-bar". The badge rule reproduces every badge in the mockup and T3 screenshots.</td></tr>
+<tr><td>D6</td><td>Repository key = remote URL (<code>remote.upstream.url</code>, else <code>remote.origin.url</code>) normalised to <code>host/owner/repo</code>: lower-case host, no scheme, user, port, leading slash or <code>.git</code>. Empty when there is no remote.</td><td>Matches T3's repository identity (receipts in the Notion task). Computed once at Add time, on the owning machine.</td></tr>
+<tr><td>D7</td><td>"No project" stays (mockup screen 1): a plain conversation in the home folder of a machine picked from the sub-bar. Its <code>project_id</code> is null.</td><td>The mockup keeps it; plain conversations exist today (<code>DraftSessionSurface.svelte:289-305</code> <span class="v">VERIFIED</span>).</td></tr>
+<tr><td>D8</td><td>In a new draft, the Current-checkout branch switch runs at <b>first send</b>, not at pick (owner, Q3).</td><td>A discarded draft leaves the repository untouched; a failed switch keeps the draft and creates no session.</td></tr>
+<tr><td>D9</td><td>Add project does not create folders or initialise repositories; "create a remote project" stays with TSK-1211. No "remove project" in this task.</td><td>YAGNI; the owner did not ask for removal.</td></tr>
+<tr><td>D10</td><td>Sub-PR 1a imports the saved <code>new-session.custom-project-roots</code> entries into the registry once, at desktop startup, then deletes that key and <code>new-session.last-project-root</code>. Entries that fail inspection (missing folder, inside Git data, sub-folder of a repository, or a non-absolute path) are skipped and written to the backend log. The two hard-coded developer paths in <code>sourceData.ts:539-550</code> <span class="v">VERIFIED</span> are not imported.</td><td>A one-time data migration, not a second source: after the first start of 1a the key no longer exists and nothing reads it. The import runs in Rust because inspection needs Git on the owning machine.</td></tr>
+</table>
+
+<h2>3. Data contract</h2>
+<pre>-- sessions.db schema 20 (core/src/session_store.rs)
+CREATE TABLE IF NOT EXISTS projects (
+  id          TEXT PRIMARY KEY,      -- UUID v4, made in Rust
+  machine     TEXT NOT NULL,         -- 'local' or a saved remote profile id
+  root_path   TEXT NOT NULL,         -- canonical absolute path on that machine
+  title       TEXT NOT NULL,
+  repo_key    TEXT NOT NULL,         -- 'github.com/jcoble/mac-command-bar' or ''
+  created_at  INTEGER NOT NULL,
+  UNIQUE (machine, root_path)
+);
+ALTER TABLE sessions ADD COLUMN project_id TEXT;   -- no foreign key: remote hosts never hold the row it names
+CREATE INDEX IF NOT EXISTS sessions_project_idx ON sessions(project_id);</pre>
+<div class="flow">
+  <div><b>Add project</b>Pick machine → browse folders on it → Add. Rust inspects the folder <i>on that machine</i> (local function or the <code>inspect_project_folder</code> remote operation) and inserts or returns the existing row.</div>
+  <div><b>Draft</b>Project menu lists registry rows (local and remote copies separately, cloud icon for remote). Machine is the project's machine. Opening is read-only.</div>
+  <div><b>First send</b>Optional checkout (1b) or new worktree (1c) on the project's machine, then ensure with <code>projectId</code>, then send. Git failure keeps the draft; no session.</div>
+  <div><b>Afterwards</b>Session record carries <code>projectId</code> on both machines' rows and the desktop's remote cache. It never changes.</div>
+</div>
+<p>Existing sessions keep <code>project_id = NULL</code> through PR 1. PR 2 back-fills them once with SQL (section 5) and switches grouping to the project in the same PR.</p>
+<p><b>Remote sessions on the desktop.</b> The desktop keeps no rows for remote sessions' metadata: it keeps one JSON blob, the app setting <code>remote-assembly.session-projections.v1</code> (<code>remote.rs:55</code>; read at <code>:424-439</code>, written at <code>:525-537</code> <span class="v">VERIFIED</span>). Each record in that blob carries <code>projectId</code> from 1a onward because the record type gains the field. (The <code>sessions</code> rows marked <code>cached_remote_profile_id</code> are history-copy placeholders with empty cwd, <code>remote_history.rs:615-631</code> <span class="v">VERIFIED</span>; they are not the session list.)</p>
+
+<h2>4. Delivery and PR 1 summary</h2>
+<div class="card"><p><b>Delivery order:</b> PR 1 ships as three sequential sub-PRs — <b>1a</b>, then <b>1b</b>, then <b>1c</b> — followed by <b>PR 2</b>, then <b>PR 3</b>. Each starts from the previous one merged, and each is a complete cut-over.</p></div>
+<p>Full PR 1 spec: <code>2026-10-06-tsk-1345-pr1-spec.md</code>.</p>
+<table>
+<tr><th>Sub-PR</th><th>Delivers</th><th>Deletes</th><th>Size</th></tr>
+<tr><td><b>1a</b> Projects replace project roots</td><td>Schema 20; project registry; one-time import of saved project roots (D10); Add project (machine → folder) dialog; heading project menu; sessions record <code>projectId</code> (protocol 13); "No project" machine picker; default project for a new draft.</td><td><code>projectRootsStore.svelte.ts</code>, <code>RemoteDirectoryPicker.svelte</code>, <code>newSessionFlow.ts</code> and its <code>.mjs</code> test, the rail-folder roots, both <code>new-session.*</code> settings keys (after import), <code>init_project_repository</code> everywhere (fixes TSK-1377), <code>list_remote_directories</code> (renamed <code>list_folders</code>).</td><td>~1,320 hand-written + ~900 deleted + ~250 vendored shadcn <code>command</code></td></tr>
+<tr><td><b>1b</b> Current checkout and the branch picker on both machines</td><td>Sub-bar (machine label, "Current checkout", branch picker on the right); branch picker rebuilt on Popover + Command with "current" and "in another worktree"; remote refs; branch switch at first send through the existing <code>switch_git_branch</code>.</td><td>The old disabled-for-remote branch menu and its "needs a worktree" state.</td><td>~450 + ~80 vendored <code>popover</code></td></tr>
+<tr><td><b>1c</b> New worktree on first message</td><td>Workspace menu (Current checkout / New worktree); <code>create_project_worktree</code> local command + remote operation; worktree made before ensure.</td><td><code>canCreateWorktree</code>, the "not available in this build" validation (<code>threadStartFlow.ts:384-389</code> <span class="v">VERIFIED</span>).</td><td>~350</td></tr>
+</table>
+<p><b>What the pull-request workspace shows after 1a.</b> <code>PullRequestWorkspace.svelte</code> lists pull requests for the root folders of the registry's <b>local</b> projects (machine <code>local</code>) — the imported saved roots plus any added since. Remote projects stay out of the default list, as remote roots were before. The two hard-coded developer paths stop appearing unless the user adds them as projects. With no local projects the list shows its existing empty state.</p>
+
+<h2>5. PR 2 outline — group and back-fill by project, in SQL</h2>
+<p><b>Contract.</b> Every session record gains <code>projectGroupKey</code> and <code>projectGroupLabel</code>, computed in SQL on the desktop:</p>
+<pre>group_key   = CASE WHEN p.id IS NULL THEN 'none'
+                   WHEN p.repo_key &lt;&gt; '' THEN 'repo:' || p.repo_key
+                   ELSE 'project:' || p.id END
+group_label = COALESCE(p.title, 'No project')</pre>
+<ul>
+<li><b>Local sessions:</b> <code>SessionStore::list_sessions</code> (<code>core/src/session_store.rs:1876-1893</code> <span class="v">VERIFIED</span>) becomes <code>… FROM sessions s LEFT JOIN projects p ON p.id = s.project_id</code> and returns both columns, ordered by <code>group_label, last_activity_at DESC, owned_id</code>.</li>
+<li><b>Cached remote sessions</b> (the JSON blob, not rows): one new store method reads the blob in SQL — <code>SELECT json_extract(e.value,'$.ownedId'), &lt;group_key&gt;, &lt;group_label&gt; FROM app_settings a, json_each(a.value_json) e LEFT JOIN projects p ON p.id = json_extract(e.value,'$.projectId') WHERE a.setting_key = 'remote-assembly.session-projections.v1'</code>. <code>list_agent_conversation_sessions</code> (<code>S/agent_conversation/mod.rs:645-669</code> <span class="v">VERIFIED</span>) and the remote refresh attach those two fields to the cached records. The remote host never computes them (it has no registry, D1).</li>
+<li>TypeScript derives no project identity from paths: <code>resolveOwnedSessionProject</code> and the <code>projectPath || cwd</code> keys are deleted. The rail draws one header per <code>projectGroupKey</code> with its label. The rail's existing live status sub-groups and the Provider / Status / Location pills keep working on the loaded live projection, because status is runtime state that SQL does not hold. <b>No Project filter is added</b> (not in the mockup).</li>
+<li>Each row's second line names its machine ("This Mac" or the profile name), then its branch; the cloud glyph replaces the Server glyph; the group header gets the two-letter badge. Changing cwd or branch can never move a session.</li>
+</ul>
+<p><b>Back-fill (write-once, SQL).</b> Runs at desktop startup after the registry is readable and before the first session list, and on each remote machine before its first session list after connecting. Step 1 is one statement:</p>
+<pre>UPDATE sessions SET project_id = (
+    SELECT p.id FROM &lt;candidate projects&gt; p
+    WHERE sessions.cwd = p.root_path
+       OR substr(sessions.cwd, 1, length(p.root_path) + 1) = p.root_path || '/'
+    ORDER BY length(p.root_path) DESC, p.created_at, p.id LIMIT 1)
+WHERE project_id IS NULL AND cached_remote_profile_id IS NULL
+  AND EXISTS (SELECT 1 FROM &lt;candidate projects&gt; p WHERE … same match …);</pre>
+<p>On the desktop, <code>&lt;candidate projects&gt;</code> is <code>projects WHERE machine = 'local'</code>. For a remote machine, the desktop sends that machine's projects as one JSON array in a new remote command <code>BackfillProjects { projects: [{ id, rootPath, createdAt }] }</code> (protocol 14), and the remote host runs the same statement over <code>json_each(?1)</code>. Step 2 handles only the rows left over: select <code>DISTINCT cwd</code> where <code>project_id IS NULL</code>, run <code>git rev-parse --git-common-dir</code> once per distinct cwd and once per candidate project root, and write all matches in one statement: <code>UPDATE sessions SET project_id = m.project_id FROM json_each(?1) … WHERE sessions.project_id IS NULL AND sessions.cwd = m.cwd</code>. Ties go to the oldest project. Re-running changes nothing that is already set. Offline remote sessions stay "No project" until their machine connects; the next session list refreshes the blob with the new ids.</p>
+<p><b>History.</b> Adopted sessions use the same key. Scanned provider transcripts that are not in SQL get their project from the scan command in Rust: one statement over <code>json_each</code> of the scan's distinct cwds joined to <code>projects</code> with the same exact/prefix rule, then the git-common-dir check once per leftover distinct cwd. Adoption passes the matched id into <code>begin_import_session</code>.</p>
+<table>
+<tr><th>File (anchor)</th><th>Change</th></tr>
+<tr><td><code>core/src/session_store.rs:1876-1893</code> <span class="v">VERIFIED</span></td><td><code>list_sessions</code> LEFT JOIN; back-fill statements; cached-blob group query; tests.</td></tr>
+<tr><td><code>S/project_folders.rs</code> (new in 1a)</td><td>Git-common-dir leftover match; <code>backfill_session_projects</code> command; scan-result matching.</td></tr>
+<tr><td><code>S/agent_conversation/protocol.rs</code>, <code>remote.rs:43,67-163</code> <span class="v">VERIFIED</span></td><td>Record fields <code>project_group_key</code>, <code>project_group_label</code>; <code>BackfillProjects</code> command, run before the first <code>ListSessions</code> on connect; protocol 14.</td></tr>
+<tr><td><code>S/agent_conversation/mod.rs:645-669</code> <span class="v">VERIFIED</span></td><td>Attach blob group fields to cached records.</td></tr>
+<tr><td><code>transcript_import.rs:95-188</code> <span class="a">ASSUMED</span></td><td><code>begin_import_session</code> takes an optional <code>project_id</code>.</td></tr>
+<tr><td><code>controllers/shellStartup.ts:36-50</code> <span class="v">VERIFIED</span></td><td>Call back-fill before the session lists.</td></tr>
+<tr><td><code>ownedSessions.ts:194-203</code>, <code>myWorkViewOptions.ts:104-196</code>, <code>SessionRail.svelte:127-179</code>, <code>WorktreeAgentRow.svelte:184-227</code> <span class="a">ASSUMED</span></td><td>Delete path-derived project identity; group by the SQL key; header badge; row "machine • branch"; cloud glyph.</td></tr>
+<tr><td><code>history/sessionHistoryViewModel.ts:179-414</code>, <code>sessionLibrary/sessionLibraryModel.ts:31-357</code>, <code>panels/history/HistoryPanel.svelte:460-533,637</code> <span class="a">ASSUMED</span></td><td>Group history by the same key; drop path-derived project identity; adoption carries the matched id; "Local Mac" header names the machine.</td></tr>
+<tr><td><code>sessionGroups.ts</code> + <code>SessionCard.svelte</code> <span class="a">ASSUMED orphaned</span></td><td>Delete (old path-based grouping; no live importer).</td></tr>
+<tr><td><code>ownedSessions.ts:329-348</code> <span class="v">VERIFIED</span></td><td>Stop writing <code>meta.project</code>; the column stays but nothing reads it.</td></tr>
+</table>
+<p><b>Size.</b> ~1,000–1,300 changed lines. Tests: exact beats prefix beats common dir, deepest prefix wins, tie-break; never reassigns a set id; remote back-fill runs before the first list; the blob query returns keys for cached remote sessions; two machines' copies of one repository share a key; changing cwd or branch does not change a key.</p>
+
+<h2>6. PR 3 outline — existing sessions: branch switch and worktree removal</h2>
+<p><b>Contract.</b> An open session shows the same sub-bar under its composer: machine label, workspace, branch picker. Picking a branch checked out in another worktree points the session there (cwd/worktree/branch change only); otherwise <code>git switch</code> runs in the session's current checkout. Deleting a session offers to remove its worktree only when the path is a registered linked worktree (not the project root) and no other session on that machine uses it; the backend re-checks just before removal and runs a normal <code>git worktree remove</code>. If Git refuses (uncommitted changes, unmerged commits, locked), the session is still deleted, the worktree stays, and Git's message is shown. <b>No forced removal.</b> Archive never touches worktrees.</p>
+<table>
+<tr><th>File (anchor)</th><th>Change</th></tr>
+<tr><td><code>manager.rs:1423-1572</code> <span class="a">ASSUMED</span></td><td><code>change_checkout</code> is Codex-only today (<code>:1447</code>). Opening it to Claude/Antigravity is the main risk of PR 3 (see risks).</td></tr>
+<tr><td><code>controllers/sessionSelectionController.svelte.ts:260-323</code> <span class="a">ASSUMED</span></td><td>Replace <code>useSessionCheckout</code> with a project-aware switch; <code>removeSession</code> goes through one confirmation that includes the worktree choice.</td></tr>
+<tr><td><code>routes/+page.svelte:294-296</code> <span class="a">ASSUMED</span></td><td><code>handleAskRemoveSession</code> deletes immediately today; add the dialog (stock AlertDialog).</td></tr>
+<tr><td><code>ConversationSurface.svelte</code>, <code>ConversationComposer.svelte</code></td><td>Mount the 1b sub-bar for an existing session.</td></tr>
+<tr><td><code>commands/source_control.rs:177-189</code>, <code>main.rs:3031+</code> <span class="a">ASSUMED</span></td><td>Reuse <code>remove_project_worktree</code> with <code>force = false</code> only.</td></tr>
+<tr><td><code>core/src/session_store.rs</code></td><td>"Other sessions using this path" is one <code>SELECT COUNT(*) FROM sessions WHERE cwd = ? AND owned_id &lt;&gt; ?</code> on the owning machine.</td></tr>
+<tr><td><code>protocol.rs</code>, <code>remote.rs</code></td><td>Delete-preview and delete-with-worktree remote commands; protocol bump.</td></tr>
+</table>
+<p><b>Size.</b> ~600–800 changed lines. Tests: switch uses the existing worktree without a Git command; a failed switch changes no session field; delete-plan eligibility (root, shared, unregistered, eligible); re-check before removal; a refused removal keeps the worktree and still deletes the session; archive never calls worktree commands.</p>
+
+<h2>7. Risks</h2>
+<div class="card risk">
+<ol>
+<li><b>Protocol collision with TSK-1344.</b> Both change <code>PROTOCOL_VERSION</code>, <code>manager.rs</code> ensure and the session record. Sequence the merges and rebase; the remote backend on the workbox must be re-installed after 1a lands (client and backend versions must match, <code>remote.rs:2408-2409</code> <span class="v">VERIFIED</span>).</li>
+<li><b>Source-text tests.</b> <code>scripts/newSessionSubmission.test.ts:65</code> asserts that <code>initProjectRepository</code> runs before listing refs <span class="v">VERIFIED</span>; <code>draftSessionLifecycle.test.ts:107</code> and <code>editorSessionLifecycle.test.ts:54</code> pin deleted code. Those assertions are deleted, not patched to match.</li>
+<li><b>Root checkout is shared.</b> Current checkout runs <code>git switch</code> in the project root, which moves every other session working in that folder. That is the owner's chosen behaviour.</li>
+<li><b>Saved-root import is one-shot.</b> A saved root on a drive that is unmounted at the first 1a start is skipped and the key is deleted; the skip is logged and the user re-adds it with Add project.</li>
+<li><b>PR 3 provider cwd changes.</b> Claude stores transcripts under a directory derived from the cwd, so resuming a Claude session from a different worktree may not find its transcript. <code>change_checkout</code> is Codex-only for this reason today. PR 3 must prove resume after a switch for each provider before enabling it.</li>
+<li><b>Remote UI proof on the workbox.</b> On the workbox, "This Mac" is the workbox itself; the remote case needs a saved SSH profile to a host running the remote backend. Set it up before UI proof, not during.</li>
+<li><b>Size of 1a.</b> 1a deletes ~900 lines and vendors ~250 shadcn lines. Reviewers should diff the vendored folder separately.</li>
+</ol>
+</div>
+
+<h2>8. Owner answers (6 October 2026)</h2>
+<div class="card q">
+<ol>
+<li><b>Q1</b> — New-worktree creation on first message is in PR 1, as sub-PR 1c.</li>
+<li><b>Q2</b> — All project records live in the Mac app's database (D1, an approved deviation from T3); remote machines store only each session's project id.</li>
+<li><b>Q3</b> — In a new draft, the Current-checkout branch switch happens on first send, not at pick.</li>
+</ol>
+<p>No open questions remain.</p>
+</div>
+
+<h2>9. Not doing</h2>
+<p>No folder creation or <code>git init</code> from Add project (TSK-1211). No project rename, removal, reordering or cloning. No reassigning a session's project. No Project filter pill. No forced worktree removal. No reader for the old roots settings beyond the one-time import. No feature flags, retries, stashes or forced checkouts. No UI regression tests, no CSS <code>:has()</code>, no new <code>.mjs</code>.</p>
+</main>
+</body>
+</html>
