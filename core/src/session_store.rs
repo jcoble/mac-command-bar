@@ -12,7 +12,7 @@ use serde::Serialize;
 
 mod evidence;
 
-const SCHEMA_VERSION: i64 = 19;
+const SCHEMA_VERSION: i64 = 20;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 static SESSION_STORE_ACTIVE_READS: AtomicUsize = AtomicUsize::new(0);
@@ -756,11 +756,24 @@ pub struct SessionRow {
     /// counts as the first prompt.
     pub title_source: Option<String>,
     pub project: Option<String>,
+    /// The registry project the session was started in. Written once.
+    pub project_id: Option<String>,
     pub state: String,
     pub suspended: bool,
     pub created_at_ms: i64,
     pub last_activity_at_ms: i64,
     pub extra_json: String,
+}
+
+/// A folder the person added as a project, on this Mac or a saved remote machine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectRow {
+    pub id: String,
+    pub machine: String,
+    pub root_path: String,
+    pub title: String,
+    pub repo_key: String,
+    pub created_at_ms: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1768,6 +1781,15 @@ impl SessionStore {
                 transaction.commit()
                     .map_err(|error| StoreError::sqlite("could not finish the replay item upgrade", error))?;
             }
+            19 => {
+                let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| StoreError::sqlite("could not begin the project upgrade", error))?;
+                add_project_schema(&transaction)?;
+                transaction.pragma_update(None, "user_version", SCHEMA_VERSION)
+                    .map_err(|error| StoreError::sqlite("could not record the project upgrade", error))?;
+                transaction.commit()
+                    .map_err(|error| StoreError::sqlite("could not finish the project upgrade", error))?;
+            }
             SCHEMA_VERSION => {}
             _ => {
                 return Err(StoreError::message(
@@ -1784,6 +1806,7 @@ impl SessionStore {
         add_notion_task_projection_schema(&connection)?;
         add_remote_history_column(&connection)?;
         add_child_session_schema(&connection)?;
+        add_project_schema(&connection)?;
 
         let interrupt_handle = connection.get_interrupt_handle();
         SESSION_STORE_OPEN_HANDLES.fetch_add(1, Ordering::Relaxed);
@@ -1863,7 +1886,7 @@ impl SessionStore {
             .query_row(
                 "SELECT owned_id, native_session_id, provider, model, effort, cwd, worktree,
                         branch, title, project, state, suspended, created_at, last_activity_at,
-                        extra, title_source
+                        extra, title_source, project_id
                  FROM sessions
                  WHERE owned_id = ?",
                 [owned_id],
@@ -1879,7 +1902,7 @@ impl SessionStore {
             .prepare(
                 "SELECT owned_id, native_session_id, provider, model, effort, cwd, worktree,
                         branch, title, project, state, suspended, created_at, last_activity_at,
-                        extra, title_source
+                        extra, title_source, project_id
                  FROM sessions
                  WHERE cached_remote_profile_id IS NULL AND parent_owned_id IS NULL
                  ORDER BY last_activity_at DESC, owned_id ASC",
@@ -2096,6 +2119,51 @@ impl SessionStore {
             )
             .map_err(|error| StoreError::sqlite("could not save the app setting", error))?;
         Ok(())
+    }
+
+    pub fn delete_app_setting(&self, setting_key: &str) -> Result<()> {
+        let connection = self.lock_write()?;
+        connection
+            .execute("DELETE FROM app_settings WHERE setting_key = ?", [setting_key])
+            .map_err(|error| StoreError::sqlite("could not delete the app setting", error))?;
+        Ok(())
+    }
+
+    pub fn list_projects(&self) -> Result<Vec<ProjectRow>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, machine, root_path, title, repo_key, created_at
+                 FROM projects ORDER BY created_at, id",
+            )
+            .map_err(|error| StoreError::sqlite("could not prepare the project list", error))?;
+        let rows = statement
+            .query_map([], project_from_row)
+            .map_err(|error| StoreError::sqlite("could not list projects", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read the project list", error))
+    }
+
+    /// Adds the project, or returns the one already registered for the same
+    /// folder on the same machine.
+    pub fn insert_or_get_project(&self, row: &ProjectRow) -> Result<ProjectRow> {
+        let connection = self.lock_write()?;
+        connection
+            .execute(
+                "INSERT INTO projects (id, machine, root_path, title, repo_key, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(machine, root_path) DO NOTHING",
+                params![row.id, row.machine, row.root_path, row.title, row.repo_key, row.created_at_ms],
+            )
+            .map_err(|error| StoreError::sqlite("could not save the project", error))?;
+        connection
+            .query_row(
+                "SELECT id, machine, root_path, title, repo_key, created_at
+                 FROM projects WHERE machine = ? AND root_path = ?",
+                params![row.machine, row.root_path],
+                project_from_row,
+            )
+            .map_err(|error| StoreError::sqlite("could not read the project", error))
     }
 
     pub fn get_app_setting(&self, setting_key: &str) -> Result<Option<String>> {
@@ -3545,8 +3613,8 @@ fn upsert_session_on(connection: &Connection, row: &SessionRow) -> Result<()> {
             "INSERT INTO sessions (
                 owned_id, native_session_id, provider, model, effort, cwd, worktree,
                 branch, title, project, state, suspended, created_at, last_activity_at, extra,
-                title_source
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                title_source, project_id
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(owned_id) DO UPDATE SET
                 native_session_id = excluded.native_session_id,
                 provider = excluded.provider,
@@ -3562,7 +3630,8 @@ fn upsert_session_on(connection: &Connection, row: &SessionRow) -> Result<()> {
                 created_at = excluded.created_at,
                 last_activity_at = excluded.last_activity_at,
                 extra = excluded.extra,
-                title_source = excluded.title_source",
+                title_source = excluded.title_source,
+                project_id = COALESCE(sessions.project_id, excluded.project_id)",
             params![
                 row.owned_id,
                 row.native_session_id,
@@ -3580,6 +3649,7 @@ fn upsert_session_on(connection: &Connection, row: &SessionRow) -> Result<()> {
                 row.last_activity_at_ms,
                 extra_json,
                 row.title_source,
+                row.project_id,
             ],
         )
         .map_err(|error| StoreError::sqlite("could not save the session", error))?;
@@ -3598,6 +3668,38 @@ fn add_remote_history_column(connection: &Connection) -> Result<()> {
     }
     connection.execute_batch("CREATE INDEX IF NOT EXISTS sessions_cached_remote_idx ON sessions(cached_remote_profile_id);")
         .map_err(|error| StoreError::sqlite("could not index remote history marker", error))
+}
+
+/// The project registry, plus the column that ties a session to its project.
+fn add_project_schema(connection: &Connection) -> Result<()> {
+    connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                machine TEXT NOT NULL,
+                root_path TEXT NOT NULL,
+                title TEXT NOT NULL,
+                repo_key TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                UNIQUE (machine, root_path)
+            );",
+        )
+        .map_err(|error| StoreError::sqlite("could not create the project table", error))?;
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'project_id')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| StoreError::sqlite("could not inspect the session project column", error))?;
+    if !exists {
+        connection
+            .execute_batch("ALTER TABLE sessions ADD COLUMN project_id TEXT;")
+            .map_err(|error| StoreError::sqlite("could not add the session project column", error))?;
+    }
+    connection
+        .execute_batch("CREATE INDEX IF NOT EXISTS sessions_project_idx ON sessions(project_id);")
+        .map_err(|error| StoreError::sqlite("could not index the session project column", error))
 }
 
 fn add_child_session_schema(connection: &Connection) -> Result<()> {
@@ -3660,6 +3762,18 @@ fn session_from_row(row: &Row<'_>) -> rusqlite::Result<SessionRow> {
         last_activity_at_ms: row.get(13)?,
         extra_json: row.get(14)?,
         title_source: row.get(15)?,
+        project_id: row.get(16)?,
+    })
+}
+
+fn project_from_row(row: &Row<'_>) -> rusqlite::Result<ProjectRow> {
+    Ok(ProjectRow {
+        id: row.get(0)?,
+        machine: row.get(1)?,
+        root_path: row.get(2)?,
+        title: row.get(3)?,
+        repo_key: row.get(4)?,
+        created_at_ms: row.get(5)?,
     })
 }
 
@@ -3820,7 +3934,8 @@ mod tests {
 
     use super::{
         EventCoverage, EventRow, EvidenceArtifact, EvidenceArtifactQuery, EvidenceDiskUsage,
-        EvidenceRunDiskUsage, NotionTaskProjection, RepresentedTurnFacts, SessionRow, SessionStore,
+        EvidenceRunDiskUsage, NotionTaskProjection, ProjectRow, RepresentedTurnFacts, SessionRow,
+        SessionStore,
     };
 
     fn fixture_session(owned_id: &str, activity_ms: i64) -> SessionRow {
@@ -3836,6 +3951,7 @@ mod tests {
             title: Some(format!("Session {owned_id}")),
             title_source: None,
             project: Some("Command Bar".to_owned()),
+            project_id: None,
             state: "idle".to_owned(),
             suspended: false,
             created_at_ms: 1_000,
@@ -4301,6 +4417,77 @@ mod tests {
         let connection = Connection::open(&path).unwrap();
         let replay_index: String = connection.query_row("SELECT sql FROM sqlite_master WHERE name = 'events_replay_page_idx'", [], |row| row.get(0)).unwrap();
         assert!(replay_index.contains("$.payload.firstSequence"));
+    }
+
+    #[test]
+    fn schema_v19_adds_projects_table_and_session_project_id() {
+        let (_directory, path, store) = open_temp_store();
+        store.upsert_session(&fixture_session("existing", 1)).unwrap();
+        drop(store);
+
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(
+            "DROP INDEX sessions_project_idx;
+             ALTER TABLE sessions DROP COLUMN project_id;
+             DROP TABLE projects;
+             PRAGMA user_version = 19;",
+        ).unwrap();
+        drop(connection);
+
+        let store = SessionStore::open(&path).unwrap();
+        assert_eq!(store.get_session("existing").unwrap().unwrap().project_id, None);
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        let version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        let mut statement = connection
+            .prepare("SELECT name FROM pragma_table_info('projects') ORDER BY cid").unwrap();
+        let project_columns: Vec<String> = statement
+            .query_map([], |row| row.get(0)).unwrap()
+            .collect::<rusqlite::Result<_>>().unwrap();
+        let column_exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'project_id')",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(version, 20);
+        assert_eq!(project_columns, ["id", "machine", "root_path", "title", "repo_key", "created_at"]);
+        assert!(column_exists);
+    }
+
+    fn fixture_project(id: &str, machine: &str, root_path: &str, created_at_ms: i64) -> ProjectRow {
+        ProjectRow {
+            id: id.to_owned(),
+            machine: machine.to_owned(),
+            root_path: root_path.to_owned(),
+            title: "repo".to_owned(),
+            repo_key: "github.com/a/repo".to_owned(),
+            created_at_ms,
+        }
+    }
+
+    #[test]
+    fn insert_or_get_project_returns_the_existing_row_for_the_same_folder() {
+        let (_directory, _path, store) = open_temp_store();
+        let first = fixture_project("b", "local", "/work/repo", 10);
+        assert_eq!(store.insert_or_get_project(&first).unwrap(), first);
+        let again = store.insert_or_get_project(&fixture_project("c", "local", "/work/repo", 20)).unwrap();
+        assert_eq!(again, first);
+        let remote = fixture_project("a", "box", "/work/repo", 10);
+        assert_eq!(store.insert_or_get_project(&remote).unwrap(), remote);
+        let projects = store.list_projects().unwrap();
+        assert_eq!(projects, vec![remote, first]);
+    }
+
+    #[test]
+    fn session_project_id_is_written_once() {
+        let (_directory, _path, store) = open_temp_store();
+        for project_id in [Some("p1"), Some("p2"), None] {
+            let mut session = fixture_session("owned", 2_000);
+            session.project_id = project_id.map(str::to_owned);
+            store.upsert_session(&session).unwrap();
+        }
+        assert_eq!(store.get_session("owned").unwrap().unwrap().project_id.as_deref(), Some("p1"));
+        assert_eq!(store.list_sessions().unwrap()[0].project_id.as_deref(), Some("p1"));
     }
 
     #[test]

@@ -1,0 +1,54 @@
+/**
+ * Plain rules for the project registry as the new-session screen shows it.
+ * The records themselves live in SQLite; see `projectRegistry.svelte.ts`.
+ */
+
+import type { ProjectRecord } from '../../tauriSource.ts';
+
+/**
+ * Two letters for a project: the first letters of its first and last word, or
+ * the first and last letter of a single word (mac-command-bar → MB,
+ * EdiPlatform → EM).
+ */
+export function projectBadge(title: string): string {
+  const words = title.split(/[^A-Za-z0-9]+/).filter(Boolean);
+  if (words.length > 1) return `${words[0][0]}${words.at(-1)![0]}`.toUpperCase();
+  const word = words[0] ?? '';
+  return (word.length > 1 ? `${word[0]}${word.at(-1)}` : word).toUpperCase();
+}
+
+/** Projects on this Mac or a saved remote machine, in registry order. */
+export function visibleProjects(
+  projects: readonly ProjectRecord[],
+  savedProfileIds: readonly string[]
+): ProjectRecord[] {
+  return projects.filter((project) => project.machine === 'local' || savedProfileIds.includes(project.machine));
+}
+
+type DraftOwnedSession = { ownedId: string; projectId: string | null; lastActivity: string | null };
+
+/**
+ * The project a new draft starts in: the active session's, else the most
+ * recently active session's, else none. Only projects in `projects` count.
+ */
+export function defaultDraftProjectId(
+  projects: readonly ProjectRecord[],
+  owned: readonly DraftOwnedSession[],
+  activeOwnedId: string | null
+): string | null {
+  const visible = (id: string | null): id is string => Boolean(id) && projects.some((project) => project.id === id);
+  const active = owned.find((session) => session.ownedId === activeOwnedId);
+  if (active && visible(active.projectId)) return active.projectId;
+  const recent = owned
+    .filter((session) => visible(session.projectId))
+    .sort((a, b) => (Date.parse(b.lastActivity ?? '') || 0) - (Date.parse(a.lastActivity ?? '') || 0));
+  return recent[0]?.projectId ?? null;
+}
+
+export function projectMachineLabel(
+  machine: string,
+  profiles: readonly { id: string; name: string }[]
+): string {
+  if (machine === 'local') return 'This Mac';
+  return profiles.find((profile) => profile.id === machine)?.name ?? 'Remote machine';
+}

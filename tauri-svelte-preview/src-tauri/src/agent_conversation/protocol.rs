@@ -608,6 +608,8 @@ pub struct EnsureAgentConversationRequest {
     pub native_session_mode: AgentNativeSessionMode,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 /// The machine that owns a conversation's complete runtime and durable state.
@@ -874,14 +876,66 @@ pub struct AgentConversationSessionRecord {
     #[serde(default)]
     pub background_task_ids: Vec<String>,
     pub native_session_id: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
     #[serde(flatten)]
     pub meta: AgentConversationSessionMeta,
+}
+
+/// A registered project, as the frontend sees it.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRecord {
+    pub id: String,
+    pub machine: String,
+    pub root_path: String,
+    pub title: String,
+    pub repo_key: String,
+    pub created_at_ms: i64,
 }
 
 #[cfg(test)]
 mod contract_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn project_id_is_optional_on_ensure_and_present_on_records() {
+        let request: EnsureAgentConversationRequest = serde_json::from_value(json!({
+            "ownedId": "owned-local",
+            "provider": "codex",
+            "cwd": "/tmp/project",
+            "nativeSessionId": null
+        }))
+        .unwrap();
+        assert_eq!(request.project_id, None);
+
+        let record = AgentConversationSessionRecord {
+            owned_id: "owned-local".into(),
+            execution_environment: ExecutionEnvironment::Local,
+            remote_profile_id: None,
+            provider: AgentConversationProvider::Codex,
+            model: None,
+            effort: None,
+            cwd: "/tmp/project".into(),
+            state: AgentRuntimeState::Ready,
+            suspended: false,
+            created_at_ms: 1,
+            last_activity_at_ms: 2,
+            active_turn_id: None,
+            pending_permission: false,
+            pending_input: false,
+            background_task_ids: Vec::new(),
+            native_session_id: None,
+            project_id: Some("p1".into()),
+            meta: AgentConversationSessionMeta::default(),
+        };
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(value["projectId"], "p1");
+        assert!(value.get("meta").is_none());
+        let read_back: AgentConversationSessionRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(read_back.project_id.as_deref(), Some("p1"));
+    }
 
     #[test]
     fn omitted_execution_environment_means_this_mac() {

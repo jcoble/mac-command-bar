@@ -3,9 +3,8 @@ import assert from 'node:assert/strict';
 import {
   accessChoicesFor,
   buildThreadStartRequest,
-  canSelectThreadStartGitRef,
+  checkoutPlanFor,
   defaultThreadStartState,
-  deriveThreadStartProjects,
   effortChoicesFor,
   filterThreadStartGitRefs,
   groupProviderModels,
@@ -14,17 +13,24 @@ import {
 } from '../src/lib/shell/newSession/threadStartFlow.ts';
 import { sessionTitleFromPrompt } from '../src/lib/shell/sessionStrip.ts';
 
+// The draft's project travels to the first send.
 {
-  const projects = deriveThreadStartProjects([
-    '/Users/me/dev/alpha/',
-    '/Users/me/dev/beta',
-    '/Users/me/dev/alpha',
-    'relative/path'
-  ]);
-  assert.deepEqual(projects, [
-    { path: '/Users/me/dev/alpha', name: 'alpha' },
-    { path: '/Users/me/dev/beta', name: 'beta' }
-  ]);
+  const state = defaultThreadStartState({
+    projectId: 'project-1',
+    projectPath: '/Users/me/dev/alpha',
+    branch: 'main'
+  });
+  assert.equal(state.projectId, 'project-1');
+  assert.equal(buildThreadStartRequest({ ...state, prompt: 'hello' })?.projectId, 'project-1');
+}
+
+// "No project" starts in the machine's home folder and names no project.
+{
+  const state = defaultThreadStartState({ projectId: null, projectPath: '', cwd: '/home/user' });
+  const request = buildThreadStartRequest({ ...state, prompt: 'hello' });
+  assert.equal(request?.projectId, null);
+  assert.equal(request?.projectPath, null);
+  assert.equal(request?.cwd, '/home/user');
 }
 
 // A current Codex ACP catalog encodes effort in each model id and uses its own
@@ -68,9 +74,31 @@ import { sessionTitleFromPrompt } from '../src/lib/shell/sessionStrip.ts';
   assert.equal(all.total, 120);
   const searched = filterThreadStartGitRefs(refs, 'feature/119');
   assert.deepEqual(searched.visible.map((ref) => ref.name), ['feature/119']);
-  assert.equal(canSelectThreadStartGitRef(refs[0], false), true);
-  assert.equal(canSelectThreadStartGitRef(refs[2], false), false);
-  assert.equal(canSelectThreadStartGitRef(refs[2], true), true);
+}
+
+// Picking a branch decides what the first send does; nothing runs at the pick.
+{
+  const root = '/Users/me/dev/alpha';
+  assert.deepEqual(
+    checkoutPlanFor(root, { name: 'main', isCurrent: true, checkoutPath: root }),
+    { kind: 'none', cwd: root },
+    'the branch the root is on needs no git command'
+  );
+  assert.deepEqual(
+    checkoutPlanFor(root, { name: 'feature', isCurrent: false, checkoutPath: '/Users/me/dev/worktrees/alpha/feature' }),
+    { kind: 'none', cwd: '/Users/me/dev/worktrees/alpha/feature' },
+    'a branch checked out elsewhere points the session at that worktree'
+  );
+  assert.deepEqual(
+    checkoutPlanFor(root, { name: 'idle', isCurrent: false, checkoutPath: null }),
+    { kind: 'switch', root, branch: 'idle', cwd: root },
+    'a branch with no checkout is switched to in the root'
+  );
+  assert.deepEqual(
+    checkoutPlanFor(root, { name: 'main', isCurrent: false, checkoutPath: root }),
+    { kind: 'none', cwd: root },
+    "the root's own checkout needs no git command"
+  );
 }
 
 const providerConfigs = [
@@ -260,28 +288,23 @@ const providerConfigs = [
   // });
 }
 
-// This build can list worktrees but has no creation command. Choosing the
-// toggle is therefore an explicit validation failure, never a silent fallback
-// to the project checkout.
+// New worktree is a real choice: the request validates and carries the base
+// branch with `createNewWorktree: true`. The worktree itself is made at the
+// first send, not here.
 {
   const state = {
+    ...defaultThreadStartState({ projectId: 'p1', projectPath: '/Users/me/dev/work/mac-command-bar' }),
     prompt: 'Create the thread-first flow',
-    provider: 'codex',
-    model: 'gpt-5.6-luna',
-    effort: 'max',
-    access: 'on-request',
-    projectPath: '/Users/me/dev/work/mac-command-bar',
-    cwd: '/Users/me/dev/work/mac-command-bar',
-    branch: 'tsk-808-thread',
+    branch: 'main',
+    branchesAvailable: true,
     createNewWorktree: true
   };
-  assert.deepEqual(validateThreadStart(state), [
-    {
-      field: 'worktree',
-      message: 'New worktree creation is not available in this build. Choose an existing checkout.'
-    }
-  ]);
-  assert.equal(buildThreadStartRequest(state), null);
+  assert.deepEqual(validateThreadStart(state), []);
+  const request = buildThreadStartRequest(state);
+  assert.equal(request?.createNewWorktree, true);
+  assert.equal(request?.branch, 'main');
+  assert.equal(request?.projectId, 'p1');
+  assert.deepEqual(validateThreadStart({ ...state, branch: '' }).map((problem) => problem.field), ['branch']);
 }
 
 assert.equal(

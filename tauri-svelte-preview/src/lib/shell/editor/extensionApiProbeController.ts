@@ -199,6 +199,7 @@ export async function createExtensionApiProbeTerminal(
     source: 'fresh',
     title: 'Extension API probe',
     projectPath: current.activeRoot,
+    projectId: null,
     cwd: normalizedRoot(request.cwd ?? current.activeRoot),
     resumeCommand: null,
     nativeSessionId: null,

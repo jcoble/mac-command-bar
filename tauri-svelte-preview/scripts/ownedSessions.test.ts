@@ -318,5 +318,10 @@ const scanRecord = {
   assert.equal(projected.projectPath, record.project);
   assert.equal(ownedSessionMetaForBackend(projected).messageCount, 7);
   assert.equal(ownedSessionFromBackend({ ...record, suspended: true }).runtimeState, 'suspended');
+  // The project id comes from the record; it is never written back as rail metadata.
+  assert.equal(projected.projectId, null);
+  const withProject = ownedSessionFromBackend({ ...record, projectId: 'project-1' });
+  assert.equal(withProject.projectId, 'project-1');
+  assert.equal('projectId' in ownedSessionMetaForBackend(withProject), false);
 }
 console.log('ownedSessions tests passed');

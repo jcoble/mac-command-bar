@@ -510,6 +510,7 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   pendingInput: boolean;
   backgroundTaskIds?: string[];
   nativeSessionId: string | null;
+  projectId: string | null;
 };
 
 export type ExecutionEnvironment = 'local' | 'remote';
@@ -3094,10 +3095,26 @@ async function postLocalSourceBridge<T>(
   return body as T;
 }
 
-export type RemoteDirectoryListing = { path: string; directories: string[]; truncated: boolean };
+export type ProjectRecord = { id: string; machine: string; rootPath: string; title: string; repoKey: string; createdAtMs: number };
+export type FolderListing = { path: string; directories: string[]; truncated: boolean };
 
-export async function listRemoteDirectoriesFromTauri(profileId: string, path: string): Promise<RemoteDirectoryListing> {
-  if (!isTauriRuntime()) throw new Error('Remote browsing is available in the desktop app.');
-  const { invoke } = await import('./workspaceInvoke');
-  return invoke<RemoteDirectoryListing>('remote_workspace', { profileId, operation: 'list_remote_directories', args: { path } });
+export async function listProjectsFromTauri(): Promise<ProjectRecord[]> {
+  if (!isTauriRuntime()) return [];
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ProjectRecord[]>('list_projects');
+}
+
+/** Inspects the folder on its machine and registers it; the same folder returns the same project. */
+export async function addProjectFromTauri(machine: string, path: string): Promise<ProjectRecord> {
+  if (!isTauriRuntime()) throw new Error('Projects are available in the desktop app.');
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<ProjectRecord>('add_project', { machine, path });
+}
+
+/** The folders inside `path` on `machine` ('local' or a saved remote profile id). `~` is that machine's home. */
+export async function listFoldersFromTauri(machine: string, path: string): Promise<FolderListing> {
+  if (!isTauriRuntime()) throw new Error('Folder browsing is available in the desktop app.');
+  const { invoke } = await import('@tauri-apps/api/core');
+  if (machine === 'local') return invoke<FolderListing>('list_folders', { path });
+  return invoke<FolderListing>('remote_workspace', { profileId: machine, operation: 'list_folders', args: { path } });
 }

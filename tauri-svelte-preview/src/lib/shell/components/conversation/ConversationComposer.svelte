@@ -60,10 +60,12 @@
     respondingRequestIds?: readonly string[];
     controlsDisabled?: boolean;
     sendDisabled?: boolean;
-    /** Extra controls for the left of the footer, ahead of Attach. The draft
-     * session puts its project and branch pickers here, so a session being set
-     * up reads as the same composer as one already running. */
-    leadingControls?: Snippet;
+    /** Extra controls at the start of the footer's right side, ahead of the
+     * model and effort controls. The draft session puts its agent picker here. */
+    footerControls?: Snippet;
+    /** A row directly below the capsule. The draft session shows its machine
+     * and branch here. */
+    subBar?: Snippet;
     onDraftChange?(value: string): void;
     onDraftBlur?(): void | Promise<void>;
     onSend?(): void | Promise<void>;
@@ -105,7 +107,8 @@
     respondingRequestIds = [],
     controlsDisabled = false,
     sendDisabled = false,
-    leadingControls,
+    footerControls,
+    subBar,
     onDraftChange,
     onDraftBlur,
     onSend,
@@ -364,10 +367,6 @@
 
 <div class="composer-area" data-testid="conversation-composer-area" bind:this={composerArea}>
   {#if bannerItems.length}<ComposerBannerStack items={bannerItems} />{/if}
-  <!-- A draft session's own pickers sit ABOVE the capsule, not inside it.
-       They set up the session rather than the message, and three of them on
-       the control row left the message nowhere to go. -->
-  {#if leadingControls}<div class="leading-controls" data-testid="composer-leading-controls">{@render leadingControls()}</div>{/if}
   {#if (plan && plan.steps.length) || planFileChanges}
     <div class="plan-chip-slot">
       <PlanChip {plan} fileChanges={planFileChanges} expanded={planExpanded} running={sending} onToggle={() => (planExpanded = !planExpanded)} />
@@ -491,6 +490,7 @@
             </DropdownMenu.Root>
           </div>
           <div class="footer-right">
+            {@render footerControls?.()}
             <!-- How full the context window is, as a small pie gauge: a slice
                  inside a faint outline grows clockwise from 12 o'clock as the
                  window is used, so a fresh session shows a thin slice and a
@@ -548,6 +548,7 @@
       {#if dragging}<p class="drop-hint" data-testid="conversation-drop-hint">Drop images to attach them</p>{/if}
     </div>
   </form>
+  {#if subBar}<div class="sub-bar" data-testid="composer-sub-bar">{@render subBar()}</div>{/if}
   <div class="composer-hint" data-testid="conversation-paste-hint"><span>Paste or drop images · type / for commands</span>{#if contextMeter?.kind === 'percent'}<span aria-hidden="true">·</span><span>{contextMeter.remaining}% left</span>{/if}</div>
 </div>
 
@@ -616,7 +617,7 @@
      ahead of the group. */
   .footer-right { grid-area: trail; gap: 4px; }
   .file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
-  .leading-controls { display: flex; width: min(820px, calc(100% - 44px)); min-width: 0; margin: 0 auto var(--composer-row-gap); align-items: center; gap: var(--composer-row-gap); }
+  .sub-bar { display: flex; width: min(780px, calc(100% - 84px)); min-width: 0; margin: 4px auto 0; align-items: center; gap: var(--composer-row-gap); }
   .wide-controls { display: flex; min-width: 0; }
   .compact-controls { display: none; }
 

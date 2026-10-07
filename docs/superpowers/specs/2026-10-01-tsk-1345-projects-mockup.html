@@ -1,0 +1,634 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TSK-1345 mockup: Projects in the new-session flow and the sidebar</title>
+<style>
+/* ------------------------------------------------------------------
+ * Values copied from the app, not invented:
+ *   tauri-svelte-preview/src/lib/shell/styles/nextTokens.css (colours,
+ *   menu sheet, composer, radii, spacing, type) and
+ *   tauri-svelte-preview/src/lib/styles/tokens.css:59-60 (fonts).
+ * Static mockup. No relational selectors, no animation, no external requests.
+ * ------------------------------------------------------------------ */
+:root {
+  --color-bg: #000000;
+  --color-surface: #121212;
+  --color-elevated: #1c1c1c;
+  --color-text: #f1f3f5;
+  --color-text-2: #b3b7bf;
+  --color-text-3: #8b919b;
+  --color-accent: #6ed8be;
+  --color-border: rgba(241, 243, 245, 0.07);
+  --color-focus: rgba(110, 216, 190, 0.42);
+  --color-on-accent: #10201b;
+  --color-good: #85c79a;
+  --color-bad: #e28a98;
+  --color-attention: #d7b77e;
+  --color-attention-bg: rgba(215, 183, 126, 0.12);
+  --color-scrim: rgba(8, 10, 12, 0.58);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.22);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.26), 0 1px 3px rgba(0, 0, 0, 0.16);
+  --shadow-lg: 0 16px 42px rgba(0, 0, 0, 0.32), 0 2px 8px rgba(0, 0, 0, 0.2);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
+  --text-heading: 16px;
+  --text-heading-weight: 700;
+  --text-body: 14px;
+  --text-quiet: 13px;
+  --menu-sheet-surface: color-mix(in srgb, var(--color-text) 7%, var(--color-surface));
+  --menu-row-hover: color-mix(in srgb, var(--color-text) 9%, transparent);
+  --composer-surface: var(--color-elevated);
+  --composer-pill-surface-hover: color-mix(in srgb, var(--color-text) 9%, transparent);
+  --composer-pill-surface-open: color-mix(in srgb, var(--color-text) 16%, transparent);
+  --segmented-tab-active: #5f607b;
+  --segmented-tab-surface: color-mix(in srgb, var(--color-text) 7%, var(--color-elevated));
+  --agent-mark-claude: #d97757;
+  --agent-mark-codex: #0080f7;
+  --panel-fade:
+    radial-gradient(120% 200px at 50% 0, rgba(64, 52, 88, 0.05), transparent 70%),
+    linear-gradient(180deg, rgba(38, 31, 50, 0.22) 0, rgba(32, 27, 42, 0.09) 100px, rgba(32, 27, 42, 0) 220px);
+  --font-ui: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--color-bg); color: var(--color-text); font: 13px/1.4 var(--font-ui); }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+a { color: inherit; text-decoration: none; }
+
+.ic { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ic.s12 { width: 12px; height: 12px; }
+.ic.s14 { width: 14px; height: 14px; }
+.ic.s18 { width: 18px; height: 18px; }
+.mark { flex: none; fill: currentColor; stroke: none; }
+.claude { color: var(--agent-mark-claude); }
+.codex { color: var(--agent-mark-codex); }
+
+/* Which view is on screen: body[data-view] is set from the URL hash. */
+[data-show] { display: none; }
+body[data-view="v1"] [data-show~="v1"],
+body[data-view="v2"] [data-show~="v2"],
+body[data-view="v3"] [data-show~="v3"],
+body[data-view="v3b"] [data-show~="v3b"],
+body[data-view="v4"] [data-show~="v4"],
+body[data-view="v5"] [data-show~="v5"],
+body[data-view="v6"] [data-show~="v6"] { display: block; }
+
+/* ---------------- Window frame (matches the running app) ---------------- */
+.app {
+  position: relative;
+  width: 100vw; height: 100vh; min-width: 1280px; min-height: 760px;
+  display: grid;
+  grid-template-columns: 358px minmax(0, 1fr) 318px;
+  grid-template-rows: 51px minmax(0, 1fr) 32px;
+  padding: 0 3px;
+  overflow: hidden;
+}
+.chrome-left { display: flex; align-items: center; padding: 0 12px; color: var(--color-text-3); font-size: 12px; gap: 8px; }
+.chrome-left b { color: var(--color-text-2); font-weight: 600; }
+.chrome-mid { display: flex; align-items: center; justify-content: center; }
+.chrome-right { display: flex; align-items: center; justify-content: flex-end; padding-right: 10px; }
+.tabs { display: flex; gap: 2px; padding: 3px; border-radius: var(--radius-pill); background: var(--segmented-tab-surface); }
+.tabs span { display: grid; place-items: center; width: 34px; height: 34px; border-radius: var(--radius-pill); color: var(--color-text-2); }
+.tabs span.on { background: var(--segmented-tab-active); color: var(--color-text); }
+.tabs i { width: 1px; margin: 8px 3px; background: var(--color-border); }
+
+.card { position: relative; margin: 3px; border-radius: var(--radius-sm); overflow: hidden; background: var(--panel-fade), var(--color-surface); background-repeat: no-repeat; min-height: 0; }
+
+.statusbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; padding: 0 12px; color: var(--color-text-2); font-size: 12px; white-space: nowrap; overflow: hidden; }
+.tag { padding: 1px 7px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--color-accent) 16%, transparent); color: var(--color-accent); font-weight: 600; }
+.notes { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.nav { margin-left: auto; display: flex; gap: 2px; }
+.nav a { display: grid; place-items: center; min-width: 26px; height: 24px; padding: 0 6px; border-radius: var(--radius-pill); color: var(--color-text-3); }
+.nav a:hover { background: var(--menu-row-hover); color: var(--color-text); }
+body[data-view="v1"] .nav a[href="#v1"], body[data-view="v2"] .nav a[href="#v2"], body[data-view="v3"] .nav a[href="#v3"],
+body[data-view="v3b"] .nav a[href="#v3b"], body[data-view="v4"] .nav a[href="#v4"], body[data-view="v5"] .nav a[href="#v5"],
+body[data-view="v6"] .nav a[href="#v6"] { background: var(--color-text); color: var(--color-bg); }
+
+/* ---------------- Sessions column (SessionsColumn / SessionRail / WorktreeAgentRow) ---------------- */
+.sessions { display: flex; flex-direction: column; height: 100%; }
+.s-head { display: flex; flex: 0 0 52px; align-items: center; padding: 0 9px 0 13px; }
+.s-head h2 { flex: 1; margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+.s-actions { display: flex; gap: 1px; padding: 3px; border-radius: var(--radius-pill); background: var(--color-elevated); }
+.s-actions span { display: grid; place-items: center; width: 29px; height: 29px; border-radius: var(--radius-pill); color: var(--color-text-2); }
+.s-actions span.mint { color: var(--color-accent); }
+.pills { display: flex; gap: 6px; padding: 0 9px 8px 13px; }
+.pills span { display: inline-flex; align-items: center; height: 28px; padding: 0 12px; border-radius: var(--radius-pill); background: var(--color-elevated); font-size: 13px; }
+.sec-head { display: flex; align-items: center; gap: 7px; min-height: 33px; padding: 7px 12px; color: var(--color-text-2); font-size: 13px; }
+.sec-head .chev { width: 13px; height: 13px; transform: rotate(90deg); }
+.sec-head .name { font-weight: 620; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sec-head .count { margin-left: auto; color: var(--color-text-3); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.rows { margin: 0 0 6px; padding: 0; list-style: none; }
+.rows li { padding: 0 6px; }
+.row { display: grid; grid-template-columns: 44px minmax(0, 1fr); column-gap: 10px; align-items: center; min-height: 58px; padding: 4px 11px 4px 13px; border-radius: var(--radius-sm); }
+.row:hover { background: color-mix(in srgb, var(--color-accent) 7%, var(--color-elevated)); }
+.thumb { position: relative; display: flex; width: 44px; height: 44px; align-items: center; justify-content: center; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-elevated) 68%, var(--color-surface)); }
+.thumb .mark { width: 22px; height: 22px; }
+.remote-mark { position: absolute; right: 1px; bottom: 1px; display: grid; width: 15px; height: 15px; place-items: center; border-radius: 50%; background: var(--color-surface); color: var(--color-good); }
+.remote-mark .ic { width: 10px; height: 10px; stroke-width: 2.4; }
+.lines { display: flex; min-width: 0; flex-direction: column; }
+.l1 { display: flex; height: 21px; align-items: center; gap: 5px; }
+.l2 { display: flex; height: 17px; align-items: center; gap: 5px; font-size: 12px; }
+.title { flex: 1; min-width: 0; overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.age { padding-left: 8px; color: var(--color-text-3); font-family: var(--font-mono); font-size: 12px; }
+.machine-name { color: var(--color-text-2); white-space: nowrap; }
+.sep { color: var(--color-text-3); }
+.branch { min-width: 0; overflow: hidden; color: var(--color-text-3); text-overflow: ellipsis; white-space: nowrap; }
+
+/* The two-letter project badge. Plain grey on purpose: the status colours
+   keep meaning status. */
+.badge { display: inline-grid; place-items: center; flex: none; width: 22px; height: 18px; border-radius: 5px; background: color-mix(in srgb, var(--color-text) 11%, transparent); color: var(--color-text-2); font: 600 10px/1 var(--font-mono); letter-spacing: 0.02em; }
+.badge.icon { background: transparent; color: var(--color-text-3); }
+
+/* ---------------- Right column ---------------- */
+.files-head { display: flex; align-items: center; margin: 12px 12px 0; padding: 0 12px; height: 60px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-text) 3%, var(--color-elevated)); }
+.files-head b { flex: 1; font-size: 16px; }
+.empty { display: grid; justify-items: center; gap: 4px; padding: 36px 12px 24px; color: var(--color-text-2); text-align: center; }
+.empty b { color: var(--color-text); font-weight: 500; }
+.empty small { color: var(--color-text-3); font-size: 12px; }
+.history-row { display: flex; align-items: center; gap: 8px; margin: 0 12px; padding: 0 12px; height: 40px; border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-text) 3%, var(--color-elevated)); font-weight: 600; }
+
+/* ---------------- The new-session draft (DraftSessionSurface) ---------------- */
+.draft { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--color-surface); }
+.topline { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px 6px 14px; color: var(--color-text-3); font-size: 12px; }
+.icon-btn { display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--radius-pill); color: var(--color-text-2); }
+.icon-btn:hover { background: var(--menu-row-hover); color: var(--color-text); }
+.stage { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 22px 60px; }
+.column { width: min(820px, 100%); }
+
+.ask { margin: 0 0 var(--space-4); text-align: center; font-size: var(--text-heading); font-weight: var(--text-heading-weight); line-height: 1.5; }
+.anchor { position: relative; display: inline-block; }
+.anchor > [data-show] { position: absolute; inset: 0; }
+.proj-trigger { padding: 1px 2px; border-radius: 6px; font-weight: inherit; text-decoration: underline dotted var(--color-text-3); text-decoration-thickness: 1px; text-underline-offset: 5px; }
+.proj-trigger:hover { background: var(--menu-row-hover); }
+body[data-view="v1"] .proj-trigger { background: var(--composer-pill-surface-open); }
+
+/* The composer box, in its open shape: message line on top, controls below. */
+.box { position: relative; z-index: 2; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: 'prompt prompt prompt' 'lead . trail'; align-items: center; padding: 9px; border: 1px solid transparent; border-radius: 24px; background: color-mix(in srgb, var(--color-text) 3%, var(--composer-surface)); box-shadow: var(--shadow-md); }
+.prompt { grid-area: prompt; min-height: 63px; padding: 4px 8px 2px; color: color-mix(in srgb, var(--color-text-3) 70%, transparent); font-size: 14px; line-height: 1.5; }
+.caret { display: inline-block; width: 1.5px; height: 18px; margin-right: 1px; vertical-align: -4px; background: var(--color-accent); }
+.lead { grid-area: lead; display: flex; align-items: center; gap: 6px; }
+.trail { grid-area: trail; display: flex; align-items: center; gap: 2px; }
+.round { display: grid; place-items: center; width: 34px; height: 34px; border-radius: var(--radius-pill); color: var(--color-text-2); }
+.round:hover { background: var(--composer-pill-surface-hover); color: var(--color-text); }
+.round[disabled] { opacity: 0.55; cursor: default; }
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 7px 12px; border-radius: var(--radius-pill); color: var(--color-text-2); font-size: 13px; white-space: nowrap; }
+.pill:hover { background: var(--composer-pill-surface-hover); color: var(--color-text); }
+.pill .mark { width: 14px; height: 14px; }
+.pill .ic.s12 { opacity: 0.7; }
+
+/* The bar under the box: machine, workspace, branch. */
+.bar { position: relative; display: flex; align-items: center; gap: 4px; margin: 0 22px; padding: 4px 8px; border-radius: 0 0 var(--radius-md) var(--radius-md); background: color-mix(in srgb, var(--color-text) 3%, var(--color-surface)); }
+.machine-label { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 6px; color: var(--color-text-3); font-size: 13px; cursor: default; }
+.chip { display: inline-flex; align-items: center; gap: 4px; height: 24px; max-width: 220px; padding: 0 6px; border-radius: var(--radius-sm); color: var(--color-text-2); font-size: 13px; white-space: nowrap; }
+.chip:hover { background: var(--composer-pill-surface-hover); color: var(--color-text); }
+.chip .ic.s12 { opacity: 0.7; }
+.bar .grow { flex: 1; }
+body[data-view="v4"] .chip.ws, body[data-view="v5"] .chip.br { background: var(--composer-pill-surface-open); color: var(--color-text); }
+
+/* ---------------- Menu sheets (dropdown-menu-content / -item / -label / -separator) ---------------- */
+.menu { position: absolute; z-index: 20; padding: 6px; border-radius: var(--radius-lg); background: var(--menu-sheet-surface); box-shadow: 0 0 0 1px var(--color-border), var(--shadow-lg); text-align: left; font-size: 13px; font-weight: 400; line-height: 1.4; }
+.mi { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 7px 10px; border-radius: var(--radius-md); color: var(--color-text); white-space: nowrap; }
+.mi:hover, .mi.hl { background: var(--menu-row-hover); }
+.mi > .ic { color: var(--color-text-2); }
+.mi .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mi .end { color: var(--color-text-3); }
+.mi .check { width: 14px; height: 14px; color: var(--color-accent); }
+.mi .slot { width: 14px; flex: none; }
+.ml { padding: 6px 10px 3px; color: var(--color-text-2); font-size: 11px; font-weight: 500; }
+.msep { height: 1px; margin: 5px -6px; background: var(--color-border); }
+.quiet { color: var(--color-text-3); font-size: 12px; }
+
+.project-menu { top: calc(100% + 8px); left: 0; width: 300px; }
+.workspace-menu { top: calc(100% + 6px); left: 0; width: 220px; }
+.branch-menu { bottom: calc(100% + 8px); right: 0; width: 440px; }
+.ref-search { display: flex; align-items: center; gap: 7px; height: 38px; padding: 0 8px; color: var(--color-text-3); }
+.ref-search .field { flex: 1; color: var(--color-text); font-size: 13px; }
+.ref-search .field span { color: color-mix(in srgb, var(--color-text-3) 80%, transparent); }
+.ref-footer { margin: 4px -6px -6px; padding: 7px 14px 8px; border-top: 1px solid var(--color-border); color: var(--color-text-3); font-size: 12px; }
+
+/* ---------------- Add project sheet (dialog over a scrim) ---------------- */
+.scrim { position: absolute; inset: 0; z-index: 30; background: var(--color-scrim); }
+.sheet { position: absolute; top: 168px; left: 50%; width: 576px; transform: translateX(-50%); overflow: hidden; border-radius: var(--radius-lg); background: var(--menu-sheet-surface); box-shadow: 0 0 0 1px var(--color-border), var(--shadow-lg); }
+.sheet-head { display: flex; align-items: center; gap: 8px; height: 52px; padding: 0 10px 0 8px; border-bottom: 1px solid var(--color-border); }
+.sheet-head .field { flex: 1; min-width: 0; font-size: 14px; color: var(--color-text); white-space: nowrap; overflow: hidden; }
+.sheet-head .field .ph { color: color-mix(in srgb, var(--color-text-3) 80%, transparent); }
+.sheet-body { padding: 6px; }
+.sheet-body .ml { padding-top: 8px; }
+.sheet .mi.two { align-items: center; min-height: 48px; }
+.mi.two .copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mi.two .copy small { color: var(--color-text-3); font-size: 12px; }
+.sheet-error { display: flex; align-items: flex-start; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--color-border); color: var(--color-bad); font-size: 13px; }
+.sheet-error .ic { margin-top: 1px; }
+.keys { display: flex; align-items: center; gap: 16px; padding: 10px 14px; border-top: 1px solid var(--color-border); background: color-mix(in srgb, var(--color-bg) 22%, transparent); color: var(--color-text-3); font-size: 12px; }
+.keys span { display: inline-flex; align-items: center; gap: 6px; }
+.keys .right { margin-left: auto; color: var(--color-text-2); }
+.kbd { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 6px; background: color-mix(in srgb, var(--color-text) 10%, transparent); color: var(--color-text-2); font-size: 12px; line-height: 1; }
+.add-btn { display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 6px 0 12px; border-radius: var(--radius-md); background: var(--color-accent); color: var(--color-on-accent); font-weight: 600; box-shadow: var(--shadow-sm); }
+.add-btn:hover { filter: brightness(1.06); }
+.add-btn .kbd { background: color-mix(in srgb, var(--color-on-accent) 14%, transparent); color: var(--color-on-accent); font-weight: 500; }
+.add-btn[disabled] { opacity: 0.5; cursor: default; filter: none; }
+
+/* ---------------- Mockup annotation (not product UI) ---------------- */
+.callout { position: absolute; z-index: 40; width: 380px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--color-attention) 40%, transparent); border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-attention) 10%, var(--color-surface)); color: var(--color-text); font-size: 13px; line-height: 1.5; }
+.callout b { display: block; margin-bottom: 4px; color: var(--color-attention); }
+.callout ul { margin: 0; padding-left: 18px; }
+.callout li + li { margin-top: 4px; }
+.callout::before { content: ""; position: absolute; top: 18px; left: -7px; width: 12px; height: 12px; border-left: 1px solid color-mix(in srgb, var(--color-attention) 40%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--color-attention) 40%, transparent); background: color-mix(in srgb, var(--color-attention) 10%, var(--color-surface)); transform: rotate(45deg); }
+</style>
+</head>
+<body data-view="v1">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<symbol id="i-cloud" viewBox="0 0 24 24"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+<symbol id="i-folder-git-2" viewBox="0 0 24 24"><path d="M18 19a5 5 0 0 1-5-5v8"/><path d="M9 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v5"/><circle cx="13" cy="12" r="2"/><circle cx="20" cy="19" r="2"/></symbol>
+<symbol id="i-git-branch" viewBox="0 0 24 24"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></symbol>
+<symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+<symbol id="i-folder-plus" viewBox="0 0 24 24"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></symbol>
+<symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></symbol>
+<symbol id="i-corner-left-up" viewBox="0 0 24 24"><path d="M14 9 9 4 4 9"/><path d="M20 20h-7a4 4 0 0 1-4-4V4"/></symbol>
+<symbol id="i-laptop" viewBox="0 0 24 24"><path d="M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z"/><path d="M20.054 15.987H3.946"/></symbol>
+<symbol id="i-settings-2" viewBox="0 0 24 24"><path d="M14 17H5"/><path d="M19 7h-9"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></symbol>
+<symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><rect x="9" y="2" width="6" height="13" rx="3"/></symbol>
+<symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></symbol>
+<symbol id="i-message-circle" viewBox="0 0 24 24"><path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719"/></symbol>
+<symbol id="i-circle-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></symbol>
+<symbol id="i-list" viewBox="0 0 24 24"><path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/></symbol>
+<symbol id="i-messages-square" viewBox="0 0 24 24"><path d="M16 10a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 14.286V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/><path d="M20 9a2 2 0 0 1 2 2v10.286a.71.71 0 0 1-1.212.502l-2.202-2.202A2 2 0 0 0 17.172 19H10a2 2 0 0 1-2-2v-1"/></symbol>
+<symbol id="i-file-code" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="M10 12.5 8 15l2 2.5"/><path d="m14 12.5 2 2.5-2 2.5"/></symbol>
+<symbol id="i-git-compare" viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M11 18H8a2 2 0 0 1-2-2V9"/></symbol>
+<symbol id="i-git-pull-request" viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" x2="6" y1="9" y2="21"/></symbol>
+<symbol id="i-files" viewBox="0 0 24 24"><path d="M15 2h-4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8"/><path d="M16.706 2.706A2.4 2.4 0 0 0 15 2v5a1 1 0 0 0 1 1h5a2.4 2.4 0 0 0-.706-1.706z"/><path d="M5 7a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h8a2 2 0 0 0 1.732-1"/></symbol>
+<symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
+<symbol id="i-panel-right" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></symbol>
+<symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></symbol>
+<symbol id="i-layers" viewBox="0 0 24 24"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></symbol>
+<symbol id="i-play" viewBox="0 0 24 24"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></symbol>
+<symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></symbol>
+<symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol>
+<symbol id="i-list-checks" viewBox="0 0 24 24"><path d="M13 5h8"/><path d="M13 12h8"/><path d="M13 19h8"/><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"/><path d="M20 2v4"/><path d="M22 4h-4"/><circle cx="4" cy="20" r="2"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+<symbol id="m-claude" viewBox="0 0 248 248"><path d="M52.4285 162.873L98.7844 136.879L99.5485 134.602L98.7844 133.334H96.4921L88.7237 132.862L62.2346 132.153L39.3113 131.207L17.0249 130.026L11.4214 128.844L6.2 121.873L6.7094 118.447L11.4214 115.257L18.171 115.847L33.0711 116.911L55.485 118.447L71.6586 119.392L95.728 121.873H99.5485L100.058 120.337L98.7844 119.392L97.7656 118.447L74.5877 102.732L49.4995 86.1905L36.3823 76.62L29.3779 71.7757L25.8121 67.2858L24.2839 57.3608L30.6515 50.2716L39.3113 50.8623L41.4763 51.4531L50.2636 58.1879L68.9842 72.7209L93.4357 90.6804L97.0015 93.6343L98.4374 92.6652L98.6571 91.9801L97.0015 89.2625L83.757 65.2772L69.621 40.8192L63.2534 30.6579L61.5978 24.632C60.9565 22.1032 60.579 20.0111 60.579 17.4246L67.8381 7.49965L71.9133 6.19995L81.7193 7.49965L85.7946 11.0443L91.9074 24.9865L101.714 46.8451L116.996 76.62L121.453 85.4816L123.873 93.6343L124.764 96.1155H126.292V94.6976L127.566 77.9197L129.858 57.3608L132.15 30.8942L132.915 23.4505L136.608 14.4708L143.994 9.62643L149.725 12.344L154.437 19.0788L153.8 23.4505L150.998 41.6463L145.522 70.1215L141.957 89.2625H143.994L146.414 86.7813L156.093 74.0206L172.266 53.698L179.398 45.6635L187.803 36.802L193.152 32.5484H203.34L210.726 43.6549L207.415 55.1159L196.972 68.3492L188.312 79.5739L175.896 96.2095L168.191 109.585L168.882 110.689L170.738 110.53L198.755 104.504L213.91 101.787L231.994 98.7149L240.144 102.496L241.036 106.395L237.852 114.311L218.495 119.037L195.826 123.645L162.07 131.592L161.696 131.893L162.137 132.547L177.36 133.925L183.855 134.279H199.774L229.447 136.524L237.215 141.605L241.8 147.867L241.036 152.711L229.065 158.737L213.019 154.956L175.45 145.977L162.587 142.787H160.805V143.85L171.502 154.366L191.242 172.089L215.82 195.011L217.094 200.682L213.91 205.172L210.599 204.699L188.949 188.394L180.544 181.069L161.696 165.118H160.422V166.772L164.752 173.152L187.803 207.771L188.949 218.405L187.294 221.832L181.308 223.959L174.813 222.777L161.187 203.754L147.305 182.486L136.098 163.345L134.745 164.2L128.075 235.42L125.019 239.082L117.887 241.8L111.902 237.31L108.718 229.984L111.902 215.452L115.722 196.547L118.779 181.541L121.58 162.873L123.291 156.636L123.14 156.219L121.773 156.449L107.699 175.752L86.304 204.699L69.3663 222.777L65.291 224.431L58.2867 220.768L58.9235 214.27L62.8713 208.48L86.304 178.705L100.44 160.155L109.551 149.507L109.462 147.967L108.959 147.924L46.6977 188.512L35.6182 189.93L30.7788 185.44L31.4156 178.115L33.7079 175.752L52.4285 162.873Z"/></symbol>
+<symbol id="m-codex" viewBox="3.6 3.6 16.8 16.8"><path d="M9.94494 9.59163V8.13227C9.94494 8.00935 9.99105 7.91713 10.0985 7.85575L13.0327 6.16599C13.4321 5.93558 13.9083 5.8281 14.3998 5.8281C16.2432 5.8281 17.4108 7.25677 17.4108 8.77751C17.4108 8.885 17.4108 9.00792 17.3953 9.13083L14.3537 7.34884C14.1694 7.24135 13.985 7.24135 13.8007 7.34884L9.94494 9.59163ZM16.7963 15.2755V11.7883C16.7963 11.5732 16.704 11.4196 16.5197 11.3121L12.664 9.0693L13.9236 8.34725C14.0311 8.28587 14.1234 8.28587 14.2308 8.34725L17.165 10.037C18.0099 10.5287 18.5782 11.5732 18.5782 12.587C18.5782 13.7544 17.887 14.8298 16.7963 15.2753V15.2755ZM9.03861 12.2031L7.77896 11.4658C7.67146 11.4045 7.62535 11.3122 7.62535 11.1893V7.8098C7.62535 6.16613 8.88501 4.92176 10.5902 4.92176C11.2354 4.92176 11.8344 5.13689 12.3415 5.52089L9.31526 7.27218C9.13097 7.37968 9.03875 7.53328 9.03875 7.74841V12.2033L9.03861 12.2031ZM11.75 13.77L9.94494 12.7562V10.6056L11.75 9.59178L13.5549 10.6056V12.7562L11.75 13.77ZM12.9098 18.44C12.2645 18.44 11.6655 18.2249 11.1585 17.8409L14.1847 16.0896C14.369 15.9821 14.4612 15.8285 14.4612 15.6134V11.1585L15.7363 11.8958C15.8438 11.9572 15.8899 12.0494 15.8899 12.1723V15.5519C15.8899 17.1955 14.6148 18.44 12.9098 18.44ZM9.26901 15.0144L6.33486 13.3246C5.4899 12.833 4.92161 11.7885 4.92161 10.7746C4.92161 9.59177 5.62824 8.53183 6.71886 8.0863V11.5887C6.71886 11.8039 6.81109 11.9575 6.99538 12.065L10.8359 14.2923L9.57621 15.0144C9.46872 15.0758 9.37649 15.0758 9.26901 15.0144ZM9.10013 17.5337C7.36426 17.5337 6.08919 16.2279 6.08919 14.6149C6.08919 14.492 6.1046 14.3691 6.11988 14.2462L9.1461 15.9975C9.33039 16.105 9.51483 16.105 9.69912 15.9975L13.5549 13.7702V15.2295C13.5549 15.3524 13.5088 15.4446 13.4013 15.506L10.4671 17.1958C10.0677 17.4262 9.59148 17.5337 9.09999 17.5337H9.10013ZM12.9098 19.3616C14.7685 19.3616 16.32 18.0406 16.6735 16.2893C18.3939 15.8438 19.5 14.2308 19.5 12.5872C19.5 11.5118 19.0391 10.4673 18.2096 9.71454C18.2864 9.39192 18.3326 9.0693 18.3326 8.74682C18.3326 6.55014 16.5505 4.90634 14.4921 4.90634C14.0774 4.90634 13.6779 4.96772 13.2785 5.10605C12.5872 4.43011 11.6347 4 10.5902 4C8.7314 4 7.17996 5.32103 6.8265 7.07232C5.10605 7.51786 4 9.13083 4 10.7745C4 11.8498 4.4608 12.8944 5.29035 13.6471C5.21354 13.9697 5.16743 14.2923 5.16743 14.6148C5.16743 16.8114 6.94941 18.4552 9.00792 18.4552C9.42261 18.4552 9.82204 18.3939 10.2215 18.2556C10.9127 18.9315 11.8651 19.3616 12.9098 19.3616Z"/></symbol>
+</svg>
+
+<div class="app">
+  <!-- Window chrome -->
+  <div class="chrome-left">
+    <b>TSK-1345 mockup</b>
+    <span data-show="v1">1 · Project menu</span>
+    <span data-show="v2">2 · Add project: machine</span>
+    <span data-show="v3">3 · Add project: folder</span>
+    <span data-show="v3b">3b · Add project: wrong folder</span>
+    <span data-show="v4">4 · Workspace menu</span>
+    <span data-show="v5">5 · Branch picker</span>
+    <span data-show="v6">6 · Sidebar by project</span>
+  </div>
+  <div class="chrome-mid">
+    <div class="tabs">
+      <span class="on"><svg class="ic s18"><use href="#i-messages-square"/></svg></span>
+      <span><svg class="ic s18"><use href="#i-file-code"/></svg></span>
+      <span><svg class="ic s18"><use href="#i-git-compare"/></svg></span>
+      <span><svg class="ic s18"><use href="#i-git-branch"/></svg></span>
+      <span><svg class="ic s18"><use href="#i-git-pull-request"/></svg></span>
+      <i></i>
+      <span><svg class="ic s18"><use href="#i-panel-right"/></svg></span>
+    </div>
+  </div>
+  <div class="chrome-right">
+    <div class="tabs">
+      <span class="on"><svg class="ic s18"><use href="#i-files"/></svg></span>
+      <span><svg class="ic s18"><use href="#i-git-branch"/></svg></span>
+      <span><svg class="ic s18"><use href="#i-layers"/></svg></span>
+      <span><svg class="ic s18"><use href="#i-play"/></svg></span>
+      <span><svg class="ic s18"><use href="#i-activity"/></svg></span>
+      <span><svg class="ic s18"><use href="#i-bot"/></svg></span>
+      <span><svg class="ic s18"><use href="#i-history"/></svg></span>
+    </div>
+  </div>
+
+  <!-- Sessions column, grouped by project -->
+  <aside class="card">
+    <div class="sessions">
+      <header class="s-head">
+        <h2>Sessions</h2>
+        <div class="s-actions">
+          <span><svg class="ic"><use href="#i-search"/></svg></span>
+          <span><svg class="ic"><use href="#i-list"/></svg></span>
+          <span class="mint"><svg class="ic"><use href="#i-plus"/></svg></span>
+        </div>
+      </header>
+      <div class="pills"><span>Provider</span><span>Status</span><span>Location</span></div>
+
+      <!-- One repository, both machines -->
+      <div class="sec-head">
+        <svg class="ic chev"><use href="#i-chevron-right"/></svg>
+        <span class="badge">MB</span>
+        <span class="name">mac-command-bar</span>
+        <span class="count">4</span>
+      </div>
+      <ul class="rows">
+        <li><div class="row">
+          <span class="thumb claude"><svg class="mark"><use href="#m-claude"/></svg><span class="remote-mark" title="Runs on agent-workbox, connected"><svg class="ic"><use href="#i-cloud"/></svg></span></span>
+          <span class="lines">
+            <span class="l1"><span class="title">Projects as first-class sessions</span><span class="age">12m</span></span>
+            <span class="l2"><span class="machine-name">agent-workbox</span><span class="sep">•</span><span class="branch">tsk-1345-projects</span></span>
+          </span>
+        </div></li>
+        <li><div class="row">
+          <span class="thumb codex"><svg class="mark"><use href="#m-codex"/></svg></span>
+          <span class="lines">
+            <span class="l1"><span class="title">Plain conversation polish</span><span class="age">2h</span></span>
+            <span class="l2"><span class="machine-name">This Mac</span><span class="sep">•</span><span class="branch">tsk-1321-plain-conversation</span></span>
+          </span>
+        </div></li>
+        <li><div class="row">
+          <span class="thumb claude"><svg class="mark"><use href="#m-claude"/></svg><span class="remote-mark" title="Runs on agent-workbox, connected"><svg class="ic"><use href="#i-cloud"/></svg></span></span>
+          <span class="lines">
+            <span class="l1"><span class="title">Keep filters when going Back</span><span class="age">5h</span></span>
+            <span class="l2"><span class="machine-name">agent-workbox</span><span class="sep">•</span><span class="branch">main</span></span>
+          </span>
+        </div></li>
+        <li><div class="row">
+          <span class="thumb claude"><svg class="mark"><use href="#m-claude"/></svg></span>
+          <span class="lines">
+            <span class="l1"><span class="title">Session switching after removal</span><span class="age">1d</span></span>
+            <span class="l2"><span class="machine-name">This Mac</span><span class="sep">•</span><span class="branch">main</span></span>
+          </span>
+        </div></li>
+      </ul>
+
+      <!-- One repository, one machine -->
+      <div class="sec-head">
+        <svg class="ic chev"><use href="#i-chevron-right"/></svg>
+        <span class="badge">RM</span>
+        <span class="name">rental-management</span>
+        <span class="count">2</span>
+      </div>
+      <ul class="rows">
+        <li><div class="row">
+          <span class="thumb codex"><svg class="mark"><use href="#m-codex"/></svg></span>
+          <span class="lines">
+            <span class="l1"><span class="title">Lease renewal reminders</span><span class="age">3h</span></span>
+            <span class="l2"><span class="machine-name">This Mac</span><span class="sep">•</span><span class="branch">feat/lease-reminders</span></span>
+          </span>
+        </div></li>
+        <li><div class="row">
+          <span class="thumb claude"><svg class="mark"><use href="#m-claude"/></svg></span>
+          <span class="lines">
+            <span class="l1"><span class="title">Tenant import dates</span><span class="age">2d</span></span>
+            <span class="l2"><span class="machine-name">This Mac</span><span class="sep">•</span><span class="branch">main</span></span>
+          </span>
+        </div></li>
+      </ul>
+
+      <!-- Plain conversations -->
+      <div class="sec-head">
+        <svg class="ic chev"><use href="#i-chevron-right"/></svg>
+        <span class="badge icon"><svg class="ic s14"><use href="#i-message-circle"/></svg></span>
+        <span class="name">No project</span>
+        <span class="count">2</span>
+      </div>
+      <ul class="rows">
+        <li><div class="row">
+          <span class="thumb claude"><svg class="mark"><use href="#m-claude"/></svg></span>
+          <span class="lines">
+            <span class="l1"><span class="title">Decorators in TypeScript 5.9</span><span class="age">4h</span></span>
+            <span class="l2"><span class="machine-name">This Mac</span></span>
+          </span>
+        </div></li>
+        <li><div class="row">
+          <span class="thumb codex"><svg class="mark"><use href="#m-codex"/></svg><span class="remote-mark" title="Runs on agent-workbox, connected"><svg class="ic"><use href="#i-cloud"/></svg></span></span>
+          <span class="lines">
+            <span class="l1"><span class="title">Draft the owner update</span><span class="age">1d</span></span>
+            <span class="l2"><span class="machine-name">agent-workbox</span></span>
+          </span>
+        </div></li>
+      </ul>
+    </div>
+  </aside>
+
+  <!-- Centre: the new-session draft -->
+  <main class="card">
+    <section class="draft" aria-label="New session">
+      <div class="topline">
+        <span>Your conversation starts when you send.</span>
+        <button class="icon-btn" aria-label="Discard this draft"><svg class="ic"><use href="#i-x"/></svg></button>
+      </div>
+
+      <div class="stage">
+        <div class="column">
+          <h1 class="ask">What should we build in
+            <span class="anchor"><button class="proj-trigger" title="~/dev/work/worktrees/mac-command-bar/main on agent-workbox">mac-command-bar</button><!-- View 1: the project menu --><div data-show="v1">
+                <div class="menu project-menu" role="menu">
+                  <div class="mi hl" title="~/dev/work/worktrees/mac-command-bar/main on agent-workbox"><span class="badge">MB</span><span class="grow">mac-command-bar</span><svg class="ic s14 end"><use href="#i-cloud"/></svg><svg class="ic check"><use href="#i-check"/></svg></div>
+                  <div class="mi" title="~/dev/work/mac-command-bar on This Mac"><span class="badge">MB</span><span class="grow">mac-command-bar</span><span class="slot"></span></div>
+                  <div class="mi" title="~/dev/work/rental-management on This Mac"><span class="badge">RM</span><span class="grow">rental-management</span><span class="slot"></span></div>
+                  <div class="mi" title="~/dev/work/rental-management on agent-workbox"><span class="badge">RM</span><span class="grow">rental-management</span><svg class="ic s14 end"><use href="#i-cloud"/></svg><span class="slot"></span></div>
+                  <div class="mi" title="~/dev/work/EdiPlatform on This Mac"><span class="badge">EM</span><span class="grow">EdiPlatform</span><span class="slot"></span></div>
+                  <div class="mi" title="~/dev/work/HealthAggregator on This Mac"><span class="badge">HR</span><span class="grow">HealthAggregator</span><span class="slot"></span></div>
+                  <div class="msep"></div>
+                  <div class="mi"><svg class="ic"><use href="#i-message-circle"/></svg><span class="grow">No project</span></div>
+                  <div class="mi"><svg class="ic"><use href="#i-folder-plus"/></svg><span class="grow">New project</span></div>
+                </div>
+              </div></span>?</h1>
+
+          <div class="box">
+            <div class="prompt"><span class="caret"></span>Message claude</div>
+            <div class="lead">
+              <button class="round" aria-label="Add to this message"><svg class="ic s18"><use href="#i-plus"/></svg></button>
+            </div>
+            <div class="trail">
+              <button class="pill"><svg class="mark claude"><use href="#m-claude"/></svg>Claude<svg class="ic s12"><use href="#i-chevron-down"/></svg></button>
+              <button class="pill"><svg class="ic s14"><use href="#i-shield"/></svg>Default<svg class="ic s12"><use href="#i-chevron-down"/></svg></button>
+              <button class="pill">Opus (1M context) Default<svg class="ic s12"><use href="#i-chevron-down"/></svg></button>
+              <button class="round" disabled aria-label="Voice input, not available yet"><svg class="ic s18"><use href="#i-mic"/></svg></button>
+            </div>
+          </div>
+
+          <div class="bar">
+            <!-- Read-only: the project decides the machine. Shown for workbox projects only. -->
+            <span class="machine-label" title="This project lives on agent-workbox"><svg class="ic s14"><use href="#i-cloud"/></svg>agent-workbox</span>
+            <span class="anchor">
+              <button class="chip ws"><svg class="ic s14"><use href="#i-folder"/></svg>Current checkout<svg class="ic s12"><use href="#i-chevron-down"/></svg></button>
+              <!-- View 4: the Workspace menu -->
+              <div data-show="v4">
+                <div class="menu workspace-menu" role="menu">
+                  <div class="ml">Workspace</div>
+                  <div class="mi hl"><svg class="ic"><use href="#i-folder"/></svg><span class="grow">Current checkout</span><svg class="ic check"><use href="#i-check"/></svg></div>
+                  <div class="mi"><svg class="ic"><use href="#i-folder-git-2"/></svg><span class="grow">New worktree</span><span class="slot"></span></div>
+                </div>
+              </div>
+            </span>
+            <span class="grow"></span>
+            <span class="anchor">
+              <button class="chip br"><svg class="ic s14"><use href="#i-git-branch"/></svg>main<svg class="ic s12"><use href="#i-chevron-down"/></svg></button>
+              <!-- View 5: the branch picker -->
+              <div data-show="v5">
+                <div class="menu branch-menu" role="menu">
+                  <div class="ref-search"><svg class="ic s14"><use href="#i-search"/></svg><span class="field"><span class="caret"></span><span>Search branches</span></span></div>
+                  <div class="msep"></div>
+                  <div class="mi hl"><span class="grow">main</span><span class="quiet">current</span></div>
+                  <div class="mi" title="Checked out in ~/dev/work/worktrees/mac-command-bar/tsk-1345-projects"><span class="grow">tsk-1345-projects</span><span class="quiet">in another worktree</span></div>
+                  <div class="mi" title="Checked out in ~/dev/work/worktrees/mac-command-bar/tsk-1321-plain-conversation"><span class="grow">tsk-1321-plain-conversation</span><span class="quiet">in another worktree</span></div>
+                  <div class="mi"><span class="grow">tsk-1325-read-link-path</span></div>
+                  <div class="mi" title="Checked out in ~/dev/work/worktrees/mac-command-bar/tsk-1217-browser-region"><span class="grow">tsk-1217-browser-region</span><span class="quiet">in another worktree</span></div>
+                  <div class="mi"><span class="grow">feat/session-switch-after-removal</span></div>
+                  <div class="mi"><span class="grow">feat/filter-back-navigation</span></div>
+                  <div class="mi" title="Checked out in ~/dev/work/worktrees/mac-command-bar/spike-tanstack-ai"><span class="grow">spike-tanstack-ai</span><span class="quiet">in another worktree</span></div>
+                  <div class="ref-footer">Showing 8 of 31 branches</div>
+                </div>
+              </div>
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- View 6: annotation pointing at the sidebar (not product UI) -->
+    <div data-show="v6">
+      <div class="callout" style="top: 610px; left: 20px;">
+        <b>Mockup note: the sidebar, grouped by project</b>
+        <ul>
+          <li>One group per repository, matched by its remote URL. <strong>mac-command-bar</strong> holds sessions from both machines.</li>
+          <li>Each row's second line names its machine, then its branch. The cloud in the icon's corner marks the workbox (it replaces the old server icon).</li>
+          <li><strong>rental-management</strong> exists on one machine only. Plain conversations land in <strong>No project</strong>.</li>
+          <li>Changing a session's branch or worktree never moves it to another group: its project is fixed.</li>
+        </ul>
+      </div>
+    </div>
+  </main>
+
+  <!-- Right column -->
+  <aside class="card">
+    <div class="files-head"><b>Files</b><svg class="ic"><use href="#i-chevron-down"/></svg></div>
+    <div class="empty"><svg class="ic s18"><use href="#i-files"/></svg><b>No session selected</b><small>Pick a session to view its files.</small></div>
+    <div class="history-row"><svg class="ic s14"><use href="#i-chevron-right"/></svg><svg class="ic s14"><use href="#i-history"/></svg>File History</div>
+  </aside>
+
+  <!-- Status bar, used here for the mockup notes -->
+  <footer class="statusbar">
+    <svg class="ic s14"><use href="#i-settings"/></svg>
+    <span class="tag">Mockup</span>
+    <span class="notes">
+      <span data-show="v1">Project menu: one row per folder per machine; the cloud marks agent-workbox. Heading is 16px per DESIGN.md (T3 uses about 26px; owner can override). Badges are plain grey; coloured badges possible if wanted.</span>
+      <span data-show="v2">New project, step 1: choose the machine. "Add remote machine…" and "Manage remote machines…" move here from the old machine menu.</span>
+      <span data-show="v3">Step 2: browse folders on that machine; Add (⌘ Enter) adds the folder in the path field. "Open in Finder" shows only for This Mac, so it is absent here.</span>
+      <span data-show="v3b">A folder inside git's own data is refused in plain words, and Add stays off until the path changes.</span>
+      <span data-show="v4">The machine label is read-only (the project decides it) and shows only for workbox projects. New worktree is created on the first message, from the branch on the right, under ~/dev/work/worktrees/&lt;repo&gt;/&lt;branch&gt;.</span>
+      <span data-show="v5">In Current checkout, picking a branch runs git checkout. A branch already checked out in another worktree points this session at that worktree instead. In New worktree, the pick is the base branch.</span>
+      <span data-show="v6">Sidebar grouped by project across machines (the default). The centred empty draft uses the composer's open shape (message line above its controls), as in T3.</span>
+    </span>
+    <nav class="nav" aria-label="Mockup views">
+      <a href="#v1">1</a><a href="#v2">2</a><a href="#v3">3</a><a href="#v3b">3b</a><a href="#v4">4</a><a href="#v5">5</a><a href="#v6">6</a>
+    </nav>
+  </footer>
+
+  <!-- View 2: Add project, step 1 - the machine -->
+  <div data-show="v2">
+    <div class="scrim">
+      <div class="sheet" role="dialog" aria-label="Add project: choose a machine">
+        <div class="sheet-head">
+          <button class="icon-btn" aria-label="Back"><svg class="ic"><use href="#i-arrow-left"/></svg></button>
+          <span class="field"><span class="caret"></span><span class="ph">Search machines…</span></span>
+        </div>
+        <div class="sheet-body">
+          <div class="ml">Add a project on</div>
+          <div class="mi two"><svg class="ic"><use href="#i-laptop"/></svg><span class="copy"><span>This Mac</span><small>Jesse’s MacBook Air</small></span></div>
+          <div class="mi two hl"><svg class="ic"><use href="#i-cloud"/></svg><span class="copy"><span>agent-workbox</span><small>blackcolours@agent-workbox</small></span></div>
+          <div class="msep"></div>
+          <div class="mi"><svg class="ic"><use href="#i-plus"/></svg><span class="grow">Add remote machine…</span></div>
+          <div class="mi"><svg class="ic"><use href="#i-settings-2"/></svg><span class="grow">Manage remote machines…</span></div>
+        </div>
+        <div class="keys">
+          <span><span class="kbd">↑</span><span class="kbd">↓</span>Navigate</span>
+          <span><span class="kbd">Enter</span>Select</span>
+          <span><span class="kbd">Backspace</span>Back</span>
+          <span><span class="kbd">Esc</span>Close</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- View 3: Add project, step 2 - the folder -->
+  <div data-show="v3">
+    <div class="scrim">
+      <div class="sheet" role="dialog" aria-label="Add project: choose a folder">
+        <div class="sheet-head">
+          <button class="icon-btn" aria-label="Back to machines"><svg class="ic"><use href="#i-arrow-left"/></svg></button>
+          <span class="field">~/dev/work/worktrees/mac-command-bar/main/<span class="caret"></span></span>
+          <button class="add-btn" title="Add this folder as a project">Add <span class="kbd">⌘ Enter</span></button>
+        </div>
+        <div class="sheet-body">
+          <div class="ml">Folders on agent-workbox</div>
+          <div class="mi hl"><svg class="ic"><use href="#i-corner-left-up"/></svg><span class="grow">..</span></div>
+          <div class="mi"><svg class="ic"><use href="#i-folder"/></svg><span class="grow">config</span></div>
+          <div class="mi"><svg class="ic"><use href="#i-folder"/></svg><span class="grow">core</span></div>
+          <div class="mi"><svg class="ic"><use href="#i-folder"/></svg><span class="grow">docs</span></div>
+          <div class="mi"><svg class="ic"><use href="#i-folder"/></svg><span class="grow">infrastructure</span></div>
+          <div class="mi"><svg class="ic"><use href="#i-folder"/></svg><span class="grow">scripts</span></div>
+          <div class="mi"><svg class="ic"><use href="#i-folder"/></svg><span class="grow">Sources</span></div>
+          <div class="mi"><svg class="ic"><use href="#i-folder"/></svg><span class="grow">tauri-svelte-preview</span></div>
+          <div class="mi"><svg class="ic"><use href="#i-folder"/></svg><span class="grow">Tests</span></div>
+        </div>
+        <div class="keys">
+          <span><span class="kbd">↑</span><span class="kbd">↓</span>Navigate</span>
+          <span><span class="kbd">Enter</span>Open</span>
+          <span><span class="kbd">Backspace</span>Back</span>
+          <span><span class="kbd">Esc</span>Close</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- View 3b: the same step, a folder inside git's own data -->
+  <div data-show="v3b">
+    <div class="scrim">
+      <div class="sheet" role="dialog" aria-label="Add project: choose a folder">
+        <div class="sheet-head">
+          <button class="icon-btn" aria-label="Back to machines"><svg class="ic"><use href="#i-arrow-left"/></svg></button>
+          <span class="field">~/dev/work/mac-command-bar/worktrees/main/<span class="caret"></span></span>
+          <button class="add-btn" disabled title="Choose the repository folder first">Add <span class="kbd">⌘ Enter</span></button>
+        </div>
+        <div class="sheet-error" role="alert"><svg class="ic"><use href="#i-circle-alert"/></svg><span>This is git's internal folder. Choose the repository folder instead.</span></div>
+        <div class="sheet-body">
+          <div class="ml">Folders on agent-workbox</div>
+          <div class="mi hl"><svg class="ic"><use href="#i-corner-left-up"/></svg><span class="grow">..</span></div>
+          <div class="mi"><svg class="ic"><use href="#i-folder"/></svg><span class="grow">logs</span></div>
+          <div class="mi"><svg class="ic"><use href="#i-folder"/></svg><span class="grow">refs</span></div>
+        </div>
+        <div class="keys">
+          <span><span class="kbd">↑</span><span class="kbd">↓</span>Navigate</span>
+          <span><span class="kbd">Enter</span>Open</span>
+          <span><span class="kbd">Backspace</span>Back</span>
+          <span><span class="kbd">Esc</span>Close</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // The only script: show the view named in the URL hash (#v1 … #v6).
+  const views = ['v1', 'v2', 'v3', 'v3b', 'v4', 'v5', 'v6'];
+  function showView() {
+    const wanted = location.hash.slice(1);
+    document.body.dataset.view = views.includes(wanted) ? wanted : 'v1';
+  }
+  addEventListener('hashchange', showView);
+  showView();
+</script>
+</body>
+</html>

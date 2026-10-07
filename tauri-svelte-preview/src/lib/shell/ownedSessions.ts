@@ -60,6 +60,8 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
   /** Model reported by the session scanner, when one was available. */
   model?: string | null;
   projectPath: string | null;
+  /** The registry project the session was started in; null for older sessions and "No project". */
+  projectId: string | null;
   cwd: string;
   resumeCommand: string | null;
   nativeSessionId: string | null;
@@ -215,6 +217,7 @@ export function adoptAgentSession(record: AgentSession, mintId: () => string = d
     title: record.title,
     model: isNonEmptyString(record.model) ? record.model : null,
     projectPath: record.projectPath,
+    projectId: null,
     cwd: record.projectPath ?? '',
     resumeCommand: record.resumeCommands[0] ?? null,
     nativeSessionId: record.id,
@@ -255,6 +258,7 @@ export function createFreshSession(
     title: opts.title ?? defaultTitle,
     model: null,
     projectPath: null,
+    projectId: null,
     cwd: opts.cwd,
     resumeCommand: null,
     nativeSessionId: null,
@@ -296,6 +300,7 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
     title: record.title ?? '',
     model: record.model,
     projectPath: record.project,
+    projectId: record.projectId ?? null,
     cwd: record.cwd,
     resumeCommand: record.resumeCommand,
     nativeSessionId: record.nativeSessionId,
@@ -410,6 +415,7 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
       title: isNonEmptyString(candidate.title) ? candidate.title : '',
       model: isNonEmptyString(candidate.model) ? candidate.model : null,
       projectPath: isNonEmptyString(candidate.projectPath) ? candidate.projectPath : null,
+      projectId: isNonEmptyString(candidate.projectId) ? candidate.projectId : null,
       cwd: candidate.cwd,
       resumeCommand: isNonEmptyString(candidate.resumeCommand) ? candidate.resumeCommand : null,
       nativeSessionId: isNonEmptyString(candidate.nativeSessionId) ? candidate.nativeSessionId : null,

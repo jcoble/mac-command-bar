@@ -40,7 +40,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 12;
+pub(super) const PROTOCOL_VERSION: u16 = 13;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -1070,6 +1070,19 @@ impl RemoteConnectionManager {
     ) -> Result<RemoteResponse, String> {
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         self.request_with_id(profile_id, id, command, None).await
+    }
+
+    /// Runs one file or Git operation on the remote machine that owns the workspace.
+    pub async fn workspace_operation(
+        &self,
+        profile_id: &str,
+        operation: String,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        match self.request_for_profile(profile_id, RemoteCommand::Workspace { operation, args }).await? {
+            RemoteResponse::Workspace(value) => Ok(value),
+            _ => Err("The remote backend returned an incompatible workspace response".into()),
+        }
     }
 
     async fn request_with_id(
@@ -3419,6 +3432,7 @@ mod connection_tests {
             native_session_id: None, provider: "local".into(), model: None, effort: None,
             cwd: String::new(), worktree: None, branch: None, title: None, title_source: None,
             project: None, state: "idle".into(), suspended: false, created_at_ms: 0,
+            project_id: None,
             last_activity_at_ms: 0, extra_json: "{}".into(),
         }).unwrap();
         let delivered = Arc::new(Mutex::new(Vec::new()));
@@ -3858,6 +3872,7 @@ mod connection_tests {
             pending_input: false,
             background_task_ids: Vec::new(),
             native_session_id: Some(format!("native-{owned_id}")),
+            project_id: None,
             meta: super::super::protocol::AgentConversationSessionMeta {
                 title: Some(format!("Session {owned_id}")),
                 ..Default::default()
@@ -4329,7 +4344,7 @@ mod connection_tests {
         store.upsert_session(&mcb_core::session_store::SessionRow {
             owned_id: "large-history".into(), native_session_id: None, provider: "codex".into(),
             model: None, effort: None, cwd: String::new(), worktree: None, branch: None,
-            title: None, title_source: None, project: None, state: "idle".into(),
+            title: None, title_source: None, project: None, project_id: None, state: "idle".into(),
             suspended: false, created_at_ms: 0, last_activity_at_ms: 0, extra_json: "{}".into(),
         }).unwrap();
         for sequence in 1..=4 {
@@ -4381,14 +4396,14 @@ mod connection_tests {
         store.upsert_session(&mcb_core::session_store::SessionRow {
             owned_id: "large-history".into(), native_session_id: None, provider: "codex".into(),
             model: None, effort: None, cwd: String::new(), worktree: None, branch: None,
-            title: None, title_source: None, project: None, state: "suspended".into(),
+            title: None, title_source: None, project: None, project_id: None, state: "suspended".into(),
             suspended: true, created_at_ms: 0, last_activity_at_ms: 0,
             extra_json: super::super::manager::imported_session_extra(AgentConversationProvider::Codex).unwrap(),
         }).unwrap();
         store.upsert_session(&mcb_core::session_store::SessionRow {
             owned_id: "unknown-history".into(), native_session_id: None, provider: "codex".into(),
             model: None, effort: None, cwd: String::new(), worktree: None, branch: None,
-            title: None, title_source: None, project: None, state: "suspended".into(),
+            title: None, title_source: None, project: None, project_id: None, state: "suspended".into(),
             suspended: true, created_at_ms: 0, last_activity_at_ms: 0,
             extra_json: super::super::manager::imported_session_extra(AgentConversationProvider::Codex).unwrap(),
         }).unwrap();
@@ -4526,10 +4541,7 @@ pub async fn remote_workspace(
     operation: String,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    match remote.request_for_profile(&profile_id, RemoteCommand::Workspace { operation, args }).await? {
-        RemoteResponse::Workspace(value) => Ok(value),
-        _ => Err("The remote backend returned an incompatible workspace response".into()),
-    }
+    remote.workspace_operation(&profile_id, operation, args).await
 }
 
 #[tauri::command]

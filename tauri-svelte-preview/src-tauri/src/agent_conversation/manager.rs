@@ -8,7 +8,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mcb_core::session_store::{
-    AnnotationRow, EventCoverage, EventRow, ItemPage, SessionRow, SessionStore,
+    AnnotationRow, EventCoverage, EventRow, ItemPage, ProjectRow, SessionRow, SessionStore,
 };
 use notify::{RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -182,6 +182,8 @@ pub struct ManagedAgentSession {
     pub native_session_id: Option<String>,
     native_session_mode: AgentNativeSessionMode,
     pub generation: u64,
+    /// The registry project this session was started in, kept across generations.
+    pub project_id: Option<String>,
     pub owner: AgentExecutionOwner,
     pub state: AgentRuntimeState,
     pub capabilities: AgentCapabilities,
@@ -533,6 +535,17 @@ impl AgentRuntimeManager {
     pub fn read_app_setting(&self, setting_key: &str) -> Result<Option<String>, String> {
         self.store
             .get_app_setting(setting_key)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn list_projects(&self) -> Result<Vec<ProjectRow>, String> {
+        self.store.list_projects().map_err(|error| error.to_string())
+    }
+
+    /// Registers the project, or returns the one already registered for that folder.
+    pub fn add_project(&self, row: ProjectRow) -> Result<ProjectRow, String> {
+        self.store
+            .insert_or_get_project(&row)
             .map_err(|error| error.to_string())
     }
 
@@ -1680,6 +1693,10 @@ impl AgentRuntimeManager {
                 native_session_id: connection.native_session_id.clone(),
                 native_session_mode: request.native_session_mode,
                 generation,
+                project_id: prior
+                    .as_ref()
+                    .and_then(|session| session.project_id.clone())
+                    .or(request.project_id.clone()),
                 owner: AgentExecutionOwner::Stopped,
                 state: AgentRuntimeState::Starting,
                 capabilities: empty_capabilities(request.provider),
@@ -3406,6 +3423,7 @@ impl AgentRuntimeManager {
                     pending_input,
                     background_task_ids,
                     native_session_id,
+                    project_id: row.project_id,
                     meta,
                 })
             })
@@ -4637,6 +4655,7 @@ fn persisted_session_row_for_candidate(
         title: session.rail_meta.title.clone(),
         title_source: session.title_source.clone(),
         project: session.rail_meta.project.clone(),
+        project_id: session.project_id.clone(),
         state: enum_storage_value(candidate.state)?,
         suspended: candidate.state == AgentRuntimeState::Suspended,
         created_at_ms: store_timestamp(session.created_at_ms),
@@ -4737,6 +4756,7 @@ fn recovered_session_from_row(
         native_session_id: row.native_session_id,
         native_session_mode: stored.native_session_mode,
         generation: stored.generation,
+        project_id: row.project_id,
         owner: stored.owner,
         state,
         capabilities: stored.capabilities,
@@ -8143,6 +8163,7 @@ mod tests {
             native_session_id: None,
             native_session_mode: AgentNativeSessionMode::Resume,
             reasoning_effort: None,
+            project_id: None,
         }
     }
 
@@ -10699,6 +10720,27 @@ mod tests {
             .await
             .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn ensure_records_the_project_id_once() {
+        let root = temp_root();
+        let other = root.join("other");
+        fs::create_dir_all(&other).unwrap();
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &root.join("sessions.db")).unwrap();
+        let owned_id = "owned-project";
+        let mut first = request(root.to_str().unwrap(), owned_id, AgentConversationProvider::Codex);
+        first.project_id = Some("p1".into());
+        manager.ensure_inner(first).unwrap();
+        let mut second = request(other.to_str().unwrap(), owned_id, AgentConversationProvider::Codex);
+        second.project_id = Some("p2".into());
+        let (connection, prior) = manager.ensure_inner(second).unwrap();
+        assert!(prior.is_some());
+        assert_eq!(connection.generation, 2);
+        let listed = manager.list_sessions().unwrap();
+        assert_eq!(listed.iter().find(|record| record.owned_id == owned_id).unwrap().project_id.as_deref(), Some("p1"));
+        assert_eq!(manager.store.get_session(owned_id).unwrap().unwrap().project_id.as_deref(), Some("p1"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

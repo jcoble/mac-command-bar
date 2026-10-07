@@ -104,7 +104,6 @@ const draft: ThreadStartPickerState = {
 // form is gone from the overlay layer altogether.
 assert.match(page, /onNewSession=\{openNewSession\}/);
 assert.match(page, /selection\.newSession\.open\(\)/);
-assert.match(controller, /draftProjectPath = this\.mostRecentProjectPath\(\) \?\? null/);
 assert.match(controller, /this\.draftOpen = true;/);
 assert.doesNotMatch(page, /openNewSession\(projectPath\?: string\): void;/);
 assert.doesNotMatch(overlays, /ThreadStartHost|onStartNewSession|newSessionRoots/);
@@ -130,13 +129,9 @@ assert.match(page, /selectCenterTab\("session"\);\s*\n\s*workbench\.rightTab = "
 
 // The draft's controls are the composer's own: the same settings menu a running
 // session uses, plus the project and branch pickers in the footer beside it.
-assert.match(composer, /leadingControls\?: Snippet;/);
-assert.match(composer, /\{@render leadingControls\(\)\}/);
 assert.match(surface, /<ConversationComposer/);
-assert.match(surface, /leadingControls=\{draftControls\}/);
 assert.match(surface, /data-testid="draft-session-provider"/);
 assert.match(surface, /data-testid="draft-session-project"/);
-assert.match(surface, /data-testid="draft-session-branch"/);
 assert.match(surface, /onConfigChange=\{changeConfig\}/);
 
 // Nothing in the draft surface may create a session or touch the rail.

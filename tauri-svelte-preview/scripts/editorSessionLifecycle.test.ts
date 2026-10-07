@@ -48,10 +48,9 @@ assert.match(panel, /const saved = await writeSourceToTauri[\s\S]*?if \(stopSign
 assert.match(panel, /await warmSourceLspForRootFromTauri\(projectRoot\);\s*if \(stopSignal\.aborted\) return;/);
 
 for (const call of [
-  'listGitRefs(projectPath)',
+  'listGitRefs(machine, projectPath)',
   'deployRemoteAssemblyFromTauri(remoteProfile)',
   'pickProjectFolder()',
-  'initProjectRepository(draft.projectPath)',
   'loadRefs(draft.projectPath)',
   'onSend(request)',
   'hydrate()',

@@ -566,6 +566,7 @@ impl AgentRuntimePort for AgentRuntimeManager {
                     native_session_mode:
                         crate::agent_conversation::protocol::AgentNativeSessionMode::Resume,
                     reasoning_effort: spawn_reasoning_effort,
+                    project_id: None,
                 })
                 .await
                 .map_err(WorkflowError::Runtime)?;
@@ -3821,6 +3822,7 @@ mod tests {
                 title: None,
                 title_source: None,
                 project: None,
+                project_id: None,
                 state: "ready".into(),
                 suspended: false,
                 created_at_ms: 100,
