@@ -1,0 +1,246 @@
+diff --git a/dist/acp-agent.js b/dist/acp-agent.js
+index 31d3921ad826ca24fb515cdb66084942ba8c4f57..9a6cdfed3eea54b1764c722fa078147900630233 100644
+--- a/dist/acp-agent.js
++++ b/dist/acp-agent.js
+@@ -4,7 +4,7 @@ import { GOAL_ACTIONS, GOAL_CONTROL_METHOD, GOAL_EXTENSION_VERSION, goalUpdateFr
+ import { sanitizeTitle, SessionTitles } from "./session-titles.js";
+ import { AIR_NATIVE_SUBAGENT_SESSIONS_CAPABILITY, asSdkSessionNotification, clientSupportsSubagents, } from "./acp-subagents.js";
+ import { isNativeSubagentControlTool, isNativeSubagentControlUpdate, NativeSubagentRuntime, nativeSubagentState, resumedNativeSubagentId, sendMessageResumePrompt, } from "./native-subagents.js";
+-import { AIR_ASYNC_TASKS_CAPABILITY, AIR_DIFF_PATCH_CAPABILITY, AIR_PLAN_FILE_CAPABILITY, AIR_GOAL_KEY, AIR_KIND_KEY, AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY, AIR_SKILL_PATH_KEY, clientSupportsAirCapability, withAirMeta, } from "./air-extension.js";
++import { AIR_ASYNC_TASKS_CAPABILITY, AIR_BACKGROUND_SUBAGENTS_CAPABILITY, AIR_OUT_OF_TURN_KEY, AIR_SESSION_STATE_KEY, AIR_DIFF_PATCH_CAPABILITY, AIR_PLAN_FILE_CAPABILITY, AIR_GOAL_KEY, AIR_KIND_KEY, AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY, AIR_SKILL_PATH_KEY, clientSupportsAirCapability, withAirMeta, } from "./air-extension.js";
+ import { AsyncTaskRuntime, backgroundBashTaskFromToolResult, clientSupportsAsyncTasks, } from "./async-tasks.js";
+ import { AUTH_STATUS_PROBE_TIMEOUT_MS, AUTH_STATUS_UPDATE_METHOD, authStatusCapability, fromAccountInfo, fromCliStatus, gatewayAuthStatus, mergeAuthStatus, notLoggedInAuthStatus, sameAuthStatus, } from "./auth-status.js";
+ import { execFile } from "node:child_process";
+@@ -252,7 +252,8 @@ const AUTONOMOUS_RESULT_ORIGINS = new Set([
+ /** Whether this turn's terminal result arrived but its settlement is being
+  *  held for background subagents it spawned (see Turn.deferredSettle). The
+  *  single spelling of the hold predicate, shared by the consumer's settle
+- *  lanes and cancel(). */
++ *  lanes and cancel(). Always false for a client with `backgroundSubagents`,
++ *  because no turn of that client is held. */
+ function isHeldOpen(turn) {
+     return turn != null && turn.deferredSettle !== undefined && !turn.settled;
+ }
+@@ -1163,6 +1164,16 @@ export class ClaudeAcpAgent {
+      * express: see {@link ToolCallClientCapabilities.v2}.
+      */
+     v2;
++    /**
++     * Whether a turn ends at its result while background subagents that it
++     * spawned or resumed still run. Only an ACP v1 AIR client that declares
++     * `backgroundSubagents` gets this. Every other client keeps the hold of
++     * `Turn.deferredSettle`.
++     */
++    endsTurnsWithLiveSubagents() {
++        return (!this.v2 &&
++            clientSupportsAirCapability(this.clientCapabilities, AIR_BACKGROUND_SUBAGENTS_CAPABILITY));
++    }
+     constructor(client, logger, options = {}) {
+         this.v2 = options.v2 ?? false;
+         this.sessions = {};
+@@ -1381,7 +1392,9 @@ export class ClaudeAcpAgent {
+             // `jetbrains.air`.
+             _meta: {
+                 ...(this.toolCallCapabilities.air.client
+-                    ? withAirMeta(airSessionFailureCapabilityMeta(AGENT_FILE_CHANGE_REPORT_CAPABILITY, AIR_NATIVE_SUBAGENT_SESSIONS_CAPABILITY, AIR_ASYNC_TASKS_CAPABILITY, AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY, AIR_DIFF_PATCH_CAPABILITY, AIR_PLAN_FILE_CAPABILITY), AIR_GOAL_KEY, {
++                    ? withAirMeta(airSessionFailureCapabilityMeta(AGENT_FILE_CHANGE_REPORT_CAPABILITY, AIR_NATIVE_SUBAGENT_SESSIONS_CAPABILITY, AIR_ASYNC_TASKS_CAPABILITY, AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY, AIR_DIFF_PATCH_CAPABILITY, AIR_PLAN_FILE_CAPABILITY, 
++                    // ACP v2 keeps the hold (see `src/v2/prompt.ts`).
++                    ...(this.v2 ? [] : [AIR_BACKGROUND_SUBAGENTS_CAPABILITY])), AIR_GOAL_KEY, {
+                         version: GOAL_EXTENSION_VERSION,
+                         controlMethod: GOAL_CONTROL_METHOD,
+                         actions: [...GOAL_ACTIONS],
+@@ -2520,7 +2533,22 @@ export class ClaudeAcpAgent {
+                     session.titles.onAssistantText(update.content);
+                 }
+             }
+-            await this.client.sessionUpdate(routedNotification);
++            // A client with `backgroundSubagents` gets root output that no
++            // activated prompt turn owns marked, so it can keep an autonomous
++            // cycle apart from the next prompt. A prompt that is only queued does
++            // not own output: its turn activates at its echo or its result.
++            const outOfTurn = this.endsTurnsWithLiveSubagents() &&
++                routedNotification.sessionId === params.sessionId &&
++                (!session.activeTurn || session.activeTurn.settled);
++            await this.client.sessionUpdate(outOfTurn
++                ? {
++                    ...routedNotification,
++                    update: {
++                        ...routedNotification.update,
++                        _meta: withAirMeta(routedNotification.update._meta, AIR_OUT_OF_TURN_KEY, true),
++                    },
++                }
++                : routedNotification);
+             if (toolCallId &&
+                 update.sessionUpdate === "tool_call_update" &&
+                 (update.status === "completed" || update.status === "failed")) {
+@@ -2870,7 +2898,8 @@ export class ClaudeAcpAgent {
+         };
+         /** Registers a live background task (see `liveBackgroundTasks`). A
+          *  subagent is also recorded on the active turn, so that turn holds until
+-         *  the subagent settles (see `Turn.spawnedTaskIds`). */
++         *  the subagent settles (see `Turn.spawnedTaskIds`). A client with
++         *  `backgroundSubagents` gets no hold (see `turnAwaitingSubagents`). */
+         const registerLiveTask = (taskId, parentToolUseId, isSubagent) => {
+             session.liveBackgroundTasks.set(taskId, { parentToolUseId, isSubagent });
+             if (parentToolUseId)
+@@ -2883,8 +2912,9 @@ export class ClaudeAcpAgent {
+         const settleLiveTask = (taskId) => settleLiveBackgroundTask(session, taskId);
+         /** Registers a settled subagent again when the SDK resumes it without a
+          *  new `task_started`. The active turn is the one that resumed it, so it
+-         *  holds until the subagent settles again. A repeated resume signal finds
+-         *  the subagent live and changes nothing. */
++         *  holds until the subagent settles again, unless the client declared
++         *  `backgroundSubagents`. A repeated resume signal finds the subagent live
++         *  and changes nothing. */
+         const resumeLiveTask = (taskId) => {
+             if (session.liveBackgroundTasks.has(taskId))
+                 return;
+@@ -2895,9 +2925,12 @@ export class ClaudeAcpAgent {
+         /** Whether any background subagent this turn spawned is still live —
+          *  while true, the turn's settlement stays deferred so the subagent's
+          *  output and permission requests land inside it (see
+-         *  Turn.deferredSettle). */
++         *  Turn.deferredSettle). Always false for a client that declared
++         *  `backgroundSubagents`: its turns end at their result, and the subagent
++         *  traffic goes out after the prompt response. This is the single gate of
++         *  the hold, so no turn of such a client is ever held open. */
+         const turnAwaitingSubagents = (turn) => {
+-            if (!turn.spawnedTaskIds?.size) {
++            if (this.endsTurnsWithLiveSubagents() || !turn.spawnedTaskIds?.size) {
+                 return false;
+             }
+             for (const taskId of turn.spawnedTaskIds) {
+@@ -2928,7 +2961,8 @@ export class ClaudeAcpAgent {
+          *  turn open (see Turn.deferredSettle). Every result-time settle of a
+          *  turn that can have spawned subagents must route through here: a site
+          *  calling settleActive directly bypasses the hold and re-opens the
+-         *  out-of-turn permission deadlock (issue #866) through its lane. */
++         *  out-of-turn permission deadlock (issue #866) through its lane. For a
++         *  client with `backgroundSubagents` this always settles now. */
+         const settleOrDefer = async (outcome) => {
+             // No result ends a steered turn: the steer aborted the cycle this result
+             // may belong to, and the steered one is still to come. Record the outcome
+@@ -3517,6 +3551,18 @@ export class ClaudeAcpAgent {
+                             case "session_state_changed": {
+                                 const previousState = session.lastSessionState;
+                                 session.lastSessionState = message.state;
++                                // A client with `backgroundSubagents` sees work after the
++                                // prompt response, so it gets each change of the root state:
++                                // `idle` is the one signal that the session has nothing left.
++                                if (this.endsTurnsWithLiveSubagents() && message.state !== previousState) {
++                                    await sendUpdate({
++                                        sessionId: params.sessionId,
++                                        update: {
++                                            sessionUpdate: "session_info_update",
++                                            _meta: withAirMeta(undefined, AIR_SESSION_STATE_KEY, message.state),
++                                        },
++                                    });
++                                }
+                                 if (message.state === "running" &&
+                                     previousState !== "running" &&
+                                     session.owedTrailingIdles > 0) {
+@@ -4092,7 +4138,18 @@ export class ClaudeAcpAgent {
+                         // the user's prompt's. Autonomous results must never touch the
+                         // user-turn lifecycle (stop reason, settles, failActive,
+                         // slash-command output forwarding), though their cost is real.
+-                        const isAutonomousResult = message.origin != null && AUTONOMOUS_RESULT_ORIGINS.has(message.origin.kind);
++                        // Except a cycle that folded in a prompt sent mid-cycle: the CLI
++                        // keeps the cycle's origin but names the folded send in
++                        // user_message_uuids, and emits no other result for it — so a
++                        // result naming an unsettled, not-held turn is that turn's own.
++                        // Leaving it autonomous would hang the prompt (the hazard above).
++                        const isAutonomousResult = message.origin != null &&
++                            AUTONOMOUS_RESULT_ORIGINS.has(message.origin.kind) &&
++                            !(message.user_message_uuids ??
++                                (message.user_message_uuid !== undefined ? [message.user_message_uuid] : [])).some((uuid) => {
++                                const turn = findUnsettledTurn(uuid);
++                                return turn !== undefined && !isHeldOpen(turn);
++                            });
+                         const pendingExitPlanModeInterruption = session.pendingExitPlanModeInterruption;
+                         const pendingExitPlanContextReset = session.pendingExitPlanContextReset;
+                         try {
+@@ -4346,6 +4403,23 @@ export class ClaudeAcpAgent {
+                                     await settleOrDefer({ ...heldTurn.deferredSettle, stopReason: "cancelled" });
+                                     break;
+                                 }
++                                // The same followup with no held turn: the client declared
++                                // `backgroundSubagents`, or the hold already ended. The user
++                                // answered out of a turn, so there is no turn to end. The
++                                // interrupt only stops this autonomous cycle. Drop the markers,
++                                // so that a later user-turn result is not read as this
++                                // interruption. A clear-context reset cannot run here, because
++                                // the fresh query continues an ACP turn. `canUseTool` offers
++                                // no clear-context option out of a turn for such a client, so
++                                // a reset here is only a race with the end of a turn.
++                                if (pendingExitPlanModeInterruption &&
++                                    isExitPlanInterruptionResult(message, pendingExitPlanModeInterruption)) {
++                                    session.pendingExitPlanModeInterruption = undefined;
++                                    if (pendingExitPlanContextReset) {
++                                        session.pendingExitPlanContextReset = undefined;
++                                        this.logger.error(`Session ${params.sessionId}: no turn to continue the accepted plan in a fresh context`);
++                                    }
++                                }
+                                 // CLI 2.1.274+ answers background-task completions that were
+                                 // already queued with ONE model call: every queued
+                                 // notification still gets its own result, but all except the
+@@ -4594,7 +4668,9 @@ export class ClaudeAcpAgent {
+                             // permission requests, and the model's promised summary all land
+                             // inside the turn. `session/cancel` and the next prompt's echo
+                             // hand-off still settle a deferred turn early, so a long-running
+-                            // subagent never holds the prompt hostage.
++                            // subagent never holds the prompt hostage. A client with
++                            // `backgroundSubagents` gets no hold: the turn settles here, and
++                            // the subagent traffic goes out after the prompt response.
+                             //
+                             // is_error/auth already settled via failActive (activeTurn is null
+                             // then, so both branches no-op); cancellation is left to the
+@@ -6330,6 +6406,11 @@ export class ClaudeAcpAgent {
+                 defaultToNo,
+                 availableModes: this.sessionModes.availableModeIds(session.modes),
+                 prePlanMode: session.prePlanMode,
++                // A fresh context continues the active ACP turn. With
++                // `backgroundSubagents` a followup cycle can ask out of a turn, and
++                // then there is no turn to continue.
++                allowContextReset: !this.endsTurnsWithLiveSubagents() ||
++                    (session.activeTurn != null && !session.activeTurn.settled),
+                 contextUsedPercent: session.contextUsedTokens === undefined || session.contextWindowSize <= 0
+                     ? undefined
+                     : Math.max(0, Math.min(100, Math.round((session.contextUsedTokens / session.contextWindowSize) * 100))),
+diff --git a/dist/air-extension.js b/dist/air-extension.js
+index 38cf467bf66db1b1fb0af32ad7174fda35b88b90..65de33f390400ab2bd20ca44944ab088def4c5a9 100644
+--- a/dist/air-extension.js
++++ b/dist/air-extension.js
+@@ -1,5 +1,20 @@
+ export const AIR_NATIVE_SUBAGENT_SESSIONS_CAPABILITY = "nativeSubagentSessions";
+ export const AIR_ASYNC_TASKS_CAPABILITY = "asyncTasks";
++/**
++ * A prompt turn ends at its result also while its background subagents run.
++ * The subagent updates and requests then go out after the prompt response.
++ */
++export const AIR_BACKGROUND_SUBAGENTS_CAPABILITY = "backgroundSubagents";
++/**
++ * With `backgroundSubagents`: the root session state of Claude Code
++ * (`running`, `requires_action` or `idle`), sent on `session_info_update`.
++ */
++export const AIR_SESSION_STATE_KEY = "sessionState";
++/**
++ * With `backgroundSubagents`: marks a root session update that no activated
++ * prompt turn owns, for example the followup of a background subagent.
++ */
++export const AIR_OUT_OF_TURN_KEY = "outOfTurn";
+ export const AIR_SESSION_FAILURE_CAPABILITY = "sessionFailure";
+ export const AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY = "recommendedValue";
+ export const AIR_DIFF_PATCH_CAPABILITY = "diffPatch";
+diff --git a/dist/permissions/options/tools.js b/dist/permissions/options/tools.js
+index 3ca1365e30d9c7469186ab46e1cc6c968531e3a1..c679fcb00d3d08fe92099999889ba1a60d897cc7 100644
+--- a/dist/permissions/options/tools.js
++++ b/dist/permissions/options/tools.js
+@@ -50,7 +50,7 @@ export function buildExitPlanModePermissionOptions(context) {
+         ? ["bypassPermissions", "auto"]
+         : ["auto", "bypassPermissions"]).filter((mode) => modes.has(mode));
+     const preferredMode = elevatedModes[0] ?? "acceptEdits";
+-    if (plainString(context.input.plan)) {
++    if (context.allowContextReset !== false && plainString(context.input.plan)) {
+         const usage = context.contextUsedPercent === undefined ? "" : ` (${context.contextUsedPercent}% used)`;
+         options.push(preferredMode === "auto"
+             ? {
