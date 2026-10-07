@@ -1,5 +1,6 @@
 <script lang="ts">
   import { ChevronDown, RefreshCw, X } from '@lucide/svelte';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { formatMonthDay } from '$lib/shell/dateFormat.ts';
   import {
     buildProviderUsageTrend,
@@ -148,8 +149,7 @@
         {/each}
       </div>
       <button class="refresh" type="button" onclick={() => void refreshUsageHistory()} disabled={usageState.historyLoading || usageState.historyRefreshing}>
-        <RefreshCw size={14} class={usageState.historyRefreshing ? 'spinning' : undefined} aria-hidden="true" />
-        {usageState.historyRefreshing ? 'Refreshing…' : usageState.historyLoading ? 'Loading…' : 'Refresh'}
+        {#if usageState.historyRefreshing || usageState.historyLoading}<WorkingSpinner size={14} />{usageState.historyRefreshing ? 'Refreshing…' : 'Loading…'}{:else}<RefreshCw size={14} aria-hidden="true" />Refresh{/if}
       </button>
       <button class="close" type="button" aria-label="Close Stats and Usage" onclick={onClose}><X size={17} aria-hidden="true" /></button>
     </div>
@@ -458,9 +458,7 @@
   .empty { display: grid; min-height: 360px; place-content: center; gap: 5px; color: var(--color-text-2); text-align: center; }
   .empty strong { color: var(--color-text); }
   .empty p { font-size: 0.76rem; }
-  .spinning { animation: spin 0.85s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @media (prefers-reduced-motion: reduce) { .spinning { animation: none; } .donut-segment { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .donut-segment { transition: none; } }
   @media (max-width: 900px) {
     .workspace-header { align-items: stretch; flex-direction: column; }
     .header-actions { justify-content: space-between; }

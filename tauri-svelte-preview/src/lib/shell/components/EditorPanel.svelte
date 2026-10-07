@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { parseRemoteWorkspacePath, workspaceChangePath } from '$lib/workspacePaths';
   /**
    * EditorPanel.svelte — the /next code-reading panel.
@@ -1626,7 +1627,7 @@
         {#snippet folderEntries(directory: string, depth: number)}
           {@const menu = breadcrumbChain[depth]}
           {#if menu?.directory !== directory || menu.entries === null}
-            <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
+            <DropdownMenu.Item disabled><WorkingSpinner size={12} />Loading…</DropdownMenu.Item>
           {:else if menu.error}
             <DropdownMenu.Item disabled>{menu.error}</DropdownMenu.Item>
           {:else if menu.entries.every((entry) => entry.excluded)}
@@ -1822,7 +1823,7 @@
             onDotnetTestRequest={onStartWorkspaceCommand ? () => runDotnetWorkspace('test') : undefined}
           />
         {:else}
-          <p class="canvas-message">Starting the code editor…</p>
+          <p class="canvas-message"><WorkingSpinner size={14} /> Starting the code editor…</p>
         {/if}
         </div>
         {#if markdownPreviewShown && activeFile.preview && MarkdownPreview}
@@ -1843,7 +1844,7 @@
           <p class="canvas-message">Starting the preview…</p>
         {/if}
       {:else}
-        <p class="canvas-message">Reading {activeFile?.fileName ?? 'file'}…</p>
+        <p class="canvas-message"><WorkingSpinner size={14} /> Reading {activeFile?.fileName ?? 'file'}…</p>
       {/if}
     </div>
 

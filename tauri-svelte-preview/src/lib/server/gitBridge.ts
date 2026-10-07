@@ -453,7 +453,7 @@ export async function readGitStatus(root: string): Promise<GitBridgeStatus> {
     'status',
     '--porcelain=v1',
     '--branch',
-    '--untracked-files=normal'
+    '--untracked-files=all'
   ]);
   return parseGitStatus(output);
 }
@@ -618,6 +618,20 @@ export async function readGitFileDiff(
   };
 }
 
+/** Mirrors `read_git_branch_diff`: one diff from the merge base of HEAD and
+ * `origin/HEAD` to the working tree. */
+export async function readGitBranchDiff(root: string): Promise<{ base: string; diff: string }> {
+  const folder = await requireRepositoryFolder(root);
+  let base: string;
+  try {
+    base = (await runGit(folder, ['rev-parse', '--abbrev-ref', 'origin/HEAD'])).trim();
+  } catch {
+    throw new Error('This repository has no origin/HEAD, so there is no default branch to compare with.');
+  }
+  const mergeBase = (await runGit(folder, ['merge-base', 'HEAD', base])).trim();
+  return { base, diff: await runGit(folder, ['diff', '--no-ext-diff', mergeBase]) };
+}
+
 // ── the routes ──────────────────────────────────────────────────────────────
 
 export interface GitBridgeResponse {
@@ -673,6 +687,8 @@ export async function handleGitBridgeRequest(
             text(body.relativePath)
           )
         };
+      case 'branch-diff':
+        return { handled: true, statusCode: 200, body: await readGitBranchDiff(text(body.root)) };
       case 'file-diff':
         return {
           handled: true,

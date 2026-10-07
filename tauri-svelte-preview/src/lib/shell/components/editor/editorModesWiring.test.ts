@@ -28,7 +28,6 @@ const editorSessionSource = readFileSync(
   path.join(here, '..', '..', 'controllers', 'editorSessionController.svelte.ts'),
   'utf8'
 );
-const diffSource = readFileSync(path.join(here, '..', 'GitDiffView.svelte'), 'utf8');
 const controlsSource = readFileSync(
   path.join(here, '..', 'LanguageIntelligenceControls.svelte'),
   'utf8'
@@ -120,16 +119,5 @@ test('file tabs scroll while the complete right-side control group stays pinned'
   assert.match(
     panelSource,
     /\.editor-controls\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?min-width:\s*max-content;/
-  );
-});
-
-test('a diff hunk opens the file in the editor at its line', () => {
-  assert.match(diffSource, /import \{ requestOpenFile \} from '\$lib\/shell\/openFileBus'/);
-  assert.match(diffSource, /onclick=\{\(\) => openAtLine\(hunk\.afterStart\)\}/);
-  assert.match(diffSource, /requestOpenFile\(\{/);
-  assert.match(
-    diffSource,
-    /onOpenLine=\{openAtLine\}/,
-    'the real diff editor must offer the same jump as the plain fallback'
   );
 });

@@ -72,19 +72,17 @@ export function updateOwnedSession(ownedId: string, patch: Partial<OwnedSession>
   );
 }
 
-export function setOwnedSessionStatus(
-  ownedId: string,
+/** The lifecycle dates that move a session to Working, Done or Settled. */
+export function ownedSessionStatusPatch(
+  session: Pick<OwnedSession, 'completedAt'>,
   status: 'working' | 'done' | 'settled',
   when: Date
-): OwnedSession | null {
-  const session = rail.owned.find((row) => row.ownedId === ownedId);
-  if (!session) return null;
+): Pick<OwnedSession, 'completedAt' | 'settledAt'> {
   const stamp = when.toISOString();
-  updateOwnedSession(ownedId, {
+  return {
     completedAt: status === 'working' ? null : session.completedAt ?? stamp,
     settledAt: status === 'settled' ? stamp : null
-  });
-  return rail.owned.find((row) => row.ownedId === ownedId) ?? null;
+  };
 }
 
 export function removeOwnedSession(ownedId: string): void {

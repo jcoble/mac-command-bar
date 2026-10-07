@@ -3,7 +3,8 @@
 
   Same settings as before, same wording, same store. What changed is the shape:
   it was a 560px dialog with four tabs, and it is now a full-window screen —
-  a way back to the app in the top-left, a search field that filters the rows
+  a way back to the app at the foot of the section list (the macOS window
+  buttons cover the top-left), a search field that filters the rows
   as you type, a grouped list of sections down the left, and cards of rows on
   the right. That is the layout every desktop app of this kind uses, and it is
   the only one that stays readable as the list of settings grows.
@@ -41,6 +42,7 @@
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import SettingsSelect from '$lib/shell/components/SettingsSelect.svelte';
   import ProviderUpdateControl from '$lib/shell/components/ProviderUpdateControl.svelte';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { Slider } from '$lib/components/ui/slider/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import {
@@ -699,11 +701,9 @@
 
 {#if open}
   <div class="settings-screen" role="dialog" aria-modal="true" aria-label="Settings">
-    <header class="border-border/70 flex items-center gap-3 border-b px-4 py-2.5">
-      <Button variant="ghost" size="sm" onclick={backToApp} class="gap-1.5 px-2">
-        <ArrowLeft aria-hidden="true" />
-        Back to app
-      </Button>
+    <!-- The left inset keeps the title clear of the macOS window buttons,
+         which the overlay title bar draws over this corner. -->
+    <header class="border-border/70 flex items-center gap-3 border-b py-2.5 pr-4 pl-20">
       <span class="text-[13px] font-semibold">Settings</span>
       <div class="relative ml-auto w-[280px]">
         <Search
@@ -722,7 +722,8 @@
     </header>
 
     <div class="flex min-h-0 flex-1">
-      <nav class="border-border/70 w-[208px] shrink-0 overflow-y-auto border-r px-2 py-3">
+      <nav class="border-border/70 flex w-[208px] shrink-0 flex-col border-r">
+        <div class="min-h-0 flex-1 overflow-y-auto px-2 py-3">
         {#each shownSections as section, index (section.id)}
           {@const newGroup = index === 0 || shownSections[index - 1].group !== section.group}
           {#if newGroup}
@@ -749,6 +750,13 @@
             {section.label}
           </button>
         {/each}
+        </div>
+        <div class="border-border/70 border-t p-2">
+          <Button variant="ghost" size="sm" onclick={backToApp} class="w-full justify-start gap-1.5 px-2">
+            <ArrowLeft aria-hidden="true" />
+            Back to app
+          </Button>
+        </div>
       </nav>
 
       <main class="min-w-0 flex-1 overflow-y-auto px-6 py-5">
@@ -1064,7 +1072,7 @@
       disabled={appUpdateState.phase === 'checking' || appUpdateState.phase === 'installing'}
       onclick={() => void checkForAppUpdate(updateOwner.signal)}
     >
-      {appUpdateState.phase === 'checking' ? 'Checking…' : 'Check now'}
+      {#if appUpdateState.phase === 'checking'}<WorkingSpinner size={12} />Checking…{:else}Check now{/if}
     </Button>
     {#if appUpdateState.message}
       <p class="text-right text-[12px] leading-[1.4] text-[var(--color-text-2)]">
@@ -1081,7 +1089,7 @@
     disabled={appUpdateState.phase !== 'available'}
     onclick={() => void installAppUpdate(updateOwner.signal)}
   >
-    {appUpdateState.phase === 'installing' ? 'Installing…' : 'Install and restart'}
+    {#if appUpdateState.phase === 'installing'}<WorkingSpinner size={12} />Installing…{:else}Install and restart{/if}
   </Button>
 {/snippet}
 

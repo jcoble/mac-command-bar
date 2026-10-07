@@ -13,8 +13,8 @@ use crate::{
     archive_project_worktree_sync,
     list_git_repository_summaries_sync, list_project_git_refs_sync, list_project_worktrees_sync,
     project_git_status_sync, read_git_commit_file_diff_sync, read_git_commit_files_sync,
-    read_git_commit_history_page_sync, read_source_git_diff_sync, remove_project_worktree_sync,
-    GitActionResult, GitCommitFileChange, GitHistoryPage, GitRepositorySummary, ProjectGitRef,
+    read_git_branch_diff_sync, read_git_commit_history_page_sync, read_source_git_diff_sync,
+    remove_project_worktree_sync, GitActionResult, GitBranchDiff, GitCommitFileChange, GitHistoryPage, GitRepositorySummary, ProjectGitRef,
     ProjectGitStatus, ProjectWorktree, ProjectWorktreeActionResult, ProjectWorktreeArchiveResult,
     RuntimeContextProject, SourceGitDiff,
 };
@@ -36,6 +36,13 @@ pub(crate) async fn read_source_git_diff(
     })
     .await
     .map_err(|error| format!("Git diff task failed: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn read_git_branch_diff(root: String) -> Result<GitBranchDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || read_git_branch_diff_sync(PathBuf::from(root)))
+        .await
+        .map_err(|error| format!("Git branch diff task failed: {error}"))?
 }
 
 #[tauri::command]

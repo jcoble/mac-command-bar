@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   /**
    * WorktreeRow.svelte — one worktree in the panel's list.
    *
@@ -143,7 +144,7 @@
     </span>
     {#if busy}
       <span class="shrink-0 text-(length:--text-quiet) leading-tight text-muted-foreground">
-        Starting…
+        <WorkingSpinner size={12} /> Starting…
       </span>
     {/if}
 

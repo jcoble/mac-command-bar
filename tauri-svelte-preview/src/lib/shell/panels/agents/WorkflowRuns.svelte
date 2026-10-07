@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { untrack } from 'svelte';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import ArrowUp from '@lucide/svelte/icons/arrow-up';
@@ -591,7 +592,7 @@
   {/if}
 
   {#if workflowState.loading && runs.length === 0}
-    <div class="p-4 text-sm text-muted-foreground">Loading workflows…</div>
+    <div class="p-4 text-sm text-muted-foreground"><WorkingSpinner size={14} /> Loading workflows…</div>
   {:else if runs.length === 0}
     <div class="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
       <p class="font-medium">No workflows yet</p>
