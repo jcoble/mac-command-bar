@@ -1,6 +1,6 @@
 [package]
 name = "mac-command-bar-webview-preview"
-version = "0.1.1"
+version = "0.1.2"
 description = "Tauri shell for Assembly"
 authors = ["blackcolours"]
 edition = "2021"
