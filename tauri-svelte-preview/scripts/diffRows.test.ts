@@ -134,6 +134,24 @@ function describe(rows: DiffRow[]): string[] {
   ]);
 }
 
+// A changed last line with no final newline on either side still pairs old with new.
+{
+  const lastLine = parseUnifiedDiff(
+    text('@@ -1 +1 @@', '-old', '\\ No newline at end of file', '+new', '\\ No newline at end of file')
+  );
+  const rows = splitRows(unifiedRows(lastLine, null, new Set(), false));
+  const shape = rows.map((row) =>
+    row.kind === 'pair'
+      ? `${row.left?.kind ?? '_'}:${row.left?.text ?? ''} | ${row.right?.kind ?? '_'}:${row.right?.text ?? ''}`
+      : row.kind
+  );
+  assert.deepEqual(shape, [
+    'removed:old | added:new',
+    'note:\\ No newline at end of file | note:\\ No newline at end of file',
+    'gap'
+  ]);
+}
+
 // An added run with nothing removed sits on the right only.
 {
   const insert = parseUnifiedDiff(text('@@ -2,0 +3,2 @@', '+x', '+y'));

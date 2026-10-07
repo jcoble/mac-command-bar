@@ -53,7 +53,8 @@ export function unifiedRows(
 ): DiffRow[] {
   const rows: DiffRow[] = [];
   const single = parsed.sections.length === 1;
-  const expandable = single && (fullLines !== null || canLoad);
+  // A deleted file has no current text to read the hidden lines from.
+  const expandable = single && !parsed.isDeletedFile && (fullLines !== null || canLoad);
 
   parsed.sections.forEach((section, sectionIndex) => {
     if (section.label) rows.push({ kind: 'label', text: section.label });
@@ -98,34 +99,46 @@ export function splitRows(rows: readonly DiffRow[]): SplitRow[] {
   const out: SplitRow[] = [];
   let removed: DiffLine[] = [];
   let added: DiffLine[] = [];
+  // git's "\ No newline" line follows the last line of one side; it is held
+  // so it lands right after that line once the two sides are paired.
+  let removedNote: DiffLine | null = null;
+  let addedNote: DiffLine | null = null;
+  let lastSide: 'removed' | 'added' | null = null;
 
   const flush = () => {
     for (let i = 0; i < Math.max(removed.length, added.length); i += 1) {
       out.push({ kind: 'pair', left: removed[i] ?? null, right: added[i] ?? null });
+      const left = i === removed.length - 1 ? removedNote : null;
+      const right = i === added.length - 1 ? addedNote : null;
+      if (left || right) out.push({ kind: 'pair', left, right });
     }
     removed = [];
     added = [];
+    removedNote = null;
+    addedNote = null;
+    lastSide = null;
   };
 
   for (const row of rows) {
     if (row.kind === 'line' && row.line.kind === 'removed') {
       if (added.length > 0) flush();
       removed.push(row.line);
+      lastSide = 'removed';
       continue;
     }
     if (row.kind === 'line' && row.line.kind === 'added') {
       added.push(row.line);
+      lastSide = 'added';
       continue;
     }
-    // git's "\ No newline" line belongs to the side of the line just before it.
-    const lastAdded = added.length > 0;
-    const lastRemoved = !lastAdded && removed.length > 0;
+    if (row.kind === 'line' && row.line.kind === 'note' && lastSide) {
+      if (lastSide === 'added') addedNote = row.line;
+      else removedNote = row.line;
+      continue;
+    }
     flush();
     if (row.kind === 'line') {
-      const line = row.line;
-      if (line.kind === 'note' && lastAdded) out.push({ kind: 'pair', left: null, right: line });
-      else if (line.kind === 'note' && lastRemoved) out.push({ kind: 'pair', left: line, right: null });
-      else out.push({ kind: 'pair', left: line, right: line });
+      out.push({ kind: 'pair', left: row.line, right: row.line });
     } else {
       out.push(row);
     }
