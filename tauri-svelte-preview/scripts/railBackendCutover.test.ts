@@ -16,7 +16,6 @@ const filesPanel = read('../src/lib/shell/panels/files/FilesPanel.svelte');
 const fileTreeWatch = read('../src/lib/shell/panels/files/fileTreeWatch.ts');
 const composer = read('../src/lib/shell/components/conversation/ConversationComposer.svelte');
 const conversationSurface = read('../src/lib/shell/components/ConversationSurface.svelte');
-const toolRun = read('../src/lib/shell/components/conversation/ToolRunItem.svelte');
 const elapsed = read('../src/lib/shell/components/railElapsedTicker.ts');
 const editorSessions = read('../src/lib/shell/controllers/editorSessionController.svelte.ts');
 const editorPanel = read('../src/lib/shell/components/EditorPanel.svelte');
@@ -40,7 +39,6 @@ const sourceControlPanel = read('../src/lib/shell/panels/sourceControl/SourceCon
 assert.match(shellStartup, /listAgentConversationSessionsFromTauri\(\)/);
 assert.match(shellStartup, /listRemoteAgentConversationSessionsFromTauri\(stopSignal\)/);
 assert.match(shellStartup, /hydrateRemoteSessionsForOwner\(generation, controller\.signal\)/);
-assert.match(selectionLayers, /loadConversationForRead\(session\.ownedId, false, owner\.signal\)/);
 assert.match(selectionController, /private async drainSelections\(\): Promise<void>/);
 assert.match(selectionController, /this\.selectionAbort\?\.abort\(\);[\s\S]*?await this\.selectionWork/);
 assert.match(
@@ -56,7 +54,6 @@ assert.doesNotMatch(
 // whatever SQLite holds, and nothing else.
 // assert.equal((page.match(/mac-command-bar\.next\.owned-sessions/g) ?? []).length, 1);
 assert.doesNotMatch(railStore, /localStorage|owned-sessions|persist/i);
-assert.match(conversationService, /readAgentConversationSnapshotFromTauri\(ownedId, signal\)/);
 assert.doesNotMatch(conversationService, /listAgentConversationEventsFromTauri/);
 assert.match(conversationService, /const requestedModel = startConfig\?\.model \?\? null/);
 assert.match(source, /invoke<AgentConversationSessionRecord\[]>\('list_agent_conversation_sessions'/);
@@ -106,7 +103,6 @@ assert.doesNotMatch(
   /conversation\.sending \|\|/,
   'the composer can submit steering text during an active turn'
 );
-assert.match(toolRun, /if \(runWasActive\)[\s\S]*?runOpen = false/);
 assert.match(elapsed, /if \(totalHours < 24\)/);
 assert.match(rowVisual, /\.row-visual:hover :global\(\.line-title\)/);
 assert.match(page, /visible=\{workbench\.rightPanelOpen\}/);

@@ -66,17 +66,19 @@
 		position: relative;
 	}
 
+	/* A 32px provider tile, then the two text lines; the age sits in line one's
+	   right corner. 6px corners, the rows' step in the shell's radius scale. */
 	.session-row {
 		position: relative;
 		display: grid;
-		grid-template-columns: 44px minmax(0, 1fr);
-		column-gap: 10px;
+		grid-template-columns: 32px minmax(0, 1fr);
+		column-gap: 12px;
 		align-items: center;
 		width: 100%;
-		min-height: 58px;
-		padding: var(--rail-row-content-inset);
+		min-height: 48px;
+		padding: 6px 8px;
 		border: 0;
-		border-radius: var(--radius-sm);
+		border-radius: 6px;
 		overflow: hidden;
 		background: transparent;
 		color: inherit;
@@ -87,17 +89,29 @@
 	}
 
 	.session-row:hover {
-		background: color-mix(in srgb, var(--color-accent) 7%, var(--color-elevated));
+		background: var(--accent);
 	}
 
+	/* The selected row: a fill plus a short primary bar on its left edge. */
 	.session-row.active {
-		background: color-mix(in srgb, var(--color-elevated) 88%, var(--color-text));
+		background: var(--secondary);
+	}
+
+	.session-row.active::before {
+		content: "";
+		position: absolute;
+		left: 0;
+		top: 12px;
+		bottom: 12px;
+		width: 2px;
+		border-radius: 2px;
+		background: var(--primary);
 	}
 
 	.row-actions {
 		position: absolute;
-		top: 6px;
-		right: 11px;
+		top: 4px;
+		right: 8px;
 		z-index: 2;
 		display: flex;
 		gap: 3px;
@@ -123,21 +137,21 @@
 
 	.row-actions button {
 		display: grid;
-		width: 25px;
-		height: 25px;
+		width: 24px;
+		height: 24px;
 		padding: 0;
 		border: 0;
 		border-radius: var(--radius-pill);
 		place-items: center;
-		background: var(--color-elevated);
-		color: var(--color-text-2);
+		background: var(--muted);
+		color: var(--muted-foreground);
 		cursor: pointer;
 	}
 
 	.row-actions button:hover,
 	.row-actions button:focus-visible {
-		background: color-mix(in srgb, var(--color-accent) 16%, var(--color-elevated));
-		color: var(--color-accent);
+		background: color-mix(in srgb, var(--primary) 16%, var(--muted));
+		color: var(--primary);
 		outline: none;
 	}
 

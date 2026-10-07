@@ -62,7 +62,7 @@
     onToggleList
   }: Props = $props();
 
-  const ROUND = 'size-[32px] rounded-full p-0 [&_svg]:size-[16px]';
+  const ROUND = 'size-[28px] rounded-full p-0 [&_svg]:size-[16px]';
 
   /** The last native menu, closed when the next one opens so they never pile up. */
   let lastMenu: Resource[] = [];
@@ -107,8 +107,8 @@
   });
 </script>
 
-<div class="@container flex h-[52px] items-center gap-2 border-b border-border px-2" data-testid="browser-toolbar">
-  <div class="flex flex-none items-center rounded-full bg-secondary p-[2px]">
+<div class="@container flex h-[44px] items-center gap-2 px-2" data-testid="browser-toolbar">
+  <div class="flex flex-none items-center rounded-full bg-muted p-[2px]">
     <Button variant="ghost" class={ROUND} aria-label="Go back" disabled={!canGoBack} data-testid="browser-back" onclick={onBack}>
       <ArrowLeft aria-hidden="true" />
     </Button>
@@ -131,8 +131,8 @@
   <Button
     variant="ghost"
     class={cn(
-      'h-[36px] flex-none gap-1.5 rounded-full bg-secondary px-3 text-[13px] @max-[640px]:px-[10px] [&_svg]:size-[16px]',
-      tool === 'element' && 'bg-accent text-accent-foreground'
+      'h-[32px] flex-none gap-1.5 rounded-full bg-muted px-3 text-[13px] @max-[640px]:px-2 [&_svg]:size-[16px]',
+      tool === 'element' && 'bg-foreground/16 text-foreground'
     )}
     aria-label={tool === 'element' ? 'Stop marking elements' : 'Annotate: mark an element on the page'}
     aria-pressed={tool === 'element'}
@@ -154,13 +154,13 @@
       aria-label="Address"
       placeholder="Enter an http, https, or file address"
       value={address}
-      class="h-[36px] rounded-full border-0 bg-secondary px-4 text-center text-[13px] focus:text-left focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-secondary"
+      class="h-[32px] rounded-full border-0 bg-muted px-3 text-center text-[13px] focus:text-left focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-muted"
       data-testid="browser-address"
       oninput={(event) => onAddressInput(event.currentTarget.value)}
     />
   </form>
 
-  <div class="flex flex-none items-center rounded-full bg-secondary p-[2px]">
+  <div class="flex flex-none items-center rounded-full bg-muted p-[2px]">
     <Button
       variant="ghost"
       class={ROUND}

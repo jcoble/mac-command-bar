@@ -10,7 +10,7 @@
   import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
   import Plus from '@lucide/svelte/icons/plus';
   import Search from '@lucide/svelte/icons/search';
-  import List from '@lucide/svelte/icons/list';
+  import ListFilter from '@lucide/svelte/icons/list-filter';
   import { onMount } from 'svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
@@ -199,7 +199,7 @@
   }
 
   const ACTION_CLASS =
-    'text-[var(--color-text-2)] hover:text-foreground hover:bg-[var(--color-elevated)]';
+    'text-muted-foreground hover:text-foreground hover:bg-accent';
   const TOOLTIP_CLASS =
     'bg-[var(--color-surface)] text-foreground ring-1 ring-[var(--color-border)] ' +
     'shadow-[var(--shadow-md)] text-[12px] px-2 py-1';
@@ -219,7 +219,7 @@
       run();
     }}
   >
-    <Icon class="size-4" aria-hidden="true" />
+    <Icon class="size-[16px]" aria-hidden="true" />
   </IconButton>
 {/snippet}
 
@@ -252,16 +252,16 @@
     <div data-testid="sessions-column" class="sessions-column flex h-full min-h-0 flex-col text-[var(--color-text)]">
       <Tooltip.Provider delayDuration={0}>
         <header class="sessions-header">
-        <h2 class="text-[14px] font-semibold text-[var(--color-text)]">Sessions</h2>
+        <h2 class="text-[16px] font-bold text-foreground">Sessions</h2>
         <div class="header-actions ml-auto flex items-center gap-2">
           <IconButton
             label="Search sessions"
-            size="xs"
+            size="sm"
             side="bottom"
             class={ACTION_CLASS}
             onclick={showFilter}
           >
-            <Search class="size-3.5" aria-hidden="true" />
+            <Search class="size-[16px]" aria-hidden="true" />
           </IconButton>
           <DropdownMenu.Root>
             <Tooltip.Root>
@@ -273,7 +273,7 @@
                     class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), ACTION_CLASS)}
                     aria-label="View session options"
                   >
-                    <List aria-hidden="true" />
+                    <ListFilter aria-hidden="true" />
                   </DropdownMenu.Trigger>
                 {/snippet}
               </Tooltip.Trigger>
@@ -303,13 +303,11 @@
                       class={cn(
                         'min-w-0 px-1 text-[13px] font-normal',
                         pressed
-                          ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)] hover:bg-[var(--color-accent)] hover:text-[var(--color-on-accent)]'
+                          ? 'bg-secondary text-foreground hover:bg-secondary'
                           : 'text-[var(--color-text-3)]'
                       )}
                       aria-pressed={pressed}
-                      style={pressed
-                        ? 'background-color: var(--color-accent); color: var(--color-on-accent)'
-                        : 'color: var(--color-text)'}
+                      style={pressed ? undefined : 'color: var(--color-text)'}
                       onclick={grouping.press}
                     >
                       <span class="truncate">{grouping.label}</span>
@@ -366,7 +364,7 @@
               </div>
             </DropdownMenu.Content>
           </DropdownMenu.Root>
-          {@render action('New session', Plus, onNewSession, 'text-[var(--color-accent)]')}
+          {@render action('New session', Plus, onNewSession)}
         </div>
       </header>
       </Tooltip.Provider>
@@ -432,55 +430,39 @@
     line-height: 19.5px;
   }
 
+  /* The 44px header band every panel shares, set 4px down from the card's top. */
   .sessions-header {
     display: flex;
-    flex: 0 0 52px;
+    flex: 0 0 44px;
+    margin-top: 4px;
     align-items: center;
-    gap: 5px;
-    padding: 0 9px 0 13px;
+    gap: 4px;
+    padding: 0 12px 0 16px;
     font-size: 13px;
     line-height: 19.5px;
   }
 
   .sessions-header :global(h2) {
     flex: 1 1 auto;
-    font-size: 14px;
+    font-size: 16px;
     letter-spacing: -0.01em;
     line-height: 19.5px;
   }
 
-  .sessions-header :global(button) {
-    width: 29px;
-    height: 29px;
-    padding: 0;
-    border-radius: var(--radius-pill);
-    font-size: 13.3333px;
-    line-height: normal;
-  }
-
-  /* The three controls sit in one container, in the same tone and shape as the
-     right panel's tab strip, so the shell's grouped controls all look alike.
-     There is no sliding pill here: search, view options and new session are
-     three things you do, not one choice out of three. */
+  /* Search, view options and new session are three plain icon buttons on the
+     header band, not a grouped track: they are three things you do, not one
+     choice out of three. */
   .sessions-header .header-actions {
-    gap: 1px;
-    padding: 3px;
-    border-radius: var(--radius-pill);
-    background: var(--color-elevated);
+    gap: 4px;
   }
 
   .filter-pills {
     flex: 0 0 auto;
-    padding: 0 9px 8px 13px;
+    padding: 4px 16px 12px;
   }
 
   .filter-strip {
     flex: 0 0 auto;
-    padding: 7px 9px 7px 13px;
-  }
-
-  .sessions-header :global(button svg) {
-    width: 16px;
-    height: 16px;
+    padding: 0 12px 8px 16px;
   }
 </style>

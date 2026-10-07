@@ -59,9 +59,9 @@
   import { sessionLibraryHost } from '$lib/shell/sessionLibrary/sessionLibraryService.ts';
   import { resetSessionLibraryState, sessionLibraryState, setSessionLibraryQuery } from '$lib/shell/sessionLibrary/sessionLibraryStore.svelte.ts';
   import {
-    ensureStructuredConversation,
-    loadConversationForRead
+    ensureStructuredConversation
   } from '$lib/shell/conversation/conversationService.ts';
+  import { refreshSelectedConversationChat } from '$lib/shell/conversation/conversationConnection';
   import { warmAgentConversationConfig } from '$lib/shell/conversation/conversationConfig.ts';
   import { setConversationAgentConfigState } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import { ownedSessionFromBackend } from '$lib/shell/ownedSessions.ts';
@@ -499,7 +499,7 @@
       // and when that read wins the race it happens before the records exist.
       // Reading it once more, after both are done, is what makes the transcript
       // appear rather than an empty session under a correct title.
-      await loadConversationForRead(ownedId);
+      await refreshSelectedConversationChat(ownedId);
       // Either half can fail on its own and the other still has value. A
       // transcript that would not load is a failed resume and is said so. An
       // agent that would not start is not: the conversation is imported, on
@@ -649,7 +649,7 @@
   <div class="relative px-2 py-2">
     <Search class="pointer-events-none absolute top-1/2 left-6 size-[16px] -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
     <Input
-      class="h-[36px] pl-9 text-[13px]"
+      class="h-8 rounded-full border-transparent bg-muted dark:bg-muted pl-9 text-[13px]"
       placeholder="Search sessions"
       autocomplete="off"
       spellcheck="false"
@@ -678,7 +678,7 @@
     {/each}
     {#if worktree.olderCount > 0 && loadingOlder}
       <div class="flex justify-center px-3 py-1.5" aria-label="Loading older sessions">
-        <WorkingSpinner seed={worktree.key} size={12} />
+        <WorkingSpinner size={12} />
       </div>
     {/if}
   {/snippet}
@@ -724,7 +724,7 @@
                      focus-visible:ring-ring/50"
             >
               {#if loadingProjectKey === project.key}
-                <WorkingSpinner seed={project.key} size={14} />
+                <WorkingSpinner size={14} />
               {:else}
                 <ChevronRight
                   class={`size-3.5 shrink-0 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}

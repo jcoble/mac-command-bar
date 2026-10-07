@@ -394,8 +394,8 @@
       <DropdownMenu.Root>
         <DropdownMenu.Trigger
           class={cn(
-            buttonVariants({ variant: 'outline', size: 'sm' }),
-            'h-[32px] min-w-0 rounded-full px-3 text-[13px] [&_svg]:size-[16px]',
+            buttonVariants({ variant: 'secondary', size: 'sm' }),
+            'h-7 min-w-0 rounded-full px-3 text-[13px] [&_svg]:size-[16px]',
             projectFilter && 'text-[var(--color-accent)]'
           )}
           aria-label="View task options"
@@ -469,11 +469,11 @@
         </DropdownMenu.Content>
       </DropdownMenu.Root>
       <span class="flex-1"></span>
-      <IconButton class="size-[32px]" label="Task settings" side="bottom" onclick={() => (showSetup = !showSetup)}>
+      <IconButton class="size-7" label="Task settings" side="bottom" onclick={() => (showSetup = !showSetup)}>
         <Settings2 class="size-[16px]" aria-hidden="true" />
       </IconButton>
       <IconButton
-        class="size-[32px]"
+        class="size-7"
         label="Refresh tasks"
         side="bottom"
         disabled={refreshing || showSetup}
@@ -484,7 +484,7 @@
     </div>
     <form class="relative" onsubmit={applySearch}>
       <Search class="pointer-events-none absolute top-1/2 left-3 size-[16px] -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-      <Input bind:value={searchDraft} class="h-[36px] pr-12 pl-9 text-[13px]" placeholder="Search tasks" aria-label="Search tasks" />
+      <Input bind:value={searchDraft} class="h-8 rounded-full border-transparent bg-muted dark:bg-muted pr-12 pl-9 text-[13px]" placeholder="Search tasks" aria-label="Search tasks" />
       <span class="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-[12px] text-muted-foreground tabular-nums">{tasks.length}</span>
     </form>
   </header>

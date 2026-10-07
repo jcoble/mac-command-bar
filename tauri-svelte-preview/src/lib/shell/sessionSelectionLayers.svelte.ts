@@ -1,3 +1,4 @@
+import { rail } from './stores/sessionRailStore.svelte';
 import { warmAgentConversationConfig } from './conversation/conversationConfig';
 import { sessionWorkspaceRoot } from '../workspacePaths';
 /**
@@ -6,13 +7,11 @@ import { sessionWorkspaceRoot } from '../workspacePaths';
  * Keep this sequence explicit. Each large surface gets one small loader here
  * so it can be added, measured, and removed without waking the other surfaces.
  */
-import { validateProjectRootFromTauri } from '../tauriSource';
+import { readAgentConversationWorkspaceFromTauri, validateProjectRootFromTauri } from '../tauriSource';
 import {
-  cancelConversationReadWork,
-  loadConversationSessionDraft,
-  loadConversationForRead,
-  releaseConversationForRead
+  loadConversationSessionDraft
 } from './conversation/conversationService';
+import { disposeSelectedConversationChat, selectConversationChat, selectedConversationChatReady } from './conversation/conversationConnection';
 import {
   ensureConversationSession,
   evictInactiveConversationSessions,
@@ -59,7 +58,8 @@ export class SessionSelectionLayers {
     if (!this.isCurrent(owner)) return;
     const root = sessionWorkspaceRoot(session);
 
-    if (!root) {
+    if (!root || (session.executionEnvironment === 'remote'
+      && rail.remoteConnections[session.remoteProfileId ?? ''] !== 'connected')) {
       if (!this.isCurrent(owner)) return;
       this.hasTreeProjection = true;
       this.treeOwnedId = session.ownedId;
@@ -93,7 +93,7 @@ export class SessionSelectionLayers {
     const provider = this.providerFor(session);
     if (!provider) {
       if (!this.isCurrent(owner)) return;
-      if (departingOwnedId) releaseConversationForRead(departingOwnedId);
+      if (departingOwnedId) disposeSelectedConversationChat(departingOwnedId);
       this.hasChatProjection = false;
       this.chatOwnedId = null;
       evictInactiveConversationSessions(null);
@@ -101,24 +101,33 @@ export class SessionSelectionLayers {
     }
 
     if (departingOwnedId && departingOwnedId !== session.ownedId) {
-      cancelConversationReadWork(departingOwnedId);
+      disposeSelectedConversationChat(departingOwnedId);
     }
 
-    ensureConversationSession(session.ownedId, provider);
+    const conversation = ensureConversationSession(session.ownedId, provider);
+    const offline = session.executionEnvironment === 'remote'
+      && rail.remoteConnections[session.remoteProfileId ?? ''] !== 'connected';
+    if (!offline) {
+      countInvoke('read_agent_conversation_workspace');
+      const workspace = await readAgentConversationWorkspaceFromTauri(session.ownedId);
+      if (!this.isCurrent(owner)) return;
+      conversation.viewByHistoryId = workspace?.conversation?.viewByHistoryId ?? {};
+    }
     setConversationMode(session.ownedId, 'structured');
-    await loadConversationForRead(session.ownedId, true, owner.signal);
+    selectConversationChat(session.ownedId, session.ownedId, owner.signal);
+    await selectedConversationChatReady(session.ownedId);
     if (!this.isCurrent(owner)) {
-      if (this.requestedChatOwnedId !== session.ownedId) releaseConversationForRead(session.ownedId);
+      if (this.requestedChatOwnedId !== session.ownedId) disposeSelectedConversationChat(session.ownedId);
       return;
     }
-    await loadConversationSessionDraft(session.ownedId);
+    if (!offline) await loadConversationSessionDraft(session.ownedId);
     if (!this.isCurrent(owner)) {
-      if (this.requestedChatOwnedId !== session.ownedId) releaseConversationForRead(session.ownedId);
+      if (this.requestedChatOwnedId !== session.ownedId) disposeSelectedConversationChat(session.ownedId);
       return;
     }
     this.hasChatProjection = true;
     this.chatOwnedId = session.ownedId;
-    if (session.executionEnvironment === 'remote' && session.nativeSessionId) {
+    if (!offline && session.executionEnvironment === 'remote' && session.nativeSessionId) {
       const generation = getConversationSession(session.ownedId)?.generation;
       if (generation !== undefined) void warmAgentConversationConfig(session.ownedId, generation).then((config) => {
         if (this.isCurrent(owner)) setConversationAgentConfigState(session.ownedId, config);
@@ -127,7 +136,7 @@ export class SessionSelectionLayers {
       });
     }
     if (departingOwnedId && departingOwnedId !== session.ownedId) {
-      releaseConversationForRead(departingOwnedId);
+      disposeSelectedConversationChat(departingOwnedId);
     }
     evictInactiveConversationSessions(session.ownedId);
   }
@@ -145,7 +154,7 @@ export class SessionSelectionLayers {
   clearChatHistory(): void {
     this.selectionGeneration += 1;
     this.requestedChatOwnedId = null;
-    if (this.chatOwnedId) releaseConversationForRead(this.chatOwnedId);
+    if (this.chatOwnedId) disposeSelectedConversationChat(this.chatOwnedId);
     this.hasChatProjection = false;
     this.chatOwnedId = null;
     evictInactiveConversationSessions(null);

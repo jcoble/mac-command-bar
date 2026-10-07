@@ -212,6 +212,7 @@ test('an unreadable remote workspace releases editor ownership before returning 
   const saved = new Map<string, { openPaths: string[]; activePath: string | null }>([['hello', { openPaths: [readme, alpha], activePath: readme }]]);
   const writes: string[] = [];
   const dependencies = {
+    rail: { owned: [], remoteConnections: {} },
     parseRemoteWorkspacePath: (root: string) => root.startsWith('assembly-remote:') ? { profileId: 'environment' } : null,
     mapWorkspaceSnapshotPaths: (snapshot: unknown) => snapshot,
     editorState: editor,

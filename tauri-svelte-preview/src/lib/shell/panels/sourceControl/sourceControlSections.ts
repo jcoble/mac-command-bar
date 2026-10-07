@@ -62,9 +62,9 @@ export function sourceControlSections(status: ProjectGitStatus | null): SourceCo
 }
 
 /**
- * The counts beside the panel title. Line-by-line additions and deletions are
- * deliberately absent: the status command this panel reads reports a state per
- * file and no line counts, and a number nobody measured is worse than no number.
+ * The counts beside the panel title. Line totals are not shown here; the status
+ * command reports them only as whole-tree sums (`additions`/`deletions`), which
+ * the Changes tab in the top row displays.
  */
 export function sourceControlDiffstat(status: ProjectGitStatus | null): SourceControlDiffstat {
   const files = status?.files ?? [];

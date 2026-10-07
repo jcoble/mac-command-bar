@@ -373,7 +373,7 @@
                    focus-visible:ring-3 focus-visible:ring-ring/50"
           >
             {#if detailsLoading}
-              <WorkingSpinner seed={record.key} size={14} />
+              <WorkingSpinner size={14} />
               Loading turns…
             {:else}
               <ChevronRight

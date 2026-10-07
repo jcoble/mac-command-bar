@@ -337,7 +337,7 @@ test('legacy single-page browser record becomes one restorable tab', () => {
       conversation: {
         mode: 'structured', draft: 'keep', version: 1, generation: 4,
         owner: 'terminal', attachmentIds: ['attachment-a'], config: { future: 'value' },
-        parentScrollTop: 20, childScrollTopById: { child: 30 }, sequence: 12,
+        parentScrollTop: 20, childScrollTopById: { child: 30 }, scrollTop: 40, sequence: 12,
         telemetry: { latencyMs: 7 }, futureField: { nested: true }
       }
     }),
@@ -350,6 +350,9 @@ test('legacy single-page browser record becomes one restorable tab', () => {
   assert.ok(restored.current);
   assert.ok(restored.legacy);
   assert.equal(restored.current.conversation.mode, 'structured', 'app-owned mode is pinned');
+  for (const key of ['parentScrollTop', 'childScrollTopById', 'scrollTop']) {
+    assert.equal(key in restored.current.conversation, false, 'retired conversation scroll state is discarded');
+  }
   assert.equal(restored.legacy.conversation.mode, 'raw', 'external raw mode persists');
   assert.equal(restored.current.conversation.futureField.nested, true);
   assert.equal(restored.current.conversation.config.future, 'value');
@@ -456,4 +459,25 @@ test('an old history panel record disappears on normalize', () => {
 
   assert.ok(snapshot);
   assert.equal('history' in snapshot, false);
+});
+
+test('conversation_reading_location_retains_only_small_view_fields', () => {
+  const view = {
+    followLatest: false,
+    anchor: { itemId: 'tool-a', firstSequence: -20, offsetPx: -14.5 },
+    expandedTurns: { active: true, completed: false },
+    disclosures: { "tool-a:output": true }
+  };
+  const snapshot = captureWorkspace({
+    openFiles: [], activePath: null, selectedPath: null, scrollTop: 0,
+    conversation: { mode: 'structured', viewByHistoryId: {
+      parent: { ...view, messages: [{ text: 'must not be retained' }] },
+      child: { followLatest: true, expandedTurns: {} }
+    } }
+  });
+  const restored = normalizeWorkspaceSnapshot(JSON.parse(JSON.stringify(snapshot)));
+  assert.deepEqual(restored?.conversation?.viewByHistoryId, {
+    parent: view, child: { followLatest: true, expandedTurns: {} }
+  });
+  assert.doesNotMatch(JSON.stringify(restored?.conversation?.viewByHistoryId), /must not be retained/);
 });

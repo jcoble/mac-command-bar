@@ -615,34 +615,17 @@ fn source_language_priority(language: &str) -> i32 {
 fn source_path_segment_adjustment(segments: &[String]) -> i32 {
     let mut score = 0;
 
-    if segments.iter().any(|segment| {
-        matches!(
-            segment.as_str(),
-            "services"
-                | "controllers"
-                | "routes"
-                | "components"
-                | "pages"
-                | "models"
-                | "entities"
-                | "features"
-        )
-    }) {
+    if segments
+        .iter()
+        .any(|segment| matches!(segment.as_str(), "services" | "controllers" | "routes" | "components" | "pages" | "models" | "entities" | "features"))
+    {
         score -= 7;
     }
 
-    if segments.iter().any(|segment| {
-        matches!(
-            segment.as_str(),
-            "migrations"
-                | "generated"
-                | "snapshots"
-                | "fixtures"
-                | "samples"
-                | "docs"
-                | "documentation"
-        )
-    }) {
+    if segments
+        .iter()
+        .any(|segment| matches!(segment.as_str(), "migrations" | "generated" | "snapshots" | "fixtures" | "samples" | "docs" | "documentation"))
+    {
         score += 22;
     }
 

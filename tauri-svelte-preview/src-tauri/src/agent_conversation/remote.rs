@@ -29,9 +29,9 @@ use super::attachments::{self, DeleteConversationAttachmentRequest, SavedConvers
 use super::prompt_content::prompt_from_blocks;
 use super::protocol::{
     AgentCapabilities, AgentConfigOption, AgentConversationConfigState,
-    AgentConversationConnection, AgentConversationEvent, AgentConversationEventPage,
-    AgentConversationProvider,
-    AgentConversationSessionRecord, AgentConversationSnapshot,
+    AgentConversationChildHistorySelection, AgentConversationConnection, AgentConversationEvent,
+    AgentConversationEventPage, AgentConversationItemPage, AgentConversationProvider, AgentConversationSelectionSnapshot,
+    AgentConversationSendReceipt, AgentConversationSessionRecord, AgentConversationSnapshot,
     ChangeAgentConversationCheckoutRequest, EnsureAgentConversationRequest, ExecutionEnvironment,
     RespondAgentConversationApprovalRequest, RespondAgentConversationInputRequest,
     RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest,
@@ -39,9 +39,8 @@ use super::protocol::{
     UpdateAgentConversationSessionMetaRequest,
 };
 use super::providers::ProviderRegistry;
-use super::transcript::TranscriptSnapshot;
 
-pub(super) const PROTOCOL_VERSION: u16 = 8;
+pub(super) const PROTOCOL_VERSION: u16 = 12;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -81,9 +80,14 @@ enum RemoteCommand {
         after_sequence: Option<i64>,
     },
     ExtendImport { owned_id: String },
-    ReadTranscript {
-        owned_id: String,
-        child_session_id: Option<String>,
+    SelectChildHistory {
+        parent_owned_id: String,
+        child_session_id: String,
+        request_id: u64,
+    },
+    StopChildHistory {
+        parent_owned_id: String,
+        request_id: u64,
     },
     EventsBefore {
         owned_id: String,
@@ -148,6 +152,7 @@ enum RemoteCommand {
     AttachmentChunk { upload_id: String, owned_id: String, mime_type: String, first: bool, last: bool, bytes: String },
     AbortAttachmentUpload { upload_id: String },
     ReadAttachments { owned_id: String },
+    ReadSelectedAttachments { owned_id: String, attachment_ids: Vec<String> },
     ReadAttachmentChunk { owned_id: String, attachment_id: String, thumbnail: bool, offset: u64 },
     DeleteAttachment(DeleteConversationAttachmentRequest),
     Send(SendAgentConversationMessageRequest),
@@ -166,7 +171,7 @@ enum RemoteResponse {
     Restarting,
     Connection(AgentConversationConnection),
     Snapshot(#[serde(deserialize_with = "deserialize_wire_payload")] Option<AgentConversationSnapshot>),
-    Transcript(TranscriptSnapshot),
+    ChildHistoryId(String),
     EventPage(#[serde(deserialize_with = "deserialize_wire_payload")] AgentConversationEventPage),
     Capabilities(AgentCapabilities),
     Config(AgentConversationConfigState),
@@ -179,6 +184,7 @@ enum RemoteResponse {
     Strings(Vec<String>),
     Bool(bool),
     ImportProgress { added: usize, reached_start: bool },
+    SendReceipt(AgentConversationSendReceipt),
     Empty,
 }
 
@@ -793,9 +799,11 @@ impl RemoteConnectionManager {
         let (profile, _, replaced_profile_id) = self.resolve_profile_identity(profile).await?;
         self.stop_profile(&profile.id);
         super::remote_install::uninstall(&profile.ssh_target, delete_data).await?;
-        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(&profile.id)?;
         if delete_data {
+            self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(&profile.id)?;
             self.replace_cached_profile_sessions(&profile.id, &[])?;
+        } else {
+            self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).disconnect(&profile.id);
         }
         Ok(replaced_profile_id)
     }
@@ -930,7 +938,8 @@ impl RemoteConnectionManager {
 
     pub fn disconnect_profile(&self, profile_id: &str) -> Result<(), String> {
         self.stop_profile(profile_id);
-        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(profile_id)
+        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).disconnect(profile_id);
+        Ok(())
     }
 
     fn history_event_sink(&self, profile_id: &str) -> RemoteEventSink {
@@ -938,7 +947,7 @@ impl RemoteConnectionManager {
         let profile = profile_id.to_string();
         let epoch = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).epoch(&profile);
         let sink = self.event_sink.clone();
-        Arc::new(move |events| {
+        Arc::new(move |mut events| {
             let started = Instant::now();
             {
                 let history = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -952,6 +961,13 @@ impl RemoteConnectionManager {
                 for (owned_id, batch) in by_session {
                     if let Err(error) = history.live_batch(&profile, epoch, &batch) {
                         eprintln!("Remote history cache write failed for {owned_id}: {error}");
+                    }
+                }
+                for event in &mut events {
+                    if let Some(history_owned_id) =
+                        history.delivery_owned_id(&profile, &event.owned_id)
+                    {
+                        event.owned_id = history_owned_id;
                     }
                 }
             }
@@ -982,7 +998,8 @@ impl RemoteConnectionManager {
             .clients
             .remove(profile_id);
         self.publish_status(profile_id);
-        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(profile_id)
+        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).disconnect(profile_id);
+        Ok(())
     }
 
     /// Installs a freshly connected client only while this attempt still owns
@@ -1193,29 +1210,202 @@ impl RemoteConnectionManager {
 
     /// Opens from the Mac's saved copy at once. Only a session never opened on
     /// this Mac waits for the server. Either way the background copy follows.
+    #[cfg(test)]
     pub async fn snapshot(
         &self, owned_id: String, request_id: u64,
     ) -> Result<Option<AgentConversationSnapshot>, String> {
         let profile = self.profile_for_owned_id(&owned_id)?;
         let saved = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .cached_snapshot(&profile, &owned_id)?;
-        let snapshot = match saved {
+        let mut snapshot = match saved {
             Some(snapshot) => snapshot,
             None => {
-                if !self.save_newer(&profile, &owned_id, request_id, false).await? { return Ok(None); }
+                if !self.save_newer(&profile, &owned_id, request_id, false, None).await? { return Ok(None); }
                 let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 history.read_snapshot(&profile, history.epoch(&profile), &owned_id)?
             }
         };
+        if self.connection_state(&profile) != RemoteConnectionState::Connected {
+            snapshot.connection.state = super::protocol::ConversationConnectionState::Disconnected;
+        }
         self.copy_history(profile, owned_id);
         Ok(Some(snapshot))
+    }
+
+    pub async fn selection_snapshot(
+        &self,
+        owned_id: String,
+        request_id: u64,
+        max_bytes: u32,
+        minimum_generation: Option<u64>,
+    ) -> Result<Option<AgentConversationSelectionSnapshot>, String> {
+        let profile = self.profile_for_owned_id(&owned_id)?;
+        let mut saved = self
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read_selection_snapshot(&profile, &owned_id, max_bytes)?;
+        if saved.as_ref().is_some_and(|snapshot| {
+            minimum_generation.is_some_and(|minimum| snapshot.connection.generation < minimum)
+        }) && self.connection_state(&profile) == RemoteConnectionState::Connected
+        {
+            if !self
+                .save_newer(&profile, &owned_id, request_id, false, minimum_generation)
+                .await?
+            {
+                return Ok(None);
+            }
+            saved = self
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .read_selection_snapshot(&profile, &owned_id, max_bytes)?;
+        }
+        let mut snapshot = match saved {
+            Some(snapshot) => snapshot,
+            None => {
+                if !self
+                    .save_newer(&profile, &owned_id, request_id, false, minimum_generation)
+                    .await?
+                {
+                    return Ok(None);
+                }
+                self.history
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .read_selection_snapshot(&profile, &owned_id, max_bytes)?
+                    .ok_or("Remote history has no synchronized selection")?
+            }
+        };
+        if self.connection_state(&profile) != RemoteConnectionState::Connected {
+            snapshot.connection.state = super::protocol::ConversationConnectionState::Disconnected;
+        }
+        self.copy_history(profile, owned_id);
+        Ok(Some(snapshot))
+    }
+
+    pub async fn child_selection_snapshot(
+        &self,
+        profile: String,
+        source_owned_id: String,
+        request_id: u64,
+        max_bytes: u32,
+    ) -> Result<Option<AgentConversationSelectionSnapshot>, String> {
+        if self.connection_state(&profile) == RemoteConnectionState::Connected {
+            self.save_newer(&profile, &source_owned_id, request_id, false, None)
+                .await?;
+            self.copy_history(profile.clone(), source_owned_id.clone());
+        }
+        let mut snapshot = self
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read_child_selection_snapshot(&profile, &source_owned_id, max_bytes)?;
+        if self.connection_state(&profile) != RemoteConnectionState::Connected {
+            if let Some(snapshot) = &mut snapshot {
+                snapshot.connection.state =
+                    super::protocol::ConversationConnectionState::Disconnected;
+            }
+        }
+        Ok(snapshot)
+    }
+
+    pub async fn item_page(
+        &self,
+        owned_id: String,
+        cursor: i64,
+        max_bytes: u32,
+        before: bool,
+    ) -> Result<AgentConversationItemPage, String> {
+        let profile = self.profile_for_owned_id(&owned_id)?;
+        let copy_key = RemoteHistory::key(&profile, &owned_id);
+        let mut restarted = false;
+        loop {
+            let copied = self.history_copied.notified();
+            tokio::pin!(copied);
+            copied.as_mut().enable();
+            let page = self
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .read_item_page(&profile, &owned_id, cursor, max_bytes, before)?;
+            if let Some(page) = page {
+                return Ok(page);
+            }
+            if !self
+                .history_copies
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(&copy_key)
+            {
+                if restarted {
+                    return Err("This part of the conversation is not saved on this Mac yet".into());
+                }
+                restarted = true;
+                self.copy_history(profile.clone(), owned_id.clone());
+                continue;
+            }
+            copied.await;
+        }
+    }
+
+    pub async fn child_item_page(
+        &self,
+        profile: String,
+        source_owned_id: String,
+        cursor: i64,
+        max_bytes: u32,
+        before: bool,
+    ) -> Result<AgentConversationItemPage, String> {
+        let copy_key = RemoteHistory::key(&profile, &source_owned_id);
+        let mut restarted = false;
+        loop {
+            let copied = self.history_copied.notified();
+            tokio::pin!(copied);
+            copied.as_mut().enable();
+            let page = self
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .read_child_item_page(
+                    &profile,
+                    &source_owned_id,
+                    cursor,
+                    max_bytes,
+                    before,
+                )?;
+            if let Some(page) = page {
+                return Ok(page);
+            }
+            if !self
+                .history_copies
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(&copy_key)
+            {
+                if restarted {
+                    return Err("This part of the conversation is not saved on this Mac yet".into());
+                }
+                restarted = true;
+                self.copy_history(profile.clone(), source_owned_id.clone());
+                continue;
+            }
+            copied.await;
+        }
     }
 
     /// Saves every server event newer than the Mac's confirmed copy, one page
     /// at a time. `publish` then sends only the newest saved event: an open
     /// transcript reads the rest from the Mac's copy, and replayed turns would
     /// otherwise look live. Answers false when the server has no such session.
-    async fn save_newer(&self, profile: &str, owned_id: &str, request_id: u64, publish: bool) -> Result<bool, String> {
+    async fn save_newer(
+        &self,
+        profile: &str,
+        owned_id: &str,
+        request_id: u64,
+        publish: bool,
+        minimum_generation: Option<u64>,
+    ) -> Result<bool, String> {
         let (epoch, mut after) = {
             let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             (history.epoch(profile), history.through(profile, owned_id)?)
@@ -1226,6 +1416,9 @@ impl RemoteConnectionManager {
                 RemoteCommand::Snapshot { owned_id: owned_id.into(), request_id, after_sequence: after }, None).await?
             else { return Err("Remote Assembly returned the wrong snapshot response".into()); };
             let Some(mut snapshot) = snapshot else { return Ok(false); };
+            if minimum_generation.is_some_and(|minimum| snapshot.connection.generation < minimum) {
+                return Err("Remote Assembly returned stale conversation metadata".into());
+            }
             let end = {
                 let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 history.check(profile, epoch)?;
@@ -1242,7 +1435,17 @@ impl RemoteConnectionManager {
             let head = snapshot.last_sequence;
             newest = snapshot.events.pop().or(newest);
             if end >= head {
-                if let Some(event) = newest.filter(|_| publish) { (self.event_sink)(event); }
+                if let Some(mut event) = newest.filter(|_| publish) {
+                    if let Some(history_owned_id) = self
+                        .history
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .delivery_owned_id(profile, &event.owned_id)
+                    {
+                        event.owned_id = history_owned_id;
+                    }
+                    (self.event_sink)(event);
+                }
                 return Ok(true);
             }
             if after == Some(end) { return Err("Remote history catch-up made no progress".into()); }
@@ -1254,7 +1457,8 @@ impl RemoteConnectionManager {
     /// newer events first, then older pages back to its start. Pages go to
     /// SQLite one at a time; only newer ones reach the open transcript.
     fn copy_history(&self, profile: String, owned_id: String) {
-        if !self.history_copies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(owned_id.clone()) {
+        let copy_key = RemoteHistory::key(&profile, &owned_id);
+        if !self.history_copies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(copy_key.clone()) {
             return;
         }
         let manager = self.clone();
@@ -1262,14 +1466,14 @@ impl RemoteConnectionManager {
             if let Err(error) = manager.copy_history_pages(&profile, &owned_id).await {
                 eprintln!("Remote history copy for {owned_id} stopped: {error}");
             }
-            manager.history_copies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&owned_id);
+            manager.history_copies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&copy_key);
             manager.history_copied.notify_waiters();
         });
     }
 
     async fn copy_history_pages(&self, profile: &str, owned_id: &str) -> Result<(), String> {
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        self.save_newer(profile, owned_id, request_id, true).await?;
+        self.save_newer(profile, owned_id, request_id, true, None).await?;
         loop {
             let (epoch, before) = {
                 let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1306,6 +1510,7 @@ impl RemoteConnectionManager {
         self.history_page(owned_id, before_sequence, max_bytes, true).await
     }
 
+    #[cfg(test)]
     pub async fn events_after(&self, owned_id: String, after_sequence: i64, max_bytes: u32)
         -> Result<AgentConversationEventPage, String> {
         self.history_page(owned_id, after_sequence, max_bytes, false).await
@@ -1317,6 +1522,7 @@ impl RemoteConnectionManager {
     async fn history_page(&self, owned_id: String, cursor: i64, max_bytes: u32, before: bool)
         -> Result<AgentConversationEventPage, String> {
         let profile = self.profile_for_owned_id(&owned_id)?;
+        let copy_key = RemoteHistory::key(&profile, &owned_id);
         let mut restarted = false;
         loop {
             let copied = self.history_copied.notified();
@@ -1325,7 +1531,7 @@ impl RemoteConnectionManager {
             let page = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                 .read_page(&profile, &owned_id, cursor, max_bytes, before)?;
             if let Some(page) = page { return Ok(page); }
-            if !self.history_copies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&owned_id) {
+            if !self.history_copies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&copy_key) {
                 if restarted { return Err("This part of the conversation is not saved on this Mac yet".into()); }
                 restarted = true;
                 self.copy_history(profile.clone(), owned_id.clone());
@@ -1337,6 +1543,22 @@ impl RemoteConnectionManager {
 
     pub async fn extend_import(&self, owned_id: String) -> Result<super::transcript_import::ExtendedImport, String> {
         let profile = self.profile_for_owned_id(&owned_id)?;
+        self.extend_import_from(profile, owned_id).await
+    }
+
+    pub async fn extend_child_import(
+        &self,
+        profile: String,
+        source_owned_id: String,
+    ) -> Result<super::transcript_import::ExtendedImport, String> {
+        self.extend_import_from(profile, source_owned_id).await
+    }
+
+    async fn extend_import_from(
+        &self,
+        profile: String,
+        owned_id: String,
+    ) -> Result<super::transcript_import::ExtendedImport, String> {
         let epoch = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).epoch(&profile);
         let RemoteResponse::ImportProgress { added, reached_start } = self.request_for_profile(&profile,
             RemoteCommand::ExtendImport { owned_id: owned_id.clone() }).await?
@@ -1634,10 +1856,12 @@ impl RemoteConnectionManager {
         }
     }
 
-    pub async fn send(&self, request: SendAgentConversationMessageRequest) -> Result<(), String> {
+    pub async fn send(&self, request: SendAgentConversationMessageRequest) -> Result<AgentConversationSendReceipt, String> {
         let owned_id = request.owned_id.clone();
-        self.empty_for_owned(&owned_id, RemoteCommand::Send(request))
-            .await
+        match self.request_for_owned(&owned_id, RemoteCommand::Send(request)).await? {
+            RemoteResponse::SendReceipt(receipt) => Ok(receipt),
+            _ => Err("Remote Assembly returned the wrong command response".to_string()),
+        }
     }
 
     pub async fn save_attachment(&self, owned_id: String, mime_type: String, bytes: Vec<u8>) -> Result<SavedConversationAttachment, String> {
@@ -1678,24 +1902,122 @@ impl RemoteConnectionManager {
         Ok(rows)
     }
 
-    pub async fn read_transcript(
+    pub async fn read_selected_attachments(
         &self,
         owned_id: String,
-        child_session_id: Option<String>,
-    ) -> Result<TranscriptSnapshot, String> {
-        let RemoteResponse::Transcript(snapshot) = self
+        attachment_ids: Vec<String>,
+    ) -> Result<Vec<SavedConversationAttachment>, String> {
+        let RemoteResponse::Attachments(rows) = self
             .request_for_owned(
                 &owned_id,
-                RemoteCommand::ReadTranscript {
+                RemoteCommand::ReadSelectedAttachments {
                     owned_id: owned_id.clone(),
-                    child_session_id,
+                    attachment_ids,
                 },
             )
             .await?
         else {
-            return Err("Remote Assembly returned the wrong transcript response".into());
+            return Err("Remote Assembly returned the wrong attachment response".into());
         };
-        Ok(snapshot)
+        Ok(rows)
+    }
+
+    pub async fn select_child_history(
+        &self,
+        parent_owned_id: String,
+        child_session_id: String,
+        request_id: u64,
+        max_bytes: u32,
+    ) -> Result<AgentConversationChildHistorySelection, String> {
+        let profile = self.profile_for_owned_id(&parent_owned_id)?;
+        let expected_server_child =
+            super::transcript_import::child_owned_id(&parent_owned_id, &child_session_id)?;
+        let expected_history_id = RemoteHistory::key(&profile, &expected_server_child);
+        if self.connection_state(&profile) != RemoteConnectionState::Connected {
+            let source = self
+                .store
+                .private_remote_child_source(&expected_history_id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "This child transcript is not saved on this Mac yet".to_string())?;
+            let page = self
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .read_child_selection_snapshot(
+                    &source.remote_profile_id,
+                    &source.source_owned_id,
+                    max_bytes,
+                )?
+                .map(|snapshot| snapshot.page)
+                .ok_or_else(|| "This child transcript is not saved on this Mac yet".to_string())?;
+            return Ok(AgentConversationChildHistorySelection {
+                history_owned_id: expected_history_id,
+                page,
+            });
+        }
+        let RemoteResponse::ChildHistoryId(server_child_owned_id) = self
+            .request_with_id(
+                &profile,
+                request_id,
+                RemoteCommand::SelectChildHistory {
+                    parent_owned_id: parent_owned_id.clone(),
+                    child_session_id: child_session_id.clone(),
+                    request_id,
+                },
+                None,
+            )
+            .await?
+        else {
+            return Err("Remote Assembly returned the wrong child history response".into());
+        };
+        let history_owned_id = self
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bind_child(
+                &profile,
+                &parent_owned_id,
+                &server_child_owned_id,
+                &child_session_id,
+            )?;
+        self.save_newer(&profile, &server_child_owned_id, request_id, false, None)
+            .await?;
+        let page = self
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read_child_selection_snapshot(&profile, &server_child_owned_id, max_bytes)?
+            .map(|snapshot| snapshot.page)
+            .ok_or_else(|| "Remote child history has no synchronized page".to_string())?;
+        self.copy_history(profile, server_child_owned_id);
+        Ok(AgentConversationChildHistorySelection {
+            history_owned_id,
+            page,
+        })
+    }
+
+    pub async fn stop_child_history(
+        &self,
+        parent_owned_id: String,
+        request_id: u64,
+    ) -> Result<bool, String> {
+        let profile = self.profile_for_owned_id(&parent_owned_id)?;
+        if self.connection_state(&profile) != RemoteConnectionState::Connected {
+            return Ok(false);
+        }
+        let RemoteResponse::Bool(stopped) = self
+            .request_for_profile(
+                &profile,
+                RemoteCommand::StopChildHistory {
+                    parent_owned_id,
+                    request_id,
+                },
+            )
+            .await?
+        else {
+            return Err("Remote Assembly returned the wrong child stop response".into());
+        };
+        Ok(stopped)
     }
 
     pub async fn read_attachment_chunk(&self, owned_id: String, attachment_id: String, thumbnail: bool, offset: u64) -> Result<Vec<u8>, String> {
@@ -2465,6 +2787,7 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
     let (completed, mut completions) = mpsc::channel::<(u64, Result<RemoteResponse, String>)>(32);
     let upload = Arc::new(Mutex::new(None::<PendingAttachment>));
     let mut request_tasks = HashMap::new();
+    let mut selected_child_watches = HashSet::<(String, u64)>::new();
     loop {
         let upload_deadline = upload.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref().map(|pending| pending.deadline);
@@ -2526,6 +2849,37 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
         };
         match frame {
             ClientFrame::Request { id, command } => {
+                match &command {
+                    RemoteCommand::SelectChildHistory {
+                        parent_owned_id,
+                        request_id,
+                        ..
+                    } => {
+                        state
+                            .manager
+                            .reserve_child_history_request(parent_owned_id, *request_id);
+                        selected_child_watches
+                            .insert((parent_owned_id.clone(), *request_id));
+                    }
+                    RemoteCommand::StopChildHistory {
+                        parent_owned_id,
+                        request_id,
+                    } => {
+                        selected_child_watches
+                            .remove(&(parent_owned_id.clone(), *request_id));
+                        let stopped = state
+                            .manager
+                            .stop_child_history(parent_owned_id, *request_id);
+                        let _ = outbound
+                            .send(ServerFrame::Response {
+                                id,
+                                response: RemoteResponse::Bool(stopped),
+                            })
+                            .await;
+                        continue;
+                    }
+                    _ => {}
+                }
                 let request_state = state.clone();
                 let request_upload = upload.clone();
                 let completion_sink = completed.clone();
@@ -2545,6 +2899,15 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
                 if let Some(task) = request_tasks.remove(&id) {
                     task.abort();
                 }
+                let cancelled = selected_child_watches
+                    .iter()
+                    .filter(|(_, request_id)| *request_id == id)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for (parent_owned_id, request_id) in cancelled {
+                    state.manager.stop_child_history(&parent_owned_id, request_id);
+                    selected_child_watches.remove(&(parent_owned_id, request_id));
+                }
             }
             ClientFrame::Resume { cursors } => {
                 queued.extend(cursors);
@@ -2562,6 +2925,9 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
     }
     for (_, task) in request_tasks.drain() {
         task.abort();
+    }
+    for (parent_owned_id, request_id) in selected_child_watches {
+        state.manager.stop_child_history(&parent_owned_id, request_id);
     }
     drop(outbound);
     let _ = writer_task.await;
@@ -2673,6 +3039,18 @@ async fn execute_server_command(state: &ServerState, upload: &Arc<Mutex<Option<P
                 attachments::read_at(&vault, &store, &owned_id).map(RemoteResponse::Attachments)
             ).await.map_err(|error| error.to_string())?;
         }
+        RemoteCommand::ReadSelectedAttachments {
+            owned_id,
+            attachment_ids,
+        } => {
+            let store = state.manager.store_handle();
+            return tokio::task::spawn_blocking(move ||
+                attachments::read_selected_at(&vault, &store, &owned_id, &attachment_ids)
+                    .map(RemoteResponse::Attachments)
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        }
         RemoteCommand::ReadAttachmentChunk { owned_id, attachment_id, thumbnail, offset } => {
             let store = state.manager.store_handle();
             return tokio::task::spawn_blocking(move || {
@@ -2758,25 +3136,26 @@ async fn execute_remote_command(
             let progress = manager.extend_imported_session(&owned_id, super::IMPORT_MAX_BYTES, super::IMPORT_MAX_RECORDS)?;
             Ok(RemoteResponse::ImportProgress { added: progress.added, reached_start: progress.reached_start })
         }
-        RemoteCommand::ReadTranscript {
-            owned_id,
+        RemoteCommand::SelectChildHistory {
+            parent_owned_id,
             child_session_id,
-        } => {
-            let row = manager
-                .store()
-                .get_session(&owned_id)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("Conversation session {owned_id} was not found"))?;
-            let native_session_id = row
-                .native_session_id
-                .ok_or_else(|| format!("Conversation session {owned_id} has no provider session"))?;
-            super::transcript::read(
-                &row.provider,
-                &native_session_id,
-                child_session_id.as_deref(),
+            request_id,
+        } => manager
+            .select_reserved_child_history(
+                &parent_owned_id,
+                &child_session_id,
+                request_id,
+                super::IMPORT_MAX_BYTES as u32,
+                super::IMPORT_MAX_BYTES,
+                super::IMPORT_MAX_RECORDS,
             )
-            .map(RemoteResponse::Transcript)
-        }
+            .map(|selection| RemoteResponse::ChildHistoryId(selection.history_owned_id)),
+        RemoteCommand::StopChildHistory {
+            parent_owned_id,
+            request_id,
+        } => Ok(RemoteResponse::Bool(
+            manager.stop_child_history(&parent_owned_id, request_id),
+        )),
         RemoteCommand::EventsBefore {
             owned_id,
             before_sequence,
@@ -2876,7 +3255,8 @@ async fn execute_remote_command(
             manager.delete(&owned_id).await.map(RemoteResponse::Bool)
         }
         RemoteCommand::AttachmentChunk { .. } | RemoteCommand::AbortAttachmentUpload { .. }
-        | RemoteCommand::ReadAttachments { .. } | RemoteCommand::ReadAttachmentChunk { .. }
+        | RemoteCommand::ReadAttachments { .. } | RemoteCommand::ReadSelectedAttachments { .. }
+        | RemoteCommand::ReadAttachmentChunk { .. }
         | RemoteCommand::DeleteAttachment(_) => Err("Attachment command needs socket ownership".into()),
         RemoteCommand::Send(request) => {
             if request.content.iter().any(|block| matches!(block, super::prompt_content::AgentPromptContentBlock::Image { .. })) {
@@ -2915,7 +3295,7 @@ async fn execute_remote_command(
                 }).await.map_err(|error| error.to_string())??;
             }
             prompt.attachment_ids = request.attachment_ids;
-            manager
+            let receipt = manager
                 .send_message(
                     &request.owned_id,
                     request.generation,
@@ -2924,7 +3304,7 @@ async fn execute_remote_command(
                     request.approval_policy,
                 )
                 .await?;
-            Ok(RemoteResponse::Empty)
+            Ok(RemoteResponse::SendReceipt(receipt))
         }
         RemoteCommand::RespondApproval(request) => {
             manager
@@ -2958,8 +3338,8 @@ async fn execute_remote_command(
                         turn_id: None,
                         item_id: None,
                     },
-                    values: request.values,
-                    cancelled: request.cancelled,
+                    action: request.action,
+                    content: request.content,
                 })
                 .await?;
             Ok(RemoteResponse::Empty)
@@ -3008,6 +3388,29 @@ mod connection_tests {
     }
 
     #[test]
+    fn send_admission_receipt_crosses_the_remote_response_boundary() {
+        let receipt = AgentConversationSendReceipt {
+            owned_id: "owned-remote".into(),
+            generation: 7,
+            turn_id: "turn-admitted".into(),
+            user_item_id: "user-turn-admitted".into(),
+            admitted_sequence: 42,
+        };
+        let frame = ServerFrame::Response {
+            id: 17,
+            response: RemoteResponse::SendReceipt(receipt.clone()),
+        };
+        let json = encode_server_frame(&frame).unwrap();
+        let wire: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(wire["response"]["result"], "sendReceipt");
+        assert_eq!(wire["response"]["value"]["admittedSequence"], 42);
+        let decoded = parse_server_frame(TungsteniteMessage::Text(json.into())).unwrap().unwrap();
+        assert!(matches!(decoded, ServerFrame::Response {
+            id: 17, response: RemoteResponse::SendReceipt(received),
+        } if received == receipt));
+    }
+
+    #[test]
     fn history_event_sink_delivers_the_event_when_the_cache_write_fails() {
         let store = store();
         // A local session under the cache key makes the remote cache write fail.
@@ -3043,7 +3446,8 @@ mod connection_tests {
                 native_session_id: None, state: super::super::protocol::ConversationConnectionState::Disconnected,
                 config: Default::default(),
             },
-            suspended: true, last_sequence, events,
+            suspended: true, last_sequence, events, has_earlier_transcript: false,
+            pending_events: Vec::new(), active_turn_id: None,
         }
     }
 
@@ -3055,11 +3459,18 @@ mod connection_tests {
     async fn cached_open_tops_up_once_and_pages_from_the_mac_copy() {
         let published = Arc::new(Mutex::new(Vec::new()));
         let captured = published.clone();
+        let directory = std::env::temp_dir().join(format!("assembly-disconnect-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let database = directory.join("sessions.db");
+        let shared = Arc::new(SessionStore::open(&database).unwrap());
         let manager = RemoteConnectionManager::from_environment(
             Arc::new(move |event: AgentConversationEvent| captured.lock().unwrap().push(event.sequence)),
-            Arc::new(|_| {}), store(),
+            Arc::new(|_| {}), shared.clone(),
         ).unwrap();
-        manager.remember("large-history", "cache-test");
+        manager.replace_cached_profile_sessions(
+            "cache-test",
+            &[session("large-history", "cache-test", 1)],
+        ).unwrap();
         // An earlier run saved 2..=3; live event 5 then arrived after a missed 4.
         manager.history.lock().unwrap()
             .snapshot("cache-test", 0, None, &history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
@@ -3112,7 +3523,25 @@ mod connection_tests {
         let late_sink = manager.history_event_sink("cache-test");
         manager.disconnect_profile("cache-test").unwrap();
         assert!(late_sink(vec![large_history_event(32)]).is_err());
-        assert!(manager.history.lock().unwrap().through("cache-test", "large-history").unwrap().is_none());
+        assert_eq!(manager.history.lock().unwrap().through("cache-test", "large-history").unwrap(), Some(6));
+
+        drop(late_sink);
+        drop(requests);
+        drop(manager);
+        drop(shared);
+        let restarted = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), Arc::new(SessionStore::open(&database).unwrap()),
+        ).unwrap();
+        assert_eq!(
+            sequences(&restarted.snapshot("large-history".into(), 4).await.unwrap().unwrap().events),
+            (1..=6).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            sequences(&restarted.events_before("large-history".into(), 4, 1 << 20).await.unwrap().events),
+            vec![1, 2, 3],
+        );
+        drop(restarted);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     fn connect(manager: &RemoteConnectionManager) -> mpsc::Receiver<ClientRequest> {
@@ -3122,6 +3551,60 @@ mod connection_tests {
             task: None, ready: Arc::new(AtomicBool::new(true)),
         });
         requests
+    }
+
+    #[tokio::test]
+    async fn empty_remote_child_selection_opens_online_and_offline() {
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), store(),
+        ).unwrap();
+        manager.remember("large-history", "cache-test");
+        manager.history.lock().unwrap()
+            .snapshot("cache-test", 0, None, &history_snapshot(vec![history_event(1)], 1)).unwrap();
+        let child_owned = super::super::transcript_import::child_owned_id("large-history", "child-empty").unwrap();
+        let history_owned = RemoteHistory::key("cache-test", &child_owned);
+        let mut requests = connect(&manager);
+        let (release, copying) = tokio::sync::oneshot::channel();
+        let server_child = child_owned.clone();
+        let server = tokio::spawn(async move {
+            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected child selection"); };
+            assert!(matches!(command, RemoteCommand::SelectChildHistory { parent_owned_id, child_session_id, request_id: 50 }
+                if parent_owned_id == "large-history" && child_session_id == "child-empty"));
+            reply.send(Ok(RemoteResponse::ChildHistoryId(server_child.clone()))).unwrap();
+            let mut empty = history_snapshot(Vec::new(), 0);
+            empty.connection.owned_id = server_child.clone();
+            empty.connection.native_session_id = Some("child-empty".into());
+            empty.has_earlier_transcript = true;
+            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected child snapshot"); };
+            assert!(matches!(command, RemoteCommand::Snapshot { owned_id, after_sequence: None, .. } if owned_id == server_child));
+            reply.send(Ok(RemoteResponse::Snapshot(Some(empty.clone())))).unwrap();
+            copying.await.unwrap();
+            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected background top-up"); };
+            assert!(matches!(command, RemoteCommand::Snapshot { owned_id, after_sequence: Some(0), .. } if owned_id == server_child));
+            reply.send(Ok(RemoteResponse::Snapshot(Some(empty)))).unwrap();
+            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected start confirmation"); };
+            assert!(matches!(command, RemoteCommand::EventsBefore { owned_id, before_sequence: 1, .. } if owned_id == server_child));
+            reply.send(Ok(RemoteResponse::EventPage(AgentConversationEventPage { events: Vec::new(), has_more: false }))).unwrap();
+        });
+        let selected = manager.select_child_history("large-history".into(), "child-empty".into(), 50, 1024).await.unwrap();
+        assert_eq!(selected.history_owned_id, history_owned);
+        assert!(selected.page.items.is_empty() && selected.page.events.is_empty());
+        assert_eq!(selected.page.watermark, 0);
+        assert!(selected.page.has_before && selected.page.has_earlier_transcript);
+        let copied = manager.history_copied.notified();
+        tokio::pin!(copied);
+        copied.as_mut().enable();
+        release.send(()).unwrap();
+        copied.await;
+        server.await.unwrap();
+        assert!(!manager.history_copies.lock().unwrap().contains(&history_owned));
+        manager.client.lock().unwrap().clients.remove("cache-test");
+        let offline = manager.select_child_history("large-history".into(), "child-empty".into(), 51, 1024).await.unwrap();
+        assert_eq!(offline.history_owned_id, history_owned);
+        assert!(offline.page.items.is_empty() && offline.page.events.is_empty());
+        assert_eq!(offline.page.watermark, 0);
+        assert!(!offline.page.has_before);
+        assert!(offline.page.has_earlier_transcript);
     }
 
     #[tokio::test]
@@ -3180,7 +3663,8 @@ mod connection_tests {
         manager.snapshot("large-history".into(), 1).await.unwrap().unwrap();
         let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected top-up"); };
         reply.send(Err("Connection reset without closing handshake".into())).unwrap();
-        while manager.history_copies.lock().unwrap().contains("large-history") { tokio::task::yield_now().await; }
+        let copy_key = RemoteHistory::key("cache-test", "large-history");
+        while manager.history_copies.lock().unwrap().contains(&copy_key) { tokio::task::yield_now().await; }
 
         // Reconnected: scrolling past the saved edge waits for the copy to resume.
         let mut requests = connect(&manager);
@@ -3217,6 +3701,8 @@ mod connection_tests {
                     config: Default::default(),
                 },
                 suspended: true, last_sequence: event.sequence, events: vec![event.clone()],
+                has_earlier_transcript: true,
+                pending_events: Vec::new(), active_turn_id: None,
             }).unwrap();
             history.page("cache-test", epoch, &event.owned_id, event.sequence, true,
                 &AgentConversationEventPage { events: vec![], has_more: false }).unwrap();
@@ -3565,7 +4051,8 @@ mod connection_tests {
             "payload":{"kind":"connection", "state":"connected"}});
         let snapshot = serde_json::json!({"connection":{"ownedId":"test", "provider":"codex",
             "generation":1, "state":"connected", "config":{}}, "suspended":true,
-            "lastSequence":7, "events":[event.clone()]});
+            "lastSequence":7, "events":[event.clone()], "hasEarlierTranscript":false,
+            "pendingEvents":[], "activeTurnId":null});
         for frame in [serde_json::json!({"type":"event", "event":event.clone()}),
             serde_json::json!({"type":"response", "id":1, "response":{"result":"snapshot", "value":snapshot}}),
             serde_json::json!({"type":"response", "id":2, "response":{"result":"eventPage", "value":{"events":[event], "hasMore":false}}})] {
@@ -3630,12 +4117,21 @@ mod connection_tests {
         )
         .unwrap();
         manager.register_profile(profile("saved")).unwrap();
+        manager.history.lock().unwrap().snapshot(
+            "saved", 0, None, &history_snapshot(vec![history_event(1)], 1),
+        ).unwrap();
+        let stale_history_sink = manager.history_event_sink("saved");
         let attempt = ConnectingAttempt::start(&manager, "saved");
         assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Reconnecting);
 
         // Removal during the attempt answers disconnected immediately.
         manager.remove_profile("saved").unwrap();
         assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Disconnected);
+        let history = manager.history.lock().unwrap();
+        let epoch = history.epoch("saved");
+        assert_eq!(sequences(&history.read_snapshot("saved", epoch, "large-history").unwrap().events), vec![1]);
+        drop(history);
+        assert!(stale_history_sink(vec![history_event(2)]).is_err());
 
         // The pre-removal attempt finishes late: its client is refused, its own
         // actor is aborted, and the removed profile is not resurrected.

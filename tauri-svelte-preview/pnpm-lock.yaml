@@ -8,6 +8,9 @@ patchedDependencies:
   '@keenmate/svelte-treeview@4.8.0':
     hash: 3de2051c6bf236ed156980aa27d669a0a9000a58d95f94a0c35da4b9c5bba49a
     path: patches/@keenmate__svelte-treeview@4.8.0.patch
+  '@tanstack/ai-svelte@0.24.3':
+    hash: 591f13c78fa2252eb9e77e2d4e9a57cb39699f685e45b9d432bf13fd7bf9e0aa
+    path: patches/@tanstack__ai-svelte@0.24.3.patch
   bits-ui@2.18.1:
     hash: af0df22c3b2624c919abaaab29e2523b089a321860ec99b256da65b6d6ffd684
     path: patches/bits-ui@2.18.1.patch
@@ -111,7 +114,7 @@ importers:
         version: 0.63.0(zod@4.6.5)
       '@tanstack/ai-svelte':
         specifier: 0.24.3
-        version: 0.24.3(@tanstack/ai@0.63.0(zod@4.6.5))(svelte@5.56.3)(zod@4.6.5)
+        version: 0.24.3(patch_hash=591f13c78fa2252eb9e77e2d4e9a57cb39699f685e45b9d432bf13fd7bf9e0aa)(@tanstack/ai@0.63.0(zod@4.6.5))(svelte@5.56.3)(zod@4.6.5)
       '@tanstack/svelte-virtual':
         specifier: 3.13.35
         version: 3.13.35(svelte@5.56.3)
@@ -230,6 +233,9 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.3.3
         version: 4.3.3(vite@8.0.16(@types/node@25.9.2)(jiti@2.7.0))
+      '@tanstack/intent':
+        specifier: ^0.5.0
+        version: 0.5.0
       '@tauri-apps/cli':
         specifier: ^2.11.2
         version: 2.11.2
@@ -881,6 +887,11 @@ packages:
   '@tanstack/devtools-event-client@0.4.4':
     resolution: {integrity: sha512-6T5Yop/793YI+H+5J8Hsyj4kCih9sl4t3ElLgKioW5hk3ocn+ZdSJ94tT7vL7uabxSugWYBZlOTMPzEw2puvQw==}
     engines: {node: '>=18'}
+    hasBin: true
+
+  '@tanstack/intent@0.5.0':
+    resolution: {integrity: sha512-27zOOpQLfBTM5cQjqkASf6JH3jggMwr29UhK8dlAI1WP9rjzywJ87/I6meiH/khyPIFNRluh9Q8wlIVrpN4Jpg==}
+    engines: {node: '>=20.12.0'}
     hasBin: true
 
   '@tanstack/svelte-virtual@3.13.35':
@@ -2743,7 +2754,7 @@ snapshots:
     dependencies:
       '@tanstack/devtools-event-client': 0.4.4
 
-  '@tanstack/ai-svelte@0.24.3(@tanstack/ai@0.63.0(zod@4.6.5))(svelte@5.56.3)(zod@4.6.5)':
+  '@tanstack/ai-svelte@0.24.3(patch_hash=591f13c78fa2252eb9e77e2d4e9a57cb39699f685e45b9d432bf13fd7bf9e0aa)(@tanstack/ai@0.63.0(zod@4.6.5))(svelte@5.56.3)(zod@4.6.5)':
     dependencies:
       '@tanstack/ai': 0.63.0(zod@4.6.5)
       '@tanstack/ai-client': 0.36.0(zod@4.6.5)
@@ -2765,6 +2776,8 @@ snapshots:
       - zod
 
   '@tanstack/devtools-event-client@0.4.4': {}
+
+  '@tanstack/intent@0.5.0': {}
 
   '@tanstack/svelte-virtual@3.13.35(svelte@5.56.3)':
     dependencies:

@@ -234,14 +234,17 @@
 		z-index: 3;
 		display: flex;
 		width: 100%;
-		min-height: 33px;
+		min-height: 28px;
 		align-items: center;
-		gap: 7px;
-		padding: 7px 12px;
+		gap: 6px;
+		padding: 8px 16px 4px;
+		line-height: 16px;
 		border: 0;
-		background: var(--color-surface);
-		color: var(--color-text-2);
-		font-size: 13px;
+		background: var(--card);
+		color: var(--muted-foreground);
+		font-size: 11px;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
 		text-align: left;
 		cursor: pointer;
 	}
@@ -258,8 +261,8 @@
 		outline-offset: -2px;
 	}
 	.section-heading :global(.chevron) {
-		width: 13px;
-		height: 13px;
+		width: 12px;
+		height: 12px;
 		flex: 0 0 auto;
 	}
 	.section-heading[aria-expanded="true"] :global(.chevron) {
@@ -268,14 +271,13 @@
 	.section-heading .name {
 		min-width: 0;
 		overflow: hidden;
-		font-weight: 620;
+		font-weight: 600;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.section-heading .count {
 		margin-left: auto;
 		color: var(--color-text-3);
-		font-family: var(--font-mono);
 		font-variant-numeric: tabular-nums;
 	}
 
@@ -312,8 +314,12 @@
 		border-top: 1px solid var(--color-border);
 	}
 
+	/* Rows sit 2px apart, so two highlighted rows never touch. */
 	.rows {
+		display: flex;
 		min-width: 0;
+		flex-direction: column;
+		gap: 2px;
 		margin: 0;
 		padding: 0;
 		list-style: none;

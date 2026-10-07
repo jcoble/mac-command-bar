@@ -49,11 +49,10 @@ function storedRegionsUsable(ids: Iterable<string>): boolean {
 const COMPONENT = 'shell-region';
 
 /** What the two side columns open at, in px, before anyone drags a divider.
- * The sessions column's rows carry a provider mark, three lines of text and a
- * reserved column for their hover actions; at 300 the title had 68px to live
- * in and truncated to a word. The tab pane opens wide enough for a diff or an
- * editor beside the chat. */
-export const SESSIONS_WIDTH = 360;
+ * The sessions column opens so its card is 320px wide, the approved mockup's
+ * rail: the region is the card plus its 3px gutter on each side. The tab pane
+ * opens wide enough for a diff or an editor beside the chat. */
+export const SESSIONS_WIDTH = 326;
 export const TOOLS_WIDTH = 720;
 
 /**

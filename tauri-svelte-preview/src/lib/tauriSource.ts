@@ -1,22 +1,35 @@
-import { parseRemoteWorkspacePath, remoteWorkspacePath, mapWorkspaceSnapshotPaths } from './workspacePaths.ts';
+import { Channel } from '@tauri-apps/api/core';
 import type { AgentConversationConfigState } from './shell/conversation/conversationConfig.ts';
 import type { AgentConversationProvider } from './shell/conversation/conversationTypes.ts';
-import { Channel } from '@tauri-apps/api/core';
+import {
+  trackTauriChannel,
+  trackTauriListener,
+  trackTauriSubscriber
+} from './shell/resourceDiagnostics.svelte.ts';
+import {
+  normalizeWorkspaceSnapshot,
+  type SessionWorkspaceSnapshot
+} from './shell/sessionWorkspaces.ts';
+import type {
+  WorkflowDefinitionV1,
+  WorkflowResultReceipt,
+  WorkflowRunRecord
+} from './shell/workflows/workflowTypes.ts';
 import type {
   ProjectRoot,
   SourceCodeAction,
-  SourceDiagnostic,
   SourceCompletionItem,
-  SourceDirectoryEntry,
   SourceDefinitionTarget,
+  SourceDiagnostic,
+  SourceDirectoryEntry,
   SourceDocumentHighlight,
   SourceInlayHint,
   SourceLspCodeActionRequest,
   SourceLspHover,
   SourceLspLookupRequest,
   SourceLspRenameRequest,
-  SourceLspWorkspaceSymbolRequest,
   SourceLspStatus,
+  SourceLspWorkspaceSymbolRequest,
   SourcePreview,
   SourceRecord,
   SourceReferenceCountResult,
@@ -27,24 +40,11 @@ import type {
   SourceSemanticToken,
   SourceSignatureHelp,
   SourceSymbol,
-  SourceTreeSearchPage,
   SourceTextEdit,
+  SourceTreeSearchPage,
   SourceWorkspaceSymbol
 } from './sourceData.ts';
-import type {
-  WorkflowDefinitionV1,
-  WorkflowResultReceipt,
-  WorkflowRunRecord
-} from './shell/workflows/workflowTypes.ts';
-import {
-  normalizeWorkspaceSnapshot,
-  type SessionWorkspaceSnapshot
-} from './shell/sessionWorkspaces.ts';
-import {
-  trackTauriListener,
-  trackTauriSubscriber,
-  trackTauriChannel
-} from './shell/resourceDiagnostics.svelte.ts';
+import { mapWorkspaceSnapshotPaths, parseRemoteWorkspacePath, remoteWorkspacePath } from './workspacePaths.ts';
 
 export const defaultSourceScanLimit = 10_000;
 export const expandedSourceScanLimit = 25_000;
@@ -117,8 +117,10 @@ export type UsageDailyRow = import('./shell/usage/usageTypes.ts').UsageDailyRow;
 export type UsageDailyTotalsRow = import('./shell/usage/usageTypes.ts').UsageDailyTotalsRow;
 export type AgentConversationCapabilities = import('./shell/conversation/conversationTypes.ts').AgentCapabilities;
 export type AgentConversationEvent = import('./shell/conversation/conversationTypes.ts').AgentConversationEvent;
-export type AgentConversationSnapshot = import('./shell/conversation/conversationTypes.ts').AgentConversationSnapshot;
 export type AgentConversationEventPage = import('./shell/conversation/conversationTypes.ts').AgentConversationEventPage;
+export type AgentConversationItemPage = import('./shell/conversation/conversationTypes.ts').AgentConversationItemPage;
+export type AgentConversationSelectionSnapshot = import('./shell/conversation/conversationTypes.ts').AgentConversationSelectionSnapshot;
+export type AgentConversationChildHistory = import('./shell/conversation/conversationTypes.ts').AgentConversationChildHistory;
 
 export type TerminalOutputPayload = {
   sessionId: string;
@@ -169,6 +171,9 @@ export type ProjectGitStatus = {
   behind: number;
   hasUpstream: boolean;
   files: ProjectGitFileStatus[];
+  /** Working-tree lines added/removed against HEAD; null without a HEAD. */
+  additions?: number | null;
+  deletions?: number | null;
 };
 
 export type GitActionResult = {
@@ -1958,63 +1963,80 @@ export async function probeAgentProviderConfigFromTauri(
     remoteProfileId: string | null;
     cwd: string;
   },
-  signal: AbortSignal
+  signal?: AbortSignal
 ): Promise<AgentConversationConfigState | null> {
-  if (!isTauriRuntime() || signal.aborted) return null;
+  if (!isTauriRuntime() || signal?.aborted) return null;
   const requestId = createAgentConversationRequestId();
   const { invoke } = await import('./workspaceInvoke');
   const cancel = (): void => { void invoke('cancel_agent_provider_probe', { requestId }); };
-  signal.addEventListener('abort', cancel, { once: true });
+  signal?.addEventListener('abort', cancel, { once: true });
   try {
-    if (signal.aborted) return null;
+    if (signal?.aborted) return null;
     const result = await invoke<AgentConversationConfigState>('probe_agent_provider_config', {
       ...input,
       requestId
     });
-    return signal.aborted ? null : result;
+    return signal?.aborted ? null : result;
   } catch (error) {
-    if (signal.aborted) return null;
+    if (signal?.aborted) return null;
     throw error;
-  } finally {
-    signal.removeEventListener('abort', cancel);
-  }
-}
-
-export async function readAgentConversationSnapshotFromTauri(
-  ownedId: string,
-  signal?: AbortSignal
-): Promise<AgentConversationSnapshot | null> {
-  if (!isTauriRuntime() || !ownedId.trim()) return null;
-  if (signal?.aborted) return null;
-  const requestId = createAgentConversationRequestId();
-  const { invoke } = await import('./workspaceInvoke');
-  const cancel = (): void => {
-    void cancelAgentConversationRequestFromTauri(requestId);
-  };
-  signal?.addEventListener('abort', cancel, { once: true });
-  try {
-    if (signal?.aborted) {
-      await cancelAgentConversationRequestFromTauri(requestId);
-      return null;
-    }
-    try {
-      const snapshot = await invoke<AgentConversationSnapshot | null>('read_agent_conversation_snapshot', {
-        ownedId,
-        requestId
-      });
-      return signal?.aborted ? null : snapshot;
-    } catch (error) {
-      if (signal?.aborted) return null;
-      throw error;
-    }
   } finally {
     signal?.removeEventListener('abort', cancel);
   }
 }
 
-export async function cancelAgentConversationSnapshotFromTauri(requestId?: number): Promise<void> {
-  const cancelRequestId = requestId ?? createAgentConversationRequestId();
-  await cancelAgentConversationRequestFromTauri(cancelRequestId);
+export async function readAgentConversationSelectionFromTauri(
+  ownedId: string,
+  maxBytes: number,
+  minimumGeneration?: number,
+  signal?: AbortSignal
+): Promise<AgentConversationSelectionSnapshot | null> {
+  if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
+  const requestId = createAgentConversationRequestId();
+  const cancel = (): void => { void cancelAgentConversationRequestFromTauri(requestId); };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) return null;
+    const { invoke } = await import('./workspaceInvoke');
+    const snapshot = await invoke<AgentConversationSelectionSnapshot | null>(
+      'read_agent_conversation_selection',
+      { ownedId, requestId, maxBytes, minimumGeneration }
+    );
+    if (signal?.aborted || !snapshot) return null;
+    return {
+      ...snapshot,
+      page: {
+        ...snapshot.page,
+        beforeCursor: snapshot.page.beforeCursor ?? undefined,
+        afterCursor: snapshot.page.afterCursor ?? undefined
+      }
+    };
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
+export async function readAgentConversationChildHistoryFromTauri(input: {
+  parentOwnedId: string;
+  childSessionId: string;
+  requestId: number;
+  maxBytes: number;
+  signal?: AbortSignal;
+}): Promise<AgentConversationChildHistory> {
+  const { invoke } = await import('./workspaceInvoke');
+  if (input.signal?.aborted) return Promise.resolve({} as AgentConversationChildHistory);
+  return invoke<AgentConversationChildHistory>('read_agent_conversation_child_history', input);
+}
+
+export async function stopAgentConversationChildHistoryFromTauri(
+  parentOwnedId: string,
+  requestId: number
+): Promise<boolean> {
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<boolean>('stop_agent_conversation_child_history', { parentOwnedId, requestId });
 }
 
 export async function listAgentConversationSessionsFromTauri(): Promise<AgentConversationSessionRecord[] | null> {
@@ -2197,22 +2219,46 @@ export async function listAgentConversationEventsBeforeFromTauri(
   }
 }
 
-/** The page of stored events just newer than `afterSequence`, for scrolling down. */
-export async function listAgentConversationEventsAfterFromTauri(
+export async function listAgentConversationItemsBeforeFromTauri(
+  ownedId: string,
+  beforeSequence: number,
+  maxBytes: number,
+  signal?: AbortSignal
+): Promise<AgentConversationItemPage | null> {
+  if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
+  const { invoke } = await import('./workspaceInvoke');
+  try {
+    const page = await invoke<AgentConversationItemPage>('list_agent_conversation_items_before', {
+      ownedId, beforeSequence, maxBytes
+    });
+    return signal?.aborted ? null : {
+      ...page,
+      beforeCursor: page.beforeCursor ?? undefined,
+      afterCursor: page.afterCursor ?? undefined
+    };
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
+  }
+}
+
+export async function listAgentConversationItemsAfterFromTauri(
   ownedId: string,
   afterSequence: number,
   maxBytes: number,
   signal?: AbortSignal
-): Promise<AgentConversationEventPage | null> {
+): Promise<AgentConversationItemPage | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
   const { invoke } = await import('./workspaceInvoke');
   try {
-    const page = await invoke<AgentConversationEventPage>('list_agent_conversation_events_after', {
-      ownedId,
-      afterSequence,
-      maxBytes
+    const page = await invoke<AgentConversationItemPage>('list_agent_conversation_items_after', {
+      ownedId, afterSequence, maxBytes
     });
-    return signal?.aborted ? null : page;
+    return signal?.aborted ? null : {
+      ...page,
+      beforeCursor: page.beforeCursor ?? undefined,
+      afterCursor: page.afterCursor ?? undefined
+    };
   } catch (error) {
     if (signal?.aborted) return null;
     throw error;
@@ -2819,9 +2865,10 @@ export async function findSourceLspCodeActionsFromTauri(
 
 export async function findSourceLspSignatureHelpFromTauri(
   preview: SourcePreview,
-  request: SourceLspLookupRequest
+  request: SourceLspLookupRequest,
+  signal?: AbortSignal
 ): Promise<SourceSignatureHelp | null> {
-  if (!isTauriRuntime()) {
+  if (!isTauriRuntime() || signal?.aborted) {
     return null;
   }
 
@@ -2834,9 +2881,10 @@ export async function findSourceLspSignatureHelpFromTauri(
 
 export async function findSourceLspInlayHintsFromTauri(
   preview: SourcePreview,
-  request: SourceLspLookupRequest
+  request: SourceLspLookupRequest,
+  signal?: AbortSignal
 ): Promise<SourceInlayHint[] | null> {
-  if (!isTauriRuntime()) {
+  if (!isTauriRuntime() || signal?.aborted) {
     return null;
   }
 
@@ -2849,9 +2897,10 @@ export async function findSourceLspInlayHintsFromTauri(
 
 export async function findSourceLspSemanticTokensFromTauri(
   preview: SourcePreview,
-  request: SourceLspLookupRequest
+  request: SourceLspLookupRequest,
+  signal?: AbortSignal
 ): Promise<SourceSemanticToken[] | null> {
-  if (!isTauriRuntime()) {
+  if (!isTauriRuntime() || signal?.aborted) {
     return null;
   }
 
@@ -2864,9 +2913,10 @@ export async function findSourceLspSemanticTokensFromTauri(
 
 export async function findSourceLspHoverFromTauri(
   preview: SourcePreview,
-  request: SourceLspLookupRequest
+  request: SourceLspLookupRequest,
+  signal?: AbortSignal
 ): Promise<SourceLspHover | null> {
-  if (!isTauriRuntime()) {
+  if (!isTauriRuntime() || signal?.aborted) {
     return null;
   }
 
@@ -2894,9 +2944,10 @@ export async function findSourceLspSymbolsFromTauri(
 
 export async function findSourceLspWorkspaceSymbolsFromTauri(
   preview: SourcePreview,
-  request: SourceLspWorkspaceSymbolRequest
+  request: SourceLspWorkspaceSymbolRequest,
+  signal?: AbortSignal
 ): Promise<SourceWorkspaceSymbol[] | null> {
-  if (!isTauriRuntime()) {
+  if (!isTauriRuntime() || signal?.aborted) {
     return null;
   }
 
@@ -2925,9 +2976,9 @@ export async function readSourceLspDiagnosticsFromTauri(
 export async function findSourceReferencesFromTauri(
   records: SourceRecord[],
   symbolName: string,
-  limit = 50
+  limit = 50 ,signal?: AbortSignal
 ): Promise<SourceReferenceTarget[] | null> {
-  if (!isTauriRuntime()) {
+  if (!isTauriRuntime() || signal?.aborted) {
     return postLocalSourceBridge<SourceReferenceTarget[]>('references', {
       records,
       symbolName,
@@ -2946,9 +2997,10 @@ export async function findSourceReferencesFromTauri(
 export async function findSourceReferencesInRootFromTauri(
   root: string,
   symbolName: string,
-  limit = 50
+  limit = 50 ,
+  signal?: AbortSignal
 ): Promise<SourceReferenceTarget[] | null> {
-  if (!isTauriRuntime()) return null;
+  if (!isTauriRuntime() || signal?.aborted) return null;
 
   const { invoke } = await import('./workspaceInvoke');
   return invoke<SourceReferenceTarget[]>('find_source_references_in_root', {
@@ -2970,9 +3022,10 @@ export async function findSourceReferencesInRootFromTauri(
 export async function countSourceReferencesFromTauri(
   root: string,
   symbolNames: string[],
-  deadlineMs?: number
+  deadlineMs?: number ,
+  signal?: AbortSignal
 ): Promise<SourceReferenceCountResult | null> {
-  if (!isTauriRuntime()) {
+  if (!isTauriRuntime() || signal?.aborted) {
     return postLocalSourceBridge<SourceReferenceCountResult>('reference-counts', {
       root,
       symbolNames,
@@ -2988,8 +3041,8 @@ export async function countSourceReferencesFromTauri(
   });
 }
 
-async function runPathCommand(command: string, path: string): Promise<boolean> {
-  if (!isTauriRuntime()) {
+async function runPathCommand(command: string, path: string, signal?: AbortSignal): Promise<boolean> {
+  if (!isTauriRuntime() || signal?.aborted) {
     return false;
   }
 
@@ -3004,9 +3057,9 @@ export function isTauriRuntime(): boolean {
 
 async function postLocalSourceBridge<T>(
   action: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown> ,signal?: AbortSignal
 ): Promise<T | null> {
-  if (typeof window === 'undefined') {
+  if (typeof window === 'undefined' || signal?.aborted) {
     return null;
   }
 

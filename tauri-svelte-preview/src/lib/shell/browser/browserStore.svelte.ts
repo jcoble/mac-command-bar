@@ -66,6 +66,10 @@ export interface BrowserCompatibilityState {
 }
 
 const workspace = createBrowserWorkspace({ workspaceId: 'next-browser' });
+// The native registry outlives this page and refuses a new tab at or below the
+// highest generation it has seen, so after a reload counting from zero again
+// left every new tab without a page. The clock keeps generations rising.
+workspace.lastGeneration = Date.now();
 const backend = createBrowserBackend();
 /** Pages remembered while no native view exists (after a session switch or
  * leaving the browser tab). Reactive so the top tab row still lists them. */

@@ -13,7 +13,13 @@
     dirty?: boolean;
     /** Editor tabs only: a preview file, replaced by the next one opened. */
     preview?: boolean;
+    /** Changes tab only: working-tree lines added and removed. */
+    additions?: number;
+    deletions?: number;
   }
+
+  /** What the `+` menu can open. */
+  export type NewTabKind = 'browser' | 'diff' | 'git-history' | 'pull-requests' | 'file';
 </script>
 
 <script lang="ts">
@@ -25,17 +31,19 @@
    * pane sits beside the chat it is the title over the chat column; while the
    * pane is expanded it is the first tab, and clicking it collapses the pane.
    * After it: one tab per open file, browser page, Changes, History and Pull
-   * requests, then `+` (new browser tab), expand, and the drawer toggle.
+   * requests, then `+` (a menu: browser page, Changes, History, Pull requests
+   * or a file from the Files drawer), expand, and the drawer toggle.
    *
-   * Tabs shrink toward a minimum before the row scrolls; a thin line parts two
-   * neighbours that are both at rest. Hover details are the native `title`
+   * Tabs keep their natural width up to 180px; once they no longer fit, the
+   * row scrolls rather than squeezing them. Hover details are the native `title`
    * tooltip, the one popup the OS draws above a live browser page.
    *
    * PRESENTATIONAL ONLY: the tabs and the active key are handed in, and every
    * click is handed back out.
    */
   import { untrack } from 'svelte';
-  import FileDiff from '@lucide/svelte/icons/file-diff';
+  import FileSearch from '@lucide/svelte/icons/file-search';
+  import GitBranch from '@lucide/svelte/icons/git-branch';
   import GitCommitHorizontal from '@lucide/svelte/icons/git-commit-horizontal';
   import GitPullRequest from '@lucide/svelte/icons/git-pull-request';
   import Globe from '@lucide/svelte/icons/globe';
@@ -48,6 +56,7 @@
 
   import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
   import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { Separator } from '$lib/components/ui/separator/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import { cn } from '$lib/utils.js';
@@ -66,7 +75,7 @@
     onSelect(key: string): void;
     onClose(key: string): void;
     onSelectChat(): void;
-    onNewBrowserTab(): void;
+    onOpen(kind: NewTabKind): void;
     onToggleExpanded(): void;
     onToggleDrawer(): void;
     editorActions: {
@@ -87,7 +96,7 @@
     onSelect,
     onClose,
     onSelectChat,
-    onNewBrowserTab,
+    onOpen,
     onToggleExpanded,
     onToggleDrawer,
     editorActions
@@ -95,10 +104,22 @@
 
   const ICONS = {
     browser: Globe,
-    diff: FileDiff,
+    diff: GitBranch,
     'git-history': GitCommitHorizontal,
     'pull-requests': GitPullRequest
   } as const;
+
+  const NEW_TAB_ITEMS = [
+    { kind: 'browser', label: 'New browser tab', icon: Globe },
+    { kind: 'diff', label: 'Changes', icon: GitBranch },
+    { kind: 'git-history', label: 'Source control history', icon: GitCommitHorizontal },
+    { kind: 'pull-requests', label: 'Pull requests', icon: GitPullRequest },
+    { kind: 'file', label: 'Open file…', icon: FileSearch }
+  ] as const;
+
+  // Picking an item opens a new surface (or focuses the Files filter), so the
+  // menu must not hand focus back to `+` as it closes; Escape still does.
+  let newTabPicked = false;
 
   let track = $state<HTMLElement | null>(null);
 
@@ -127,19 +148,15 @@
   });
 </script>
 
-{#snippet tabChip(tab: TopTabView, props: Record<string, unknown>, index: number)}
+{#snippet tabChip(tab: TopTabView, props: Record<string, unknown>)}
   {@const active = tab.key === activeKey}
-  {@const parted = index > 0 && !active && tabs[index - 1].key !== activeKey}
   <div
     {...props}
     title={tab.detail}
     class={cn(
-      'group relative flex h-[32px] min-w-[88px] items-center gap-1.5 rounded-[8px] pl-2.5 text-[13px] font-medium transition-colors [flex:0_1_160px]',
-      active || tab.dirty ? 'pr-1' : 'pr-2.5',
-      active ? 'min-w-[120px] bg-accent text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
-      // The line on this tab's left edge goes while either neighbour is hovered.
-      parted &&
-        'before:absolute before:top-1/2 before:left-[-2.5px] before:h-[16px] before:w-px before:-translate-y-1/2 before:bg-border hover:before:opacity-0 [.group:hover+&]:before:opacity-0'
+      'group relative flex h-[30px] max-w-[180px] shrink-0 items-center gap-2 rounded-[6px] pl-3 text-[13px] transition-colors',
+      active || tab.dirty ? 'pr-1.5' : 'pr-3',
+      active ? 'bg-secondary text-foreground' : 'text-foreground/70 hover:bg-accent hover:text-foreground'
     )}
     data-active={active}
   >
@@ -147,7 +164,7 @@
       type="button"
       role="tab"
       aria-selected={active}
-      class="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left outline-none"
+      class="flex h-full min-w-0 flex-1 items-center gap-2 text-left outline-none"
       onclick={() => onSelect(tab.key)}
     >
       {#if tab.kind === 'editor'}
@@ -157,12 +174,18 @@
         <Icon class="size-[16px] shrink-0" aria-hidden="true" />
       {/if}
       <span class={cn('min-w-0 truncate', tab.preview && 'italic')}>{tab.label}</span>
+      {#if tab.additions || tab.deletions}
+        <span class="inline-flex shrink-0 gap-1 text-[11px] tabular-nums">
+          <span class="text-(--color-good)">+{tab.additions}</span>
+          <span class="text-(--color-bad)">−{tab.deletions}</span>
+        </span>
+      {/if}
     </button>
     <Button
       variant="ghost"
       aria-label={`Close ${tab.label}${tab.dirty ? ' (unsaved)' : ''}`}
       class={cn(
-        'size-[24px] shrink-0 rounded-[6px] p-0',
+        'size-[20px] shrink-0 rounded-full p-0',
         // A resting tab's hidden × takes no room, so its label keeps the full
         // width; on hover the × sits over the label's end.
         active || tab.dirty
@@ -191,8 +214,8 @@
     <button
       type="button"
       class={cn(
-        'flex h-[32px] min-w-0 items-center gap-1.5 rounded-[8px] px-2.5 text-[13px] font-medium transition-colors',
-        expanded ? 'max-w-[224px] text-foreground hover:bg-accent/50' : 'bg-accent text-accent-foreground'
+        'flex h-[30px] min-w-0 items-center gap-2 rounded-[6px] px-3 text-[13px] transition-colors',
+        expanded ? 'max-w-[224px] text-foreground hover:bg-accent' : 'bg-secondary text-foreground'
       )}
       title={chatTitle}
       aria-label={expanded ? `Chat: ${chatTitle}. Collapse the pane` : `Chat: ${chatTitle}`}
@@ -204,18 +227,17 @@
     {#if expanded}<Separator orientation="vertical" class="h-4" />{/if}
   </div>
 
-  <div
-    class={cn('flex h-full min-w-0 items-center gap-1 px-2', paneOpen && !expanded && 'border-l border-border')}
-    data-tauri-drag-region
-  >
+  <!-- The tabs and + sit together on the left; the window controls hold the
+       right end, and the free space between them drags the window. -->
+  <div class="flex h-full min-w-0 items-center gap-1 px-2" data-tauri-drag-region>
     <div
       bind:this={track}
-      class="flex min-w-0 flex-1 items-center gap-[4px] overflow-x-auto [scrollbar-width:none]"
+      class="flex min-w-0 items-center gap-1 overflow-x-auto [scrollbar-width:none]"
       role="tablist"
       aria-label="Open tabs"
       use:scrollTabStrip
     >
-      {#each tabs as tab, index (tab.key)}
+      {#each tabs as tab (tab.key)}
         {#if tab.kind === 'editor' && tab.path}
           {@const path = tab.path}
           <!-- Opening the menu activates its tab first, so the menu never
@@ -223,7 +245,7 @@
           <ContextMenu.Root onOpenChange={(open) => { if (open) onSelect(tab.key); }}>
             <ContextMenu.Trigger>
               {#snippet child({ props })}
-                {@render tabChip(tab, props, index)}
+                {@render tabChip(tab, props)}
               {/snippet}
             </ContextMenu.Trigger>
             <ContextMenu.Content class="w-[220px]" aria-label={`Actions for ${tab.label}`}>
@@ -243,23 +265,44 @@
             </ContextMenu.Content>
           </ContextMenu.Root>
         {:else}
-          {@render tabChip(tab, {}, index)}
+          {@render tabChip(tab, {})}
         {/if}
       {/each}
     </div>
 
-    <div class="flex flex-none items-center gap-1">
-      <Tooltip.Root>
-        <Tooltip.Trigger
-          class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
-          aria-label="New browser tab"
-          disabled={!canOpenBrowser}
-          onclick={onNewBrowserTab}
-        >
-          <Plus aria-hidden="true" />
-        </Tooltip.Trigger>
-        <Tooltip.Content side="bottom">New browser tab</Tooltip.Content>
-      </Tooltip.Root>
+    <!-- A menu (role="menu"), so the live browser page steps aside while it is open. -->
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'flex-none')} aria-label="Open a tab">
+        <Plus aria-hidden="true" />
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content
+        side="bottom"
+        align="start"
+        class="w-56"
+        onCloseAutoFocus={(event) => {
+          if (newTabPicked) event.preventDefault();
+          newTabPicked = false;
+        }}
+      >
+        <DropdownMenu.Group>
+          {#each NEW_TAB_ITEMS as item (item.kind)}
+            <DropdownMenu.Item
+              disabled={item.kind === 'browser' && !canOpenBrowser}
+              onSelect={() => {
+                newTabPicked = true;
+                onOpen(item.kind);
+              }}
+            >
+              <item.icon aria-hidden="true" />
+              {item.label}
+            </DropdownMenu.Item>
+          {/each}
+        </DropdownMenu.Group>
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
+
+    <div class="ml-auto flex flex-none items-center gap-1">
+      <Separator orientation="vertical" class="mx-1 h-[14px]" />
       {#if paneOpen}
         <Tooltip.Root>
           <Tooltip.Trigger
@@ -274,7 +317,7 @@
       {/if}
       <Tooltip.Root>
         <Tooltip.Trigger
-          class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), drawerOpen && 'bg-accent text-accent-foreground')}
+          class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
           aria-label={drawerOpen ? 'Close side panel' : 'Open side panel'}
           aria-pressed={drawerOpen}
           onclick={onToggleDrawer}

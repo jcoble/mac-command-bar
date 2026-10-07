@@ -13,14 +13,16 @@
  *   terminal  xterm's theme object. Same story — its own palette, set on the
  *             terminal instance.
  *
- * Houston is what the app looks like TODAY, copied value for value out of the
- * three files that hold those values now, so picking it can never change a
- * pixel. The additional CodeMirror catalog entries keep that shell palette and
- * swap only the visible editor's syntax extension.
+ * Assembly is the default: its colors are copied value for value out of
+ * `nextTokens.css` and `themeChrome.css`, which paint the first frame before
+ * any theme is applied, so picking it can never change a pixel. Houston,
+ * Dracula, Tokyo Night and Graphite set the same names (TSK-1389's theme set).
+ * The additional CodeMirror catalog entries keep the Assembly shell palette
+ * and swap only the visible editor's syntax extension.
  *
  * The copying is the risk. `scripts/themeRegistry.test.mjs` reads the original
- * files and fails if Houston stops agreeing with them, so the shipped palette
- * cannot drift apart quietly.
+ * files and fails if the default theme stops agreeing with them, so the
+ * shipped palette cannot drift apart quietly.
  *
  * This module is deliberately plain data with no imports: no DOM, no store, no
  * Svelte runes. Applying a theme is `themeService.ts`'s job.
@@ -104,12 +106,15 @@ export const PALETTE_TOKEN_NAMES = [
   '--color-bg',
   '--color-surface',
   '--color-elevated',
+  '--color-rail',
+  '--color-overlay',
   '--color-text',
   '--color-text-2',
   '--color-text-3',
   '--color-disabled-text',
   '--color-accent',
   '--color-border',
+  '--color-field-border',
   '--color-focus',
   '--color-focus-solid',
   '--color-selected',
@@ -134,7 +139,7 @@ export const PALETTE_TOKEN_NAMES = [
  * Four colors the dock needs that the shared palette has no name for: the
  * sidebar's section-header text, the ring dockview draws around the section you
  * are working in, and the two tones a visible tab takes when its group is not
- * the focused one. Their Houston values live in
+ * the focused one. Their default (Assembly) values live in
  * `src/lib/shell/styles/themeChrome.css` so the dock still looks right on the
  * very first frame, before any theme has been applied.
  */
@@ -153,11 +158,11 @@ export const TOKEN_NAMES: string[] = [...PALETTE_TOKEN_NAMES, ...CHROME_TOKEN_NA
 /**
  * The terminal's colors, copied from `src/lib/shell/xtermFactory.ts`.
  *
- * BOTH themes use these, on purpose. The terminal in this app has been painted
+ * EVERY theme uses these, on purpose. The terminal in this app has been painted
  * in Dracula's colors since long before themes existed, in the old shell and
- * the new one, so Houston keeps exactly those colors — otherwise simply
- * switching themes on and off would repaint every terminal on screen. Giving
- * Houston a terminal palette of its own is a real design decision and a
+ * the new one, so every theme keeps exactly those colors — otherwise simply
+ * switching themes would repaint every terminal on screen. Giving a theme a
+ * terminal palette of its own is a real design decision and a
  * visible change; it belongs in its own change, not in this one.
  */
 const DRACULA_TERMINAL: TerminalTheme = {
@@ -184,47 +189,48 @@ const DRACULA_TERMINAL: TerminalTheme = {
   brightWhite: '#ffffff'
 };
 
-// ── Houston — what the app looks like today ─────────────────────────────────
+// ── Houston ─────────────────────────────────────────────────────────────────
 
 const HOUSTON: ShellTheme = {
   id: 'houston',
   label: 'Houston',
-  description: 'The dark mint look the app ships with.',
+  description: 'Astro’s Houston palette: cool greys and mint.',
   tokens: {
-    // Copied from src/lib/shell/styles/nextTokens.css. Do not edit one without
-    // the other; the test reads that file and compares.
-    '--color-bg': '#000000',
-    '--color-surface': '#121212',
-    '--color-elevated': '#1c1c1c',
-    '--color-text': '#f1f3f5',
-    '--color-text-2': '#b3b7bf',
-    '--color-text-3': '#8b919b',
-    '--color-disabled-text': '#7f858e',
-    '--color-accent': '#6ed8be',
-    '--color-border': 'rgba(241, 243, 245, 0.07)',
-    '--color-focus': 'rgba(110, 216, 190, 0.42)',
-    '--color-focus-solid': '#6ed8be',
-    '--color-selected': '#263734',
-    '--color-selected-border': '#5cb29b',
-    '--color-hover': '#232323',
-    '--color-live': '#74b6d8',
-    '--color-good': '#85c79a',
-    '--color-bad': '#e28a98',
-    '--color-attention': '#d7b77e',
-    '--color-idle': '#969ca6',
-    '--color-status-idle': '#969ca6',
-    '--color-on-accent': '#10201b',
-    '--color-live-bg': 'rgba(116, 182, 216, 0.12)',
-    '--color-good-bg': 'rgba(133, 199, 154, 0.12)',
-    '--color-bad-bg': 'rgba(226, 138, 152, 0.12)',
-    '--color-bad-bg-strong': 'rgba(226, 138, 152, 0.2)',
-    '--color-attention-bg': 'rgba(215, 183, 126, 0.12)',
-    '--color-scrim': 'rgba(8, 10, 12, 0.58)',
-    // Copied from src/lib/shell/styles/themeChrome.css.
-    '--color-section-header-text': '#8b919b',
-    '--color-section-focus-ring': '#6ed8be',
-    '--color-tab-unfocused-surface': '#191b1e',
-    '--color-tab-unfocused-text': '#b3b7bf'
+    // TSK-1389 (Fable C) Houston: Astro's Houston palette on the shared ladder.
+    '--color-bg': '#101216',
+    '--color-surface': '#17191e',
+    '--color-elevated': '#1e2127',
+    '--color-rail': '#17191e',
+    '--color-overlay': '#2a2d34',
+    '--color-text': '#eef0f9',
+    '--color-text-2': '#a0a6b4',
+    '--color-text-3': '#6c707b',
+    '--color-disabled-text': '#6c707b',
+    '--color-accent': '#4bf3c8',
+    '--color-border': 'rgba(238, 240, 249, 0.08)',
+    '--color-field-border': 'rgba(238, 240, 249, 0.11)',
+    '--color-focus': 'rgba(75, 243, 200, 0.45)',
+    '--color-focus-solid': '#4bf3c8',
+    '--color-selected': '#2f333c',
+    '--color-selected-border': '#4bf3c8',
+    '--color-hover': '#23262d',
+    '--color-live': '#54b9ff',
+    '--color-good': '#4bf3c8',
+    '--color-bad': '#ff6d91',
+    '--color-attention': '#ffd493',
+    '--color-idle': '#a0a6b4',
+    '--color-status-idle': '#a0a6b4',
+    '--color-on-accent': '#0e1013',
+    '--color-live-bg': 'rgba(84, 185, 255, 0.12)',
+    '--color-good-bg': 'rgba(75, 243, 200, 0.12)',
+    '--color-bad-bg': 'rgba(255, 109, 145, 0.12)',
+    '--color-bad-bg-strong': 'rgba(255, 109, 145, 0.2)',
+    '--color-attention-bg': 'rgba(255, 212, 147, 0.12)',
+    '--color-scrim': 'rgba(0, 0, 0, 0.6)',
+    '--color-section-header-text': '#a0a6b4',
+    '--color-section-focus-ring': '#4bf3c8',
+    '--color-tab-unfocused-surface': '#17191e',
+    '--color-tab-unfocused-text': '#a0a6b4'
   },
   monaco: {
     // Copied from src/lib/sourcePreviewAppearance.ts.
@@ -346,44 +352,48 @@ const HOUSTON: ShellTheme = {
   terminal: DRACULA_TERMINAL
 };
 
-// ── Dracula — the second theme, and the proof switching works ───────────────
+// ── Dracula ─────────────────────────────────────────────────────────────────
 
 const DRACULA: ShellTheme = {
   id: 'dracula',
   label: 'Dracula',
   description: 'Dracula’s purple and pink, across the whole app.',
   tokens: {
-    '--color-bg': '#21222c',
+    // TSK-1389 (Fable C) Dracula: the official draculatheme.com palette.
+    '--color-bg': '#191a21',
     '--color-surface': '#282a36',
-    '--color-elevated': '#343746',
+    '--color-elevated': '#30323f',
+    '--color-rail': '#21222c',
+    '--color-overlay': '#343746',
     '--color-text': '#f8f8f2',
-    '--color-text-2': '#b8b8c4',
-    '--color-text-3': '#9298b5',
-    '--color-disabled-text': '#8f95b3',
+    '--color-text-2': '#a3a8c6',
+    '--color-text-3': '#74788f',
+    '--color-disabled-text': '#74788f',
     '--color-accent': '#bd93f9',
-    '--color-border': 'rgba(248, 248, 242, 0.12)',
+    '--color-border': 'rgba(98, 114, 164, 0.3)',
+    '--color-field-border': 'rgba(98, 114, 164, 0.4)',
     '--color-focus': 'rgba(189, 147, 249, 0.45)',
     '--color-focus-solid': '#bd93f9',
     '--color-selected': '#44475a',
-    '--color-selected-border': '#b58bfa',
+    '--color-selected-border': '#bd93f9',
     '--color-hover': '#343746',
     '--color-live': '#8be9fd',
     '--color-good': '#50fa7b',
-    '--color-bad': '#ff6b6b',
+    '--color-bad': '#ff5555',
     '--color-attention': '#f1fa8c',
-    '--color-idle': '#a4a6b8',
-    '--color-status-idle': '#a4a6b8',
-    '--color-on-accent': '#21222c',
+    '--color-idle': '#a3a8c6',
+    '--color-status-idle': '#a3a8c6',
+    '--color-on-accent': '#282a36',
     '--color-live-bg': 'rgba(139, 233, 253, 0.12)',
     '--color-good-bg': 'rgba(80, 250, 123, 0.12)',
     '--color-bad-bg': 'rgba(255, 85, 85, 0.12)',
-    '--color-bad-bg-strong': 'rgba(255, 85, 85, 0.20)',
+    '--color-bad-bg-strong': 'rgba(255, 85, 85, 0.2)',
     '--color-attention-bg': 'rgba(241, 250, 140, 0.12)',
-    '--color-scrim': 'rgba(0, 0, 0, 0.62)',
-    '--color-section-header-text': '#9298b5',
+    '--color-scrim': 'rgba(0, 0, 0, 0.6)',
+    '--color-section-header-text': '#a3a8c6',
     '--color-section-focus-ring': '#bd93f9',
-    '--color-tab-unfocused-surface': '#242631',
-    '--color-tab-unfocused-text': '#b8b8c4'
+    '--color-tab-unfocused-surface': '#282a36',
+    '--color-tab-unfocused-text': '#a3a8c6'
   },
   monaco: {
     id: 'dracula',
@@ -504,12 +514,152 @@ const DRACULA: ShellTheme = {
   terminal: DRACULA_TERMINAL
 };
 
+// ── Assembly, Tokyo Night, Graphite ─────────────────────────────────────────
+//
+// These three have no editor palette of their own yet: the code editor is
+// CodeMirror, which falls back to its base (Houston-coloured) look for any
+// theme it has no extension for, so the Monaco entry simply reuses Houston's.
+
+const ASSEMBLY: ShellTheme = {
+  id: 'assembly',
+  label: 'Assembly',
+  description: 'Near-black surfaces with a green accent. The default.',
+  tokens: {
+    // Copied from src/lib/shell/styles/nextTokens.css and themeChrome.css. Do
+    // not edit one without the other; the test reads those files and compares.
+    '--color-bg': '#000000',
+    '--color-surface': '#121212',
+    '--color-elevated': '#1f1f1f',
+    '--color-rail': '#121212',
+    '--color-overlay': '#282828',
+    '--color-text': '#f5f5f5',
+    '--color-text-2': '#a7a7a7',
+    '--color-text-3': '#6e6e6e',
+    '--color-disabled-text': '#6e6e6e',
+    '--color-accent': '#1ed760',
+    '--color-border': 'rgba(255, 255, 255, 0.08)',
+    '--color-field-border': 'rgba(255, 255, 255, 0.1)',
+    '--color-focus': 'rgba(30, 215, 96, 0.45)',
+    '--color-focus-solid': '#1ed760',
+    '--color-selected': '#2f2f2f',
+    '--color-selected-border': '#1ed760',
+    '--color-hover': '#242424',
+    '--color-live': '#6fb6ff',
+    '--color-good': '#1ed760',
+    '--color-bad': '#f15e6c',
+    '--color-attention': '#f3c969',
+    '--color-idle': '#a7a7a7',
+    '--color-status-idle': '#a7a7a7',
+    '--color-on-accent': '#06140b',
+    '--color-live-bg': 'rgba(111, 182, 255, 0.12)',
+    '--color-good-bg': 'rgba(30, 215, 96, 0.12)',
+    '--color-bad-bg': 'rgba(241, 94, 108, 0.12)',
+    '--color-bad-bg-strong': 'rgba(241, 94, 108, 0.2)',
+    '--color-attention-bg': 'rgba(243, 201, 105, 0.12)',
+    '--color-scrim': 'rgba(0, 0, 0, 0.6)',
+    '--color-section-header-text': '#a7a7a7',
+    '--color-section-focus-ring': '#1ed760',
+    '--color-tab-unfocused-surface': '#121212',
+    '--color-tab-unfocused-text': '#a7a7a7'
+  },
+  monaco: { ...HOUSTON.monaco, id: 'assembly' },
+  terminal: DRACULA_TERMINAL
+};
+
+const TOKYO_NIGHT: ShellTheme = {
+  id: 'tokyo-night',
+  label: 'Tokyo Night',
+  description: 'Deep navy surfaces with a soft blue accent.',
+  tokens: {
+    '--color-bg': '#16161e',
+    '--color-surface': '#1a1b26',
+    '--color-elevated': '#20222f',
+    '--color-rail': '#1a1b26',
+    '--color-overlay': '#24283b',
+    '--color-text': '#c0caf5',
+    '--color-text-2': '#9aa5ce',
+    '--color-text-3': '#69718e',
+    '--color-disabled-text': '#69718e',
+    '--color-accent': '#7aa2f7',
+    '--color-border': 'rgba(169, 177, 214, 0.1)',
+    '--color-field-border': 'rgba(169, 177, 214, 0.14)',
+    '--color-focus': 'rgba(122, 162, 247, 0.45)',
+    '--color-focus-solid': '#7aa2f7',
+    '--color-selected': '#292e42',
+    '--color-selected-border': '#7aa2f7',
+    '--color-hover': '#242838',
+    '--color-live': '#7dcfff',
+    '--color-good': '#9ece6a',
+    '--color-bad': '#f7768e',
+    '--color-attention': '#e0af68',
+    '--color-idle': '#9aa5ce',
+    '--color-status-idle': '#9aa5ce',
+    '--color-on-accent': '#16161e',
+    '--color-live-bg': 'rgba(125, 207, 255, 0.12)',
+    '--color-good-bg': 'rgba(158, 206, 106, 0.12)',
+    '--color-bad-bg': 'rgba(247, 118, 142, 0.12)',
+    '--color-bad-bg-strong': 'rgba(247, 118, 142, 0.2)',
+    '--color-attention-bg': 'rgba(224, 175, 104, 0.12)',
+    '--color-scrim': 'rgba(0, 0, 0, 0.6)',
+    '--color-section-header-text': '#9aa5ce',
+    '--color-section-focus-ring': '#7aa2f7',
+    '--color-tab-unfocused-surface': '#1a1b26',
+    '--color-tab-unfocused-text': '#9aa5ce'
+  },
+  monaco: { ...HOUSTON.monaco, id: 'tokyo-night' },
+  terminal: DRACULA_TERMINAL
+};
+
+const GRAPHITE: ShellTheme = {
+  id: 'graphite',
+  label: 'Graphite',
+  description: 'Neutral near-black with a monochrome accent.',
+  tokens: {
+    '--color-bg': '#09090b',
+    '--color-surface': '#141416',
+    '--color-elevated': '#1c1c1f',
+    '--color-rail': '#111113',
+    '--color-overlay': '#222225',
+    '--color-text': '#ededed',
+    '--color-text-2': '#8f9096',
+    '--color-text-3': '#6a6b70',
+    '--color-disabled-text': '#6a6b70',
+    '--color-accent': '#ededed',
+    '--color-border': 'rgba(255, 255, 255, 0.08)',
+    '--color-field-border': 'rgba(255, 255, 255, 0.11)',
+    '--color-focus': 'rgba(237, 237, 237, 0.35)',
+    '--color-focus-solid': '#ededed',
+    '--color-selected': '#2a2a2e',
+    '--color-selected-border': '#ededed',
+    '--color-hover': '#1f1f23',
+    '--color-live': '#7ab8f5',
+    '--color-good': '#5fd38d',
+    '--color-bad': '#f0616d',
+    '--color-attention': '#e8c268',
+    '--color-idle': '#8f9096',
+    '--color-status-idle': '#8f9096',
+    '--color-on-accent': '#09090b',
+    '--color-live-bg': 'rgba(122, 184, 245, 0.12)',
+    '--color-good-bg': 'rgba(95, 211, 141, 0.12)',
+    '--color-bad-bg': 'rgba(240, 97, 109, 0.12)',
+    '--color-bad-bg-strong': 'rgba(240, 97, 109, 0.2)',
+    '--color-attention-bg': 'rgba(232, 194, 104, 0.12)',
+    '--color-scrim': 'rgba(0, 0, 0, 0.6)',
+    '--color-section-header-text': '#8f9096',
+    '--color-section-focus-ring': '#ededed',
+    '--color-tab-unfocused-surface': '#141416',
+    '--color-tab-unfocused-text': '#8f9096'
+  },
+  monaco: { ...HOUSTON.monaco, id: 'graphite' },
+  terminal: DRACULA_TERMINAL
+};
+
 // ── The roster ──────────────────────────────────────────────────────────────
 
 /** The theme the app opens with, and the one every unknown name falls back to. */
-export const DEFAULT_THEME_ID = 'houston';
+export const DEFAULT_THEME_ID = 'assembly';
 
-/** ThemeMirror entries keep the Houston shell until CodeMirror adds its palette. */
+/** ThemeMirror entries keep the Assembly shell and swap only the editor's syntax colors. */
 const THEMEMIRROR_THEMES: ShellTheme[] = [
   ['amy', 'Amy'],
   ['ayu-light', 'Ayu Light'],
@@ -517,15 +667,22 @@ const THEMEMIRROR_THEMES: ShellTheme[] = [
   ['rose-pine-dawn', 'Rose Pine Dawn'],
   ['tomorrow', 'Tomorrow']
 ].map(([id, label]) => ({
-  ...HOUSTON,
+  ...ASSEMBLY,
   id,
   label,
   description: `${label} CodeMirror syntax theme.`,
-  monaco: { ...HOUSTON.monaco, id }
+  monaco: { ...ASSEMBLY.monaco, id }
 }));
 
 /** Every theme, in the order the chooser should list them. */
-export const THEMES: ShellTheme[] = [HOUSTON, ...THEMEMIRROR_THEMES, DRACULA];
+export const THEMES: ShellTheme[] = [
+  ASSEMBLY,
+  HOUSTON,
+  DRACULA,
+  TOKYO_NIGHT,
+  GRAPHITE,
+  ...THEMEMIRROR_THEMES
+];
 
 const BY_ID = new Map<string, ShellTheme>(THEMES.map((theme) => [theme.id, theme]));
 

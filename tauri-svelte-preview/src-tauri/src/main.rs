@@ -251,6 +251,10 @@ pub(crate) struct ProjectGitStatus {
     behind: usize,
     has_upstream: bool,
     files: Vec<GitFileStatus>,
+    /// Lines added and removed in the working tree against HEAD (tracked files
+    /// only); `None` when there is no HEAD to compare with.
+    additions: Option<usize>,
+    deletions: Option<usize>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -2457,7 +2461,35 @@ pub(crate) fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus,
         });
     }
 
-    parse_project_git_status(&String::from_utf8_lossy(&output.stdout))
+    let mut status = parse_project_git_status(&String::from_utf8_lossy(&output.stdout))?;
+
+    // A repository with no commits has no HEAD; its counts stay absent.
+    let numstat = bounded_process::output(
+        Command::new("git").args(["-C", root_arg.as_str(), "diff", "--numstat", "HEAD"]),
+        "git diff --numstat",
+        bounded_process::LOCAL_COMMAND_TIMEOUT,
+    );
+    if let Some(numstat) = numstat.ok().filter(|numstat| numstat.status.success()) {
+        let (additions, deletions) =
+            parse_git_numstat_totals(&String::from_utf8_lossy(&numstat.stdout));
+        status.additions = Some(additions);
+        status.deletions = Some(deletions);
+    }
+    Ok(status)
+}
+
+/// Sums `git diff --numstat` lines. Binary files report `-` and are skipped.
+fn parse_git_numstat_totals(output: &str) -> (usize, usize) {
+    output.lines().fold((0, 0), |(added, removed), line| {
+        let mut fields = line.split('\t');
+        match (
+            fields.next().and_then(|value| value.parse::<usize>().ok()),
+            fields.next().and_then(|value| value.parse::<usize>().ok()),
+        ) {
+            (Some(plus), Some(minus)) => (added + plus, removed + minus),
+            _ => (added, removed),
+        }
+    })
 }
 
 fn git_history_cursor_offset(cursor: Option<String>) -> Result<usize, String> {
@@ -4722,6 +4754,8 @@ fn parse_project_git_status(output: &str) -> Result<ProjectGitStatus, String> {
         behind: 0,
         has_upstream: false,
         files: Vec::new(),
+        additions: None,
+        deletions: None,
     };
 
     for line in output.lines().filter(|line| !line.trim().is_empty()) {
@@ -5630,16 +5664,17 @@ fn main() {
             agent_conversation::read_agent_conversation_capabilities,
             agent_conversation::close_agent_conversation,
             agent_conversation::delete_agent_conversation_session,
-            agent_conversation::read_agent_conversation_snapshot,
+            agent_conversation::read_agent_conversation_selection,
             agent_conversation::cancel_agent_conversation_request,
-            agent_conversation::cancel_agent_conversation_snapshot,
             agent_conversation::list_agent_conversation_sessions,
             agent_conversation::list_remote_agent_conversation_sessions,
             agent_conversation::list_agent_conversation_events,
             agent_conversation::list_agent_conversation_events_before,
-            agent_conversation::list_agent_conversation_events_after,
+            agent_conversation::list_agent_conversation_items_before,
+            agent_conversation::list_agent_conversation_items_after,
             agent_conversation::update_agent_conversation_session_meta,
-            agent_conversation::read_agent_conversation_transcript,
+            agent_conversation::read_agent_conversation_child_history,
+            agent_conversation::stop_agent_conversation_child_history,
             agent_conversation::begin_agent_conversation_import,
             agent_conversation::finish_agent_conversation_import,
             agent_conversation::extend_agent_conversation_import,
@@ -5653,6 +5688,7 @@ fn main() {
             projection_streams::unregister_terminal_output_stream,
             agent_conversation::save_agent_conversation_attachment,
             agent_conversation::read_agent_conversation_attachments,
+            agent_conversation::read_agent_conversation_selected_attachments,
             agent_conversation::read_agent_conversation_attachment_file,
             agent_conversation::discard_agent_conversation_original,
             agent_conversation::delete_agent_conversation_attachment,
@@ -6997,6 +7033,13 @@ mod tests {
                 ("src/New.ts", "untracked", "untracked", "?", "untracked")
             ]
         );
+    }
+
+    #[test]
+    fn parse_git_numstat_totals_sums_text_files_and_skips_binary() {
+        let output = "12\t3\tsrc/a.ts\n-\t-\tlogo.png\n6\t8\tsrc/b.rs\n0\t0\tempty\n";
+        assert_eq!(parse_git_numstat_totals(output), (18, 11));
+        assert_eq!(parse_git_numstat_totals(""), (0, 0));
     }
 
     #[test]

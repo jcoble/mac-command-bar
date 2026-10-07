@@ -3,7 +3,7 @@
 
   Every panel in the right drawer opens the same way, following the Codex file
   pane: one row with the panel's own control or note on the left, how many
-  things are in it, and round 32px icon actions on the right (sized here, so
+  things are in it, and round 28px icon actions on the right (sized here, so
   every panel's header matches the Files one). The drawer's tab row
   already names the panel, so the name is the header's accessible label only.
   A panel with nothing to show here gets just the top padding.
@@ -58,7 +58,7 @@
       <Chip tone="count">{count}</Chip>
     {/if}
     {#if actions}
-      <div class="flex shrink-0 items-center gap-1 [&_button]:size-[32px] [&_button]:rounded-full [&_svg]:size-[16px]">
+      <div class="flex shrink-0 items-center gap-1 [&_button]:size-7 [&_button]:rounded-full [&_svg]:size-4">
         {@render actions()}
       </div>
     {/if}

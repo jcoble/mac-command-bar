@@ -8,36 +8,15 @@
 	 * active tab (`topTabs`) decides what the pane shows; one effect below
 	 * hands that choice to the editor and browser stores.
 	 */
-	import { onMount, untrack } from "svelte";
 	import { Button } from "$lib/components/ui/button/index.js";
+	import { onMount, untrack } from "svelte";
 
 	import { PRODUCT_DOCUMENT_TITLE } from "$lib/productIdentity";
 
-	import "$lib/shell/styles/nextTokens.css";
 	import "$lib/shell/styles/next.css";
+	import "$lib/shell/styles/nextTokens.css";
 	import "$lib/shell/styles/themeChrome.css";
 
-	import { registerSessionRowJumpTarget } from "$lib/shell/components/sessionRowJump.ts";
-	import PendingFirstMessage from "$lib/shell/components/conversation/PendingFirstMessage.svelte";
-	import ConversationSurface from "$lib/shell/components/ConversationSurface.svelte";
-	import { sendStructuredMessage } from "$lib/shell/conversation/conversationService";
-	import {
-		getConversationSession,
-		setConversationAttachments,
-	} from "$lib/shell/conversation/conversationStore.svelte";
-	import DockPanel from "$lib/shell/components/DockPanel.svelte";
-	import EditorPanel from "$lib/shell/components/EditorPanel.svelte";
-	import GitDiffView from "$lib/shell/components/GitDiffView.svelte";
-	import GitHistoryView from "$lib/shell/components/git/GitHistoryView.svelte";
-	import PullRequestWorkspace from "$lib/shell/components/github/PullRequestWorkspace.svelte";
-	import RightPanel from "$lib/shell/components/RightPanel.svelte";
-	import RightPanelTabs from "$lib/shell/components/RightPanelTabs.svelte";
-	import TopTabRow, { type TopTabView } from "$lib/shell/components/TopTabRow.svelte";
-	import BrowserPanel from "$lib/shell/panels/browser/BrowserPanel.svelte";
-	import { pullRequestSelection } from "$lib/shell/components/github/pullRequestSelection.svelte";
-	import { topTabs } from "$lib/shell/layout/topTabs.svelte";
-	import { parseTopTabKey } from "$lib/shell/layout/topTabsOps";
-	import { editorState, pinEditorFile } from "$lib/shell/editor/editorStore.svelte";
 	import {
 		browser,
 		captureBrowserState,
@@ -46,29 +25,45 @@
 		queueBrowserPageTab,
 		selectBrowserPageTab,
 	} from "$lib/shell/browser/browserStore.svelte";
+	import PendingFirstMessage from "$lib/shell/components/conversation/PendingFirstMessage.svelte";
+	import ConversationSurface from "$lib/shell/components/ConversationSurface.svelte";
+	import DockPanel from "$lib/shell/components/DockPanel.svelte";
+	import EditorPanel from "$lib/shell/components/EditorPanel.svelte";
+	import GitHistoryView from "$lib/shell/components/git/GitHistoryView.svelte";
+	import GitDiffView from "$lib/shell/components/GitDiffView.svelte";
+	import { pullRequestSelection } from "$lib/shell/components/github/pullRequestSelection.svelte";
+	import PullRequestWorkspace from "$lib/shell/components/github/PullRequestWorkspace.svelte";
+	import RightPanel from "$lib/shell/components/RightPanel.svelte";
+	import RightPanelTabs from "$lib/shell/components/RightPanelTabs.svelte";
+	import { registerSessionRowJumpTarget } from "$lib/shell/components/sessionRowJump.ts";
 	import SessionsColumn from "$lib/shell/components/SessionsColumn.svelte";
 	import ShellFrame from "$lib/shell/components/ShellFrame.svelte";
 	import ShellOverlays from "$lib/shell/components/ShellOverlays.svelte";
-	import UtilityStrip from "$lib/shell/components/UtilityStrip.svelte";
+	import TopTabRow, { type NewTabKind, type TopTabView } from "$lib/shell/components/TopTabRow.svelte";
 	import type { UtilityId } from "$lib/shell/components/utilityStrip";
+	import UtilityStrip from "$lib/shell/components/UtilityStrip.svelte";
+	import { sendStructuredMessage } from "$lib/shell/conversation/conversationService";
+	import { getConversationSession, setConversationAttachments } from "$lib/shell/conversation/conversationStore.svelte";
+	import { editorState, pinEditorFile } from "$lib/shell/editor/editorStore.svelte";
+	import { topTabs } from "$lib/shell/layout/topTabs.svelte";
+	import { parseTopTabKey } from "$lib/shell/layout/topTabsOps";
+	import BrowserPanel from "$lib/shell/panels/browser/BrowserPanel.svelte";
+	import { parseRemoteWorkspacePath } from "$lib/workspacePaths";
 
 	import { SessionSelectionController } from "$lib/shell/controllers/sessionSelectionController.svelte";
-	import { ownedSessionMetaForBackend } from "$lib/shell/ownedSessions";
-	import { setOwnedSessionStatus, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
-	import { updateAgentConversationSessionMetaFromTauri } from "$lib/tauriSource";
-	import { WorkbenchController } from "$lib/shell/controllers/workbenchController.svelte";
 	import { startShell, stopShell } from "$lib/shell/controllers/shellStartup";
-	import { gitService } from "$lib/shell/git/gitService";
+	import { WorkbenchController } from "$lib/shell/controllers/workbenchController.svelte";
 	import { gitPanel } from "$lib/shell/git/gitPanelStore.svelte";
-	import type { CenterTabId, OpenPullRequestDiffRequest } from "$lib/shell/workbenchNavigation";
-	import { diffPathFor } from "$lib/shell/sessionWorkspaces";
+	import { gitService } from "$lib/shell/git/gitService";
 	import { registerSessionHistoryHost } from "$lib/shell/history/sessionHistoryHost";
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
 	import type { ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow";
-	import {
-		clearWorkbenchNavigation,
-		registerWorkbenchNavigation,
-	} from "$lib/shell/workbenchNavigation";
+	import { ownedSessionMetaForBackend } from "$lib/shell/ownedSessions";
+	import { diffPathFor } from "$lib/shell/sessionWorkspaces";
+	import { setOwnedSessionStatus, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
+	import type { CenterTabId, OpenPullRequestDiffRequest } from "$lib/shell/workbenchNavigation";
+	import { clearWorkbenchNavigation, registerWorkbenchNavigation } from "$lib/shell/workbenchNavigation";
+	import { updateAgentConversationSessionMetaFromTauri } from "$lib/tauriSource";
 
 	const selection = new SessionSelectionController();
 	const workbench = new WorkbenchController();
@@ -84,14 +79,30 @@
 	let editorPanel = $state<EditorPanel | null>(null);
 	let overlays = $state<ShellOverlays | null>(null);
 	let openUtility = $state<UtilityId | null>(null);
-	let sessionsRailWidth = $state(360);
+	let sessionsRailWidth = $state(326);
 	// Zero until the frame reports the pane's laid-out width: the browser may
 	// place its native view only once the pane really has a size.
 	let toolsRailWidth = $state(0);
 	let pullRequestDiff = $state<OpenPullRequestDiffRequest | null>(null);
 	let routeDisposal: Promise<void> | null = null;
+	/** The right drawer's card width; its left edge drags it between these. */
+	const DRAWER_MIN_WIDTH = 240;
+	const DRAWER_MAX_WIDTH = 640;
+	let drawerWidth = $state(320);
+	let drawerDrag: { x: number; width: number } | null = null;
+	/** Bumped to ask the Files drawer to focus its filter. */
+	let filesFilterFocus = $state(0);
 
-	async function changeSessionStatus(ownedId: string, status: 'working' | 'done' | 'settled'): Promise<void> {
+	/**
+	 * Any open menu, list, card or dialog. The browser page is a native view
+	 * painted above every DOM layer, so it steps aside (hidden, still live)
+	 * while one is up. Tooltips are left out on purpose.
+	 */
+	const POPUP_SELECTOR =
+		'[role="dialog"], [role="alertdialog"], [role="menu"], [data-select-content], dialog[open], [data-testid="usage-live-quota"]';
+	let popupOpen = $state(false);
+
+	async function changeSessionStatus(ownedId: string, status: "working" | "done" | "settled"): Promise<void> {
 		const before = selection.railOwned.find((session) => session.ownedId === ownedId);
 		const updated = setOwnedSessionStatus(ownedId, status, new Date());
 		if (!before || !updated) return;
@@ -100,11 +111,11 @@
 				ownedId,
 				model: null,
 				effort: null,
-				meta: ownedSessionMetaForBackend(updated)
+				meta: ownedSessionMetaForBackend(updated),
 			});
 		} catch (error) {
 			updateOwnedSession(ownedId, { completedAt: before.completedAt, settledAt: before.settledAt });
-			console.error('Could not change session status', error);
+			console.error("Could not change session status", error);
 		}
 	}
 
@@ -131,19 +142,45 @@
 				const file = editorState.openFiles.find((entry) => entry.path === ref.id);
 				if (!file) return [];
 				const detail = [file.relativePath, file.path, file.dirty ? "Unsaved changes" : ""];
-				return [{ key, kind: "editor", label: file.fileName, detail: detail.filter(Boolean).join("\n"), path: file.path, dirty: Boolean(file.dirty), preview: Boolean(file.previewTab) }];
+				return [
+					{
+						key,
+						kind: "editor",
+						label: file.fileName,
+						detail: detail.filter(Boolean).join("\n"),
+						path: file.path,
+						dirty: Boolean(file.dirty),
+						preview: Boolean(file.previewTab),
+					},
+				];
 			}
 			if (ref.kind === "browser") {
 				const tab = browserTabs.find((entry) => entry.id === ref.id);
 				const label = tab?.title || "New browser tab";
 				return [{ key, kind: "browser", label, detail: [label, tab?.url ?? ""].filter(Boolean).join("\n") }];
 			}
-			if (ref.kind === "diff") return [{ key, kind: "diff", label: "Changes", detail: gitPanel.selectedPath || "Working tree changes" }];
-			if (ref.kind === "git-history") return [{ key, kind: "git-history", label: "History", detail: gitPanel.historyPath || "Whole repository" }];
+			if (ref.kind === "diff")
+				return [
+					{
+						key,
+						kind: "diff",
+						label: "Changes",
+						detail: gitPanel.selectedPath || "Working tree changes",
+						additions: gitPanel.status?.additions ?? 0,
+						deletions: gitPanel.status?.deletions ?? 0,
+					},
+				];
+			if (ref.kind === "git-history")
+				return [{ key, kind: "git-history", label: "History", detail: gitPanel.historyPath || "Whole repository" }];
 			const pullRequest = pullRequestSelection.selected;
 			return [
 				pullRequest
-					? { key, kind: "pull-requests", label: `PR #${pullRequest.number}`, detail: `PR #${pullRequest.number} — ${pullRequest.title}\n${pullRequest.headBranch} → ${pullRequest.baseBranch}` }
+					? {
+							key,
+							kind: "pull-requests",
+							label: `PR #${pullRequest.number}`,
+							detail: `PR #${pullRequest.number} — ${pullRequest.title}\n${pullRequest.headBranch} → ${pullRequest.baseBranch}`,
+						}
 					: { key, kind: "pull-requests", label: "Pull requests", detail: "Pull requests" },
 			];
 		});
@@ -176,6 +213,24 @@
 		});
 	});
 
+	// Only the native browser needs to step aside for DOM popups, so the page is
+	// watched only while a browser tab is on screen: a whole-document query on
+	// every DOM change would otherwise run for the life of the app.
+	$effect(() => {
+		if (!paneShowing || topTabs.activeKind !== "browser" || toolsRailWidth <= 0) {
+			popupOpen = false;
+			return;
+		}
+		// Popups mount and unmount as DOM nodes, wherever they are drawn.
+		const report = () => {
+			popupOpen = document.querySelector(POPUP_SELECTOR) !== null;
+		};
+		const popups = new MutationObserver(report);
+		popups.observe(document.body, { childList: true, subtree: true });
+		report();
+		return () => popups.disconnect();
+	});
+
 	onMount(() => {
 		const historyStop = new AbortController();
 		const releaseSessionRowJump = registerSessionRowJumpTarget({
@@ -193,7 +248,7 @@
 			},
 			openPullRequestDiff: (request) => {
 				pullRequestDiff = request;
-				workbench.setDiffMode('side-by-side');
+				workbench.setDiffMode("side-by-side");
 			},
 			openFileTimeline: async (request) => {
 				const ownedId = selection.activeOwnedId;
@@ -213,10 +268,7 @@
 				const conversation = getConversationSession(request.ownedId);
 				if (!conversation) throw new Error("The selected conversation is not ready");
 				if (request.attachments?.length) {
-					setConversationAttachments(request.ownedId, [
-						...conversation.attachments,
-						...request.attachments,
-					]);
+					setConversationAttachments(request.ownedId, [...conversation.attachments, ...request.attachments]);
 				}
 				await sendStructuredMessage(request.ownedId, request.text);
 			},
@@ -282,7 +334,7 @@
 	async function restoreSelectedWorkbench(): Promise<void> {
 		workbench.restoreSessionState(selection.activeWorkspaceSnapshot);
 		const storedDiffPath = diffPathFor(selection.activeWorkspaceSnapshot, selection.durableSessionRoot);
-		if (storedDiffPath && selection.activeWorkspaceSnapshot?.topTabs?.order.includes('diff')) {
+		if (storedDiffPath && selection.activeWorkspaceSnapshot?.topTabs?.order.includes("diff")) {
 			await gitService.showStoredDiff(selection.durableSessionRoot, storedDiffPath);
 		}
 	}
@@ -349,6 +401,25 @@
 		persistTabs();
 	}
 
+	/** The `+` menu: one of the top-row kinds, or a file picked from the Files drawer. */
+	async function openFromMenu(kind: NewTabKind): Promise<void> {
+		if (kind === "browser") return openNewBrowserTab();
+		if (kind === "file") {
+			selectRightTab("files");
+			filesFilterFocus += 1;
+			return;
+		}
+		if (kind === "git-history") {
+			// Clearing the path may re-read History; a session switch meanwhile
+			// must not open the tab in the session that arrived.
+			const ownedId = selection.activeOwnedId;
+			const root = selection.durableSessionRoot;
+			await gitService.clearHistoryPath();
+			if (selection.activeOwnedId !== ownedId || selection.durableSessionRoot !== root) return;
+		} else if (kind === "pull-requests") pullRequestSelection.selected = null;
+		selectCenterTab(kind);
+	}
+
 	function selectRightTab(id: Parameters<WorkbenchController["selectRightTab"]>[0]): void {
 		workbench.selectRightTab(id);
 		const ownedId = selection.activeOwnedId;
@@ -394,10 +465,10 @@
 					void selectSession(ownedId);
 				}}
 				onAskRemove={handleAskRemoveSession}
-				onComplete={(ownedId) => void changeSessionStatus(ownedId, 'done')}
-				onReopen={(ownedId) => void changeSessionStatus(ownedId, 'working')}
-				onSettle={(ownedId) => void changeSessionStatus(ownedId, 'settled')}
-				onUnsettle={(ownedId) => void changeSessionStatus(ownedId, 'done')}
+				onComplete={(ownedId) => void changeSessionStatus(ownedId, "done")}
+				onReopen={(ownedId) => void changeSessionStatus(ownedId, "working")}
+				onSettle={(ownedId) => void changeSessionStatus(ownedId, "settled")}
+				onUnsettle={(ownedId) => void changeSessionStatus(ownedId, "done")}
 			/>
 		</div>
 	</div>
@@ -412,12 +483,14 @@
 		ownedId={selection.activeOwnedId}
 		filesRoot={selection.filesProjectionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
+		filesFilterFocusRequest={filesFilterFocus}
 		expandedPathsByRoot={selection.expandedPathsByRoot}
 		onExpandedPathsChange={(ownedId, root, paths) => selection.rememberExpandedPaths(ownedId, root, paths)}
 		filesInspectionRoot={selection.activeWorkspaceSnapshot?.filesInspectionRoot ?? null}
 		sourceControlInspectionRoot={selection.activeWorkspaceSnapshot?.sourceControlInspectionRoot ?? null}
 		onFilesInspectionRootChange={(root) => selection.rememberWorkspaceState({ filesInspectionRoot: root })}
-		onSourceControlInspectionRootChange={(root) => selection.rememberWorkspaceState({ sourceControlInspectionRoot: root })}
+		onSourceControlInspectionRootChange={(root) =>
+			selection.rememberWorkspaceState({ sourceControlInspectionRoot: root })}
 		sourceControlWorkspace={selection.activeWorkspaceSnapshot?.sourceControl}
 		onSourceControlWorkspaceChange={(ownedId, sourceControl) => {
 			if (selection.activeOwnedId === ownedId) selection.rememberWorkspaceState({ sourceControl });
@@ -453,22 +526,30 @@
 				<ConversationSurface
 					owned={selection.railOwned}
 					activeOwnedId={selection.chatOwnedId}
-					pendingFirstMessage={selection.newSession.pendingFirstMessage?.ownedId === selection.chatOwnedId ? selection.newSession.pendingFirstMessage.text : null}
+					pendingFirstMessage={selection.newSession.pendingFirstMessage?.ownedId === selection.chatOwnedId
+						? selection.newSession.pendingFirstMessage.text
+						: null}
 					rootAvailable={selection.activeRootAvailable}
 					onPersistAttachmentIds={(ownedId, ids) => selection.persistConversationAttachmentIds(ownedId, ids)}
 				/>
 			</div>
 		{/if}
 		{#if selection.activeOwnedId && (!selection.hasChatProjection || selection.chatOwnedId !== selection.activeOwnedId)}
-			<div class="conversation-data-isolation" class:pending-first-send={selection.newSession.pendingFirstMessage?.ownedId === selection.activeOwnedId} aria-label={selection.selectionError ? "Conversation unavailable" : "Loading conversation"}>
-                {#if selection.newSession.pendingFirstMessage?.ownedId === selection.activeOwnedId}
-                  <PendingFirstMessage text={selection.newSession.pendingFirstMessage.text} />
+			<div
+				class="conversation-data-isolation"
+				class:pending-first-send={selection.newSession.pendingFirstMessage?.ownedId === selection.activeOwnedId}
+				aria-label={selection.selectionError ? "Conversation unavailable" : "Loading conversation"}
+			>
+				{#if selection.newSession.pendingFirstMessage?.ownedId === selection.activeOwnedId}
+					<PendingFirstMessage text={selection.newSession.pendingFirstMessage.text} />
 				{:else if selection.selectionError}
 					<p>{selection.selectionError}</p>
 					{#if selection.disconnectedRemoteProfileId || selection.connectingRemote}
-						<Button disabled={selection.connectingRemote} onclick={() => void connectSelectedRemote()}>{selection.connectingRemote ? 'Connecting…' : 'Connect'}</Button>
+						<Button disabled={selection.connectingRemote} onclick={() => void connectSelectedRemote()}
+							>{selection.connectingRemote ? "Connecting…" : "Connect"}</Button
+						>
 					{/if}
-                {:else}<p>Loading conversation…</p>{/if}
+				{:else}<p>Loading conversation…</p>{/if}
 			</div>
 		{:else if !selection.activeOwnedId}
 			<div class="conversation-data-isolation" aria-label="No session selected">
@@ -504,8 +585,14 @@
 			/>
 		</div>
 		<div class="pane-body" class:showing={paneShowing && topTabs.activeKind === "browser"}>
+			<!-- The page is a native view painted above every DOM layer, so it
+			     steps aside (hidden, still live) while Settings or a popup is up. -->
 			<BrowserPanel
-				visible={paneShowing && topTabs.activeKind === "browser" && toolsRailWidth > 0}
+				visible={paneShowing &&
+					topTabs.activeKind === "browser" &&
+					toolsRailWidth > 0 &&
+					!overlays?.settingsOpen() &&
+					!popupOpen}
 				panelOpen={paneShowing}
 				root={browserRoot}
 				ownedId={selection.activeOwnedId}
@@ -534,7 +621,7 @@
 				<GitDiffView
 					showing={true}
 					rootAvailable={pullRequestDiff !== null || selection.activeRootAvailable}
-					pullRequestDiff={pullRequestDiff}
+					{pullRequestDiff}
 					mode={workbench.diffMode}
 					onModeChange={(mode) => workbench.setDiffMode(mode)}
 				/>
@@ -547,7 +634,7 @@
 	class="next-shell"
 	style:--sessions-rail-width={`${sessionsRailWidth}px`}
 	style:--tools-rail-width={`${toolsRailWidth}px`}
-	style:--drawer-width={workbench.rightPanelOpen ? "326px" : "0px"}
+	style:--drawer-width={workbench.rightPanelOpen ? `${drawerWidth + 8}px` : "0px"}
 	oncontextmenu={(event) => {
 		const target = event.target instanceof Element ? event.target : null;
 		if (target?.closest('input, textarea, [contenteditable="true"]')) return;
@@ -567,7 +654,7 @@
 			onSelect={selectTopTab}
 			onClose={closeTopTab}
 			onSelectChat={() => selectCenterTab("session")}
-			onNewBrowserTab={openNewBrowserTab}
+			onOpen={(kind) => void openFromMenu(kind)}
 			onToggleExpanded={() => workbench.setExpanded(!workbench.expanded)}
 			onToggleDrawer={() => workbench.toggleRightPanel()}
 			editorActions={{
@@ -594,7 +681,32 @@
 		</div>
 		<!-- Closing hides the drawer rather than unmounting it (measured: unmounting
 		     saved no memory and made reopening slower). Hidden, it takes no width. -->
-		<aside class="right-drawer" class:open={workbench.rightPanelOpen} aria-label="Tools" aria-hidden={!workbench.rightPanelOpen}>
+		<aside
+			class="right-drawer"
+			class:open={workbench.rightPanelOpen}
+			style:flex-basis={`${drawerWidth}px`}
+			aria-label="Tools"
+			aria-hidden={!workbench.rightPanelOpen}
+		>
+			<div
+				class="right-drawer-resize"
+				role="separator"
+				aria-orientation="vertical"
+				aria-label="Resize the drawer"
+				onpointerdown={(event) => {
+					event.currentTarget.setPointerCapture(event.pointerId);
+					drawerDrag = { x: event.clientX, width: drawerWidth };
+				}}
+				onpointermove={(event) => {
+					if (drawerDrag)
+						drawerWidth = Math.min(
+							DRAWER_MAX_WIDTH,
+							Math.max(DRAWER_MIN_WIDTH, drawerDrag.width + drawerDrag.x - event.clientX),
+						);
+				}}
+				onpointerup={() => (drawerDrag = null)}
+				onpointercancel={() => (drawerDrag = null)}
+			></div>
 			<RightPanelTabs
 				activeId={workbench.rightTab}
 				extraId={workbench.rightExtraTab}
@@ -611,6 +723,7 @@
 		{openUtility}
 		onOpenUtility={(id, anchor) => overlays?.openUtility(id, anchor)}
 		onOpenSettings={() => overlays?.openSettings()}
+		location={browserRoot ? (parseRemoteWorkspacePath(browserRoot) ? "Remote" : "Local Mac") : null}
 	/>
 
 	<ShellOverlays
@@ -651,7 +764,8 @@
 	}
 
 	/* The drawer is a card in the same gutter as the frame's own cards; its
-	   320px plus the 6px gutter is the --drawer-width the chrome row adds. The
+	   width (320px until its left edge is dragged) plus the 8px gutter is the
+	   --drawer-width the chrome row adds. The
 	   column takes its full width at once (an animated width would lay the
 	   whole frame out again every frame); only the card slides in, and the
 	   animation ends. Closed, it is display:none and releases its width. */
@@ -660,8 +774,9 @@
 		flex: 0 0 320px;
 		flex-direction: column;
 		min-height: 0;
-		margin: 6px 6px 6px 0;
-		border-radius: var(--radius-sm);
+		position: relative;
+		margin: 8px 8px 8px 0;
+		border-radius: var(--radius-md);
 		overflow: hidden;
 		background: var(--panel-fade), var(--color-surface);
 		background-repeat: no-repeat;
@@ -683,6 +798,15 @@
 		.right-drawer.open {
 			animation: none;
 		}
+	}
+
+	.right-drawer-resize {
+		position: absolute;
+		inset: 0 auto 0 0;
+		z-index: 1;
+		width: 6px;
+		cursor: col-resize;
+		touch-action: none;
 	}
 
 	.right-drawer-body {
@@ -716,13 +840,11 @@
 		flex: 0 0 calc(var(--center-head-row-height) + 6px);
 		align-items: center;
 		min-height: 0;
-		border-bottom: 1px solid var(--color-border);
 		background: var(--color-bg);
 	}
 
 	.window-sessions-cap {
 		height: 100%;
-		border-right: 1px solid var(--color-border);
 	}
 
 	.sessions-region {
@@ -777,5 +899,8 @@
 		background-repeat: no-repeat;
 	}
 
-	.conversation-data-isolation.pending-first-send { align-items: flex-start; justify-content: flex-end; }
+	.conversation-data-isolation.pending-first-send {
+		align-items: flex-start;
+		justify-content: flex-end;
+	}
 </style>
