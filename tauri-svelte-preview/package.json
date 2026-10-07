@@ -79,6 +79,7 @@
     "test:git-working-tree-actions": "node --experimental-strip-types scripts/gitWorkingTreeActions.test.mjs",
     "test:commit-suggestion": "node --experimental-strip-types scripts/commitSuggestion.test.mjs",
     "test:parse-unified-diff": "node --experimental-strip-types scripts/parseUnifiedDiff.test.mjs",
+    "test:diff-rows": "node --experimental-strip-types scripts/diffRows.test.ts",
     "test:session-context": "node --experimental-strip-types scripts/sessionContext.test.ts",
     "test:explorer": "node --experimental-strip-types scripts/explorerStore.test.mjs",
     "test:files-panel-actions": "node --experimental-strip-types scripts/filesPanelActions.test.ts",
