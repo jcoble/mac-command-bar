@@ -10,7 +10,7 @@ It runs on your Mac, or you can keep everything on a remote Linux machine (proje
 
 [Releases](https://github.com/jcoble/mac-command-bar/releases) · [Issues](https://github.com/jcoble/mac-command-bar/issues) · [Architecture guide](main-architecture-explained.html) · [Contributing](CONTRIBUTING.md)
 
-![Assembly: sessions grouped by project on the left, an agent conversation in the center, Source Control on the right](docs/images/assembly-main-window.png)
+![Assembly: sessions grouped by project on the left, an agent working live in the center with its tool calls, Source Control on the right](docs/images/assembly-main-window.png)
 <!-- screenshot: Supercharged editor with reference counts and the problems list -->
 <!-- screenshot: pull request workspace with the side-by-side diff -->
 <!-- screenshot: Settings → Connections with a remote machine connected -->
