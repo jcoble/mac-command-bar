@@ -83,6 +83,8 @@
     onForkNativeCli?(ownedId: string): void | Promise<void>;
     onReturnToStructured?(ownedId: string): void | Promise<void>;
     onPersistAttachmentIds(ownedId: string, ids: readonly string[]): Promise<void>;
+    /** Open one of this session's sub-agents in the Agents panel. */
+    onOpenChild?(ownedId: string, childId: string): void;
   }
   let {
     owned,
@@ -93,7 +95,8 @@
     onOpenNativeCli,
     onForkNativeCli,
     onReturnToStructured,
-    onPersistAttachmentIds
+    onPersistAttachmentIds,
+    onOpenChild
   }: Props = $props();
   const active = $derived(owned.find((item) => item.ownedId === activeOwnedId) ?? null);
   let remoteMachine = $state<RemoteAssemblyProfile | null>(null);
@@ -188,11 +191,15 @@
   const activityLabel = $derived(
     turnActive && conversation && !conversation.selectedHasAfter
       ? turnActivityLabel(visibleTimeline, activeTurnId, pendingApprovals.length, pendingInputs.length)
-      : active && conversation && !conversation.selectedHasAfter
-        && active.backgroundWork?.some((item) => item.kind === 'command')
-        && (active.executionEnvironment !== 'remote' || rail.remoteConnections[active.remoteProfileId ?? ''] === 'connected')
-        ? 'Background command running'
-        : null
+      : null
+  );
+  /* Between turns, the same place lists the sub-agents and commands still
+     running. A disconnected remote session cannot vouch for its list. */
+  const backgroundWork = $derived(
+    !turnActive && active?.backgroundWork?.length && conversation && !conversation.selectedHasAfter
+      && (active.executionEnvironment !== 'remote' || rail.remoteConnections[active.remoteProfileId ?? ''] === 'connected')
+      ? active.backgroundWork
+      : undefined
   );
   const commandCatalog = $derived(mergeConversationCommandCatalog(conversation?.availableCommands ?? conversation?.capabilities?.commands ?? []).filter((command) => !appOwned || command.name !== 'terminal'));
   /* The same numbers the Context panel shows. This read only `metadata`, and a
@@ -714,6 +721,8 @@
         turnFacts={conversation.selectedTurns}
         {localTurnActive}
         {activityLabel}
+        {backgroundWork}
+        onOpenChild={(childId) => onOpenChild?.(active.ownedId, childId)}
         {composerHeight}
         assistantLabel={active.agent}
         emptyText="Start the conversation below."

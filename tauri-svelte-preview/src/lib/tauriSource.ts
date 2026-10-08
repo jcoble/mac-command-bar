@@ -866,6 +866,21 @@ export async function cancelSourceScanFromTauri(scanId: string): Promise<boolean
   return invoke<boolean>('cancel_source_scan', { scanId });
 }
 
+/** The red close button or Cmd-Q; the native side holds it until `continueAppExit`. */
+export type AppExitKind = 'close' | 'quit';
+
+export async function listenToAppExitRequests(handler: (kind: AppExitKind) => void): Promise<() => void> {
+  if (!isTauriRuntime()) return () => {};
+  const { listen } = await import('@tauri-apps/api/event');
+  return trackTauriListener(await listen<{ kind: AppExitKind }>('assembly_exit_requested', (event) => handler(event.payload.kind)));
+}
+
+/** Let the held close or quit go ahead, once. */
+export async function continueAppExit(kind: AppExitKind): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('continue_app_exit', { kind });
+}
+
 const sourceScanProgressSubscribers = new Set<SourceScanProgressSubscriber>();
 let sourceScanProgressUnlisten: (() => void) | null = null;
 let sourceScanProgressSetup: Promise<void> | null = null;

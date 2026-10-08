@@ -134,6 +134,47 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
   startedAtMs?: number | null;
 };
 
+// ── Background work, in words ────────────────────────────────────────────────
+
+/** The rail's count of running work, e.g. "1 sub-agent · 1 command running"; null when none runs. */
+export function backgroundWorkSummary(work: readonly BackgroundWorkItem[]): string | null {
+  const subagents = work.filter((item) => item.kind === 'subagent').length;
+  const commands = work.length - subagents;
+  const count = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  if (subagents && commands) return `${count(subagents, 'sub-agent')} · ${count(commands, 'command')} running`;
+  if (subagents) return `${count(subagents, 'sub-agent')} running`;
+  if (commands) return `${count(commands, 'background command')} running`;
+  return null;
+}
+
+/** The item's own label, or what kind of work it is when it has none. */
+export function backgroundWorkLabel(item: BackgroundWorkItem): string {
+  return item.label.trim() || (item.kind === 'subagent' ? 'Sub-agent' : 'Background command');
+}
+
+/** How long work has run: "14s", "2m 14s", then "1h 5m". */
+export function formatBackgroundElapsed(elapsedMs: number): string {
+  const seconds = Math.max(0, Math.floor(elapsedMs / 1_000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 3_600)}h ${Math.floor((seconds % 3_600) / 60)}m`;
+}
+
+/** Where the chat line's link goes: the child in the Agents panel, or the command's tool row. */
+export function backgroundWorkTarget(item: BackgroundWorkItem):
+  | { kind: 'child'; childId: string }
+  | { kind: 'tool'; itemId: string } {
+  return item.kind === 'subagent'
+    ? { kind: 'child', childId: item.id.replace(/^claude-child:/, '') }
+    : { kind: 'tool', itemId: item.id };
+}
+
+/** Sessions whose work stops if this app quits. Remote work keeps running on its server. */
+export function localBackgroundWorkSessions(sessions: readonly OwnedSession[]): OwnedSession[] {
+  return sessions.filter((session) => session.executionEnvironment !== 'remote'
+    && (session.backgroundWork?.length ?? 0) > 0);
+}
+
 const KNOWN_AGENTS: AgentKind[] = ['codex', 'claude', 'antigravity', 'gemini', 'opencode'];
 const KNOWN_STATES: OwnedSessionState[] = ['live', 'background', 'exited'];
 const KNOWN_EXECUTION_OWNERS: AgentExecutionOwner[] = [

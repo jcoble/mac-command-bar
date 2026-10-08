@@ -5295,6 +5295,53 @@ fn install_panic_hook() {
     }));
 }
 
+/// Tells the frontend the main window is closing or the app is quitting, so it
+/// can warn about sub-agents and commands still running on this Mac.
+const EXIT_REQUESTED_EVENT: &str = "assembly_exit_requested";
+/// The app menu's Quit item. The stock one terminates the process directly, so
+/// Cmd-Q would never reach the exit guard.
+const QUIT_MENU_ID: &str = "assembly-quit";
+
+/// Holds every window close and app quit until the frontend has checked for
+/// local background work. `continue_app_exit` lets exactly one through.
+#[derive(Default)]
+struct ExitRequestGuard {
+    approved: AtomicBool,
+}
+
+impl ExitRequestGuard {
+    /// True when this request must wait for the frontend; uses up an approval.
+    fn hold(&self) -> bool {
+        !self.approved.swap(false, Ordering::SeqCst)
+    }
+
+    fn approve(&self) {
+        self.approved.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The frontend found nothing to warn about, or the person chose Quit Anyway.
+#[tauri::command]
+fn continue_app_exit(
+    app: tauri::AppHandle,
+    guard: tauri::State<'_, ExitRequestGuard>,
+    kind: String,
+) -> Result<(), String> {
+    guard.approve();
+    match kind.as_str() {
+        "close" => app
+            .get_webview_window("main")
+            .ok_or_else(|| "The main window is already closed.".to_string())?
+            .close()
+            .map_err(|error| error.to_string()),
+        "quit" => {
+            app.exit(0);
+            Ok(())
+        }
+        other => Err(format!("Unknown exit kind: {other}")),
+    }
+}
+
 fn main() {
     install_panic_hook();
     if std::env::args().any(|argument| argument == "--assembly-server") {
@@ -5321,7 +5368,35 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build());
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(ExitRequestGuard::default());
+    // The stock menu, with its Quit item swapped for one that asks to exit, so
+    // Cmd-Q goes through the exit guard like the window's close button.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .menu(|app| {
+            let menu = tauri::menu::Menu::default(app)?;
+            if let Some(tauri::menu::MenuItemKind::Submenu(app_menu)) =
+                menu.items()?.into_iter().next()
+            {
+                if let Some(quit) = app_menu.items()?.pop() {
+                    app_menu.remove(&quit)?;
+                }
+                app_menu.append(&tauri::menu::MenuItem::with_id(
+                    app,
+                    QUIT_MENU_ID,
+                    format!("Quit {}", app.package_info().name),
+                    true,
+                    Some("CmdOrCtrl+Q"),
+                )?)?;
+            }
+            Ok(menu)
+        })
+        .on_menu_event(|app, event| {
+            if event.id() == QUIT_MENU_ID {
+                app.exit(0);
+            }
+        });
 
     let app = builder
         .setup(|app| {
@@ -5737,26 +5812,47 @@ fn main() {
             helper::set_helper_key,
             helper::read_helper_settings,
             helper::write_helper_settings,
-            helper::test_helper
+            helper::test_helper,
+            continue_app_exit
         ])
-        .on_window_event(|window, event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) {
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. }
+                if window.label() == "main" && window.state::<ExitRequestGuard>().hold() =>
+            {
+                api.prevent_close();
+                let _ = window
+                    .app_handle()
+                    .emit(EXIT_REQUESTED_EVENT, serde_json::json!({ "kind": "close" }));
+            }
+            tauri::WindowEvent::Destroyed => {
                 window.state::<browser::BrowserRegistry>().shutdown();
                 window
                     .state::<agent_conversation::remote::RemoteConnectionManager>()
                     .shutdown();
             }
+            _ => {}
         })
         .build(tauri::generate_context!())
         .expect(product_identity::STARTUP_FAILURE_CONTEXT);
 
-    app.run(|app_handle, event| {
-        if matches!(event, tauri::RunEvent::Exit) {
+    app.run(|app_handle, event| match event {
+        // A quit (code set) is held; the exit that follows the last window
+        // closing (no code) was already approved, and a restart cannot be held.
+        tauri::RunEvent::ExitRequested {
+            code: Some(code), api, ..
+        } if code != tauri::RESTART_EXIT_CODE
+            && app_handle.state::<ExitRequestGuard>().hold() =>
+        {
+            api.prevent_exit();
+            let _ = app_handle.emit(EXIT_REQUESTED_EVENT, serde_json::json!({ "kind": "quit" }));
+        }
+        tauri::RunEvent::Exit => {
             app_handle.state::<browser::BrowserRegistry>().shutdown();
             app_handle
                 .state::<agent_conversation::remote::RemoteConnectionManager>()
                 .shutdown();
         }
+        _ => {}
     });
 }
 
@@ -5769,6 +5865,20 @@ mod tests {
         unstage_git_paths_sync,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn exit_request_guard_requires_confirmation_once() {
+        let guard = ExitRequestGuard::default();
+        // The first close or quit waits for the frontend to check for work.
+        assert!(guard.hold());
+        // Cancel approves nothing, so the next request is held again.
+        assert!(guard.hold());
+        // One approval lets exactly one request through...
+        guard.approve();
+        assert!(!guard.hold());
+        // ...and is used up, so a later request warns again.
+        assert!(guard.hold());
+    }
 
     #[test]
     fn project_git_refs_classify_default_current_and_checkouts() {

@@ -44,7 +44,7 @@
 	import type { UtilityId } from "$lib/shell/components/utilityStrip";
 	import UtilityStrip from "$lib/shell/components/UtilityStrip.svelte";
 	import { sendStructuredMessage } from "$lib/shell/conversation/conversationService";
-	import { getConversationSession, setConversationAttachments } from "$lib/shell/conversation/conversationStore.svelte";
+	import { getConversationSession, setConversationAttachments, setConversationSelectedChild } from "$lib/shell/conversation/conversationStore.svelte";
 	import { editorState, pinEditorFile } from "$lib/shell/editor/editorStore.svelte";
 	import { topTabs } from "$lib/shell/layout/topTabs.svelte";
 	import { parseTopTabKey } from "$lib/shell/layout/topTabsOps";
@@ -569,6 +569,10 @@
 						: null}
 					rootAvailable={selection.activeRootAvailable}
 					onPersistAttachmentIds={(ownedId, ids) => selection.persistConversationAttachmentIds(ownedId, ids)}
+					onOpenChild={(ownedId, childId) => {
+						setConversationSelectedChild(ownedId, childId);
+						selectRightTab("agents");
+					}}
 				/>
 			</div>
 		{/if}

@@ -2,6 +2,7 @@
   import { tick, untrack, setContext } from 'svelte';
   import { createVirtualizer } from '@tanstack/svelte-virtual';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
+  import Bot from '@lucide/svelte/icons/bot';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import BookOpen from '@lucide/svelte/icons/book-open';
   import Pencil from '@lucide/svelte/icons/pencil';
@@ -13,6 +14,8 @@
   import { USER_SEND_ANCHOR_OFFSET_PX, type ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import type { ConversationViewState } from '$lib/shell/sessionWorkspaces.ts';
+  import { backgroundWorkLabel, backgroundWorkTarget, formatBackgroundElapsed } from '$lib/shell/ownedSessions.ts';
+  import type { BackgroundWorkItem } from '$lib/tauriSource.ts';
   import { conversationItemHasVisibleContent } from '$lib/shell/conversation/conversationItemVisibility.ts';
   import { setConversationTimelineDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
   import TimelineItem from './TimelineItem.svelte';
@@ -36,6 +39,9 @@
     turnFacts?: readonly AgentConversationTurnFacts[];
     localTurnActive?: boolean;
     activityLabel?: string | null;
+    /** Sub-agents and commands still running between turns, shown in the activity line's place. */
+    backgroundWork?: readonly BackgroundWorkItem[];
+    onOpenChild?(childId: string): void;
     composerHeight?: number;
     assistantLabel?: string;
     emptyText?: string;
@@ -57,7 +63,7 @@
   let {
     items, conversationId, historyOwnedId, renderWindowId = conversationId, timelineRevision,
     viewState, onViewChange, itemFirstSequence, anchorRequest = null, activeTurnId = null,
-    turnFacts = [], localTurnActive = false, activityLabel = null, composerHeight = 0,
+    turnFacts = [], localTurnActive = false, activityLabel = null, backgroundWork, onOpenChild, composerHeight = 0,
     assistantLabel = 'Assistant', emptyText = 'Start the conversation below.', pendingFirstMessage = null,
     hasOlder = false, loadingOlder = false, pageError = '', onLoadOlder, hasNewer = false, loadingNewer = false,
     onLoadNewer, oldestSequence = 0, newestSequence = 0, onJumpToLatest, onApprovalDecision,
@@ -82,6 +88,8 @@
   let pageRequest: { older: boolean; edge: number; windowId: string; visibleKeys: string } | null = null;
   const renderedItems = $derived(items.filter(conversationItemHasVisibleContent));
   const groups = $derived(conversationTurnGroups(renderedItems, activeTurnId, turnFacts));
+  // A boolean, so a child's progress update does not rebuild the rows.
+  const hasBackgroundWork = $derived(!!backgroundWork?.length);
 
   type Row = {
     key: string;
@@ -143,7 +151,7 @@
       }
     }
     previousRuns = nextRuns;
-    if (activityLabel) result.push({ key: `activity:${result.at(-1)?.key ?? 'empty'}`, activity: true });
+    if (activityLabel || hasBackgroundWork) result.push({ key: `activity:${result.at(-1)?.key ?? 'empty'}`, activity: true });
     return result;
   });
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
@@ -357,6 +365,54 @@
     });
   }
 
+  /** A command link: open its folded run if need be, then bring its row to the top. */
+  function showToolItem(itemId: string): void {
+    const row = rows.find((candidate) => candidate.key === itemId
+      || candidate.run?.items.some((item) => item.itemId === itemId));
+    if (!row) return;
+    follow = false;
+    if (row.run && !runOpen(row.run)) disclosures = { ...disclosures, [`${row.run.itemId}:open`]: true };
+    const windowId = renderWindowId;
+    void tick().then(() => {
+      if (windowId !== renderWindowId) return;
+      const topInset = host ? Number.parseFloat(getComputedStyle(host).getPropertyValue('--center-head-height')) || 0 : 0;
+      if (positionRow(row.key, topInset + USER_SEND_ANCHOR_OFFSET_PX)) saveView();
+    });
+  }
+  function openBackgroundWork(work: BackgroundWorkItem): void {
+    const target = backgroundWorkTarget(work);
+    if (target.kind === 'child') onOpenChild?.(target.childId);
+    else showToolItem(target.itemId);
+  }
+  /* One clock for the background line's elapsed times. It runs only while the
+     line is on screen and the window is visible; the line leaving the render
+     window unmounts it and stops the clock. */
+  let backgroundNow = $state(Date.now());
+  function backgroundClock(node: HTMLElement) {
+    let onScreen = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const sync = (): void => {
+      const run = onScreen && document.visibilityState === 'visible';
+      if (run && !timer) {
+        backgroundNow = Date.now();
+        timer = setInterval(() => { backgroundNow = Date.now(); }, 1000);
+      } else if (!run && timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    const observer = new IntersectionObserver(([entry]) => { onScreen = entry.isIntersecting; sync(); });
+    observer.observe(node);
+    document.addEventListener('visibilitychange', sync);
+    return {
+      destroy() {
+        observer.disconnect();
+        document.removeEventListener('visibilitychange', sync);
+        if (timer) clearInterval(timer);
+      }
+    };
+  }
+
   let disclosureWindow = '';
   let previousLiveTail: string | undefined;
   let previousActiveTurn: string | null = null;
@@ -566,7 +622,24 @@
             {/if}
             {#if row.item}<TimelineItem item={row.item} {assistantLabel} {onApprovalDecision} {onFileLink} {onPlanOpen} />{/if}
             {#if row.edit}<TurnFileCard path={row.edit.path} added={row.edit.added} removed={row.edit.removed} onReview={onFileLink} />{/if}
-            {#if row.activity}<div class="working-row" data-testid="conversation-working-indicator" role="status"><WorkingSpinner seed={conversationId} /><span>{activityLabel}…</span></div>{/if}
+            {#if row.activity && activityLabel}<div class="working-row" data-testid="conversation-working-indicator" role="status"><WorkingSpinner seed={conversationId} /><span>{activityLabel}…</span></div>
+            {:else if row.activity && backgroundWork?.length}
+              <div class="working-row background-row" data-testid="conversation-background-work" role="group" aria-label="Running in the background" use:backgroundClock>
+                <WorkingSpinner seed={conversationId} />
+                {#each backgroundWork as work, index (work.id)}
+                  {#if index > 0}<span class="background-sep" aria-hidden="true">·</span>{/if}
+                  <span class="background-item">
+                    <button class="background-link" type="button"
+                      title={work.kind === 'subagent' ? 'Open this sub-agent in the Agents panel' : 'Show this command in the conversation'}
+                      onclick={() => openBackgroundWork(work)}>
+                      {#if work.kind === 'subagent'}<Bot size={13} aria-hidden="true" />{:else}<Terminal size={13} aria-hidden="true" />{/if}
+                      <span class="background-label">{backgroundWorkLabel(work)}</span>
+                    </button>
+                    <span class="background-elapsed">{formatBackgroundElapsed(backgroundNow - work.startedAtMs)}</span>
+                  </span>
+                {/each}
+              </div>
+            {/if}
           </div>
       {/each}
     </div>
@@ -594,6 +667,14 @@
   .run-summary{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .working-row{flex:none;display:flex;align-items:center;gap:8px;height:24px;overflow:hidden;white-space:nowrap;color:var(--color-text-3);font-size:13px}
+  .background-row{gap:6px}
+  .background-item{display:inline-flex;align-items:center;gap:6px;min-width:0}
+  .background-link{display:inline-flex;align-items:center;gap:5px;min-width:0;height:24px;padding:0 6px;border:0;border-radius:8px;background:transparent;color:var(--color-text-2);font:inherit;cursor:pointer}
+  .background-link:hover{background:color-mix(in srgb,var(--color-hover) 50%,transparent);color:var(--color-text)}
+  .background-link:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:-2px}
+  .background-label{max-width:24ch;overflow:hidden;text-overflow:ellipsis}
+  .background-elapsed{font-variant-numeric:tabular-nums}
+  .background-sep{color:var(--color-text-3)}
   /* A disc under the middle of the transcript, holding one arrow. It sits over
      the column it scrolls rather than off in the corner, and it says what it
      does by pointing, so it stays out of the reading it is offering to move. */
