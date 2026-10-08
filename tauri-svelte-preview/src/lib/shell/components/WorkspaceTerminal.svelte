@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   /** A single, lazy PTY for the workspace shown in the bottom dock. */
   import '@xterm/xterm/css/xterm.css';
   import { onDestroy, onMount } from 'svelte';
@@ -134,7 +135,7 @@
   <div class="terminal-host" bind:this={host}></div>
   {#if status !== 'ready'}
     <div class="terminal-status" class:error={status === 'error'}>
-      {#if status === 'starting'}Opening terminal…{:else if status === 'ended'}Terminal exited{:else}{error}{/if}
+      {#if status === 'starting'}<WorkingSpinner size={12} /> Opening terminal…{:else if status === 'ended'}Terminal exited{:else}{error}{/if}
     </div>
   {/if}
 </div>

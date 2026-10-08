@@ -26,6 +26,7 @@
    * row only reads.
    */
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import X from '@lucide/svelte/icons/x';
 
   import { Chip } from '$lib/components/ui/chip/index.js';
@@ -433,10 +434,7 @@
       disabled={!historyPanel.activated || historyPanel.historyLoading}
       onclick={() => void historyService.refreshHistory()}
     >
-      <RefreshCw
-        class={historyPanel.historyLoading ? 'size-3.5 animate-spin' : 'size-3.5'}
-        aria-hidden="true"
-      />
+      {#if historyPanel.historyLoading}<WorkingSpinner size={14} />{:else}<RefreshCw class="size-3.5" aria-hidden="true" />{/if}
     </IconButton>
   </header>
 
@@ -458,7 +456,7 @@
           : historyPanel.historyError}
       </p>
     {:else if historyPanel.historyLoading && commits.length === 0}
-      <p class="notice">Reading the commit history…</p>
+      <p class="notice"><WorkingSpinner size={12} /> Reading the commit history…</p>
     {:else if commits.length === 0}
       <p class="notice">No commits yet. The first commit you make will appear here.</p>
     {:else}
@@ -534,11 +532,11 @@
           </svg>
 
           <span class="message">
-<!-- Kit `Chip`s, tones named for what they mean: the branch you are
-                 ON is `live`, a tag keeps the shell's amber, and everything
-                 else stays quiet so the subject is what you read. -->
+<!-- Kit `Chip`s, tones named for what they mean: a tag keeps the
+                 shell's amber, and everything else, the branch you are ON
+                 included, stays quiet so the subject is what you read. -->
             {#each commit.refs.headLabels as label (label)}
-              <Chip tone="live" class="max-w-[220px] truncate">{label}</Chip>
+              <Chip tone="neutral" class="max-w-[220px] truncate">{label}</Chip>
             {/each}
             {#each branchChips(commit.refs) as label (label)}
               <Chip tone="neutral" class="max-w-[220px] truncate">{label}</Chip>
@@ -602,7 +600,7 @@
           {:else if filtering}
             {rows.length} of {commits.length} loaded commits match the current filters.
           {:else if historyPanel.historyLoadingMore}
-            Reading older commits…
+            <WorkingSpinner size={12} /> Reading older commits…
           {:else}
             {footer}
           {/if}
@@ -613,11 +611,9 @@
           disabled={!canLoadMore}
           onclick={() => void loadOlderHistory()}
         >
-          {historyPanel.historyLoadingMore
-            ? 'Reading older commits…'
-            : canLoadMore
+          {#if historyPanel.historyLoadingMore}<WorkingSpinner size={12} />Reading older commits…{:else}{canLoadMore
               ? `Load ${COMMIT_HISTORY_LIMIT} older commits`
-              : 'All commits loaded'}
+              : 'All commits loaded'}{/if}
         </Button>
       </div>
     {/if}
@@ -737,7 +733,7 @@
   }
 
   .commit-row.open {
-    background: color-mix(in srgb, var(--color-accent) 14%, var(--color-elevated));
+    background: var(--color-selected);
   }
 
   .commit-row:focus-visible {
@@ -829,7 +825,7 @@
   }
 
   .file-row.chosen {
-    background: color-mix(in srgb, var(--color-accent) 14%, var(--color-elevated));
+    background: var(--color-selected);
   }
 
   .file-row.unreadable {

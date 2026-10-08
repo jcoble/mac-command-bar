@@ -1,15 +1,19 @@
 <script lang="ts">
+  import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
+  import { getContext } from 'svelte';
   import Check from '@lucide/svelte/icons/check';
   import Copy from '@lucide/svelte/icons/copy';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import { highlightCode, languageForPath, plainHighlightedLines, type HighlightedLine } from './codeHighlight.ts';
 
   interface Props {
-    item?: Extract<ConversationDisplayItem, { kind: 'file' }>;
+    item: Extract<ConversationDisplayItem, { kind: 'file' }>;
     path?: string;
     diff?: string;
     onFileLink?(path: string): void;
   }
+
+  const disclosure = getContext<ConversationDisclosureContext>(conversationDisclosureContext);
 
   let { item, path: propPath, diff: propDiff, onFileLink }: Props = $props();
 
@@ -84,7 +88,7 @@
   });
 
   const foldable = $derived(allRows.length > DIFF_FOLD_OVER_LINES);
-  let diffOpen = $state(false);
+  const diffOpen = $derived(disclosure?.get(`${item.itemId}:diff`) ?? false);
   const rows = $derived(foldable && !diffOpen ? allRows.slice(0, DIFF_LINES_KEPT) : allRows);
   const hiddenLines = $derived(allRows.length - DIFF_LINES_KEPT);
   const additions = $derived(allRows.filter((row) => row.tone === 'add').length);
@@ -120,7 +124,7 @@
       data-testid="timeline-file-diff-fold"
       type="button"
       aria-expanded={diffOpen}
-      onclick={() => (diffOpen = !diffOpen)}
+      onclick={() => disclosure?.set(`${item.itemId}:diff`, !diffOpen)}
     >{diffOpen ? 'Show less' : `Show ${hiddenLines.toLocaleString()} more lines`}</button>
   {/if}
 </aside>

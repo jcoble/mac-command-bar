@@ -1,19 +1,21 @@
 <script lang="ts">
+  import { createChatUI, UIProvider } from '@tanstack/ai-svelte/ui';
+  import ConversationMessageParts from '$lib/shell/components/conversation/ConversationMessageParts.svelte';
+  import ConversationToolPart from '$lib/shell/components/conversation/ConversationToolPart.svelte';
   import { setContext } from 'svelte';
   import { conversationMessagesContext, type ConversationMessagesContext } from '$lib/shell/conversation/conversationChatUI.ts';
-  import { remoteWorkspacePath } from '$lib/workspacePaths';
   import { readRemoteAssemblyEnvironmentFromTauri, type RemoteAssemblyProfile } from '$lib/tauriSource';
   import { untrack } from 'svelte';
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import type {
     AgentConfigValue,
+    AgentUserInputAction,
     AgentConversationProvider,
     ConversationAttachment
   } from '$lib/shell/conversation/conversationTypes.ts';
   import ConversationTimeline from './conversation/ConversationTimeline.svelte';
   import ConversationComposer from './conversation/ConversationComposer.svelte';
-  import ConversationAgentTree from './conversation/ConversationAgentTree.svelte';
   import {
     beginConversationAgentConfigChange,
     confirmConversationAgentConfigChange,
@@ -28,20 +30,15 @@
     setConversationSendError,
     setConversationMode,
     setConversationProviderNotice,
-    setConversationScrollTop,
-    setConversationSelectedChild
+    selectedConversationViewState,
+    setSelectedConversationViewState
   } from '$lib/shell/conversation/conversationStore.svelte';
   import {
-    cancelChildConversationTranscriptRead,
     cleanupConversationAttachment,
     clearConversationSessionDraft,
     flushConversationSessionDraft,
     loadConversationCapabilities,
-    loadConversationForRead,
-    loadOlderConversationEvents,
-    loadNewerConversationEvents,
     persistConversationSessionDraft,
-    readChildConversationTranscript,
     removeConversationAttachment,
     sendPermissionResponse,
     respondToStructuredInput,
@@ -50,6 +47,7 @@
     sendStructuredMessage,
     stopStructuredTurn
   } from '$lib/shell/conversation/conversationService';
+  import { selectedConversationChat, sendSelectedConversationMessage, pageSelectedConversation, jumpSelectedConversationToLatest } from '$lib/shell/conversation/conversationConnection';
   import {
     readAgentConversationConfig,
     setAgentConversationConfig,
@@ -70,14 +68,7 @@
   import { conversationDisplayItems } from '$lib/shell/conversation/conversationMessages.ts';
   import { contextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
   import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
-  import {
-    requestOpenFile,
-    resolveConversationFilePath
-  } from '$lib/shell/openFileBus.ts';
-  import {
-    normalizeConversationFileHref,
-    splitConversationFileReference
-  } from '$lib/shell/conversation/conversationMessageSafety.ts';
+  import { requestOpenConversationFile } from '$lib/shell/openFileBus.ts';
   import { clearViewedSession, sessionPresenceHistory, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
   import type { ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
@@ -128,23 +119,37 @@
     return a === 'codex' || a === 'claude' || a === 'antigravity' || a === 'anthropic' || a === 'openai' || a === 'gemini' || a === 'agy';
   }
   const structured = $derived(!!active && isStructuredAgent(active.agent) && (appOwned || conversation?.mode !== 'raw'));
-  const selectedChild = $derived(conversation && conversation.selectedChildId
-    ? conversation.children.find((child) => child.childId === conversation.selectedChildId) ?? null
-    : null);
-  const transcriptMessages = $derived.by(() => {
-    if (!conversation) return [];
+  const transcriptChat = $derived.by(() => {
+    if (!conversation) return null;
     conversation.timelineRevision;
-    return (conversation.selectedChildId ? conversation.childTranscript : conversation.transcript).getMessages();
+    return selectedConversationChat(conversation.ownedId);
   });
+  const transcriptMessages = $derived(transcriptChat?.messages ?? []);
   const transcriptMessagesById = $derived(new Map(transcriptMessages.map((message) => [message.id, message])));
+  const toolComponents = $state<Record<string, typeof ConversationToolPart>>({});
+  const ui = createChatUI({}, {
+    components: { layout: ConversationMessageParts, message: ConversationMessageParts },
+    partsComponents: {},
+    toolsComponents: toolComponents
+  });
+  $effect.pre(() => {
+    const names = new Set(transcriptMessages.flatMap((message) => message.parts.flatMap((part) =>
+      part.type === 'tool-call' ? [part.name] : []
+    )));
+    untrack(() => {
+      for (const name of Object.keys(toolComponents)) if (!names.has(name)) delete toolComponents[name];
+      for (const name of names) toolComponents[name] = ConversationToolPart;
+    });
+  });
   setContext<ConversationMessagesContext>(conversationMessagesContext, {
+    ui,
     get messages() { return transcriptMessagesById; }
   });
   let previousTimelineKey = '';
   let previousVisibleTimeline: ConversationDisplayItem[] = [];
   const visibleTimeline = $derived.by((): ConversationDisplayItem[] => {
     if (!conversation) return [];
-    const timelineKey = `${conversation.ownedId}:${conversation.selectedChildId ?? 'root'}`;
+    const timelineKey = conversation.ownedId;
     if (timelineKey !== previousTimelineKey) {
       previousTimelineKey = timelineKey;
       previousVisibleTimeline = [];
@@ -152,9 +157,8 @@
     previousVisibleTimeline = conversationDisplayItems(
       transcriptMessages,
       previousVisibleTimeline,
-      conversation.selectedChildId ? {} : conversation.sentAttachments
-    ).filter((item) => conversation.selectedChildId
-      || (item.kind !== 'approval' || !conversation.pendingApprovals[item.requestId])
+      conversation.sentAttachments
+    ).filter((item) => (item.kind !== 'approval' || !conversation.pendingApprovals[item.requestId])
         && (item.kind !== 'input' || !conversation.pendingInputs[item.requestId]));
     return previousVisibleTimeline;
   });
@@ -164,24 +168,27 @@
   let fileChangesViewKey = '';
   let planFileChanges = $state<ReturnType<typeof turnFileChanges>>(null);
   $effect(() => {
-    const viewKey = `${activeOwnedId ?? ''}:${conversation?.selectedChildId ?? 'root'}`;
+    const viewKey = activeOwnedId ?? '';
     if (viewKey !== fileChangesViewKey) {
       fileChangesViewKey = viewKey;
       planFileChanges = null;
     }
-    if (conversation?.reachedTranscriptEnd && visibleTimeline.length) {
+    if (conversation && !conversation.selectedHasAfter && visibleTimeline.length) {
       planFileChanges = turnFileChanges(visibleTimeline);
     }
   });
+  const remoteDisconnected = $derived(active?.executionEnvironment === 'remote'
+    && rail.remoteConnections[active.remoteProfileId ?? ''] !== 'connected');
+  const controlsDisabled = $derived(conversation?.connectionState !== 'connected' || remoteDisconnected);
   const pendingApprovals = $derived(conversation ? Object.values(conversation.pendingApprovals) : []);
   const pendingInputs = $derived(conversation ? Object.values(conversation.pendingInputs) : []);
   /* The live status line under the reply. Only the root transcript at its live
-     end can speak for the running turn; a sub-agent view or a window trimmed
+     end can speak for the running turn; a window trimmed
      while reading upward shows none. */
   const activityLabel = $derived(
-    turnActive && conversation && !conversation.selectedChildId && conversation.reachedTranscriptEnd
+    turnActive && conversation && !conversation.selectedHasAfter
       ? turnActivityLabel(visibleTimeline, activeTurnId, pendingApprovals.length, pendingInputs.length)
-      : active && conversation && !conversation.selectedChildId && conversation.reachedTranscriptEnd
+      : active && conversation && !conversation.selectedHasAfter
         && (active.backgroundTaskIds?.length ?? 0) > 0
         && (active.executionEnvironment !== 'remote' || rail.remoteConnections[active.remoteProfileId ?? ''] === 'connected')
         ? 'Background command running'
@@ -275,7 +282,7 @@
   });
 
   $effect(() => {
-    if (pendingFirstMessage) return;
+    if (pendingFirstMessage || remoteDisconnected) return;
     if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex' && active.agent !== 'antigravity')) return;
     const ownedId = active.ownedId;
     const generation = conversation.generation;
@@ -382,28 +389,6 @@
     }
   }
 
-  async function readSelectedChildTranscript(
-    ownedId: string,
-    provider: AgentConversationProvider,
-    nativeSessionId: string,
-    childSessionId: string,
-    generation: number,
-    signal: AbortSignal
-  ): Promise<void> {
-    try {
-      await readChildConversationTranscript({
-        ownedId,
-        provider,
-        nativeSessionId,
-        childSessionId,
-        signal
-      });
-    } catch (_error) {
-      // The transcript read is opportunistic; the selector remains usable.
-    }
-    if (signal.aborted || conversationSessions[ownedId]?.generation !== generation) return;
-  }
-
   async function cleanupSavedAttachments(
     ownedId: string,
     attachments: ConversationAttachment[],
@@ -438,12 +423,16 @@
   async function submitStructuredInput(
     ownedId: string,
     requestId: string,
-    values: Record<string, AgentConfigValue>,
-    cancelled: boolean,
+    action: AgentUserInputAction,
+    content: Record<string, AgentConfigValue>,
     generation: number
   ): Promise<void> {
     try {
-      await respondToStructuredInput(ownedId, { requestId, values, cancelled });
+      await respondToStructuredInput(ownedId, {
+        requestId,
+        action,
+        content
+      });
     } catch (error) {
       if (conversationSessions[ownedId]?.generation === generation) {
         setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
@@ -452,7 +441,7 @@
   }
 
   async function stopActiveStructuredTurn(ownedId: string, generation: number): Promise<void> {
-    if (conversationSessions[ownedId]?.generation !== generation) return;
+    if (controlsDisabled || conversationSessions[ownedId]?.generation !== generation) return;
     try {
       await stopStructuredTurn(ownedId);
     } catch (_error) {
@@ -462,7 +451,7 @@
 
   async function send(): Promise<void> {
     const ownedId = activeOwnedId;
-    if (!ownedId || !conversation || conversation.selectedChildId) return;
+    if (!ownedId || !conversation || remoteDisconnected) return;
     if (pendingAttachmentUploads.has(ownedId)) {
       if (sendsWaitingForUpload.has(ownedId)) return;
       sendsWaitingForUpload.add(ownedId);
@@ -483,12 +472,6 @@
     const text = conversation.draft;
     const deliveredIds = new Set(conversation.attachments.map((attachment) => attachment.id));
     const retainedIds = conversation.attachmentIds.filter((id) => !deliveredIds.has(id));
-    const previousUserItemId = visibleTimeline.findLast((item) => item.kind === 'user')?.itemId ?? null;
-    sendAnchorRequest = {
-      requestId: ++sendAnchorRequestId,
-      conversationId: ownedId,
-      previousUserItemId
-    };
     if (!steering) {
       localTurnActive = true;
       localTurnStarted = false;
@@ -497,7 +480,16 @@
     setConversationSendError(ownedId, '');
     try {
       await clearConversationSessionDraft(ownedId);
-      await sendStructuredMessage(ownedId, text);
+      const receipt = steering
+        ? await sendStructuredMessage(ownedId, text)
+        : await sendSelectedConversationMessage(ownedId, text);
+      if (receipt && activeOwnedId === ownedId) {
+        sendAnchorRequest = {
+          requestId: ++sendAnchorRequestId,
+          conversationId: ownedId,
+          userItemId: receipt.userItemId
+        };
+      }
     } catch (error) {
       // Restore the draft. The service intentionally leaves attachments in the
       // store on every failure, so the user can retry without data loss. The
@@ -521,36 +513,9 @@
     }
   }
 
-  async function selectChild(childId: string | null): Promise<void> {
-    if (!active || !conversation) return;
-    cancelChildConversationTranscriptRead(active.ownedId);
-    setConversationSelectedChild(active.ownedId, childId);
-    if (!childId || !active.nativeSessionId) return;
-    const child = conversation.children.find((candidate) => candidate.childId === childId);
-    if (!child?.transcriptAvailable) return;
-    await readSelectedChildTranscript(
-      active.ownedId,
-      conversation.provider,
-      active.nativeSessionId,
-      childId,
-      conversation.generation,
-      surfaceController.signal
-    );
-  }
-
-  $effect(() => {
-    const ownedId = active?.ownedId;
-    return () => {
-      if (ownedId) {
-        cancelChildConversationTranscriptRead(ownedId);
-        setConversationSelectedChild(ownedId, null);
-      }
-    };
-  });
-
   /** Cmd+V checks files first; text paste is untouched when there are no files. */
   async function paste(event: ClipboardEvent): Promise<void> {
-    if (!active || !conversation || conversation.selectedChildId) return;
+    if (!active || !conversation) return;
     const files = [...(event.clipboardData?.files ?? [])];
     if (files.length === 0) return;
     event.preventDefault();
@@ -581,7 +546,7 @@
   }
 
   async function saveImages(files: File[], rejectedMessage: string): Promise<void> {
-    if (!active || !conversation || conversation.selectedChildId) return;
+    if (!active || !conversation) return;
     const ownedId = active.ownedId;
     const generation = conversation.generation;
     const images = files.filter((file) => file.type.startsWith('image/'));
@@ -657,66 +622,23 @@
   }
 
   function onApprovalDecision(requestId: string, optionId: string): void {
-    if (!active || !optionId) return;
+    if (!active || !optionId || controlsDisabled) return;
     const ownedId = active.ownedId;
     const generation = conversationSessions[ownedId]?.generation ?? 0;
     void chooseApprovalOption(ownedId, requestId, optionId, generation);
   }
 
-  function onInputSubmit(requestId: string, values: Record<string, AgentConfigValue>, cancelled = false): void {
-    if (!active) return;
+  function onInputSubmit(requestId: string, action: AgentUserInputAction, content: Record<string, AgentConfigValue>): void {
+    if (!active || controlsDisabled) return;
     const ownedId = active.ownedId;
     const generation = conversationSessions[ownedId]?.generation ?? 0;
-    void submitStructuredInput(ownedId, requestId, values, cancelled, generation);
+    void submitStructuredInput(ownedId, requestId, action, content, generation);
   }
 
-  function openConversationFile(
-    reference: string,
-    provenance?: ConversationFileLinkProvenance
-  ): void {
+  function openConversationFile(reference: string, provenance?: ConversationFileLinkProvenance): void {
     if (!active) return;
-    const sessionRoot = (active.cwd || active.projectPath || '').replace(/\/+$/, '');
-    const { path, line } = splitConversationFileReference(reference);
-    const candidate = normalizeConversationFileHref(path);
-    const recordedPath = provenance?.path ? normalizeConversationFileHref(provenance.path) : '';
-    const linkIsRecordedFile = Boolean(recordedPath && (
-      recordedPath === candidate
-      || recordedPath.endsWith(`/${candidate.replace(/^\.\//, '')}`)
-    ));
-    const recordedRoot = provenance?.root
-      ? normalizeConversationFileHref(provenance.root)
-      : !linkIsRecordedFile && recordedPath.includes('/')
-        ? recordedPath.slice(0, recordedPath.lastIndexOf('/'))
-        : '';
-    const recordedRootPath = recordedRoot
-      ? resolveConversationFilePath(recordedRoot, sessionRoot).replace(/\/+$/, '')
-      : '';
-    const root = recordedRootPath || sessionRoot;
-    if (!root || !candidate || candidate.includes('\0') || candidate.split('/').includes('..')) {
-      // Nothing here resolves to a file, so there is nothing to open.
-      setConversationAttachmentError(active.ownedId, 'That file link could not be opened.');
-      return;
-    }
-    const absolute = linkIsRecordedFile && (recordedPath.startsWith('/') || recordedPath.startsWith('~'))
-      ? recordedPath
-      : resolveConversationFilePath(candidate, root);
-    // A link that lands outside the workspace still opens, read-only: reading a
-    // file this session does not own is safe, and refusing it left the reader
-    // with a notice and no way to see what the link pointed at.
-    const outside = absolute !== root && !absolute.startsWith(`${root}/`);
-    const readOnly = outside || Boolean(recordedRootPath && recordedRootPath !== sessionRoot);
-    if (active.executionEnvironment === 'remote' && !active.remoteProfileId) {
-      setConversationAttachmentError(active.ownedId, 'Connect to this conversation’s saved machine first.');
-      return;
-    }
-    const qualify = (path: string): string => active.executionEnvironment === 'remote'
-      ? remoteWorkspacePath(active.remoteProfileId!, path) : path;
-    requestOpenFile({
-      path: qualify(absolute),
-      projectRoot: qualify(readOnly ? sessionRoot : root),
-      readOnly,
-      line
-    });
+    const error = requestOpenConversationFile(active, reference, provenance);
+    if (error) setConversationAttachmentError(active.ownedId, error);
   }
 
   async function changeConfig(field: AgentConversationConfigField, value: string): Promise<void> {
@@ -771,39 +693,47 @@
           </button>
         </div>
       {/if}
-      <ConversationAgentTree children={conversation.children} selectedChildId={conversation.selectedChildId} onSelect={(childId) => void selectChild(childId)} />
+      {#if transcriptChat}
+        {#key transcriptChat}
+          <UIProvider {ui} chat={transcriptChat}>
       <ConversationTimeline
         {pendingFirstMessage}
         items={visibleTimeline}
         conversationId={active.ownedId}
-        renderWindowId={`${active.ownedId}:${conversation.selectedChildId ?? 'root'}`}
+        renderWindowId={`${active.ownedId}:${active.ownedId}`}
+        historyOwnedId={active.ownedId}
+        viewState={selectedConversationViewState(active.ownedId, active.ownedId)}
+        onViewChange={setSelectedConversationViewState}
+        itemFirstSequence={(itemId) => {
+          const sequence = transcriptMessagesById.get(itemId)?.metadata?.firstSequence;
+          return typeof sequence === 'number' ? sequence : undefined;
+        }}
         timelineRevision={conversation.timelineRevision}
         anchorRequest={sendAnchorRequest}
-        activeTurnId={conversation.activeTurnId ?? null}
+        {activeTurnId}
+        turnFacts={conversation.selectedTurns}
         {localTurnActive}
         {activityLabel}
         {composerHeight}
-        assistantLabel={selectedChild?.title ?? active.agent}
-        emptyText={conversation.selectedChildId ? 'This sub-agent transcript is not available yet.' : 'Start the conversation below.'}
-        hasOlder={!conversation.selectedChildId && !conversation.reachedTranscriptStart}
-        loadingOlder={!conversation.selectedChildId && conversation.loadingOlder}
-        onLoadOlder={() => void loadOlderConversationEvents(active.ownedId, surfaceController.signal)}
-        hasNewer={!conversation.selectedChildId && !conversation.reachedTranscriptEnd}
-        loadingNewer={!conversation.selectedChildId && conversation.loadingNewer}
-        onLoadNewer={() => void loadNewerConversationEvents(active.ownedId, surfaceController.signal)}
-        oldestSequence={conversation.oldestLoadedSequence}
-        newestSequence={conversation.newestLoadedSequence}
-        onJumpToLatest={() => loadConversationForRead(active.ownedId, true, surfaceController.signal)}
-        onScroll={(scrollTop) => {
-          if (conversation.selectedChildId) conversation.childScrollTopById[conversation.selectedChildId] = scrollTop;
-          else setConversationScrollTop(active.ownedId, scrollTop);
-        }}
+        assistantLabel={active.agent}
+        emptyText="Start the conversation below."
+        hasOlder={conversation.selectedHasBefore}
+        loadingOlder={conversation.selectedLoadingOlder}
+        pageError={conversation.selectedPageError}
+        onLoadOlder={() => void pageSelectedConversation('older')}
+        hasNewer={conversation.selectedHasAfter}
+        loadingNewer={conversation.selectedLoadingNewer}
+        onLoadNewer={() => void pageSelectedConversation('newer')}
+        oldestSequence={conversation.selectedBeforeCursor ?? 0}
+        newestSequence={conversation.selectedAfterCursor ?? 0}
+        onJumpToLatest={() => jumpSelectedConversationToLatest(active.ownedId)}
         onApprovalDecision={onApprovalDecision}
-        onInputSubmit={onInputSubmit}
         onFileLink={openConversationFile}
         onPlanOpen={() => composer?.expandPlan()}
       />
-      {#if !conversation.selectedChildId}
+          </UIProvider>
+        {/key}
+      {/if}
         {#key active.ownedId}
         <ConversationComposer
           bind:this={composer}
@@ -823,6 +753,8 @@
           pendingApproval={pendingApprovals[0] ?? null}
           pendingApprovalCount={pendingApprovals.length}
           pendingInputs={pendingInputs}
+          {controlsDisabled}
+          sendDisabled={remoteDisconnected}
           {attachmentError}
           {sendError}
           {providerNotice}
@@ -850,7 +782,6 @@
           onHeightChange={(height) => (composerHeight = height)}
         />
         {/key}
-      {/if}
     </section>
   {:else if active && isStructuredAgent(active.agent) && conversation?.mode === 'raw'}
     <div class="raw-actions" aria-label="Conversation handoff actions">

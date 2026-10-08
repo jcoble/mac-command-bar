@@ -1,292 +1,80 @@
 <script lang="ts">
-  /**
-   * The small figure that means "the agent is working".
-   *
-   * Which of the ten it is comes from the seed, so one turn keeps one spinner
-   * for its whole life and the next turn brings a different one. The drawing is
-   * a handful of empty spans that the stylesheet below shapes and moves; only
-   * transform and opacity are animated, so a frame costs the compositor a
-   * matrix and nothing else.
-   *
-   * Nothing here loops at rest. The caller mounts this only while a turn is
-   * running, so a finished turn removes the element and its animations with it,
-   * and while it is mounted it still pauses whenever it scrolls off screen —
-   * an animation nobody can see costs exactly what a visible one costs.
-   */
-  import { observeElementVisibility } from '$lib/shell/elementVisibility.ts';
+  import { onMount } from 'svelte';
+  import { DESIGNS, pickSpinner, type Design, type Part } from './workingSpinners';
 
-  import { pickSpinner, SPINNERS } from './workingSpinners.ts';
+  let { size = 16, seed }: { size?: number; seed?: string } = $props();
+  // A session's design follows its seed; an unseeded spinner picks once and keeps it while mounted.
+  const randomDesign = pickSpinner();
+  const id = $derived(seed === undefined ? randomDesign : pickSpinner(seed));
+  const design: Design = $derived(DESIGNS[id]);
+  let host = $state<HTMLSpanElement>();
+  let visible = $state(false);
+  let documentVisible = $state(false);
+  let reducedMotion = $state(true);
 
-  interface Props {
-    /** Anything stable for the length of the turn: a turn id, or a session id. */
-    seed: string;
-    /** Box size in pixels. Everything inside is measured from it. */
-    size?: number;
-  }
-
-  let { seed, size = 16 }: Props = $props();
-
-  const spinner = $derived(
-    SPINNERS.find((candidate) => candidate.id === pickSpinner(seed)) ?? SPINNERS[0]
-  );
-
-  let host = $state<HTMLSpanElement | null>(null);
-  let onScreen = $state(true);
-
-  $effect(() => {
-    const element = host;
-    if (!element) return;
-    return observeElementVisibility(element, (visible) => {
-      onScreen = visible;
-    });
+  onMount(() => {
+    const observer = new IntersectionObserver(([entry]) => { visible = entry.isIntersecting; });
+    if (host) observer.observe(host);
+    const visibilityChanged = () => { documentVisible = document.visibilityState === 'visible'; };
+    const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const motionChanged = () => { reducedMotion = motion.matches; };
+    visibilityChanged();
+    motionChanged();
+    document.addEventListener('visibilitychange', visibilityChanged);
+    motion.addEventListener('change', motionChanged);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener('visibilitychange', visibilityChanged);
+      motion.removeEventListener('change', motionChanged);
+    };
   });
+
+  const seconds = (value: number | undefined) => (value ? `${Math.abs(value)}s` : undefined);
 </script>
 
-<span
-  bind:this={host}
-  class="working-spinner"
-  data-testid="working-spinner"
-  data-spinner={spinner.id}
-  data-active={onScreen}
-  style={`--size:${size}px`}
-  aria-hidden="true"
->
-  {#each { length: spinner.parts } as _, index (index)}
-    <i style={`--i:${index}`}></i>
-  {/each}
-  <b class="static-mark"></b>
+<!-- Shapes are painted once; only transform animations run, so frames are composited, not redrawn. -->
+{#snippet draw(part: Part, outerPx: number)}
+  {@const px = (outerPx * part.size) / 100}
+  {@const [x, y] = part.at ?? [50, 50]}
+  {@const unit = 24 / px}
+  <span class="axis" style:left={`${x - part.size / 2}%`} style:top={`${y - part.size / 2}%`} style:width={`${part.size}%`} style:height={`${part.size}%`} style:transform={part.tilt ? `rotate(${part.tilt}deg)` : undefined}>
+    <span
+      class={['part', part.shape === 'ring' && 'ring', part.shape === 'dot' && 'dot', part.turn && 'turn', (part.spin ?? 0) > 0 && 'spin', (part.spin ?? 0) < 0 && 'spin-back']}
+      style:--c={part.color}
+      style:animation-duration={seconds(part.turn ?? part.spin)}
+      style:animation-delay={part.delay ? `${part.delay}s` : undefined}
+    >
+      {#if part.shape !== 'ring' && part.shape !== 'dot'}
+        <svg viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">
+          <path d={part.shape} stroke={part.color} stroke-opacity="0.25" stroke-width={3 * unit} />
+          <path d={part.shape} stroke={part.color} stroke-width={1.5 * unit} />
+          <path d={part.shape} stroke="#fff" stroke-width={0.6 * unit} />
+        </svg>
+      {/if}
+    </span>
+  </span>
+{/snippet}
+
+<span bind:this={host} class="spinner" class:spinning={visible && documentVisible && !reducedMotion} style:width={`${size}px`} style:height={`${size}px`} data-testid="working-spinner" data-spinner={id} aria-hidden="true">
+  <span class={['part', (design.spin ?? 0) > 0 && 'spin', (design.spin ?? 0) < 0 && 'spin-back']} style:animation-duration={seconds(design.spin)}>
+    {#each design.parts as part}{@render draw(part, size)}{/each}
+  </span>
 </span>
 
 <style>
-  /* The box every variant is measured from. `--p` is the viewing distance the
-     three-dimensional ones project through: close enough that a 16px cube reads
-     as a solid, far enough that its near face does not balloon. */
-  .working-spinner {
-    position: relative;
-    display: inline-block;
-    flex: 0 0 auto;
-    width: var(--size);
-    height: var(--size);
-    color: var(--color-accent);
-    vertical-align: middle;
-    --p: calc(var(--size) * 3);
-  }
-
-  .working-spinner i,
-  .static-mark {
-    position: absolute;
-    display: block;
-    box-sizing: border-box;
-  }
-
-  /* Off screen is off. The attribute is the single switch: it stops the parts
-     and the tumbling body alike, and it costs nothing to leave paused. */
-  .working-spinner i { animation-play-state: running; }
-  .working-spinner[data-active='false'],
-  .working-spinner[data-active='false'] i { animation-play-state: paused; }
-
-  /* ── The seven flat ones ─────────────────────────────────────────────── */
-
-  /* arc — a thin ring lit along one quarter, turning. */
-  .working-spinner[data-spinner='arc'] i {
-    inset: 0;
-    border: 2px solid color-mix(in srgb, currentColor 22%, transparent);
-    border-top-color: currentColor;
-    border-radius: 50%;
-    animation: ws-spin 1.08s linear infinite;
-  }
-
-  /* orbit — one dot travelling a track it never leaves. */
-  .working-spinner[data-spinner='orbit'] i:nth-child(1) {
-    inset: 0;
-    border: 1.5px solid color-mix(in srgb, currentColor 26%, transparent);
-    border-radius: 50%;
-  }
-  .working-spinner[data-spinner='orbit'] i:nth-child(2) {
-    inset: 0;
-    animation: ws-spin 1.49s linear infinite;
-  }
-  .working-spinner[data-spinner='orbit'] i:nth-child(2)::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 50%;
-    width: calc(var(--size) * 0.3);
-    height: calc(var(--size) * 0.3);
-    margin-left: calc(var(--size) * -0.15);
-    border-radius: 50%;
-    background: currentColor;
-  }
-
-  /* wave — three dots riding the same swell a beat apart. */
-  .working-spinner[data-spinner='wave'] i {
-    top: 50%;
-    width: calc(var(--size) * 0.22);
-    height: calc(var(--size) * 0.22);
-    margin-top: calc(var(--size) * -0.11);
-    border-radius: 50%;
-    background: currentColor;
-    animation: ws-wave 1.22s ease-in-out infinite;
-    animation-delay: calc(var(--i) * 0.18s);
-  }
-  .working-spinner[data-spinner='wave'] i:nth-child(1) { left: 0; }
-  .working-spinner[data-spinner='wave'] i:nth-child(2) {
-    left: 50%;
-    margin-left: calc(var(--size) * -0.11);
-  }
-  .working-spinner[data-spinner='wave'] i:nth-child(3) { right: 0; }
-
-  /* bars — three columns growing off the floor. */
-  .working-spinner[data-spinner='bars'] i {
-    bottom: 0;
-    width: calc(var(--size) * 0.2);
-    height: 100%;
-    border-radius: calc(var(--size) * 0.1);
-    background: currentColor;
-    transform-origin: 50% 100%;
-    animation: ws-bars 1.05s ease-in-out infinite;
-    animation-delay: calc(var(--i) * 0.15s);
-  }
-  .working-spinner[data-spinner='bars'] i:nth-child(1) { left: 0; }
-  .working-spinner[data-spinner='bars'] i:nth-child(2) {
-    left: 50%;
-    margin-left: calc(var(--size) * -0.1);
-  }
-  .working-spinner[data-spinner='bars'] i:nth-child(3) { right: 0; }
-
-  /* halo — rings leaving the centre, the second half a beat behind. */
-  .working-spinner[data-spinner='halo'] i {
-    inset: 0;
-    border: 1.5px solid currentColor;
-    border-radius: 50%;
-    animation: ws-halo 1.89s ease-out infinite;
-    animation-delay: calc(var(--i) * 0.95s);
-  }
-
-  /* diamond — a square that turns and breathes. */
-  .working-spinner[data-spinner='diamond'] i {
-    inset: calc(var(--size) * 0.16);
-    border: 2px solid currentColor;
-    border-radius: 2px;
-    animation: ws-diamond 1.49s ease-in-out infinite;
-  }
-
-  /* comet — a head and two fading followers on the same circle. */
-  .working-spinner[data-spinner='comet'] i {
-    inset: 0;
-    animation: ws-spin 1.28s linear infinite;
-    animation-delay: calc(var(--i) * -0.18s);
-  }
-  .working-spinner[data-spinner='comet'] i::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 50%;
-    width: calc(var(--size) * 0.3);
-    height: calc(var(--size) * 0.3);
-    margin-left: calc(var(--size) * -0.15);
-    border-radius: 50%;
-    background: currentColor;
-    opacity: calc(1 - var(--i) * 0.28);
-    transform: scale(calc(1 - var(--i) * 0.2));
-  }
-
-  /* ── The three with depth ────────────────────────────────────────────── */
-
-  /* cube — six faces on a body that tumbles on two axes. The body is this
-     element itself, which is why the perspective rides in the transform. */
-  .working-spinner[data-spinner='cube'] {
-    transform-style: preserve-3d;
-    animation: ws-tumble 3.51s linear infinite;
-    --face: calc(var(--size) * 0.34);
-  }
-  .working-spinner[data-spinner='cube'] i {
-    inset: calc(var(--size) * 0.16);
-    border: 1.5px solid currentColor;
-    background: color-mix(in srgb, currentColor 12%, transparent);
-  }
-  .working-spinner[data-spinner='cube'] i:nth-child(1) { transform: translateZ(var(--face)); }
-  .working-spinner[data-spinner='cube'] i:nth-child(2) { transform: rotateY(180deg) translateZ(var(--face)); }
-  .working-spinner[data-spinner='cube'] i:nth-child(3) { transform: rotateY(90deg) translateZ(var(--face)); }
-  .working-spinner[data-spinner='cube'] i:nth-child(4) { transform: rotateY(-90deg) translateZ(var(--face)); }
-  .working-spinner[data-spinner='cube'] i:nth-child(5) { transform: rotateX(90deg) translateZ(var(--face)); }
-  .working-spinner[data-spinner='cube'] i:nth-child(6) { transform: rotateX(-90deg) translateZ(var(--face)); }
-
-  /* disc — a coin turning edge-on and back. */
-  .working-spinner[data-spinner='disc'] { transform-style: preserve-3d; }
-  .working-spinner[data-spinner='disc'] i {
-    inset: calc(var(--size) * 0.06);
-    border: 2px solid currentColor;
-    border-radius: 50%;
-    background: color-mix(in srgb, currentColor 14%, transparent);
-    animation: ws-flip 2.03s cubic-bezier(0.5, 0, 0.5, 1) infinite;
-  }
-
-  /* gyro — two tilted rings turning about axes at right angles. */
-  .working-spinner[data-spinner='gyro'] { transform-style: preserve-3d; }
-  .working-spinner[data-spinner='gyro'] i {
-    inset: 0;
-    border: 1.5px solid currentColor;
-    border-radius: 50%;
-  }
-  .working-spinner[data-spinner='gyro'] i:nth-child(1) { animation: ws-gyro-x 1.76s linear infinite; }
-  .working-spinner[data-spinner='gyro'] i:nth-child(2) {
-    inset: calc(var(--size) * 0.18);
-    border-color: color-mix(in srgb, currentColor 55%, transparent);
-    animation: ws-gyro-y 1.49s linear infinite;
-  }
-
-  @keyframes ws-spin { to { transform: rotate(360deg); } }
-  @keyframes ws-wave {
-    0%, 100% { transform: translateY(calc(var(--size) * 0.16)); opacity: 0.45; }
-    50% { transform: translateY(calc(var(--size) * -0.16)); opacity: 1; }
-  }
-  @keyframes ws-bars {
-    0%, 100% { transform: scaleY(0.32); opacity: 0.5; }
-    50% { transform: scaleY(1); opacity: 1; }
-  }
-  @keyframes ws-halo {
-    0% { transform: scale(0.28); opacity: 1; }
-    100% { transform: scale(1); opacity: 0; }
-  }
-  @keyframes ws-diamond {
-    0% { transform: rotate(0) scale(0.72); }
-    50% { transform: rotate(180deg) scale(1); }
-    100% { transform: rotate(360deg) scale(0.72); }
-  }
-  @keyframes ws-tumble {
-    0% { transform: perspective(var(--p)) rotateX(0) rotateY(0); }
-    50% { transform: perspective(var(--p)) rotateX(180deg) rotateY(180deg); }
-    100% { transform: perspective(var(--p)) rotateX(360deg) rotateY(360deg); }
-  }
-  @keyframes ws-flip {
-    0% { transform: perspective(var(--p)) rotateX(8deg) rotateY(0); }
-    100% { transform: perspective(var(--p)) rotateX(8deg) rotateY(360deg); }
-  }
-  @keyframes ws-gyro-x {
-    0% { transform: perspective(var(--p)) rotateY(24deg) rotateX(0); }
-    100% { transform: perspective(var(--p)) rotateY(24deg) rotateX(360deg); }
-  }
-  @keyframes ws-gyro-y {
-    0% { transform: perspective(var(--p)) rotateX(-18deg) rotateY(0); }
-    100% { transform: perspective(var(--p)) rotateX(-18deg) rotateY(360deg); }
-  }
-
-  /* Asked for stillness, the spinner becomes a mark: the moving parts are gone
-     and one quiet ring says the same thing. */
-  .static-mark { display: none; }
-
-  @media (prefers-reduced-motion: reduce) {
-    /* The attribute is carried so this outranks the tumbling body above it,
-       which names the same element and would otherwise keep turning. */
-    .working-spinner[data-spinner] { animation: none; }
-    .working-spinner i { display: none; }
-    .static-mark {
-      display: block;
-      inset: calc(var(--size) * 0.2);
-      border: 2px solid currentColor;
-      border-radius: 50%;
-      opacity: 0.7;
-    }
-  }
+  .spinner{display:inline-flex;flex-shrink:0;vertical-align:middle;position:relative}
+  .axis,.part{position:absolute}
+  .part{inset:0}
+  .part svg{display:block;width:100%;height:100%;overflow:visible}
+  .ring{border-radius:50%;border:1px solid #fff;box-shadow:0 0 1px 1px var(--c),0 0 3px var(--c),inset 0 0 1px 1px var(--c)}
+  .dot{border-radius:50%;background:#fff;box-shadow:0 0 3px 1px var(--c)}
+  .turn{animation:turn 1s cubic-bezier(.37,0,.63,1) infinite alternate}
+  .spin{animation:spin 1s linear infinite}
+  /* A separate keyframe, not animation-direction:reverse, which WebKit redraws every frame. */
+  .spin-back{animation:spin-back 1s linear infinite}
+  /* Loops run only while the spinner is on screen, the window is visible and motion is allowed. */
+  .spinner:not(.spinning) :is(.turn,.spin,.spin-back){animation-play-state:paused}
+  @keyframes turn{from{transform:scaleX(1)}to{transform:scaleX(-1)}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes spin-back{to{transform:rotate(-360deg)}}
 </style>

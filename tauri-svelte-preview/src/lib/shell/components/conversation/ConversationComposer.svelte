@@ -7,7 +7,8 @@
   import Square from '@lucide/svelte/icons/square';
   import X from '@lucide/svelte/icons/x';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
-  import type { ConversationAttachment, AgentConfigValue, AgentPermissionRequest, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
+  import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
+  import type { ConversationAttachment, AgentUserInputAction, AgentConfigValue, AgentPermissionRequest, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import type { AgentConversationConfigField, AgentConversationConfigState } from '$lib/shell/conversation/conversationConfig.ts';
   import type { ConversationCommand } from '$lib/shell/conversation/conversationCommandCatalog.ts';
@@ -17,6 +18,7 @@
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import AgentCommandMenu from './AgentCommandMenu.svelte';
   import AttachmentLightbox from './AttachmentLightbox.svelte';
+  import WorkingSpinner from './WorkingSpinner.svelte';
   import ComposerBannerStack, { type ComposerBannerItem } from './ComposerBannerStack.svelte';
   import ComposerConfigMenu from './ComposerConfigMenu.svelte';
   import PlanChip, { type PlanFileChanges } from './PlanChip.svelte';
@@ -57,10 +59,14 @@
     pendingApprovalCount?: number;
     pendingInputs?: readonly AgentUserInputRequest[];
     respondingRequestIds?: readonly string[];
-    /** Extra controls for the left of the footer, ahead of Attach. The draft
-     * session puts its project and branch pickers here, so a session being set
-     * up reads as the same composer as one already running. */
-    leadingControls?: Snippet;
+    controlsDisabled?: boolean;
+    sendDisabled?: boolean;
+    /** Extra controls at the start of the footer's right side, ahead of the
+     * model and effort controls. The draft session puts its agent picker here. */
+    footerControls?: Snippet;
+    /** A row directly below the capsule. The draft session shows its machine
+     * and branch here. */
+    subBar?: Snippet;
     onDraftChange?(value: string): void;
     onDraftBlur?(): void | Promise<void>;
     onSend?(): void | Promise<void>;
@@ -72,7 +78,7 @@
     onConfigChange?(field: AgentConversationConfigField, value: string): void | Promise<void>;
     onCommandSelected?(command: ConversationCommand): void;
     onApprovalDecision?(requestId: string, optionId: string): void | Promise<void>;
-    onInputSubmit?(requestId: string, values: Record<string, AgentConfigValue>, cancelled?: boolean): void | Promise<void>;
+    onInputSubmit?(requestId: string, action: AgentUserInputAction, content: Record<string, AgentConfigValue>): void | Promise<void>;
     onHeightChange?(height: number): void;
   }
 
@@ -100,7 +106,10 @@
     pendingApprovalCount = 1,
     pendingInputs = [],
     respondingRequestIds = [],
-    leadingControls,
+    controlsDisabled = false,
+    sendDisabled = false,
+    footerControls,
+    subBar,
     onDraftChange,
     onDraftBlur,
     onSend,
@@ -305,7 +314,7 @@
 
   /** Hand the message off and let the box return to its resting height. */
   function submitPrompt(): void {
-    if (composerLocked) return;
+    if (composerLocked || sendDisabled) return;
     hasOpened = false;
     void onSend?.();
   }
@@ -359,10 +368,6 @@
 
 <div class="composer-area" data-testid="conversation-composer-area" bind:this={composerArea}>
   {#if bannerItems.length}<ComposerBannerStack items={bannerItems} />{/if}
-  <!-- A draft session's own pickers sit ABOVE the capsule, not inside it.
-       They set up the session rather than the message, and three of them on
-       the control row left the message nowhere to go. -->
-  {#if leadingControls}<div class="leading-controls" data-testid="composer-leading-controls">{@render leadingControls()}</div>{/if}
   {#if (plan && plan.steps.length) || planFileChanges}
     <div class="plan-chip-slot">
       <PlanChip {plan} fileChanges={planFileChanges} expanded={planExpanded} running={sending} onToggle={() => (planExpanded = !planExpanded)} />
@@ -387,12 +392,14 @@
               approval={pendingApproval}
               pendingCount={pendingApprovalCount}
               responding={respondingRequestIds.includes(pendingApproval.requestId)}
+              disabled={controlsDisabled}
               onDecision={onApprovalDecision}
             />
           {:else}
             <ComposerPendingUserInputPanel
               requests={pendingInputs}
               responding={respondingRequestIds.length > 0}
+              disabled={controlsDisabled}
               onSubmit={onInputSubmit}
             />
           {/if}
@@ -403,7 +410,7 @@
         {#if attachments.length || pendingImageCount}
           <div class="attachments" data-testid="conversation-attachment-previews">
             {#each Array(pendingImageCount) as _}
-              <figure><div class="attachment-preview pending-image" role="status" aria-label="Loading image"><span class="pending-spinner"></span></div><figcaption><strong>Loading image</strong></figcaption></figure>
+              <figure><div class="attachment-preview pending-image" role="status" aria-label="Loading image"><WorkingSpinner size={18} /></div><figcaption><strong>Loading image</strong></figcaption></figure>
             {/each}
             {#each attachments as attachment (attachment.id)}
               <figure data-testid="conversation-attachment-preview">
@@ -457,12 +464,11 @@
                 {#snippet child({ props })}
                   <button
                     {...props}
-                    class:open={addMenuOpen}
-                    class="round-control add-control"
+                    class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
                     type="button"
                     aria-label={addMenuOpen ? 'Close the add menu' : 'Add to this message'}
                   >
-                    {#if addMenuOpen}<X size={18} />{:else}<Plus size={18} />{/if}
+                    {#if addMenuOpen}<X />{:else}<Plus />{/if}
                   </button>
                 {/snippet}
               </DropdownMenu.Trigger>
@@ -485,6 +491,7 @@
             </DropdownMenu.Root>
           </div>
           <div class="footer-right">
+            {@render footerControls?.()}
             <!-- How full the context window is, as a small pie gauge: a slice
                  inside a faint outline grows clockwise from 12 o'clock as the
                  window is used, so a fresh session shows a thin slice and a
@@ -528,14 +535,13 @@
             {/if}
             <div class="wide-controls"><ComposerConfigMenu {provider} state={configState} pending={pendingConfig} error={configError} onChange={onConfigChange} /></div>
             <div class="compact-controls"><CompactComposerControlsMenu {provider} state={configState} pending={pendingConfig} onChange={onConfigChange} /></div>
-            <!-- The mic keeps its place in every state; send joins it to the
-                 right the moment there is something to send. -->
-            <button class="round-control mic" type="button" disabled title="Voice input is not available yet" aria-label="Voice input, not available yet"><Mic size={17} /></button>
+            <!-- The mic and send keep their places in every state; send waits
+                 disabled until there is something to send. -->
+            <Button variant="ghost" size="icon-sm" class="ml-auto" disabled title="Voice input is not available yet" aria-label="Voice input, not available yet"><Mic /></Button>
             {#if sending && (!hasSendableContent || !supportsSteering)}
-              <button class="round-control send stop" data-testid="conversation-stop" type="button" aria-label="Stop generation" onclick={() => void onStop?.()}><Square size={13} fill="currentColor" /></button>
-            {/if}
-            {#if hasSendableContent && (!sending || supportsSteering)}
-              <button class="round-control send" data-testid="conversation-send" type="submit" aria-label={sending ? 'Steer current turn' : 'Send message'}><ArrowUp size={17} strokeWidth={2.2} /></button>
+              <button class="round-control send stop" data-testid="conversation-stop" type="button" aria-label="Stop generation" disabled={controlsDisabled} onclick={() => void onStop?.()}><Square size={13} fill="currentColor" /></button>
+            {:else}
+              <button class="round-control send" data-testid="conversation-send" type="submit" disabled={!hasSendableContent || sendDisabled} aria-label={sending ? 'Steer current turn' : 'Send message'}><ArrowUp size={17} strokeWidth={2.2} /></button>
             {/if}
           </div>
         </div>
@@ -543,6 +549,7 @@
       {#if dragging}<p class="drop-hint" data-testid="conversation-drop-hint">Drop images to attach them</p>{/if}
     </div>
   </form>
+  {#if subBar}<div class="sub-bar" data-testid="composer-sub-bar">{@render subBar()}</div>{/if}
   <div class="composer-hint" data-testid="conversation-paste-hint"><span>Paste or drop images · type / for commands</span>{#if contextMeter?.kind === 'percent'}<span aria-hidden="true">·</span><span>{contextMeter.remaining}% left</span>{/if}</div>
 </div>
 
@@ -553,49 +560,37 @@
      the ramp holds off before it converges, so lines thin out over the length
      of it instead of meeting an edge. It is opaque by the time it reaches the
      box, or the transcript would read through beside the capsule. */
-  .composer-area { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; padding: var(--composer-fade) 0 6px; container-type: inline-size; container-name: composer; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--color-surface) 45%, transparent) calc(var(--composer-fade) * 0.55), var(--color-surface) var(--composer-fade)); }
+  .composer-area { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; padding: var(--composer-fade) 0 var(--space-3); container-type: inline-size; container-name: composer; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--color-surface) 45%, transparent) calc(var(--composer-fade) * 0.55), var(--color-surface) var(--composer-fade)); }
   .composer-form { width: min(820px, calc(100% - 44px)); margin: 0 auto; }
   /* The chip is centred on the capsule and takes the same width, so its
      panel opens inside the composer's own column rather than the panel's. */
   .plan-chip-slot { width: min(820px, calc(100% - 44px)); margin: 0 auto; }
 
-  /* The box is one grid in two shapes.
-     Empty, it is a single capsule line — add button, message, controls.
-     Carrying something, the message takes the whole width on its own line and
-     the two control groups sit on the line below it. Only the named areas
-     change between the two; nothing moves in the markup. */
+  /* The box is a raised card with two rows: the message takes the whole first
+     row on its own, so the placeholder always has the full width, and the two
+     control groups sit on the row below it. */
   .composer-box {
+    --composer-control-size: 28px;
     position: relative;
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
-    grid-template-areas: 'panels panels panels' 'lead prompt trail' 'hint hint hint';
+    grid-template-areas: 'panels panels panels' 'prompt prompt prompt' 'lead trail trail' 'hint hint hint';
+    row-gap: var(--space-2);
     align-items: center;
     overflow: visible;
-    padding: var(--composer-inset);
-    /* No outline at rest: the surface and its shadow are what separate the box
-       from the page. The width stays so that dragging and a locked composer can
+    padding: var(--space-3) var(--space-3) var(--space-2) var(--space-4);
+    /* No outline at rest: the surface tone is what separates the box from the
+       panel. The width stays so that focus, dragging and a locked composer can
        colour it without the box changing size underneath them. */
     border: 1px solid transparent;
-    border-radius: var(--composer-radius-capsule);
-    /* A step lighter again than the sheet colour the token names. The box floats
-       on the backdrop's own near-black, where a drop shadow has nothing to fall
-       on, so the fill is the whole of what lifts it — and at the token's value
-       the difference was small enough that the capsule read as a hole rather
-       than a control. */
-    background: color-mix(in srgb, var(--color-text) 3%, var(--composer-surface));
-    box-shadow: var(--shadow-md);
+    border-radius: 12px;
+    background: var(--muted);
   }
-  /* Shut, the box is as tall as the controls sitting in it and no taller, which
-     came out shorter than the thing it is: the one place a conversation starts.
-     A floor gives it presence without changing the shape. */
-  .composer-box:not(.relaxed) { min-height: 70px; }
-  .composer-box.relaxed { grid-template-areas: 'panels panels panels' 'prompt prompt prompt' 'lead . trail' 'hint hint hint'; border-radius: var(--composer-radius-relaxed); }
-  .composer-box:focus-within { border-color: var(--composer-border-focus); box-shadow: var(--shadow-lg); }
+  .composer-box:focus-within { border-color: var(--composer-border-focus); }
   .composer-box.dragging { border-color: var(--color-accent); background: var(--composer-surface-drop); }
   .composer-box.locked { border-color: var(--composer-border-locked); }
   .composer-panels { grid-area: panels; }
-  .composer-input-zone { grid-area: prompt; position: relative; padding: var(--composer-prompt-inset-capsule); }
-  .composer-box.relaxed .composer-input-zone { padding: var(--composer-prompt-inset); }
+  .composer-input-zone { grid-area: prompt; position: relative; min-width: 0; }
   /* Three lines of room once the box is open. The height a textarea is given
      follows what is typed into it, which at one line left a box barely taller
      than the capsule it just grew out of — opening that looked like nothing
@@ -608,44 +603,34 @@
      three competing pieces of writing; quieter, the capsule reads as one thing
      with a waiting cursor in it. */
   textarea::placeholder { color: color-mix(in srgb, var(--color-text-3) 70%, transparent); }
-  /* Shut, the message shares its row with the + button and the setting pills,
-     so the box is as tall as they are while the text in it is one line. The
-     line was landing against the top of that box and reading as floating above
-     the controls beside it.
-
-     `align-content` centres the text block inside the box it already has. It is
-     not only a flex and grid property any more — it aligns the contents of a
-     block container too, which is what a textarea is. Stretching the line height
-     to fill the box was the old way of faking this, and it lied about the
-     leading: a second line would have inherited it. */
-  .composer-box:not(.relaxed) textarea { padding: 0; align-content: center; }
   textarea:disabled { cursor: not-allowed; opacity: .6; }
 
   /* The footer is only a bracket around the two control groups: it hands them
      to the grid above so each can take its own cell in either shape. */
   .composer-footer { display: contents; }
   .footer-left, .footer-right { display: flex; min-width: 0; align-items: center; gap: var(--composer-row-gap); }
-  .footer-left { grid-area: lead; }
-  /* The right of the row is one cluster, not four separate controls: the pills
-     already carry their own padding, so the gap between them only has to keep
-     them from touching. The meter is the one thing there that is read rather
-     than pressed, so it keeps its own space ahead of the group. */
-  .footer-right { grid-area: trail; justify-self: end; gap: 2px; }
+  /* Pulled left so the + glyph lines up under the message text. */
+  .footer-left { grid-area: lead; margin-left: calc(-1 * var(--space-2)); }
+  /* The settings pills follow the add button on the left; the mic and send
+     hold the far right. The pills already carry their own padding, so the gap
+     between them only has to keep them from touching. The meter is the one
+     thing there that is read rather than pressed, so it keeps its own space
+     ahead of the group. */
+  .footer-right { grid-area: trail; gap: 4px; }
   .file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
-  .leading-controls { display: flex; width: min(820px, calc(100% - 44px)); min-width: 0; margin: 0 auto var(--composer-row-gap); align-items: center; gap: var(--composer-row-gap); }
+  .sub-bar { display: flex; width: min(780px, calc(100% - 84px)); min-width: 0; margin: 4px auto 0; align-items: center; gap: var(--composer-row-gap); }
   .wide-controls { display: flex; min-width: 0; }
   .compact-controls { display: none; }
 
-  /* Every round control on the row — add, mic, send — is the same capsule. */
+  /* The send and stop button; add and mic are the shared ghost icon button. */
   .round-control { display: inline-grid; place-items: center; flex: none; width: var(--composer-control-size); height: var(--composer-control-size); padding: 0; border: 0; border-radius: var(--radius-pill); background: var(--composer-pill-surface); color: var(--composer-pill-text); cursor: pointer; }
   .round-control:hover:not(:disabled) { background: var(--composer-pill-surface-hover); color: var(--composer-pill-text-open); }
   .round-control:focus-visible { outline: 2px solid var(--color-focus-solid); outline-offset: 2px; }
-  .add-control.open { background: var(--composer-pill-surface-open); color: var(--composer-pill-text-open); }
-  .mic:disabled { cursor: default; opacity: .55; }
-  .send { background: var(--color-accent); color: var(--color-on-accent); box-shadow: var(--shadow-sm); }
-  .send:hover:not(:disabled) { background: var(--color-accent); color: var(--color-on-accent); filter: brightness(1.06); transform: translateY(-1px); }
-  .send.stop { background: var(--color-bad); }
-  .send.stop:hover:not(:disabled) { background: var(--color-bad); }
+  .send { width: 32px; height: 32px; background: var(--primary); color: var(--primary-foreground); }
+  .send:hover:not(:disabled) { background: var(--primary); color: var(--primary-foreground); filter: brightness(1.08); }
+  .send.stop { background: var(--destructive); }
+  .send.stop:hover:not(:disabled) { background: var(--destructive); }
+  .send:disabled { cursor: default; }
 
   /* The gauge is the size of the icons beside it and drawn in the same quiet
      colour, warming as the window empties so the last stretch is noticed
@@ -675,8 +660,6 @@
   .attachments figure { display: grid; grid-template-columns: 60px minmax(0, 1fr); column-gap: 8px; min-width: 210px; max-width: 280px; margin: 0; padding: var(--composer-attachment-inset); border: 1px solid var(--composer-attachment-border); border-radius: var(--radius-md); background: var(--composer-attachment-surface); }
   .attachment-preview { position: relative; grid-row: span 2; width: 60px; height: 52px; }
   .pending-image{display:grid;place-items:center}
-  .pending-spinner{width:17px;height:17px;border:2px solid color-mix(in srgb,var(--color-text-2) 35%,transparent);border-top-color:var(--color-text);border-radius:50%;animation:pending-spin .7s linear infinite}
-  @keyframes pending-spin{to{transform:rotate(360deg)}}
   .attachment-remove { position: absolute; top: 3px; right: 3px; display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: var(--radius-pill); background: var(--composer-attachment-scrim); color: var(--color-text); cursor: pointer; }
   .attachment-remove:hover { background: var(--color-bad-bg); color: var(--color-bad); }
   .attachment-remove:focus-visible, .attachment-annotate:focus-visible { outline: 2px solid var(--color-focus-solid); outline-offset: 1px; }
@@ -689,7 +672,7 @@
      the ring above already draws. It stays because it is where a newcomer finds
      the slash menu, but at the weight of the message it was competing with the
      one line in the box that matters. */
-  .composer-hint { display: flex; justify-content: flex-end; gap: 8px; width: min(820px, calc(100% - 44px)); margin: 5px auto 0; color: color-mix(in srgb, var(--color-text-3) 78%, transparent); font-size: 12px; }
+  .composer-hint { display: flex; justify-content: flex-end; gap: 8px; width: min(820px, calc(100% - 44px)); margin: 0 auto; padding: 6px var(--space-1) 0; color: color-mix(in srgb, var(--color-text-3) 78%, transparent); font-size: 11px; }
   /* The settings row is a fixed 211px — approval on the left, the model pill on
      the right — and the add button beside it needs about 80px more. Measured in
      the browser, the pair still sits unclipped in a 438px composer, so
@@ -698,12 +681,12 @@
      genuinely stop fitting. */
   @container composer (max-width: 440px) { .wide-controls { display: none; } .compact-controls { display: flex; } }
 
-  /* Short, one-shot transitions. The box eases between its two corners as the
-     message grows, and the message box itself eases its own height; the send
-     button pops in the moment there is something to send. */
+  /* Short, one-shot transitions. The box eases its border and fill as focus
+     and dragging change; the send button pops in when it takes the stop
+     button's place. */
   @keyframes send-pop { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
   @media (prefers-reduced-motion: no-preference) {
-    .composer-box { transition: border-color .14s ease, border-radius .18s ease, background-color .14s ease, box-shadow .14s ease; }
+    .composer-box { transition: border-color .14s ease, background-color .14s ease; }
     /* Commented out while we chase a UI freeze. Height is a layout property, so
        animating it makes the ResizeObserver on the composer fire every frame for
        160ms; each fire republishes `--composer-height`, which is the transcript's

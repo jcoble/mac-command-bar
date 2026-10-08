@@ -320,6 +320,7 @@ pub enum AgentUserInputKind {
     Text,
     Password,
     Select,
+    MultiSelect,
     Boolean,
 }
 
@@ -341,8 +342,16 @@ pub struct AgentUserInputField {
 pub struct AgentUserInputResponse {
     #[serde(flatten)]
     pub identity: AgentRequestIdentity,
-    pub values: BTreeMap<String, Value>,
-    pub cancelled: bool,
+    pub action: AgentUserInputAction,
+    pub content: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentUserInputAction {
+    Accept,
+    Decline,
+    Cancel,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -489,6 +498,11 @@ pub enum AgentConversationPayload {
     ChildUpdate {
         child_id: String,
         parent_tool_call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_id: Option<String>,
+        /// Provider-durable transcript identity, distinct from resumed ACP generations.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         label: Option<String>,
         state: String,
@@ -506,6 +520,8 @@ pub enum AgentConversationPayload {
         #[serde(skip_serializing_if = "Option::is_none")]
         description: Option<String>,
         fields: Vec<AgentUserInputField>,
+        #[serde(default)]
+        can_decline: bool,
     },
     UserInputResolved {
         request_id: String,
@@ -592,6 +608,8 @@ pub struct EnsureAgentConversationRequest {
     pub native_session_mode: AgentNativeSessionMode,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 /// The machine that owns a conversation's complete runtime and durable state.
@@ -622,6 +640,17 @@ pub struct SendAgentConversationMessageRequest {
     pub approval_policy: Option<String>,
 }
 
+/// Identifies the durable user item admitted by one normal send or steering request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationSendReceipt {
+    pub owned_id: String,
+    pub generation: u64,
+    pub turn_id: String,
+    pub user_item_id: String,
+    pub admitted_sequence: i64,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApprovalDecision {
@@ -648,14 +677,13 @@ pub struct RespondAgentConversationPermissionRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RespondAgentConversationInputRequest {
     pub owned_id: String,
     pub generation: u64,
     pub request_id: String,
-    #[serde(default)]
-    pub values: BTreeMap<String, Value>,
-    pub cancelled: bool,
+    pub content: BTreeMap<String, Value>,
+    pub action: AgentUserInputAction,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -715,6 +743,76 @@ pub struct AgentConversationEventPage {
     pub has_more: bool,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationEventCoverage {
+    pub low: i64,
+    pub high: i64,
+    pub start_complete: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationItemDescriptor {
+    pub stable_id: String,
+    pub item_id: String,
+    pub selection_mode: String,
+    pub first_sequence: i64,
+    pub first_timestamp_ms: i64,
+    pub last_sequence: i64,
+    pub authority_seq: Option<i64>,
+    pub turn_id: Option<String>,
+    pub completed: bool,
+    pub prefix_complete: bool,
+    pub position_known: bool,
+    pub required_bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationTurnFacts {
+    pub turn_id: String,
+    pub started_at_ms: Option<i64>,
+    pub ended_at_ms: Option<i64>,
+    pub terminal_state: Option<String>,
+    pub final_assistant_item_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationItemPage {
+    pub items: Vec<AgentConversationItemDescriptor>,
+    pub events: Vec<AgentConversationEvent>,
+    pub turns: Vec<AgentConversationTurnFacts>,
+    pub before_cursor: Option<i64>,
+    pub after_cursor: Option<i64>,
+    pub has_before: bool,
+    pub has_earlier_transcript: bool,
+    pub has_after: bool,
+    pub watermark: i64,
+    pub transfer_bytes: u64,
+    pub oversized: bool,
+    pub coverage: Option<AgentConversationEventCoverage>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationChildHistorySelection {
+    pub history_owned_id: String,
+    pub page: AgentConversationItemPage,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentConversationSelectionSnapshot {
+    pub connection: AgentConversationConnection,
+    pub suspended: bool,
+    pub page: AgentConversationItemPage,
+    pub pending_events: Vec<AgentConversationEvent>,
+    pub pending_sequence: i64,
+    pub active_turn_id: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConversationSnapshot {
@@ -722,6 +820,9 @@ pub struct AgentConversationSnapshot {
     pub suspended: bool,
     pub last_sequence: i64,
     pub events: Vec<AgentConversationEvent>,
+    pub has_earlier_transcript: bool,
+    pub pending_events: Vec<AgentConversationEvent>,
+    pub active_turn_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -738,6 +839,8 @@ pub struct AgentConversationSessionMeta {
     pub resume_command: Option<String>,
     pub completed_at: Option<String>,
     pub settled_at: Option<String>,
+    /// When the person pinned the session to the top of the rail; `None` when unpinned.
+    pub pinned_at: Option<String>,
     pub task_id: Option<String>,
     pub pull_request: Option<String>,
     pub message_count: Option<u64>,
@@ -775,14 +878,80 @@ pub struct AgentConversationSessionRecord {
     #[serde(default)]
     pub background_task_ids: Vec<String>,
     pub native_session_id: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// The rail group the desktop computed in SQL from `project_id`, and its
+    /// label. Empty, and left off the wire, wherever no desktop grouped the
+    /// record (a remote server never does), so protocol 13 is unchanged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_group_key: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_group_label: String,
     #[serde(flatten)]
     pub meta: AgentConversationSessionMeta,
+}
+
+/// A registered project, as the frontend sees it.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRecord {
+    pub id: String,
+    pub machine: String,
+    pub root_path: String,
+    pub title: String,
+    pub repo_key: String,
+    pub created_at_ms: i64,
+    /// The rail group its sessions share, computed in SQL.
+    pub group_key: String,
 }
 
 #[cfg(test)]
 mod contract_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn project_id_is_optional_on_ensure_and_present_on_records() {
+        let request: EnsureAgentConversationRequest = serde_json::from_value(json!({
+            "ownedId": "owned-local",
+            "provider": "codex",
+            "cwd": "/tmp/project",
+            "nativeSessionId": null
+        }))
+        .unwrap();
+        assert_eq!(request.project_id, None);
+
+        let record = AgentConversationSessionRecord {
+            owned_id: "owned-local".into(),
+            execution_environment: ExecutionEnvironment::Local,
+            remote_profile_id: None,
+            provider: AgentConversationProvider::Codex,
+            model: None,
+            effort: None,
+            cwd: "/tmp/project".into(),
+            state: AgentRuntimeState::Ready,
+            suspended: false,
+            created_at_ms: 1,
+            last_activity_at_ms: 2,
+            active_turn_id: None,
+            pending_permission: false,
+            pending_input: false,
+            background_task_ids: Vec::new(),
+            native_session_id: None,
+            project_id: Some("p1".into()),
+            project_group_key: String::new(),
+            project_group_label: String::new(),
+            meta: AgentConversationSessionMeta::default(),
+        };
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(value["projectId"], "p1");
+        assert!(value.get("meta").is_none());
+        // Ungrouped, as a remote server sends it: the protocol-13 wire has no group fields.
+        assert!(value.get("projectGroupKey").is_none() && value.get("projectGroupLabel").is_none());
+        let read_back: AgentConversationSessionRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(read_back.project_id.as_deref(), Some("p1"));
+        assert_eq!(read_back.project_group_key, "");
+    }
 
     #[test]
     fn omitted_execution_environment_means_this_mac() {
@@ -882,5 +1051,42 @@ mod contract_tests {
                 "availableApprovalPolicies": ["untrusted", "on-request"]
             })
         );
+    }
+
+    #[test]
+    fn user_input_contract_defaults_old_events_but_rejects_old_commands() {
+        let event: AgentConversationPayload = serde_json::from_value(json!({
+            "kind": "userInputRequested",
+            "requestId": "input-1",
+            "title": "Input requested",
+            "fields": []
+        }))
+        .unwrap();
+        assert!(matches!(
+            event,
+            AgentConversationPayload::UserInputRequested {
+                can_decline: false,
+                ..
+            }
+        ));
+
+        assert!(serde_json::from_value::<RespondAgentConversationInputRequest>(json!({
+            "ownedId": "owned",
+            "generation": 1,
+            "requestId": "input-1",
+            "values": {},
+            "cancelled": false
+        }))
+        .is_err());
+        let request: RespondAgentConversationInputRequest = serde_json::from_value(json!({
+            "ownedId": "owned",
+            "generation": 1,
+            "requestId": "input-1",
+            "action": "accept",
+            "content": { "choice": "stable" }
+        }))
+        .unwrap();
+        assert_eq!(request.action, AgentUserInputAction::Accept);
+        assert_eq!(request.content["choice"], "stable");
     }
 }

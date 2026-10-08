@@ -1,17 +1,22 @@
 <script lang="ts">
+  import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
+  import { getContext } from 'svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import ConversationMessage from './ConversationMessage.svelte';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
+
+  const disclosure = getContext<ConversationDisclosureContext>(conversationDisclosureContext);
 
   let { item, onFileLink }: {
     item: Extract<ConversationDisplayItem, { kind: 'reasoning' }>;
     onFileLink?(path: string): void;
   } = $props();
 
+  const open = $derived(disclosure?.get(`${item.itemId}:reasoning`) ?? false);
   const preview = $derived(item.text.replace(/\s+/g, ' ').trim().slice(0, 140) || 'Working through the request');
 </script>
 
-<details class:streaming={!item.completed} class="reasoning" data-testid="timeline-reasoning-item">
+<details {open} ontoggle={(event) => { if (event.currentTarget.open !== open) disclosure?.set(`${item.itemId}:reasoning`, event.currentTarget.open); }} class:streaming={!item.completed} class="reasoning" data-testid="timeline-reasoning-item">
   <summary>
     <span class="chevron" aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
     <strong>{item.completed ? 'Thinking' : 'Thinking…'}</strong>

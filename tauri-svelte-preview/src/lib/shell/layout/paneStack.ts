@@ -2,7 +2,7 @@
  * paneStack.ts — the /next left rail's stack of collapsible sections (one
  * dockview Paneview). DOM-only: zero backend IO, zero Svelte imports.
  *
- * Same teleport contract as `frame.ts` and `centerDock.ts`: every section's
+ * Same teleport contract as `frame.ts`: every section's
  * body is a Svelte-owned element that this module MOVES into a dockview-owned
  * host div, and hands back to its original parent ("parking") whenever the pane
  * that held it dies while the shell lives on. dockview never renders or

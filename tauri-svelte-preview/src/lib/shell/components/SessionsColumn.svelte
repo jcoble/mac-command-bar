@@ -10,7 +10,7 @@
   import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
   import Plus from '@lucide/svelte/icons/plus';
   import Search from '@lucide/svelte/icons/search';
-  import List from '@lucide/svelte/icons/list';
+  import ListFilter from '@lucide/svelte/icons/list-filter';
   import { onMount } from 'svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
@@ -21,7 +21,7 @@
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-  import { resolveOwnedSessionProject, type OwnedSession } from '$lib/shell/ownedSessions';
+  import type { OwnedSession } from '$lib/shell/ownedSessions';
   import { AGENT_ICONS } from '$lib/shell/agentIcons';
   import { openSessionLibrary } from '$lib/shell/sessionLibrary/sessionLibraryNavigation';
   import SessionRail from './SessionRail.svelte';
@@ -56,6 +56,9 @@
     onReopen?(ownedId: string): void;
     onSettle?(ownedId: string): void;
     onUnsettle?(ownedId: string): void;
+    onPin?(ownedId: string, pinned: boolean): void;
+    onRename?(ownedId: string, title: string): void;
+    onConnect?(ownedId: string): void;
     onAskRemove?(ownedId: string): void;
   }
 
@@ -70,6 +73,9 @@
     onReopen,
     onSettle,
     onUnsettle,
+    onPin,
+    onRename,
+    onConnect,
     onAskRemove
   }: Props = $props();
 
@@ -102,11 +108,17 @@
   const MY_WORK_FILTERS_SETTING_KEY = 'rail.my-work-filters';
   let filtersVersion = 0;
 
+  /** The order rows were dragged into, as owned ids; read by the Custom order sort. */
+  let manualOrder = $state<string[]>([]);
+  const MY_WORK_ORDER_SETTING_KEY = 'rail.session-order';
+  let manualOrderVersion = 0;
+
   onMount(() => {
     const owner = { active: true };
     const restoreVersion = viewOptionsVersion;
     void restoreViewOptions(owner, restoreVersion);
     void restoreFilters(owner, filtersVersion);
+    void restoreManualOrder(owner, manualOrderVersion);
     return () => {
       owner.active = false;
     };
@@ -162,6 +174,27 @@
     }
   }
 
+  async function restoreManualOrder(owner: { active: boolean }, restoreVersion: number): Promise<void> {
+    try {
+      const stored = await readAssemblySettingFromTauri(MY_WORK_ORDER_SETTING_KEY);
+      if (owner.active && manualOrderVersion === restoreVersion && Array.isArray(stored)) {
+        manualOrder = stored.filter((ownedId): ownedId is string => typeof ownedId === 'string');
+      }
+    } catch {
+      // Custom order starts empty when local settings are unavailable.
+    }
+  }
+
+  /** A drop saves the new order and switches the rail to it. */
+  function reorder(order: string[]): void {
+    manualOrderVersion += 1;
+    manualOrder = order;
+    if (viewOptions.sortBy !== 'manual') setViewOptions({ sortBy: 'manual' });
+    void writeAssemblySettingFromTauri(MY_WORK_ORDER_SETTING_KEY, order).catch(() => {
+      // The order stays for this visit when local settings are unavailable.
+    });
+  }
+
   /** Searching sessions means the full Session History tab, not a rail popover. */
   export function openFinder(): void {
     openSessionLibrary();
@@ -178,7 +211,7 @@
     if (!needle) return byPills;
     return byPills.filter((session) => {
       const title = sessionLabel(session).toLowerCase();
-      const project = resolveOwnedSessionProject(session).label.toLowerCase();
+      const project = session.projectGroupLabel.toLowerCase();
       return title.includes(needle) || project.includes(needle);
     });
   });
@@ -199,7 +232,7 @@
   }
 
   const ACTION_CLASS =
-    'text-[var(--color-text-2)] hover:text-foreground hover:bg-[var(--color-elevated)]';
+    'text-muted-foreground hover:text-foreground hover:bg-accent';
   const TOOLTIP_CLASS =
     'bg-[var(--color-surface)] text-foreground ring-1 ring-[var(--color-border)] ' +
     'shadow-[var(--shadow-md)] text-[12px] px-2 py-1';
@@ -219,7 +252,7 @@
       run();
     }}
   >
-    <Icon class="size-4" aria-hidden="true" />
+    <Icon class="size-[16px]" aria-hidden="true" />
   </IconButton>
 {/snippet}
 
@@ -252,16 +285,16 @@
     <div data-testid="sessions-column" class="sessions-column flex h-full min-h-0 flex-col text-[var(--color-text)]">
       <Tooltip.Provider delayDuration={0}>
         <header class="sessions-header">
-        <h2 class="text-[14px] font-semibold text-[var(--color-text)]">Sessions</h2>
+        <h2 class="text-[16px] font-bold text-foreground">Sessions</h2>
         <div class="header-actions ml-auto flex items-center gap-2">
           <IconButton
             label="Search sessions"
-            size="xs"
+            size="sm"
             side="bottom"
             class={ACTION_CLASS}
             onclick={showFilter}
           >
-            <Search class="size-3.5" aria-hidden="true" />
+            <Search class="size-[16px]" aria-hidden="true" />
           </IconButton>
           <DropdownMenu.Root>
             <Tooltip.Root>
@@ -273,7 +306,7 @@
                     class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), ACTION_CLASS)}
                     aria-label="View session options"
                   >
-                    <List aria-hidden="true" />
+                    <ListFilter aria-hidden="true" />
                   </DropdownMenu.Trigger>
                 {/snippet}
               </Tooltip.Trigger>
@@ -303,13 +336,11 @@
                       class={cn(
                         'min-w-0 px-1 text-[13px] font-normal',
                         pressed
-                          ? 'bg-[var(--color-accent)] text-[var(--color-on-accent)] hover:bg-[var(--color-accent)] hover:text-[var(--color-on-accent)]'
+                          ? 'bg-secondary text-foreground hover:bg-secondary'
                           : 'text-[var(--color-text-3)]'
                       )}
                       aria-pressed={pressed}
-                      style={pressed
-                        ? 'background-color: var(--color-accent); color: var(--color-on-accent)'
-                        : 'color: var(--color-text)'}
+                      style={pressed ? undefined : 'color: var(--color-text)'}
                       onclick={grouping.press}
                     >
                       <span class="truncate">{grouping.label}</span>
@@ -326,15 +357,18 @@
                   onValueChange={(value) => setViewOptions({ sortBy: value as MyWorkSort })}
                 >
                   <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Sort My Work sessions">
-                    {viewOptions.sortBy === 'recent' ? 'Recent activity' : 'Name'}
+                    {{ recent: 'Recent activity', name: 'Name', manual: 'Custom order' }[viewOptions.sortBy]}
                   </Select.Trigger>
                   <Select.Content>
                     <Select.Item value="recent" label="Recent activity" />
                     <Select.Item value="name" label="Name" />
+                    <Select.Item value="manual" label="Custom order" />
                   </Select.Content>
                 </Select.Root>
               </div>
 
+              <!-- Custom order is the dragged order; it has no direction to turn. -->
+              {#if viewOptions.sortBy !== 'manual'}
               <div class="flex min-h-8 items-center justify-between gap-3">
                 <span class="text-[13px] text-foreground">Direction</span>
                 <Select.Root
@@ -364,9 +398,10 @@
                   </Select.Content>
                 </Select.Root>
               </div>
+              {/if}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
-          {@render action('New session', Plus, onNewSession, 'text-[var(--color-accent)]')}
+          {@render action('New session', Plus, onNewSession)}
         </div>
       </header>
       </Tooltip.Provider>
@@ -397,12 +432,17 @@
         <SessionRail
           sessions={filtered}
           options={viewOptions}
+          {manualOrder}
+          onReorder={reorder}
           {activeOwnedId}
           onSelectSession={selectFilteredSession}
           {onComplete}
           {onReopen}
           {onSettle}
           {onUnsettle}
+          {onPin}
+          {onRename}
+          {onConnect}
           {onAskRemove}
         />
       </div>
@@ -432,55 +472,39 @@
     line-height: 19.5px;
   }
 
+  /* The 44px header band every panel shares, set 4px down from the card's top. */
   .sessions-header {
     display: flex;
-    flex: 0 0 52px;
+    flex: 0 0 44px;
+    margin-top: 4px;
     align-items: center;
-    gap: 5px;
-    padding: 0 9px 0 13px;
+    gap: 4px;
+    padding: 0 12px 0 16px;
     font-size: 13px;
     line-height: 19.5px;
   }
 
   .sessions-header :global(h2) {
     flex: 1 1 auto;
-    font-size: 14px;
+    font-size: 16px;
     letter-spacing: -0.01em;
     line-height: 19.5px;
   }
 
-  .sessions-header :global(button) {
-    width: 29px;
-    height: 29px;
-    padding: 0;
-    border-radius: var(--radius-pill);
-    font-size: 13.3333px;
-    line-height: normal;
-  }
-
-  /* The three controls sit in one container, in the same tone and shape as the
-     right panel's tab strip, so the shell's grouped controls all look alike.
-     There is no sliding pill here: search, view options and new session are
-     three things you do, not one choice out of three. */
+  /* Search, view options and new session are three plain icon buttons on the
+     header band, not a grouped track: they are three things you do, not one
+     choice out of three. */
   .sessions-header .header-actions {
-    gap: 1px;
-    padding: 3px;
-    border-radius: var(--radius-pill);
-    background: var(--color-elevated);
+    gap: 4px;
   }
 
   .filter-pills {
     flex: 0 0 auto;
-    padding: 0 9px 8px 13px;
+    padding: 4px 16px 12px;
   }
 
   .filter-strip {
     flex: 0 0 auto;
-    padding: 7px 9px 7px 13px;
-  }
-
-  .sessions-header :global(button svg) {
-    width: 16px;
-    height: 16px;
+    padding: 0 12px 8px 16px;
   }
 </style>

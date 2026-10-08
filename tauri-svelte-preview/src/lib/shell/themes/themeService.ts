@@ -178,7 +178,7 @@ export function apply(themeId: unknown, options: ApplyOptions = {}): ShellTheme 
  * carry the shipped theme's colors.
  *
  * The remembered choice is not rewritten here: a settings file that still says
- * `dark` renders as Houston and stays as it is until the user picks something.
+ * `dark` renders as the default theme and stays as it is until the user picks something.
  */
 export function applyStoredTheme(root?: HTMLElement | null): ShellTheme {
   return apply(resolveThemeId(settings.appearance.themeId), { root, persist: false });

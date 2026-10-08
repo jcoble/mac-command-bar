@@ -24,6 +24,7 @@
   import GitPullRequest from '@lucide/svelte/icons/git-pull-request';
   import RefreshCcwDot from '@lucide/svelte/icons/refresh-ccw-dot';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import {
@@ -102,7 +103,7 @@
       disabled={!panel.activated || panel.statusLoading}
       onclick={() => void service.refresh()}
     >
-      <RefreshCw class={cn('size-3.5', panel.statusLoading && 'animate-spin')} aria-hidden="true" />
+      {#if panel.statusLoading}<WorkingSpinner size={14} />{:else}<RefreshCw class="size-3.5" aria-hidden="true" />{/if}
     </button>
   </div>
 
@@ -154,8 +155,7 @@
         title={canWrite ? action.tip : readOnlyReason}
         onclick={() => void service.runRemoteAction(action.id)}
       >
-        <Icon class="size-3" aria-hidden="true" />
-        {panel.actionBusy === action.id ? action.busyLabel : action.label}
+        {#if panel.actionBusy === action.id}<WorkingSpinner size={12} />{action.busyLabel}{:else}<Icon class="size-3" aria-hidden="true" />{action.label}{/if}
       </button>
     {/each}
   </div>

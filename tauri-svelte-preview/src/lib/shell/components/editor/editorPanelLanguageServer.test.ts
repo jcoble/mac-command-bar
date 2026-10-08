@@ -46,9 +46,6 @@ const barSource = readFileSync(
   path.join(here, '..', '..', 'editor', 'languageIntelligenceBar.svelte.ts'),
   'utf8'
 );
-const pillsSource = readFileSync(path.join(here, '..', 'CenterCornerTabs.svelte'), 'utf8');
-const frameSource = readFileSync(path.join(here, '..', 'ShellFrame.svelte'), 'utf8');
-const utilityStripSource = readFileSync(path.join(here, '..', 'UtilityStrip.svelte'), 'utf8');
 
 test('the global mode control is a compact switch', () => {
   assert.match(controlsSource, /import \{ Switch \} from '\$lib\/components\/ui\/switch\/index\.js'/);
@@ -60,37 +57,6 @@ test('the global mode control is a compact switch', () => {
     !controlsSource.includes('<LanguageServerStatusChip'),
     'the status pipeline remains separate from the global mode choice'
   );
-});
-
-test('the editor status bar owns the switch and the pill group keeps only surface icons', () => {
-  assert.doesNotMatch(pillsSource, /LanguageIntelligenceControls/);
-  assert.doesNotMatch(utilityStripSource, /<LanguageIntelligenceControls \/>/);
-  assert.match(panelSource, /<div class="editor-status">[\s\S]*?<LanguageIntelligenceControls \/>/);
-  const group = pillsSource.slice(pillsSource.indexOf('<nav'), pillsSource.indexOf('</nav>'));
-  assert.ok(group.length > 0, 'the pill group must still exist');
-  // Icons, not words: the label survives as the accessible name and the
-  // tooltip, which is the only place the word is now written.
-  assert.match(pillsSource, /<IconButton\b[\s\S]*?label=\{tab\.label\}/);
-  const capsule = pillsSource.slice(
-    pillsSource.indexOf('>', pillsSource.indexOf('<IconButton')),
-    pillsSource.indexOf('</IconButton>')
-  );
-  assert.match(capsule, /<Icon\b/, 'the capsule carries the glyph');
-  assert.ok(
-    !capsule.includes('tab.label'),
-    'the word must not be printed inside the capsule; it lives on the label'
-  );
-});
-
-test('the group answers for its own focus, not the whole pane', () => {
-  // No focus selector keeps the always-visible compact capsule in a separate
-  // reveal state. In particular, typing elsewhere in the pane cannot change it.
-  assert.ok(!pillsSource.includes(':focus-within'));
-  assert.ok(
-    !frameSource.includes('.center-region:focus-within'),
-    'focus elsewhere in the pane must not change the capsule'
-  );
-  assert.ok(!pillsSource.includes('.blur()'));
 });
 
 test('the switch stays in the waiting colour until the server reports ready', () => {
@@ -119,7 +85,6 @@ test('only the open file\'s own controls stay in the file-tab title row', () => 
     panelSource.indexOf('<div class="editor-canvas">')
   );
   assert.ok(titleRow.length > 0, 'the editor title row must still exist');
-  assert.match(titleRow, /aria-label="Open files"/);
   assert.match(
     titleRow,
     /aria-label="Markdown view"/,

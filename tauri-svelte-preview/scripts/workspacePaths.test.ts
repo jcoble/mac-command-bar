@@ -38,6 +38,15 @@ test('saved workspace paths round trip without retaining a client profile or rew
   assert.equal((projected as typeof stored).activePath, 'assembly-remote://workbox/home/me/a.txt');
   assert.deepEqual(mapWorkspaceSnapshotPaths(projected, null), stored);
 });
+test('saved top tabs follow their editor paths between machines', () => {
+  const stored = { openPaths: ['/home/me/a.txt'], topTabs: { order: ['diff', 'editor:/home/me/a.txt', 'browser:tab-1'], activeKey: 'editor:/home/me/a.txt' } };
+  const projected = mapWorkspaceSnapshotPaths(stored, 'workbox') as typeof stored;
+  assert.deepEqual(projected.topTabs, {
+    order: ['diff', 'editor:assembly-remote://workbox/home/me/a.txt', 'browser:tab-1'],
+    activeKey: 'editor:assembly-remote://workbox/home/me/a.txt'
+  });
+  assert.deepEqual(mapWorkspaceSnapshotPaths(projected, null), stored);
+});
 test('hosted PR requests route their nested roots to the owning machine', () => {
   const root = remoteWorkspacePath('workbox', '/home/me/repo');
   assert.deepEqual(remoteWorkspaceRequest({ query: { roots: [root], mode: 'open', projectFilter: root } }, 'list_github_pull_requests'), {

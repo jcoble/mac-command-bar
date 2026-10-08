@@ -69,10 +69,11 @@
     user-select: none;
   }
 
+  /* A footer word like its neighbours, not a heading. */
   .mode-label {
     font-size: 12px;
-    font-weight: 500;
-    color: var(--foreground);
+    font-weight: 400;
+    color: var(--color-text-3);
   }
 
   .language-switch :global([data-slot='switch']) {

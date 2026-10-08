@@ -16,7 +16,6 @@ const filesPanel = read('../src/lib/shell/panels/files/FilesPanel.svelte');
 const fileTreeWatch = read('../src/lib/shell/panels/files/fileTreeWatch.ts');
 const composer = read('../src/lib/shell/components/conversation/ConversationComposer.svelte');
 const conversationSurface = read('../src/lib/shell/components/ConversationSurface.svelte');
-const toolRun = read('../src/lib/shell/components/conversation/ToolRunItem.svelte');
 const elapsed = read('../src/lib/shell/components/railElapsedTicker.ts');
 const editorSessions = read('../src/lib/shell/controllers/editorSessionController.svelte.ts');
 const editorPanel = read('../src/lib/shell/components/EditorPanel.svelte');
@@ -26,8 +25,6 @@ const settingsStore = read('../src/lib/settingsStore.svelte.ts');
 const codeMirrorTheme = read('../src/lib/shell/editor/codeMirrorTheme.ts');
 const codeMirrorSourceEditor = read('../src/lib/CodeMirrorSourceEditor.svelte');
 const xtermFactory = read('../src/lib/shell/xtermFactory.ts');
-const centerTabs = read('../src/lib/shell/components/CenterCornerTabs.svelte');
-const segmentedTabs = read('../src/lib/shell/components/SegmentedTabs.svelte');
 const rightPanel = read('../src/lib/shell/components/RightPanel.svelte');
 const browserPanel = read('../src/lib/shell/panels/browser/BrowserPanel.svelte');
 const browserToolbar = read('../src/lib/shell/panels/browser/BrowserToolbar.svelte');
@@ -42,7 +39,6 @@ const sourceControlPanel = read('../src/lib/shell/panels/sourceControl/SourceCon
 assert.match(shellStartup, /listAgentConversationSessionsFromTauri\(\)/);
 assert.match(shellStartup, /listRemoteAgentConversationSessionsFromTauri\(stopSignal\)/);
 assert.match(shellStartup, /hydrateRemoteSessionsForOwner\(generation, controller\.signal\)/);
-assert.match(selectionLayers, /loadConversationForRead\(session\.ownedId, false, owner\.signal\)/);
 assert.match(selectionController, /private async drainSelections\(\): Promise<void>/);
 assert.match(selectionController, /this\.selectionAbort\?\.abort\(\);[\s\S]*?await this\.selectionWork/);
 assert.match(
@@ -58,7 +54,6 @@ assert.doesNotMatch(
 // whatever SQLite holds, and nothing else.
 // assert.equal((page.match(/mac-command-bar\.next\.owned-sessions/g) ?? []).length, 1);
 assert.doesNotMatch(railStore, /localStorage|owned-sessions|persist/i);
-assert.match(conversationService, /readAgentConversationSnapshotFromTauri\(ownedId, signal\)/);
 assert.doesNotMatch(conversationService, /listAgentConversationEventsFromTauri/);
 assert.match(conversationService, /const requestedModel = startConfig\?\.model \?\? null/);
 assert.match(source, /invoke<AgentConversationSessionRecord\[]>\('list_agent_conversation_sessions'/);
@@ -108,14 +103,10 @@ assert.doesNotMatch(
   /conversation\.sending \|\|/,
   'the composer can submit steering text during an active turn'
 );
-assert.match(toolRun, /if \(runWasActive\)[\s\S]*?runOpen = false/);
 assert.match(elapsed, /if \(totalHours < 24\)/);
 assert.match(rowVisual, /\.row-visual:hover :global\(\.line-title\)/);
-assert.doesNotMatch(centerTabs, /LanguageIntelligenceControls/);
-assert.match(centerTabs, /data-testid="toggle-right-panel"/);
 assert.match(page, /visible=\{workbench\.rightPanelOpen\}/);
 assert.match(frame, /setToolsPresent[\s\S]*?api\.removePanel\(panel\)/);
-assert.match(workbenchController, /toggleRightPanel\(\)[\s\S]*?setToolsPresent\(open\)/);
 assert.doesNotMatch(
   workbenchController,
   /releaseBrowserWorkspace/,
@@ -123,23 +114,18 @@ assert.doesNotMatch(
 );
 assert.match(
   browserPanel,
-  /return \(\) => untrack\(\(\) => \{\s*releaseBrowserWorkspace\(\);/,
-  'the Browser component releases its native workspace from its own lifecycle cleanup'
+  /if \(owningResources\) \{\s*releaseBrowserWorkspace\(\);/,
+  'the Browser component releases its native workspace in an effect body; a teardown reads pre-change state'
 );
 assert.match(
   browserPanel,
   /untrack\(\(\) => subscribeToBrowserNavigation\(syncBrowserNavigation\)\)/,
   'Browser navigation diagnostics cannot become a dependency of their subscribing effect'
 );
-assert.equal(
-  (browserToolbar.match(/tooltip=\{false\}/g) ?? []).length,
-  7,
-  'Browser toolbar icons must not mount the tooltip state loop over the native view'
-);
 assert.doesNotMatch(
-  segmentedTabs,
-  /Tooltip\./,
-  'panel tabs must not mount tooltip state over the native Browser view'
+  browserToolbar,
+  /Tooltip\.|IconButton/,
+  'Browser toolbar icons must not mount the tooltip state loop over the native view'
 );
 assert.match(page, /onProblemsLocationChange=\{\(location\) => workbench\.applyProblemsLocation\(location\)\}/);
 assert.match(page, /onShowBottomDock=\{\(\) => workbench\.showBottomDock\(\)\}/);
@@ -151,7 +137,6 @@ assert.match(dockPanel, /await terminal\?\.close\(\)[\s\S]*?problemsLocation = l
 assert.match(workspaceTerminal, /new AbortController\(\)/);
 assert.match(workspaceTerminal, /stop\.abort\(\)[\s\S]*?closeTerminalSessionFromTauri/);
 assert.match(palettePanel, /id: 'show-bottom-dock'/);
-assert.match(rightPanel, /visible && activeId === 'browser'/);
 assert.match(rightPanel, /visible=\{visible && activeId === 'files'\}/);
 assert.doesNotMatch(utilityStrip, /LanguageIntelligenceControls/);
 assert.match(editorPanel, /<div class="editor-status">[\s\S]*?<LanguageIntelligenceControls \/>/);

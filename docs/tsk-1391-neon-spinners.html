@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>TSK-1391 · Neon spinners for every loading indicator</title>
+<style>
+body{margin:0;padding:32px;background:#0b0d12;color:#cfd6e4;font:14px/1.5 -apple-system,system-ui,sans-serif}
+h1{font-size:20px;color:#fff;margin:0 0 6px}h2{font-size:15px;color:#fff;margin:24px 0 8px}
+ul{margin:0;padding-left:20px}li{margin:3px 0}code{color:#9fb3d1}
+.grid{display:grid;grid-template-columns:repeat(8,1fr);gap:12px;margin-top:12px}
+figure{margin:0;padding:12px;background:#121621;border:1px solid #1f2533;border-radius:10px;display:grid;justify-items:center;gap:8px}
+.small{display:flex;align-items:center;gap:10px}.light{background:#f2f3f5;border-radius:4px;padding:3px;display:inline-flex}
+figcaption{font-size:12px;color:#8a93a6}
+.row{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:8px;background:#121621;margin-right:12px}
+</style>
+<h1>TSK-1391 · The neon spinner set is every loading indicator</h1>
+<p>Owner, 2026-10-07: keep these 16 designs, use them for the left side bar and waiting on a turn, for downloading updates and anything else in the app that takes time; random, except the same session on the left and in its working line has the same spinner.</p>
+<h2>How it works</h2>
+<ul>
+<li><code>WorkingSpinner.svelte</code> picks a design once per instance with <code>pickSpinner(seed)</code>. A session's <code>ownedId</code> is the seed for its rail row, its transcript working line and its pending first message; everything else is random.</li>
+<li>Each of the 16 designs is a small table in <code>workingSpinners.ts</code>: rings, dots and SVG outlines painted once with a static glow and moved only by CSS <code>transform</code> animations. A flat spin turns a shape; a squash along a tilted axis reads as a ring turning in 3D.</li>
+<li>Why: the first version animated the SVG geometry with SMIL and cost about 20% CPU per spinner on the owner's Mac. Real 3D rotation (about 14%) and <code>animation-direction: reverse</code> (6-20%) are also redrawn every frame by WebKit, so neither is used. Three of the flat designs on screen cost about 1.6% CPU, the same as the old rotating icon.</li>
+<li>The animations are paused off screen, while the window is hidden and under reduced motion, and run only while their work runs: an idle app has no spinner in the page.</li>
+<li>The old animations (rotating Lucide loaders, CSS ring spinners, the plan step arc, pulsing loading text) are deleted.</li>
+</ul>

@@ -38,14 +38,12 @@ export interface SessionLibraryRecord {
   canonicalCwd: string;
   title: string;
   description: string | null;
-  projectPath: string | null;
   /**
-   * The repository the session's folder belongs to, as git reported it during
-   * the scan. This is what a project group is keyed on, so a repository's main
-   * checkout and all of its worktrees land together under its folder's name.
-   * Null for a live session, and for a folder that is gone from disk.
+   * The project group SQL matched the session to — `repo:<key>`, `project:<id>`
+   * or `none` — and its label. History groups on these, the same as the rail.
    */
-  projectRoot: string | null;
+  projectGroupKey: string;
+  projectGroupLabel: string;
   model: string | null;
   state: SessionLibraryState;
   runtimeState: AgentRuntimeState | null;
@@ -88,19 +86,12 @@ export interface SessionLibraryFilters {
 export interface SessionHistoryFilters extends SessionLibraryFilters {
   scope?: SessionHistoryScope;
   workspacePath?: string | null;
-  projectPath?: string | null;
+  projectKey?: string | null;
 }
 
 export interface SessionLibraryGroup {
   state: SessionLibraryState;
   label: string;
-  items: SessionLibraryRecord[];
-}
-
-export interface SessionHistoryGroup {
-  key: string;
-  name: string;
-  path: string | null;
   items: SessionLibraryRecord[];
 }
 
@@ -185,7 +176,7 @@ export function ownedSessionLibraryRecord(
   includeDetails = false
 ): SessionLibraryRecord {
   const provider = providerForOwned(session);
-  const cwd = canonicalCwd(session.cwd || session.projectPath);
+  const cwd = canonicalCwd(session.cwd);
   return {
     key: `owned:${session.ownedId}`,
     source: 'owned',
@@ -195,10 +186,8 @@ export function ownedSessionLibraryRecord(
     canonicalCwd: cwd,
     title: session.title || session.ownedId,
     description: session.latestTurnPreview,
-    projectPath: session.projectPath,
-    // A live session is not scanned, so nothing has asked git about its folder.
-    // The panel falls back to reading the path when this is null.
-    projectRoot: null,
+    projectGroupKey: session.projectGroupKey,
+    projectGroupLabel: session.projectGroupLabel,
     model: null,
     state: deriveOwnedLibraryState(session),
     runtimeState: session.runtimeState ?? null,
@@ -230,8 +219,8 @@ export function providerSessionLibraryRecord(
     canonicalCwd: cwd,
     title: session.title || session.id,
     description: session.description ?? session.latestTurnPreview ?? null,
-    projectPath: session.projectPath,
-    projectRoot: session.projectRoot ?? null,
+    projectGroupKey: session.projectGroupKey,
+    projectGroupLabel: session.projectGroupLabel,
     model: session.model ?? null,
     state: 'resumable',
     runtimeState: null,
@@ -303,7 +292,7 @@ function textFor(record: SessionLibraryRecord): string {
     record.description,
     record.provider,
     record.model,
-    record.projectPath,
+    record.projectGroupLabel,
     record.canonicalCwd,
     record.nativeSessionId,
     record.state,
@@ -343,39 +332,12 @@ export function filterSessionLibrary(
   return records.filter((record) => {
     if (query && !textFor(record).includes(query)) return false;
     if (!includesFilter(record.provider, filters.provider)) return false;
-    if (!includesFilter(record.projectPath, filters.project)) return false;
+    if (!includesFilter(record.projectGroupLabel, filters.project)) return false;
     if (!includesFilter(record.canonicalCwd, filters.worktree)) return false;
     if (filters.state && filters.state !== 'all' && record.state !== filters.state) return false;
     if (!includesFilter(record.model, filters.model)) return false;
     return dateInRange(record.updatedAt, filters.dateFrom, filters.dateTo);
   });
-}
-
-/** The path used for the Workspace / Project scopes and project headings. */
-export function sessionProjectPath(record: Pick<SessionLibraryRecord, 'projectPath' | 'canonicalCwd'>): string {
-  return canonicalCwd(record.projectPath) || canonicalCwd(record.canonicalCwd);
-}
-
-function samePath(left: string | null | undefined, right: string | null | undefined): boolean {
-  const a = canonicalCwd(left);
-  const b = canonicalCwd(right);
-  return Boolean(a && b && a === b);
-}
-
-/** Apply the three Orca-style scopes after the regular library filters. */
-export function filterSessionHistory(
-  records: readonly SessionLibraryRecord[],
-  filters: SessionHistoryFilters = {}
-): SessionLibraryRecord[] {
-  const { scope = 'all', workspacePath, projectPath, ...libraryFilters } = filters;
-  const filtered = filterSessionLibrary(records, libraryFilters);
-  if (scope === 'workspace') {
-    return filtered.filter((record) => samePath(record.canonicalCwd, workspacePath));
-  }
-  if (scope === 'project') {
-    return filtered.filter((record) => samePath(sessionProjectPath(record), projectPath));
-  }
-  return filtered;
 }
 
 export function groupSessionLibrary(records: readonly SessionLibraryRecord[]): SessionLibraryGroup[] {
@@ -389,33 +351,6 @@ export function groupSessionLibrary(records: readonly SessionLibraryRecord[]): S
   return order
     .map((state) => ({ state, label: labels[state], items: records.filter((record) => record.state === state) }))
     .filter((group) => group.items.length > 0);
-}
-
-function projectName(path: string | null): string {
-  if (!path) return 'Other sessions';
-  const segments = path.split('/').filter(Boolean);
-  return segments.at(-1) || path;
-}
-
-/** Group history rows by project, retaining the input order within each group. */
-export function groupSessionHistory(records: readonly SessionLibraryRecord[]): SessionHistoryGroup[] {
-  const groups = new Map<string, SessionHistoryGroup>();
-  for (const record of records) {
-    const path = sessionProjectPath(record) || null;
-    const key = path || '__other__';
-    const current = groups.get(key);
-    if (current) {
-      current.items.push(record);
-      continue;
-    }
-    groups.set(key, {
-      key,
-      name: projectName(path),
-      path,
-      items: [record]
-    });
-  }
-  return [...groups.values()];
 }
 
 /** One row click expands one details card; clicking it again closes the card. */

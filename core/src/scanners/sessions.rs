@@ -112,12 +112,14 @@ pub struct AgentSessionRecord {
     /// repository in one afternoon.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub latest_turns: Vec<AgentSessionTurn>,
-    /// The repository this session's folder belongs to, as git reports it, so a
-    /// project's main checkout and its worktrees land in one group under the
-    /// project folder's name. Empty when the folder is gone from disk or was
-    /// never in a repository; the panel then groups on the folder itself.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_root: Option<String>,
+    /// The project group the desktop matched this session's folder to, in SQL
+    /// against its project registry (`repo:<key>`, `project:<id>` or `none`),
+    /// and the label History shows for it. The scan leaves both empty; the
+    /// command that returns the scan fills them in.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_group_key: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_group_label: String,
 }
 
 /// One remembered turn: who spoke, and what they said.
@@ -277,27 +279,12 @@ fn git_project_root(path: &Path) -> Option<PathBuf> {
 pub fn with_derived_agent_session_metadata(
     mut records: Vec<AgentSessionRecord>,
 ) -> Vec<AgentSessionRecord> {
-    // One answer per folder. A busy repository has dozens of sessions in the
-    // same checkout, and asking git the same question dozens of times is a
-    // filesystem walk each time for a reply that cannot change mid-scan.
-    let mut roots: HashMap<String, Option<String>> = HashMap::new();
-
     for record in records.iter_mut() {
         let metadata = derive_agent_session_metadata(record);
         record.branch_hint = metadata.branch_hint;
         record.task_id = metadata.task_id;
         record.pull_request_hint = metadata.pull_request_hint;
         record.source_label = Some(metadata.source_label);
-
-        if let Some(folder) = record.project_path.clone() {
-            record.project_root = roots
-                .entry(folder.clone())
-                .or_insert_with(|| {
-                    git_project_root(Path::new(&folder))
-                        .map(|root| root.to_string_lossy().into_owned())
-                })
-                .clone();
-        }
     }
 
     records
@@ -693,7 +680,8 @@ pub fn parse_codex_index_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                 message_count: None,
                 latest_turn_preview: None,
                 latest_turns: Vec::new(),
-                project_root: None,
+                project_group_key: String::new(),
+                project_group_label: String::new(),
             })
         })
         .collect()
@@ -783,7 +771,8 @@ pub fn parse_codex_rollout_jsonl(input: &str) -> Vec<AgentSessionRecord> {
                     message_count: None,
                     latest_turn_preview: None,
                     latest_turns: Vec::new(),
-                    project_root: None,
+                    project_group_key: String::new(),
+                    project_group_label: String::new(),
                 };
 
                 if let Some(existing) = records.iter_mut().find(|candidate| {
@@ -1199,7 +1188,8 @@ fn update_latest_codex_record(
         message_count: None,
         latest_turn_preview: None,
         latest_turns: Vec::new(),
-        project_root: None,
+        project_group_key: String::new(),
+        project_group_label: String::new(),
     };
     merge_codex_record(record, update);
 }
@@ -1317,7 +1307,8 @@ pub fn parse_cmux_hook_sessions_json(agent: &str, input: &str) -> Vec<AgentSessi
                 message_count: None,
                 latest_turn_preview: None,
                 latest_turns: Vec::new(),
-                project_root: None,
+                project_group_key: String::new(),
+                project_group_label: String::new(),
             })
         })
         .collect()
@@ -1410,7 +1401,8 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
             message_count: None,
             latest_turn_preview: None,
             latest_turns: Vec::new(),
-            project_root: None,
+            project_group_key: String::new(),
+            project_group_label: String::new(),
         };
 
         if let Some(existing) = records
@@ -2444,7 +2436,8 @@ mod tests {
             message_count: None,
             latest_turn_preview: None,
             latest_turns: Vec::new(),
-            project_root: None,
+            project_group_key: String::new(),
+            project_group_label: String::new(),
         }
     }
 

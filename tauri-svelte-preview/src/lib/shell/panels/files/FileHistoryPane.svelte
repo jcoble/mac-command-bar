@@ -1,4 +1,5 @@
 <script lang="ts">
+	import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
 	import ChevronRight from "@lucide/svelte/icons/chevron-right";
 	import FileUp from "@lucide/svelte/icons/file-up";
 	import History from "@lucide/svelte/icons/history";
@@ -107,7 +108,7 @@
 		<Collapsible.Trigger class="file-history-trigger">
 			<ChevronRight class={open ? "open" : ""} aria-hidden="true" />
 			<History aria-hidden="true" />
-			<strong>File History</strong>
+			<strong>File history</strong>
 			{#if fileName}<span title={relativePath}>{fileName}</span>{/if}
 		</Collapsible.Trigger>
 		{#if open && relativePath}
@@ -131,7 +132,7 @@
 			{#if !relativePath}
 				<p>Select a file to see its history.</p>
 			{:else if panel.historyLoading}
-				<p>Reading the file history…</p>
+				<p><WorkingSpinner size={12} /> Reading the file history…</p>
 			{:else if panel.historyError && isNotARepositoryError(panel.historyError)}
 				<p>This folder’s Git history is unavailable.</p>
 			{:else if panel.historyError}
@@ -158,7 +159,7 @@
 							</li>
 						{/each}
 						{#if panel.historyLoadingMore}
-							<li class="loading-more">Reading older commits…</li>
+							<li class="loading-more"><WorkingSpinner size={12} /> Reading older commits…</li>
 						{/if}
 					</ol>
 				</ScrollArea>
@@ -173,11 +174,11 @@
 		display: flex;
 		min-height: 0;
 		flex-direction: column;
-		/* A card of its own under the tree, like Spotify's "Credits". */
-		margin: 0 var(--space-3) var(--space-3);
+		/* A quiet card of its own under the tree, like Spotify's "Credits". */
+		margin: var(--space-2) var(--space-3) var(--space-3);
 		overflow: hidden;
-		border-radius: var(--radius-sm);
-		background: var(--color-elevated);
+		border-radius: var(--radius-md);
+		background: var(--muted);
 	}
 
 	.file-history-heading {
@@ -191,9 +192,10 @@
 		min-width: 0;
 		flex: 1;
 		align-items: center;
-		gap: 6px;
-		padding: 10px 12px;
+		gap: 8px;
+		padding: 8px 12px;
 		color: var(--color-text);
+		font-size: 13px;
 		text-align: left;
 		transition: background-color 0.15s ease;
 	}
@@ -210,6 +212,9 @@
 	}
 
 	:global(.file-history-trigger svg:first-child) {
+		width: 12px;
+		height: 12px;
+		color: var(--color-text-3);
 		transition: transform 120ms ease-out;
 	}
 
@@ -220,14 +225,14 @@
 	:global(.file-history-trigger strong) {
 		flex: none;
 		white-space: nowrap;
-		font-size: var(--text-body);
-		font-weight: 700;
+		font-size: 13px;
+		font-weight: 600;
 	}
 
 	:global(.file-history-trigger span) {
 		min-width: 0;
 		overflow: hidden;
-		color: var(--color-text-2);
+		color: var(--color-text-3);
 		font-size: 12px;
 		text-overflow: ellipsis;
 		white-space: nowrap;

@@ -66,9 +66,17 @@ export interface BrowserCompatibilityState {
 }
 
 const workspace = createBrowserWorkspace({ workspaceId: 'next-browser' });
+// The native registry outlives this page and refuses a new tab at or below the
+// highest generation it has seen, so after a reload counting from zero again
+// left every new tab without a page. The clock keeps generations rising.
+workspace.lastGeneration = Date.now();
 const backend = createBrowserBackend();
-let restoredTabs: SessionBrowserTabWorkspace[] = [];
-let restoredActiveTabId: string | null = null;
+/** Pages remembered while no native view exists (after a session switch or
+ * leaving the browser tab). Reactive so the top tab row still lists them. */
+const restored = $state<{ tabs: SessionBrowserTabWorkspace[]; activeTabId: string | null }>({
+  tabs: [],
+  activeTabId: null
+});
 
 const conversationBridge = {
   read(ownedId: string) {
@@ -135,15 +143,15 @@ export function captureBrowserState(): SessionBrowserWorkspace {
       title: tab.title
     }));
   return {
-    tabs: tabs.length > 0 ? tabs : restoredTabs.map((tab) => ({ ...tab })),
-    activeTabId: browser.workspace.activeTabId ?? restoredActiveTabId
+    tabs: tabs.length > 0 ? tabs : restored.tabs.map((tab) => ({ ...tab })),
+    activeTabId: browser.workspace.activeTabId ?? restored.activeTabId
   };
 }
 
 export function restoreBrowserState(snapshot: SessionBrowserWorkspace | null | undefined): void {
-  restoredTabs = snapshot?.tabs.map((tab) => ({ ...tab })) ?? [];
-  restoredActiveTabId = snapshot?.activeTabId ?? restoredTabs.at(-1)?.id ?? null;
-  const restoredActive = restoredTabs.find((tab) => tab.id === restoredActiveTabId) ?? null;
+  restored.tabs = snapshot?.tabs.map((tab) => ({ ...tab })) ?? [];
+  restored.activeTabId = snapshot?.activeTabId ?? restored.tabs.at(-1)?.id ?? null;
+  const restoredActive = restored.tabs.find((tab) => tab.id === restored.activeTabId) ?? null;
   browser.workspace.activated = false;
   browser.workspace.error = null;
   browser.url = restoredActive?.url ?? '';
@@ -157,21 +165,21 @@ export function activateBrowser(): void {
   const savedUrl = normalizeBrowserUrl(browser.url);
   try {
     activateBrowserWorkspace(modelContext());
-    if (restoredTabs.length > 0 && !browser.workspace.activeTabId) {
-      for (const restored of restoredTabs) {
+    if (restored.tabs.length > 0 && !browser.workspace.activeTabId) {
+      for (const remembered of restored.tabs) {
         createBrowserTab(modelContext(), {
-          tabId: restored.id,
-          url: restored.url,
-          title: restored.title
+          tabId: remembered.id,
+          url: remembered.url,
+          title: remembered.title
         });
-        const created = browser.workspace.tabs[restored.id];
-        if (created) created.inputUrl = restored.inputUrl;
+        const created = browser.workspace.tabs[remembered.id];
+        if (created) created.inputUrl = remembered.inputUrl;
       }
-      if (restoredActiveTabId && browser.workspace.tabs[restoredActiveTabId]) {
-        selectBrowserTab(modelContext(), restoredActiveTabId);
+      if (restored.activeTabId && browser.workspace.tabs[restored.activeTabId]) {
+        selectBrowserTab(modelContext(), restored.activeTabId);
       }
-      restoredTabs = [];
-      restoredActiveTabId = null;
+      restored.tabs = [];
+      restored.activeTabId = null;
     } else if (savedUrl && !browser.workspace.activeTabId) {
       createBrowserTab(modelContext(), { url: savedUrl });
     }
@@ -206,8 +214,8 @@ export function releaseBrowserWorkspace(): void {
       title: tab.title
     }));
   if (liveTabs.length > 0) {
-    restoredTabs = liveTabs;
-    restoredActiveTabId = browser.workspace.activeTabId;
+    restored.tabs = liveTabs;
+    restored.activeTabId = browser.workspace.activeTabId;
   }
   // Hide the whole native workspace first. Closing its tabs is asynchronous,
   // so relying on close alone can leave the child view intercepting the shell
@@ -234,7 +242,22 @@ export function releaseBrowserWorkspace(): void {
 }
 
 export function hasRestoredBrowserTabs(): boolean {
-  return restoredTabs.length > 0;
+  return restored.tabs.length > 0;
+}
+
+/** Remember a new page without creating a native view; it opens when its
+ * tab is shown. Returns the new tab id. */
+export function queueBrowserPageTab(url = ''): string {
+  const id = `tab-${crypto.randomUUID()}`;
+  restored.tabs = [...restored.tabs, { id, url, inputUrl: url, title: 'New browser tab' }];
+  restored.activeTabId = id;
+  return id;
+}
+
+/** Make a page the active one, live or remembered. */
+export function selectBrowserPageTab(id: string): void {
+  if (browser.workspace.tabs[id]) syncBrowserTab(id);
+  else if (restored.tabs.some((tab) => tab.id === id)) restored.activeTabId = id;
 }
 
 export function setBrowserUrl(value: string): boolean {
@@ -308,6 +331,8 @@ export function createBrowserPageTab(): string | null {
 }
 
 export function closeBrowserPageTab(tabId: string): void {
+  restored.tabs = restored.tabs.filter((tab) => tab.id !== tabId);
+  if (restored.activeTabId === tabId) restored.activeTabId = restored.tabs.at(-1)?.id ?? null;
   try {
     closeBrowserTab(modelContext(), tabId);
     if (browser.workspace.activeTabId) {

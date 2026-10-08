@@ -14,5 +14,6 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs"
+  "type": "commonjs",
+  "packageManager": "pnpm@10.28.2"
 }

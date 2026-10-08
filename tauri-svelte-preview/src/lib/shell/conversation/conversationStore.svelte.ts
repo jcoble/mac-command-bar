@@ -1,13 +1,12 @@
-import { EventType, StreamProcessor, type UIMessage } from '@tanstack/ai/client';
-import { applyMessageEvent, conversationMessageDisplayItem, displayEventFrom, finishMessageReasoning, restoreProcessor, transcriptMessages } from './conversationMessages.ts';
+import { displayEventFrom } from './conversationMessages.ts';
 export { displayEventFrom } from './conversationMessages.ts';
 /**
  * Reactive conversation state keyed by Command Bar's stable `ownedId`.
  *
  * This module performs no IO. The conversation service owns Tauri calls and
- * feeds normalized events into `applyAgentConversationEvent`.
+ * holds controls and view state beside the selected TanStack message graph.
  */
-import { applyConversationEvent, createConversationState, reduceConversationEvent, usageDropIsCompaction } from './conversationReducer.ts';
+import { createConversationState, reduceConversationEvent, shouldClearConversationSending } from './conversationReducer.ts';
 import type {
   AgentApprovalRequest,
   AgentCapabilities,
@@ -15,9 +14,10 @@ import type {
   AgentEvent,
   AgentConversationConnection,
   AgentConversationEvent,
-  AgentConversationEventPage,
   AgentConversationProvider,
-  AgentConversationSnapshot,
+  AgentConversationItemPage,
+  AgentConversationSelectionSnapshot,
+  AgentConversationTurnFacts,
   AgentConfigValue,
   AgentPermissionOption,
   AgentPermissionRequest,
@@ -27,13 +27,12 @@ import type {
   ConversationAttachment,
   ConversationChildAgent,
   ConversationMetadata,
-  ConversationTranscriptMessage,
-  ConversationTranscriptSnapshot,
   ConversationSessionState
 } from './conversationTypes.ts';
 import {
   agentItemFromEvent,
   availableCommandsFromEvent,
+  displayItemFromAgentItem,
   displayItemFromApproval,
   permissionRequestFromEvent
 } from './conversationTimeline.ts';
@@ -44,7 +43,6 @@ import {
   type AgentConversationConfigState
 } from './conversationConfig.ts';
 import type { AgentExecutionOwner } from '../ownedSessions.ts';
-import { publishWorkspaceFileChange } from '../workspaceFileChangeBus.ts';
 import {
   clearSessionPresence,
   synchronizeSessionPresenceWork
@@ -52,13 +50,13 @@ import {
 import { recordConversationPresenceEvent } from './sessionNotifications.ts';
 import {
   SESSION_CONVERSATION_WORKSPACE_VERSION,
+  type ConversationViewState,
   type SessionConversationWorkspace
 } from '../sessionWorkspaces.ts';
 import {
   revokeTrackedObjectUrl,
   setConversationProjectionDiagnostics,
-  setSentAttachmentDiagnostics,
-  textBytes
+  setSentAttachmentDiagnostics
 } from '../resourceDiagnostics.svelte.ts';
 
 export type ConversationViewMode = 'structured' | 'raw';
@@ -72,22 +70,7 @@ export interface ConversationRecentEvent {
 
 export const CONVERSATION_RECENT_EVENT_CAP = 200;
 export const ACTIVE_EVENT_WINDOW_EVENTS = 20_000;
-export const ACTIVE_EVENT_WINDOW_TRIM_EVENTS = 15_000;
-export const ACTIVE_EVENT_WINDOW_BYTES = 4 * 1024 * 1024; // 4 MiB bounded memory window
-const ACTIVE_EVENT_WINDOW_TRIM_BYTES = 3 * 1024 * 1024;
-const eventEncoder = new TextEncoder();
-
-function serializedEventBytes(event: AgentConversationEvent): number {
-  return typeof event.payload === 'object' && event.payload !== null
-    ? eventEncoder.encode(JSON.stringify(event.payload)).byteLength
-    : 0;
-}
-
-function serializedEventsBytes(events: readonly AgentConversationEvent[]): number {
-  let bytes = 0;
-  for (const event of events) bytes += serializedEventBytes(event);
-  return bytes;
-}
+export const ACTIVE_EVENT_WINDOW_BYTES = 4 * 1024 * 1024; // 4 MiB stream race-buffer budget
 
 export interface ConversationWorkspaceState extends ConversationSessionState {
   draft: string;
@@ -107,9 +90,9 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   metadata: ConversationMetadata;
   children: ConversationChildAgent[];
   selectedChildId: string | null;
-  childTranscript: StreamProcessor;
-  scrollTop: number;
-  childScrollTopById: Record<string, number>;
+  selectedChildHistoryOwnedId: string | null;
+  childTranscriptTruncated: boolean;
+  childTranscriptError: string | null;
   executionOwner: AgentExecutionOwner;
   writerLease: AgentWriterLease;
   writerLeaseTransition: AgentWriterLeaseTransition | null;
@@ -135,27 +118,19 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   pendingConfig: Record<string, AgentConfigValue>;
   configErrors: Record<string, string>;
   recentEvents: ConversationRecentEvent[];
-  /** The bounded SQLite event window that produced the canonical messages.
-   * It is retained only for the active projection so either trimmed end can be
-   * rebuilt without introducing a second display model. */
-  loadedEvents: AgentConversationEvent[];
-  /** Cached UTF-8 payload bytes for `loadedEvents`. Keeping this incrementally
-   * avoids serializing the entire conversation again for every live event. */
-  loadedEventsBytes: number;
-  /** The lowest stored sequence currently on screen, and where scrolling up
-   * asks from. Zero until a session has been opened. */
-  oldestLoadedSequence: number;
-  /** The highest stored sequence represented on screen, and where scrolling
-   * down asks from after the newest end was trimmed. */
-  newestLoadedSequence: number;
-  /** A backward page is in flight; the transcript must not ask for another. */
-  loadingOlder: boolean;
-  /** Nothing older than what is on screen exists, so stop asking. */
-  reachedTranscriptStart: boolean;
-  loadingNewer: boolean;
-  reachedTranscriptEnd: boolean;
-  /** UTF-8 text bytes retained for the one selected child transcript. */
-  loadedChildTranscriptBytes: number;
+  selectedHistoryOwnedId: string;
+  selectedTurns: AgentConversationTurnFacts[];
+  selectedBeforeCursor?: number;
+  selectedAfterCursor?: number;
+  selectedHasBefore: boolean;
+  selectedHasAfter: boolean;
+  selectedLoadingOlder: boolean;
+  selectedLoadingNewer: boolean;
+  selectedPageError: string;
+  selectedWatermark: number;
+  selectedTransferBytes: number;
+  selectedOversized: boolean;
+  viewByHistoryId: Record<string, ConversationViewState>;
 }
 
 const emptyMetadata = (): ConversationMetadata => ({
@@ -180,20 +155,10 @@ function publishConversationProjectionDiagnostics(): void {
   }
   setConversationProjectionDiagnostics(
     projections.length,
-    projections.reduce((total, projection) => total + projection.loadedEvents.length, 0),
-    projections.reduce((total, projection) => total + projection.loadedChildTranscriptBytes, 0)
+    0,
+    0
   );
   setSentAttachmentDiagnostics(sentAttachmentMapEntries, sentAttachmentCount);
-}
-
-function userItemIds(events: readonly AgentConversationEvent[]): Set<string> {
-  const ids = new Set<string>();
-  for (const event of events) {
-    const displayEvent = displayEventFrom(event);
-    const payload = displayEvent.payload as { kind?: unknown; itemId?: unknown };
-    if (payload.kind === 'userMessage' && typeof payload.itemId === 'string') ids.add(payload.itemId);
-  }
-  return ids;
 }
 
 function revokeUnretainedPreviewUrls(
@@ -208,44 +173,10 @@ function revokeUnretainedPreviewUrls(
   }
 }
 
-function retainSentAttachments(
-  sentAttachments: Readonly<Record<string, ConversationAttachment[]>>,
-  events: readonly AgentConversationEvent[]
-): Record<string, ConversationAttachment[]> {
-  const ids = userItemIds(events);
-  const retained: Record<string, ConversationAttachment[]> = {};
-  const discarded: ConversationAttachment[] = [];
-  for (const [itemId, attachments] of Object.entries(sentAttachments)) {
-    if (ids.has(itemId)) retained[itemId] = attachments;
-    else discarded.push(...attachments);
-  }
-  revokeUnretainedPreviewUrls(discarded, Object.values(retained).flat());
-  return retained;
-}
-
-function releaseChildTranscriptProjection(current: ConversationWorkspaceState): boolean {
-  const hadProjection = current.selectedChildId !== null
-    || current.childTranscript.getMessages().length > 0
-    || current.loadedChildTranscriptBytes > 0;
-  current.selectedChildId = null;
-  current.childTranscript = new StreamProcessor();
-  current.loadedChildTranscriptBytes = 0;
-  return hadProjection;
-}
-
-function releaseOtherChildTranscriptProjections(ownedId: string): boolean {
-  let released = false;
-  for (const [candidateOwnedId, projection] of Object.entries(conversationSessions)) {
-    if (candidateOwnedId !== ownedId) released = releaseChildTranscriptProjection(projection) || released;
-  }
-  return released;
-}
-
 function freshState(
   ownedId: string,
   provider: AgentConversationProvider
 ): ConversationWorkspaceState {
-  const loadedEvents: AgentConversationEvent[] = [];
   return {
     ...createConversationState(ownedId, provider),
     draft: '',
@@ -258,9 +189,9 @@ function freshState(
     metadata: emptyMetadata(),
     children: [],
     selectedChildId: null,
-    childTranscript: new StreamProcessor(),
-    scrollTop: 0,
-    childScrollTopById: {},
+    selectedChildHistoryOwnedId: null,
+    childTranscriptTruncated: false,
+    childTranscriptError: null,
     executionOwner: 'stopped',
     writerLease: { ownedId, generation: 0, owner: 'none' },
     writerLeaseTransition: null,
@@ -281,17 +212,241 @@ function freshState(
     pendingConfig: {},
     configErrors: {},
     recentEvents: [],
-    // The journal feeds the reducers; only their display projection is reactive.
-    get loadedEvents() { return loadedEvents; },
-    loadedEventsBytes: 0,
-    oldestLoadedSequence: 0,
-    newestLoadedSequence: 0,
-    loadingOlder: false,
-    reachedTranscriptStart: false,
-    loadingNewer: false,
-    reachedTranscriptEnd: true,
-    loadedChildTranscriptBytes: 0
+    selectedHistoryOwnedId: ownedId,
+    selectedTurns: [],
+    selectedHasBefore: false,
+    selectedHasAfter: false,
+    selectedLoadingOlder: false,
+    selectedLoadingNewer: false,
+    selectedPageError: '',
+    selectedWatermark: 0,
+    selectedTransferBytes: 0,
+    selectedOversized: false,
+    viewByHistoryId: {}
   };
+}
+
+function applySelectedPageState(
+  current: ConversationWorkspaceState,
+  page: AgentConversationItemPage,
+  direction: 'snapshot' | 'older' | 'newer',
+  window?: {
+    beforeCursor?: number;
+    afterCursor?: number;
+    hasBefore: boolean;
+    hasAfter: boolean;
+    retainedTurnIds: readonly string[];
+    transferBytes: number;
+  }
+): void {
+  const turns = new Map((direction === 'snapshot' ? [] : current.selectedTurns)
+    .map((turn) => [turn.turnId, turn]));
+  for (const turn of page.turns) turns.set(turn.turnId, turn);
+  const retainedTurns = window ? new Set(window.retainedTurnIds) : null;
+  current.selectedTurns = [...turns.values()].filter((turn) =>
+    !retainedTurns || retainedTurns.has(turn.turnId)
+  );
+  if (direction !== 'newer' || window) current.selectedBeforeCursor = window?.beforeCursor ?? page.beforeCursor;
+  if (direction !== 'older' || window) current.selectedAfterCursor = window?.afterCursor ?? page.afterCursor;
+  current.selectedHasBefore = window?.hasBefore
+    ?? (page.hasBefore || page.hasEarlierTranscript || !!(page.coverage && !page.coverage.startComplete));
+  current.selectedHasAfter = window?.hasAfter ?? page.hasAfter;
+  current.selectedWatermark = Math.max(current.selectedWatermark, page.watermark);
+  current.selectedTransferBytes = window?.transferBytes ?? page.transferBytes;
+  current.selectedOversized = window ? window.transferBytes > ACTIVE_EVENT_WINDOW_BYTES : page.oversized;
+  if (direction === 'snapshot') {
+    current.selectedLoadingOlder = false;
+    current.selectedLoadingNewer = false;
+  }
+  current.timelineRevision += 1;
+}
+
+function applyConversationSnapshotControls(
+  current: ConversationWorkspaceState,
+  snapshot: AgentConversationSelectionSnapshot
+): void {
+  current.generation = snapshot.connection.generation;
+  current.lastSequence = snapshot.pendingSequence;
+  current.desynchronized = false;
+  current.connectionState = snapshot.connection.state;
+  current.suspended = snapshot.suspended;
+  current.activeTurnId = snapshot.suspended ? undefined : snapshot.activeTurnId;
+  current.pendingApprovals = {};
+  current.pendingInputs = {};
+  current.children = [];
+  for (const event of snapshot.pendingEvents) applyTypedEventPayload(current, displayEventFrom(event));
+}
+
+export function applySelectedConversationSnapshotState(
+  workspaceOwnedId: string,
+  historyOwnedId: string,
+  snapshot: AgentConversationSelectionSnapshot,
+  applyControls = true,
+  window?: Parameters<typeof applySelectedPageState>[3]
+): void {
+  const current = !applyControls && conversationSessions[workspaceOwnedId]
+    ? conversationSessions[workspaceOwnedId]
+    : ensureConversationSession(workspaceOwnedId, snapshot.connection.provider);
+  current.selectedHistoryOwnedId = historyOwnedId;
+  if (applyControls) applyConversationSnapshotControls(current, snapshot);
+  else {
+    current.generation = snapshot.connection.generation;
+    current.activeTurnId = snapshot.suspended ? undefined : snapshot.activeTurnId;
+  }
+  current.selectedPageError = '';
+  applySelectedPageState(current, snapshot.page, 'snapshot', window);
+}
+
+function applyConversationEventControls(
+  workspaceOwnedId: string,
+  event: AgentConversationEvent
+): { current: ConversationWorkspaceState; displayEvent: AgentConversationEvent | AgentEvent } | null {
+  const current = conversationSessions[workspaceOwnedId];
+  if (!current || event.generation < current.generation) return null;
+  const next = reduceConversationEvent(current, event);
+  if (next === current) return null;
+  appendRecentEvent(current, event);
+  Object.assign(current, next);
+  const displayEvent = displayEventFrom(event);
+  if (event.payload.kind === 'userMessage' && current.unclaimedSentAttachments.length) {
+    current.sentAttachments[event.payload.itemId] = current.unclaimedSentAttachments;
+    current.unclaimedSentAttachments = [];
+  }
+  applyTypedEventPayload(current, displayEvent);
+  return { current, displayEvent };
+}
+
+function applySelectedConversationTurnState(
+  current: ConversationWorkspaceState,
+  event: AgentConversationEvent,
+  displayEvent: AgentConversationEvent | AgentEvent
+): void {
+  const item = agentItemFromEvent(displayEvent);
+  const row = item ? displayItemFromAgentItem(item, displayEvent.timestampMs) : null;
+  const payload = displayEvent.payload as Record<string, unknown>;
+  const turnId = ('turnId' in displayEvent ? displayEvent.turnId : undefined)
+    ?? asString(payload.turnId)
+    ?? item?.turnId;
+  if (turnId) {
+    const prior = current.selectedTurns.find((turn) => turn.turnId === turnId);
+    const eventType = 'type' in displayEvent ? displayEvent.type : '';
+    const turnState = event.payload.kind === 'turn' ? event.payload.state : null;
+    const next: AgentConversationTurnFacts = {
+      turnId,
+      ...prior,
+      ...((turnState === 'started' || eventType === 'turn.started') && !prior?.startedAtMs
+        ? { startedAtMs: displayEvent.timestampMs } : {}),
+      ...((turnState && turnState !== 'started') || ['turn.completed', 'turn.interrupted'].includes(eventType)
+        ? {
+            endedAtMs: displayEvent.timestampMs,
+            terminalState: turnState ?? eventType.slice('turn.'.length)
+          } : {}),
+      ...(row?.kind === 'assistant' && row.completed
+        ? { finalAssistantItemId: row.itemId } : {})
+    };
+    current.selectedTurns = [
+      ...current.selectedTurns.filter((turn) => turn.turnId !== turnId),
+      next
+    ];
+  }
+}
+
+export function applySelectedConversationEventState(
+  workspaceOwnedId: string,
+  event: AgentConversationEvent
+): void {
+  const result = applyConversationEventControls(workspaceOwnedId, event);
+  if (result) applySelectedConversationTurnState(result.current, event, result.displayEvent);
+}
+
+export function applySelectedConversationHistoryEventState(
+  workspaceOwnedId: string,
+  event: AgentConversationEvent
+): void {
+  const current = conversationSessions[workspaceOwnedId];
+  if (!current) return;
+  const displayEvent = displayEventFrom(event);
+  const payload = displayEvent.payload as Record<string, unknown>;
+  const eventType = 'type' in displayEvent ? displayEvent.type : '';
+  const turnId = asString(payload.turnId) ?? ('turnId' in displayEvent ? displayEvent.turnId : undefined);
+  if ((payload.kind === 'turn' && payload.state === 'started') || eventType === 'turn.started') {
+    current.activeTurnId = turnId;
+  } else if (shouldClearConversationSending(displayEvent) && (!turnId || turnId === current.activeTurnId)) {
+    current.activeTurnId = undefined;
+  }
+  applySelectedConversationTurnState(current, event, displayEvent);
+}
+
+export function applySelectedConversationLiveWindow(
+  ownedId: string,
+  retainedTurnIds: readonly string[],
+  transferBytes: number
+): void {
+  const current = conversationSessions[ownedId];
+  if (!current) return;
+  const retained = new Set(retainedTurnIds);
+  if (current.activeTurnId) retained.add(current.activeTurnId);
+  current.selectedTurns = current.selectedTurns.filter((turn) => retained.has(turn.turnId));
+  current.selectedTransferBytes = transferBytes;
+  current.selectedOversized = transferBytes > ACTIVE_EVENT_WINDOW_BYTES;
+}
+
+export function applySelectedConversationPageState(
+  ownedId: string,
+  page: AgentConversationItemPage,
+  direction: 'older' | 'newer',
+  window: {
+    beforeCursor?: number;
+    afterCursor?: number;
+    hasBefore: boolean;
+    hasAfter: boolean;
+    retainedTurnIds: readonly string[];
+    transferBytes: number;
+  }
+): void {
+  const current = conversationSessions[ownedId];
+  if (current) applySelectedPageState(current, page, direction, window);
+}
+
+export function setSelectedConversationPageError(ownedId: string, message: string): void {
+  const current = conversationSessions[ownedId];
+  if (current) current.selectedPageError = message;
+}
+
+export function setSelectedConversationPageLoading(
+  ownedId: string,
+  direction: 'older' | 'newer',
+  loading: boolean
+): boolean {
+  const current = conversationSessions[ownedId];
+  if (!current) return false;
+  if (loading && (current.selectedLoadingOlder || current.selectedLoadingNewer)) return false;
+  if (direction === 'older') {
+    if (loading && !current.selectedHasBefore) return false;
+    current.selectedLoadingOlder = loading;
+  } else {
+    if (loading && !current.selectedHasAfter) return false;
+    current.selectedLoadingNewer = loading;
+  }
+  if (loading) current.selectedPageError = '';
+  return true;
+}
+
+export function selectedConversationViewState(
+  ownedId: string,
+  historyOwnedId: string
+): ConversationViewState {
+  return conversationSessions[ownedId]?.viewByHistoryId[historyOwnedId]
+    ?? { followLatest: true, expandedTurns: {} };
+}
+
+export function setSelectedConversationViewState(
+  ownedId: string,
+  historyOwnedId: string,
+  view: ConversationViewState
+): void {
+  const current = conversationSessions[ownedId];
+  if (current) current.viewByHistoryId[historyOwnedId] = view;
 }
 
 export function getConversationSession(ownedId: string): ConversationWorkspaceState | null {
@@ -308,72 +463,6 @@ export function ensureConversationSession(
   conversationSessions[ownedId] = created;
   publishConversationProjectionDiagnostics();
   return created;
-}
-
-/** Apply one native journal event through the shared live/replay reducer. */
-export function applyAgentConversationEvent(event: AgentConversationEvent): boolean {
-  const existing = conversationSessions[event.ownedId];
-  if (existing && event.provider !== existing.provider) return false;
-  const current = ensureConversationSession(event.ownedId, event.provider);
-  appendRecentEvent(current, event);
-  // A live event cannot be joined across a trimmed middle. Leave the older
-  // page in place; scrolling forward or Jump to latest reads the stored tail.
-  if (current.loadedEvents.length > 0 && !current.reachedTranscriptEnd) {
-    recordConversationPresenceEvent(displayEventFrom(event));
-    return false;
-  }
-  const reduced = applyConversationEvent(current, event);
-  if (reduced === current) return false;
-  Object.assign(current, reduced);
-  current.writerLease.generation = event.generation;
-  if (current.desynchronized) return true;
-  const displayEvent = displayEventFrom(event);
-  if (event.payload.kind === 'userMessage' && current.unclaimedSentAttachments.length) {
-    current.sentAttachments[event.payload.itemId] = current.unclaimedSentAttachments;
-    current.unclaimedSentAttachments = [];
-  }
-  const payload = displayEvent.payload as Record<string, unknown>;
-  const itemId = ('itemId' in displayEvent ? displayEvent.itemId : undefined) ?? payload.itemId ?? payload.toolCallId ?? payload.messageId;
-  const message = current.transcript.getMessages().find((message) => message.id === itemId);
-  const row = message ? conversationMessageDisplayItem(message) : null;
-  if (row?.kind === 'tool' && row.state === 'completed' && row.path && row.diff) {
-    publishWorkspaceFileChange({ ownedId: event.ownedId, path: row.path });
-  }
-  applyTypedEventPayload(current, displayEvent);
-  current.loadedEvents.push(event);
-  let bytes = current.loadedEventsBytes + serializedEventBytes(event);
-  let trimmed = false;
-  if (current.loadedEvents.length > ACTIVE_EVENT_WINDOW_EVENTS) {
-    const excess = current.loadedEvents.length - ACTIVE_EVENT_WINDOW_TRIM_EVENTS;
-    const removed = current.loadedEvents.splice(0, excess);
-    for (const removedEvent of removed) bytes -= serializedEventBytes(removedEvent);
-    trimmed = true;
-  }
-  if (bytes > ACTIVE_EVENT_WINDOW_BYTES) {
-    // Leave room for later live events so a long turn does not rebuild its
-    // entire visible timeline on every new event after reaching the cap.
-    while (bytes > ACTIVE_EVENT_WINDOW_TRIM_BYTES && current.loadedEvents.length > 0) {
-      const removed = current.loadedEvents.shift();
-      if (removed) {
-        bytes -= serializedEventBytes(removed);
-        trimmed = true;
-      }
-    }
-  }
-  current.loadedEventsBytes = Math.max(0, bytes);
-  current.oldestLoadedSequence = current.loadedEvents[0]?.sequence ?? event.sequence;
-  if (trimmed) {
-    applyAgentConversationSnapshot(projectionSnapshot(current), {
-      events: [...current.loadedEvents],
-      reachedStart: false,
-      reachedEnd: true,
-      oldestSequence: current.oldestLoadedSequence,
-      newestSequence: event.sequence
-    });
-  }
-  if (!current.desynchronized) recordConversationPresenceEvent(displayEvent);
-  publishConversationProjectionDiagnostics();
-  return true;
 }
 
 /** Update rail attention for an inactive session without retaining its transcript. */
@@ -410,560 +499,6 @@ function summarizeRecentEvent(event: AgentConversationEvent | AgentEvent): strin
   if (Array.isArray(payload.items)) return `${payload.items.length} items`;
   if (Array.isArray(payload.tasks)) return `${payload.tasks.length} tasks`;
   return 'Event received';
-}
-
-/**
- * Historical replay from some ACP adapters can repeat a complete assistant
- * chunk with the same item id. Keep the event sequence intact for snapshot gap
- * checks, but make only the repeated delta empty while rebuilding the view.
- */
-function idempotentSnapshotEvents(events: AgentConversationEvent[]): AgentConversationEvent[] {
-  const assistantDelta = (event: AgentConversationEvent): { itemId: string; delta: string } | null => {
-    const payload = event.payload as { kind?: unknown; itemId?: unknown; delta?: unknown };
-    return payload.kind === 'assistantDelta'
-      && typeof payload.itemId === 'string'
-      && typeof payload.delta === 'string'
-      ? { itemId: payload.itemId, delta: payload.delta }
-      : null;
-  };
-  let previous: { itemId: string; delta: string } | null = null;
-  const replayedChunksByItem = new Map<string, Set<string>>();
-  const completedItemIds = new Set<string>();
-  let insideCompletedItemReplay = false;
-  const normalized = events.map<AgentConversationEvent>((event) => {
-    if (event.payload.kind === 'userMessage' || event.payload.kind === 'assistantMessage') {
-      if (completedItemIds.has(event.payload.itemId)) insideCompletedItemReplay = true;
-      completedItemIds.add(event.payload.itemId);
-      previous = null;
-      // A resumed provider can replay its whole completed history as one
-      // contiguous block. The first repeated stable id identifies that block;
-      // suppress it and its following completed items while preserving journal
-      // sequence continuity for the snapshot reducer.
-      return insideCompletedItemReplay
-        ? { ...event, payload: { kind: 'usage' } as AgentConversationEvent['payload'] }
-        : event;
-    }
-    insideCompletedItemReplay = false;
-    if (event.payload.kind !== 'assistantDelta') {
-      previous = null;
-      return event;
-    }
-    const current = { itemId: event.payload.itemId, delta: event.payload.delta };
-    const metadata = (event.payload as unknown as { _meta?: { replay?: boolean } })._meta;
-    const seen = replayedChunksByItem.get(current.itemId) ?? new Set<string>();
-    const duplicateReplay = metadata?.replay === true && seen.has(current.delta);
-    if (metadata?.replay === true && current.delta.length > 0) {
-      seen.add(current.delta);
-      replayedChunksByItem.set(current.itemId, seen);
-    }
-    const duplicate = current.delta.length > 0 && (
-      duplicateReplay
-      || (previous?.itemId === current.itemId && previous.delta === current.delta)
-    );
-    previous = current;
-    return duplicate
-      ? { ...event, payload: { ...event.payload, delta: '' } }
-      : event;
-  });
-
-  // A stored answer can contain hundreds of tiny deltas. Replaying them one at
-  // a time builds every intermediate version of the same string in both
-  // conversation projections. The UI never observes those intermediate states
-  // because the rebuilt snapshot is published only after replay finishes, so
-  // carry the same final text on the last delta and leave the earlier sequence
-  // positions empty. Live events still stream one delta at a time.
-  const deltaIndexesByItem = new Map<string, number[]>();
-  for (let index = 0; index < normalized.length; index++) {
-    const event = normalized[index];
-    const payload = assistantDelta(event);
-    if (!payload) continue;
-    const indexes = deltaIndexesByItem.get(payload.itemId) ?? [];
-    indexes.push(index);
-    deltaIndexesByItem.set(payload.itemId, indexes);
-  }
-  for (const indexes of deltaIndexesByItem.values()) {
-    if (indexes.length < 2) continue;
-    const joined = indexes
-      .map((index) => {
-        return assistantDelta(normalized[index])?.delta ?? '';
-      })
-      .join('');
-    for (const index of indexes.slice(0, -1)) {
-      const event = normalized[index];
-      if (assistantDelta(event)?.delta) {
-        normalized[index] = {
-          ...event,
-          payload: { ...event.payload, delta: '' } as AgentConversationEvent['payload']
-        };
-      }
-    }
-    const lastIndex = indexes[indexes.length - 1];
-    const last = normalized[lastIndex];
-    if (assistantDelta(last)?.delta !== joined) {
-      normalized[lastIndex] = {
-        ...last,
-        payload: { ...last.payload, delta: joined } as AgentConversationEvent['payload']
-      };
-    }
-  }
-
-  // Some stored providers write the complete diff again on every progress
-  // update. A snapshot publishes only the final tool state, so replay the call
-  // that fixes its position and one merged final update instead of proxying the
-  // same twenty-kilobyte patch dozens of times.
-  const toolIndexesByItem = new Map<string, number[]>();
-  for (let index = 0; index < normalized.length; index++) {
-    const payload = normalized[index].payload as unknown as Record<string, unknown>;
-    if (payload.kind !== 'tool' || typeof payload.itemId !== 'string') continue;
-    const indexes = toolIndexesByItem.get(payload.itemId) ?? [];
-    indexes.push(index);
-    toolIndexesByItem.set(payload.itemId, indexes);
-  }
-  for (const indexes of toolIndexesByItem.values()) {
-    if (indexes.length < 3) continue;
-    const merged = {
-      ...(normalized[indexes[0]].payload as unknown as Record<string, unknown>)
-    };
-    for (const index of indexes.slice(1)) {
-      const payload = normalized[index].payload as unknown as Record<string, unknown>;
-      for (const key of ['name', 'state', 'summary', 'output', 'path', 'diff']) {
-        if (payload[key] !== undefined && (key !== 'name' || payload[key])) merged[key] = payload[key];
-      }
-    }
-    for (const index of indexes.slice(1, -1)) {
-      normalized[index] = {
-        ...normalized[index],
-        payload: { kind: 'usage' } as AgentConversationEvent['payload']
-      };
-    }
-    const lastIndex = indexes[indexes.length - 1];
-    normalized[lastIndex] = {
-      ...normalized[lastIndex],
-      payload: merged as AgentConversationEvent['payload']
-    };
-  }
-  return normalized;
-}
-
-interface ProjectionWindowState {
-  events: AgentConversationEvent[];
-  reachedStart: boolean;
-  reachedEnd: boolean;
-  loadingOlder?: boolean;
-  loadingNewer?: boolean;
-  oldestSequence?: number;
-  newestSequence?: number;
-  /** Built by prepend for these events, so only the bookkeeping replays. */
-  transcript?: StreamProcessor;
-  bytes?: number;
-}
-
-function projectionSnapshot(current: ConversationWorkspaceState): AgentConversationSnapshot {
-  return {
-    connection: {
-      ownedId: current.ownedId,
-      provider: current.provider,
-      generation: current.generation,
-      nativeSessionId: current.nativeSessionId,
-      state: current.connectionState,
-      config: current.agentConfig
-    },
-    suspended: current.suspended,
-    lastSequence: current.lastSequence,
-    events: []
-  };
-}
-
-export function applyAgentConversationSnapshot(
-  snapshot: AgentConversationSnapshot,
-  window?: ProjectionWindowState,
-  bufferedEvents: readonly AgentConversationEvent[] = []
-): boolean {
-  const current = ensureConversationSession(
-    snapshot.connection.ownedId,
-    snapshot.connection.provider
-  );
-  if (snapshot.connection.generation < current.generation) return false;
-  // Re-selecting a session hands us a snapshot we have usually already applied.
-  // When it is the same generation, holds no event newer than what is on
-  // screen, and changes no connection fact, rebuilding would redo the whole
-  // replay and re-render for nothing — on long sessions that work is
-  // user-visible. Skip it outright. A desynchronized session never skips:
-  // its snapshot is the repair.
-  let sourceEvents = window?.events ?? snapshot.events;
-  if (!window) {
-    // SQLite supplies the base; persisted live events supply only a continuous
-    // suffix. Never advance over an event missing from both sources.
-    const suffix = [...current.loadedEvents, ...bufferedEvents]
-      .filter((event) => event.generation >= snapshot.connection.generation
-        && (event.generation > snapshot.connection.generation || event.sequence > snapshot.lastSequence))
-      .sort((a, b) => a.generation - b.generation || a.sequence - b.sequence);
-    let head = snapshot.lastSequence;
-    const tail: AgentConversationEvent[] = [];
-    for (const event of suffix) {
-      if (event.generation !== snapshot.connection.generation) return false;
-      if (event.sequence <= head) continue;
-      if (event.sequence !== head + 1) {
-        console.info('[conversation-sync]', {
-          cause: 'snapshot-suffix-gap', session: event.ownedId, generation: event.generation,
-          expectedSequence: head + 1, receivedSequence: event.sequence
-        });
-        return false;
-      }
-      tail.push(event);
-      head = event.sequence;
-    }
-    if (snapshot.connection.generation === current.generation && head < current.lastSequence) return false;
-    snapshot = { ...snapshot, lastSequence: head };
-    // Replay normalization belongs to historical rows, not new live deltas.
-    sourceEvents = [...idempotentSnapshotEvents(sourceEvents), ...tail];
-    if (sourceEvents.length > ACTIVE_EVENT_WINDOW_EVENTS) {
-      sourceEvents.splice(0, sourceEvents.length - ACTIVE_EVENT_WINDOW_TRIM_EVENTS);
-    }
-    let bytes = serializedEventsBytes(sourceEvents);
-    while (bytes > ACTIVE_EVENT_WINDOW_BYTES && sourceEvents.length > 0) {
-      const removed = sourceEvents.shift();
-      if (removed) bytes -= serializedEventBytes(removed);
-    }
-  }
-  const newestSnapshotSequence = sourceEvents.length
-    ? sourceEvents[sourceEvents.length - 1].sequence
-    : 0;
-  if (
-    !window
-    && snapshot.connection.generation === current.generation
-    && current.lastSequence > 0
-    && newestSnapshotSequence <= current.lastSequence
-    && current.reachedTranscriptEnd
-    && !current.desynchronized
-    && current.suspended === snapshot.suspended
-    && current.connectionState === snapshot.connection.state
-    && (!snapshot.suspended || (!current.activeTurnId && !current.sending))
-  ) return true;
-  const rebuilt = createConversationState(
-    snapshot.connection.ownedId,
-    snapshot.connection.provider
-  );
-  const events = sourceEvents;
-  const firstEvent = events[0];
-  // A read snapshot is deliberately a bounded tail window. Seed the reducer
-  // immediately before that window so the first retained event is contiguous
-  // without pretending the omitted older journal was materialized.
-  rebuilt.generation = firstEvent?.generation ?? snapshot.connection.generation;
-  // Not clamped at zero: importing older history writes it at descending
-  // sequences that run through zero into negatives, and a clamp here would make
-  // the reducer read every one of those as already seen and drop it.
-  rebuilt.lastSequence = firstEvent ? firstEvent.sequence - 1 : 0;
-  rebuilt.connectionState = snapshot.connection.state;
-  rebuilt.nativeSessionId = snapshot.connection.nativeSessionId;
-  const sentAttachments = retainSentAttachments(current.sentAttachments, sourceEvents);
-  // Build the complete snapshot off the reactive graph. Publishing this object
-  // before replay made every event traverse Svelte's deep proxy machinery and
-  // invalidated subscribers 2,000 times during a read-only load.
-  // Replay is seeded from the first retained event so no history is skipped,
-  // which leaves the rebuilt generation at whatever the window ended on. A
-  // session re-ensured after a suspend has a newer adapter incarnation and no
-  // events in it yet, so the connection's generation is the current one: keep
-  // it, or the next send is addressed to an incarnation the backend has
-  // already replaced and is refused.
-  const generation = Math.max(rebuilt.generation, snapshot.connection.generation);
-  const keepChildProjection = generation === current.generation;
-  const restored: ConversationWorkspaceState = {
-    ...rebuilt,
-    transcript: window?.transcript ?? rebuilt.transcript,
-    lastSequence: rebuilt.lastSequence,
-    // Paging can trim the newest turn event. Its old start must not revive a
-    // turn the live head has already completed (or hide one still running).
-    activeTurnId: snapshot.suspended ? undefined : window ? current.activeTurnId : rebuilt.activeTurnId,
-    generation: rebuilt.generation,
-    suspended: snapshot.suspended === true,
-    timelineRevision: current.timelineRevision + 1,
-    draft: current.draft,
-    sendError: current.sendError,
-    attachmentError: current.attachmentError,
-    providerNotice: current.providerNotice,
-    mode: current.mode,
-    sending: snapshot.suspended ? false : current.sending,
-    attachments: current.attachments,
-    metadata: current.metadata,
-    children: current.children,
-    selectedChildId: keepChildProjection ? current.selectedChildId : null,
-    childTranscript: keepChildProjection ? current.childTranscript : new StreamProcessor(),
-    scrollTop: current.scrollTop,
-    childScrollTopById: current.childScrollTopById,
-    executionOwner: current.executionOwner,
-    writerLease: { ...current.writerLease, generation },
-    writerLeaseTransition: current.writerLeaseTransition,
-    attachmentIds: current.attachmentIds,
-    sentAttachments,
-    unclaimedSentAttachments: current.unclaimedSentAttachments,
-    config: current.config,
-    telemetry: current.telemetry,
-    capabilities: current.capabilitiesGeneration === generation ? current.capabilities : null,
-    capabilitiesGeneration: current.capabilitiesGeneration === generation
-      ? current.capabilitiesGeneration
-      : 0,
-    capabilityError: current.capabilityError,
-    availableCommands: current.availableCommands,
-    pendingApprovals: {},
-    pendingInputs: {},
-    pendingConfig: current.pendingConfig,
-    configErrors: current.configErrors,
-    agentConfig: current.agentConfig,
-    pendingAgentConfig: current.pendingAgentConfig,
-    agentConfigError: current.agentConfigError,
-    recentEvents: [],
-    // Avoid a reactive proxy for every field of every retained journal event.
-    get loadedEvents() { return events; },
-    loadedEventsBytes: window?.bytes ?? serializedEventsBytes(events),
-    // A snapshot is the newest window of a longer journal. Scrolling up asks
-    // for what came before its first event.
-    oldestLoadedSequence: window?.oldestSequence ?? firstEvent?.sequence ?? snapshot.lastSequence,
-    newestLoadedSequence: window?.newestSequence
-      ?? sourceEvents[sourceEvents.length - 1]?.sequence
-      ?? snapshot.lastSequence,
-    loadingOlder: window?.loadingOlder ?? false,
-    reachedTranscriptStart: window?.reachedStart ?? false,
-    loadingNewer: window?.loadingNewer ?? false,
-    reachedTranscriptEnd: window?.reachedEnd ?? newestSnapshotSequence >= snapshot.lastSequence,
-    loadedChildTranscriptBytes: keepChildProjection ? current.loadedChildTranscriptBytes : 0
-  };
-  for (const event of events) {
-    const reduced = window?.transcript ? reduceConversationEvent(restored, event) : applyConversationEvent(restored, event);
-    if (reduced !== restored) Object.assign(restored, reduced);
-    applyTypedEventPayload(restored, displayEventFrom(event));
-  }
-  if (generation === current.generation) {
-    const starts = new Map(current.transcript.getMessages().map((message) => [message.id, message.metadata?.startedAtMs]));
-    for (const message of restored.transcript.getMessages()) {
-      const start = starts.get(message.id);
-      if (typeof start === 'number' && typeof message.metadata?.startedAtMs === 'number' && start < message.metadata.startedAtMs) {
-        restored.transcript.processChunk({ type: EventType.TEXT_MESSAGE_START, messageId: message.id, role: message.role,
-          metadata: { startedAtMs: start } });
-      }
-    }
-  }
-  restored.generation = generation;
-  restored.lastSequence = window ? current.lastSequence : snapshot.lastSequence;
-  restored.activeTurnId = snapshot.suspended ? undefined : window ? current.activeTurnId : restored.activeTurnId;
-  restored.timelineRevision = current.timelineRevision + 1;
-  restored.recentEvents = events.slice(-CONVERSATION_RECENT_EVENT_CAP).map((event) => ({
-    sequence: event.sequence,
-    kind: String('type' in event ? event.type : event.payload.kind),
-    summary: summarizeRecentEvent(event),
-    timestampMs: event.timestampMs
-  }));
-  // One reactive publication: subscribers see only the finished snapshot.
-  conversationSessions[snapshot.connection.ownedId] = restored;
-  publishConversationProjectionDiagnostics();
-  return !restored.desynchronized;
-}
-
-/** The message an event writes, by the ids `applyMessageEvent` uses. A usage
- * event can only write the compaction row it may create. */
-function eventMessageId(event: AgentConversationEvent): string | undefined {
-  const display = displayEventFrom(event);
-  const request = permissionRequestFromEvent(display);
-  if (request) return displayItemFromApproval(request).itemId;
-  return agentItemFromEvent(event.payload.kind === 'usage'
-    ? { ...event, payload: { kind: 'contextCompaction' } }
-    : display)?.id;
-}
-
-/**
- * The transcript of `events` (an older page, then the kept part of the current
- * window) without replaying the window. In step at the join, every kept event
- * acts exactly as it did when the current transcript was built. So only the
- * messages the page or a trimmed event wrote, reasoning a trimmed event may
- * have closed, and compaction rows decided across the join are rebuilt; every
- * other message is the current one.
- */
-function prependPageTranscript(
-  current: ConversationWorkspaceState,
-  pageLength: number,
-  events: readonly AgentConversationEvent[]
-): StreamProcessor {
-  const state = createConversationState(current.ownedId, current.provider);
-  state.generation = events[0]?.generation ?? 0;
-  state.lastSequence = events[0] ? events[0].sequence - 1 : 0;
-  for (const event of events.slice(0, pageLength)) Object.assign(state, applyConversationEvent(state, event));
-  const transcript = state.transcript;
-  const kept = events.slice(pageLength);
-  const joined = kept.length ? reduceConversationEvent(state, kept[0]) : state;
-  if (joined === state || joined.desynchronized) {
-    // Out of step at the join, a full replay does no message work until a
-    // generation restarts at 1, so the reducer itself is cheap here.
-    for (const event of kept) Object.assign(state, applyConversationEvent(state, event));
-    return transcript;
-  }
-  const pageMessages = transcript.getMessages().length;
-  const pageIds = new Set(transcript.getMessages().map((message) => message.id));
-  const currentById = new Map(current.transcript.getMessages().map((message) => [message.id, message]));
-  const trimmed = current.loadedEvents.slice(kept.length);
-  const rebuild = new Set(pageIds);
-  for (const event of trimmed) {
-    const id = eventMessageId(event);
-    if (id && currentById.has(id)) rebuild.add(id);
-  }
-  for (const message of currentById.values()) {
-    if (trimmed.length && message.metadata?.itemType === 'reasoning') rebuild.add(message.id);
-  }
-  // Messages in creation order: the page's, then current ones as kept events
-  // first write them, with compaction rows the current window lacks inserted.
-  const created = new Set(pageIds);
-  const inserted: [number, string][] = [];
-  let fromCurrent = 0;
-  let lastIsCompaction = transcript.getMessages().at(-1)?.metadata?.itemType === 'context-compaction';
-  for (const event of kept) {
-    const reduced = reduceConversationEvent(state, event);
-    if (reduced === state) continue;
-    const previous = state.usage?.usedTokens;
-    Object.assign(state, reduced);
-    if (state.desynchronized) continue;
-    const payload = event.payload;
-    const id = eventMessageId(event);
-    if (!id) {
-      finishMessageReasoning(transcript, displayEventFrom(event));
-    } else if (payload.kind === 'usage') {
-      // The reducer's compaction rule, against the rows this replay created.
-      if (!usageDropIsCompaction(previous, payload.usedTokens) || lastIsCompaction) continue;
-      if (currentById.has(id)) fromCurrent += 1;
-      else {
-        applyMessageEvent(transcript, { ...event, payload: { kind: 'contextCompaction', preTokens: previous, postTokens: payload.usedTokens } });
-        inserted.push([fromCurrent + inserted.length, id]);
-      }
-      created.add(id);
-      lastIsCompaction = true;
-    } else {
-      const display = displayEventFrom(event);
-      if (rebuild.has(id)) applyMessageEvent(transcript, display);
-      if (!created.has(id)) {
-        created.add(id);
-        fromCurrent += 1;
-        lastIsCompaction = currentById.get(id)?.metadata?.itemType === 'context-compaction';
-      }
-      finishMessageReasoning(transcript, display);
-    }
-  }
-  const rebuilt = new Map(transcript.getMessages().map((message) => [message.id, message]));
-  const newer: UIMessage[] = [];
-  for (const message of currentById.values()) {
-    if (created.has(message.id) && !pageIds.has(message.id)) newer.push(rebuilt.get(message.id) ?? message);
-  }
-  for (const [at, id] of inserted) newer.splice(at, 0, rebuilt.get(id)!);
-  restoreProcessor(transcript, [...transcript.getMessages().slice(0, pageMessages), ...newer]);
-  return transcript;
-}
-
-/**
- * Puts the page of stored events just older than the transcript in front of it.
- *
- * Only the page is replayed through the message mapper; the window's messages
- * are kept (see `prependPageTranscript`). Once the event ceiling is reached,
- * the newest end is removed and remains refetchable.
- */
-export function prependOlderConversationEvents(
-  ownedId: string,
-  page: AgentConversationEventPage
-): void {
-  const current = conversationSessions[ownedId];
-  if (!current) return;
-  const events = [...page.events, ...current.loadedEvents];
-  const oldestSequence = page.events[0]?.sequence ?? current.oldestLoadedSequence;
-  let trimmedNewest = false;
-  if (events.length > ACTIVE_EVENT_WINDOW_EVENTS) {
-    const excess = events.length - ACTIVE_EVENT_WINDOW_TRIM_EVENTS;
-    events.splice(events.length - excess, excess);
-    trimmedNewest = true;
-  }
-  let bytes = serializedEventsBytes(events);
-  // Over the cap, trim to the low mark so the next page does not trim again.
-  if (bytes > ACTIVE_EVENT_WINDOW_BYTES) {
-    while (bytes > ACTIVE_EVENT_WINDOW_TRIM_BYTES && events.length > 0) {
-      const removed = events.pop();
-      if (removed) {
-        bytes -= serializedEventBytes(removed);
-        trimmedNewest = true;
-      }
-    }
-  }
-  applyAgentConversationSnapshot(projectionSnapshot(current), {
-    events,
-    reachedStart: !page.hasMore,
-    reachedEnd: current.reachedTranscriptEnd && !trimmedNewest,
-    oldestSequence: events[0]?.sequence ?? oldestSequence,
-    newestSequence: events[events.length - 1]?.sequence ?? oldestSequence - 1,
-    transcript: prependPageTranscript(current, Math.min(page.events.length, events.length), events),
-    bytes
-  });
-}
-
-/** Adds the next stored page after the current window, trimming the oldest end
- * when the active projection reaches its byte ceiling. */
-export function appendNewerConversationEvents(
-  ownedId: string,
-  page: AgentConversationEventPage
-): void {
-  const current = conversationSessions[ownedId];
-  if (!current) return;
-  const events = [...current.loadedEvents, ...page.events];
-  const newestSequence = page.events[page.events.length - 1]?.sequence
-    ?? current.newestLoadedSequence;
-  let trimmedOldest = false;
-  if (events.length > ACTIVE_EVENT_WINDOW_EVENTS) {
-    const excess = events.length - ACTIVE_EVENT_WINDOW_TRIM_EVENTS;
-    events.splice(0, excess);
-    trimmedOldest = true;
-  }
-  let bytes = serializedEventsBytes(events);
-  if (bytes > ACTIVE_EVENT_WINDOW_BYTES) {
-    while (bytes > ACTIVE_EVENT_WINDOW_TRIM_BYTES && events.length > 0) {
-      const removed = events.shift();
-      if (removed) {
-        bytes -= serializedEventBytes(removed);
-        trimmedOldest = true;
-      }
-    }
-  }
-  applyAgentConversationSnapshot(projectionSnapshot(current), {
-    events,
-    reachedStart: current.reachedTranscriptStart && !trimmedOldest,
-    reachedEnd: !page.hasMore,
-    oldestSequence: events[0]?.sequence ?? newestSequence + 1,
-    newestSequence: events[events.length - 1]?.sequence ?? newestSequence
-  });
-}
-
-/** Marks a backward page as in flight so only one is ever asked for. */
-export function beginLoadingOlderConversationEvents(ownedId: string): boolean {
-  const current = conversationSessions[ownedId];
-  if (!current) return false;
-  if (current.loadingOlder || current.reachedTranscriptStart) return false;
-  // Nothing is on screen yet, so there is no cursor to read backwards from.
-  // Sequence numbers themselves say nothing here: extending an import writes
-  // older events at descending sequences, which run through 1 and past it.
-  if (current.oldestLoadedSequence === 0 && current.loadedEvents.length === 0) return false;
-  current.loadingOlder = true;
-  return true;
-}
-
-/** Releases the in-flight guard when a backward page could not be read. */
-export function failLoadingOlderConversationEvents(ownedId: string): void {
-  const current = conversationSessions[ownedId];
-  if (current) current.loadingOlder = false;
-}
-
-export function beginLoadingNewerConversationEvents(ownedId: string): boolean {
-  const current = conversationSessions[ownedId];
-  if (!current || current.loadingNewer || current.reachedTranscriptEnd) return false;
-  if (current.newestLoadedSequence === 0 && current.loadedEvents.length === 0) return false;
-  current.loadingNewer = true;
-  return true;
-}
-
-export function failLoadingNewerConversationEvents(ownedId: string): void {
-  const current = conversationSessions[ownedId];
-  if (current) current.loadingNewer = false;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1015,13 +550,15 @@ function normalizedConversationChild(
   parentOwnedId: string,
   parentGeneration: number,
   timestampMs: number,
-  siblings: readonly ConversationChildAgent[]
+  siblings: readonly ConversationChildAgent[],
+  rootNativeSessionId?: string
 ): ConversationChildAgent | null {
   if (!isRecord(value) || isWorkflowChildRecord(value)) return null;
   const childId = asString(value.childId) ?? asString(value.childSessionId) ?? asString(value.id);
   if (!childId) return null;
   const parentToolCallId = asString(value.parentToolCallId) ?? existing?.parentToolCallId;
-  const parentId = asString(value.parentId) ?? parentToolCallId ?? existing?.parentId;
+  const rawParentId = asString(value.parentId) ?? parentToolCallId ?? existing?.parentId;
+  const parentId = rawParentId === rootNativeSessionId ? parentOwnedId : rawParentId;
   if (!parentId || childParentWouldCycle(siblings, childId, parentId)) return null;
   const childProvider = normalizeChildProvider(value.provider, existing?.provider ?? provider);
   return {
@@ -1030,6 +567,9 @@ function normalizedConversationChild(
     parentGeneration,
     parentId,
     ...(parentToolCallId ? { parentToolCallId } : {}),
+    ...(asString(value.transcriptId) || existing?.transcriptId
+      ? { transcriptId: asString(value.transcriptId) ?? existing?.transcriptId }
+      : {}),
     provider: childProvider,
     title: asString(value.title) ?? asString(value.label) ?? existing?.title ?? 'Sub-agent',
     state: asString(value.state) ?? existing?.state ?? 'finished',
@@ -1049,7 +589,8 @@ function normalizedConversationChildren(
   provider: AgentConversationProvider,
   parentOwnedId: string,
   parentGeneration: number,
-  timestampMs: number
+  timestampMs: number,
+  rootNativeSessionId?: string
 ): ConversationChildAgent[] {
   const children: ConversationChildAgent[] = [];
   for (const value of values) {
@@ -1067,7 +608,8 @@ function normalizedConversationChildren(
       parentOwnedId,
       parentGeneration,
       timestampMs,
-      children
+      children,
+      rootNativeSessionId
     );
     if (!child) continue;
     const index = children.findIndex((entry) => entry.childId === child.childId);
@@ -1096,7 +638,8 @@ function mergeConversationChild(
     current.ownedId,
     parentGeneration,
     timestampMs,
-    current.children
+    current.children,
+    current.nativeSessionId
   );
   if (!child) return;
   if (index >= 0) current.children[index] = child;
@@ -1130,6 +673,8 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
   const eventType: string = 'type' in event
     ? event.type
     : payload.kind === 'approval' ? 'approval.requested'
+      : payload.kind === 'userInputRequested' ? 'user-input.requested'
+      : payload.kind === 'userInputResolved' ? 'user-input.resolved'
       : payload.kind === 'error' ? 'runtime.error'
         : payload.kind === 'usage' ? 'usage.updated' : '';
   const requestIdFromEvent = 'requestId' in event ? event.requestId : undefined;
@@ -1223,7 +768,8 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
         itemId: itemIdFromEvent,
         title: asString(payload.title) ?? 'Input requested',
         description: asString(payload.description) ?? undefined,
-        fields: payload.fields as AgentUserInputRequest['fields']
+        fields: payload.fields as AgentUserInputRequest['fields'],
+        canDecline: payload.canDecline === true
       };
     }
   }
@@ -1233,47 +779,25 @@ function applyTypedEventPayload(current: ConversationWorkspaceState, event: Agen
   }
 }
 
-export function applyConversationTranscript(
-  ownedId: string,
-  provider: AgentConversationProvider,
-  snapshot: ConversationTranscriptSnapshot
-): void {
-  const current = ensureConversationSession(ownedId, provider);
-  const loadedEvents = current.loadedEvents;
-  conversationSessions[ownedId] = {
-    ...current,
-    get loadedEvents() { return loadedEvents; },
-    connectionState: 'connected',
-    desynchronized: false,
-    metadata: snapshot.metadata,
-    children: normalizedConversationChildren(
-      snapshot.children,
-      current.children,
-      provider,
-      ownedId,
-      current.generation,
-      0
-    ),
-    transcript: transcriptMessages(snapshot.messages),
-    timelineRevision: current.timelineRevision + 1
-  };
-}
-
-export function applyChildConversationTranscript(
+export function applyChildConversationHistoryStatus(
   ownedId: string,
   childId: string,
-  messages: readonly ConversationTranscriptMessage[]
+  truncated: boolean
 ): void {
   const current = conversationSessions[ownedId];
   if (!current || current.selectedChildId !== childId) return;
-  releaseOtherChildTranscriptProjections(ownedId);
-  current.childTranscript = transcriptMessages(messages, `child:${childId}:`);
-  current.timelineRevision += 1;
-  current.loadedChildTranscriptBytes = messages.reduce(
-    (total, message) => total + textBytes(message.text),
-    0
-  );
-  publishConversationProjectionDiagnostics();
+  current.childTranscriptTruncated = truncated;
+  current.childTranscriptError = null;
+}
+
+export function failChildConversationTranscript(
+  ownedId: string,
+  childId: string,
+  message: string
+): void {
+  const current = conversationSessions[ownedId];
+  if (!current || current.selectedChildId !== childId) return;
+  current.childTranscriptError = message;
 }
 
 export function setConversationAttachments(ownedId: string, attachments: ConversationAttachment[]): void {
@@ -1320,35 +844,32 @@ export function recordSentConversationAttachments(
  * hold above only covers sends this window made, so a restarted app has to
  * hang the saved files back on the user messages that named them. A message
  * that already carries its screenshots keeps them. */
-export function restoreSentConversationAttachments(
+/** Keep saved attachments only for user items still in the selected TanStack graph. */
+export function restoreSelectedConversationAttachments(
   ownedId: string,
   byItemId: Record<string, ConversationAttachment[]>,
-  generation: number
+  generation: number,
+  retainedItemIds: readonly string[]
 ): void {
   const current = conversationSessions[ownedId];
+  const retained = new Set(retainedItemIds);
   const incoming = Object.values(byItemId).flat();
   if (!current || current.generation !== generation) {
     revokeUnretainedPreviewUrls(incoming, current ? Object.values(current.sentAttachments).flat() : []);
     return;
   }
-  const ids = userItemIds(current.loadedEvents);
-  const discarded: ConversationAttachment[] = [];
-  for (const [itemId, attachments] of Object.entries(byItemId)) {
-    if (!ids.has(itemId)) discarded.push(...attachments);
-    else {
-      const previous = current.sentAttachments[itemId] ?? [];
-      const previewAdvanced = attachments.some((attachment) => {
-        const earlier = previous.find((record) => record.id === attachment.id);
-        return earlier && ((!earlier.previewUrl && !!attachment.previewUrl)
-          || (earlier.previewLoading && !attachment.previewLoading));
-      });
-      if (!previous.length || previewAdvanced) {
-        current.sentAttachments[itemId] = attachments;
-        discarded.push(...previous);
-      } else discarded.push(...attachments);
-    }
+  const next: Record<string, ConversationAttachment[]> = {};
+  for (const [itemId, attachments] of Object.entries(current.sentAttachments)) {
+    if (retained.has(itemId)) next[itemId] = attachments;
   }
-  revokeUnretainedPreviewUrls(discarded, Object.values(current.sentAttachments).flat());
+  for (const [itemId, attachments] of Object.entries(byItemId)) {
+    if (retained.has(itemId)) next[itemId] = attachments;
+  }
+  revokeUnretainedPreviewUrls(
+    [...Object.values(current.sentAttachments).flat(), ...incoming],
+    [...Object.values(next).flat(), ...current.attachments]
+  );
+  current.sentAttachments = next;
   publishConversationProjectionDiagnostics();
 }
 
@@ -1519,29 +1040,10 @@ export function setConversationPendingInput(ownedId: string, request: AgentUserI
 export function setConversationSelectedChild(ownedId: string, childId: string | null): void {
   const current = conversationSessions[ownedId];
   if (!current) return;
-  const releasedOther = childId !== null && releaseOtherChildTranscriptProjections(ownedId);
-  if (current.selectedChildId === childId) {
-    if (releasedOther) publishConversationProjectionDiagnostics();
-    return;
-  }
+  if (current.selectedChildId === childId) return;
   current.selectedChildId = childId;
-  current.childTranscript = new StreamProcessor();
-  current.loadedChildTranscriptBytes = 0;
-  publishConversationProjectionDiagnostics();
-}
-
-export function setConversationScrollTop(ownedId: string, scrollTop: number): void {
-  const current = conversationSessions[ownedId];
-  if (current) current.scrollTop = Math.max(0, scrollTop);
-}
-
-export function setChildConversationScrollTop(
-  ownedId: string,
-  childId: string,
-  scrollTop: number
-): void {
-  const current = conversationSessions[ownedId];
-  if (current) current.childScrollTopById[childId] = Math.max(0, scrollTop);
+  current.childTranscriptTruncated = false;
+  current.childTranscriptError = null;
 }
 
 export function setConversationWriterLeaseTransition(
@@ -1612,11 +1114,9 @@ export function setConversationConnection(connection: AgentConversationConnectio
   const existing = conversationSessions[connection.ownedId];
   if (existing && connection.generation < existing.generation) return;
   const current = ensureConversationSession(connection.ownedId, connection.provider);
-  let releasedChildProjection = false;
   if (connection.generation > current.generation) {
     current.capabilities = null;
     current.capabilitiesGeneration = 0;
-    releasedChildProjection = releaseChildTranscriptProjection(current);
   }
   current.generation = connection.generation;
   current.writerLease.generation = connection.generation;
@@ -1632,7 +1132,6 @@ export function setConversationConnection(connection: AgentConversationConnectio
     current.agentConfig = connection.config;
     current.agentConfigError = null;
   }
-  if (releasedChildProjection) publishConversationProjectionDiagnostics();
 }
 
 export function captureConversationWorkspace(
@@ -1647,14 +1146,12 @@ export function captureConversationWorkspace(
     owner: current.executionOwner,
     attachmentIds: current.attachmentIds,
     config: current.config,
-    parentScrollTop: current.scrollTop,
-    childScrollTopById: current.childScrollTopById,
+    viewByHistoryId: current.viewByHistoryId,
     sequence: current.lastSequence,
     telemetry: current.telemetry,
     writerLease: current.writerLease,
     writerLeaseTransition: current.writerLeaseTransition,
     selectedChildId: null,
-    scrollTop: current.scrollTop,
     providerGeneration: current.generation,
     lastSequence: current.lastSequence
   };
@@ -1667,12 +1164,14 @@ export function restoreConversationWorkspace(
 ): ConversationWorkspaceState {
   const current = ensureConversationSession(ownedId, provider);
   current.mode = snapshot?.mode === 'raw' ? 'raw' : 'structured';
-  releaseChildTranscriptProjection(current);
-  current.scrollTop = snapshot?.parentScrollTop ?? snapshot?.scrollTop ?? 0;
-  current.childScrollTopById = snapshot?.childScrollTopById ?? {};
+  current.selectedChildId = null;
+  current.selectedChildHistoryOwnedId = null;
+  current.childTranscriptTruncated = false;
+  current.childTranscriptError = null;
   current.executionOwner = snapshot?.owner ?? current.executionOwner;
   current.attachmentIds = snapshot?.attachmentIds ?? current.attachmentIds;
   current.config = snapshot?.config ?? current.config;
+  current.viewByHistoryId = snapshot?.viewByHistoryId ?? current.viewByHistoryId;
   current.telemetry = snapshot?.telemetry ?? current.telemetry;
   if (snapshot?.writerLease?.ownedId === ownedId) current.writerLease = snapshot.writerLease;
   if (snapshot?.writerLeaseTransition?.ownedId === ownedId) {
@@ -1685,14 +1184,23 @@ export function restoreConversationWorkspace(
 export function evictConversationSession(ownedId: string): void {
   const current = conversationSessions[ownedId];
   if (!current) return;
+  const previewUrls = new Set([
+    ...current.attachments,
+    ...current.unclaimedSentAttachments,
+    ...Object.values(current.sentAttachments).flat()
+  ].map((attachment) => attachment.previewUrl));
+  for (const previewUrl of previewUrls) {
+    if (previewUrl.startsWith('blob:')) revokeTrackedObjectUrl(previewUrl);
+  }
   delete conversationSessions[ownedId];
   publishConversationProjectionDiagnostics();
 }
 
-/** Release all materialized transcripts except the active session. */
+/** Retain the active parent and its one displayed child history. */
 export function evictInactiveConversationSessions(activeOwnedId: string | null): void {
+  const childHistoryOwnedId = activeOwnedId ? conversationSessions[activeOwnedId]?.selectedChildHistoryOwnedId : null;
   for (const ownedId of Object.keys(conversationSessions)) {
-    if (ownedId !== activeOwnedId) {
+    if (ownedId !== activeOwnedId && ownedId !== childHistoryOwnedId) {
       const current = conversationSessions[ownedId];
       if (current && !current.sending) {
         evictConversationSession(ownedId);

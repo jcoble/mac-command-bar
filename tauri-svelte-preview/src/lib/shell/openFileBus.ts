@@ -1,3 +1,8 @@
+import { remoteWorkspacePath } from '../workspacePaths.ts';
+import type { OwnedSession } from './ownedSessions.ts';
+import type { ConversationFileLinkProvenance } from './conversation/conversationTimeline.ts';
+import { normalizeConversationFileHref, splitConversationFileReference } from './conversation/conversationMessageSafety.ts';
+
 /**
  * openFileBus.ts — cross-panel "open this file in the editor" requests.
  *
@@ -66,4 +71,53 @@ export function onOpenFile(listener: Listener): () => void {
   return () => {
     listeners.delete(listener);
   };
+}
+
+/** Open a transcript file using its saved workspace and file provenance. */
+export function requestOpenConversationFile(
+  active: OwnedSession,
+  reference: string,
+  provenance?: ConversationFileLinkProvenance
+): string | null {
+  const sessionRoot = active.cwd.replace(/\/+$/, '');
+  const { path, line } = splitConversationFileReference(reference);
+  const candidate = normalizeConversationFileHref(path);
+  const recordedPath = provenance?.path ? normalizeConversationFileHref(provenance.path) : '';
+  const linkIsRecordedFile = Boolean(recordedPath && (
+    recordedPath === candidate
+    || recordedPath.endsWith(`/${candidate.replace(/^\.\//, '')}`)
+  ));
+  const recordedRoot = provenance?.root
+    ? normalizeConversationFileHref(provenance.root)
+    : !linkIsRecordedFile && recordedPath.includes('/')
+      ? recordedPath.slice(0, recordedPath.lastIndexOf('/'))
+      : '';
+  const recordedRootPath = recordedRoot
+    ? resolveConversationFilePath(recordedRoot, sessionRoot).replace(/\/+$/, '')
+    : '';
+  const root = recordedRootPath || sessionRoot;
+  if (!root || !candidate || candidate.includes('\0') || candidate.split('/').includes('..')) {
+    // Nothing here resolves to a file, so there is nothing to open.
+    return 'That file link could not be opened.';
+  }
+  const absolute = linkIsRecordedFile && (recordedPath.startsWith('/') || recordedPath.startsWith('~'))
+    ? recordedPath
+    : resolveConversationFilePath(candidate, root);
+  // A link that lands outside the workspace still opens, read-only: reading a
+  // file this session does not own is safe, and refusing it left the reader
+  // with a notice and no way to see what the link pointed at.
+  const outside = absolute !== root && !absolute.startsWith(`${root}/`);
+  const readOnly = outside || Boolean(recordedRootPath && recordedRootPath !== sessionRoot);
+  if (active.executionEnvironment === 'remote' && !active.remoteProfileId) {
+    return 'Connect to this conversation’s saved machine first.';
+  }
+  const qualify = (path: string): string => active.executionEnvironment === 'remote'
+    ? remoteWorkspacePath(active.remoteProfileId!, path) : path;
+  requestOpenFile({
+    path: qualify(absolute),
+    projectRoot: qualify(readOnly ? sessionRoot : root),
+    readOnly,
+    line
+  });
+  return null;
 }

@@ -1,23 +1,14 @@
 /**
- * workbenchTabs.ts — which tab each session was left on.
+ * workbenchTabs.ts — which drawer tab each session was left on.
  *
- * The center pane and right panel remember their selected tabs in the active
- * session's SQLite workspace snapshot. This pure module owns only the valid
- * values and defaults; it has no persistence path of its own.
+ * The right drawer remembers its selected tab in the active session's SQLite
+ * workspace snapshot (the top tab row has its own record, `topTabsOps.ts`).
+ * This pure module owns only the valid values and default; it has no
+ * persistence path of its own.
  */
-import {
-  CENTER_TAB_IDS,
-  RIGHT_TAB_IDS,
-  type CenterTabId,
-  type RightTabId
-} from '../workbenchNavigation.ts';
+import { RIGHT_TAB_IDS, type RightTabId } from '../workbenchNavigation.ts';
 
-export const DEFAULT_CENTER_TAB: CenterTabId = 'session';
 export const DEFAULT_RIGHT_TAB: RightTabId = 'files';
-
-export function isCenterTabId(value: unknown): value is CenterTabId {
-  return typeof value === 'string' && CENTER_TAB_IDS.some((id) => id === value);
-}
 
 export function isRightTabId(value: unknown): value is RightTabId {
   return typeof value === 'string' && RIGHT_TAB_IDS.some((id) => id === value);
