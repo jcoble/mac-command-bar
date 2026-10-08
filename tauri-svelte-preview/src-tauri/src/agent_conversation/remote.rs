@@ -32,7 +32,8 @@ use super::protocol::{
     AgentConversationChildHistorySelection, AgentConversationConnection, AgentConversationEvent,
     AgentConversationEventPage, AgentConversationItemPage, AgentConversationProvider, AgentConversationSelectionSnapshot,
     AgentConversationSendReceipt, AgentConversationSessionRecord, AgentConversationSnapshot,
-    ChangeAgentConversationCheckoutRequest, EnsureAgentConversationRequest, ExecutionEnvironment,
+    BackgroundWorkItem, BackgroundWorkKind, ChangeAgentConversationCheckoutRequest,
+    EnsureAgentConversationRequest, ExecutionEnvironment,
     RespondAgentConversationApprovalRequest, RespondAgentConversationInputRequest,
     RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest,
     SetAgentConversationConfigRequest, StopAgentConversationTurnRequest,
@@ -40,7 +41,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 14;
+pub(super) const PROTOCOL_VERSION: u16 = 15;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -3872,7 +3873,12 @@ mod connection_tests {
             active_turn_id: None,
             pending_permission: false,
             pending_input: false,
-            background_task_ids: Vec::new(),
+            background_work: vec![BackgroundWorkItem {
+                id: "background-task:remote-1".into(),
+                kind: BackgroundWorkKind::Command,
+                label: "Remote command".into(),
+                started_at_ms: 2,
+            }],
             native_session_id: Some(format!("native-{owned_id}")),
             project_id: None,
             project_group_key: String::new(),
@@ -4203,7 +4209,8 @@ mod connection_tests {
 
     #[tokio::test]
     async fn readiness_requires_protocol_and_session_response() {
-        for version in [PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
+        assert_eq!(PROTOCOL_VERSION, 15);
+        for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let (probe_tx, probe_rx) = oneshot::channel();
@@ -4235,7 +4242,12 @@ mod connection_tests {
                 assert!(result.await.unwrap().unwrap().is_empty());
                 assert!(ready.load(Ordering::Acquire));
             } else {
-                assert!(result.await.unwrap().unwrap_err().contains("Assembly client needs an update"));
+                let error = result.await.unwrap().unwrap_err();
+                if version < PROTOCOL_VERSION {
+                    assert!(error.contains("Remote backend needs an update"));
+                } else {
+                    assert!(error.contains("Assembly client needs an update"));
+                }
                 assert!(!ready.load(Ordering::Acquire));
             }
             drop(requests);

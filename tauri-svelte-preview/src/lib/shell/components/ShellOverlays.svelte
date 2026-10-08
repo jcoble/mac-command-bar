@@ -2,9 +2,11 @@
 	/**
 	 * ShellOverlays.svelte — everything that floats above the /next shell rather
 	 * than living in a region: the command palette, the settings dialog, the
-	 * message strip, and the development-only backend call counter.
+	 * message strip, the quit warning, and the development-only backend call
+	 * counter.
 	 *
-	 * No backend call and no state of its own beyond the settings handle. The
+	 * Its one backend call lets a held close or quit go ahead, and its only
+	 * state is the settings handle and that pending exit. The
 	 * palette is mounted exactly once (two of them would answer the same keyboard
 	 * shortcut and would fight over the seeded actions), which is why it lives
 	 * here and not inside a panel.
@@ -12,7 +14,12 @@
 	import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
 	import { onMount } from "svelte";
 
+	import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
 	import type { ProblemsLocation } from "$lib/settingsStore.svelte";
+	import { cancelAppExit, continueAppExit, listenToAppExitRequests, type AppExitKind } from "$lib/tauriSource";
+	import { backgroundWorkSummary, localBackgroundWorkSessions } from "$lib/shell/ownedSessions";
+	import { sessionLabel } from "$lib/shell/sessionStrip";
+	import { rail } from "$lib/shell/stores/sessionRailStore.svelte";
 	import AssistanceHost from "$lib/shell/assistance/AssistanceHost.svelte";
 	import ResourceManagerPanel from "$lib/shell/resources/ResourceManagerPanel.svelte";
 	import ResourcePopover from "$lib/shell/resources/ResourcePopover.svelte";
@@ -71,10 +78,37 @@
 		return () => observer.disconnect();
 	}
 
+	/**
+	 * A held close or quit, and the sessions on this Mac whose sub-agents or
+	 * commands it would stop. With none, the exit goes ahead without asking;
+	 * remote sessions keep running on their server, so they never count.
+	 */
+	let exitRequest = $state<{ kind: AppExitKind; lines: string[] } | null>(null);
+
+	function exitRequested(kind: AppExitKind): void {
+		const sessions = localBackgroundWorkSessions(rail.owned);
+		if (sessions.length === 0) {
+			void continueAppExit(kind);
+			return;
+		}
+		exitRequest = {
+			kind,
+			lines: sessions.map((session) => `${sessionLabel(session)} — ${backgroundWorkSummary(session.backgroundWork ?? [])}`),
+		};
+	}
+
 	onMount(() => {
 		const stopObservingResources = observeUtilityState("resources");
 		const stopObservingUsage = observeUtilityState("usage");
+		let stopExitRequests: (() => void) | null = null;
+		let unmounted = false;
+		void listenToAppExitRequests(exitRequested).then((stop) => {
+			if (unmounted) stop();
+			else stopExitRequests = stop;
+		});
 		return () => {
+			unmounted = true;
+			stopExitRequests?.();
 			stopObservingResources();
 			stopObservingUsage();
 		};
@@ -133,6 +167,47 @@
 >
 	<UsagePopover />
 </div>
+<AlertDialog.Root
+	open={exitRequest !== null}
+	onOpenChange={(open) => {
+		if (open || !exitRequest) return;
+		exitRequest = null;
+		void cancelAppExit();
+	}}
+>
+	<AlertDialog.Content
+		class="rounded-lg bg-background text-foreground ring-[var(--color-border)] shadow-[var(--shadow-lg)]"
+		data-testid="quit-warning"
+	>
+		<AlertDialog.Header>
+			<AlertDialog.Title class="text-[14px] leading-[1.4] font-semibold">Quit while work is still running?</AlertDialog.Title>
+			<AlertDialog.Description class="text-[13px] leading-[1.5] text-[var(--color-text-2)]">
+				These sessions on this Mac have sub-agents or commands running. Quitting stops them.
+			</AlertDialog.Description>
+		</AlertDialog.Header>
+		<ul class="m-0 flex list-none flex-col gap-1 p-0">
+			{#each exitRequest?.lines ?? [] as line, index (index)}
+				<li class="flex gap-1.5 text-[13px] leading-[1.5] text-[var(--color-text)]">
+					<span class="text-[var(--color-text-3)]" aria-hidden="true">•</span>
+					<span class="min-w-0 break-words">{line}</span>
+				</li>
+			{/each}
+		</ul>
+		<AlertDialog.Footer class="bg-transparent">
+			<AlertDialog.Cancel size="sm" class="text-[13px]">Cancel</AlertDialog.Cancel>
+			<AlertDialog.Action
+				size="sm"
+				variant="destructive"
+				class="text-[13px]"
+				onclick={() => {
+					const kind = exitRequest?.kind;
+					exitRequest = null;
+					if (kind) void continueAppExit(kind);
+				}}>Quit Anyway</AlertDialog.Action
+			>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>
 {#if message}
 	<!-- Something went wrong, said once, along the bottom edge. Announced to
        screen readers, and see-through to the mouse so it can never swallow a

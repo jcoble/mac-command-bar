@@ -21,7 +21,7 @@
 		sessionPresenceHistory,
 	} from "$lib/shell/conversation/sessionPresence.ts";
 	import { presentAgentError } from "$lib/shell/errorPresentation";
-	import type { OwnedSession } from "$lib/shell/ownedSessions";
+	import { backgroundWorkSummary, type OwnedSession } from "$lib/shell/ownedSessions";
 	import { projectMachineLabel } from "$lib/shell/projects/projects";
 	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
 	import { sessionLabel } from "$lib/shell/sessionStrip";
@@ -81,9 +81,10 @@
 	const activeTurnId = $derived(session.activeTurnId ?? presenceHistory.activeTurnId);
 	const suspended = $derived(session.runtimeState === "suspended");
 	const backgroundActive = $derived(
-		(session.backgroundTaskIds?.length ?? 0) > 0
+		(session.backgroundWork?.length ?? 0) > 0
 			&& (session.executionEnvironment !== "remote" || rail.remoteConnections[session.remoteProfileId ?? ""] === "connected"),
 	);
+	const backgroundLabel = $derived(backgroundActive ? backgroundWorkSummary(session.backgroundWork ?? []) : null);
 	const presenceSignals = $derived(
 		deriveSessionPresence(
 			{
@@ -116,7 +117,7 @@
 	);
 	const finishedUnread = $derived(!needsYou && presenceSignals === "needs-attention");
 	const presenceLabel = $derived(
-		backgroundActive ? "Background command running" : {
+		backgroundLabel ?? {
 			working: "Working",
 			attention: "Waiting on you",
 			idle: "Idle",
@@ -248,6 +249,8 @@
 						<span class="attention-dot" aria-hidden="true"></span>
 						Needs you
 					</span>
+				{:else if backgroundLabel}
+					<span data-testid="worktree-agent-background" class="background-work">{backgroundLabel}</span>
 				{:else if finishedUnread}
 					<span data-testid="worktree-agent-unread" class="unread">
 						<span class="unread-dot" aria-hidden="true"></span>
@@ -521,6 +524,7 @@
 
 	.failed,
 	.needs-you,
+	.background-work,
 	.unread {
 		margin-left: auto;
 	}
@@ -560,6 +564,15 @@
 		align-items: center;
 		gap: 5px;
 		color: var(--color-attention);
+		font-size: 11px;
+		font-weight: 500;
+		white-space: nowrap;
+	}
+
+	/* The needs-you label's type, without its dot, in the working colour. */
+	.background-work {
+		flex: 0 0 auto;
+		color: var(--primary);
 		font-size: 11px;
 		font-weight: 500;
 		white-space: nowrap;
