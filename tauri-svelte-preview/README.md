@@ -1,6 +1,6 @@
 # MacCommandBar Tauri/SvelteKit Preview
 
-Small visual prototype for comparing a WebKit/Tauri source preview against the native Swift/AppKit implementation.
+The Assembly desktop app. The folder keeps its early prototype name; see the [root README](../README.md) for what the app does and how to build it.
 
 The SvelteKit app follows Tauri's current SvelteKit guidance: static adapter, SPA mode, `build/` output, and a Tauri `devUrl` pointed at Vite.
 
@@ -32,9 +32,7 @@ plus native Git, LSP, terminal, worktree, process, and session actions.
 
 ## Appearance
 
-Source preview font and Monaco theme settings live in `src/lib/sourcePreviewAppearance.ts`.
-The `theme.id` value is registered with Monaco before the editor is created, so changing the
-theme colors or font stack in that file is reflected by the web viewer after Vite reloads.
+Source preview font and theme settings live in `src/lib/sourcePreviewAppearance.ts`.
 
 ## Verify
 
@@ -45,7 +43,7 @@ cargo check --manifest-path src-tauri/Cargo.toml
 pnpm test:native-lsp
 ```
 
-Monaco is the default source surface, so the prototype now exercises a real editor viewport instead of static highlighted HTML. The current build intentionally accepts Monaco's large editor chunks for this visual comparison; production would lazy-load the editor route and add language intelligence only where needed.
+The source editor is CodeMirror 6. Language servers start only when Supercharged is on.
 
 `pnpm test:native-lsp` exercises the Rust LSP bridge directly. It uses TypeScript and C# scratch workspaces and verifies symbols, hover, definition, references, and diagnostics against the same registry used by the Tauri commands.
 
