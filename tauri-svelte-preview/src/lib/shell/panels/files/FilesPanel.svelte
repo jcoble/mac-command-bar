@@ -1,11 +1,11 @@
 <script lang="ts">
+	import WorkingSpinner from "$lib/shell/components/conversation/WorkingSpinner.svelte";
 		import { dev } from "$app/environment";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import * as ContextMenu from "$lib/components/ui/context-menu/index.js";
 	import { EmptyState } from "$lib/components/ui/empty-state/index.js";
 	import { IconButton } from "$lib/components/ui/icon-button/index.js";
 	import { Input } from "$lib/components/ui/input/index.js";
-	import { Chip } from "$lib/components/ui/chip/index.js";
 	import * as Select from "$lib/components/ui/select/index.js";
 	import FileIcon from "$lib/shell/components/explorer/FileIcon.svelte";
 	import FileHistoryPane from "./FileHistoryPane.svelte";
@@ -30,7 +30,6 @@
 		selectPath,
 		setIncludeExcluded,
 	} from "$lib/shell/explorer/explorerStore.svelte";
-	import { projectRootLabel } from "$lib/shell/explorer/explorerTree";
 		import {
 			FILE_TREE_OVERSCAN_ROWS,
 			FILE_TREE_ROW_HEIGHT,
@@ -50,14 +49,9 @@
 		isNativeTauriRuntime,
 		listRepositoryCheckoutsFromTauri,
 		moveToTrashFromTauri,
-		readAssemblySettingFromTauri,
 		searchSourceTreeFromTauri,
 		validateProjectRootFromTauri,
-		writeAssemblySettingFromTauri,
 	} from "$lib/tauriSource";
-	import { AGENT_ICONS, agentDisplayName } from "$lib/shell/agentIcons";
-	import { resolveOwnedSessionProject, type OwnedSession } from "$lib/shell/ownedSessions";
-	import GitBranch from "@lucide/svelte/icons/git-branch";
 	import ChevronDown from "@lucide/svelte/icons/chevron-down";
 	import ChevronRight from "@lucide/svelte/icons/chevron-right";
 	import ArrowDownAZ from "@lucide/svelte/icons/arrow-down-a-z";
@@ -68,6 +62,8 @@
 	import FolderOpen from "@lucide/svelte/icons/folder-open";
 	import FolderTree from "@lucide/svelte/icons/folder-tree";
 	import RefreshCw from "@lucide/svelte/icons/refresh-cw";
+	import Rows3 from "@lucide/svelte/icons/rows-3";
+	import Search from "@lucide/svelte/icons/search";
 	import Square from "@lucide/svelte/icons/square";
 	import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
 	import { onDestroy, tick, untrack } from "svelte";
@@ -83,8 +79,8 @@
 		onInspectionRootChange?(root: string | null): void;
 		checkoutDiscoveryRoots?: readonly string[];
 		onUseSessionCheckout?(root: string): void | Promise<void>;
-		/** The active session's rail record, shown in the header card. */
-		session?: OwnedSession | null;
+		/** Raised by the page (the `+` menu's "Open file…") to focus the filter. */
+		filterFocusRequest?: number;
 	}
 
 	type PendingEntry = {
@@ -120,30 +116,22 @@
 		onInspectionRootChange,
 		checkoutDiscoveryRoots = [],
 		onUseSessionCheckout,
-		session = null,
+		filterFocusRequest = 0,
 	}: Props = $props();
 
-	const sessionProject = $derived(session ? resolveOwnedSessionProject(session) : null);
-	const SessionAgentIcon = $derived(session ? AGENT_ICONS[session.agent] : null);
+	// A request counts once, and only while the panel is on screen; the filter
+	// field may appear later than the request (first activation), so the effect
+	// waits for it.
+	let filterInput = $state<HTMLInputElement | null>(null);
+	let handledFilterFocus = untrack(() => filterFocusRequest);
+	$effect(() => {
+		const request = filterFocusRequest;
+		const input = filterInput;
+		if (!visible || !input || request <= handledFilterFocus) return;
+		handledFilterFocus = request;
+		input.focus();
+	});
 
-	/** Whether the header card is unfolded. Starts open; the last choice is kept
-	 *  in the app's settings store like the rail's view options. */
-	const CARD_OPEN_SETTING_KEY = "files.session-card-open";
-	let cardOpen = $state(true);
-	let cardOpenTouched = false;
-	void readAssemblySettingFromTauri(CARD_OPEN_SETTING_KEY)
-		.then((stored) => {
-			if (!cardOpenTouched && typeof stored === "boolean") cardOpen = stored;
-		})
-		.catch(() => {
-			// Stays open when local settings are unavailable.
-		});
-
-	function toggleCard(): void {
-		cardOpenTouched = true;
-		cardOpen = !cardOpen;
-		void writeAssemblySettingFromTauri(CARD_OPEN_SETTING_KEY, cardOpen).catch(() => {});
-	}
 	let inspectedRoot = $state("");
 	let checkouts = $state<RepositoryCheckout[]>([]);
 	let expanded = $state.raw<Set<string>>(new Set());
@@ -226,8 +214,12 @@
 				],
 	);
 	const scopeValue = $derived(projectRoot || sessionRoot);
-	const rootLabel = $derived(projectRootLabel(projectRoot || sessionRoot));
-	const listedCount = $derived(loadedNodes.length);
+	/** The picker shows the session's own folder by its bare name; the list still marks it "(session)". */
+	const scopeLabel = $derived.by(() => {
+		const option = scopeOptions.find((candidate) => canonicalPath(candidate.path) === canonicalPath(scopeValue));
+		if (!option) return "Session folder";
+		return canonicalPath(option.path) === canonicalPath(sessionRoot) ? folderName(option.path) : option.label;
+	});
 	const listed = $derived(explorer.lastScanFinishedAt !== null);
 	const watchedDirectoryKey = $derived.by(() => {
 		loadedNodes.length;
@@ -1053,130 +1045,97 @@
 </script>
 
 <div class="files-panel flex h-full min-h-0 w-full flex-col text-foreground">
-	<!-- The panel's header is a card: who this session is, then the tree's own
-	     controls. It folds to its title row and remembers that choice. -->
-	<section class="files-card" aria-label={session ? "About this session" : "Files"}>
-		<div class="files-card-title">
-			{#if session && sessionProject && SessionAgentIcon}
-				<span class="session-mark" data-agent={session.agent} aria-hidden="true"><SessionAgentIcon class="size-5" /></span>
-				<div class="session-names">
-					<strong title={session.title}>{session.title}</strong>
-					<span title={sessionProject.path}>
-						{agentDisplayName(session.agent, session.viaCmux)} · {rootLabel}{#if readOnlyInspection} · read-only{/if}
-					</span>
-				</div>
-			{:else}
-				<div class="session-names">
-					<strong>Files</strong>
-					{#if rootLabel}<span>{rootLabel}{#if readOnlyInspection} · read-only{/if}</span>{/if}
-				</div>
-			{/if}
-			<IconButton
-							class="p-0"
-				label={cardOpen ? "Collapse session card" : "Expand session card"}
-				size="sm"
-				onclick={toggleCard}
-			>
-				<ChevronDown class={cardOpen ? "card-chevron size-[16px]" : "card-chevron folded size-[16px]"} />
-			</IconButton>
-		</div>
-		{#if cardOpen}
-			{#if session && (session.branch || session.model || session.taskId || session.messageCount)}
-				<ul class="session-facts">
-					{#if session.branch}
-						<li title={`Branch ${session.branch}`}><GitBranch class="size-3" aria-hidden="true" />{session.branch}</li>
-					{/if}
-					{#if session.model}<li>{session.model}</li>{/if}
-					{#if session.taskId}<li>{session.taskId}</li>{/if}
-					{#if session.messageCount}
-						<li>{session.messageCount} {session.messageCount === 1 ? "message" : "messages"}</li>
-					{/if}
-				</ul>
-			{/if}
-			<div class="files-card-controls">
-			{#if scopeOptions.length > 1}
+	<!-- The header follows the Codex file pane: a row of pill controls, then the
+	     filter field, then the tree. -->
+	<header class="flex flex-none flex-col gap-2 px-3 pt-1 pb-2" aria-label="Files">
+		<div class="-mr-1 flex min-w-0 items-center gap-1">
+			{#if scopeOptions.length > 0}
 				<Select.Root
 					type="single"
 					bind:open={scopePickerOpen}
 					value={scopeValue}
 					onValueChange={selectInspectionRoot}
 				>
-					<Select.Trigger size="sm" class="w-full min-w-0" aria-label="Folder this panel reads">
-						<span class="min-w-0 truncate">
-							{scopeOptions.find((option) => canonicalPath(option.path) === canonicalPath(scopeValue))?.label ??
-								"Session folder"}
-						</span>
+					<!-- Up to 190px for the folder name; it gives way only down to 120px
+					     when the icon buttons beside it need the room. -->
+					<Select.Trigger size="sm" class="min-w-[120px] max-w-[190px] border-transparent bg-secondary pr-2 pl-3 text-[13px] hover:bg-secondary/80 data-[size=sm]:h-7 data-[size=sm]:rounded-full dark:bg-secondary dark:hover:bg-secondary/80 [&>svg:last-child]:size-3" aria-label="Folder this panel reads">
+						<Folder class="size-[14px] text-muted-foreground" strokeWidth={2} aria-hidden="true" />
+						<span class="min-w-0 truncate">{scopeLabel}{#if readOnlyInspection} · read-only{/if}</span>
 					</Select.Trigger>
-					<Select.Content>
+					<Select.Content class="min-w-[240px]">
 						{#each scopeOptions as option (option.path)}
 							<Select.Item value={option.path} label={option.label} />
 						{/each}
 					</Select.Content>
 				</Select.Root>
 			{/if}
-			{#if readOnlyInspection && onUseSessionCheckout}
-				<Button
-					size="sm"
-					variant="outline"
-					disabled={checkoutBusy}
-					data-testid="files-use-session-checkout"
-					onclick={useSessionCheckout}
-				>
-					{checkoutBusy ? "Changing…" : "Use as session folder"}
-				</Button>
-			{/if}
-				{#if explorer.activated && explorer.unavailable === null}
-					<Input
-						type="search"
-						class="h-8 w-full rounded-full"
-						placeholder="Search files"
-						aria-label="Search project files"
-						autocomplete="off"
-						autocapitalize="none"
-						spellcheck={false}
-						value={searchText}
-						oninput={onFilterInput}
-					/>
-					<div class="files-card-actions">
-						<Chip tone="count">{listedCount}</Chip>
-						<span class="flex-1"></span>
-						{#if dev}
-							<Button
-								size="sm"
-								variant="ghost"
-								class="rounded-full"
-								aria-label="Compare virtualized and all file-tree rows"
-								onclick={() => (virtualized = !virtualized)}
-							>
-								{virtualized ? "Virtualized" : "All rows"}
-							</Button>
-						{/if}
-						<IconButton
-							class="p-0"
-							label={sortDirection === "ascending" ? "Sort Z to A" : "Sort A to Z"}
-							onclick={() => (sortDirection = sortDirection === "ascending" ? "descending" : "ascending")}
-						>
-							{#if sortDirection === "ascending"}<ArrowDownAZ class="size-[16px]" />{:else}<ArrowUpZA class="size-[16px]" />{/if}
-						</IconButton>
-						<IconButton
-							class="p-0"
-							label={explorer.includeExcluded ? "Hide excluded files" : "Show excluded files"}
-							onclick={() => void toggleExcludedFiles()}
-						>
-							{#if explorer.includeExcluded}<EyeOff class="size-[16px]" />{:else}<Eye class="size-[16px]" />{/if}
-						</IconButton>
-						{#if explorer.scanning}
-							<IconButton class="p-0" label="Stop listing files" onclick={() => stopScan()}><Square class="size-[16px]" /></IconButton>
-						{:else}
-							<IconButton class="p-0" label="List this project's files again" disabled={!explorer.root} onclick={refreshFiles}>
-								<RefreshCw class="size-[16px]" />
-							</IconButton>
-						{/if}
-					</div>
+			<span class="flex-1"></span>
+			{#if explorer.activated && explorer.unavailable === null}
+				<!-- Developer diagnostic, dev builds only: compares the windowed tree with
+				     every row rendered. Icon-sized so the folder picker keeps its room. -->
+				{#if dev}
+					<Button
+						size="icon-sm"
+						variant="ghost"
+						aria-pressed={virtualized}
+						aria-label="Compare virtualized and all file-tree rows"
+						title="Virtualized rows (dev only)"
+						onclick={() => (virtualized = !virtualized)}
+					>
+						<Rows3 class="size-[14px]" strokeWidth={2} aria-hidden="true" />
+					</Button>
 				{/if}
+				<IconButton
+					label={sortDirection === "ascending" ? "Sort Z to A" : "Sort A to Z"}
+					onclick={() => (sortDirection = sortDirection === "ascending" ? "descending" : "ascending")}
+				>
+					{#if sortDirection === "ascending"}<ArrowDownAZ class="size-[14px]" />{:else}<ArrowUpZA class="size-[14px]" />{/if}
+				</IconButton>
+				<IconButton
+					label={explorer.includeExcluded ? "Hide excluded files" : "Show excluded files"}
+					onclick={() => void toggleExcludedFiles()}
+				>
+					{#if explorer.includeExcluded}<EyeOff class="size-[14px]" />{:else}<Eye class="size-[14px]" />{/if}
+				</IconButton>
+				{#if explorer.scanning}
+					<IconButton label="Stop listing files" onclick={() => stopScan()}><Square class="size-[14px]" /></IconButton>
+				{:else}
+					<IconButton label="List this project's files again" disabled={!explorer.root} onclick={refreshFiles}>
+						<RefreshCw class="size-[14px]" />
+					</IconButton>
+				{/if}
+			{/if}
+		</div>
+		{#if readOnlyInspection && onUseSessionCheckout}
+			<Button
+				size="sm"
+				variant="outline"
+				class="h-7 self-start rounded-full px-3 text-[13px]"
+				disabled={checkoutBusy}
+				data-testid="files-use-session-checkout"
+				onclick={useSessionCheckout}
+			>
+				{checkoutBusy ? "Changing…" : "Use as session folder"}
+			</Button>
+		{/if}
+		{#if explorer.activated && explorer.unavailable === null}
+			<div class="relative">
+				<Search class="pointer-events-none absolute top-1/2 left-3 size-[14px] -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+				<Input
+					bind:ref={filterInput}
+					type="search"
+					class="h-8 w-full rounded-[var(--radius-md)] border-transparent bg-muted dark:bg-muted pr-3 pl-[34px] text-[13px]"
+					placeholder="Filter files"
+					aria-label="Search project files"
+					autocomplete="off"
+					autocapitalize="none"
+					spellcheck={false}
+					value={searchText}
+					oninput={onFilterInput}
+				/>
 			</div>
 		{/if}
-	</section>
+	</header>
 
 	{#if !explorer.activated}
 		{#if sessionRoot}
@@ -1264,7 +1223,7 @@
 			onscroll={(event) => (treeScrollTop = event.currentTarget.scrollTop)}
 		>
 				{#if renderedRows.length === 0}
-					<p class="tree-empty">{searchLoading ? "Searching files…" : "Nothing matches that search."}</p>
+					<p class="tree-empty">{#if searchLoading}<WorkingSpinner size={12} /> Searching files…{:else}Nothing matches that search.{/if}</p>
 				{:else}
 					<!-- One canvas whose height never changes as you scroll, with each row
 					     transformed into place. Resizing spacer divs on every scroll instead
@@ -1281,7 +1240,7 @@
 					<div
 							class="tree-node"
 							class:selected={node.path === explorer.selectedPath}
-							style={`padding-left: ${node.depth * 12}px; transform: translateY(${(virtualized ? treeWindow.topSpacerHeight : 0) + rowIndex * FILE_TREE_ROW_HEIGHT}px)`}
+							style={`padding-left: ${node.depth * 16}px; transform: translateY(${(virtualized ? treeWindow.topSpacerHeight : 0) + rowIndex * FILE_TREE_ROW_HEIGHT}px)`}
 						onclick={() => onTreeNodeClicked(node)}
 						ondblclick={(event) => pinTreeNodeOpen(node, event)}
 						oncontextmenu={() => selectContextMenuNode(node)}
@@ -1289,9 +1248,9 @@
 						<span class="tree-toggle" aria-hidden="true">
 							{#if node.isDirectory}
 								{#if expanded.has(node.path)}
-									<ChevronDown size={13} strokeWidth={2} />
+									<ChevronDown size={12} strokeWidth={2} />
 								{:else}
-									<ChevronRight size={13} strokeWidth={2} />
+									<ChevronRight size={12} strokeWidth={2} />
 								{/if}
 							{/if}
 						</span>
@@ -1339,7 +1298,7 @@
 	{#if treeVisible && searching && searchNextCursor !== null}
 		<div class="search-more">
 			<Button size="sm" variant="ghost" disabled={searchLoading} onclick={loadMoreSearchResults}>
-				{searchLoading ? "Loading…" : "Load more"}
+				{#if searchLoading}<WorkingSpinner size={12} />Loading…{:else}Load more{/if}
 			</Button>
 		</div>
 	{/if}
@@ -1371,110 +1330,14 @@
 </div>
 
 <style>
-	/* A Spotify-style card: its own lighter fill, no outline. */
-	.files-card {
-		display: flex;
-		flex: none;
-		flex-direction: column;
-		gap: var(--space-3);
-		margin: var(--space-3) var(--space-3) var(--space-2);
-		padding: var(--space-3);
-		border-radius: var(--radius-sm);
-		background: var(--color-elevated);
-	}
-	.files-card-title {
-		display: flex;
-		min-width: 0;
-		align-items: center;
-		gap: var(--space-3);
-	}
-	.session-mark {
-		display: grid;
-		width: 40px;
-		height: 40px;
-		flex: none;
-		place-items: center;
-		border-radius: 6px;
-		background: color-mix(in srgb, var(--color-text) 7%, var(--color-surface));
-		box-shadow: var(--shadow-sm);
-	}
-	.session-mark[data-agent="claude"] {
-		color: var(--agent-mark-claude);
-	}
-	.session-mark[data-agent="codex"] {
-		color: var(--agent-mark-codex);
-	}
-	.session-names {
-		display: flex;
-		min-width: 0;
-		flex: 1;
-		flex-direction: column;
-		gap: 2px;
-	}
-	.session-names strong,
-	.session-names span {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.session-names strong {
-		color: var(--color-text);
-		font-size: var(--text-heading);
-		font-weight: 700;
-	}
-	.session-names span {
-		color: var(--color-text-2);
-		font-size: var(--text-quiet);
-	}
-	:global(.card-chevron) {
-		transition: transform 0.15s ease;
-	}
-	:global(.card-chevron.folded) {
-		transform: rotate(-90deg);
-	}
-	.session-facts {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px;
-		margin: 0;
-		padding: 0;
-		list-style: none;
-	}
-	/* Outline pills, like Spotify's "Following" chip. */
-	.session-facts li {
-		display: inline-flex;
-		max-width: 100%;
-		align-items: center;
-		gap: 4px;
-		overflow: hidden;
-		padding: 3px 10px;
-		border: 1px solid color-mix(in srgb, var(--color-text) 22%, transparent);
-		border-radius: var(--radius-pill);
-		color: var(--color-text-2);
-		font-size: 12px;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.files-card-controls {
-		display: flex;
-		min-width: 0;
-		flex-direction: column;
-		gap: var(--space-2);
-	}
-	.files-card-actions {
-		display: flex;
-		min-width: 0;
-		align-items: center;
-		gap: var(--space-1);
-	}
 	.tree-host {
-		--tree-node-indent-per-level: 12px;
+		--tree-node-indent-per-level: 16px;
 		display: flex;
 		height: 0;
 		min-height: 0;
 		flex: 1;
 		overflow: hidden;
-		padding: 0 4px 4px;
+		padding: 0 8px 4px;
 	}
 	.tree-host.hidden {
 		display: none;
@@ -1505,7 +1368,7 @@
 		flex: 0 0 14px;
 		align-items: center;
 		justify-content: center;
-		color: var(--color-text-3);
+		color: var(--muted-foreground);
 	}
 	.tree-name {
 		min-width: 0;
@@ -1548,18 +1411,25 @@
 		height: 28px;
 		min-width: 0;
 		align-items: center;
+		gap: 6px;
+		padding-right: 8px;
 		border-radius: 4px;
+		font-size: 13px;
 		user-select: none;
 		cursor: pointer;
 	}
+	.tree-node:hover {
+		background: var(--accent);
+	}
+	/* Neutral, like the rail's selected session: the brand colour stays off the tree. */
 	.tree-node.selected {
-		background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+		background: var(--secondary);
 	}
 	.tree-toggle {
 		display: flex;
-		width: 16px;
+		width: 14px;
 		height: 28px;
-		flex: 0 0 16px;
+		flex: 0 0 14px;
 		align-items: center;
 		justify-content: center;
 		color: var(--color-text-3);

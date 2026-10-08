@@ -1,5 +1,4 @@
 /** Owns the draft surface and the side effects of its first send. */
-import { sessionWorkspaceRoot } from '../../workspacePaths';
 import {
 	getConversationSession,
 	setConversationAttachments,
@@ -7,15 +6,12 @@ import {
 	setConversationSendError,
 } from '../conversation/conversationStore.svelte';
 import { ensureStructuredConversation, flushConversationSessionDraft, persistConversationSessionDraft, saveConversationClipboardImage, sendStructuredMessage } from '../conversation/conversationService';
-import { rememberLastUsed } from '../newSession/projectRootsStore.svelte';
-import {
-	deriveThreadStartProjects,
-	type ThreadStartRequest,
-} from '../newSession/threadStartFlow';
+import type { ThreadStartRequest } from '../newSession/threadStartFlow';
 import {
 	createFreshSession,
 	ownedSessionMetaForBackend,
 } from '../ownedSessions';
+import { projectRegistry } from '../projects/projectRegistry.svelte';
 import { shellPanels } from '../shellPanels';
 import {
 	addOwnedSession,
@@ -26,7 +22,6 @@ import { updateAgentConversationSessionMetaFromTauri } from '../../tauriSource';
 
 export class NewSessionController {
 	draftOpen = $state(false);
-	draftProjectPath = $state<string | null>(null);
 
 	private draftWork = new AbortController();
 	private startingOwnedId: string | null = null;
@@ -36,16 +31,9 @@ export class NewSessionController {
 		return this.draftWork.signal;
 	}
 
-	get sessionRoots(): string[] {
-		return deriveThreadStartProjects(
-			rail.owned.filter((session) => session.executionEnvironment !== 'remote' && session.projectPath).map((session) => session.projectPath!),
-		).map((project) => project.path);
-	}
-
 	open(): void {
 		this.stopDraftWork();
 		this.draftWork = new AbortController();
-		this.draftProjectPath = this.mostRecentProjectPath() ?? null;
 		this.draftOpen = true;
 	}
 
@@ -71,6 +59,7 @@ export class NewSessionController {
 		const stopSignal = this.stopSignal;
 		if (stopSignal.aborted) throw new Error('the new session draft was closed');
 
+		const project = projectRegistry.projects.find((candidate) => candidate.id === request.projectId);
 		const owned = {
 			...createFreshSession({
 				cwd: request.cwd,
@@ -79,7 +68,9 @@ export class NewSessionController {
 				remoteProfileId: request.remoteProfileId,
 			}),
 			agent: request.provider,
-			projectPath: request.projectPath,
+			projectId: request.projectId,
+			projectGroupKey: project?.groupKey ?? 'none',
+			projectGroupLabel: project?.title ?? 'No project',
 			branch: request.branch,
 			resumeCommand: null,
 			origin: 'app' as const,
@@ -116,6 +107,7 @@ export class NewSessionController {
 					provider: request.provider,
 					cwd: owned.cwd,
 					reasoningEffort: request.reasoningEffort,
+					projectId: request.projectId,
 					signal: stopSignal,
 				});
 				if (!connection) throw new Error('The new conversation could not be started');
@@ -137,7 +129,6 @@ export class NewSessionController {
 			// that sendStructuredMessage has already handed to the background runtime.
 			const stillPresented = !stopSignal.aborted;
 			await this.persistOwnedMetadata(owned.ownedId);
-			if (!stopSignal.aborted && request.executionEnvironment !== 'remote' && request.projectPath) rememberLastUsed(request.projectPath);
 			updateOwnedSession(owned.ownedId, { runtimeState: 'ready', lastError: null });
 			if (stillPresented && !stopSignal.aborted) showSession();
 			return owned.ownedId;
@@ -176,19 +167,6 @@ export class NewSessionController {
 	private stopDraftWork(): void {
 		this.draftWork.abort();
 		this.pendingFirstMessage = null;
-	}
-
-	private mostRecentProjectPath(): string | undefined {
-		const active = rail.owned.find((session) => session.ownedId === rail.activeOwnedId);
-		if (active?.projectPath) return sessionWorkspaceRoot(active) || undefined;
-		const activityTime = (value: string | null): number => {
-			const parsed = Date.parse(value ?? '');
-			return Number.isFinite(parsed) ? parsed : 0;
-		};
-		const recent = rail.owned.filter((session) => session.projectPath).sort(
-			(left, right) => activityTime(right.lastActivity) - activityTime(left.lastActivity),
-		)[0];
-		return recent ? sessionWorkspaceRoot(recent) || undefined : undefined;
 	}
 
 	private async persistOwnedMetadata(ownedId: string): Promise<void> {

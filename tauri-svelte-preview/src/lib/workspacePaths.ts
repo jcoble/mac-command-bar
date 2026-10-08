@@ -33,7 +33,7 @@ export function sessionWorkspaceRoot(session: { cwd: string; projectPath?: strin
 
 const pathKeys = new Set(['root', 'path', 'directory', 'source', 'target', 'roots', 'paths', 'projectRoot', 'projectPath', 'worktreePath', 'checkoutPath', 'gitRoot', 'localRoot', 'projectFilter']);
 /** Hosted PR commands wrap their root in one request object. */
-const nestedRequestCommands = new Set(['list_github_pull_requests', 'read_github_pull_request_file', 'submit_github_pull_request_review', 'reply_github_pull_request_comment', 'merge_github_pull_request']);
+const nestedRequestCommands = new Set(['list_github_pull_requests', 'read_github_pull_request_file', 'submit_github_pull_request_review', 'reply_github_pull_request_comment', 'comment_github_pull_request', 'merge_github_pull_request']);
 export function remoteWorkspaceRequest(args: Record<string, unknown>, command = ''): { profileId: string; args: Record<string, unknown> } | null {
   let profileId: string | null = null;
   let localAbsolute = false;
@@ -70,7 +70,11 @@ export function mapWorkspaceSnapshotPaths(value: unknown, profileId: string | nu
     const native = parseRemoteWorkspacePath(path)?.path ?? path;
     return profileId && native.startsWith('/') ? remoteWorkspacePath(profileId, native) : native;
   };
-  if (typeof value === 'string') return keys.has(key) || key === 'expandedPathsByRoot' ? mapPath(value) : value;
+  if (typeof value === 'string') {
+    // Top-row editor tabs are keyed 'editor:<path>' and must follow openPaths.
+    if ((key === 'order' || key === 'activeKey') && value.startsWith('editor:')) return `editor:${mapPath(value.slice(7))}`;
+    return keys.has(key) || key === 'expandedPathsByRoot' ? mapPath(value) : value;
+  }
   if (Array.isArray(value)) return value.map((item) => mapWorkspaceSnapshotPaths(item, profileId, key));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([name, item]) => [
     name.startsWith('/') || name.startsWith(remotePrefix) ? mapPath(name) : name,

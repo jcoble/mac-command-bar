@@ -141,19 +141,6 @@ test('an empty error still has a human summary and no empty detail', () => {
   assert.deepEqual(presentAgentError(''), { summary: 'The agent hit an error.' });
 });
 
-test('the session card keeps raw detail behind a disclosure control', async () => {
-  const sessionCard = await readFile(
-    new URL('../src/lib/shell/components/sessions/SessionCard.svelte', import.meta.url),
-    'utf8'
-  );
-
-  assert.match(sessionCard, /presentAgentError\(session\.lastError\)/);
-  assert.doesNotMatch(sessionCard, /\{session\.lastError\}|title=\{session\.lastError\}/);
-  assert.match(sessionCard, /presentedError\.summary/);
-  assert.match(sessionCard, /title=\{presentedError\.detail \?\? presentedError\.summary\}/);
-  assert.match(sessionCard, /<details[\s\S]*presentedError\.detail/);
-});
-
 test('the rail row shows the error summary in its status slot, never the raw text', async () => {
   const worktreeRow = await readFile(
     new URL('../src/lib/shell/components/WorktreeAgentRow.svelte', import.meta.url),

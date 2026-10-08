@@ -35,7 +35,7 @@
  * scoped here so softening /next cannot silently reshape the legacy route.
  * Most names below already exist in tokens.css. The semantic interaction
  * and status names are owned by the /next theme registry until the old shell
- * adopts them deliberately. The shipped Houston palette is deliberately soft:
+ * adopts them deliberately. The shipped Assembly palette is a dark surface ladder:
  * surfaces carry hierarchy, while controls use fills and focus rings instead
  * of bright outlines. Contrast is a property of semantic roles, not a
  * separate high-contrast theme.
@@ -43,26 +43,34 @@
 
 :is(:root.next-shell-document, .next-shell) {
   /* ------------------------------------------------------------------
-   * Background layers — the /next shell's three depths.
+   * Background layers — the /next shell's surface ladder.
    *   bg       the quiet shell backdrop.
    *   surface  a raised sheet for panel bodies and active tabs.
-   *   elevated one step above a sheet for hover fills and pressed rows.
+   *   elevated the quiet fill ON a panel: the composer, inputs, the
+   *            island track, cards and badges (shadcn's --muted).
+   *   rail     the sessions rail (shadcn's --sidebar).
+   *   overlay  menus, tooltips and dialogs, one step above everything.
+   * Hover (--color-hover) and selected (--color-selected) sit above
+   * elevated, so no stock shadcn surface vanishes into its panel.
    * The values are intentionally close, opaque grays: depth comes from
    * layering and spacing, not a grid of bright outlines.
    * ------------------------------------------------------------------ */
   --color-bg: #000000;
   --color-surface: #121212;
-  --color-elevated: #1c1c1c;
+  --color-elevated: #1f1f1f;
+
+  --color-rail: #121212;
+  --color-overlay: #282828;
 
   /* ------------------------------------------------------------------
    * Text hierarchy — primary carries body copy; the secondary and tertiary
    * tiers carry metadata and remain readable at the 3:1 secondary floor.
    * Disabled labels have their own token so their state is intentional.
    * ------------------------------------------------------------------ */
-  --color-text: #f1f3f5;
-  --color-text-2: #b3b7bf;
-  --color-text-3: #8b919b;
-  --color-disabled-text: #7f858e;
+  --color-text: #f5f5f5;
+  --color-text-2: #a7a7a7;
+  --color-text-3: #6e6e6e;
+  --color-disabled-text: #6e6e6e;
   --secondary-label: var(--color-text-3);
 
   /* Shared shell insets keep dense rows and floating detail surfaces aligned. */
@@ -73,67 +81,56 @@
 
   /* ------------------------------------------------------------------
    * Accent, hairlines and the focus tint.
-   * Houston has one restrained mint accent. Borders are surface hairlines,
+   * Assembly has one green accent. Borders are surface hairlines,
    * not text or status indicators, so they stay quiet; focus and selected
-   * states carry the stronger mint signal.
+   * states carry the stronger green signal.
    * ------------------------------------------------------------------ */
-  --color-accent: #6ed8be;
-  --color-border: rgba(241, 243, 245, 0.07);
-  --color-focus: rgba(110, 216, 190, 0.42);
-  --color-focus-solid: #6ed8be;
+  --color-accent: #1ed760;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-field-border: rgba(255, 255, 255, 0.1);
+  --color-focus: rgba(30, 215, 96, 0.45);
+  --color-focus-solid: #1ed760;
 
   /* A field says it has focus with its own edge, not with a halo drawn
-     around it: the border colour goes mint and nothing moves or grows.
+     around it: the border colour takes the accent and nothing moves or grows.
      Buttons and rows keep the ring above — they have no edge to change. */
   --focus-border: color-mix(in srgb, var(--color-accent) 60%, transparent);
 
   /* Interaction surfaces are opaque so text contrast is deterministic. */
-  --color-selected: #263734;
-  --color-selected-border: #5cb29b;
-  --color-hover: #232323;
+  --color-selected: #2f2f2f;
+  --color-selected-border: #1ed760;
+  --color-hover: #242424;
   --row-selected: color-mix(in srgb, var(--color-accent) 7%, transparent);
 
-  /* ------------------------------------------------------------------
-   * Panel fade — the light each card carries down from its top edge.
-   * A dark, desaturated purple that dissolves into the surface within the
-   * first few hundred pixels, with a handful of faint specks in it so the
-   * wash reads as a lit surface rather than a flat tint. Deliberately at
-   * the edge of notice. Static paint only: nothing here animates.
-   * The specks are separate layers above the wash; the wash is last so the
-   * panel's own surface colour can be added beneath it.
-   * ------------------------------------------------------------------ */
-  --panel-fade:
-    radial-gradient(circle at 14% 38px, rgba(255, 255, 255, 0.05) 0 0.6px, transparent 1.4px),
-    radial-gradient(circle at 63% 22px, rgba(214, 196, 255, 0.05) 0 0.7px, transparent 1.5px),
-    radial-gradient(circle at 86% 94px, rgba(255, 255, 255, 0.04) 0 0.6px, transparent 1.4px),
-    radial-gradient(circle at 37% 148px, rgba(214, 196, 255, 0.04) 0 0.6px, transparent 1.4px),
-    radial-gradient(circle at 74% 196px, rgba(255, 255, 255, 0.03) 0 0.5px, transparent 1.3px),
-    radial-gradient(120% 200px at 50% 0, rgba(64, 52, 88, 0.05), transparent 70%),
-    linear-gradient(180deg, rgba(38, 31, 50, 0.22) 0, rgba(32, 27, 42, 0.09) 100px, rgba(32, 27, 42, 0) 220px);
+  /* Panel fade — an image layer painted over each panel's surface. The
+     Assembly look is flat surface tone, so it is empty; the name stays
+     because the panels still read it. */
+  --panel-fade: none;
 
   /* ------------------------------------------------------------------
    * Status tones — live is blue and good is green so running and done
    * never collapse into the same signal. Idle is opaque so its computed
    * contrast remains stable on every interaction surface.
    * ------------------------------------------------------------------ */
-  --color-live: #74b6d8;
-  --color-good: #85c79a;
-  --color-bad: #e28a98;
-  --color-attention: #d7b77e;
-  --color-idle: #969ca6;
-  --color-status-idle: #969ca6;
+  --color-live: #6fb6ff;
+  --color-good: #1ed760;
+  --color-bad: #f15e6c;
+  --color-attention: #f3c969;
+  --color-idle: #a7a7a7;
+  /* A merged pull request, in GitHub's purple so it reads the same as there. */
+  --color-merged: #a371f7;
+  --color-status-idle: #a7a7a7;
 
   /* ------------------------------------------------------------------
    * Derived color — text printed on top of the accent, plus translucent
-   * status fills. Live follows the blue live tone; the others retain the
-   * established Houston tints.
+   * status fills. Each fill is its status tone at low opacity.
    * ------------------------------------------------------------------ */
-  --color-on-accent: #10201b;
-  --color-live-bg: rgba(116, 182, 216, 0.12);
-  --color-good-bg: rgba(133, 199, 154, 0.12);
-  --color-bad-bg: rgba(226, 138, 152, 0.12);
-  --color-bad-bg-strong: rgba(226, 138, 152, 0.2);
-  --color-attention-bg: rgba(215, 183, 126, 0.12);
+  --color-on-accent: #06140b;
+  --color-live-bg: rgba(111, 182, 255, 0.12);
+  --color-good-bg: rgba(30, 215, 96, 0.12);
+  --color-bad-bg: rgba(241, 94, 108, 0.12);
+  --color-bad-bg-strong: rgba(241, 94, 108, 0.2);
+  --color-attention-bg: rgba(243, 201, 105, 0.12);
 
   /* ------------------------------------------------------------------
    * Focus ring — same shorthand as tokens.css, restated here so it
@@ -151,13 +148,15 @@
   --shadow-lg: 0 16px 42px rgba(0, 0, 0, 0.32), 0 2px 8px rgba(0, 0, 0, 0.2);
   --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.3);
   --shadow-thumb-sm: 0 1px 3px rgba(0, 0, 0, 0.26);
-  --color-scrim: rgba(8, 10, 12, 0.58);
+  --color-scrim: rgba(0, 0, 0, 0.6);
 
-  /* Shape — one consistent 8 / 12 / 16 rhythm for controls, panels and
-     overlays, plus the capsule every round control and chip is cut to. */
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
+  /* Shape — 4 for tree rows, 6 for tabs and rows, 8 for panels and cards,
+     12 for the composer and popovers, plus the capsule every control,
+     chip and single-line input is cut to. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
   --radius-pill: 999px;
 
   /* Spacing — the six steps every panel measures itself in. 4 is the gap
@@ -196,11 +195,11 @@
   --menu-sheet-inset: 6px;
   --menu-sheet-min-width: 240px;
   --menu-label-inset: 6px 10px 3px;
-  --menu-row-radius: var(--radius-md);
+  --menu-row-radius: var(--radius-sm);
   --menu-row-inset: 7px 10px;
   --menu-row-gap: 10px;
   --menu-row-hover: color-mix(in srgb, var(--color-text) 9%, transparent);
-  --menu-row-active: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  --menu-row-active: var(--color-hover);
   --menu-row-description-gap: 2px;
   --menu-separator-inset: 5px;
 
@@ -221,7 +220,7 @@
   --composer-border-locked: color-mix(in srgb, var(--color-attention) 30%, var(--color-border));
   --composer-border-focus: color-mix(in srgb, var(--color-text) 28%, var(--color-border));
   --composer-radius-capsule: var(--radius-pill);
-  --composer-radius-relaxed: 24px;
+  --composer-radius-relaxed: var(--radius-lg);
   --composer-inset: 9px;
   /* How far the transcript takes to dissolve into the bar. The composer area
      reserves exactly this much room above the box and spends all of it on the
@@ -256,11 +255,11 @@
    * The group floats over whatever surface it names, so a rest pill is
    * mixed INTO the surface rather than laid over it as a wash: over code
    * or a transcript a translucent fill let the content read through and
-   * the labels came apart. Both tab strips share one lavender selector, which
+   * the labels came apart. Both tab strips share one white-16% selector, which
    * makes "which surface am I on" answerable without competing with status
    * colours such as green, amber, or red.
    * ------------------------------------------------------------------ */
-  --segmented-tab-active: #5f607b;
+  --segmented-tab-active: color-mix(in srgb, var(--color-text) 16%, transparent);
   --segmented-tab-surface: color-mix(in srgb, var(--color-text) 7%, var(--color-elevated));
   --pill-surface: var(--segmented-tab-surface);
   --pill-surface-hover: color-mix(in srgb, var(--color-text) 18%, var(--color-surface));
@@ -298,7 +297,7 @@
 
   /* A right-click menu is lighter than everything under it, so it reads as a
      sheet laid on top rather than a hole cut into the surface. */
-  --menu-surface: #282828;
+  --menu-surface: var(--color-overlay);
 
   /* Scrollbars — one thin style for every scrolling surface in the shell.
      Native scrolling, styled: the transcript's virtualiser measures real

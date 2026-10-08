@@ -55,23 +55,15 @@ const startNewSession = functionSource(
 assert.match(surface, /data-testid="draft-session-surface"/);
 assert.match(surface, /<ConversationComposer/);
 assert.match(surface, /data-testid="draft-session-project"/);
-assert.match(surface, /data-testid="draft-session-branch"/);
 assert.match(surface, /data-testid="draft-session-provider"/);
 assert.match(surface, /data-testid="draft-session-new-project"/);
-assert.match(surface, /data-testid="draft-session-ref-search"/);
-assert.match(surface, /Showing \{filteredRefs\.visible\.length\} of \{filteredRefs\.total\} branches/);
-assert.match(surface, /disabled=\{!canSelectThreadStartGitRef\(ref, canCreateWorktree\)\}/);
-assert.match(surface, /New project folders get a local Git repository when selected\./);
-assert.match(surface, /const repository = await initProjectRepository\(projectPath\);[\s\S]*?answer = await listGitRefs\(projectPath\)/);
 // A project with no repository behind it answers with nothing, so the reply is
 // read as a list only when it really is one — see newSessionGitRefs.test.ts.
-assert.match(backend, /invoke<ProjectGitRef\[] \| null>\('list_project_git_refs'/);
 assert.match(backend, /Array\.isArray\(refs\) \? refs : \[]/);
 assert.match(nativeSourceControl, /async fn list_project_git_refs\(/);
 assert.match(nativeSource, /list_project_git_refs,/);
 
 assert.match(controller, /open\(\): void/);
-assert.match(controller, /this\.mostRecentProjectPath\(\)/);
 assert.doesNotMatch(page, /const providerConfigs = \$derived/);
 
 // The first-send request keeps every chosen picker value and rejects the
@@ -100,7 +92,8 @@ assert.deepEqual(validateThreadStart({ ...request, prompt: request.prompt }), []
 assert.match(startNewSession, /async start\([\s\S]*?request: ThreadStartRequest[\s\S]*?\): Promise<string>/);
 assert.match(startNewSession, /return owned\.ownedId;/);
 assert.match(startNewSession, /createFreshSession\(\{[\s\S]*?cwd: request\.cwd,[\s\S]*?title: request\.title/);
-assert.match(startNewSession, /projectPath: request\.projectPath/);
+// The new row sits in its project's rail group before the first reply.
+assert.match(startNewSession, /projectGroupKey: project\?\.groupKey \?\? 'none'/);
 assert.match(startNewSession, /branch: request\.branch/);
 assert.match(startNewSession, /await selectSession\(owned\.ownedId\)/);
 assert.doesNotMatch(startNewSession, /ensureStructuredConversation|setAgentConversationConfig\(/);

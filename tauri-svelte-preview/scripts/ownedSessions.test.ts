@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import {
   normalizeProvider, adoptAgentSession, createFreshSession,
   ownedSessionFromBackend, ownedSessionMetaForBackend, parseStoredOwnedSessions, reconcileOwnedSessions,
-  resolveOwnedSessionProject,
 } from '../src/lib/shell/ownedSessions.ts';
 
 const mint = () => 'owned-1';
@@ -13,6 +12,7 @@ const scanRecord = {
   branchHint: 'tsk-788-session-workspaces', taskId: 'TSK-788', pullRequestHint: 'PR #12',
   sourceLabel: 'CMUX Claude · proj',
   messageCount: 12, latestTurnPreview: 'Agent: fixed the reference race',
+  projectGroupKey: 'repo:github.com/me/proj', projectGroupLabel: 'proj',
 };
 
 { // normalizeProvider
@@ -21,34 +21,11 @@ const scanRecord = {
   assert.deepEqual(normalizeProvider('cmux-rovo'), { agent: 'other', viaCmux: true });
   assert.deepEqual(normalizeProvider(''), { agent: 'other', viaCmux: false });
 }
-{ // project labels never expose the old placeholder
-  assert.deepEqual(
-    resolveOwnedSessionProject({
-      projectPath: '/workspaces/mac-command-bar',
-      cwd: '/worktrees/other',
-      agent: 'codex',
-      viaCmux: false
-    }),
-    { path: '/workspaces/mac-command-bar', label: 'mac-command-bar' }
-  );
-  assert.deepEqual(
-    resolveOwnedSessionProject({
-      projectPath: null,
-      cwd: '/worktrees/rail-redesign',
-      agent: 'claude',
-      viaCmux: false
-    }),
-    { path: '/worktrees/rail-redesign', label: 'rail-redesign' }
-  );
-  assert.deepEqual(
-    resolveOwnedSessionProject({
-      projectPath: 'No Project recorded',
-      cwd: '   ',
-      agent: 'opencode',
-      viaCmux: true
-    }),
-    { path: '', label: 'opencode session' }
-  );
+{ // the rail group is the one SQL filled in; a fresh row starts in "No project"
+  const scanned = adoptAgentSession(scanRecord, mint);
+  assert.deepEqual([scanned.projectGroupKey, scanned.projectGroupLabel], ['repo:github.com/me/proj', 'proj']);
+  const fresh = createFreshSession({ cwd: '/tmp/x' }, mint);
+  assert.deepEqual([fresh.projectGroupKey, fresh.projectGroupLabel], ['none', 'No project']);
 }
 { // adoptAgentSession
   const owned = adoptAgentSession(scanRecord, mint);
@@ -315,8 +292,17 @@ const scanRecord = {
   assert.equal(projected.pendingPermission, true);
   assert.equal(projected.branch, record.branch);
   assert.equal(projected.title, record.title);
-  assert.equal(projected.projectPath, record.project);
+  // A record without group fields reads as "No project"; the folder path is no longer rail metadata.
+  assert.deepEqual([projected.projectGroupKey, projected.projectGroupLabel], ['none', 'No project']);
+  const grouped = ownedSessionFromBackend({ ...record, projectGroupKey: 'project:p1', projectGroupLabel: 'proj' });
+  assert.deepEqual([grouped.projectGroupKey, grouped.projectGroupLabel], ['project:p1', 'proj']);
+  assert.equal(ownedSessionMetaForBackend(grouped).project, null);
   assert.equal(ownedSessionMetaForBackend(projected).messageCount, 7);
   assert.equal(ownedSessionFromBackend({ ...record, suspended: true }).runtimeState, 'suspended');
+  // The project id comes from the record; it is never written back as rail metadata.
+  assert.equal(projected.projectId, null);
+  const withProject = ownedSessionFromBackend({ ...record, projectId: 'project-1' });
+  assert.equal(withProject.projectId, 'project-1');
+  assert.equal('projectId' in ownedSessionMetaForBackend(withProject), false);
 }
 console.log('ownedSessions tests passed');

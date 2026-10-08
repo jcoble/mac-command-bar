@@ -45,6 +45,8 @@ export type ThreadStartPickerState = {
   model: string;
   effort: string;
   access: string;
+  /** The registry project, or null for "No project". */
+  projectId: string | null;
   projectPath: string;
   cwd: string;
   branch: string;
@@ -55,7 +57,7 @@ export type ThreadStartPickerState = {
 };
 
 export type ThreadStartProblem = {
-  field: 'prompt' | 'project' | 'branch' | 'worktree';
+  field: 'prompt' | 'project' | 'branch';
   message: string;
 };
 
@@ -67,6 +69,7 @@ export type ThreadStartRequest = {
   model: string | null;
   reasoningEffort: string | null;
   approvalPolicy: string | null;
+  projectId: string | null;
   projectPath: string | null;
   cwd: string;
   branch: string;
@@ -77,11 +80,6 @@ export type ThreadStartRequest = {
 export type ThreadStartGitRef = {
   name: string;
   checkoutPath: string | null;
-};
-
-export type ThreadStartProject = {
-  path: string;
-  name: string;
 };
 
 const PROVIDER_ORDER: readonly ThreadStartProvider[] = ['codex', 'claude', 'antigravity'];
@@ -162,18 +160,6 @@ function unique(values: readonly string[]): string[] {
   return [...new Set(values.map(tidy).filter(Boolean))];
 }
 
-export function deriveThreadStartProjects(paths: readonly string[]): ThreadStartProject[] {
-  return unique(paths)
-    .filter((path) => path.startsWith('/'))
-    .map((path) => ({
-      path: path === '/' ? path : path.replace(/\/+$/, ''),
-      name: path.split('/').filter(Boolean).at(-1) ?? path
-    }))
-    .filter((project, index, projects) =>
-      projects.findIndex((candidate) => candidate.path === project.path) === index
-    );
-}
-
 export function filterThreadStartGitRefs<T extends Pick<ThreadStartGitRef, 'name'>>(
   refs: readonly T[],
   search: string,
@@ -186,11 +172,27 @@ export function filterThreadStartGitRefs<T extends Pick<ThreadStartGitRef, 'name
   return { visible: matches.slice(0, Math.max(0, limit)), total: matches.length };
 }
 
-export function canSelectThreadStartGitRef(
-  ref: ThreadStartGitRef,
-  canCreateWorktree: boolean
-): boolean {
-  return Boolean(ref.checkoutPath) || canCreateWorktree;
+export type ThreadStartCheckoutPlan =
+  | { kind: 'none'; cwd: string }
+  | { kind: 'switch'; root: string; branch: string; cwd: string };
+
+/**
+ * What the first send does for the picked branch. Picking runs nothing: a
+ * branch already checked out (in the root or another worktree) is used where
+ * it is, and any other branch is switched to in the root at the first send.
+ */
+export function checkoutPlanFor(
+  rootPath: string,
+  ref: ThreadStartGitRef & { isCurrent: boolean }
+): ThreadStartCheckoutPlan {
+  if (ref.isCurrent || ref.checkoutPath) return { kind: 'none', cwd: ref.checkoutPath ?? rootPath };
+  return { kind: 'switch', root: rootPath, branch: ref.name, cwd: rootPath };
+}
+
+/** The quiet note beside a branch in the picker. */
+export function refNote(ref: ThreadStartGitRef & { isCurrent: boolean }, rootPath: string): string {
+  if (ref.isCurrent) return 'current';
+  return ref.checkoutPath && ref.checkoutPath !== rootPath ? 'in another worktree' : '';
 }
 
 function modelLabel(model: string): string {
@@ -280,6 +282,7 @@ function firstConfiguredModel(
 
 /** The values painted when the pane first opens. No session is created here. */
 export function defaultThreadStartState(input: {
+  projectId?: string | null;
   projectPath: string;
   cwd?: string;
   branch?: string;
@@ -305,6 +308,7 @@ export function defaultThreadStartState(input: {
       || (hasLiveCatalog ? (effortChoices[0] ?? '') : FALLBACK_EFFORTS[provider]),
     access: choiceAmong(config?.approvalPolicy, accessChoices)
       || (hasLiveCatalog ? (accessChoices[0] ?? '') : FALLBACK_ACCESS[provider]),
+    projectId: input.projectId ?? null,
     projectPath: tidy(input.projectPath),
     cwd: tidy(input.cwd) || tidy(input.projectPath),
     branch: tidy(input.branch),
@@ -355,9 +359,8 @@ export function titleFromPrompt(prompt: string, projectPath: string): string {
 }
 
 /**
- * Validate only what can be settled before a backend call. The worktree toggle
- * is intentionally rejected because this build has no create-worktree command;
- * silently using the main checkout would violate the selected location.
+ * Validate only what can be settled before a backend call. In New worktree
+ * mode the branch is the base; the worktree itself is made at the first send.
  */
 export function validateThreadStart(state: ThreadStartPickerState, hasAttachments = false): ThreadStartProblem[] {
   const problems: ThreadStartProblem[] = [];
@@ -381,12 +384,6 @@ export function validateThreadStart(state: ThreadStartPickerState, hasAttachment
   if (state.projectPath && state.branchesAvailable && !tidy(state.branch)) {
     problems.push({ field: 'branch', message: 'Choose an existing branch first.' });
   }
-  if (state.createNewWorktree) {
-    problems.push({
-      field: 'worktree',
-      message: 'New worktree creation is not available in this build. Choose an existing checkout.'
-    });
-  }
   return problems;
 }
 
@@ -407,6 +404,7 @@ export function buildThreadStartRequest(
     // approval control, and a session asked to change one refuses the message
     // that carried the request.
     approvalPolicy: state.provider === 'antigravity' ? null : (tidy(state.access) || null),
+    projectId: state.projectId ?? null,
     projectPath: tidy(state.projectPath) || null,
     cwd: tidy(state.cwd),
     branch: tidy(state.branch),

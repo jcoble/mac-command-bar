@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TSK-1345 — Projects technical design</title>
+  <style>
+    :root { color-scheme: light; --ink:#18212f; --muted:#596579; --line:#d9e0e9; --paper:#fff; --wash:#f5f7fa; --blue:#2255a4; --blue-wash:#edf4ff; --green:#17653a; --amber:#8a4d00; --red:#9b2c2c; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:#eef1f5; color:var(--ink); font:15px/1.5 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(1540px,calc(100% - 48px)); margin:24px auto 80px; background:var(--paper); border:1px solid var(--line); border-radius:16px; box-shadow:0 8px 30px #17203312; overflow:hidden; }
+    header { padding:42px 52px 34px; background:linear-gradient(135deg,#f8fbff,#edf4ff); border-bottom:1px solid var(--line); }
+    section { padding:30px 52px; border-bottom:1px solid var(--line); }
+    h1 { margin:0 0 10px; font-size:35px; line-height:1.15; letter-spacing:-.025em; }
+    h2 { margin:0 0 17px; font-size:24px; letter-spacing:-.015em; }
+    h3 { margin:24px 0 10px; font-size:17px; }
+    h4 { margin:18px 0 8px; font-size:15px; }
+    p { margin:8px 0; }
+    ul,ol { margin:9px 0 12px; padding-left:23px; }
+    li { margin:5px 0; }
+    code { padding:1px 5px; border-radius:4px; background:#eef1f5; font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    pre { margin:10px 0; padding:14px 16px; overflow:auto; border:1px solid var(--line); border-radius:9px; background:#f7f9fb; font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; }
+    table { width:100%; border-collapse:collapse; margin:12px 0; font-size:13.5px; }
+    th,td { padding:10px 12px; border:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { background:var(--wash); }
+    .lead { max-width:1050px; font-size:18px; color:#334056; }
+    .meta { color:var(--muted); }
+    .tag { display:inline-block; margin-right:5px; padding:1px 7px; border-radius:999px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; background:#e8f5ed; color:var(--green); }
+    .assumed { background:#fff1d6; color:var(--amber); }
+    .design { background:#eaf1ff; color:var(--blue); }
+    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+    .card { padding:16px 18px; border:1px solid var(--line); border-radius:10px; background:#fff; }
+    .card h3 { margin-top:0; }
+    .flow { display:flex; align-items:stretch; gap:10px; margin:18px 0; }
+    .flow > div { flex:1; padding:15px; border:1px solid #bed0ec; border-radius:9px; background:var(--blue-wash); }
+    .arrow { flex:0 0 auto !important; display:grid; place-items:center; padding:0 !important; border:0 !important; background:transparent !important; font-size:22px; color:var(--blue); }
+    .callout { margin:14px 0; padding:14px 17px; border-left:4px solid var(--blue); background:var(--blue-wash); }
+    .conflict { border-left-color:var(--red); background:#fff1f1; }
+    .decision { border-left-color:var(--green); background:#eef9f2; }
+    .files td:first-child { width:37%; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+    .compact li { margin:3px 0; }
+    .check { color:var(--green); font-weight:700; }
+    @media (max-width:1000px) { main{width:100%;margin:0;border:0;border-radius:0} header,section{padding:26px}.grid{grid-template-columns:1fr}.flow{display:grid}.arrow{transform:rotate(90deg)} }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="meta">Technical design · TSK-1345 · 1 October 2026 · branch <code>tsk-1345-projects</code> · base <code>ad11d88f2</code></p>
+    <h1>Projects become the stable identity for sessions</h1>
+    <p class="lead">Ship three complete cut-overs: first register projects and start new sessions from them; then group and backfill only by <code>project_id</code>; finally let existing sessions change checkout and safely remove disposable worktrees. The project never changes after session creation.</p>
+  </header>
+
+  <section id="outcome">
+    <h2>01. Outcome and fixed boundaries</h2>
+    <div class="grid">
+      <div class="card"><h3>Project</h3><p>One normalized folder on one machine, held only by the desktop client's SQLite registry.</p></div>
+      <div class="card"><h3>Session</h3><p>Keeps one nullable <code>project_id</code>. Its cwd, worktree, and branch may change; its project may not.</p></div>
+      <div class="card"><h3>Repository group</h3><p>Combines project copies across machines by normalized remote URL. A project without a remote remains its own group.</p></div>
+    </div>
+    <div class="callout decision"><strong>Recommended split:</strong> keep the controller's PR1/PR2/PR3 split. It is complete at each boundary: PR1 replaces folder-root selection, PR2 replaces folder-derived grouping, and PR3 adds existing-session mutations without leaving two mechanisms for any one job.</div>
+    <p><span class="tag">Verified</span> The durable session row currently has cwd/worktree/branch/project but no project ID; schema version is 14 (<code>core/src/session_store.rs:14,194-215,486-503</code>).</p>
+    <p><span class="tag">Verified</span> The current new-session roots are app-setting values, and the draft UI exposes a raw remote directory picker (<code>tauri-svelte-preview/src/lib/shell/newSession/projectRootsStore.svelte.ts:38-66,158-175</code>; <code>DraftSessionSurface.svelte:579-634</code>).</p>
+    <p><span class="tag">Verified</span> A session's provider still needs the physical checkout cwd, so cwd remains operational data rather than grouping identity (<code>tauri-svelte-preview/src-tauri/src/agent_conversation/manager.rs:1466-1527</code>; <code>providers/process.rs:123-150</code>).</p>
+  </section>
+
+  <section id="conflict">
+    <h2>02. Conflict that needs the owner's ruling</h2>
+    <div class="callout conflict">
+      <strong>Conflict C1 — D6 versus D5/D7.</strong> A bare repository root is its Git directory, so <code>git -C &lt;root&gt; rev-parse --is-inside-git-dir</code> returns <code>true</code>. Rejecting every true result makes a bare repository project impossible, while D5 and D7 explicitly define one. The existing validator does not resolve this because it only compares the discovered Git root with the selected path (<span class="tag">Verified</span> <code>tauri-svelte-preview/src-tauri/src/main.rs:1130-1187</code>).
+      <p><strong>Smallest alternative:</strong> allow the selected root when <code>--is-bare-repository</code> is true and the selected path equals <code>--absolute-git-dir</code>; reject every other path for which <code>--is-inside-git-dir</code> is true. The rest of this design assumes that exception.</p>
+    </div>
+  </section>
+
+  <section id="model">
+    <h2>03. Data model and invariants</h2>
+    <div class="flow">
+      <div><strong>Desktop projects</strong><br>Central registry: local and remote roots.</div><div class="arrow">→</div>
+      <div><strong>Desktop sessions</strong><br>Local rows plus cached remote projections carry project_id.</div><div class="arrow">↔</div>
+      <div><strong>Remote sessions</strong><br>Remote host stores project_id; it never stores the projects table.</div>
+    </div>
+    <h3>Schema 15</h3>
+    <pre>ALTER TABLE sessions ADD COLUMN project_id TEXT NULL;
+
+-- Desktop-client store only. Do not create this table in a remote backend store.
+CREATE TABLE projects (
+  id          TEXT PRIMARY KEY,
+  title       TEXT NOT NULL,
+  environment TEXT NOT NULL,       -- "local" or remote profile id
+  root_path   TEXT NOT NULL,       -- normalized absolute path on that machine
+  repo_key    TEXT NOT NULL,       -- canonical host/path; '' when absent
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  deleted_at  INTEGER NULL
+);
+CREATE UNIQUE INDEX projects_active_environment_root
+  ON projects(environment, root_path) WHERE deleted_at IS NULL;</pre>
+    <ul>
+      <li><span class="tag design">Contract</span> Add <code>ProjectRow</code> with the seven columns above and <code>project_id: Option&lt;String&gt;</code> to <code>SessionRow</code>. Do not add a foreign key: remote stores need session IDs without the client-only project table.</li>
+      <li><span class="tag design">Contract</span> Add <code>SessionStore::open_client</code> and <code>open_client_in_memory</code>. Both run schema 15 and create the registry; existing <code>open</code>/<code>open_in_memory</code> run schema 15 without that table. The desktop startup uses <code>open_client</code>; remote backend startup continues to use <code>open</code>.</li>
+      <li><span class="tag design">Contract</span> The schema-15 session migration is common. The client-table DDL also runs with <code>IF NOT EXISTS</code> after version migration, so a v15 store first opened as a remote store can safely become a desktop store without another schema number.</li>
+      <li><span class="tag design">Contract</span> Registry methods are <code>list_projects()</code>, <code>insert_or_get_project(ProjectRow)</code>, <code>soft_delete_project(id, now)</code>, and <code>set_session_project_if_null(owned_id, project_id)</code>. There is deliberately no method that overwrites a non-null session project.</li>
+    </ul>
+    <p><span class="tag">Verified</span> All store construction currently funnels through <code>SessionStore::from_connection</code>, while the desktop opens through <code>AgentRuntimeManager::open</code> (<code>core/src/session_store.rs:405-475</code>; <code>tauri-svelte-preview/src-tauri/src/agent_conversation/manager.rs:354-375</code>; <code>src-tauri/src/main.rs:5294-5311</code>). The explicit client opener is therefore a small enforceable boundary.</p>
+    <h3>Path and repository normalization</h3>
+    <ol>
+      <li>Expand <code>~</code> on the selected machine, canonicalize the existing directory, remove a trailing separator, and require an absolute result.</li>
+      <li>Run <code>git rev-parse --is-inside-git-dir</code>, <code>--is-bare-repository</code>, and <code>--absolute-git-dir</code>. Apply C1's narrow exception; otherwise return “Choose the repository folder, not Git's internal data.”</li>
+      <li>For a Git repository, read <code>remote.upstream.url</code>, falling back to <code>remote.origin.url</code>. Canonicalize common HTTPS, SSH URL, and SCP forms to <code>lowercase-host/path-without-leading-slash-or-.git</code>. Missing or unparsable remotes produce <code>repo_key = ''</code>.</li>
+      <li>Default title is the canonical folder's last component; remove one terminal <code>.git</code> only for a bare repository.</li>
+    </ol>
+  </section>
+
+  <section id="pr1">
+    <h2>04. PR1 — Registry, Add project, and new-session cut-over</h2>
+    <p><strong>Expected diff:</strong> 1,150–1,500 changed lines across 20–24 files, including tests and architecture. This includes first-message worktree creation required by D8; moving it to PR3 would leave PR1's “New worktree” choice nonfunctional.</p>
+    <h3>End-to-end flow</h3>
+    <div class="flow">
+      <div><strong>Add project</strong><br>Choose environment, browse existing folder, inspect there, insert-or-return registry row.</div><div class="arrow">→</div>
+      <div><strong>Compose</strong><br>Choose project, Current checkout or New worktree, then a base/reference branch.</div><div class="arrow">→</div>
+      <div><strong>First message</strong><br>Create/switch checkout first, ensure session with project_id second, send prompt last.</div>
+    </div>
+    <h3>Files and exact changes</h3>
+    <table class="files">
+      <tr><th>File and current anchor</th><th>Required change</th></tr>
+      <tr><td>core/src/session_store.rs:14,194-215,405-475,486-503,889-912,922-1061,2531-2575</td><td>Add schema 15, client-only registry setup, ProjectRow CRUD, nullable session project_id in every insert/select/decoder. <span class="tag">Verified</span></td></tr>
+      <tr><td>src-tauri/src/agent_conversation/manager.rs:354-375,993-1055,1213-1369,2817-2890,4027-4072</td><td>Add client opener; accept project_id on ensure, preserve it on repeated ensure, project it in listings, and persist it. Reject a request whose project differs from an existing non-null value. <span class="tag">Verified</span></td></tr>
+      <tr><td>src-tauri/src/agent_conversation/protocol.rs:582-595,729-780,787-798</td><td>Add <code>project_id</code> to EnsureConversationRequest and AgentConversationSessionRecord; extend serialization contract tests. <span class="tag">Verified</span></td></tr>
+      <tr><td>src-tauri/src/agent_conversation/remote.rs:43,57-74,1141-1177,2628-2640</td><td>Bump protocol 7→8. The existing shared Ensure request carries project_id to the remote manager; ListSessions returns it and refreshes the client cache. <span class="tag">Verified</span></td></tr>
+      <tr><td>src-tauri/src/agent_conversation/mod.rs:108-123,630-665</td><td>Expose project_id in the local ensure and local/remote listing Tauri commands. <span class="tag">Verified</span></td></tr>
+      <tr><td>src-tauri/src/agent_conversation/transcript_import.rs:74-165</td><td>Initialize imported rows with the caller's optional project_id; do not infer here. <span class="tag">Verified</span></td></tr>
+      <tr><td>src-tauri/src/commands/source_control.rs:139-189; src-tauri/src/main.rs:295-320,1130-1187,2855-2992,5446-5539</td><td>Add project inspection, checkout-ref, and create-worktree commands for local use; register them. Keep the existing worktree/ref parsers. <span class="tag">Verified</span></td></tr>
+      <tr><td>src-tauri/src/agent_conversation/remote_workspace.rs:21-118; remote.rs:3775-3785</td><td>Add matching <code>inspect_project</code>, <code>checkout_project_ref</code>, and <code>create_project_worktree</code> operations so local and remote execute identical Git rules. <span class="tag">Verified</span></td></tr>
+      <tr><td>src-tauri/src/projects.rs (new); src-tauri/src/main.rs:5294-5311,5446-5539</td><td>Small command module: list/add/soft-delete client registry rows. Add calls local inspection or the selected profile's remote workspace operation before insert. Manage no second store. <span class="tag design">New</span></td></tr>
+      <tr><td>src/lib/tauriSource.ts:472-508,2020-2049,3068-3074</td><td>Add ProjectRecord, ProjectInspection, registry wrappers, Git operation wrappers, and projectId on session records. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/shell/projects/projectRegistry.svelte.ts (new)</td><td>One hydrated client-side projection with <code>projects</code>, <code>hydrateProjects</code>, <code>addProject</code>, and lookup by ID. It mirrors SQLite; it does not persist settings. <span class="tag design">New</span></td></tr>
+      <tr><td>src/lib/shell/newSession/DraftSessionSurface.svelte:34,43-49,91-92,240-305,329-400,411-450,505-705</td><td>Replace roots and raw remote-folder session selection with the T3 menus: environment → Add project folder; project; Current checkout/New worktree; ref. Enable remote refs/worktrees through the same backend wrappers. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/shell/newSession/threadStartFlow.ts:40-75,189-194,281-313,362-415; newSessionBackend.ts:1-18,64-187; newSessionFlow.ts:1-18,472+</td><td>Draft contract becomes projectId + checkout mode + ref. Validate registered project and Git capability; create/switch checkout on send. Delete obsolete “never create worktree” helpers. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/shell/controllers/newSessionController.svelte.ts:10,64-168; conversation/conversationService.ts:1307-1367</td><td>Resolve checkout before creating the session, pass projectId into ensure, then send. A Git failure leaves the draft visible and creates no session. Delete last-used-root writes. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/shell/ownedSessions.ts:50-128,241-326; controllers/shellStartup.ts:25-52</td><td>Add immutable projectId to OwnedSession and projections; hydrate registry during startup before draft/session rendering. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/shell/components/github/PullRequestWorkspace.svelte:1-75</td><td>Read registry roots instead of the deleted roots settings store; filter active projects by environment. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/shell/newSession/projectRootsStore.svelte.ts (delete); package.json:103-106; scripts/newSessionFlow.test.mjs</td><td>Delete the old settings source. Rename the touched <code>.mjs</code> test to <code>.ts</code> and update its package script. <span class="tag">Verified</span></td></tr>
+      <tr><td>main-architecture-explained.html:625-688,1124-1215,1293-1389,1391-1455,1523-1595,1925-1965</td><td>Update 01 change log, 09 start lifecycle, 10 SQLite, 11 wire protocol, 13 frontend projection, and 20 source map in the same implementation commit. <span class="tag">Verified</span></td></tr>
+    </table>
+    <h3>Command and type contracts</h3>
+    <pre>type Environment = 'local' | string; // remote value is a saved profile id
+interface ProjectRecord { id:string; title:string; environment:string; rootPath:string;
+  repoKey:string; createdAt:number; updatedAt:number; deletedAt:number|null }
+interface AddProjectInput { environment:string; rootPath:string }
+interface ProjectInspection { rootPath:string; title:string; repoKey:string;
+  isGit:boolean; isBare:boolean }
+
+list_projects() -> ProjectRecord[]
+add_project(input) -> ProjectRecord                  // existing active key returns existing row
+delete_project(id) -> void                          // soft delete only
+checkout_project_ref(environment, rootPath, ref) -> { cwd:string; branch:string }
+create_project_worktree(environment, rootPath, baseRef, token8)
+  -> { cwd:string; worktree:string; branch:string };</pre>
+    <ul class="compact">
+      <li><strong>Current checkout:</strong> list <code>git worktree list --porcelain</code>. For a ref already checked out, return that path without checkout. Otherwise run <code>git -C &lt;project-root&gt; checkout &lt;ref&gt;</code> and return root. A bare root with no checkout for the ref returns “Choose New worktree for this branch.”</li>
+      <li><strong>New worktree:</strong> generate eight lowercase hex characters in the backend and run exactly <code>git -C &lt;root&gt; worktree add -b assembly/&lt;hex&gt; ~/dev/work/worktrees/&lt;repo&gt;/assembly-&lt;hex&gt; &lt;base&gt;</code>. Create parent directories only; do not create a project folder. Return Git stderr verbatim on failure.</li>
+      <li><strong>Non-Git:</strong> allow Add project and Current checkout with cwd=root. Hide/disable ref and New worktree controls. Never initialize Git.</li>
+      <li><strong>Errors:</strong> missing profile, disconnected remote, nonexistent/non-directory path, Git-data path, duplicate branch/path, dirty checkout, or Git launch failure remain in the draft. No stash, force, retry, or fallback.</li>
+    </ul>
+    <h3>Tests first</h3>
+    <table>
+      <tr><th>Test</th><th>Assertion and suite</th></tr>
+      <tr><td><code>migration_14_adds_project_id_and_client_registry</code></td><td>Client v14→15 has both additions; ordinary remote open has project_id but no projects table. <code>cd core &amp;&amp; cargo test</code>.</td></tr>
+      <tr><td><code>active_project_key_is_unique_and_soft_delete_releases_it</code></td><td>Insert-or-get is stable; deleted row permits a new ID. Core suite.</td></tr>
+      <tr><td><code>ensure_preserves_session_project_id</code></td><td>First ensure stores ID; same ID is idempotent; different ID is rejected. Tauri crate tests.</td></tr>
+      <tr><td><code>remote_ensure_round_trips_project_id</code></td><td>Protocol v8 ensure/list/cache retain ID. Tauri crate tests.</td></tr>
+      <tr><td><code>inspect_project_rejects_git_data_but_accepts_non_git</code></td><td>D6 validation and C1 bare-root case. Tauri crate tests.</td></tr>
+      <tr><td><code>new_session_current_checkout_uses_existing_branch_worktree</code></td><td>No checkout command when ref already has a path. Existing TS unit runner.</td></tr>
+      <tr><td><code>new_session_worktree_runs_before_ensure</code></td><td>Exact call order and no session on Git error. Existing TS unit runner.</td></tr>
+    </table>
+  </section>
+
+  <section id="pr2">
+    <h2>05. PR2 — Project-only grouping, filtering, backfill, and adoption</h2>
+    <p><strong>Expected diff:</strong> 750–1,000 changed lines across 13–17 files, including tests and architecture.</p>
+    <h3>One write-time matcher, no read-time fallback</h3>
+    <div class="flow">
+      <div><strong>Null project_id</strong><br>Old owned row or newly adopted scanned session.</div><div class="arrow">→</div>
+      <div><strong>Match on its machine</strong><br>Exact root, deepest containing root, then equal Git common directory.</div><div class="arrow">→</div>
+      <div><strong>Write once</strong><br>Set ID only if null; otherwise “No project.” Reads never inspect cwd.</div>
+    </div>
+    <h3>Backfill placement and remote handling</h3>
+    <ol>
+      <li>At shell startup, hydrate the project registry first. Call <code>backfill_session_projects</code> before projecting local and cached remote sessions (<span class="tag">Verified</span> current parallel load is <code>controllers/shellStartup.ts:38-49</code>).</li>
+      <li>The command matches local null rows in the desktop backend. For every connected remote profile, send only that profile's active project IDs and roots in <code>RemoteCommand::BackfillSessionProjects</code>; the remote backend matches and writes its own rows, then ListSessions refreshes the cache.</li>
+      <li>Run the same remote backfill immediately after each later successful profile connection and before its first ListSessions. Offline rows remain null and appear under No project until that machine connects. Re-running is safe because SQL updates only <code>WHERE project_id IS NULL</code>.</li>
+      <li>At adoption, map the scanner's folder before <code>begin_import</code>; pass that optional ID through import and ensure. This is the same matcher command, not a TypeScript path heuristic.</li>
+    </ol>
+    <p><span class="tag">Verified</span> Remote ensure and listing already cross one command path and the client caches returned records (<code>src-tauri/src/agent_conversation/remote.rs:1141-1177,2628-2640</code>). <span class="tag">Verified</span> Adoption currently copies the scanned folder into cwd/projectPath (<code>src/lib/shell/ownedSessions.ts:205-238</code>), and HistoryPanel performs begin-import then ensure (<code>src/lib/shell/panels/history/HistoryPanel.svelte:524-592</code>).</p>
+    <h3>Files and exact changes</h3>
+    <table class="files">
+      <tr><th>File and current anchor</th><th>Required change</th></tr>
+      <tr><td>core/src/session_store.rs:1011-1061,2531-2575</td><td>List null-ID rows and write one matched ID with <code>project_id IS NULL</code>. No bulk materialization for UI grouping; this bounded migration command is the write operation. <span class="tag">Verified</span></td></tr>
+      <tr><td>src-tauri/src/projects.rs; main.rs:2855-2955</td><td>Add matcher/backfill commands. Resolve <code>git rev-parse --git-common-dir</code> on the session's machine. Exact match wins, then deepest path ancestor, then same common dir; stable tie-break is oldest created project then ID. <span class="tag design">PR1 file</span></td></tr>
+      <tr><td>src-tauri/src/agent_conversation/protocol.rs:57-74; remote.rs:1141-1177,2628-2640</td><td>Add backfill request/response, invoke on connection before ListSessions, and refresh cached projections. <span class="tag">Verified</span></td></tr>
+      <tr><td>src-tauri/src/agent_conversation/transcript_import.rs:74-165; agent_conversation/mod.rs:753-770</td><td>Carry adoption's optional project_id into the newly owned row. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/shell/controllers/shellStartup.ts:25-67</td><td>Sequence registry → backfill → local/remote session list. Do not render an interim cwd-derived group. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/shell/ownedSessions.ts:187-238</td><td>Delete <code>projectPath ?? cwd</code> resolver. Adoption asks the backend matcher once. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/shell/components/myWorkViewOptions.ts:103-195</td><td>Build groups and project filter choices from projectId→registry→repo key. Unknown/null/deleted IDs go to one No project group. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/shell/history/sessionHistoryViewModel.ts:195-212,326-414</td><td>Delete projectPath/projectRoot/cwd identity and path nesting; group only by projectId using the same pure grouping function as the rail. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/shell/sessionLibrary/sessionLibraryModel.ts:31-75,183-215,339-356</td><td>Add projectId/environment to library records and remove <code>sessionProjectPath</code> fallback. Filter by repository-group key or No project. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/shell/components/WorktreeAgentRow.svelte:152-224; components/SessionsColumn.svelte</td><td>Show “This Mac” or saved remote profile name on every row; group header uses owner/repository path from repo_key, else project title. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/shell/panels/history/HistoryPanel.svelte:524-592; history/sessionHistoryActions.ts:85-103</td><td>Map before adoption; add project filter entries and one No project choice. <span class="tag">Verified</span></td></tr>
+      <tr><td>package.json:90,98; scripts/sessionGroups.test.mjs</td><td>Rename the touched group test to <code>.ts</code>; add matcher/backfill and project-only grouping unit coverage. <span class="tag">Verified</span></td></tr>
+      <tr><td>main-architecture-explained.html:625-688,1293-1455,1523-1595,1925-1965</td><td>Update 01, 10, 11, 13, and 20 for write-time association and project-only reads. <span class="tag">Verified</span></td></tr>
+    </table>
+    <h3>Grouping contract</h3>
+    <pre>groupKey(session):
+  project = active-or-deleted registry row matching session.projectId
+  if none:                    "none"
+  if project.repoKey != "":  "repo:" + project.repoKey
+  else:                       "project:" + project.id
+
+groupLabel:
+  repo group    -> repoKey with host removed (example: jcoble/rental-management)
+  project group -> project.title
+  none          -> "No project"</pre>
+    <h3>Tests first</h3>
+    <ul>
+      <li><code>backfill_prefers_exact_then_deepest_ancestor_then_common_dir</code>: all match modes and deterministic tie. Tauri crate tests.</li>
+      <li><code>backfill_never_reassigns_non_null_project</code>: changed cwd cannot change identity. Core/Tauri tests.</li>
+      <li><code>remote_backfill_precedes_first_list_and_updates_cache</code>: reconnect behavior and offline No project behavior. Tauri tests.</li>
+      <li><code>adoption_writes_project_id_once</code>: matched and unmatched scanned sessions. Existing TS unit runner plus Tauri import test.</li>
+      <li><code>groups_same_repo_across_machines_and_separates_empty_keys</code>: repository default, labels, one No project, machine per row. Existing <code>test:session-groups</code>, converted to TypeScript.</li>
+      <li><code>grouping_ignores_project_path_and_cwd</code>: changing folder fields cannot move a session. Existing TS unit runner.</li>
+    </ul>
+  </section>
+
+  <section id="pr3">
+    <h2>06. PR3 — Existing-session checkout changes and safe worktree deletion</h2>
+    <p><strong>Expected diff:</strong> 650–900 changed lines across 11–15 files, including tests and architecture.</p>
+    <h3>Files and exact changes</h3>
+    <table class="files">
+      <tr><th>File and current anchor</th><th>Required change</th></tr>
+      <tr><td>src/lib/shell/components/ConversationSurface.svelte:83-112,762,812-855; conversation/ConversationComposer.svelte:60-63</td><td>Use the existing leading-controls slot for project (read-only identity), workspace mode, and ref controls on an existing session. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/shell/controllers/sessionSelectionController.svelte.ts:257-321</td><td>Replace raw path checkout mutation with project-aware switch/new-worktree actions. Keep projectId unchanged. Route delete through preview/confirm flow. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/routes/next/+page.svelte:181-183,233-246,363-370</td><td>Wire checkout actions and the two-stage delete dialog; archive bypasses all worktree logic. <span class="tag">Verified</span></td></tr>
+      <tr><td>src-tauri/src/agent_conversation/manager.rs:1062-1210,3551-3600</td><td>Keep existing quiescence/provider checks for checkout update. Add delete-plan counts and server-side recheck immediately before optional removal. <span class="tag">Verified</span></td></tr>
+      <tr><td>src-tauri/src/agent_conversation/protocol.rs:670-674; remote.rs:1467-1498</td><td>Add remote project-aware switch/create and delete-plan/delete-with-worktree messages; return updated session record after success. <span class="tag">Verified</span></td></tr>
+      <tr><td>src-tauri/src/main.rs:2994+; commands/source_control.rs:139-189; remote_workspace.rs:55-92</td><td>Reuse safe <code>git worktree remove</code>; add status detail for the second confirmation and never pass force until explicitly requested. <span class="tag">Verified</span></td></tr>
+      <tr><td>src/lib/tauriSource.ts:2157-2167,2259-2265</td><td>Add typed switch, create-worktree, deletion-preview, and confirmed-delete wrappers. <span class="tag">Verified</span></td></tr>
+      <tr><td>main-architecture-explained.html:625-688,1124-1215,1391-1455,1523-1595,1925-1965</td><td>Update 01, 09, 11, 13, and 20 for mutable checkout metadata and deletion ordering. <span class="tag">Verified</span></td></tr>
+    </table>
+    <h3>Mutation contracts</h3>
+    <pre>switch_session_ref(ownedId, ref) -> AgentConversationSessionRecord
+create_session_worktree(ownedId, baseRef) -> AgentConversationSessionRecord
+preview_session_deletion(ownedId) -> {
+  mayRemoveWorktree:boolean, path:string|null, projectRoot:string|null,
+  otherSessionCount:number, changes:string[]
+}
+delete_session(ownedId, removeWorktree:boolean, force:boolean) -> void</pre>
+    <ol>
+      <li>Resolve the immutable project and its machine. If the selected ref is checked out elsewhere, update the session to that worktree; otherwise run checkout in the project root. On Git failure, show stderr in place and change no session fields.</li>
+      <li>New worktree uses PR1's exact D8 operation, then updates only cwd/worktree/branch through the existing checkout command. It never changes projectId.</li>
+      <li>Deletion preview offers worktree removal only when the path is not the normalized project root, is a registered Git worktree, and no other non-deleted session on that machine has that normalized path.</li>
+      <li>On confirm, the backend rechecks sharing. Try <code>git worktree remove &lt;path&gt;</code> without force before deleting the session. If Git reports changes, return the exact short-status lines for a second prompt. Only <code>force=true</code> after that prompt runs <code>git worktree remove --force</code>. Declining the second prompt may delete the session while leaving the worktree.</li>
+      <li>Archive changes session state only and never previews, checks, or removes a worktree.</li>
+    </ol>
+    <h3>Tests first</h3>
+    <ul>
+      <li><code>switch_ref_uses_existing_worktree_without_checkout</code> and <code>switch_ref_returns_git_failure_without_metadata_change</code>: Tauri crate tests.</li>
+      <li><code>existing_session_new_worktree_preserves_project_id</code>: exact D8 command result, mutable fields only. Tauri tests.</li>
+      <li><code>delete_plan_excludes_project_root_shared_and_unregistered_paths</code>: eligibility matrix. Tauri tests.</li>
+      <li><code>delete_rechecks_sharing_before_remove</code>: stale UI plan cannot remove a now-shared worktree. Tauri tests.</li>
+      <li><code>force_remove_requires_explicit_second_confirmation</code>: TS controller call order and named changes. Existing TS unit runner.</li>
+      <li><code>archive_never_calls_worktree_commands</code>: existing TS unit runner.</li>
+    </ul>
+  </section>
+
+  <section id="delete">
+    <h2>07. What is deleted — the one-way cut-over</h2>
+    <table>
+      <tr><th>PR</th><th>Old path removed</th></tr>
+      <tr><td>PR1</td><td>Delete <code>projectRootsStore.svelte.ts</code>, its app-setting keys, last-used-root writes, “No project” as a new-session folder choice, the raw <code>RemoteDirectoryPicker</code> from New session, automatic <code>git init</code> from send, and the disabled-worktree branch. Keep the directory browser only inside Add project.</td></tr>
+      <tr><td>PR2</td><td>Delete every grouping/filter identity derived from <code>projectPath</code>, <code>projectRoot</code>, cwd, folder ancestry, or scanner Git root. These fields may remain where needed for provider/display compatibility, but no group/filter reads them.</td></tr>
+      <tr><td>PR3</td><td>Delete raw-path existing-session checkout UI and immediate unexamined session deletion. There is one project-aware mutation path and one deletion path.</td></tr>
+    </table>
+  </section>
+
+  <section id="verification">
+    <h2>08. Verification after each implementation PR</h2>
+    <p>These are implementation receipts, not commands run during this design lane.</p>
+    <pre>cd core &amp;&amp; cargo test
+cargo test --manifest-path tauri-svelte-preview/src-tauri/Cargo.toml
+cd tauri-svelte-preview &amp;&amp; pnpm run test:new-session-flow
+cd tauri-svelte-preview &amp;&amp; pnpm run test:new-session-submission
+cd tauri-svelte-preview &amp;&amp; pnpm run test:new-session-git-refs
+cd tauri-svelte-preview &amp;&amp; pnpm run test:thread-start-flow
+cd tauri-svelte-preview &amp;&amp; pnpm run test:owned-sessions
+cd tauri-svelte-preview &amp;&amp; pnpm run test:session-groups
+cd tauri-svelte-preview &amp;&amp; pnpm run test:session-history-load
+cd tauri-svelte-preview &amp;&amp; npx tsc --noEmit
+cd tauri-svelte-preview &amp;&amp; pnpm run check:svelte
+# Required final line: Files the /next shell owns: 0 error(s)
+rg -n ':has\(' tauri-svelte-preview/src
+# Required result: no matches</pre>
+    <p><span class="tag">Verified</span> The named frontend scripts exist in <code>tauri-svelte-preview/package.json:90,98,103-106</code>. <span class="tag">Verified</span> The repository requires touched <code>.mjs</code> scripts to become TypeScript and prohibits UI regression tests (<code>AGENTS.md:146-158,185-193</code>).</p>
+    <h3>Real-app checks at 1710×990, headless browser where applicable</h3>
+    <table>
+      <tr><th>Where</th><th>Happy, edge, and order-sensitive cases</th></tr>
+      <tr><td>Local Mac</td><td>Add an existing Git repo and a non-Git folder; duplicate Add returns the same row; Git-data folder refuses plainly; title default is correct. Start Current checkout on current and other-worktree branches. Start New worktree and confirm checkout exists before ensure/send. Confirm a dirty checkout shows Git's message and creates no session.</td></tr>
+      <tr><td>Workbox</td><td>Add the remote copy through remote directory listing; disconnect during inspection; reconnect and use branches/worktrees remotely. Confirm the same repo's Mac and workbox sessions share one repository group, every row names its machine, and offline unbackfilled rows are under No project.</td></tr>
+      <tr><td>Migration/order</td><td>Launch with v14 local and remote databases. Confirm local backfill precedes first grouping, remote backfill precedes first post-connect listing, and changing cwd/branch never changes project group. Adopt matched and unmatched discovered sessions.</td></tr>
+      <tr><td>Existing session/delete</td><td>Switch to root ref, switch to another checked-out worktree, create worktree, and exercise dirty failure. Verify no removal offer for root/shared paths; safe remove; dirty second prompt names changes; decline leaves worktree; force removes it; archive never removes.</td></tr>
+      <tr><td>Performance</td><td>At rest, confirm no running animations and app/WebView CPU near zero over about ten seconds. Switch sessions under 350ms. Registry and grouping add no polling or idle timers.</td></tr>
+    </table>
+    <p class="meta">Any screenshots are added to the task evidence immediately with the repository's <code>evidence add</code> command. No component-structure, layout, menu, styling, color, or screenshot assertion is added to automated tests.</p>
+  </section>
+
+  <section id="not-doing">
+    <h2>09. Not doing</h2>
+    <ul class="compact">
+      <li>No folder creation or remote project initialization; TSK-1211 owns that.</li>
+      <li>No project reassignment API for an existing session.</li>
+      <li>No client-side remote-session mapping table and no project registry on remote hosts.</li>
+      <li>No cwd/projectPath fallback, compatibility shim, dual settings store, feature flag, retry, stash, or forced checkout.</li>
+      <li>No repository discovery, project rename UI, project ordering, cloning, remote editing, or worktree naming option.</li>
+      <li>No UI regression tests, CSS <code>:has()</code>, JavaScript test files, idle animation, or polling.</li>
+    </ul>
+  </section>
+
+  <section id="questions">
+    <h2>10. Open question</h2>
+    <ol>
+      <li><strong>Must the bare-root exception in Conflict C1 be approved?</strong> Without it, D6 forbids the bare repository projects required by D5 and D7.</li>
+    </ol>
+    <p class="meta">No other product decision is open. Exact copy and visual spacing should follow the six fixed T3 reference screenshots during implementation.</p>
+  </section>
+</main>
+</body>
+</html>

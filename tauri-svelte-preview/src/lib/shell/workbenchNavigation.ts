@@ -12,16 +12,15 @@
  * PURE: no DOM, no Svelte, no backend call. Every caller is a no-op — never a
  * throw — while nothing is registered, so a panel that runs before the page is
  * ready simply does nothing. Browser URLs are the one queued handoff because
- * selecting that tab is what mounts the handler that can place its native view.
+ * showing a browser tab is what registers the handler that can place its view.
  */
 import type { ConversationAttachment } from './conversation/conversationTypes.ts';
-import type { SourceGitDiff } from '../tauriSource.ts';
 import { requestOpenFile, type OpenFileRequest } from './openFileBus.ts';
 
-/** The four surfaces the center pane's corner tabs switch between. */
-export type CenterTabId = 'session' | 'editor' | 'diff' | 'git-history' | 'pull-requests';
+/** The chat and the five kinds of tab the top tab row can bring forward. */
+export type CenterTabId = 'session' | 'editor' | 'browser' | 'diff' | 'git-history' | 'pull-requests';
 
-/** The nine panels the right column's icon strip switches between. */
+/** The eight panels the right drawer's icon strip switches between. */
 export type RightTabId =
   | 'files'
   | 'source-control'
@@ -29,13 +28,13 @@ export type RightTabId =
   | 'run'
   | 'context'
   | 'agents'
-  | 'browser'
   | 'history'
   | 'tasks';
 
 export const CENTER_TAB_IDS: readonly CenterTabId[] = [
   'session',
   'editor',
+  'browser',
   'diff',
   'git-history',
   'pull-requests'
@@ -48,7 +47,6 @@ export const RIGHT_TAB_IDS: readonly RightTabId[] = [
   'run',
   'context',
   'agents',
-  'browser',
   'history',
   'tasks'
 ];
@@ -60,15 +58,15 @@ export interface OpenDiffRequest {
   relativePath: string;
 }
 
-export interface OpenPullRequestDiffRequest {
-  projectRoot: string;
-  repository: string;
-  number: number;
-  diff: SourceGitDiff;
-}
-
 export interface OpenUrlRequest {
   url: string;
+}
+
+/** One pull request, named the way its github.com link names it. */
+export interface PullRequestLink {
+  /** `owner/repo` */
+  repository: string;
+  number: number;
 }
 
 export interface ComposerHandoff {
@@ -97,9 +95,9 @@ export interface WorkbenchNavigationHandlers {
   showCenterTab(id: CenterTabId): void;
   showRightTab(id: RightTabId): void;
   openDiff(request: OpenDiffRequest): void | Promise<void>;
-  openPullRequestDiff(request: OpenPullRequestDiffRequest): void;
   openFileTimeline(request: OpenDiffRequest): void | boolean | Promise<void | boolean>;
   openUrl(request: OpenUrlRequest): void | Promise<void>;
+  openPullRequest(link: PullRequestLink): void;
   focusComposer(handoff: ComposerHandoff): void | Promise<void>;
   sendToSession(request: SendToSessionRequest): Promise<void>;
   startSession(request: StartSessionRequest): Promise<string | null>;
@@ -119,9 +117,9 @@ export function clearWorkbenchNavigation(): void {
   pendingOpenUrl = null;
 }
 
-/** BrowserPanel mounts only after its tab is selected. Keep the one URL that
- * caused that mount until the panel owns the native-view placement needed to
- * open it. */
+/** BrowserPanel listens for URLs only while a browser tab is showing. Keep
+ * the one URL that brought it forward until the panel owns the native-view
+ * placement needed to open it. */
 export function registerBrowserUrlNavigation(
   openUrl: (request: OpenUrlRequest) => void
 ): () => void {
@@ -155,12 +153,6 @@ export async function openDiffForFile(request: OpenDiffRequest): Promise<void> {
   showCenterTab('diff');
 }
 
-/** Show a hosted PR comparison in the existing center Diff tab. */
-export function openPullRequestDiff(request: OpenPullRequestDiffRequest): void {
-  handlers.openPullRequestDiff?.(request);
-  showCenterTab('diff');
-}
-
 /** Show the paged history for one repository-relative file. */
 export async function openFileTimeline(request: OpenDiffRequest): Promise<void> {
   const opened = await handlers.openFileTimeline?.(request);
@@ -168,10 +160,32 @@ export async function openFileTimeline(request: OpenDiffRequest): Promise<void> 
   showCenterTab('git-history');
 }
 
-/** Point the browser panel at a URL. The panel is put on screen first: the
- * browser only loads while it is the tab in front. */
+/** `https://github.com/<owner>/<repo>/pull/<n>` (any trailing path, query or
+ * fragment) as a pull request; anything else is null. */
+export function parseGithubPullRequestUrl(url: string): PullRequestLink | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (!/^https?:$/.test(parsed.protocol) || !/^(www\.)?github\.com$/i.test(parsed.hostname)) return null;
+  const match = /^\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)(\/|$)/.exec(parsed.pathname);
+  const number = match ? Number(match[3]) : 0;
+  return match && number > 0 ? { repository: `${match[1]}/${match[2]}`, number } : null;
+}
+
+/** Point the browser at a URL. A browser tab is put on screen first: the
+ * browser only loads while it is the tab in front. A GitHub pull request link
+ * opens that pull request in the Pull requests tab instead. */
 export async function openUrlInBrowser(request: OpenUrlRequest): Promise<void> {
-  showRightTab('browser');
+  const pullRequest = handlers.openPullRequest ? parseGithubPullRequestUrl(request.url) : null;
+  if (pullRequest) {
+    handlers.openPullRequest?.(pullRequest);
+    showCenterTab('pull-requests');
+    return;
+  }
+  showCenterTab('browser');
   const openUrl = handlers.openUrl;
   if (openUrl) {
     await openUrl(request);

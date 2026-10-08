@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   /**
    * WorktreeRow.svelte — one worktree in the panel's list.
    *
@@ -78,7 +79,7 @@
    * 14px and the kit's sizes are in rem — which is most of why these rows read
    * as smaller than they look in the source.
    */
-  const CHIP = 'h-6 px-2 text-(length:--text-quiet) font-normal';
+  const CHIP = 'h-6 shrink-0 px-2 text-(length:--text-quiet) font-normal';
 
   /**
    * A chip that names the folder rather than warning about it. It reads as
@@ -127,11 +128,10 @@
       aria-hidden="true"
     />
     <FolderGit2 class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-    <!-- The branch keeps a readable minimum; the chips beside it give way first. -->
-    <span class="min-w-16 flex-1 truncate font-medium" title={row.path}>{row.branch}</span>
-    <!-- The chips shrink as a group and clip, so a row with a lot to say still
-         ends at the panel edge instead of pushing past it. -->
-    <span class="flex min-w-0 shrink items-center gap-1.5 overflow-hidden">
+    <!-- The branch name keeps about eight characters; past that the chip
+         group gives way and clips the chips that no longer fit. -->
+    <span class="min-w-[8ch] flex-1 truncate font-medium" title={row.path}>{row.branch}</span>
+    <span class="flex min-w-0 items-center gap-1.5 overflow-hidden">
       {#if row.isPrimary}
         <Chip class={QUIET_CHIP}>main checkout</Chip>
       {/if}
@@ -144,7 +144,7 @@
     </span>
     {#if busy}
       <span class="shrink-0 text-(length:--text-quiet) leading-tight text-muted-foreground">
-        Starting…
+        <WorkingSpinner size={12} /> Starting…
       </span>
     {/if}
 

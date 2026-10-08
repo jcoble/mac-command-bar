@@ -1,3 +1,4 @@
+import { rail } from '../stores/sessionRailStore.svelte';
 import { parseRemoteWorkspacePath, mapWorkspaceSnapshotPaths } from '../../workspacePaths';
 /** Saves and restores only the editor portion of each session workspace. */
 import {
@@ -69,8 +70,22 @@ export class EditorSessionController {
 		this.releaseActiveEditorResources();
 
 		if (stopSignal.aborted) return null;
-		const stored = await readAgentConversationWorkspaceFromTauri(ownedId);
+		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
+		const offline = session?.executionEnvironment === 'remote'
+			&& rail.remoteConnections[session.remoteProfileId ?? ''] !== 'connected';
 		const remote = parseRemoteWorkspacePath(projectRoot);
+		let stored: SessionWorkspaceSnapshot | null;
+		try {
+			stored = offline ? null : await readAgentConversationWorkspaceFromTauri(ownedId);
+		} catch (error) {
+			if (stopSignal.aborted) return null;
+			const message = error instanceof Error ? error.message
+				: typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error);
+			if (rootAvailable || !remote || message !== `Remote machine ${remote.profileId} is not connected`) throw error;
+			this.activeOwnedId = null;
+			this.activeSnapshot = null;
+			return null;
+		}
 		const snapshot = remote ? mapWorkspaceSnapshotPaths(stored, remote.profileId) as SessionWorkspaceSnapshot | null : stored;
 		if (stopSignal.aborted) return null;
 		this.activeOwnedId = ownedId;
@@ -155,6 +170,13 @@ export class EditorSessionController {
 		return true;
 	}
 
+	/** Stop owning a session whose files couldn't be shown, so leaving it can't
+	 *  save its empty editor over the tabs it had. */
+	releaseOwnership(): void {
+		this.activeOwnedId = null;
+		this.activeSnapshot = null;
+	}
+
 	/** Drops file-backed editor state after the session moves to another checkout. */
 	async resetForCheckoutChange(stopSignal: AbortSignal): Promise<void> {
 		if (stopSignal.aborted) return;
@@ -168,6 +190,9 @@ export class EditorSessionController {
 	private async checkpointActiveWorkspace(stopSignal: AbortSignal, attachmentIds?: readonly string[]): Promise<void> {
 		const ownedId = this.activeOwnedId;
 		if (!ownedId || stopSignal.aborted) return;
+		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
+		if (session?.executionEnvironment === 'remote'
+			&& rail.remoteConnections[session.remoteProfileId ?? ''] !== 'connected') return;
 		const panel = this.panel;
 		const ownedPaths = panel?.workspaceOwnedPaths()
 			?? editorState.openFiles.map((file) => file.path);

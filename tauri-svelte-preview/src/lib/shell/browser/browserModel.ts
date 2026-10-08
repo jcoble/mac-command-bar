@@ -418,7 +418,10 @@ export function selectBrowserTab(
   updateActiveGeneration(context, context.workspace.tabs[tabId]);
   context.workspace.error = null;
   const tab = context.workspace.tabs[tabId];
-  if (context.workspace.activated) {
+  // Only a page meant to be on screen is shown. Choosing a tab while the view
+  // is put away (an editor in front, a tab closed behind it) must not bring the
+  // page back over whatever is in front; the panel shows it when it places it.
+  if (context.workspace.activated && isExpandedBrowserMode(context.workspace.presentation)) {
     const target = backendTarget(tab);
     callBackend(context, () => context.backend!.show_browser_tab(target), (error) => setWorkspaceError(context, error), () => isCurrentBackendTarget(context, target));
   }

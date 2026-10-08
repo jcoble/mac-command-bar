@@ -7,23 +7,25 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { compileModule } from 'svelte/compiler';
 import { get } from 'svelte/store';
-import { applyConversationEvent, createConversationState, shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
-import { conversationDisplayItems } from '../src/lib/shell/conversation/conversationMessages.ts';
-import type { ConversationSessionState } from '../src/lib/shell/conversation/conversationTypes.ts';
-const display = (state: ConversationSessionState) => conversationDisplayItems(state.transcript.getMessages());
+import { EventType, StreamProcessor, type StreamChunk } from '@tanstack/ai/client';
+import { shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
+import { conversationChunksFromEvent, conversationDisplayItems, conversationMessagesAfterCustom, conversationMessagesFromEvents, conversationSnapshotChunks } from '../src/lib/shell/conversation/conversationMessages.ts';
+import { agentItemFromEvent, displayItemFromAgentItem } from '../src/lib/shell/conversation/conversationTimeline.ts';
+
+function applyNativeChunks(processor: StreamProcessor, event: any): StreamChunk[] {
+  const chunks = conversationChunksFromEvent(processor.getMessages(), event);
+  for (const chunk of chunks) {
+    if (chunk.type === EventType.CUSTOM) {
+      processor.setMessages(conversationMessagesAfterCustom(
+        processor.getMessages(), chunk.name, chunk.value
+      ));
+    } else processor.processChunk(chunk);
+  }
+  return chunks;
+}
 import { sessionPresenceHistory, sessionPresenceEventFromConversation, synchronizeSessionPresenceWork, deriveSessionPresence, EMPTY_SESSION_PRESENCE_HISTORY } from '../src/lib/shell/conversation/sessionPresence.ts';
-import { onWorkspaceFileChange } from '../src/lib/shell/workspaceFileChangeBus.ts';
 
 type ProviderName = 'codex' | 'claude';
-type ConnectionState = 'connected' | 'connecting' | 'reconnecting';
-
-interface ConversationConnectionUpdate {
-  ownedId: string;
-  provider: ProviderName;
-  generation: number;
-  state: ConnectionState;
-  nativeSessionId?: string;
-}
 
 interface AgentConversationEvent<TPayload = Record<string, unknown>> {
   ownedId: string;
@@ -32,42 +34,6 @@ interface AgentConversationEvent<TPayload = Record<string, unknown>> {
   sequence: number;
   timestampMs: number;
   payload: TPayload;
-}
-
-interface AgentConversationSnapshot<TPayload = Record<string, unknown>> {
-  connection: ConversationConnectionUpdate;
-  suspended?: boolean;
-  lastSequence: number;
-  events: AgentConversationEvent<TPayload>[];
-}
-
-interface ConversationCapabilitySet {
-  revision: number;
-  provider: ProviderName;
-  implementation: { name: string; version: string };
-  session: {
-    list: boolean;
-    load: boolean;
-    resume: boolean;
-    close: boolean;
-    steering: boolean;
-  };
-  prompt: {
-    text: boolean;
-    image: boolean;
-    embeddedContext: boolean;
-    resourceLinks: boolean;
-  };
-  interaction: {
-    permissions: boolean;
-    structuredUserInput: boolean;
-    toolTerminals: boolean;
-    plans: boolean;
-    tasks: boolean;
-    subagents: boolean;
-  };
-  configOptions: unknown[];
-  commands: unknown[];
 }
 
 const storePath = fileURLToPath(
@@ -86,10 +52,6 @@ const diagnosticsOutputPath = fileURLToPath(
   new URL('../src/lib/shell/.resourceDiagnostics.test.mjs', import.meta.url)
 );
 
-const surfaceSource = readFileSync(
-  new URL('../src/lib/shell/components/ConversationSurface.svelte', import.meta.url),
-  'utf8'
-);
 // Node has no bundler, so the build-time flag both modules read is compiled
 // out as false, which is what the shipped app sees.
 function compileForTest(modulePath: string, filename: string): string {
@@ -120,13 +82,121 @@ const a = store.ensureConversationSession('owned-a', 'codex');
 const b = store.ensureConversationSession('owned-b', 'claude');
 assert.notEqual(a, b);
 
-// The first config read can finish before a fresh session connects. Its
-// connection transition must trigger another read without a row re-selection.
-// WIP: disabled - source-text assertion on component/service source, drifted behind the code.
-// assert.match(
-//   surfaceSource,
-//   /const key = `\$\{ownedId\}:\$\{generation\}:\$\{conversation\.connectionState\}`;/
-// );
+// Live native text and tools enter TanStack through standard chunks. CUSTOM is
+// reserved for the two targeted patches the standard protocol cannot express.
+{
+  const processor = new StreamProcessor();
+  const base = {
+    type: 'item.completed', ownedId: 'chunk-owner', provider: 'codex',
+    providerInstanceId: 'fixture', generation: 1, sequence: 1,
+    timestampMs: 10, nativeSessionId: 'native', rawFrameReference: { id: 'raw', redacted: true }
+  };
+  const authority = {
+    ...base,
+    itemId: 'assistant-1',
+    payload: {
+      kind: 'assistantMessage', itemId: 'assistant-1', text: 'Hello', completed: true,
+      blocks: [{ type: 'paragraph', text: 'Hello' }]
+    },
+    providerMetadata: {}
+  };
+  const authorityChunks = applyNativeChunks(processor, authority);
+  assert.deepEqual(authorityChunks.map((chunk) => chunk.type), [
+    EventType.TEXT_MESSAGE_START, EventType.TEXT_MESSAGE_CONTENT, EventType.TEXT_MESSAGE_END
+  ]);
+  assert.equal(processor.getMessages()[0].metadata?.blocks?.[0]?.text, 'Hello');
+
+  const deltaChunks = applyNativeChunks(processor, {
+    ...base, type: 'content.delta', sequence: 2, timestampMs: 20, itemId: 'assistant-1',
+    payload: { kind: 'assistantDelta', itemId: 'assistant-1', text: ' again' },
+    providerMetadata: {}
+  });
+  assert.equal(deltaChunks.some((chunk) => chunk.type === EventType.CUSTOM
+    && chunk.name === 'assembly:stale-markdown'), true);
+  assert.equal(processor.getMessages()[0].parts[0].content, 'Hello again');
+  assert.equal('blocks' in (processor.getMessages()[0].metadata ?? {}), false);
+
+  applyNativeChunks(processor, {
+    ...base, type: 'item.started', sequence: 3, timestampMs: 30, itemId: 'tool-1',
+    payload: { kind: 'tool', itemId: 'tool-1', name: 'Read file', state: 'started', rawInput: { path: 'a.ts' }, output: 'one' },
+    providerMetadata: {}
+  });
+  const terminalChunks = applyNativeChunks(processor, {
+    ...base, sequence: 4, timestampMs: 40, itemId: 'tool-1',
+    payload: { kind: 'tool', itemId: 'tool-1', name: 'Tool', state: 'completed' },
+    providerMetadata: {}
+  });
+  assert.equal(terminalChunks.some((chunk) => chunk.type === EventType.TOOL_CALL_RESULT), true);
+  const call = processor.getMessages().find((message) => message.id === 'tool-1')?.parts
+    .find((part) => part.type === 'tool-call');
+  assert.equal(call?.name, 'Read file');
+  assert.equal(call?.arguments, JSON.stringify({ path: 'a.ts' }));
+  assert.equal((call?.output as { output?: string })?.output, 'one');
+
+  const correctionChunks = applyNativeChunks(processor, {
+    ...base, sequence: 5, timestampMs: 50, itemId: 'assistant-1',
+    payload: { kind: 'assistantMessage', itemId: 'assistant-1', text: 'Corrected', completed: true },
+    providerMetadata: {}
+  });
+  assert.equal(correctionChunks[0]?.type, EventType.MESSAGES_SNAPSHOT);
+  const afterCorrection = applyNativeChunks(processor, {
+    ...base, type: 'content.delta', sequence: 6, timestampMs: 60, itemId: 'assistant-1',
+    payload: { kind: 'assistantDelta', itemId: 'assistant-1', text: ' plus' },
+    providerMetadata: {}
+  });
+  assert.equal(afterCorrection.some((chunk) => chunk.type === EventType.TEXT_MESSAGE_START), false);
+  assert.equal(processor.getMessages().find((message) => message.id === 'assistant-1')?.parts[0].content, 'Corrected plus');
+
+  const authoritative = processor.getMessages().map((message) => message.id === 'tool-1'
+    ? { ...message, metadata: { ...message.metadata, lastSequence: 7 }, parts: message.parts.flatMap((part) =>
+        part.type === 'tool-result' ? [] : part.type === 'tool-call'
+          ? [{ ...part, state: 'input-complete' as const, input: { path: 'a.ts' }, output: { output: 'live' }, metadata: { native: true } }]
+          : [part]) }
+    : message);
+  for (const chunk of conversationSnapshotChunks(authoritative)) {
+    if (chunk.type === EventType.CUSTOM) processor.setMessages(conversationMessagesAfterCustom(processor.getMessages(), chunk.name, chunk.value));
+    else processor.processChunk(chunk);
+  }
+  const running = processor.getMessages().find((message) => message.id === 'tool-1');
+  const runningCall = running?.parts.find((part) => part.type === 'tool-call');
+  assert.equal(runningCall?.state, 'input-complete');
+  assert.deepEqual(runningCall?.input, { path: 'a.ts' });
+  assert.deepEqual(runningCall?.output, { output: 'live' });
+  assert.equal(running?.parts.some((part) => part.type === 'tool-result'), false);
+  assert.equal(running?.metadata?.lastSequence, 7);
+
+  // A page with many unfinished historical tools must publish a constant number
+  // of message arrays, while keeping each native tool's state and output.
+  assert.ok(runningCall?.type === 'tool-call');
+  const retained = Array.from({ length: 200 }, (_, index) => ({
+    id: 'running-' + index, role: 'assistant' as const, metadata: running?.metadata,
+    parts: [{ ...runningCall, id: 'running-' + index }]
+  }));
+  const pageChunks = conversationSnapshotChunks(retained);
+  assert.equal(pageChunks.length, 2, 'one snapshot and one restoration batch regardless of tool count');
+  let publications = 0;
+  const paged = new StreamProcessor({ events: { onMessagesChange: () => { publications++; } } });
+  for (const chunk of pageChunks) {
+    if (chunk.type === EventType.CUSTOM) paged.setMessages(conversationMessagesAfterCustom(paged.getMessages(), chunk.name, chunk.value));
+    else paged.processChunk(chunk);
+  }
+  assert.equal(publications, 2, 'history admission must not republish once per running tool');
+  assert.deepEqual(paged.getMessages(), retained);
+
+  const optimistic = new StreamProcessor();
+  optimistic.addUserMessage('Hello', 'optimistic');
+  for (const chunk of conversationSnapshotChunks(optimistic.getMessages().map((message) => ({ ...message, id: 'native-user' })))) {
+    if (chunk.type === EventType.CUSTOM) optimistic.setMessages(conversationMessagesAfterCustom(optimistic.getMessages(), chunk.name, chunk.value));
+    else optimistic.processChunk(chunk);
+  }
+  applyNativeChunks(optimistic, {
+    ...base, sequence: 8, timestampMs: 80, itemId: 'native-user',
+    payload: { kind: 'userMessage', itemId: 'native-user', text: 'Hello', completed: true },
+    providerMetadata: {}
+  });
+  assert.equal(optimistic.getMessages().length, 1);
+  assert.equal(optimistic.getMessages()[0].metadata?.startedAtMs, 80);
+}
 
 store.setConversationDraft('owned-a', 'Message A');
 store.setConversationDraft('owned-b', 'Message B');
@@ -136,34 +206,76 @@ assert.equal(store.getConversationSession('owned-a').mode, 'structured');
 assert.equal(store.getConversationSession('owned-b').draft, 'Message B');
 assert.equal(store.getConversationSession('owned-b').mode, 'raw');
 
-store.applyConversationTranscript('owned-a', 'codex', {
-  messages: [{ itemId: 'parent-a', role: 'assistant', text: 'Parent A', timestampMs: 1 }],
-  metadata: {
-    model: 'gpt-5.6-sol', effort: 'medium', approvalPolicy: 'never',
-    usedTokens: 1000, contextWindow: 10000
+
+store.applySelectedConversationSnapshotState('owned-a', 'owned-a', {
+  connection: {
+    ownedId: 'owned-a', provider: 'codex', generation: 1,
+    state: 'connected', nativeSessionId: 'thread-a'
   },
-  children: [{
-    childId: 'child-a', parentId: 'thread-a', provider: 'codex', label: 'Reviewer',
-    state: 'active', updatedAtMs: 2
-  }]
+  suspended: false,
+  page: {
+    items: [], events: [], turns: [], hasBefore: false, hasEarlierTranscript: false, hasAfter: false,
+    watermark: 0, transferBytes: 0, oversized: false
+  },
+  pendingEvents: [{
+    ownedId: 'owned-a', provider: 'codex', generation: 1, sequence: 10, timestampMs: 1,
+    payload: {
+      kind: 'childUpdate', childId: 'restored-child', parentToolCallId: 'tool-parent',
+      transcriptId: 'durable-restored-child', label: 'Restored child', state: 'completed'
+    }
+  }], pendingSequence: 10
 });
+assert.equal(store.getConversationSession('owned-a').children[0]?.childId, 'restored-child',
+  'authoritative child metadata restores outside the bounded content page');
 store.setConversationAttachments('owned-a', [{
   id: 'image-a', name: 'a.png', mimeType: 'image/png', path: '/managed/a.png', previewUrl: 'blob:a'
 }]);
 store.setConversationSelectedChild('owned-a', 'child-a');
-store.setConversationScrollTop('owned-a', 240);
-store.applyChildConversationTranscript('owned-a', 'child-a', [
-  { itemId: 'child-message', role: 'assistant', text: 'Child A', timestampMs: 3 }
-]);
-assert.equal(store.getConversationSession('owned-a').metadata.model, 'gpt-5.6-sol');
-// WIP: disabled. The child record field is `title` since 81962044.
-// assert.equal(store.getConversationSession('owned-a').children[0].label, 'Reviewer');
-assert.equal(store.getConversationSession('owned-a').attachments[0].path, '/managed/a.png');
-assert.equal(conversationDisplayItems(store.getConversationSession('owned-a').childTranscript.getMessages())[0].text, 'Child A');
-assert.equal(store.getConversationSession('owned-a').scrollTop, 240);
-assert.equal(store.getConversationSession('owned-b').metadata.model, null);
-assert.equal(store.getConversationSession('owned-b').children.length, 0);
-assert.equal(store.getConversationSession('owned-b').attachments.length, 0);
+store.ensureConversationSession('opaque-child-history', 'claude');
+store.applySelectedConversationSnapshotState('opaque-child-history', 'opaque-child-history', {
+  connection: { ownedId: 'opaque-child-history', provider: 'claude', generation: 9, state: 'disconnected' },
+  suspended: false,
+  activeTurnId: 'child-turn',
+  page: {
+    items: [], events: [], turns: [{ turnId: 'child-turn', terminalState: 'completed' }],
+    hasBefore: true, hasEarlierTranscript: true, hasAfter: false,
+    watermark: 20, transferBytes: 40, oversized: false
+  },
+  pendingEvents: [], pendingSequence: 20
+}, false);
+assert.equal(store.getConversationSession('owned-a').generation, 1, 'child snapshots preserve parent generation');
+assert.equal(store.getConversationSession('owned-a').connectionState, 'connected', 'child snapshots preserve parent controls');
+assert.equal(store.getConversationSession('owned-a').selectedHistoryOwnedId, 'owned-a');
+assert.equal(store.getConversationSession('opaque-child-history').selectedHistoryOwnedId, 'opaque-child-history');
+assert.equal(store.getConversationSession('opaque-child-history').selectedHasBefore, true);
+store.applySelectedConversationEventState('owned-a', {
+  ownedId: 'owned-a', provider: 'codex', generation: 2, sequence: 11, timestampMs: 2,
+  payload: { kind: 'connection', state: 'connecting' }
+});
+assert.equal(store.getConversationSession('owned-a').generation, 2);
+assert.equal(store.getConversationSession('owned-a').desynchronized, false, 'journal sequence continues across runtime generations');
+assert.equal(store.getConversationSession('owned-a').connectionState, 'connecting');
+store.applySelectedConversationEventState('owned-a', {
+  ownedId: 'owned-a', provider: 'codex', generation: 2, sequence: 12, timestampMs: 3,
+  payload: { kind: 'approval', requestId: 'parent-approval', turnId: 'parent-turn', itemId: 'tool',
+    title: 'Allow?', options: [{ id: 'yes', label: 'Yes', action: 'allow_once' }] }
+});
+assert.ok(store.getConversationSession('owned-a').pendingApprovals['parent-approval']);
+store.applySelectedConversationEventState('owned-a', {
+  ownedId: 'owned-a', provider: 'codex', generation: 2, sequence: 11, timestampMs: 4,
+  payload: {
+    kind: 'childUpdate', childId: 'restored-child', parentToolCallId: 'tool-parent',
+    transcriptId: 'durable-restored-child', label: 'Restored child', state: 'running'
+  }
+});
+assert.equal(store.getConversationSession('owned-a').children[0]?.state, 'completed',
+  'stale child updates cannot overwrite authoritative snapshot controls');
+assert.deepEqual(store.getConversationSession('opaque-child-history').selectedTurns, [{
+  turnId: 'child-turn', terminalState: 'completed'
+}], 'parent controls do not enter child turn facts');
+assert.equal('transcript' in store.getConversationSession('owned-a'), false);
+assert.equal('childTranscript' in store.getConversationSession('owned-a'), false);
+assert.equal('loadedEvents' in store.getConversationSession('owned-a'), false);
 
 store.setConversationConnection({
   ownedId: 'owned-b', provider: 'claude', generation: 2, state: 'connecting'
@@ -172,766 +284,21 @@ assert.equal(store.setConversationWriterLeaseTransition({
   ownedId: 'owned-b', generation: 2, from: 'none', to: 'terminal', state: 'committed'
 }), true);
 assert.equal(store.getConversationSession('owned-b').executionOwner, 'terminal');
-assert.equal(store.getConversationSession('owned-b').writerLease.owner, 'terminal');
-assert.equal(store.getConversationSession('owned-a').executionOwner, 'stopped');
-assert.equal(store.setConversationWriterLeaseTransition({
-  ownedId: 'owned-b', generation: 1, from: 'terminal', to: 'structured', state: 'committed'
-}), false);
 
-store.applyAgentConversationEvent({
-  ownedId: 'owned-a',
+store.setConversationCapabilities('owned-a', 2, {
+  revision: 1,
   provider: 'codex',
-  generation: 1,
-  sequence: 1,
-  timestampMs: 100,
-  payload: { kind: 'assistantMessage', itemId: 'a-1', text: 'Only A', completed: true }
-});
-assert.equal(display(store.getConversationSession('owned-a')).length, 2);
-assert.equal(display(store.getConversationSession('owned-b')).length, 0);
-
-// A completed structured file edit publishes its retained path once, even
-// when the provider's completion update omits the path and diff.
-{
-  const changes: Array<{ ownedId: string; path: string }> = [];
-  const unsubscribe = onWorkspaceFileChange((change) => changes.push(change));
-  const ownedId = 'owned-file-change';
-  store.ensureConversationSession(ownedId, 'codex');
-  store.applyAgentConversationEvent({
-    ownedId, provider: 'codex', generation: 1, sequence: 1, timestampMs: 110,
-    payload: {
-      kind: 'tool', itemId: 'edit-1', name: 'Editing files', state: 'started',
-      path: '/workspace/new.txt', diff: '@@ -0,0 +1 @@\n+created\n'
-    }
-  });
-  assert.deepEqual(changes, []);
-  store.applyAgentConversationEvent({
-    ownedId, provider: 'codex', generation: 1, sequence: 2, timestampMs: 120,
-    payload: { kind: 'tool', itemId: 'edit-1', name: 'Tool', state: 'completed' }
-  });
-  assert.deepEqual(changes, [{ ownedId, path: '/workspace/new.txt' }]);
-  unsubscribe();
-}
-
-// Live subagent updates create one durable row, then update that same row
-// without losing the spawn label when a completion update omits it.
-{
-  const ownedId = 'owned-live-child';
-  store.ensureConversationSession(ownedId, 'codex');
-  store.applyAgentConversationEvent({
-    ownedId, provider: 'codex', generation: 1, sequence: 1, timestampMs: 150,
-    payload: {
-      kind: 'childUpdate', childId: 'child-live', parentToolCallId: 'parent-tool',
-      label: 'Review the change', state: 'running', latestActivity: 'Review the change'
-    }
-  });
-  store.applyAgentConversationEvent({
-    ownedId, provider: 'codex', generation: 1, sequence: 2, timestampMs: 160,
-    payload: {
-      kind: 'childUpdate', childId: 'child-live', parentToolCallId: 'parent-tool',
-      state: 'finished', latestActivity: 'Review complete'
-    }
-  });
-  // WIP: disabled. The child record field is `title` since 81962044, not `label`.
-  // assert.deepEqual(store.getConversationSession(ownedId).children, [{
-  //   childId: 'child-live', parentId: 'parent-tool', parentToolCallId: 'parent-tool',
-  //   provider: 'codex', label: 'Review the change', state: 'finished',
-  //   latestActivity: 'Review complete', updatedAtMs: 160
-  // }]);
-
-  // Canonical transcript projections use the same merge path and may add a
-  // different child without replacing finished rows from this session.
-  store.applyAgentConversationEvent({
-    ownedId, provider: 'codex', generation: 1, sequence: 3, timestampMs: 170,
-    payload: {
-      kind: 'terminalProjection', eventType: 'children.updated',
-      providerInstanceId: 'fixture', timestampMs: 170, nativeSessionId: 'thread-live',
-      itemId: null, providerMetadata: {}, rawFrameReference: { id: 'raw-1', redacted: true },
-      payload: { children: [{
-        childId: 'child-two', parentId: 'thread-live', provider: 'codex',
-        label: 'Inspect tests', state: 'historical', updatedAtMs: 165,
-        latestActivity: 'Inspecting tests'
-      }] }
-    }
-  });
-  assert.equal(store.getConversationSession(ownedId).children.length, 2);
-  assert.equal(store.getConversationSession(ownedId).children[0].state, 'finished');
-  assert.equal(store.getConversationSession(ownedId).children[1].latestActivity, 'Inspecting tests');
-}
-
-// A live turn start keeps the composer busy; only a terminal turn clears it.
-store.setConversationSending('owned-a', true);
-const startedTurn: any = {
-  ownedId: 'owned-a',
-  provider: 'codex',
-  generation: 1,
-  sequence: 2,
-  timestampMs: 130,
-  payload: { kind: 'turn', turnId: 'turn-live', state: 'started' }
-};
-store.applyAgentConversationEvent(startedTurn);
-if (shouldClearConversationSending(startedTurn)) {
-  store.setConversationSending('owned-a', false);
-}
-assert.equal(store.getConversationSession('owned-a').sending, true);
-
-const completedTurn: any = {
-  ...startedTurn,
-  sequence: 3,
-  timestampMs: 140,
-  payload: { kind: 'turn', turnId: 'turn-live', state: 'completed' }
-};
-store.applyAgentConversationEvent(completedTurn);
-if (shouldClearConversationSending(completedTurn)) {
-  store.setConversationSending('owned-a', false);
-}
-assert.equal(store.getConversationSession('owned-a').sending, false);
-
-// A native snapshot repairs a missed-event gap and restores every message.
-store.applyAgentConversationSnapshot({
-  connection: {
-    ownedId: 'owned-a',
-    provider: 'codex',
-    generation: 1,
-    state: 'connected',
-    nativeSessionId: 'thread-a'
+  implementation: { name: 'fixture', version: '1' },
+  session: { list: true, load: true, resume: true, close: true, steering: true },
+  prompt: { text: true, image: false, embeddedContext: true, resourceLinks: true },
+  interaction: {
+    permissions: true, structuredUserInput: true, toolTerminals: true,
+    plans: true, tasks: true, subagents: true
   },
-  suspended: true,
-  lastSequence: 3,
-  events: [
-    {
-      ownedId: 'owned-a', provider: 'codex', generation: 1, sequence: 1, timestampMs: 100,
-      payload: { kind: 'connection', state: 'connected', nativeSessionId: 'thread-a' }
-    },
-    {
-      ownedId: 'owned-a', provider: 'codex', generation: 1, sequence: 2, timestampMs: 110,
-      payload: { kind: 'userMessage', itemId: 'user-1', text: 'Visible question', completed: true }
-    },
-    {
-      ownedId: 'owned-a', provider: 'codex', generation: 1, sequence: 3, timestampMs: 120,
-      payload: { kind: 'assistantMessage', itemId: 'assistant-1', text: 'Visible answer', completed: true }
-    }
-  ]
+  configOptions: [],
+  commands: []
 });
-assert.equal(store.getConversationSession('owned-a').suspended, true);
-assert.deepEqual(
-  display(store.getConversationSession('owned-a')).map((item: { text: any; }) => item.text),
-  ['Visible question', 'Visible answer']
-);
-assert.equal(store.getConversationSession('owned-a').desynchronized, false);
-
-// A missing live event must not briefly paint later tool updates out of order.
-{
-  const ownedId = 'owned-gapped-live';
-  const connection = { ownedId, provider: 'codex' as const, generation: 1, state: 'connected' as const };
-  const event = (sequence: number, payload: Record<string, unknown>) => ({
-    ownedId, provider: 'codex' as const, generation: 1, sequence,
-    timestampMs: sequence * 10, payload
-  });
-  const first = event(1, { kind: 'assistantMessage', itemId: 'prior', text: 'Earlier answer', completed: true });
-  const missing = event(2, { kind: 'userMessage', itemId: 'question', text: 'New question', completed: true });
-  const toolStart = event(3, { kind: 'tool', itemId: 'tool', name: 'Bash', state: 'started' });
-  const toolUpdate = event(4, { kind: 'tool', itemId: 'tool', name: 'Bash', state: 'completed', output: 'done' });
-  store.applyAgentConversationSnapshot({ connection, lastSequence: 1, events: [first] });
-  store.applyAgentConversationEvent(toolStart);
-  store.applyAgentConversationEvent(toolUpdate);
-  const beforeRepair = store.getConversationSession(ownedId);
-  assert.equal(beforeRepair.desynchronized, true);
-  assert.deepEqual(display(beforeRepair).map((item: { itemId: string }) => item.itemId), ['prior']);
-  assert.deepEqual(beforeRepair.transcript.getMessages().map((item: { id: string }) => item.id), ['prior']);
-  store.applyAgentConversationSnapshot({ connection, lastSequence: 4, events: [first, missing, toolStart, toolUpdate] });
-  const repaired = store.getConversationSession(ownedId);
-  assert.equal(repaired.desynchronized, false);
-  assert.deepEqual(display(repaired).map((item: { itemId: string }) => item.itemId), ['prior', 'question', 'tool']);
-  assert.equal(display(repaired).find((item: { itemId: string }) => item.itemId === 'tool')?.output, 'done');
-}
-
-// A session picked up from a past Claude or Codex transcript stores every event
-// wrapped in a terminal projection, with the real event one level further down.
-// The live path unwraps that wrapper before it types the item; snapshot restore
-// read the wrapper itself, so each imported row arrived as an empty `unknown`
-// and a resumed session painted nothing at all.
-{
-  interface ImportedConversationContentPart {
-    channel: string;
-    text: string;
-  }
-
-  interface ImportedConversationItem {
-    id: string;
-    type: string;
-    content: ImportedConversationContentPart[];
-  }
-
-  interface ImportedConversationItemPayload {
-    historical: boolean;
-    item: ImportedConversationItem;
-  }
-
-  interface ImportedConversationTerminalProjection {
-    kind: 'terminalProjection';
-    eventType: 'item.completed';
-    providerInstanceId: string;
-    timestampMs: null;
-    nativeSessionId: string;
-    itemId: string;
-    payload: ImportedConversationItemPayload;
-  }
-
-  interface ImportedConversationEvent {
-    ownedId: string;
-    provider: 'claude';
-    generation: number;
-    sequence: number;
-    timestampMs: number;
-    payload: ImportedConversationTerminalProjection;
-  }
-
-  const importedEvent = (
-    sequence: number,
-    itemId: string,
-    type: string,
-    text: string
-  ): ImportedConversationEvent => ({
-    ownedId: 'owned-imported',
-    provider: 'claude',
-    generation: 0,
-    sequence,
-    timestampMs: 300 + sequence,
-    payload: {
-      kind: 'terminalProjection',
-      eventType: 'item.completed',
-      providerInstanceId: 'imported-transcript:native-imported',
-      timestampMs: null,
-      nativeSessionId: 'native-imported',
-      itemId,
-      payload: {
-        historical: true,
-        item: { id: itemId, type, content: [{ channel: 'assistant', text }] }
-      }
-    }
-  });
-
-  store.applyAgentConversationSnapshot({
-    connection: {
-      ownedId: 'owned-imported',
-      provider: 'claude',
-      generation: 0,
-      state: 'connected',
-      nativeSessionId: 'native-imported'
-    },
-    lastSequence: 2,
-    events: [
-      importedEvent(1, 'imported-user-1', 'user-message', 'Imported question'),
-      importedEvent(2, 'imported-assistant-1', 'assistant-message', 'Imported answer')
-    ]
-  });
-
-  const imported = store.getConversationSession('owned-imported');
-  assert.deepEqual(
-    imported.transcript.getMessages().map((item) => item.metadata.itemType),
-    ['user-message', 'assistant-message'],
-    'restore must type an imported transcript the way the live path does'
-  );
-  assert.deepEqual(
-    imported.transcript.getMessages().map((item) => item.parts.map((part) => part.content ?? '').join('')),
-    ['Imported question', 'Imported answer'],
-    'a restored imported transcript keeps its text instead of becoming empty unknown items'
-  );
-}
-
-// A send failure belongs to the session it happened in. The conversation
-// surface is mounted once for the whole shell, so a failure held there was
-// painted under every session and outlived the send that fixed it.
-{
-  store.setConversationSendError('owned-a', 'This conversation is closed, so the message was not sent');
-  assert.equal(
-    store.getConversationSession('owned-a').sendError,
-    'This conversation is closed, so the message was not sent'
-  );
-  assert.equal(store.getConversationSession('owned-b').sendError, '', 'a failure in one session never surfaces in another');
-  store.setConversationSendError('owned-a', '');
-  assert.equal(store.getConversationSession('owned-a').sendError, '', 'the next send clears the session it belongs to');
-}
-
-// An attachment failure belongs to its session for the same reason, and the
-// notice carries a dismiss: held on the surface it could not be cleared at all
-// and followed the reader into every other conversation.
-{
-  store.setConversationAttachmentError('owned-a', 'That file link could not be opened.');
-  assert.equal(
-    store.getConversationSession('owned-a').attachmentError,
-    'That file link could not be opened.'
-  );
-  assert.equal(
-    store.getConversationSession('owned-b').attachmentError,
-    '',
-    'an attachment failure in one session never surfaces in another'
-  );
-  store.setConversationAttachmentError('owned-a', '');
-  assert.equal(
-    store.getConversationSession('owned-a').attachmentError,
-    '',
-    'dismissing the notice clears the session it belongs to'
-  );
-}
-
-// A file link that lands outside the workspace opens read-only rather than
-// leaving a notice: reading a file the session does not own is safe, and
-// refusing it left no way to see what the link pointed at.
-// WIP: disabled - source-text assertion on component/service source, drifted behind the code.
-// assert.match(surfaceSource, /readOnly: outside/);
-// WIP: disabled - source-text assertion on component/service source, drifted behind the code.
-// assert.doesNotMatch(surfaceSource, /outside the active workspace/);
-
-// Re-ensuring a suspended session opens a new adapter incarnation that has no
-// events of its own yet, so the snapshot's history all belongs to the previous
-// one. The replayed transcript must survive and the session must still hold the
-// connection's generation, or the next send is addressed to an incarnation the
-// backend has already replaced.
-{
-  store.applyAgentConversationSnapshot({
-    connection: {
-      ownedId: 'owned-reensured', provider: 'codex', generation: 2,
-      state: 'connecting', nativeSessionId: 'thread-reensured'
-    },
-    lastSequence: 2,
-    events: [
-      {
-        ownedId: 'owned-reensured', provider: 'codex', generation: 1, sequence: 1, timestampMs: 200,
-        payload: { kind: 'userMessage', itemId: 'user-1', text: 'Earlier question', completed: true }
-      },
-      {
-        ownedId: 'owned-reensured', provider: 'codex', generation: 1, sequence: 2, timestampMs: 210,
-        payload: { kind: 'assistantMessage', itemId: 'assistant-1', text: 'Earlier answer', completed: true }
-      }
-    ]
-  });
-  assert.equal(store.getConversationSession('owned-reensured').generation, 2);
-  assert.equal(store.getConversationSession('owned-reensured').writerLease.generation, 2);
-  assert.deepEqual(
-    display(store.getConversationSession('owned-reensured')).map((item: { text: any; }) => item.text),
-    ['Earlier question', 'Earlier answer']
-  );
-}
-
-// Snapshot replay can repeat completed history after unrelated journal events.
-// The first repeated stable item identifies the contiguous replay block, so
-// both that item and the following replay-only items render zero extra rows.
-{
-  store.applyAgentConversationSnapshot({
-    connection: {
-      ownedId: 'owned-nonconsecutive-replay', provider: a.provider, generation: 1,
-      state: 'connected', nativeSessionId: 'thread-nonconsecutive-replay'
-    },
-    lastSequence: 6,
-    events: [
-      {
-        ownedId: 'owned-nonconsecutive-replay', provider: a.provider, generation: 1,
-        sequence: 1, timestampMs: 600,
-        payload: { kind: 'assistantMessage', itemId: 'complete-item', text: 'Complete answer', completed: true }
-      },
-      {
-        ownedId: 'owned-nonconsecutive-replay', provider: a.provider, generation: 1,
-        sequence: 2, timestampMs: 610,
-        payload: { kind: 'turn', turnId: 'stored-turn', state: 'completed' }
-      },
-      {
-        ownedId: 'owned-nonconsecutive-replay', provider: a.provider, generation: 1,
-        sequence: 3, timestampMs: 620,
-        payload: { kind: 'usage', usedTokens: 10 }
-      },
-      {
-        ownedId: 'owned-nonconsecutive-replay', provider: a.provider, generation: 1,
-        sequence: 4, timestampMs: 630,
-        payload: { kind: 'assistantMessage', itemId: 'complete-item', text: 'Complete answer', completed: true }
-      },
-      {
-        ownedId: 'owned-nonconsecutive-replay', provider: a.provider, generation: 1,
-        sequence: 5, timestampMs: 640,
-        payload: { kind: 'assistantMessage', itemId: 'replayed-next-item', text: 'Replay-only answer', completed: true }
-      },
-      {
-        ownedId: 'owned-nonconsecutive-replay', provider: a.provider, generation: 1,
-        sequence: 6, timestampMs: 650,
-        payload: { kind: 'turn', turnId: 'replay-finished', state: 'completed' }
-      }
-    ]
-  });
-  const assistantRows = display(store.getConversationSession('owned-nonconsecutive-replay'))
-    .filter((item: { kind: string; }) => item.kind === 'assistant');
-  assert.equal(assistantRows.length, 1);
-  assert.equal(assistantRows[0].text, 'Complete answer');
-  assert.equal(store.getConversationSession('owned-nonconsecutive-replay').transcript.getMessages().length, 1);
-  assert.equal(store.getConversationSession('owned-nonconsecutive-replay').transcript.getMessages()[0].parts[0].content, 'Complete answer');
-}
-
-// Live deltas mutate only the touched leaves and advance a cheap numeric revision.
-{
-  const ownedId = 'owned-live-identity';
-  store.applyAgentConversationSnapshot({
-    connection: { ownedId, provider: a.provider, generation: 1, state: 'connected' },
-    lastSequence: 2,
-    events: [
-      {
-        ownedId, provider: a.provider, generation: 1, sequence: 1, timestampMs: 700,
-        payload: { kind: 'assistantMessage', itemId: 'settled-item', text: 'Settled', completed: true }
-      },
-      {
-        ownedId, provider: a.provider, generation: 1, sequence: 2, timestampMs: 710,
-        payload: { kind: 'assistantDelta', itemId: 'stream-item', delta: 'First' }
-      }
-    ]
-  });
-  const before = store.getConversationSession(ownedId);
-  const metadata = before.metadata;
-  const settledItem = before.transcript.getMessages()[0];
-  const revision = before.timelineRevision;
-  store.applyAgentConversationEvent({
-    ownedId, provider: a.provider, generation: 1, sequence: 3, timestampMs: 720,
-    payload: { kind: 'assistantDelta', itemId: 'stream-item', delta: ' second' }
-  });
-  const after = store.getConversationSession(ownedId);
-  assert.equal(after, before);
-  assert.equal(after.metadata, metadata);
-  assert.equal(after.transcript, before.transcript);
-  assert.equal(after.transcript.getMessages()[0], settledItem);
-  assert.equal(after.timelineRevision, revision + 1);
-}
-
-// A bounded tail snapshot begins after omitted journal rows without marking
-// itself desynchronized, and replaying stored turn events cannot mutate the
-// live-only presence history.
-{
-  const presenceBefore = get(sessionPresenceHistory)['owned-windowed'];
-  store.applyAgentConversationSnapshot({
-    connection: {
-      ownedId: 'owned-windowed', provider: 'codex', generation: 1,
-      state: 'connected', nativeSessionId: 'thread-windowed'
-    },
-    suspended: true,
-    lastSequence: 502,
-    events: [
-      {
-        ownedId: 'owned-windowed', provider: 'codex', generation: 1,
-        sequence: 501, timestampMs: 500,
-        payload: { kind: 'userMessage', itemId: 'window-user', text: 'Recent question', completed: true }
-      },
-      {
-        ownedId: 'owned-windowed', provider: 'codex', generation: 1,
-        sequence: 502, timestampMs: 510,
-        payload: { kind: 'turn', turnId: 'stored-turn', state: 'completed' }
-      }
-    ]
-  });
-  assert.equal(store.getConversationSession('owned-windowed').desynchronized, false);
-  assert.equal(display(store.getConversationSession('owned-windowed'))[0].text, 'Recent question');
-  assert.equal(get(sessionPresenceHistory)['owned-windowed'], presenceBefore);
-}
-
-// Re-applying the same snapshot is a read repair, not another stream of deltas.
-// Session-row re-entry rebuilds the canonical transcript once, so retained
-// assistant items cannot receive the same delta a second time.
-{
-  const replayedSnapshot = {
-    connection: {
-      ownedId: 'owned-replayed',
-      provider: 'codex',
-      generation: 1,
-      state: 'connected',
-      nativeSessionId: 'thread-replayed'
-    },
-    lastSequence: 2,
-    events: [
-      {
-        ownedId: 'owned-replayed', provider: 'codex', generation: 1, sequence: 1, timestampMs: 200,
-        payload: { kind: 'connection', state: 'connected', nativeSessionId: 'thread-replayed' }
-      },
-      {
-        ownedId: 'owned-replayed', provider: 'codex', generation: 1, sequence: 2, timestampMs: 210,
-        payload: { kind: 'assistantDelta', itemId: 'assistant-replayed', delta: 'One answer' }
-      }
-    ]
-  };
-  store.applyAgentConversationSnapshot(replayedSnapshot);
-  store.applyAgentConversationSnapshot(replayedSnapshot);
-  assert.equal(display(store.getConversationSession('owned-replayed'))[0].text, 'One answer');
-  assert.equal(store.getConversationSession('owned-replayed').transcript.getMessages()[0].parts[0].content, 'One answer');
-  assert.equal(store.getConversationSession('owned-replayed').recentEvents.length, 2);
-}
-
-// Repair journals poisoned by historical replay: identical consecutive full
-// assistant chunks for the same item collapse while a snapshot is rebuilt.
-{
-  store.applyAgentConversationSnapshot({
-    connection: {
-      ownedId: 'owned-poisoned',
-      provider: 'codex',
-      generation: 1,
-      state: 'connected',
-      nativeSessionId: 'thread-poisoned'
-    },
-    lastSequence: 3,
-    events: [
-      {
-        ownedId: 'owned-poisoned', provider: 'codex', generation: 1, sequence: 1, timestampMs: 300,
-        payload: { kind: 'connection', state: 'connected', nativeSessionId: 'thread-poisoned' }
-      },
-      {
-        ownedId: 'owned-poisoned', provider: 'codex', generation: 1, sequence: 2, timestampMs: 310,
-        payload: { kind: 'assistantDelta', itemId: 'assistant-poisoned', delta: 'Recovered answer' }
-      },
-      {
-        ownedId: 'owned-poisoned', provider: 'codex', generation: 1, sequence: 3, timestampMs: 320,
-        payload: { kind: 'assistantDelta', itemId: 'assistant-poisoned', delta: 'Recovered answer' }
-      }
-    ]
-  });
-  assert.equal(display(store.getConversationSession('owned-poisoned'))[0].text, 'Recovered answer');
-  assert.equal(store.getConversationSession('owned-poisoned').transcript.getMessages()[0].parts[0].content, 'Recovered answer');
-}
-
-// Snapshot replay combines stored streaming chunks before rebuilding the
-// canonical transcript. The final answer stays identical without allocating
-// every intermediate string that was visible only while the answer was live.
-{
-  const ownedId = 'owned-streamed-snapshot';
-  const chunks = Array.from({ length: 650 }, (_, index) => `chunk-${index};`);
-  store.applyAgentConversationSnapshot({
-    connection: {
-      ownedId,
-      provider: 'codex',
-      generation: 1,
-      state: 'connected',
-      nativeSessionId: 'thread-streamed'
-    },
-    lastSequence: chunks.length,
-    events: chunks.map((delta, index) => ({
-      ownedId,
-      provider: 'codex',
-      generation: 1,
-      sequence: index + 1,
-      timestampMs: 400 + index,
-      payload: { kind: 'assistantDelta', itemId: 'assistant-streamed', delta }
-    }))
-  });
-  const restored = store.getConversationSession(ownedId);
-  const expected = chunks.join('');
-  assert.equal(display(restored)[0].text, expected);
-  assert.equal(restored.transcript.getMessages()[0].parts[0].content, expected);
-  assert.equal(restored.loadedEvents.length, chunks.length);
-}
-
-// Repeated full tool progress is one stored tool after snapshot replay. The
-// call keeps its original position and the final update keeps the latest diff.
-{
-  const ownedId = 'owned-repeated-tool-snapshot';
-  store.applyAgentConversationSnapshot({
-    connection: {
-      ownedId,
-      provider: 'codex',
-      generation: 1,
-      state: 'connected',
-      nativeSessionId: 'thread-repeated-tool'
-    },
-    lastSequence: 4,
-    events: [
-      {
-        ownedId, provider: 'codex', generation: 1, sequence: 1, timestampMs: 500,
-        payload: { kind: 'tool', itemId: 'tool-diff', name: 'Apply file changes', state: 'started' }
-      },
-      {
-        ownedId, provider: 'codex', generation: 1, sequence: 2, timestampMs: 510,
-        payload: { kind: 'tool', itemId: 'tool-diff', name: '', state: 'updated', path: 'src/a.ts', diff: '-old\n+first' }
-      },
-      {
-        ownedId, provider: 'codex', generation: 1, sequence: 3, timestampMs: 520,
-        payload: { kind: 'tool', itemId: 'tool-diff', name: '', state: 'updated', path: 'src/a.ts', diff: '-old\n+final' }
-      },
-      {
-        ownedId, provider: 'codex', generation: 1, sequence: 4, timestampMs: 530,
-        payload: { kind: 'tool', itemId: 'tool-diff', name: '', state: 'completed' }
-      }
-    ]
-  });
-  const restored = store.getConversationSession(ownedId);
-  assert.equal(restored.transcript.getMessages()[0].parts.find((part) => part.type === 'tool-call')?.name, 'Apply file changes');
-  assert.equal(display(restored)[0].state, 'completed');
-  assert.equal(display(restored)[0].diff, '-old\n+final');
-  assert.equal(restored.loadedEvents.filter((event: AgentConversationEvent) => event.payload.kind === 'tool').length, 2);
-}
-
-// A backend-sized snapshot is rebuilt once without losing the bounded event
-// inspector or duplicating streamed assistant content on a second read.
-{
-  const ownedId = 'owned-large-snapshot';
-  const events = Array.from({ length: 2_000 }, (_, index) => {
-    const turn = Math.floor(index / 10);
-    const offset = index % 10;
-    const payload = offset === 0
-      ? { kind: 'userMessage', itemId: `user-${turn}`, text: `Question ${turn}`, completed: true }
-      : offset === 9
-        ? { kind: 'assistantMessage', itemId: `assistant-${turn}`, text: `Answer ${turn}`, completed: true }
-        : { kind: 'assistantDelta', itemId: `assistant-${turn}`, delta: `chunk ${offset} ` };
-    return {
-      ownedId,
-      provider: 'codex',
-      generation: 1,
-      sequence: index + 1,
-      timestampMs: 1_000 + index,
-      payload
-    };
-  });
-  const snapshot = {
-    connection: {
-      ownedId, provider: 'codex', generation: 1,
-      state: 'connected', nativeSessionId: 'thread-large'
-    },
-    lastSequence: events.length,
-    events
-  };
-  store.applyAgentConversationSnapshot(snapshot);
-  store.applyAgentConversationSnapshot(snapshot);
-  const restored = store.getConversationSession(ownedId);
-  assert.equal(display(restored).length, 400);
-  assert.equal(restored.transcript.getMessages().length, 400);
-  assert.equal(restored.recentEvents.length, 200);
-  assert.equal(restored.transcript.getMessages().at(-1).parts[0].content, 'Answer 199');
-}
-
-// A stale snapshot cannot replace a newer generation.
-store.setConversationConnection({
-  ownedId: 'owned-a', provider: 'codex', generation: 3, state: 'reconnecting'
-});
-assert.equal(store.getConversationSession('owned-a').suspended, false, 'ensuring the conversation clears suspension');
-store.applyAgentConversationSnapshot({
-  connection: { ownedId: 'owned-a', provider: 'codex', generation: 2, state: 'connected' },
-  lastSequence: 0,
-  events: []
-});
-assert.equal(store.getConversationSession('owned-a').generation, 3);
-assert.equal(store.getConversationSession('owned-a').connectionState, 'reconnecting');
-
-// A same-generation snapshot cannot erase a newer live event.
-{
-  const ownedId = 'owned-stale-snapshot';
-  const staleSnapshot = {
-    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
-    lastSequence: 40,
-    events: [{
-      ownedId, provider: 'codex', generation: 1, sequence: 40, timestampMs: 400,
-      payload: { kind: 'assistantMessage', itemId: 'snapshot-40', text: 'Older answer', completed: true }
-    }]
-  };
-  store.applyAgentConversationSnapshot(staleSnapshot);
-  store.applyAgentConversationEvent({
-    ownedId, provider: 'codex', generation: 1, sequence: 41, timestampMs: 410,
-    payload: { kind: 'assistantMessage', itemId: 'live-41', text: 'Newest live answer', completed: true }
-  });
-  store.applyAgentConversationSnapshot(staleSnapshot);
-  const current = store.getConversationSession(ownedId);
-  assert.equal(current.lastSequence, 41);
-  assert.equal(display(current).some((item: { itemId: string }) => item.itemId === 'live-41'), true);
-}
-
-// A stale connection response cannot move an existing session backwards.
-{
-  const ownedId = 'owned-stale-connection';
-  store.setConversationConnection({ ownedId, provider: 'codex', generation: 2, state: 'connected' });
-  store.setConversationConnection({ ownedId, provider: 'codex', generation: 1, state: 'connecting' });
-  const current = store.getConversationSession(ownedId);
-  assert.equal(current.generation, 2);
-  assert.equal(current.connectionState, 'connected');
-}
-
-// An event from another provider cannot replace the owned session workspace.
-{
-  const ownedId = 'owned-wrong-provider';
-  store.ensureConversationSession(ownedId, 'codex');
-  store.setConversationDraft(ownedId, 'Keep this draft');
-  store.applyAgentConversationEvent({
-    ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 500,
-    payload: { kind: 'assistantMessage', itemId: 'wrong-provider', text: 'Wrong provider', completed: true }
-  });
-  const current = store.getConversationSession(ownedId);
-  assert.equal(current.provider, 'codex');
-  assert.equal(current.draft, 'Keep this draft');
-  assert.equal(display(current).length, 0);
-}
-
-// Capabilities belong only to the generation that requested them.
-{
-  const ownedId = 'owned-capability-generation';
-  const capabilities = {
-    revision: 1,
-    provider: 'codex',
-    implementation: { name: 'fixture', version: '1' },
-    session: { list: true, load: true, resume: true, close: true, steering: true },
-    prompt: { text: true, image: false, embeddedContext: true, resourceLinks: true },
-    interaction: {
-      permissions: true, structuredUserInput: true, toolTerminals: true,
-      plans: true, tasks: true, subagents: true
-    },
-    configOptions: [],
-    commands: []
-  };
-  store.setConversationConnection({ ownedId, provider: 'codex', generation: 1, state: 'connected' });
-  store.setConversationCapabilities(ownedId, 1, capabilities);
-  assert.equal(store.getConversationSession(ownedId).capabilitiesGeneration, 1);
-  store.setConversationConnection({ ownedId, provider: 'codex', generation: 2, state: 'connected' });
-  assert.equal(store.getConversationSession(ownedId).capabilities, null);
-  assert.equal(store.getConversationSession(ownedId).capabilitiesGeneration, 0);
-  store.setConversationCapabilities(ownedId, 1, capabilities);
-  assert.equal(store.getConversationSession(ownedId).capabilities, null);
-  assert.equal(store.getConversationSession(ownedId).capabilitiesGeneration, 0);
-}
-
-// Terminal transcript items arrive inside the same journal envelope as every
-// structured event. The common sequence rule must reject a repeated envelope
-// before its nested projection can render another item.
-{
-  const projectedEvent = {
-    ownedId: 'owned-projection', provider: 'codex', generation: 1,
-    sequence: 1, timestampMs: 400,
-    payload: {
-      kind: 'terminalProjection',
-      eventType: 'item.completed',
-      providerInstanceId: 'terminal-transcript:native-projection',
-      timestampMs: 390,
-      nativeSessionId: 'native-projection',
-      itemId: 'projected-answer',
-      payload: {
-        item: {
-          id: 'projected-answer', type: 'assistant-message',
-          content: [{ channel: 'assistant', text: 'Projected answer' }]
-        }
-      },
-      providerMetadata: { source: 'terminal-transcript', historical: true },
-      rawFrameReference: { id: 'frame-projection', redacted: true }
-    }
-  };
-  assert.equal(store.applyAgentConversationEvent(projectedEvent), true);
-  const current = store.getConversationSession('owned-projection');
-  assert.equal(current.lastSequence, 1);
-  assert.equal(current.transcript.getMessages().length, 1);
-  assert.equal(current.transcript.getMessages()[0].parts[0].content, 'Projected answer');
-
-  const staleProjection = {
-    ...projectedEvent,
-    payload: {
-      ...projectedEvent.payload,
-      itemId: 'stale-projected-answer',
-      payload: {
-        item: {
-          id: 'stale-projected-answer', type: 'assistant-message',
-          content: [{ channel: 'assistant', text: 'Stale projected answer' }]
-        }
-      }
-    }
-  };
-  assert.equal(store.applyAgentConversationEvent(staleProjection), false);
-  assert.equal(current.lastSequence, 1);
-  assert.equal(current.transcript.getMessages().length, 1);
-}
+assert.equal(store.getConversationSession('owned-a').capabilitiesGeneration, 2);
 
 const saved = store.captureConversationWorkspace('owned-b');
 store.setConversationDraft('owned-b', 'Changed');
@@ -945,61 +312,29 @@ assert.equal(saved.owner, 'terminal');
 assert.equal(saved.generation, 2);
 assert.equal(saved.writerLease.owner, 'terminal');
 
-// A sent screenshot has to stay visible in the transcript. The provider never
-// echoes the image back, so the store keeps the sent copy against the user
-// message the send produced.
-const sent = store.ensureConversationSession('owned-sent', 'claude');
-assert.deepEqual(sent.sentAttachments, {});
-store.recordSentConversationAttachments('owned-sent', [{
-  id: 'image-sent', name: 'shot.png', mimeType: 'image/png',
-  path: '/managed/shot.png', previewUrl: 'blob:sent'
-}]);
-store.applyAgentConversationEvent({
-  ownedId: 'owned-sent',
-  provider: 'claude',
-  generation: 1,
-  sequence: 1,
-  timestampMs: 500,
-  payload: { kind: 'userMessage', itemId: 'user-turn-sent', text: 'Look', completed: true }
-});
-assert.deepEqual(
-  store.getConversationSession('owned-sent').sentAttachments['user-turn-sent'].map((item: { id: any; }) => item.id),
-  ['image-sent'],
-  'the sent screenshot is claimed by the user message it was sent with'
-);
-store.applyAgentConversationEvent({
-  ownedId: 'owned-sent',
-  provider: 'claude',
-  generation: 1,
-  sequence: 2,
-  timestampMs: 510,
-  payload: { kind: 'userMessage', itemId: 'user-turn-later', text: 'And again', completed: true }
-});
-assert.equal(
-  store.getConversationSession('owned-sent').sentAttachments['user-turn-later'],
-  undefined,
-  'a later message without attachments claims nothing'
-);
-// A send that fails releases its hold, so the screenshots left in the composer
-// cannot reappear on some unrelated message later in the transcript.
-store.recordSentConversationAttachments('owned-sent', [{
-  id: 'image-failed', name: 'failed.png', mimeType: 'image/png',
-  path: '/managed/failed.png', previewUrl: 'blob:failed'
-}]);
-store.recordSentConversationAttachments('owned-sent', []);
-store.applyAgentConversationEvent({
-  ownedId: 'owned-sent',
-  provider: 'claude',
-  generation: 1,
-  sequence: 3,
-  timestampMs: 520,
-  payload: { kind: 'userMessage', itemId: 'user-turn-after-failure', text: 'Retry', completed: true }
-});
-assert.equal(
-  store.getConversationSession('owned-sent').sentAttachments['user-turn-after-failure'],
-  undefined,
-  'a released hold cannot be claimed by a later message'
-);
+// Sent screenshots stay keyed to the admitted user item outside the message graph.
+{
+  const ownedId = 'owned-sent';
+  store.applySelectedConversationSnapshotState(ownedId, ownedId, {
+    connection: { ownedId, provider: 'claude', generation: 1, state: 'connected' },
+    suspended: false,
+    page: {
+      items: [], events: [], turns: [], hasBefore: false, hasEarlierTranscript: false,
+      hasAfter: false, watermark: 0, transferBytes: 0, oversized: false
+    },
+    pendingEvents: [], pendingSequence: 0
+  });
+  store.recordSentConversationAttachments(ownedId, [{
+    id: 'image-sent', name: 'shot.png', mimeType: 'image/png',
+    path: '/managed/shot.png', previewUrl: 'blob:sent'
+  }]);
+  store.applySelectedConversationEventState(ownedId, {
+    ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 500,
+    payload: { kind: 'userMessage', itemId: 'user-turn-sent', text: 'Look', completed: true }
+  });
+  assert.equal(store.getConversationSession(ownedId).sentAttachments['user-turn-sent'][0].id, 'image-sent');
+  assert.equal('transcript' in store.getConversationSession(ownedId), false);
+}
 
 test('attachment previews are revoked when replaced, but not while shown in a sent message', () => {
   const revoked: string[] = [];
@@ -1018,82 +353,770 @@ test('attachment previews are revoked when replaced, but not while shown in a se
     store.recordSentConversationAttachments(ownedId, [attachment('replacement', 'blob:replacement')]);
     store.setConversationAttachments(ownedId, []);
     assert.deepEqual(revoked, ['blob:draft']);
-    store.applyAgentConversationEvent({
+    store.setConversationConnection({ ownedId, provider: 'claude', generation: 1, state: 'connected' });
+    store.applySelectedConversationEventState(ownedId, {
       ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 1,
       payload: { kind: 'userMessage', itemId: 'sent', text: 'See image', completed: true }
     });
-    store.restoreSentConversationAttachments(ownedId, {
-      sent: [attachment('duplicate', 'blob:duplicate')]
-    }, 1);
-    assert.deepEqual(revoked, ['blob:draft', 'blob:duplicate']);
     assert.equal(store.getConversationSession(ownedId).sentAttachments.sent[0].previewUrl, 'blob:replacement');
+
+    store.setConversationAttachments(ownedId, [attachment('replacement', 'blob:replacement')]);
+    store.restoreSelectedConversationAttachments(ownedId, {}, 1, []);
+    assert.deepEqual(store.getConversationSession(ownedId).sentAttachments, {});
+    assert.deepEqual(revoked, ['blob:draft'], 'graph disposal preserves a matching draft preview');
+    store.setConversationAttachments(ownedId, []);
+    assert.deepEqual(revoked, ['blob:draft', 'blob:replacement']);
+    store.evictConversationSession(ownedId);
+    assert.deepEqual(revoked, ['blob:draft', 'blob:replacement']);
   } finally {
     URL.revokeObjectURL = originalRevoke;
   }
 });
 
+test('late attachment reads retain the current page and revoke evicted previews', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('async function restorePageAttachments('), source.indexOf('function pageAttachments('));
+  const ownedId = 'owned-attachment-page-race';
+  store.ensureConversationSession(ownedId, 'codex');
+  store.setConversationConnection({ ownedId, provider: 'codex', generation: 1, state: 'connected' });
+  const attachment = (id: string) => ({ id, name: `${id}.png`, mimeType: 'image/png', path: `/managed/${id}.png`, previewUrl: `blob:${id}` });
+  const selection = {
+    token: Symbol(), workspaceOwnedId: ownedId, historyOwnedId: ownedId,
+    controller: new AbortController(), chat: { messages: [{ id: 'page-a' }] }
+  };
+  let release!: (value: unknown[]) => void;
+  const pendingRead = new Promise<unknown[]>((resolve) => { release = resolve; });
+  const restore = Function(
+    'isCurrent', 'readSelectedConversationAttachments', 'restoreAttachmentList',
+    'restoreSelectedConversationAttachments', 'discardRestoredAttachments', 'setConversationAttachmentError',
+    `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn restorePageAttachments;`
+  )((candidate: unknown) => candidate === selection && !selection.controller.signal.aborted, () => pendingRead, async (unused: string, records: unknown[]) => records,
+    store.restoreSelectedConversationAttachments, () => undefined,
+    (unused: string, message: string) => { throw new Error(message); });
+  const revoked: string[] = [];
+  const originalRevoke = URL.revokeObjectURL;
+  URL.revokeObjectURL = (url) => { revoked.push(url); };
+  try {
+    store.restoreSelectedConversationAttachments(ownedId, { stale: [attachment('stale')] }, 1, ['stale']);
+    const loading = restore(selection, new Map([['page-a', ['a']]]), 1, ['page-a']);
+    assert.deepEqual(revoked, ['blob:stale'], 'replacement prunes before waiting on previews');
+    selection.chat.messages = [{ id: 'page-b' }];
+    store.restoreSelectedConversationAttachments(ownedId, { 'page-b': [attachment('b')] }, 1, ['page-b']);
+    release([attachment('a')]);
+    await loading;
+    assert.deepEqual(Object.keys(store.getConversationSession(ownedId).sentAttachments), ['page-b']);
+    assert.deepEqual(revoked, ['blob:stale', 'blob:a'], 'late evicted preview is released while page B remains');
+  } finally {
+    store.evictConversationSession(ownedId);
+    URL.revokeObjectURL = originalRevoke;
+  }
+});
 
-await test('snapshot reads top up overlapping live events and keep streaming after one read', async () => {
-  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
-  const reads = source.slice(source.indexOf('function bufferConversationEvent('), source.indexOf('/** Stored event bytes'));
-  const handler = source.slice(source.indexOf('async function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
-  for (const initialRead of [true, false]) {
-    const ownedId = `owned-deferred-${initialRead}`;
-    store.ensureConversationSession(ownedId, 'codex');
-    let finishRead!: (snapshot: AgentConversationSnapshot) => void;
-    const pending = new Promise<AgentConversationSnapshot>((resolve) => { finishRead = resolve; });
-    let readCount = 0;
+test('message sizes are exact and reuse parts already measured', () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('function isCurrent('), source.indexOf('function resetMessageBytes('));
+  const encoder = new TextEncoder();
+  let stringified: unknown[] = [];
+  const countingJson = { stringify: (value: unknown) => { stringified.push(value); return JSON.stringify(value); } };
+  const messageBytes = Function('encoder', 'JSON', `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn messageBytes;`)(encoder, countingJson);
+  const messages = [
+    { id: 'empty', role: 'assistant', parts: [], metadata: { turnId: 'turn-1' } },
+    { id: 'one', role: 'user', parts: [{ type: 'text', content: 'Look at this — café ✓ 漢字 🙂' }] },
+    { id: 'many', role: 'assistant', metadata: { firstSequence: 4 }, parts: [
+      { type: 'thinking', content: 'Plan' },
+      { type: 'tool-call', id: 'call-1', name: 'Read', arguments: '{"path":"/a"}', state: 'input-complete', output: { text: 'ü' } },
+      { type: 'text', content: 'Done.' }
+    ] }
+  ];
+  for (const message of messages) {
+    assert.equal(messageBytes(message), encoder.encode(JSON.stringify(message)).byteLength, message.id);
+  }
+  // A history snapshot hands back copied messages that keep the same part objects.
+  stringified = [];
+  const copies = messages.map((message) => ({ ...message, parts: [...message.parts] }));
+  for (const copy of copies) messageBytes(copy);
+  const parts = new Set<unknown>(messages.flatMap((message) => message.parts));
+  const reserialized = stringified.filter((value) => parts.has(value)
+    || ((value as { parts?: unknown[] }).parts ?? []).some((part) => parts.has(part)));
+  assert.equal(reserialized.length, 0, 'known parts are not serialized again');
+});
+
+test('a stored message that names one attachment twice shows it once', async () => {
+  // Messages saved before late September 2026 can list the same screenshot id
+  // twice. The user card keys its screenshots by id, so a repeat stops it rendering.
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('async function restorePageAttachments('), source.indexOf('function pageAttachments('));
+  const ownedId = 'owned-attachment-repeat';
+  store.ensureConversationSession(ownedId, 'claude');
+  store.setConversationConnection({ ownedId, provider: 'claude', generation: 1, state: 'connected' });
+  const attachment = (id: string) => ({ id, name: `${id}.png`, mimeType: 'image/png', path: `/managed/${id}.png`, previewUrl: `asset://${id}` });
+  const selection = { workspaceOwnedId: ownedId, historyOwnedId: ownedId, controller: new AbortController(), chat: { messages: [{ id: 'user-repeat' }] } };
+  const restore = Function(
+    'isCurrent', 'readSelectedConversationAttachments', 'restoreAttachmentList',
+    'restoreSelectedConversationAttachments', 'discardRestoredAttachments', 'setConversationAttachmentError',
+    `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn restorePageAttachments;`
+  )(() => true, async () => [attachment('a'), attachment('b')], async (unused: string, records: unknown[]) => records,
+    store.restoreSelectedConversationAttachments, () => undefined,
+    (unused: string, message: string) => { throw new Error(message); });
+  try {
+    await restore(selection, new Map([['user-repeat', ['a', 'a', 'b']]]), 1, ['user-repeat']);
+    assert.deepEqual(
+      store.getConversationSession(ownedId).sentAttachments['user-repeat'].map((item: { id: string }) => item.id),
+      ['a', 'b']
+    );
+  } finally {
+    store.evictConversationSession(ownedId);
+  }
+});
+
+test('selected delivery reloads gaps and suppresses controls already in the snapshot', () => {
+  const source = readFileSync(
+    new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url),
+    'utf8'
+  );
+  const block = source.slice(
+    source.indexOf('function selectedEventUsesControlCursor('),
+    source.indexOf('function requestSelectedConversationReload(')
+  );
+  const delivered: number[] = [];
+  let reloads = 0;
+  const read = {
+    ownedId: 'owned-gap', generation: 1, pageWatermark: 10, pendingSequence: 15,
+    onEvent: (event: AgentConversationEvent) => delivered.push(event.sequence)
+  };
+  const deliver = Function(
+    'requestSelectedConversationReload',
+    `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn deliverSelectedConversationEvent;`
+  )(() => { reloads += 1; }) as (state: typeof read, event: AgentConversationEvent) => void;
+
+  deliver(read, {
+    ownedId: read.ownedId, provider: 'codex', generation: 1,
+    sequence: 11, timestampMs: 11,
+    payload: { kind: 'turn', turnId: 'already-snapshotted', state: 'started' }
+  });
+  assert.equal(read.pageWatermark, 11);
+  assert.equal(read.pendingSequence, 15);
+  assert.deepEqual(delivered, []);
+
+  deliver(read, {
+    ownedId: read.ownedId, provider: 'codex', generation: 1,
+    sequence: 12, timestampMs: 12,
+    payload: {
+      kind: 'childUpdate', childId: 'child', parentToolCallId: 'tool',
+      state: 'running'
+    }
+  });
+  assert.equal(read.pageWatermark, 12);
+  assert.deepEqual(delivered, [], 'replay cannot regress an authoritative child descriptor');
+
+  deliver(read, {
+    ownedId: read.ownedId, provider: 'codex', generation: 1,
+    sequence: 16, timestampMs: 16,
+    payload: { kind: 'assistantDelta', itemId: 'answer', delta: 'late' }
+  });
+  assert.equal(reloads, 1);
+  assert.equal(read.pageWatermark, 12);
+  assert.deepEqual(delivered, []);
+});
+
+test('live turn facts stay stable and prune with the retained graph', () => {
+  const ownedId = 'owned-turn-facts';
+  store.applySelectedConversationSnapshotState(ownedId, ownedId, {
+    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
+    suspended: false,
+    page: {
+      items: [], events: [], turns: [], hasBefore: false, hasEarlierTranscript: false,
+      hasAfter: false, watermark: 0, transferBytes: 0, oversized: false
+    },
+    pendingEvents: [], pendingSequence: 0
+  });
+  for (const event of [{
+    ownedId, provider: 'codex', generation: 1, sequence: 1, timestampMs: 100,
+    payload: { kind: 'turn', turnId: 'turn-1', state: 'started' }
+  }, {
+    ownedId, provider: 'codex', generation: 1, sequence: 2, timestampMs: 200,
+    payload: { kind: 'turn', turnId: 'turn-1', state: 'completed' }
+  }] as AgentConversationEvent[]) store.applySelectedConversationEventState(ownedId, event);
+  assert.deepEqual(store.getConversationSession(ownedId).selectedTurns, [{
+    turnId: 'turn-1', startedAtMs: 100, endedAtMs: 200, terminalState: 'completed'
+  }]);
+  store.applySelectedConversationLiveWindow(ownedId, [], 0);
+  assert.deepEqual(store.getConversationSession(ownedId).selectedTurns, []);
+  assert.equal(store.getConversationSession(ownedId).selectedHasBefore, false);
+});
+
+test('history gaps withhold live content and admitted messages stay retained', async () => {
+  const source = readFileSync(
+    new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url),
+    'utf8'
+  );
+  const emitBlock = source.slice(
+    source.indexOf('function emitEvent('),
+    source.indexOf('function createConnection(')
+  );
+  const state = { selectedHasAfter: true, usage: undefined };
+  let stateUpdates = 0;
+  const emit = Function(
+    'getConversationSession', 'applySelectedConversationEventState',
+    'applySelectedConversationHistoryEventState',
+    'usageDropIsCompaction', 'encoder', 'isTerminal', 'EventType',
+    `${stripTypeScriptTypes(emitBlock, { mode: 'strip' })}\nreturn emitEvent;`
+  )(
+    () => state,
+    () => { stateUpdates += 1; },
+    () => { stateUpdates += 1; },
+    () => false,
+    new TextEncoder(),
+    (candidate: AgentConversationEvent, turnId: string) => candidate.payload.turnId === turnId
+      && candidate.payload.kind === 'turn' && candidate.payload.state !== 'started',
+    EventType
+  );
+  const pushed: unknown[] = [];
+  const event: AgentConversationEvent = {
+    ownedId: 'owned-window', provider: 'codex', generation: 1,
+    sequence: 2, timestampMs: 2,
+    payload: { kind: 'assistantDelta', itemId: 'answer', delta: 'new' }
+  };
+  emit({ workspaceOwnedId: 'owned-window', pendingSend: null }, event, (item: unknown) => pushed.push(item));
+  assert.equal(stateUpdates, 1, 'native controls still advance');
+  assert.deepEqual(pushed, [], 'older content is not appended to the retained window');
+
+  const terminalPushed: any[] = [];
+  const pending = { receipt: { turnId: 'turn-1' }, runId: 'run-1' };
+  emit({ workspaceOwnedId: 'owned-window', historyOwnedId: 'owned-window', pendingSend: pending }, {
+    ...event, sequence: 3, payload: { kind: 'turn', turnId: 'turn-1', state: 'completed' }
+  }, (item: unknown) => terminalPushed.push(item));
+  assert.equal(terminalPushed[0]?.type, EventType.RUN_FINISHED, 'terminal settles while older content is shown');
+
+  const merge = Function(`${stripTypeScriptTypes(source.slice(
+    source.indexOf('function mergeMessages('), source.indexOf('function recordLiveMessages(')
+  ), { mode: 'strip' })}\nreturn mergeMessages;`)();
+  const large = Array.from({ length: 300 }, (_, index) => ({
+    id: `message-${index}`, role: 'assistant', parts: [{ type: 'text', content: 'x'.repeat(16 * 1024) }],
+    metadata: { firstSequence: index + 1, turnId: `turn-${index}` }
+  }));
+  assert.ok(new TextEncoder().encode(JSON.stringify(large)).byteLength > 4 * 1024 * 1024);
+  assert.deepEqual(merge(large.slice(150), large.slice(0, 151), 'older'), large);
+  assert.deepEqual(merge(large.slice(0, 151), large.slice(150), 'newer'), large);
+  const changed = { ...large[150], parts: [{ type: 'text', content: 'updated' }] };
+  assert.equal(merge([changed], [large[150]], 'older')[0], changed);
+  assert.equal(merge([large[150]], [changed], 'newer')[0], changed);
+
+  let encodes = 0;
+  const bytes = (message: unknown) => { encodes += 1; return new TextEncoder().encode(JSON.stringify(message)).byteLength; };
+  const recordLive = Function(
+    'messageBytes', 'applySelectedConversationLiveWindow', 'historyPosition', 'resetMessageBytes',
+    `${stripTypeScriptTypes(source.slice(source.indexOf('function recordLiveMessages('),
+      source.indexOf('function isTerminal(')), { mode: 'strip' })}\nreturn recordLiveMessages;`
+  )(bytes, () => undefined, (message: any) => message?.metadata?.firstSequence, () => undefined);
+  const sizes = new Map(large.map((row) => [row.id, bytes(row)]));
+  const liveSelection = {
+    chat: { messages: large }, messageBytes: sizes,
+    graphBytes: [...sizes.values()].reduce((sum, size) => sum + size, 0), historyOwnedId: 'owned-window', beforeCursor: 1
+  };
+  encodes = 0;
+  recordLive(liveSelection, new Set([large[299].id]), false);
+  assert.equal(encodes, 1, 'one changed live message is remeasured without rescanning the graph');
+  assert.equal(liveSelection.chat.messages, large);
+  assert.ok(liveSelection.graphBytes > 4 * 1024 * 1024);
+  assert.equal(liveSelection.beforeCursor, 1);
+
+  let snapshotWindow: any;
+  let snapshotTurns: any;
+  let snapshotMessages: any;
+  const oldTurn = { turnId: 'turn-0', startedAtMs: 1 };
+  const finishedTurn = { turnId: 'turn-299', endedAtMs: 3 };
+  const snapshotBlock = source.slice(source.indexOf('function snapshotChunks('), source.indexOf('function admitInitialSnapshot('));
+  const admitSnapshot = Function(
+    'messagesFromPage', 'getConversationSession', 'historyPosition', 'hasOlderHistory', 'resetMessageBytes',
+    'applySelectedConversationSnapshotState', 'pushMessagesSnapshot', 'EventType', 'restorePageAttachments', 'pageAttachments',
+    `${stripTypeScriptTypes(snapshotBlock, { mode: 'strip' })}\nreturn snapshotChunks;`
+  )((page: any) => page.items, () => ({ selectedHasBefore: false, selectedTurns: [oldTurn, { turnId: 'turn-299' }] }),
+    (message: any) => message?.metadata?.firstSequence, (page: any) => page.hasBefore,
+    (selection: any, rows: any[]) => { selection.graphBytes = rows.reduce((sum, row) => sum + bytes(row), 0); },
+    (_workspace: string, _history: string, snapshot: any, _controls: boolean, window: unknown) => {
+      snapshotWindow = window; snapshotTurns = snapshot.page.turns;
+    }, (_selection: unknown, rows: unknown) => { snapshotMessages = rows; }, EventType, () => undefined, () => []);
+  const snapshotSelection: any = { historyOwnedId: 'owned-window', pendingSend: null, chat: { messages: large } };
+  admitSnapshot(snapshotSelection, { page: { items: large.slice(250), beforeCursor: 251, afterCursor: 300,
+    hasBefore: true, hasAfter: false, events: [], turns: [finishedTurn] }, connection: { generation: 1 } }, () => undefined, false);
+  assert.deepEqual(snapshotMessages, large, 'overlapping latest refresh retains all earlier pages');
+  assert.deepEqual(snapshotTurns, [oldTurn, finishedTurn], 'earlier facts survive; incoming turn facts win');
+  assert.equal(snapshotWindow.beforeCursor, 1);
+  assert.equal(snapshotWindow.afterCursor, 300);
+  assert.equal(snapshotWindow.hasBefore, false, 'known beginning survives latest refresh');
+  assert.equal(snapshotWindow.transferBytes, snapshotSelection.graphBytes);
+
+  const enqueueBlock = source.slice(
+    source.indexOf('function enqueueFactory('), source.indexOf('function resetReady(')
+  );
+  const enqueueFactory = Function(
+    'conversationChunksFromEvent', 'recordLiveMessages', 'EventType',
+    `${stripTypeScriptTypes(enqueueBlock, { mode: 'strip' })}\nreturn enqueueFactory;`
+  )(
+    (_messages: unknown[], nativeEvent: AgentConversationEvent) => [{
+      type: EventType.TEXT_MESSAGE_CONTENT,
+      messageId: nativeEvent.payload.itemId,
+      delta: nativeEvent.payload.delta
+    }],
+    () => undefined,
+    EventType
+  );
+  const controller = new AbortController();
+  const queued = enqueueFactory(controller.signal, { chat: { messages: [] }, pendingSend: null });
+  queued.push({ nativeEvent: { ...event, payload: { kind: 'assistantDelta', itemId: 'first', delta: 'one' } } });
+  queued.push({ nativeEvent: { ...event, sequence: 3, payload: { kind: 'assistantDelta', itemId: 'second', delta: 'two' } } });
+  const iterator = queued.stream()[Symbol.asyncIterator]();
+  assert.deepEqual((await iterator.next()).value, { type: EventType.TEXT_MESSAGE_CONTENT, messageId: 'first', delta: 'one' });
+  assert.deepEqual((await iterator.next()).value, { type: EventType.TEXT_MESSAGE_CONTENT, messageId: 'second', delta: 'two' });
+  controller.abort();
+  await iterator.return?.();
+});
+
+test('history paging publishes saved rows before import and handles failed or stale reads', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const body = source.slice(source.indexOf('export async function pageSelectedConversation('),
+    source.indexOf('export function selectedConversationHistoryOwnedId(')).replace('export async function', 'async function');
+  const saved = { id: 'saved', metadata: { firstSequence: 1 } };
+  const selection = { historyOwnedId: 'history', beforeCursor: 2, afterCursor: 2,
+    controller: new AbortController(), chat: { messages: [saved] },
+    push: (chunk: any) => setTimeout(() => {
+      assert.equal(historyState.selectedLoadingOlder || historyState.selectedLoadingNewer, true,
+        'actual store stays locked until the client consumes the page');
+      assert.equal(store.setSelectedConversationPageLoading('history', 'older', true), false);
+      assert.equal(store.setSelectedConversationPageLoading('history', 'newer', true), false);
+      if (chunk.name === 'assembly:snapshot-ready') selection.resolveReady();
+    }, 0),
+    ready: Promise.resolve(), resolveReady: () => undefined, resubscribe: async () => {
+      assert.equal(selection.chat.messages.at(-1)?.id, 'latest', 'last page is consumed before live resubscription');
+      selection.resolveReady();
+    } };
+  let page = { items: [{ itemId: 'saved' }], events: [], turns: [], watermark: 1, transferBytes: 10, oversized: false, hasBefore: false,
+    hasAfter: true, hasEarlierTranscript: true, beforeCursor: 1, afterCursor: 1 };
+  let current = true;
+  let loading = false;
+  let pageError = '';
+  let imports = 0;
+  let published = 0;
+  let readFailure = false;
+  let importFailure = false;
+  let staleImport = false;
+  let publishedWindow: any;
+  let measured = 0;
+  store.ensureConversationSession('history', 'codex');
+  const historyState = store.getConversationSession('history');
+  historyState.selectedHasBefore = true;
+  historyState.selectedHasAfter = false;
+  const read = async () => {
+    if (readFailure) throw { message: 'Saved page could not be read' };
+    return page;
+  };
+  const paging = Function('active', 'childActive', 'PAGE_BYTES', 'setSelectedConversationPageLoading',
+    'readOlderSelectedConversationItems', 'readNewerSelectedConversationItems', 'isCurrent',
+    'extendAgentConversationImportFromTauri', 'messagesFromPage', 'mergeMessages', 'pushMessagesSnapshot',
+    'historyPosition', 'hasOlderHistory', 'applySelectedConversationPageState', 'messageBytes',
+    'getConversationSession', 'restorePageAttachments', 'pageAttachments', 'setSelectedConversationPageError', 'resetReady', 'EventType',
+    `${stripTypeScriptTypes(body, { mode: 'strip' })}\nreturn pageSelectedConversation;`
+  )(selection, null, 512 * 1024, (id: string, direction: 'older' | 'newer', value: boolean) => {
+    loading = value; if (value) pageError = '';
+    return store.setSelectedConversationPageLoading(id, direction, value);
+  }, read, read, () => current, async () => {
+    imports += 1;
+    if (importFailure) throw { message: 'Remote machine is not connected' };
+    if (staleImport) { current = false; return { added: 0, reachedStart: true }; }
+    page = { ...page, items: [{ itemId: 'saved' }] };
+    return { added: 1, reachedStart: true };
+  }, () => page.items.map((item) => ({ id: item.itemId, metadata: { firstSequence: 1 } })),
+  (_existing: unknown, incoming: unknown) => incoming,
+  (target: any, messages: any) => { published += 1; target.graphBytes = 10 * messages.length; queueMicrotask(() => { selection.chat.messages = messages; }); },
+  () => 1, (value: any) => value.hasBefore || value.hasEarlierTranscript,
+  (id: string, value: any, direction: 'older' | 'newer', window: any) => {
+    publishedWindow = window; store.applySelectedConversationPageState(id, value, direction, window);
+  }, () => { measured += 1; return 10; },
+  () => historyState, async () => undefined, () => new Map(),
+  (_id: string, message: string) => { pageError = message; },
+  (value: typeof selection) => { value.ready = new Promise<void>((resolve) => { value.resolveReady = resolve; }); }, EventType);
+
+  await paging('older');
+  assert.equal(imports, 0, 'saved local messages do not wait for provider import');
+  assert.equal(published, 1);
+  assert.equal(publishedWindow.hasAfter, false, 'older page preserves the known live tail');
+  assert.equal(publishedWindow.transferBytes, 10);
+  assert.equal(measured, 0, 'the window size comes from the snapshot that already measured every message');
+  assert.equal(loading, false);
+  page = { ...page, items: [] };
+  await paging('older');
+  assert.equal(imports, 1, 'empty earlier boundary still imports');
+  assert.equal(published, 2);
+  historyState.selectedHasBefore = true;
+  readFailure = true;
+  await paging('older');
+  assert.match(pageError, /Could not load older messages: Saved page could not be read/);
+  assert.equal(loading, false);
+  assert.equal(published, 2, 'read failure preserves the existing history');
+  assert.deepEqual(selection.chat.messages, [saved]);
+  readFailure = false;
+  importFailure = true;
+  page = { ...page, items: [] };
+  await paging('older');
+  assert.match(pageError, /Remote machine is not connected/);
+  assert.equal(loading, false);
+  assert.equal(published, 2, 'failed import does not replace visible history');
+  importFailure = false;
+  staleImport = true;
+  await paging('older');
+  assert.equal(published, 2, 'an old selection cannot publish an import completion');
+  assert.equal(pageError, '');
+  current = true; staleImport = false;
+  store.setSelectedConversationPageLoading('history', 'older', false);
+  historyState.selectedHasAfter = true;
+  page = { ...page, items: [{ itemId: 'latest' }], hasAfter: false, hasEarlierTranscript: false };
+  await paging('newer');
+  assert.equal(publishedWindow.hasBefore, true, 'newer page preserves the earlier boundary');
+  assert.equal(publishedWindow.hasAfter, false);
+  assert.equal(loading, false);
+});
+
+test('saved anchor admission keeps current authority and ignores a stale Jump failure', async () => {
+  const source = readFileSync(
+    new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url),
+    'utf8'
+  );
+  const admissionBlock = source.slice(
+    source.indexOf('function admitInitialSnapshot('),
+    source.indexOf('function emitEvent(')
+  );
+  const jumpBlock = source.slice(
+    source.indexOf('export function jumpSelectedConversationToLatest('),
+    source.indexOf('export async function pageSelectedConversation(')
+  ).replace('export function', 'function');
+  const makeHarness = (
+    selection: Record<string, any>,
+    readPage: () => Promise<any>,
+    published: any[],
+    controls: any[],
+    errors: unknown[]
+  ) => {
     const dependencies = {
-      ...store, get, sessionPresenceHistory, sessionPresenceEventFromConversation,
-      synchronizeSessionPresenceWork, shouldClearConversationSending,
-      rail: { activeOwnedId: ownedId, owned: [] },
-      updateOwnedSession: () => undefined,
-      publishConversationSnapshotReadDiagnostics: () => undefined,
-      hydrateSentConversationAttachments: async () => undefined,
-      readAgentConversationSnapshotFromTauri: async () => { readCount += 1; return pending; }
+      initialActive: selection,
+      isCurrent: (candidate: unknown) => candidate === selection && !selection.controller.signal.aborted,
+      getConversationSession: () => ({
+        viewByHistoryId: {
+          history: { followLatest: false, anchor: { itemId: 'anchor', firstSequence: 50, offsetPx: 12 } }
+        }
+      }),
+      snapshotChunks: (_selection: unknown, snapshot: unknown, _push: unknown, applyControls: boolean) =>
+        published.push({ snapshot, applyControls }),
+      readNewerSelectedConversationItems: readPage,
+      PAGE_BYTES: 512 * 1024,
+      applySelectedConversationSnapshotState: (_workspace: string, _history: string, snapshot: unknown) => controls.push(snapshot),
+      setConversationSendError: (_workspace: string, message: string) => errors.push(message),
+      refreshSelectedConversationChat: async () => { selection.refreshes += 1; }
     };
-    const service = Function(...Object.keys(dependencies), stripTypeScriptTypes(`
-      const resyncing = new Map(); const readVersions = new Map(); const railActivityEvents = new Map();
-      const conversationEventsDisposed = false; const conversationEventsGeneration = 1;
-      ${reads.replaceAll('export async function', 'async function')}
-      ${handler}
-    `, { mode: 'strip' }) + '\nreturn { loadConversationForRead, handleConversationStreamEnvelope, resyncing };')(...Object.values(dependencies));
-    const event = (sequence: number, text: string): AgentConversationEvent => ({
-      ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
-      payload: { kind: 'assistantDelta', itemId: 'answer', delta: text }
-    });
-    const opening = initialRead ? service.loadConversationForRead(ownedId, false) : Promise.resolve();
-    const first = service.handleConversationStreamEnvelope(1, { chunk: event(10, 'B') });
-    const second = service.handleConversationStreamEnvelope(1, { chunk: event(11, 'C') });
-    const duplicate = service.handleConversationStreamEnvelope(1, { chunk: event(11, 'C') });
-    finishRead({
-      connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
-      lastSequence: initialRead ? 10 : 9, events: initialRead ? [event(9, 'A'), event(10, 'B')] : [event(9, 'A')]
-    });
-    await Promise.all([opening, first, second, duplicate]);
-    assert.equal(readCount, 1, 'a late snapshot with a contiguous suffix needs only one read');
-    assert.equal(store.getConversationSession(ownedId).desynchronized, false);
-    assert.equal(display(store.getConversationSession(ownedId))[0].text, 'ABC');
-    assert.deepEqual(store.getConversationSession(ownedId).loadedEvents.map((event: AgentConversationEvent) => event.sequence), [9, 10, 11]);
-    await service.handleConversationStreamEnvelope(1, { chunk: event(12, 'D') });
-    assert.equal(display(store.getConversationSession(ownedId))[0].text, 'ABCD');
-    assert.equal(service.resyncing.size, 0, 'completed reads release their buffers');
-    synchronizeSessionPresenceWork(ownedId, 'buffered-turn', true);
-    const finishingRead = service.loadConversationForRead(ownedId, false);
-    await service.handleConversationStreamEnvelope(1, { chunk: {
-      ...event(13, ''), timestampMs: Date.now(),
-      payload: { kind: 'turn', turnId: 'buffered-turn', state: 'completed' }
-    } });
-    assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, null,
-      'buffering must still clear active presence immediately on completion');
-    await finishingRead;
-    synchronizeSessionPresenceWork(ownedId, 'gapped-turn', true);
-    await service.handleConversationStreamEnvelope(1, { chunk: {
-      ...event(15, ''), timestampMs: Date.now(),
-      payload: { kind: 'turn', turnId: 'gapped-turn', state: 'completed' }
-    } });
-    assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, null,
-      'the event triggering gap recovery must also clear completed presence');
+    return Function(...Object.keys(dependencies), `
+      let active = null;
+      let childActive = initialActive;
+      ${stripTypeScriptTypes(admissionBlock, { mode: 'strip' })}
+      ${stripTypeScriptTypes(jumpBlock, { mode: 'strip' })}
+      return { admitInitialSnapshot, jumpSelectedConversationToLatest };
+    `)(...Object.values(dependencies)) as {
+      admitInitialSnapshot(selection: Record<string, any>, snapshot: any, push: (item: unknown) => void): void;
+      jumpSelectedConversationToLatest(workspaceOwnedId: string): Promise<void>;
+    };
+  };
+  const makeSelection = () => ({
+    token: Symbol('history'), workspaceOwnedId: 'workspace', historyOwnedId: 'history',
+    controller: new AbortController(), contentAdmitted: false, anchorRevision: 0,
+    anchorAdmission: null as Promise<void> | null, anchorSnapshot: null,
+    rejectReady: (error: unknown) => { throw error; }, refreshes: 0
+  });
+  const snapshot = (generation: number) => ({
+    connection: { generation }, pendingEvents: [],
+    page: { items: [], events: [], turns: [], hasBefore: false, hasAfter: false, watermark: generation }
+  });
+
+  let resolveAnchor!: (page: any) => void;
+  const selection = makeSelection();
+  const published: any[] = [];
+  const controls: any[] = [];
+  const errors: unknown[] = [];
+  const api = makeHarness(selection, () => new Promise((resolve) => { resolveAnchor = resolve; }), published, controls, errors);
+  api.admitInitialSnapshot(selection, snapshot(1), () => undefined);
+  api.admitInitialSnapshot(selection, snapshot(2), () => undefined);
+  assert.deepEqual(controls.map((value) => value.connection.generation), [1, 2], 'controls use snapshots immediately');
+  const admission = selection.anchorAdmission!;
+  resolveAnchor({ items: [], events: [], turns: [], hasBefore: true, hasAfter: true, watermark: 55 });
+  await admission;
+  assert.equal(published[0].snapshot.connection.generation, 2, 'the newest snapshot remains authoritative');
+  assert.equal(published[0].snapshot.page.watermark, 55, 'the saved window supplies only the content page');
+  assert.equal(published[0].applyControls, false, 'installing the saved page cannot roll controls back');
+
+  let rejectAnchor!: (error: Error) => void;
+  const staleSelection = makeSelection();
+  const staleErrors: unknown[] = [];
+  staleSelection.rejectReady = (error: unknown) => staleErrors.push(error);
+  const staleApi = makeHarness(
+    staleSelection,
+    () => new Promise((_resolve, reject) => { rejectAnchor = reject; }),
+    [], [], staleErrors
+  );
+  staleApi.admitInitialSnapshot(staleSelection, snapshot(1), (item) => staleErrors.push(item));
+  const staleAdmission = staleSelection.anchorAdmission!;
+  await staleApi.jumpSelectedConversationToLatest('workspace', 'history');
+  rejectAnchor(new Error('obsolete anchor read'));
+  await staleAdmission.catch(() => undefined);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(staleErrors, [], 'Jump invalidates a late anchor rejection');
+  assert.equal(staleSelection.refreshes, 1);
+
+  const latestSelection = makeSelection();
+  const latestPublished: unknown[] = [];
+  latestSelection.resubscribe = async () => { latestSelection.refreshes += 1; };
+  const latestApi = makeHarness(
+    latestSelection,
+    async () => ({ items: [], events: [], turns: [], hasBefore: true, hasAfter: false, watermark: 60 }),
+    latestPublished, [], []
+  );
+  latestApi.admitInitialSnapshot(latestSelection, snapshot(1), () => undefined);
+  await latestSelection.anchorAdmission;
+  assert.equal(latestSelection.refreshes, 1, 'an anchor page at the tail uses the authoritative resubscribe handoff');
+  assert.deepEqual(latestPublished, []);
+});
+
+test('child history admission rejects stale results and stops the exact native watch', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const block = source.slice(
+    source.indexOf('interface ChildHistoryRead'),
+    source.indexOf('export type SavedAttachment')
+  ).replaceAll('export ', '');
+  const pending = new Map<number, { resolve(value: any): void; reject(error: Error): void }>();
+  const reads: any[] = [];
+  const stops: Array<[string, number]> = [];
+  const statuses: Array<[string, string, boolean]> = [];
+  const failures: Array<[string, string, string]> = [];
+  const state = { selectedChildId: 'child-a' };
+  let nextRequestId = 0;
+  const dependencies = {
+    createAgentConversationRequestId: () => ++nextRequestId,
+    CHILD_HISTORY_PAGE_BYTES: 512 * 1024,
+    readAgentConversationChildHistoryFromTauri: (request: any) => {
+      reads.push(request);
+      return new Promise((resolve, reject) => pending.set(request.requestId, { resolve, reject }));
+    },
+    stopAgentConversationChildHistoryFromTauri: async (ownedId: string, requestId: number) => {
+      stops.push([ownedId, requestId]); return true;
+    },
+    getConversationSession: () => state,
+    applyChildConversationHistoryStatus: (ownedId: string, childId: string, truncated: boolean) =>
+      statuses.push([ownedId, childId, truncated]),
+    failChildConversationTranscript: (ownedId: string, childId: string, message: string) =>
+      failures.push([ownedId, childId, message])
+  };
+  const api = Function(...Object.keys(dependencies), `
+    ${stripTypeScriptTypes(block, { mode: 'strip' })}
+    return { readChildConversationHistory, stopChildConversationHistory };
+  `)(...Object.values(dependencies)) as {
+    readChildConversationHistory(input: any): Promise<any>;
+    stopChildConversationHistory(ownedId: string): void;
+  };
+  const first = api.readChildConversationHistory({
+    ownedId: 'parent', childId: 'child-a', childSessionId: 'durable-a'
+  });
+  await Promise.resolve();
+  api.stopChildConversationHistory('parent');
+  state.selectedChildId = 'child-b';
+  const second = api.readChildConversationHistory({
+    ownedId: 'parent', childId: 'child-b', childSessionId: 'durable-b'
+  });
+  state.selectedChildId = 'child-c';
+  const third = api.readChildConversationHistory({
+    ownedId: 'parent', childId: 'child-c', childSessionId: 'durable-c'
+  });
+  assert.deepEqual(reads.map((read) => read.requestId), [1],
+    'B and C serialize behind the deferred A admission');
+  const page = { hasEarlierTranscript: true };
+  pending.get(1)!.resolve({ historyOwnedId: 'obsolete-history', page });
+  assert.equal(await first, null, 'a stale completion cannot steal the newer selection');
+  assert.equal(await second, null, 'B is cancelled before it invokes native selection');
+  assert.deepEqual(reads.map((read) => read.requestId), [1, 3], 'only A then current C invoke native selection');
+  assert.deepEqual(stops.map(([, requestId]) => requestId), [1, 1, 2, 1],
+    'the late A result receives a second exact stop without stopping C');
+  pending.get(3)!.resolve({ historyOwnedId: 'opaque-history', page });
+  assert.equal((await third).historyOwnedId, 'opaque-history');
+  assert.deepEqual(statuses, [['parent', 'child-c', true]]);
+
+  const failed = api.readChildConversationHistory({
+    ownedId: 'parent', childId: 'child-c', childSessionId: 'durable-c'
+  });
+  await Promise.resolve();
+  pending.get(4)!.reject(new Error('refresh failed'));
+  await failed.catch(() => undefined);
+  assert.deepEqual(failures, [['parent', 'child-c', 'refresh failed']]);
+  assert.deepEqual(stops.at(-1), ['parent', 4], 'a failed admission releases its native watch');
+});
+
+test('remote reconnect reacquires only the still-selected child watch', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const block = source.slice(
+    source.indexOf('async function reacquireSelectedChildHistory('),
+    source.indexOf('async function handleConversationStreamEnvelope(')
+  );
+  const read = {
+    workspaceOwnedId: 'parent', ownedId: 'opaque-child', abortController: new AbortController(),
+  };
+  const state = {
+    selectedChildId: 'child-a',
+    children: [{
+      childId: 'child-a', transcriptId: 'durable-a', transcriptAvailable: true
+    }]
+  };
+  const admissions: any[] = [];
+  const pending: Array<(value: any) => void> = [];
+  let reloads = 0;
+  const api = Function(
+    'initialRead', 'rail', 'getConversationSession', 'readChildConversationHistory',
+    'requestSelectedConversationReload',
+    `let conversationEventsDisposed = false;
+     let conversationEventsGeneration = 7;
+     let selectedConversationRead = null;
+     let childConversationRead = initialRead;
+     const isCurrentConversationRead = (candidate) => candidate === childConversationRead && !candidate.abortController.signal.aborted;
+     ${stripTypeScriptTypes(block, { mode: 'strip' })}
+     return { reacquireSelectedChildHistory };`
+  )(
+    read,
+    { owned: [{ ownedId: 'parent', remoteProfileId: 'remote-a' }] },
+    () => state,
+    (input: any) => {
+      admissions.push(input);
+      return new Promise((resolve) => pending.push(resolve));
+    },
+    () => {
+      reloads += 1;
+    }
+  ) as { reacquireSelectedChildHistory(profileId: string, generation: number): Promise<void> };
+
+  await api.reacquireSelectedChildHistory('remote-b', 7);
+  assert.equal(admissions.length, 0, 'another remote profile cannot replace the selected child watch');
+
+  const stale = api.reacquireSelectedChildHistory('remote-a', 7);
+  assert.equal(admissions[0].childSessionId, 'durable-a');
+  state.selectedChildId = 'child-b';
+  pending[0]({ historyOwnedId: 'opaque-child' });
+  await stale;
+  assert.equal(reloads, 0, 'a changed child selection rejects the late reacquisition');
+
+  state.selectedChildId = 'child-a';
+  const current = api.reacquireSelectedChildHistory('remote-a', 7);
+  pending[1]({ historyOwnedId: 'opaque-child' });
+  await current;
+  assert.equal(reloads, 1, 'the reacquired watch reloads the existing selected child graph');
+});
+
+test('parent and child readers deliver concurrently without sharing cursors', () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('function selectedEventUsesControlCursor('), source.indexOf('async function refreshSelectedConversation('));
+  const delivered: string[] = [];
+  const makeRead = (ownedId: string) => ({
+    ownedId, generation: 1, pageWatermark: 0, pendingSequence: 0, reading: false,
+    abortController: new AbortController(),
+    onEvent: (event: AgentConversationEvent) => delivered.push(event.ownedId)
+  });
+  const parent = makeRead('parallel-parent');
+  const child = makeRead('parallel-child');
+  const dependencies = {
+    selectedConversationRead: parent, childConversationRead: child,
+    isCurrentConversationRead: (read: typeof parent) => !read.abortController.signal.aborted && (read === parent || read === child)
+  };
+  const admit = Function(...Object.keys(dependencies), `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn admitSelectedConversationEvent;`)(...Object.values(dependencies));
+  const event = (ownedId: string, sequence: number) => ({
+    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
+    payload: { kind: 'assistantDelta', itemId: ownedId, delta: 'text' }
+  });
+  assert.equal(admit(event(parent.ownedId, 1)), true);
+  assert.equal(admit(event(child.ownedId, 1)), true);
+  child.abortController.abort();
+  assert.equal(admit(event(child.ownedId, 2)), false);
+  assert.equal(admit(event(parent.ownedId, 2)), true);
+  assert.deepEqual(delivered, [parent.ownedId, child.ownedId, parent.ownedId]);
+  assert.equal(parent.pageWatermark, 2);
+  assert.equal(child.pageWatermark, 1);
+});
+
+test('snapshot projection preserves implicit Claude compaction markers', () => {
+  const ownedId = 'owned-compaction';
+  const messages = conversationMessagesFromEvents([{
+    ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 1,
+    payload: { kind: 'usage', usedTokens: 100_000 }
+  }, {
+    ownedId, provider: 'claude', generation: 1, sequence: 2, timestampMs: 2,
+    payload: { kind: 'usage', usedTokens: 30_000 }
+  }]);
+  assert.equal(conversationDisplayItems(messages)[0].kind, 'compaction');
+});
+
+
+await test('start-up registers the event stream before it opens the remembered session', async () => {
+  // A remote open shows the Mac's copy at once and its background top-up is
+  // published moments later; a stream registered after the open would miss it.
+  const source = readFileSync(new URL('../src/lib/shell/controllers/shellStartup.ts', import.meta.url), 'utf8');
+  const startShell = source.slice(source.indexOf('export async function startShell('), source.indexOf('export function stopShell('));
+  const calls: string[] = [];
+  const dependencies = {
+    document: { documentElement: { classList: { add: () => undefined } } },
+    applyStoredTheme: () => undefined, applyStoredFonts: () => undefined,
+    hydrateShellSettings: async () => undefined, shellActive: () => true,
+    listAgentConversationSessionsFromTauri: async () => [],
+    listRemoteAgentConversationSessionsFromTauri: async () => [{ ownedId: 'remembered' }],
+    readAssemblySettingFromTauri: async () => 'remembered', ACTIVE_OWNED_SESSION_SETTING_KEY: 'active',
+    ownedSessionFromBackend: (session: unknown) => session, hydrateOwned: () => undefined,
+    shellPanels: { allowSessionLoads: () => undefined }, rail: { error: null },
+    startConversationEventsForOwner: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      calls.push('event stream registered');
+    }
+  };
+  const shell = Function(...Object.keys(dependencies), stripTypeScriptTypes(`
+    let shellAbort = null; let shellGeneration = 0;
+    ${startShell.replace('export async function', 'async function')}
+  `, { mode: 'strip' }) + '\nreturn { startShell };')(...Object.values(dependencies));
+  await shell.startShell({ onSelectInitial: async (ownedId: string) => { calls.push('open ' + ownedId); } });
+  assert.deepEqual(calls, ['event stream registered', 'open remembered']);
+});
+
+await test('ensure refresh requires the confirmed generation before admitting cached history', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const reload = source.slice(source.indexOf('async function reloadSelectedConversation('), source.indexOf('export async function subscribeSelectedConversation('));
+  const ensure = source.slice(source.indexOf('async function ensureStructuredConversationOnce('), source.indexOf('/** Changes a quiescent Codex session'));
+  const ownedId = 'ensured-generation';
+  for (const priorMinimum of [undefined, 3]) {
+    const state = { generation: 0 };
+    const reads: Array<number | undefined> = [];
+    const read = {
+      ownedId, workspaceOwnedId: ownedId, maxBytes: 512 * 1024,
+      minimumGeneration: priorMinimum, reading: false, reloadRequested: false,
+      events: [], bytes: 0, overflow: false, abortController: new AbortController(),
+      onSnapshot: (snapshot: { connection: { generation: number } }) => { state.generation = snapshot.connection.generation; }
+    };
+    const dependencies = {
+      selectedConversationRead: read, childConversationRead: null, isCurrentConversationRead: (candidate: unknown) => candidate === read && !read.abortController.signal.aborted, ensuring: new Map(), rail: { activeOwnedId: ownedId },
+      invoke: async () => ({ ownedId, provider: 'codex', generation: 1 }),
+      setConversationConnection: (connection: { generation: number }) => { state.generation = connection.generation; },
+      readAgentConversationSelectionFromTauri: async (_id: string, _bytes: number, minimum?: number) => {
+        reads.push(minimum);
+        // The remote boundary serves cached generation 0 unless the caller requires newer metadata.
+        return { connection: { generation: minimum ?? 0 }, page: { watermark: 6 }, pendingSequence: 6 };
+      }
+    };
+    const ensured = Function(...Object.keys(dependencies),
+      stripTypeScriptTypes(`${reload}\n${ensure}`, { mode: 'strip' }) + '\nreturn ensureStructuredConversationOnce;'
+    )(...Object.values(dependencies)) as (
+      id: string, request: object, token: object, signal: AbortSignal
+    ) => Promise<{ generation: number }>;
+    await ensured(ownedId, {}, {}, new AbortController().signal);
+    const expectedMinimum = priorMinimum ?? 1;
+    assert.deepEqual(reads, [expectedMinimum], 'the selected read requires the ensured or already newer generation');
+    assert.equal(state.generation, expectedMinimum, 'cached generation 0 cannot replace the confirmed generation');
   }
 });
 
@@ -1119,7 +1142,6 @@ await test('sendStructuredMessage resolves the terminal from the owned session, 
     writerLease: { ownedId, generation: 0, owner: 'terminal' }
   };
   const terminalWrites: Array<{ terminalId: string; text: string }> = [];
-  const evicted: string[] = [];
   const sendStructuredMessage = Function(
     'getConversationSession',
     'setConversationSending',
@@ -1131,7 +1153,6 @@ await test('sendStructuredMessage resolves the terminal from the owned session, 
     'cleanupConversationAttachmentPreview',
     'setConversationAttachments',
     'recordSentConversationAttachments',
-    'releaseConversationForRead',
     `const preparingSends = new Map();\n${serviceJavaScript}\nreturn sendStructuredMessage;`
   )(
     () => state,
@@ -1155,49 +1176,119 @@ await test('sendStructuredMessage resolves the terminal from the owned session, 
     },
     () => undefined,
     () => undefined,
-    () => undefined,
-    (id: string) => evicted.push(id)
+    () => undefined
   ) as (messageOwnedId: string, text: string) => Promise<void>;
 
   await sendStructuredMessage(ownedId, 'Route this message');
   assert.deepEqual(terminalWrites.map((write) => write.terminalId), [terminalId, terminalId]);
-  assert.deepEqual(evicted, [ownedId], 'a completed send releases the inactive transcript');
 });
 
-await test('a remote send releases its transcript when the reader switched away during dispatch', async () => {
-  const ownedId = 'remote-send-switch';
+await test('an admitted send returns the native receipt', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
   const block = source.match(/export async function sendStructuredMessage\([\s\S]*?\n\}\n\n\/\*\* Stops the active turn/);
   assert.ok(block);
   const code = stripTypeScriptTypes(block[0].replace(/\n\n\/\*\* Stops the active turn$/, '').replace('export async function', 'async function'), { mode: 'strip' });
-  const state = { sending: false, generation: 1, attachments: [], capabilities: null, connectionState: 'connected', agentConfig: { availableApprovalPolicies: [] } };
-  const rail = { activeOwnedId: ownedId, owned: [{ ownedId, agent: 'codex', state: 'live', origin: 'app', executionEnvironment: 'remote' }] };
-  const evicted: string[] = [];
-  let finishSend!: () => void;
-  const dispatched = new Promise<void>((resolve) => { finishSend = resolve; });
-  const dependencies = {
-    getConversationSession: () => state,
-    setConversationSending: (_id: string, sending: boolean) => { state.sending = sending; },
-    rail, get, sessionPresenceHistory,
-    shouldReviveBeforeSend: () => false,
-    sendSupportsImages: () => false,
-    hasBackendCapability: async () => true,
-    ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY: 'test',
-    sendTargetGeneration: () => 1,
-    updateOwnedSession: () => undefined,
-    recordSentConversationAttachments: () => undefined,
-    attachmentDisplayMetadata: () => undefined,
-    invoke: async () => dispatched,
-    setConversationAttachments: () => undefined,
-    releaseConversationForRead: (id: string) => evicted.push(id)
+  for (const executionEnvironment of ['local', 'remote']) {
+    const ownedId = `accepted-${executionEnvironment}`;
+    const receipt = { ownedId, generation: 1, turnId: 'turn-accepted', userItemId: 'user-accepted', admittedSequence: 4 };
+    const state = { sending: false, generation: 1, attachments: [], capabilities: null, connectionState: 'connected', agentConfig: { availableApprovalPolicies: [] } };
+    let sends = 0;
+    const dependencies = {
+      getConversationSession: () => state,
+      setConversationSending: (_id: string, sending: boolean) => { state.sending = sending; },
+      rail: { activeOwnedId: ownedId, owned: [{ ownedId, agent: 'codex', state: 'live', origin: 'app', executionEnvironment }] },
+      get, sessionPresenceHistory,
+      shouldReviveBeforeSend: () => false,
+      sendSupportsImages: () => false,
+      buildConversationPrompt: (text: string) => ({ text, content: [] }),
+      hasBackendCapability: async () => false,
+      ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY: 'test',
+      sendTargetGeneration: () => 1,
+      updateOwnedSession: () => undefined,
+      recordSentConversationAttachments: () => undefined,
+      attachmentDisplayMetadata: () => undefined,
+      invoke: async () => { sends++; return receipt; },
+      setConversationAttachments: () => undefined
+    };
+    const send = Function(...Object.keys(dependencies), `const preparingSends = new Map();\n${code}\nreturn sendStructuredMessage;`)(...Object.values(dependencies)) as (id: string, text: string) => Promise<unknown>;
+    assert.deepEqual(await send(ownedId, 'Continue'), receipt);
+    assert.equal(sends, 1);
+    assert.equal(state.sending, true, 'receipt admission keeps the turn active');
+  }
+});
+
+test('completed file notifications do not depend on the selected transcript', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const handler = source.slice(source.indexOf('async function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
+  for (const selection of ['root', 'child', 'another-session']) {
+    const ownedId = `file-notification-${selection}`;
+    const notifications: Array<{ ownedId: string; path: string }> = [];
+    const current = selection === 'another-session' ? null : { generation: 1, selectedChildId: selection === 'child' ? 'child' : null };
+    const dependencies = {
+      conversationEventsDisposed: false, conversationEventsGeneration: 1,
+      admitSelectedConversationEvent: () => selection === 'root',
+      railActivityEvents: new Map(), selectedConversationRead: selection === 'child' ? { workspaceOwnedId: ownedId, ownedId: 'child-history' } : null,
+      displayEventFrom: store.displayEventFrom, shouldClearConversationSending,
+      getConversationSession: () => current, selectedEventUsesControlCursor: () => false,
+      get: () => ({}), sessionPresenceHistory: {},
+      agentItemFromEvent, displayItemFromAgentItem,
+      publishWorkspaceFileChange: (change: { ownedId: string; path: string }) => notifications.push(change),
+      sessionPresenceEventFromConversation: () => null,
+      recordAgentConversationPresenceEvent: () => undefined
+    };
+    const deliver = Function(...Object.keys(dependencies), `${stripTypeScriptTypes(handler, { mode: 'strip' })}\nreturn handleConversationStreamEnvelope;`)(...Object.values(dependencies));
+    const event = (sequence: number, generation = 1) => ({
+      ownedId, provider: 'codex', generation, sequence, timestampMs: sequence,
+      payload: { kind: 'tool', itemId: 'edit-1', name: 'Edit', state: sequence === 1 ? 'started' : 'completed',
+        path: '/workspace/new.txt', diff: '@@ -0,0 +1 @@\n+created\n' }
+    });
+    await deliver(1, { chunk: event(1) });
+    assert.deepEqual(notifications, [], 'opening an edit is not a completed file change');
+    await deliver(1, { chunk: event(2) });
+    await deliver(1, { chunk: event(2) });
+    await deliver(1, { chunk: event(3, 0) });
+    assert.deepEqual(notifications, [{ ownedId, path: '/workspace/new.txt' }], `${selection}: only a fresh completion publishes once`);
+  }
+});
+
+test('native question controls survive live delivery and authoritative snapshot replay', () => {
+  const ownedId = 'native-question-controls';
+  const requestId = 'input-1';
+  const fields = [{ id: 'channel', label: 'Channel', kind: 'select', required: false,
+    choices: [{ value: 'stable', label: 'Stable' }] }];
+  const requested = {
+    ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 10,
+    payload: { kind: 'userInputRequested', requestId, title: 'Choose', fields, canDecline: true }
   };
-  const send = Function(...Object.keys(dependencies), `const preparingSends = new Map();\n${code}\nreturn sendStructuredMessage;`)(...Object.values(dependencies)) as (id: string, text: string) => Promise<void>;
-  const pending = send(ownedId, 'Continue');
-  await new Promise((resolve) => setImmediate(resolve));
-  rail.activeOwnedId = 'another-session';
-  finishSend();
-  await pending;
-  assert.deepEqual(evicted, [ownedId]);
+  const resolved = { ...requested, sequence: 2,
+    payload: { kind: 'userInputResolved', requestId, cancelled: false } };
+  store.ensureConversationSession(ownedId, 'claude');
+  store.applySelectedConversationEventState(ownedId, requested);
+  const live = store.getConversationSession(ownedId).pendingInputs[requestId];
+  assert.equal(live.ownedId, ownedId);
+  assert.equal(live.canDecline, true);
+  assert.deepEqual(live.fields, fields);
+  store.applySelectedConversationEventState(ownedId, resolved);
+  assert.deepEqual(store.getConversationSession(ownedId).pendingInputs, {});
+  const snapshot = {
+    connection: { ownedId, provider: 'claude', generation: 1, state: 'connected' },
+    suspended: false,
+    page: { items: [], events: [], turns: [], hasBefore: false, hasEarlierTranscript: false,
+      hasAfter: false, watermark: 2, transferBytes: 0, oversized: false },
+    pendingEvents: [requested], pendingSequence: 2
+  };
+  store.applySelectedConversationSnapshotState(ownedId, ownedId, snapshot);
+  assert.deepEqual(store.getConversationSession(ownedId).pendingInputs[requestId], live);
+  store.applySelectedConversationSnapshotState(ownedId, ownedId, {
+    ...snapshot, pendingEvents: [requested, resolved]
+  });
+  assert.deepEqual(store.getConversationSession(ownedId).pendingInputs, {});
+  const { canDecline: _omitted, ...oldPayload } = requested.payload;
+  store.applySelectedConversationSnapshotState(ownedId, ownedId, {
+    ...snapshot, pendingEvents: [{ ...requested, payload: oldPayload }]
+  });
+  assert.equal(store.getConversationSession(ownedId).pendingInputs[requestId].canDecline, false);
+  store.removeConversationSession(ownedId);
 });
 
 // A permission request without provider options must answer through the
@@ -1216,9 +1307,10 @@ await test('a remote send releases its transcript when the reader switched away 
     payload: { requestId }
   });
   store.ensureConversationSession(ownedId, 'codex');
-  store.applyAgentConversationEvent({
+  store.setConversationConnection({ ownedId, provider: 'codex', generation: 1, state: 'connected' });
+  store.applySelectedConversationEventState(ownedId, {
     ...permissionEvent('approval.requested', 1),
-    payload: { requestId, title: 'Approval needed', toolTitle: 'Read File' }
+    payload: { kind: 'approval', requestId, title: 'Approval needed', toolTitle: 'Read File' }
   });
   const pending = store.getConversationSession(ownedId).pendingApprovals[requestId];
   assert.ok(pending);
@@ -1239,14 +1331,15 @@ await test('a remote send releases its transcript when the reader switched away 
     { mode: 'strip' }
   );
   const calls: Array<{ command: string; args?: Record<string, unknown> }> = [];
+  let rejectOption = false;
   const invoke = async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
     calls.push({ command, args });
-    if (command === 'respond_agent_conversation_permission') throw new Error('ACP permission option is not part of the pending request');
+    if (rejectOption && command === 'respond_agent_conversation_permission') throw new Error('ACP permission option is not part of the pending request');
     return undefined;
   };
   const respondToStructuredApproval = async (responseOwnedId: string, responseRequestId: string, decision: 'accept' | 'decline' | 'cancel'): Promise<void> => {
     calls.push({ command: 'respond_agent_conversation_approval', args: { request: { ownedId: responseOwnedId, requestId: responseRequestId, decision } } });
-    store.applyAgentConversationEvent(permissionEvent('approval.resolved', 2));
+    store.applySelectedConversationEventState(ownedId, permissionEvent('approval.resolved', 2));
   };
   const sendPermissionResponse = Function(
     'getConversationSession',
@@ -1263,504 +1356,26 @@ await test('a remote send releases its transcript when the reader switched away 
   assert.deepEqual(calls.map((call) => call.command), ['respond_agent_conversation_approval']);
   assert.equal(store.getConversationSession(ownedId).pendingApprovals[requestId], undefined);
   assert.equal((pending.options[0] as { synthetic?: boolean }).synthetic, true);
+  store.applySelectedConversationEventState(ownedId, {
+    ...permissionEvent('approval.requested', 3),
+    payload: { kind: 'permissionRequest', requestId, options: [{ optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' }] }
+  });
+  calls.length = 0;
+  await sendPermissionResponse(ownedId, requestId, 'allow-once');
+  assert.deepEqual(calls.map((call) => call.command), ['respond_agent_conversation_permission']);
+  calls.length = 0;
+  rejectOption = true;
+  await assert.rejects(() => sendPermissionResponse(ownedId, requestId, 'allow-once'), /not part of the pending request/);
+  assert.deepEqual(calls.map((call) => call.command), ['respond_agent_conversation_permission']);
 }
 
 store.removeConversationSession('owned-a');
 assert.equal(store.getConversationSession('owned-a'), null);
 assert.ok(store.getConversationSession('owned-b'));
 
-// Leaving a session releases its materialized transcript, while later
-// background events update only the lightweight rail-presence record.
-{
-  const ownedId = 'owned-evicted';
-  store.applyAgentConversationEvent({
-    ownedId, provider: 'codex', generation: 1, sequence: 1, timestampMs: 1_000,
-    payload: { kind: 'userMessage', itemId: 'large-row', text: 'materialized', completed: true }
-  });
-  store.evictConversationSession(ownedId);
-  store.recordAgentConversationPresenceEvent({
-    ownedId, provider: 'codex', generation: 1, sequence: 2, timestampMs: 1_010,
-    payload: { kind: 'turn', turnId: 'background-turn', state: 'started' }
-  });
-  assert.equal(store.getConversationSession(ownedId), null);
-  assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, 'background-turn');
-}
-
-// A backend turn can be active without this frontend initiating Send. On
-// reselection, the bounded tail may omit the older turn.started event.
-{
-  const ownedId = 'owned-active-controls-probe';
-  store.applyAgentConversationEvent({
-    ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 2_000,
-    payload: { kind: 'turn', turnId: 'live-turn', state: 'started' }
-  });
-  assert.equal(store.getConversationSession(ownedId).sending, false);
-  store.evictConversationSession(ownedId);
-  store.recordAgentConversationPresenceEvent({
-    ownedId, provider: 'claude', generation: 1, sequence: 2, timestampMs: 2_010,
-    payload: { kind: 'tool', itemId: 'running-tool', status: 'in-progress' }
-  });
-  store.applyAgentConversationSnapshot({
-    connection: { ownedId, provider: 'claude', generation: 1, state: 'connected' },
-    lastSequence: 2,
-    events: [{
-      ownedId, provider: 'claude', generation: 1, sequence: 2, timestampMs: 2_010,
-      payload: { kind: 'tool', itemId: 'running-tool', status: 'in-progress' }
-    }]
-  });
-  assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, 'live-turn');
-  assert.equal(store.getConversationSession(ownedId).activeTurnId, undefined);
-  assert.equal(store.getConversationSession(ownedId).sending, false);
-  store.recordAgentConversationPresenceEvent({
-    ownedId, provider: 'claude', generation: 1, sequence: 3, timestampMs: 2_020,
-    payload: { kind: 'turn', turnId: 'live-turn', state: 'completed' }
-  });
-  assert.equal(get(sessionPresenceHistory)[ownedId].activeTurnId, null);
-}
-
-// A bounded replacement can lose a tool's opening event while retaining its
-// completion. The row must keep its position among the already visible items.
-{
-  const ownedId = 'owned-trimmed-tool-order';
-  const event = (sequence: number, timestampMs: number, payload: Record<string, unknown>) => ({
-    ownedId, provider: 'codex' as const, generation: 1, sequence, timestampMs, payload
-  });
-  const opening = event(1, 100, { kind: 'tool', itemId: 'tool-a', name: 'Run tests', state: 'started' });
-  const middle = event(2, 200, { kind: 'assistantMessage', itemId: 'message-a', text: 'Checking.', completed: true });
-  const completion = event(3, 300, { kind: 'tool', itemId: 'tool-a', name: 'Run tests', state: 'completed' });
-  store.applyAgentConversationSnapshot({
-    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
-    lastSequence: 2,
-    events: [opening, middle]
-  });
-  store.applyAgentConversationSnapshot({
-    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
-    lastSequence: 3,
-    events: [middle, completion]
-  });
-  const current = store.getConversationSession(ownedId);
-  assert.deepEqual(
-    display(current).map((item) => item.itemId),
-    ['tool-a', 'message-a'],
-    'the tool does not jump past a later message when its opening event leaves the window'
-  );
-  assert.equal(current.transcript.getMessages().find((item: { id: string }) => item.id === 'tool-a')?.metadata?.startedAtMs, 100);
-
-  const replayed = [opening, middle, completion].reduce(applyConversationEvent, createConversationState(ownedId, 'codex'));
-  assert.equal(display(replayed).find((item) => item.itemId === 'tool-a')?.timestampMs, 100);
-
-  const pagedOwnedId = 'owned-tool-start-in-older-page';
-  store.applyAgentConversationSnapshot({
-    connection: { ownedId: pagedOwnedId, provider: 'codex', generation: 1, state: 'connected' },
-    lastSequence: 3,
-    events: [{ ...completion, ownedId: pagedOwnedId }]
-  });
-  store.prependOlderConversationEvents(pagedOwnedId, {
-    events: [{ ...opening, ownedId: pagedOwnedId }],
-    hasMore: false
-  });
-  assert.equal(
-    store.getConversationSession(pagedOwnedId).transcript.getMessages().find((item: { id: string }) => item.id === 'tool-a')?.metadata?.startedAtMs,
-    100,
-    'loading the actual opening event moves the tool back to its true earlier position'
-  );
-}
-
-// Scrolling up loads the page of stored events just older than what is on
-// screen. The older rows have to land in front of the ones already there,
-// keeping one ascending transcript, and an item that straddles the page
-// boundary must not be drawn twice.
-{
-  const olderEvent = (sequence: number, itemId: string, kind: string, text: string) => ({
-    ownedId: 'owned-paged',
-    provider: 'codex',
-    generation: 1,
-    sequence,
-    timestampMs: 100 + sequence,
-    payload: { kind, itemId, text, completed: true }
-  });
-
-  store.applyAgentConversationSnapshot({
-    connection: {
-      ownedId: 'owned-paged',
-      provider: 'codex',
-      generation: 1,
-      state: 'connected',
-      nativeSessionId: 'thread-paged'
-    },
-    lastSequence: 12,
-    events: [
-      olderEvent(11, 'user-newer', 'userMessage', 'Newer question'),
-      olderEvent(12, 'assistant-newer', 'assistantMessage', 'Newer answer')
-    ]
-  });
-
-  const opened = store.getConversationSession('owned-paged');
-  assert.equal(opened.oldestLoadedSequence, 11, 'opening records the oldest event it was given');
-  assert.equal(opened.reachedTranscriptStart, false);
-
-  store.prependOlderConversationEvents('owned-paged', {
-    events: [
-      olderEvent(9, 'user-older', 'userMessage', 'Older question'),
-      olderEvent(10, 'assistant-older', 'assistantMessage', 'Older answer')
-    ],
-    hasMore: true
-  });
-
-  const paged = store.getConversationSession('owned-paged');
-  assert.deepEqual(
-    display(paged).map((entry: { text: any; }) => entry.text),
-    ['Older question', 'Older answer', 'Newer question', 'Newer answer'],
-    'an older page lands in front of the transcript already on screen'
-  );
-  assert.deepEqual(
-    paged.transcript.getMessages().map((item) => item.parts.map((part) => part.content ?? '').join('')),
-    ['Older question', 'Older answer', 'Newer question', 'Newer answer']
-  );
-  const itemIds = display(paged).map((entry: { itemId: any; }) => entry.itemId);
-  assert.equal(new Set(itemIds).size, itemIds.length, 'no row is drawn twice');
-  assert.equal(paged.oldestLoadedSequence, 9);
-  assert.equal(paged.reachedTranscriptStart, false);
-  assert.equal(paged.lastSequence, 12, 'reading older history never rewinds the live cursor');
-
-  // An item whose start is in the older page and whose completion is already on
-  // screen must not produce a second row.
-  store.prependOlderConversationEvents('owned-paged', {
-    events: [olderEvent(8, 'user-older', 'userMessage', 'Older question')],
-    hasMore: false
-  });
-  const deduped = store.getConversationSession('owned-paged');
-  assert.deepEqual(
-    display(deduped).map((entry: { text: any; }) => entry.text),
-    ['Older question', 'Older answer', 'Newer question', 'Newer answer']
-  );
-  assert.equal(deduped.oldestLoadedSequence, 8);
-  assert.equal(deduped.reachedTranscriptStart, true, 'the start stops any further request');
-}
-
-// A stored turn start is history when the runtime has been suspended.
-{
-  const ownedId = 'owned-suspended-turn';
-  const connection = { ownedId, provider: 'codex' as const, generation: 1, state: 'connected' as const };
-  const started: AgentConversationEvent = {
-    ownedId, provider: 'codex', generation: 1, sequence: 1, timestampMs: 1,
-    payload: { kind: 'turn', turnId: 'old-turn', state: 'started' }
-  };
-  store.applyAgentConversationSnapshot({ connection, lastSequence: 1, events: [started] });
-  store.setConversationSending(ownedId, true);
-  assert.equal(store.getConversationSession(ownedId).activeTurnId, 'old-turn');
-  store.applyAgentConversationSnapshot({ connection, suspended: true, lastSequence: 1, events: [started] });
-  assert.equal(store.getConversationSession(ownedId).activeTurnId, undefined, 'a suspended runtime cannot have a live turn');
-  assert.equal(store.getConversationSession(ownedId).sending, false, 'a suspended runtime cannot keep the Stop button');
-  store.getConversationSession(ownedId).activeTurnId = 'old-turn';
-  store.setConversationSending(ownedId, true);
-  store.applyAgentConversationSnapshot({ connection, suspended: true, lastSequence: 1, events: [started] });
-  assert.equal(store.getConversationSession(ownedId).activeTurnId, undefined, 'an unchanged suspended snapshot still repairs stale turn state');
-  store.evictConversationSession(ownedId);
-}
-
-// An older page can end before the turn-completed event at the live head.
-// Replaying that page must not turn the composer back into a Stop button.
-{
-  const ownedId = 'owned-paged-turn-state';
-  const connection = { ownedId, provider: 'codex' as const, generation: 1, state: 'connected' as const };
-  const turn = (sequence: number, turnId: string, state: 'started' | 'completed'): AgentConversationEvent => ({
-    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
-    payload: { kind: 'turn', turnId, state }
-  });
-  const olderStart = turn(1, 'old-turn', 'started');
-  const olderWindow = {
-    events: [olderStart], reachedStart: true, reachedEnd: false,
-    oldestSequence: 1, newestSequence: 1
-  };
-  store.applyAgentConversationSnapshot({
-    connection, lastSequence: 3,
-    events: [turn(2, 'head-turn', 'started'), turn(3, 'head-turn', 'completed')]
-  });
-  assert.equal(store.getConversationSession(ownedId).activeTurnId, undefined);
-  store.applyAgentConversationSnapshot({ connection, lastSequence: 3, events: [] }, olderWindow);
-  assert.equal(store.getConversationSession(ownedId).activeTurnId, undefined, 'older starts cannot revive a completed turn');
-
-  store.applyAgentConversationSnapshot({ connection, lastSequence: 4, events: [turn(4, 'live-turn', 'started')] });
-  assert.equal(store.getConversationSession(ownedId).activeTurnId, 'live-turn');
-  store.applyAgentConversationSnapshot({ connection, lastSequence: 4, events: [] }, olderWindow);
-  assert.equal(store.getConversationSession(ownedId).activeTurnId, 'live-turn', 'older pages cannot hide a live turn');
-  store.evictConversationSession(ownedId);
-}
-
-// Reading further back into a provider's own transcript writes those older
-// events BELOW the ones already stored, so their sequences count down through
-// zero and into negatives. A reducer that treats "not greater than the last
-// sequence" as "already seen" throws every one of them away, which is what
-// happened: 112 events arrived off disk and none of them ever reached a row.
-{
-  const event = (sequence: number, itemId: string, kind: string, text: string) => ({
-    ownedId: 'owned-negative',
-    provider: 'codex',
-    generation: 0,
-    sequence,
-    timestampMs: 1000 + sequence,
-    payload: { kind, itemId, text, completed: true }
-  });
-
-  store.applyAgentConversationSnapshot({
-    connection: {
-      ownedId: 'owned-negative',
-      provider: 'codex',
-      generation: 0,
-      state: 'connected',
-      nativeSessionId: 'thread-negative'
-    },
-    lastSequence: 2,
-    events: [
-      event(1, 'user-stored', 'userMessage', 'Stored question'),
-      event(2, 'assistant-stored', 'assistantMessage', 'Stored answer')
-    ]
-  });
-
-  store.prependOlderConversationEvents('owned-negative', {
-    events: [
-      event(-2, 'user-disk', 'userMessage', 'Question from the transcript'),
-      event(-1, 'assistant-disk', 'assistantMessage', 'Answer from the transcript'),
-      event(0, 'assistant-disk-2', 'assistantMessage', 'Second answer from the transcript')
-    ],
-    hasMore: true
-  });
-
-  const negative = store.getConversationSession('owned-negative');
-  assert.deepEqual(
-    display(negative).map((entry: { text: any; }) => entry.text),
-    [
-      'Question from the transcript',
-      'Answer from the transcript',
-      'Second answer from the transcript',
-      'Stored question',
-      'Stored answer'
-    ],
-    'events at sequences at or below zero must still reach the transcript'
-  );
-  assert.equal(negative.oldestLoadedSequence, -2);
-  assert.equal(negative.lastSequence, 2, 'reading older history never rewinds the live cursor');
-}
-
-// Claude never says it compacted; the only sign is the reported occupancy
-// falling off a cliff. Without this the transcript has a silent gap and the
-// reply after it reads as though the agent forgot the conversation.
-{
-  const ownedId = 'owned-compaction';
-  store.applyAgentConversationSnapshot({
-    connection: { ownedId, provider: 'claude', generation: 1, state: 'connected' },
-    lastSequence: 1,
-    events: [
-      {
-        ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 900,
-        payload: { kind: 'usage', usedTokens: 351_238, contextWindow: 400_000 }
-      }
-    ]
-  });
-  store.applyAgentConversationEvent({
-    ownedId, provider: 'claude', generation: 1, sequence: 2, timestampMs: 910,
-    payload: { kind: 'usage', usedTokens: 22_202, contextWindow: 400_000 }
-  });
-  const compactions = display(store.getConversationSession(ownedId))
-    .filter((entry: { kind: string; }) => entry.kind === 'compaction');
-  assert.equal(compactions.length, 1, 'a window falling to a fraction of itself is a compaction');
-  assert.equal(compactions[0].preTokens, 351_238);
-  assert.equal(compactions[0].postTokens, 22_202);
-  assert.equal(store.getConversationSession(ownedId).usage.usedTokens, 22_202);
-}
-
-// An ordinary decline is not one. Agents report the last request as often as
-// the session, so a modest fall says nothing about the window being emptied.
-{
-  const ownedId = 'owned-no-compaction';
-  store.applyAgentConversationSnapshot({
-    connection: { ownedId, provider: 'claude', generation: 1, state: 'connected' },
-    lastSequence: 1,
-    events: [
-      {
-        ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 900,
-        payload: { kind: 'usage', usedTokens: 351_238 }
-      }
-    ]
-  });
-  store.applyAgentConversationEvent({
-    ownedId, provider: 'claude', generation: 1, sequence: 2, timestampMs: 910,
-    payload: { kind: 'usage', usedTokens: 300_000 }
-  });
-  assert.equal(
-    display(store.getConversationSession(ownedId)).filter((entry: { kind: string; }) => entry.kind === 'compaction').length,
-    0
-  );
-}
-
-// The same drop read back from the journal when the session is reopened. A
-// marker that only appeared live would be gone by morning.
-{
-  const ownedId = 'owned-replayed-compaction';
-  store.applyAgentConversationSnapshot({
-    connection: { ownedId, provider: 'claude', generation: 1, state: 'connected' },
-    lastSequence: 3,
-    events: [
-      {
-        ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 900,
-        payload: { kind: 'usage', usedTokens: 351_238 }
-      },
-      {
-        ownedId, provider: 'claude', generation: 1, sequence: 2, timestampMs: 910,
-        payload: { kind: 'usage', usedTokens: 22_202 }
-      },
-      {
-        ownedId, provider: 'claude', generation: 1, sequence: 3, timestampMs: 920,
-        payload: { kind: 'assistantMessage', itemId: 'after', text: 'Carrying on.', completed: true }
-      }
-    ]
-  });
-  assert.deepEqual(
-    display(store.getConversationSession(ownedId)).map((entry: { kind: any; }) => entry.kind),
-    ['compaction', 'assistant'],
-    'replayed history marks the boundary where the live session did'
-  );
-}
-
-// Codex reports its compaction outright, and then reports nothing else about
-// the window. The explicit record is the row.
-{
-  const ownedId = 'owned-explicit-compaction';
-  store.applyAgentConversationSnapshot({
-    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
-    lastSequence: 1,
-    events: [
-      {
-        ownedId, provider: 'codex', generation: 1, sequence: 1, timestampMs: 900,
-        payload: { kind: 'contextCompaction', trigger: 'auto' }
-      }
-    ]
-  });
-  const timeline = display(store.getConversationSession(ownedId));
-  assert.deepEqual(timeline.map((entry: { kind: any; }) => entry.kind), ['compaction']);
-  assert.equal(timeline[0].trigger, 'auto');
-  assert.equal(timeline[0].preTokens, undefined);
-}
-
-// The retained event window is capped by event count. Without a working cap
-// the transcript of a long session grows for as long as the session is
-// selected, which is what put the app's memory on a ramp.
-{
-  const ownedId = 'owned-event-window-cap';
-  // Mirrors ACTIVE_EVENT_WINDOW_EVENTS and ACTIVE_EVENT_WINDOW_TRIM_EVENTS.
-  const windowEvents = 20_000;
-  const trimEvents = 15_000;
-  for (let sequence = 1; sequence <= windowEvents + 1; sequence += 1) {
-    store.applyAgentConversationEvent({
-      ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
-      payload: { kind: 'assistantMessage', itemId: `m-${sequence}`, text: 'x', completed: true }
-    });
-  }
-  const session = store.getConversationSession(ownedId);
-  assert.equal(session.loadedEvents.length, trimEvents, 'the window trims down to its low mark');
-  assert.equal(
-    session.oldestLoadedSequence,
-    windowEvents + 1 - trimEvents + 1,
-    'the oldest retained sequence follows the trim so scrolling up still has a cursor'
-  );
-  assert.equal(session.newestLoadedSequence, windowEvents + 1, 'the newest event is retained');
-}
-
-// Crossing the byte cap should leave room for subsequent live events. Rebuilding
-// the entire conversation on every event made long remote turns flash and stall.
-{
-  const ownedId = 'owned-live-byte-window';
-  const event = (sequence: number): AgentConversationEvent => ({
-    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
-    payload: { kind: 'assistantMessage', itemId: `message-${sequence}`, text: 'x'.repeat(128_000), completed: true }
-  });
-  let sequence = 0;
-  do {
-    store.applyAgentConversationEvent(event(++sequence));
-  } while (store.getConversationSession(ownedId).oldestLoadedSequence === 1 && sequence < 40);
-  const afterTrim = store.getConversationSession(ownedId);
-  assert.ok(afterTrim.oldestLoadedSequence > 1, 'the byte ceiling was reached');
-  assert.ok(afterTrim.loadedEventsBytes < store.ACTIVE_EVENT_WINDOW_BYTES);
-  for (let next = 0; next < 4; next += 1) store.applyAgentConversationEvent(event(++sequence));
-  assert.equal(store.getConversationSession(ownedId), afterTrim, 'later events should not rebuild the timeline');
-  assert.equal(afterTrim.lastSequence, sequence);
-  store.evictConversationSession(ownedId);
-}
-
-await test('journal payloads stay plain across live events, snapshots, paging and transcript imports', () => {
-  const ownedId = 'owned-plain-journal';
-  const event = (sequence: number): AgentConversationEvent => ({
-    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
-    payload: { kind: 'assistantMessage', itemId: `plain-${sequence}`, text: `Message ${sequence}`, completed: true }
-  });
-  const live = event(1);
-  store.applyAgentConversationEvent(live);
-  assert.equal(store.getConversationSession(ownedId).loadedEvents[0], live);
-  const tail = event(3);
-  store.applyAgentConversationSnapshot({
-    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
-    lastSequence: 3, events: [tail]
-  });
-  const older = event(2);
-  store.prependOlderConversationEvents(ownedId, { events: [older], hasMore: false });
-  const newer = event(4);
-  store.appendNewerConversationEvents(ownedId, { events: [newer], hasMore: false });
-  const state = store.getConversationSession(ownedId);
-  [older, tail, newer].forEach((original, index) => {
-    assert.equal(state.loadedEvents[index], original, 'paging must not retain reactive event wrappers');
-    assert.equal(state.loadedEvents[index].payload, original.payload);
-  });
-  assert.deepEqual(display(state).map((entry: { text: string }) => entry.text), ['Message 2', 'Message 3', 'Message 4']);
-  store.applyConversationTranscript(ownedId, 'codex', { messages: [], metadata: state.metadata, children: [] });
-  assert.equal(store.getConversationSession(ownedId).loadedEvents[0], older);
-  store.evictConversationSession(ownedId);
-});
-
-await test('release builds enforce the UTF-8 history byte limit in both paging directions and live output', () => {
-  // compileForTest disables DEV, matching the shipped frontend.
-  const ownedId = 'owned-release-byte-limit';
-  const event = (sequence: number): AgentConversationEvent => ({
-    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
-    payload: { kind: 'assistantMessage', itemId: `large-${sequence}`, text: '界'.repeat(800_000), completed: true }
-  });
-  const first = event(1);
-  const second = event(2);
-  store.applyAgentConversationSnapshot({
-    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
-    lastSequence: 2, events: [first, second]
-  });
-  const assertWindow = (sequence: number) => {
-    const state = store.getConversationSession(ownedId);
-    assert.equal(state.loadedEvents.length, 1);
-    assert.equal(state.loadedEvents[0].sequence, sequence);
-    assert.ok(state.loadedEventsBytes > 2_400_000, 'count UTF-8 bytes, not characters or DEV diagnostics');
-    assert.ok(state.loadedEventsBytes <= store.ACTIVE_EVENT_WINDOW_BYTES);
-    assert.equal(state.oldestLoadedSequence, sequence);
-    assert.equal(state.newestLoadedSequence, sequence);
-  };
-  assertWindow(2);
-  store.prependOlderConversationEvents(ownedId, { events: [first], hasMore: false });
-  assertWindow(1);
-  assert.equal(store.getConversationSession(ownedId).reachedTranscriptEnd, false);
-  const live = event(3);
-  assert.equal(store.applyAgentConversationEvent(live), false);
-  assertWindow(1);
-  assert.equal(store.getConversationSession(ownedId).desynchronized, false);
-  assert.equal(store.getConversationSession(ownedId).lastSequence, 2);
-  store.appendNewerConversationEvents(ownedId, { events: [second], hasMore: false });
-  assertWindow(2);
-  assert.equal(store.getConversationSession(ownedId).reachedTranscriptStart, false);
-  store.applyAgentConversationEvent(live);
-  assertWindow(3);
-  store.evictConversationSession(ownedId);
-});
-
-console.log('agent conversation store tests passed');
-
 await test('Stop during revival prevents dispatch and releases the prepared runtime', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
-  const block = source.slice(source.indexOf('const preparingSends ='), source.indexOf('/** Answers one legacy approval'));
+  const block = source.slice(source.indexOf('const preparingSends ='), source.indexOf('/** Answers one summary-only approval'));
   const code = stripTypeScriptTypes(block.replaceAll('export async function', 'async function'), { mode: 'strip' });
   let finishRevival!: () => void;
   const revival = new Promise<void>((resolve) => { finishRevival = resolve; });
@@ -1802,17 +1417,15 @@ await test('Stop during revival prevents dispatch and releases the prepared runt
   assert.equal(api.preparingSends.size, 0, 'no retained send bookkeeping');
 });
 
-await test('an observed active turn routes Stop to the backend during steering', async () => {
+await test('an observed active turn routes Stop to the backend', async () => {
   const ownedId = 'observed-steering';
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
-  const block = source.slice(source.indexOf('const preparingSends ='), source.indexOf('/** Answers one legacy approval'));
+  const block = source.slice(source.indexOf('const preparingSends ='), source.indexOf('/** Answers one summary-only approval'));
   const code = stripTypeScriptTypes(block.replaceAll('export async function', 'async function'), { mode: 'strip' });
   store.recordAgentConversationPresenceEvent({
     ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 3_000,
     payload: { kind: 'turn', turnId: 'observed-turn', state: 'started' }
   });
-  let finishCapability!: () => void;
-  const capability = new Promise<boolean>((resolve) => { finishCapability = () => resolve(true); });
   const state = {
     sending: false, generation: 1, activeTurnId: undefined,
     attachments: [], capabilities: null, connectionState: 'connected',
@@ -1828,8 +1441,6 @@ await test('an observed active turn routes Stop to the backend during steering',
     shouldReviveBeforeSend: () => false,
     sendSupportsImages: () => false,
     buildConversationPrompt: (text: string) => ({ text, content: [] }),
-    hasBackendCapability: () => capability,
-    ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY: 'test',
     sendTargetGeneration: () => 1,
     updateOwnedSession: () => undefined,
     recordSentConversationAttachments: () => undefined,
@@ -1842,14 +1453,9 @@ await test('an observed active turn routes Stop to the backend during steering',
     stopStructuredTurn: (id: string) => Promise<void>;
     preparingSends: Map<string, unknown>;
   };
-  const sending = api.sendStructuredMessage(ownedId, 'Correct the answer');
-  assert.equal(api.preparingSends.size, 1, 'pending steering remains cancellable');
+  await api.sendStructuredMessage(ownedId, 'Correct the answer');
   await api.stopStructuredTurn(ownedId);
-  assert.deepEqual(calls, ['stop_agent_conversation_turn']);
-  const cancelled = assert.rejects(sending, /Message cancelled before sending/);
-  finishCapability();
-  await cancelled;
-  assert.deepEqual(calls, ['stop_agent_conversation_turn'], 'Stop must prevent the pending correction from dispatching');
+  assert.deepEqual(calls, ['send_agent_conversation_message', 'stop_agent_conversation_turn']);
   assert.equal(api.preparingSends.size, 0);
 });
 
@@ -1865,19 +1471,20 @@ await test('an inactive terminal event clears send state before finished rail pr
   const dependencies = {
     conversationEventsDisposed: false,
     conversationEventsGeneration: 1,
+    selectedConversationRead: null,
     railActivityEvents: new Map(),
     sessionPresenceEventFromConversation,
     synchronizeSessionPresenceWork,
     displayEventFrom: store.displayEventFrom,
+    agentItemFromEvent, displayItemFromAgentItem, publishWorkspaceFileChange: assert.fail,
     updateOwnedSession: () => undefined,
     rail: { activeOwnedId: 'another-session', owned: [] },
     shouldClearConversationSending,
     get,
     sessionPresenceHistory,
-    applyAgentConversationEvent: () => { throw new Error('inactive event materialized'); },
+    admitSelectedConversationEvent: () => false,
     setConversationSending: () => { state.sending = false; calls.push('clear'); },
     recordAgentConversationPresenceEvent: () => { calls.push('presence'); },
-    releaseConversationForRead: () => { calls.push('release'); },
     getConversationSession: () => state
   };
   const handle = Function(...Object.keys(dependencies), `${code}\nreturn handleConversationStreamEnvelope;`)(...Object.values(dependencies)) as (
@@ -1887,7 +1494,7 @@ await test('an inactive terminal event clears send state before finished rail pr
     ownedId, provider: 'claude', generation: 1, sequence: 3, timestampMs: 3_010,
     payload: { kind: 'turn', turnId: 'observed-turn', state: 'completed' }
   } });
-  assert.deepEqual(calls, ['clear', 'release', 'presence']);
+  assert.deepEqual(calls, ['presence', 'clear']);
   assert.equal(state.draft, draft);
   assert.equal(state.attachments, attachments);
   store.recordAgentConversationPresenceEvent({
@@ -1937,6 +1544,7 @@ await test('remote rail activity reconciles without opening background conversat
   let opened = false;
   let finishRead: (records: unknown[]) => void = () => {};
   const dependencies = {
+    selectedConversationRead: null,
     rail: { activeOwnedId: 'another-session', owned: [row], remoteConnections: { workbox: 'connected' }, error: null },
     listRemoteAgentConversationSessionsFromTauri: () => new Promise<unknown[]>((resolve) => { finishRead = resolve; }),
     updateOwnedSession: (_id: string, patch: Partial<typeof row>) => Object.assign(row, patch),
@@ -1944,10 +1552,11 @@ await test('remote rail activity reconciles without opening background conversat
     preparingSends: new Map(),
     get, sessionPresenceHistory, sessionPresenceEventFromConversation, synchronizeSessionPresenceWork,
     displayEventFrom: store.displayEventFrom,
+    agentItemFromEvent, displayItemFromAgentItem, publishWorkspaceFileChange: assert.fail,
     shouldClearConversationSending,
     setConversationSending: (_id: string, sending: boolean) => { state.sending = sending; },
     recordAgentConversationPresenceEvent: store.recordAgentConversationPresenceEvent,
-    applyAgentConversationEvent: () => { throw new Error('background transcript must stay unloaded'); }
+    admitSelectedConversationEvent: () => false
   };
   const api = Function(...Object.keys(dependencies), `
     let conversationEventsDisposed = false;
@@ -2056,30 +1665,173 @@ await test('an unchanged sidebar row update leaves the row list untouched', asyn
   assert.equal(railStore.rail.owned[0].state, 'live');
 });
 
-await test('prepending an older page trims newest only down to the trim target', () => {
-  assert.equal(store.ACTIVE_EVENT_WINDOW_BYTES, 4 * 1024 * 1024);
-  const ownedId = 'owned-prepend-trim-target';
-  const event = (sequence: number): AgentConversationEvent => ({
-    ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
-    payload: { kind: 'assistantMessage', itemId: `message-${sequence}`, text: 'x'.repeat(100_000), completed: true }
-  });
-  const perEvent = JSON.stringify(event(1000)).length;
-  const fullWindow = Math.floor(store.ACTIVE_EVENT_WINDOW_BYTES / perEvent);
-  const first = 1000;
-  const loaded = Array.from({ length: fullWindow }, (_, index) => event(first + index));
-  store.applyAgentConversationSnapshot({
-    connection: { ownedId, provider: 'codex', generation: 1, state: 'connected' },
-    lastSequence: first + fullWindow - 1,
-    events: loaded
-  });
-  const newest = first + fullWindow - 1;
-  store.prependOlderConversationEvents(ownedId, { events: [event(first - 1)], hasMore: true });
-  const session = store.getConversationSession(ownedId);
-  assert.equal(session.oldestLoadedSequence, first - 1, 'the older page is kept');
-  assert.ok(
-    session.loadedEventsBytes <= store.ACTIVE_EVENT_WINDOW_BYTES * 0.75 + perEvent,
-    'one page trims down to the trim target so the next page does not trim again'
-  );
-  assert.ok(session.newestLoadedSequence < newest, 'the far end was trimmed');
-  store.evictConversationSession(ownedId);
+await test('selected refresh reports failure and releases buffered terminal events', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('function selectedEventUsesControlCursor'), source.indexOf('async function refreshSelectedConversation'));
+  const code = stripTypeScriptTypes(block, { mode: 'strip' });
+  for (const aborted of [false, true]) {
+    const errors: unknown[] = [];
+    const delivered: number[] = [];
+    let rejectRead: (error: Error) => void = () => {};
+    const read = {
+      ownedId: 'refresh-failure', generation: 1, pageWatermark: 10, pendingSequence: 15,
+      reading: false, reloadRequested: false, events: [] as AgentConversationEvent[],
+      bytes: 0, overflow: false, maxBytes: 1024, abortController: new AbortController(),
+      onSnapshot: () => assert.fail('failed refresh must preserve the displayed snapshot'),
+      onEvent: (event: AgentConversationEvent) => delivered.push(event.sequence),
+      onError: (error: unknown) => errors.push(error)
+    };
+    const dependencies = {
+      selectedConversationRead: read, childConversationRead: null, isCurrentConversationRead: (candidate: unknown) => candidate === read && !read.abortController.signal.aborted, ACTIVE_EVENT_WINDOW_EVENTS: 100,
+      ACTIVE_EVENT_WINDOW_BYTES: 100_000,
+      readAgentConversationSelectionFromTauri: () => new Promise((_resolve, reject) => { rejectRead = reject; })
+    };
+    const admit = Function(...Object.keys(dependencies), `${code}\nreturn admitSelectedConversationEvent;`)(...Object.values(dependencies)) as (event: AgentConversationEvent) => void;
+    const event = (sequence: number): AgentConversationEvent => ({
+      ownedId: read.ownedId, provider: 'codex', generation: 1, sequence, timestampMs: sequence,
+      payload: { kind: 'turn', turnId: 'active-turn', state: 'completed' }
+    });
+    admit(event(16)); // Missing 11–15 requires an authoritative refresh.
+    admit(event(17)); // The terminal arriving during the read must not settle the turn.
+    if (aborted) read.abortController.abort();
+    const failure = new Error('selected history read failed');
+    rejectRead(failure);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(delivered, []);
+    assert.equal(read.pageWatermark, 10);
+    assert.equal(read.reading, false);
+    assert.deepEqual(errors, aborted ? [] : [failure], 'departed selections must not receive refresh errors');
+    if (!aborted) {
+      assert.equal(read.events.length, 0);
+      assert.equal(read.bytes, 0);
+    }
+  }
+});
+
+await test('a session the backend has not started yet still reports its empty chat ready', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('function createConnection('), source.indexOf('export function selectConversationChat('));
+  const enqueueFactory = () => {
+    const items: unknown[] = [];
+    let wake: (() => void) | null = null;
+    return {
+      push(item: unknown) { items.push(item); wake?.(); },
+      async *stream() {
+        for (;;) {
+          if (items.length) yield items.shift();
+          else await new Promise<void>((resolve) => { wake = resolve; });
+        }
+      }
+    };
+  };
+  for (const started of [false, true]) {
+    const dependencies = {
+      enqueueFactory,
+      PAGE_BYTES: 1024,
+      EventType,
+      // The backend answers null for a session with no row yet, so no snapshot is delivered.
+      subscribeSelectedConversation: async (input: { onSnapshot: (snapshot: unknown) => void }) => {
+        if (started) input.onSnapshot({ page: 'saved' });
+        return () => {};
+      },
+      admitInitialSnapshot: (_selection: unknown, _snapshot: unknown, push: (item: unknown) => void) => push('admitted snapshot'),
+      emitEvent: () => undefined
+    };
+    const createConnection = Function(...Object.keys(dependencies), `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn createConnection;`)(...Object.values(dependencies));
+    const selection = { workspaceOwnedId: 'new-session', historyOwnedId: 'new-session', controller: new AbortController() };
+    const stream = createConnection(selection).subscribe()[Symbol.asyncIterator]();
+    const first = await Promise.race([
+      stream.next().then((result: IteratorResult<unknown>) => result.value),
+      new Promise((resolve) => setImmediate(() => setImmediate(() => resolve('nothing yielded'))))
+    ]);
+    if (started) assert.equal(first, 'admitted snapshot', 'a found session is admitted from its snapshot');
+    else assert.deepEqual(first, { type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: 'new-session' });
+    selection.controller.abort();
+    await stream.return?.();
+  }
+});
+
+await test('a sent message draws below the history it was sent after', () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('export function sendSelectedConversationMessage('), source.indexOf('export async function refreshSelectedConversationChat('))
+    .replace('export ', '');
+  const processor = new StreamProcessor();
+  processor.setMessages(conversationMessagesFromEvents([{
+    ownedId: 'owned-sent', provider: 'claude', generation: 1, sequence: 1, timestampMs: Date.now() - 60_000,
+    payload: { kind: 'userMessage', itemId: 'user-earlier', text: 'Earlier', completed: true }
+  }] as any));
+  const active = {
+    workspaceOwnedId: 'owned-sent',
+    pendingAdmission: null,
+    chat: {
+      // The chat draws its own copy of the message the moment it is sent, as TanStack does.
+      sendMessage(input: { content: any; metadata?: Record<string, unknown> }) {
+        processor.addUserMessage(input.content, undefined, input.metadata);
+        return new Promise(() => {});
+      }
+    }
+  };
+  const send = Function('active', 'rejectPendingAdmission',
+    `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn sendSelectedConversationMessage;`)(active, () => {});
+  void send('owned-sent', 'Next question');
+  const shown = conversationDisplayItems(processor.getMessages());
+  assert.deepEqual(shown.map((item) => item.kind === 'user' ? item.text : item.kind), ['Earlier', 'Next question'],
+    'the sent copy is the newest row, so the send anchor scrolls to it rather than to the top of the history');
+});
+
+await test('displayed child state is isolated and eviction preserves parent controls and previews', () => {
+  store.ensureConversationSession('drill-parent', 'codex');
+  store.ensureConversationSession('drill-child-history', 'codex');
+  const parent = store.getConversationSession('drill-parent');
+  const child = store.getConversationSession('drill-child-history');
+  parent.selectedChildHistoryOwnedId = child.ownedId;
+  parent.selectedBeforeCursor = 900;
+  parent.pendingApprovals = { approval: { requestId: 'approval' } };
+  parent.sentAttachments = { parentMessage: [{ previewUrl: 'blob:parent-preview' }] };
+  child.sentAttachments = { childMessage: [{ previewUrl: 'blob:child-preview' }] };
+  const revoked: string[] = [];
+  const originalRevoke = URL.revokeObjectURL;
+  URL.revokeObjectURL = (url) => { revoked.push(url); };
+  try {
+    store.applySelectedConversationSnapshotState(child.ownedId, child.ownedId, {
+      connection: { provider: 'codex', generation: 7 }, suspended: false, activeTurnId: 'child-live',
+      page: { turns: [{ turnId: 'child-turn' }], beforeCursor: 10, afterCursor: 20, hasBefore: true,
+        hasAfter: false, watermark: 20, transferBytes: 200, oversized: false }
+    }, false);
+    assert.equal(child.generation, 7);
+    assert.equal(child.activeTurnId, 'child-live');
+    const childTurnEvent = (state: string, turnId: string) => ({
+      ownedId: child.ownedId, provider: 'codex', generation: 7, sequence: 21, timestampMs: 21,
+      payload: { kind: 'turn', state, turnId }
+    });
+    store.applySelectedConversationHistoryEventState(child.ownedId, childTurnEvent('started', 'child-next'));
+    assert.equal(child.activeTurnId, 'child-next');
+    store.applySelectedConversationHistoryEventState(child.ownedId, childTurnEvent('completed', 'older-child'));
+    assert.equal(child.activeTurnId, 'child-next', 'an unrelated terminal cannot finish the current child turn');
+    store.applySelectedConversationHistoryEventState(child.ownedId, childTurnEvent('completed', 'child-next'));
+    assert.equal(child.activeTurnId, undefined);
+    assert.equal(parent.activeTurnId, undefined, 'child activity cannot start a parent turn');
+    store.applySelectedConversationHistoryEventState(child.ownedId, childTurnEvent('started', 'child-error'));
+    store.applySelectedConversationHistoryEventState(child.ownedId, {
+      ...childTurnEvent('started', 'child-error'), payload: { kind: 'error', message: 'child failed' }
+    });
+    assert.equal(child.activeTurnId, undefined);
+    assert.equal(child.selectedBeforeCursor, 10);
+    assert.equal(parent.selectedBeforeCursor, 900);
+    assert.deepEqual(Object.keys(parent.pendingApprovals), ['approval']);
+    store.evictInactiveConversationSessions(parent.ownedId);
+    assert.equal(store.getConversationSession(child.ownedId), child);
+    assert.equal(revoked.includes('blob:parent-preview'), false);
+    assert.equal(revoked.includes('blob:child-preview'), false);
+    parent.selectedChildHistoryOwnedId = null;
+    store.evictConversationSession(child.ownedId);
+    assert.equal(store.getConversationSession(child.ownedId), null);
+    assert.equal(store.getConversationSession(parent.ownedId), parent);
+    assert.deepEqual(Object.keys(parent.sentAttachments), ['parentMessage']);
+    assert.equal(revoked.includes('blob:child-preview'), true);
+    assert.equal(revoked.includes('blob:parent-preview'), false);
+  } finally {
+    store.evictConversationSession(parent.ownedId);
+    URL.revokeObjectURL = originalRevoke;
+  }
 });

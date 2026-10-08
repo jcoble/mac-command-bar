@@ -49,6 +49,24 @@ export function formatLastActivity(lastActivity: string | null | undefined, now:
 }
 
 /**
+ * The short distance GitHub prints beside pull request events: "5m", "3h",
+ * "2d", "1w", "1mo", "1y". A page of events reads as a timeline this way; the
+ * exact moment stays one hover away through `exactLocalTime`.
+ */
+export function formatAge(stamp: string | null | undefined, now: Date): string {
+  const when = parseStamp(stamp);
+  if (!when) return '';
+  const elapsed = now.getTime() - when.getTime();
+  if (elapsed < JUST_NOW) return 'now';
+  if (elapsed < HOUR) return `${Math.floor(elapsed / MINUTE)}m`;
+  if (elapsed < DAY) return `${Math.floor(elapsed / HOUR)}h`;
+  if (elapsed < 7 * DAY) return `${Math.floor(elapsed / DAY)}d`;
+  if (elapsed < 30 * DAY) return `${Math.floor(elapsed / (7 * DAY))}w`;
+  if (elapsed < 365 * DAY) return `${Math.floor(elapsed / (30 * DAY))}mo`;
+  return `${Math.floor(elapsed / (365 * DAY))}y`;
+}
+
+/**
  * The full local date and time, for hovering over a shortened stamp. "3h ago"
  * is the right thing to read at a glance and the wrong thing to quote in a bug
  * report, so the exact moment stays one hover away.

@@ -269,15 +269,18 @@
         <DropdownMenu.Root bind:open={menuOpen}>
           <DropdownMenu.Trigger>
             {#snippet child({ props })}
-              <IconButton
+              <!-- Button, not IconButton: IconButton drops the trigger's props, which left the menu off-screen. -->
+              <Button
                 {...props}
-                label="More actions"
-                side="bottom"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="More actions"
+                title="More actions"
                 class="rounded-md bg-transparent text-[var(--color-text)] shadow-none
                        hover:bg-accent/60 hover:text-foreground"
               >
                 <Ellipsis />
-              </IconButton>
+              </Button>
             {/snippet}
           </DropdownMenu.Trigger>
           <DropdownMenu.Content class="w-56" align="end">
@@ -348,7 +351,7 @@
           </IconButton>
         </div>
         {#if detailsLoading}
-          <p class={QUIET_LINE}>Loading session details…</p>
+          <p class={QUIET_LINE}><WorkingSpinner size={12} /> Loading session details…</p>
         {:else if firstPrompt}
           <ScrollArea type="always" class="first-prompt-scroll">
             <p class="m-0 whitespace-pre-wrap pr-2 text-(length:--text-quiet) leading-relaxed">
@@ -373,7 +376,7 @@
                    focus-visible:ring-3 focus-visible:ring-ring/50"
           >
             {#if detailsLoading}
-              <WorkingSpinner seed={record.key} size={14} />
+              <WorkingSpinner size={14} />
               Loading turns…
             {:else}
               <ChevronRight
@@ -386,7 +389,7 @@
           <Collapsible.Content>
             <div class="flex flex-col gap-(--space-2) pt-(--space-2)">
               {#if detailsLoading}
-                <p class={QUIET_LINE}>Loading turns…</p>
+                <p class={QUIET_LINE}><WorkingSpinner size={12} /> Loading turns…</p>
               {:else if turns.length === 0}
                 <p class={QUIET_LINE}>No turns were stored for this session.</p>
               {:else}

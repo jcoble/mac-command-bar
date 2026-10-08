@@ -1,13 +1,15 @@
 import {
   changeAgentConversationCheckoutFromTauri,
-  extendAgentConversationImportFromTauri,
-  listAgentConversationEventsAfterFromTauri,
+  createAgentConversationRequestId,
+  listAgentConversationItemsAfterFromTauri,
+  listAgentConversationItemsBeforeFromTauri,
   listRemoteAgentConversationSessionsFromTauri,
-  listAgentConversationEventsBeforeFromTauri,
   readAgentConversationCapabilitiesFromTauri,
-  readAgentConversationSnapshotFromTauri,
+  readAgentConversationChildHistoryFromTauri,
+  readAgentConversationSelectionFromTauri,
   readRemoteAssemblyEnvironmentFromTauri,
   registerAgentConversationStream,
+  stopAgentConversationChildHistoryFromTauri,
   writeTerminalSessionFromTauri,
   type AgentConversationSessionRecord,
   type ExecutionEnvironment,
@@ -17,13 +19,13 @@ import {
 import { convertFileSrc, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { get } from 'svelte/store';
-import { hasBackendCapability } from '../backendCapabilities.ts';
 import {
   revokeTrackedObjectUrl,
-  setConversationSnapshotReadDiagnostics,
   trackTauriListener
 } from '../resourceDiagnostics.svelte.ts';
 import { sessionTitleFromPrompt } from '../sessionStrip.ts';
+import { publishWorkspaceFileChange } from '../workspaceFileChangeBus.ts';
+import { agentItemFromEvent, displayItemFromAgentItem } from './conversationTimeline.ts';
 import { rail, setRemoteConnection, updateOwnedSession } from '../stores/sessionRailStore.svelte';
 import type { RemoteConnectionState } from '../stores/sessionRailStore.svelte';
 import {
@@ -40,32 +42,24 @@ import { sessionPresenceHistory, sessionPresenceEventFromConversation, synchroni
 import {
   ACTIVE_EVENT_WINDOW_BYTES,
   ACTIVE_EVENT_WINDOW_EVENTS,
-  appendNewerConversationEvents,
-  applyAgentConversationEvent,
-  applyAgentConversationSnapshot,
   displayEventFrom,
-  applyChildConversationTranscript,
+  applyChildConversationHistoryStatus,
   beginConversationConfigChange,
-  beginLoadingNewerConversationEvents,
-  beginLoadingOlderConversationEvents,
   clearConversationWriterLeaseTransition,
   confirmConversationConfigChange,
   ensureConversationSession,
   evictConversationSession,
+  failChildConversationTranscript,
   failConversationConfigChange,
-  failLoadingNewerConversationEvents,
-  failLoadingOlderConversationEvents,
   getConversationSession,
-  prependOlderConversationEvents,
   recordAgentConversationPresenceEvent,
   recordSentConversationAttachments,
-  restoreSentConversationAttachments,
   setConversationAttachments,
   setConversationCapabilities,
   setConversationCapabilityError,
   setConversationConnection,
   setConversationDraft,
-  setConversationProviderNotice,
+  setConversationSendError,
   setConversationSending,
   setConversationWriterLeaseTransition
 } from './conversationStore.svelte.ts';
@@ -80,11 +74,14 @@ import type {
   AgentConversationHandoffReceipt,
   AgentConversationHandoffRequest,
   AgentConversationProvider,
+  AgentConversationSendReceipt,
+  AgentConversationItemPage,
+  AgentConversationSelectionSnapshot,
   AgentUserInputResponse,
   AgentWriterLeaseOwner,
   AgentWriterLeaseTransition,
   ConversationAttachment,
-  ConversationTranscriptSnapshot
+  AgentConversationChildHistory
 } from './conversationTypes.ts';
 import {
   applyConversationHandoffReceipt,
@@ -100,16 +97,7 @@ let conversationEventsDisposed = false;
 let conversationEventsGeneration = 0;
 let remoteActivityRead = 0;
 const railActivityEvents = new Map<string, { generation: number; sequence: number }>();
-type ConversationSnapshotRead = {
-  events: AgentConversationEvent[];
-  bytes: number;
-  overflow: boolean;
-  abortController: AbortController;
-  invalidated: boolean;
-  readVersion: number;
-  token: object;
-  work: Promise<void>;
-};
+const CHILD_HISTORY_PAGE_BYTES = 512 * 1024;
 
 type ConversationEnsure = {
   abortController: AbortController;
@@ -119,18 +107,34 @@ type ConversationEnsure = {
   work: Promise<AgentConversationConnection | null>;
 };
 
-const resyncing = new Map<string, ConversationSnapshotRead>();
+type SelectedConversationRead = {
+  workspaceOwnedId: string;
+  ownedId: string;
+  maxBytes: number;
+  generation?: number;
+  minimumGeneration?: number;
+  pageWatermark: number;
+  pendingSequence: number;
+  events: AgentConversationEvent[];
+  bytes: number;
+  overflow: boolean;
+  reading: boolean;
+  reloadRequested: boolean;
+  abortController: AbortController;
+  onSnapshot: (snapshot: AgentConversationSelectionSnapshot) => void;
+  onEvent: (event: AgentConversationEvent) => void;
+  onError: (error: unknown) => void;
+};
+
 const ensuring = new Map<string, ConversationEnsure>();
 const terminalProjections = new Map<string, string>();
-const readVersions = new Map<string, number>();
+let selectedConversationRead: SelectedConversationRead | null = null;
+let childConversationRead: SelectedConversationRead | null = null;
 
-function publishConversationSnapshotReadDiagnostics(): void {
-  setConversationSnapshotReadDiagnostics(
-    resyncing.size,
-    [...resyncing.values()].filter((read) => read.invalidated).length
-  );
+function isCurrentConversationRead(read: SelectedConversationRead): boolean {
+  return !read.abortController.signal.aborted
+    && (selectedConversationRead === read || childConversationRead === read);
 }
-const ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY = 'acpLiveConversationEvents';
 const sessionDraftPersistence = new ConversationDraftPersistence(
   {
     set: (ownedId, text) => invoke('agent_conversation_set_session_draft', { ownedId, text }),
@@ -156,61 +160,87 @@ export async function clearConversationSessionDraft(ownedId: string): Promise<vo
   if (isTauri()) await sessionDraftPersistence.clear(ownedId);
 }
 
-/** Loads one child transcript through the typed conversation command boundary. */
-interface ChildTranscriptRead {
-  generation: number;
+/** Opens one selected child's durable history and owns its native watch. */
+interface ChildHistoryRead {
+  requestId: number;
   childSessionId: string;
+  active: boolean;
+  settled: Promise<void>;
+  stop(): void;
 }
 
-const childTranscriptReads = new Map<string, ChildTranscriptRead>();
+const childHistoryReads = new Map<string, ChildHistoryRead>();
 
-export function cancelChildConversationTranscriptRead(ownedId: string): void {
-  childTranscriptReads.delete(ownedId);
+export function stopChildConversationHistory(ownedId: string): void {
+  const read = childHistoryReads.get(ownedId);
+  if (!read) return;
+  read.stop();
 }
 
-export async function readChildConversationTranscript(input: {
+export async function readChildConversationHistory(input: {
   ownedId: string;
-  provider: AgentConversationProvider;
-  nativeSessionId: string;
+  childId: string;
   childSessionId: string;
   signal?: AbortSignal;
-}): Promise<void> {
-  if (input.signal?.aborted) return;
-  const generation = getConversationSession(input.ownedId)?.generation ?? 0;
-  const active = childTranscriptReads.get(input.ownedId);
-  if (active?.generation === generation && active.childSessionId === input.childSessionId) return;
-  const readToken = {
-    generation,
-    childSessionId: input.childSessionId
-  };
-  const abortFromOwner = (): void => {
-    if (childTranscriptReads.get(input.ownedId) === readToken) childTranscriptReads.delete(input.ownedId);
-  };
-  input.signal?.addEventListener('abort', abortFromOwner, { once: true });
-  childTranscriptReads.set(input.ownedId, readToken);
-  let snapshot: ConversationTranscriptSnapshot;
-  try {
-    snapshot = await invoke<ConversationTranscriptSnapshot>('read_agent_conversation_transcript', {
-      ownedId: input.ownedId,
-      provider: input.provider,
-      nativeSessionId: input.nativeSessionId,
-      childSessionId: input.childSessionId
+}): Promise<AgentConversationChildHistory | null> {
+  if (input.signal?.aborted) return null;
+  const previous = childHistoryReads.get(input.ownedId);
+  stopChildConversationHistory(input.ownedId);
+  const requestId = createAgentConversationRequestId();
+  let readToken: ChildHistoryRead;
+  let settle!: () => void;
+  const settled = new Promise<void>((resolve) => { settle = resolve; });
+  const stop = (): void => {
+    readToken.active = false;
+    input.signal?.removeEventListener('abort', abortFromOwner);
+    void stopAgentConversationChildHistoryFromTauri(input.ownedId, requestId);
+    void settled.then(() => {
+      if (childHistoryReads.get(input.ownedId) === readToken) childHistoryReads.delete(input.ownedId);
     });
+  };
+  const abortFromOwner = (): void => stop();
+  readToken = { requestId, childSessionId: input.childId, active: true, settled, stop };
+  input.signal?.addEventListener('abort', abortFromOwner, { once: true });
+  childHistoryReads.set(input.ownedId, readToken);
+  try {
+    await previous?.settled;
+    if (!readToken.active || input.signal?.aborted
+      || childHistoryReads.get(input.ownedId) !== readToken) return null;
+    const result = await readAgentConversationChildHistoryFromTauri({
+      parentOwnedId: input.ownedId,
+      childSessionId: input.childSessionId,
+      requestId,
+      maxBytes: CHILD_HISTORY_PAGE_BYTES
+    });
+    const current = getConversationSession(input.ownedId);
+    if (!readToken.active || input.signal?.aborted || childHistoryReads.get(input.ownedId) !== readToken
+      || current?.selectedChildId !== input.childId) {
+      stop();
+      return null;
+    }
+    applyChildConversationHistoryStatus(
+      input.ownedId,
+      input.childId,
+      result.page.hasEarlierTranscript
+    );
+    return result;
   } catch (error) {
-    if (childTranscriptReads.get(input.ownedId) === readToken) childTranscriptReads.delete(input.ownedId);
+    const ownsRead = childHistoryReads.get(input.ownedId) === readToken;
+    if (ownsRead) {
+      stop();
+    }
+    const current = getConversationSession(input.ownedId);
+    if (ownsRead && !input.signal?.aborted && current?.selectedChildId === readToken.childSessionId) {
+      failChildConversationTranscript(
+        input.ownedId,
+        input.childId,
+        error instanceof Error ? error.message : String(error)
+      );
+    }
     throw error;
   } finally {
-    input.signal?.removeEventListener('abort', abortFromOwner);
+    settle();
   }
-  const current = getConversationSession(input.ownedId);
-  if (input.signal?.aborted || childTranscriptReads.get(input.ownedId) !== readToken) return;
-  childTranscriptReads.delete(input.ownedId);
-  if (
-    !current
-    || current.generation !== readToken.generation
-    || current.selectedChildId !== readToken.childSessionId
-  ) return;
-  applyChildConversationTranscript(input.ownedId, input.childSessionId, snapshot.messages);
 }
 
 export type SavedAttachment = Omit<ConversationAttachment, 'previewUrl' | 'originalUrl'> & { byteLength: number };
@@ -313,46 +343,6 @@ export function cleanupConversationAttachmentPreview(attachment: ConversationAtt
   if (attachment.previewUrl.startsWith('blob:')) revokeTrackedObjectUrl(attachment.previewUrl);
 }
 
-/** Stop work owned by a conversation surface without evicting its hidden data yet. */
-export function cancelConversationReadWork(ownedId: string): void {
-  readVersions.delete(ownedId);
-  const activeRead = resyncing.get(ownedId);
-  if (activeRead) {
-    activeRead.events.length = 0;
-    activeRead.invalidated = true;
-    activeRead.abortController.abort();
-  }
-  resyncing.delete(ownedId);
-  const activeEnsure = ensuring.get(ownedId);
-  if (activeEnsure) {
-    activeEnsure.invalidated = true;
-    activeEnsure.abortController.abort();
-  }
-  ensuring.delete(ownedId);
-  stopConversationTerminalProjection(ownedId);
-  publishConversationSnapshotReadDiagnostics();
-  cancelChildConversationTranscriptRead(ownedId);
-}
-
-/** Drop frontend-only conversation data after its workspace has been saved. */
-export function releaseConversationForRead(ownedId: string): void {
-  cancelConversationReadWork(ownedId);
-  const state = getConversationSession(ownedId);
-  if (!state) {
-    evictConversationSession(ownedId);
-    return;
-  }
-  const previewUrls = new Set([
-    ...state.attachments,
-    ...state.unclaimedSentAttachments,
-    ...Object.values(state.sentAttachments).flat()
-  ].map((attachment) => attachment.previewUrl));
-  for (const previewUrl of previewUrls) {
-    if (previewUrl.startsWith('blob:')) revokeTrackedObjectUrl(previewUrl);
-  }
-  evictConversationSession(ownedId);
-}
-
 async function hydrateAttachmentBytes(attachment: AttachmentWithBytes): Promise<AttachmentWithBytes> {
   if (attachment.bytes?.length) return attachment;
   if (!attachment.path) throw new Error(`Attachment ${attachment.name} has no managed path`);
@@ -397,7 +387,7 @@ function conversationGenerationMatches(ownedId: string, generation: number | und
   return generation !== undefined && getConversationSession(ownedId)?.generation === generation;
 }
 
-function discardRestoredAttachments(attachments: readonly ConversationAttachment[]): void {
+export function discardRestoredAttachments(attachments: readonly ConversationAttachment[]): void {
   attachments.forEach(cleanupConversationAttachmentPreview);
 }
 
@@ -677,418 +667,217 @@ export async function rollbackConversationHandoff(input: HandoffInput): Promise<
   return receipt;
 }
 
-/** Hang the saved screenshots back on the replayed user messages that named
- * them. The in-memory hold a send uses is gone after a restart, so the ids the
- * journal carries are the only way the transcript can find the files again.
- *
- * Never awaited by the caller: the transcript is already on screen by then, and
- * a message whose screenshot has not landed yet is a message with an empty
- * thumbnail box, not a message that waits. One read covers the whole session,
- * and messages already carrying their screenshots are skipped, so a repeat
- * replay does no disk work at all. */
-async function hydrateSentConversationAttachments(
-  ownedId: string,
-  generation: number,
-  events: readonly AgentConversationEvent[],
-  signal?: AbortSignal
-): Promise<void> {
-  if (signal?.aborted) return;
-  const current = getConversationSession(ownedId);
-  if (!current || current.generation !== generation) return;
-  const alreadyShown = current.sentAttachments;
-  const wanted = new Map<string, string[]>();
-  for (const event of events) {
-    const payload = event.payload;
-    if (
-      payload.kind === 'userMessage'
-      && payload.attachmentIds?.length
-      && !alreadyShown[payload.itemId]?.length
-    ) {
-      wanted.set(payload.itemId, payload.attachmentIds);
-    }
-  }
-  if (wanted.size === 0 || !isTauri()) return;
-  let records: (Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string })[];
-  try {
-    records = await invoke<(Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string })[]>(
-      'read_agent_conversation_attachments',
-      { ownedId }
-    );
-  } catch (_error) {
-    // The invoke seam logged the sanitized failure. A message that cannot find
-    // its screenshot still shows its text, so there is nothing to repair here.
-    return;
-  }
-  if (signal?.aborted || !Array.isArray(records)) return;
-  const wantedIds = new Set([...wanted.values()].flat());
-  let restored: ConversationAttachment[];
-  const publish = (items: ConversationAttachment[]) => {
-    if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) return;
-    const byId = new Map(items.map((record) => [record.id, record]));
-    const resolved: Record<string, ConversationAttachment[]> = {};
-    for (const [itemId, ids] of wanted) {
-      const attachments = [...new Set(ids)]
-        .map((id) => byId.get(id))
-        .filter((attachment): attachment is ConversationAttachment => !!attachment);
-      if (attachments.length) resolved[itemId] = attachments;
-    }
-    if (Object.keys(resolved).length) restoreSentConversationAttachments(ownedId, resolved, generation);
-  };
-  try {
-    restored = await restoreAttachmentList(ownedId, (records as SavedAttachment[])
-      .filter((record) => wantedIds.has(record.id)), signal, publish);
-  } catch {
-    return;
-  }
-  if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) {
-    discardRestoredAttachments(restored);
-    return;
-  }
-  publish(restored);
+function selectedEventUsesControlCursor(event: AgentConversationEvent): boolean {
+  return event.payload.kind === 'approval'
+    || event.payload.kind === 'userInputRequested'
+    || event.payload.kind === 'userInputResolved'
+    || event.payload.kind === 'turn'
+    || event.payload.kind === 'connection'
+    || event.payload.kind === 'error'
+    || event.payload.kind === 'childUpdate'
+    || (event.payload.kind === 'terminalProjection'
+      && event.payload.eventType === 'children.updated');
 }
 
-function bufferConversationEvent(read: ConversationSnapshotRead, event: AgentConversationEvent): void {
-  if (read.overflow || read.invalidated || read.abortController.signal.aborted) return;
+function deliverSelectedConversationEvent(
+  read: SelectedConversationRead,
+  event: AgentConversationEvent
+): void {
+  if (event.generation !== read.generation) {
+    if (event.generation > (read.generation ?? 0)) {
+      read.minimumGeneration = Math.max(read.minimumGeneration ?? 0, event.generation);
+      requestSelectedConversationReload(read);
+    }
+    return;
+  }
+  if (event.sequence <= read.pageWatermark) return;
+  if (event.sequence !== read.pageWatermark + 1) {
+    requestSelectedConversationReload(read);
+    return;
+  }
+  read.pageWatermark = event.sequence;
+  const control = selectedEventUsesControlCursor(event);
+  if (control && event.sequence <= read.pendingSequence) return;
+  if (control) read.pendingSequence = event.sequence;
+  read.onEvent(event);
+}
+
+function requestSelectedConversationReload(read: SelectedConversationRead): void {
+  read.reloadRequested = true;
+  if (read.reading) return;
+  void reloadSelectedConversation(read).catch((error) => {
+    if (isCurrentConversationRead(read) && !read.abortController.signal.aborted) {
+      read.events.length = 0;
+      read.bytes = 0;
+      read.onError(error);
+    }
+  });
+}
+
+function bufferSelectedConversationEvent(
+  read: SelectedConversationRead,
+  event: AgentConversationEvent
+): void {
+  if (read.overflow || read.abortController.signal.aborted) return;
   read.bytes += new TextEncoder().encode(JSON.stringify(event)).byteLength;
   if (read.events.length >= ACTIVE_EVENT_WINDOW_EVENTS || read.bytes > ACTIVE_EVENT_WINDOW_BYTES) {
     read.events.length = 0;
     read.overflow = true;
-    console.info('[conversation-sync]', {
-      cause: 'read-buffer-overflow', session: event.ownedId, generation: event.generation,
-      expectedSequence: (getConversationSession(event.ownedId)?.lastSequence ?? 0) + 1,
-      receivedSequence: event.sequence
-    });
     return;
   }
   read.events.push(event);
 }
 
-async function resyncConversation(ownedId: string, signal?: AbortSignal, firstEvent?: AgentConversationEvent) {
-  if (signal?.aborted) return;
-  const existing = resyncing.get(ownedId);
-  if (existing) {
-    await existing.work;
+function admitSelectedConversationEvent(event: AgentConversationEvent): boolean {
+  const read = selectedConversationRead?.ownedId === event.ownedId ? selectedConversationRead : childConversationRead;
+  if (!read || read.ownedId !== event.ownedId || read.abortController.signal.aborted) return false;
+  if (read.reading) bufferSelectedConversationEvent(read, event);
+  else deliverSelectedConversationEvent(read, event);
+  return true;
+}
+
+async function reloadSelectedConversation(read: SelectedConversationRead): Promise<void> {
+  if (!isCurrentConversationRead(read) || read.abortController.signal.aborted) return;
+  if (read.reading) {
+    read.reloadRequested = true;
     return;
   }
-  const readVersion = (readVersions.get(ownedId) ?? 0) + 1;
-  readVersions.set(ownedId, readVersion);
-  const token = {};
-  const abortController = new AbortController();
-  const abortFromOwner = (): void => abortController.abort();
-  signal?.addEventListener('abort', abortFromOwner, { once: true });
-  const work = Promise.resolve().then(() => resyncConversationOnce(ownedId, readVersion, token, abortController.signal));
-  const read: ConversationSnapshotRead = { abortController, invalidated: false, readVersion, token, work, events: [], bytes: 0, overflow: false };
-  if (firstEvent) bufferConversationEvent(read, firstEvent);
-  resyncing.set(ownedId, read);
-  publishConversationSnapshotReadDiagnostics();
+  read.reading = true;
   try {
-    await work;
-  } finally {
-    signal?.removeEventListener('abort', abortFromOwner);
-  }
-}
-
-async function resyncConversationOnce(
-  ownedId: string,
-  readVersion: number,
-  token: object,
-  signal: AbortSignal
-): Promise<void> {
-  try {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const read = resyncing.get(ownedId);
-      if (!read || read.token !== token || signal?.aborted) return;
-      // An overflow requires a new DB read; that read covers all discarded events.
-      if (read.overflow) { read.events.length = 0; read.bytes = 0; read.overflow = false; }
-      const started = performance.now();
-      console.info('[conversation-sync]', {
-        cause: 'snapshot-read', session: ownedId, attempt, readVersion,
-        generation: getConversationSession(ownedId)?.generation,
-        expectedSequence: (getConversationSession(ownedId)?.lastSequence ?? 0) + 1
-      });
-      const snapshot = await readAgentConversationSnapshotFromTauri(ownedId, signal);
-      console.info('[conversation-sync]', {
-        cause: 'snapshot-result', session: ownedId, generation: snapshot?.connection.generation,
-        expectedSequence: (getConversationSession(ownedId)?.lastSequence ?? 0) + 1,
-        receivedSequence: snapshot?.lastSequence, elapsedMs: Math.round(performance.now() - started)
-      });
-      if (!snapshot || readVersions.get(ownedId) !== readVersion) return;
-      if (signal.aborted || resyncing.get(ownedId)?.token !== token) return;
-      const applied = !read.overflow && applyAgentConversationSnapshot(snapshot, undefined, read.events);
-      console.info('[conversation-sync]', {
-        cause: applied ? 'snapshot-applied' : 'snapshot-incomplete', session: ownedId,
-        generation: snapshot.connection.generation, expectedSequence: snapshot.lastSequence + 1,
-        receivedSequence: read.events.at(-1)?.sequence ?? snapshot.lastSequence,
-        bufferedCount: read.events.length
-      });
-      if (!applied) continue;
-      void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events, signal);
-      return;
-    }
-  } finally {
-    if (resyncing.get(ownedId)?.token === token) {
-      resyncing.get(ownedId)!.events.length = 0;
-      resyncing.delete(ownedId);
-      publishConversationSnapshotReadDiagnostics();
-    }
-  }
-}
-
-export async function loadConversationForRead(
-  ownedId: string,
-  includeAttachments = true,
-  signal?: AbortSignal
-): Promise<void> {
-  if (signal?.aborted) return;
-  const existing = resyncing.get(ownedId);
-  if (existing) {
-    try {
-      await existing.work;
-    } catch (error) {
-      if (!getConversationSession(ownedId)) return;
-      if (readVersions.get(ownedId) === existing.readVersion
-        && !existing.invalidated && !existing.abortController.signal.aborted) throw error;
-      await loadConversationForRead(ownedId, includeAttachments, signal);
-      return;
-    }
-    if (!getConversationSession(ownedId)) return;
-    if (readVersions.get(ownedId) === existing.readVersion
-      && !existing.invalidated && !existing.abortController.signal.aborted) return;
-    await loadConversationForRead(ownedId, includeAttachments, signal);
-    return;
-  }
-  const readVersion = (readVersions.get(ownedId) ?? 0) + 1;
-  readVersions.set(ownedId, readVersion);
-  const token = {};
-  const abortController = new AbortController();
-  const abortFromOwner = (): void => abortController.abort();
-  signal?.addEventListener('abort', abortFromOwner, { once: true });
-  const work = Promise.resolve().then(() => loadConversationSnapshot(
-    ownedId,
-    readVersion,
-    token,
-    includeAttachments,
-    abortController.signal,
-    signal
-  ));
-  resyncing.set(ownedId, { abortController, invalidated: false, readVersion, token, work, events: [], bytes: 0, overflow: false });
-  publishConversationSnapshotReadDiagnostics();
-  try {
-    await work;
-  } finally {
-    signal?.removeEventListener('abort', abortFromOwner);
-  }
-}
-
-async function loadConversationSnapshot(
-  ownedId: string,
-  readVersion: number,
-  token: object,
-  includeAttachments: boolean,
-  signal?: AbortSignal,
-  ownerSignal?: AbortSignal
-): Promise<void> {
-  try {
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const read = resyncing.get(ownedId);
-      if (!read || read.token !== token || signal?.aborted) return;
-      // An overflow requires a new DB read; that read covers all discarded events.
-      if (read.overflow) { read.events.length = 0; read.bytes = 0; read.overflow = false; }
-      const started = performance.now();
-      console.info('[conversation-sync]', {
-        cause: 'snapshot-read', session: ownedId, attempt, readVersion,
-        generation: getConversationSession(ownedId)?.generation,
-        expectedSequence: (getConversationSession(ownedId)?.lastSequence ?? 0) + 1
-      });
-      const snapshot = await readAgentConversationSnapshotFromTauri(ownedId, signal);
-      console.info('[conversation-sync]', {
-        cause: 'snapshot-result', session: ownedId, generation: snapshot?.connection.generation,
-        expectedSequence: (getConversationSession(ownedId)?.lastSequence ?? 0) + 1,
-        receivedSequence: snapshot?.lastSequence, elapsedMs: Math.round(performance.now() - started)
-      });
-      const current = getConversationSession(ownedId);
-      if (signal?.aborted || !snapshot || readVersions.get(ownedId) !== readVersion || !current) return;
-      if (resyncing.get(ownedId)?.token !== token) return;
-      const applied = !read.overflow && applyAgentConversationSnapshot(snapshot, undefined, read.events);
-      console.info('[conversation-sync]', {
-        cause: applied ? 'snapshot-applied' : 'snapshot-incomplete', session: ownedId,
-        generation: snapshot.connection.generation, expectedSequence: snapshot.lastSequence + 1,
-        receivedSequence: read.events.at(-1)?.sequence ?? snapshot.lastSequence,
-        bufferedCount: read.events.length
-      });
-      if (!applied) continue;
-      if (includeAttachments) {
-        void hydrateSentConversationAttachments(ownedId, snapshot.connection.generation, snapshot.events, ownerSignal ?? signal);
-      }
-      return;
-    }
-  } finally {
-    if (resyncing.get(ownedId)?.token === token) {
-      resyncing.get(ownedId)!.events.length = 0;
-      resyncing.delete(ownedId);
-      publishConversationSnapshotReadDiagnostics();
-    }
-  }
-}
-
-/** Stored event bytes read per history page, leaving room in the transcript
- * window for the rest of the loaded conversation. */
-const EVENT_PAGE_BYTES = 512 * 1024;
-
-/**
- * Reads the page of stored events just older than the transcript and puts it in
- * front. Opening a conversation ships one screen; this is how the rest of a
- * long session is reached.
- */
-export async function loadOlderConversationEvents(
-  ownedId: string,
-  signal?: AbortSignal
-): Promise<void> {
-  if (signal?.aborted) return;
-  if (!beginLoadingOlderConversationEvents(ownedId)) return;
-  const started = getConversationSession(ownedId);
-  const before = started?.oldestLoadedSequence ?? 0;
-  const generation = started?.generation ?? 0;
-  const readVersion = readVersions.get(ownedId) ?? 0;
-  try {
-    const page = await listAgentConversationEventsBeforeFromTauri(
-      ownedId,
-      before,
-      EVENT_PAGE_BYTES,
-      signal
-    );
-    const current = getConversationSession(ownedId);
-    if (
-      signal?.aborted
-      || readVersions.get(ownedId) !== readVersion
-      || current?.generation !== generation
-      || current.oldestLoadedSequence !== before
-    ) {
-      failLoadingOlderConversationEvents(ownedId);
-      return;
-    }
-    if (!page) {
-      failLoadingOlderConversationEvents(ownedId);
-      return;
-    }
-    if (page.events.length || page.hasMore) {
-      prependOlderConversationEvents(ownedId, page);
-      void hydrateSentConversationAttachments(
-        ownedId,
-        generation,
-        getConversationSession(ownedId)?.loadedEvents ?? [],
-        signal
+    // One retry covers a generation change or bounded-buffer overflow that
+    // races the first read. The second read is authoritative for both content
+    // and pending controls; repeated churn is surfaced instead of looping.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      read.reloadRequested = false;
+      read.events.length = 0;
+      read.bytes = 0;
+      read.overflow = false;
+      const snapshot = await readAgentConversationSelectionFromTauri(
+        read.ownedId,
+        read.maxBytes,
+        read.minimumGeneration,
+        read.abortController.signal
       );
-      return;
+      if (!isCurrentConversationRead(read) || read.abortController.signal.aborted || !snapshot) return;
+      if (read.overflow) {
+        read.reloadRequested = true;
+        continue;
+      }
+      if (snapshot.connection.generation < (read.minimumGeneration ?? 0)) {
+        read.reloadRequested = true;
+        continue;
+      }
+      read.generation = snapshot.connection.generation;
+      read.minimumGeneration = undefined;
+      read.pageWatermark = snapshot.page.coverage?.high ?? snapshot.page.watermark;
+      read.pendingSequence = snapshot.pendingSequence;
+      read.onSnapshot(snapshot);
+      const replay = [...read.events].sort((left, right) => left.sequence - right.sequence);
+      read.events.length = 0;
+      for (const event of replay) deliverSelectedConversationEvent(read, event);
+      if (!read.reloadRequested) return;
     }
-    // The database is exhausted, which is not the same as the conversation
-    // being. A session picked up from a past transcript holds only the tail
-    // that was read at the time; the rest is still on disk behind a byte
-    // cursor. Read the next chunk into the database and ask again. A session
-    // started here has no transcript behind it and reports nothing added,
-    // which is how this stops.
-    if (signal?.aborted) {
-      failLoadingOlderConversationEvents(ownedId);
-      return;
-    }
-    const extended = await extendAgentConversationImportFromTauri(ownedId, signal);
-    const afterExtend = getConversationSession(ownedId);
-    if (
-      signal?.aborted
-      || readVersions.get(ownedId) !== readVersion
-      || afterExtend?.generation !== generation
-      || afterExtend.oldestLoadedSequence !== before
-    ) {
-      failLoadingOlderConversationEvents(ownedId);
-      return;
-    }
-    if (!extended) {
-      failLoadingOlderConversationEvents(ownedId);
-      return;
-    }
-    // Only the file running out means the conversation has none left. A reach
-    // that added nothing but did not reach the start walked past a stretch
-    // holding nothing worth showing, and there is more behind it.
-    if (!extended.added) {
-      prependOlderConversationEvents(ownedId, {
-        events: [],
-        hasMore: !extended.reachedStart
-      });
-      return;
-    }
-    const grown = await listAgentConversationEventsBeforeFromTauri(
-      ownedId,
-      before,
-      EVENT_PAGE_BYTES,
-      signal
-    );
-    const afterGrow = getConversationSession(ownedId);
-    if (
-      signal?.aborted
-      || readVersions.get(ownedId) !== readVersion
-      || afterGrow?.generation !== generation
-      || afterGrow.oldestLoadedSequence !== before
-    ) {
-      failLoadingOlderConversationEvents(ownedId);
-      return;
-    }
-    prependOlderConversationEvents(ownedId, {
-      events: grown?.events ?? [],
-      hasMore: grown?.hasMore || !extended.reachedStart
-    });
-    void hydrateSentConversationAttachments(
-      ownedId,
-      generation,
-      getConversationSession(ownedId)?.loadedEvents ?? [],
-      signal
-    );
-  } catch {
-    failLoadingOlderConversationEvents(ownedId);
+    throw new Error('Conversation changed too quickly to open its selected history');
+  } finally {
+    read.reading = false;
   }
 }
 
-/** Reads the next stored page after a window whose newest end was trimmed. */
-export async function loadNewerConversationEvents(
-  ownedId: string,
-  signal?: AbortSignal
-): Promise<void> {
-  if (signal?.aborted) return;
-  if (!beginLoadingNewerConversationEvents(ownedId)) return;
-  const started = getConversationSession(ownedId);
-  const after = started?.newestLoadedSequence ?? 0;
-  const generation = started?.generation ?? 0;
-  const readVersion = readVersions.get(ownedId) ?? 0;
+async function refreshSelectedConversation(ownedId: string): Promise<void> {
+  const read = selectedConversationRead;
+  if (!read || read.ownedId !== ownedId) return;
+  await reloadSelectedConversation(read);
+}
+
+export async function subscribeSelectedConversation(input: {
+  workspaceOwnedId: string;
+  ownedId: string;
+  maxBytes: number;
+  signal?: AbortSignal;
+  onSnapshot: (snapshot: AgentConversationSelectionSnapshot) => void;
+  onEvent: (event: AgentConversationEvent) => void;
+  onError: (error: unknown) => void;
+}): Promise<() => void> {
+  const child = input.ownedId !== input.workspaceOwnedId;
+  (child ? childConversationRead : selectedConversationRead)?.abortController.abort();
+  const abortController = new AbortController();
+  const abortFromOwner = (): void => abortController.abort();
+  input.signal?.addEventListener('abort', abortFromOwner, { once: true });
+  const read: SelectedConversationRead = {
+    workspaceOwnedId: input.workspaceOwnedId,
+    ownedId: input.ownedId,
+    maxBytes: input.maxBytes,
+    pageWatermark: Number.MIN_SAFE_INTEGER,
+    pendingSequence: Number.MIN_SAFE_INTEGER,
+    events: [],
+    bytes: 0,
+    overflow: false,
+    // Buffer any event delivered while the shared listener is registering.
+    // The snapshot started immediately afterwards is authoritative for them.
+    reading: true,
+    reloadRequested: false,
+    abortController,
+    onSnapshot: input.onSnapshot,
+    onEvent: input.onEvent,
+    onError: input.onError
+  };
+  if (child) childConversationRead = read;
+  else selectedConversationRead = read;
+  const dispose = (): void => {
+    input.signal?.removeEventListener('abort', abortFromOwner);
+    abortController.abort();
+    read.events.length = 0;
+    if (selectedConversationRead === read) selectedConversationRead = null;
+    if (childConversationRead === read) childConversationRead = null;
+  };
   try {
-    const page = await listAgentConversationEventsAfterFromTauri(
-      ownedId,
-      after,
-      EVENT_PAGE_BYTES,
-      signal
-    );
-    const current = getConversationSession(ownedId);
-    if (
-      signal?.aborted
-      || readVersions.get(ownedId) !== readVersion
-      || current?.generation !== generation
-      || current.newestLoadedSequence !== after
-    ) {
-      failLoadingNewerConversationEvents(ownedId);
-      return;
+    await startConversationEvents();
+    if (input.signal?.aborted) {
+      dispose();
+      return dispose;
     }
-    if (!page) {
-      failLoadingNewerConversationEvents(ownedId);
-      return;
-    }
-    appendNewerConversationEvents(ownedId, page);
-    void hydrateSentConversationAttachments(
-      ownedId,
-      generation,
-      getConversationSession(ownedId)?.loadedEvents ?? [],
-      signal
-    );
-  } catch {
-    failLoadingNewerConversationEvents(ownedId);
+    read.reading = false;
+    await reloadSelectedConversation(read);
+    return dispose;
+  } catch (error) {
+    dispose();
+    throw error;
   }
+}
+
+export function readOlderSelectedConversationItems(
+  ownedId: string,
+  beforeSequence: number,
+  maxBytes: number,
+  signal?: AbortSignal
+): Promise<AgentConversationItemPage | null> {
+  return listAgentConversationItemsBeforeFromTauri(
+    ownedId, beforeSequence, maxBytes, signal
+  );
+}
+
+export function readNewerSelectedConversationItems(
+  ownedId: string,
+  afterSequence: number,
+  maxBytes: number,
+  signal?: AbortSignal
+): Promise<AgentConversationItemPage | null> {
+  return listAgentConversationItemsAfterFromTauri(
+    ownedId, afterSequence, maxBytes, signal
+  );
+}
+
+export async function readSelectedConversationAttachments(
+  ownedId: string,
+  attachmentIds: readonly string[],
+  signal?: AbortSignal
+): Promise<SavedAttachment[]> {
+  if (!isTauri() || signal?.aborted || attachmentIds.length === 0) return [];
+  const rows = await invoke<SavedAttachment[]>('read_agent_conversation_selected_attachments', {
+    ownedId,
+    attachmentIds: [...attachmentIds]
+  });
+  return signal?.aborted ? [] : rows;
 }
 
 export async function startConversationEvents(): Promise<void> {
@@ -1130,16 +919,22 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
     }>('remote-connection-changed', ({ payload }) => {
       remoteConnectionEventsSeen.add(payload.profileId);
       setRemoteConnection(payload.profileId, payload.state);
-      if (payload.state === 'connected') void refreshRemoteSessionActivity(streamGeneration);
+      if (payload.state === 'connected') {
+        void refreshRemoteSessionActivity(streamGeneration);
+        void reacquireSelectedChildHistory(payload.profileId, streamGeneration).catch(() => {});
+      }
     });
     stopRemoteConnections = trackTauriListener(stopRemoteConnectionEvents);
     const remoteEnvironment = await readRemoteAssemblyEnvironmentFromTauri();
+    rail.remoteProfiles = remoteEnvironment.profiles;
     const readyRemoteProfiles = new Set(remoteEnvironment.readyProfileIds);
     for (const profile of remoteEnvironment.profiles) {
       if (remoteConnectionEventsSeen.has(profile.id)) continue;
       setRemoteConnection(profile.id, readyRemoteProfiles.has(profile.id) ? 'connected' : 'disconnected');
     }
-    await refreshRemoteSessionActivity(streamGeneration);
+    // Start-up waits for this setup before it opens a session, so the remote
+    // read runs on its own.
+    void refreshRemoteSessionActivity(streamGeneration);
     if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !registration) {
       await registration?.unregister();
       stopTitles();
@@ -1196,16 +991,47 @@ async function refreshRemoteSessionActivity(streamGeneration: number): Promise<v
   }
 }
 
+async function reacquireSelectedChildHistory(
+  profileId: string,
+  streamGeneration: number
+): Promise<void> {
+  if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
+  const parent = selectedConversationRead;
+  if (parent && rail.owned.find((session) => session.ownedId === parent.workspaceOwnedId)?.remoteProfileId === profileId) {
+    requestSelectedConversationReload(parent);
+  }
+  const read = childConversationRead;
+  if (!read || read.workspaceOwnedId === read.ownedId || read.abortController.signal.aborted) return;
+  const owned = rail.owned.find((session) => session.ownedId === read.workspaceOwnedId);
+  if (owned?.remoteProfileId !== profileId) return;
+  const current = getConversationSession(read.workspaceOwnedId);
+  const childId = current?.selectedChildId;
+  const child = current?.children.find((candidate) => candidate.childId === childId);
+  if (!childId || !child?.transcriptAvailable) return;
+  const history = await readChildConversationHistory({
+    ownedId: read.workspaceOwnedId,
+    childId,
+    childSessionId: child.transcriptId ?? childId,
+    signal: read.abortController.signal
+  });
+  if (!history || !isCurrentConversationRead(read) || read.abortController.signal.aborted
+    || getConversationSession(read.workspaceOwnedId)?.selectedChildId !== childId
+    || history.historyOwnedId !== read.ownedId) return;
+  requestSelectedConversationReload(read);
+}
+
 async function handleConversationStreamEnvelope(
   streamGeneration: number,
   envelope: StreamEnvelope<AgentConversationEvent>
 ): Promise<void> {
   if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
   const payload = envelope.chunk;
+  admitSelectedConversationEvent(payload);
   const previous = railActivityEvents.get(payload.ownedId);
   if (previous && (payload.generation < previous.generation
-    || (payload.generation === previous.generation && payload.sequence <= previous.sequence))) return;
-  const active = rail.activeOwnedId === payload.ownedId;
+    || (payload.generation === previous.generation && payload.sequence <= previous.sequence))) {
+    return;
+  }
   const displayEvent = displayEventFrom(payload);
   const terminal = shouldClearConversationSending(displayEvent);
   const current = getConversationSession(payload.ownedId);
@@ -1217,6 +1043,11 @@ async function handleConversationStreamEnvelope(
     || (payload.payload.kind === 'turn' && payload.payload.turnId !== activeTurnId)
   )) return;
   railActivityEvents.set(payload.ownedId, { generation: payload.generation, sequence: payload.sequence });
+  const item = agentItemFromEvent(displayEvent);
+  const row = item ? displayItemFromAgentItem(item, displayEvent.timestampMs) : null;
+  if (row?.kind === 'tool' && row.state === 'completed' && row.path && row.diff) {
+    publishWorkspaceFileChange({ ownedId: payload.ownedId, path: row.path });
+  }
   if (payload.payload.kind === 'tool' && payload.payload.itemId.startsWith('background-task:')) {
     const owned = rail.owned.find((session) => session.ownedId === payload.ownedId);
     if (owned) {
@@ -1239,19 +1070,7 @@ async function handleConversationStreamEnvelope(
     });
   }
   if (terminal && !transition) synchronizeSessionPresenceWork(payload.ownedId, null, false);
-  const pendingRead = active ? resyncing.get(payload.ownedId) : undefined;
-  if (pendingRead) {
-    bufferConversationEvent(pendingRead, payload);
-    recordAgentConversationPresenceEvent(payload);
-  }
-  else if (active) applyAgentConversationEvent(payload);
-  else {
-    if (terminal) {
-      setConversationSending(payload.ownedId, false);
-      if (current) releaseConversationForRead(payload.ownedId);
-    }
-    recordAgentConversationPresenceEvent(payload);
-  }
+  recordAgentConversationPresenceEvent(payload);
   if (
     payload.payload.kind === 'userMessage'
     && typeof payload.payload.text === 'string'
@@ -1262,30 +1081,32 @@ async function handleConversationStreamEnvelope(
       if (title) updateOwnedSession(payload.ownedId, { title });
     }
   }
-  if (active && !pendingRead && getConversationSession(payload.ownedId)?.desynchronized) {
-    recordAgentConversationPresenceEvent(payload);
-    await resyncConversation(payload.ownedId, undefined, payload);
-  }
-  if (active && terminal) {
+  if (terminal && current) {
     setConversationSending(payload.ownedId, false);
   }
 }
 
 async function handleConversationStreamResync(streamGeneration: number): Promise<void> {
   if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
-  const activeOwnedId = rail.activeOwnedId;
-  if (activeOwnedId) await resyncConversation(activeOwnedId);
+  await Promise.allSettled([selectedConversationRead, childConversationRead].map(async (read) => {
+    if (!read) return;
+    try {
+      await reloadSelectedConversation(read);
+    } catch (error) {
+      if (isCurrentConversationRead(read)) read.onError(error);
+    }
+  }));
   await refreshRemoteSessionActivity(streamGeneration);
 }
 
 export function stopConversationEvents(): void {
   conversationEventsDisposed = true;
   conversationEventsGeneration += 1;
-  childTranscriptReads.clear();
-  // Nothing can read a session's snapshot once the stream is gone, so the
-  // per-session read counters have nothing left to invalidate.
-  for (const ownedId of [...resyncing.keys()]) cancelConversationReadWork(ownedId);
-  readVersions.clear();
+  for (const ownedId of childHistoryReads.keys()) stopChildConversationHistory(ownedId);
+  selectedConversationRead?.abortController.abort();
+  selectedConversationRead = null;
+  childConversationRead?.abortController.abort();
+  childConversationRead = null;
   railActivityEvents.clear();
   void conversationStream?.unregister();
   conversationStream = null;
@@ -1314,6 +1135,8 @@ export async function ensureStructuredConversation(input: {
   nativeSessionId?: string | null;
   nativeSessionMode?: 'resume' | 'load';
   reasoningEffort?: string | null;
+  /** The registry project; the backend records it once, on the first ensure. */
+  projectId?: string | null;
   signal?: AbortSignal;
 }): Promise<AgentConversationConnection | null> {
   if (input.signal?.aborted) return null;
@@ -1357,6 +1180,7 @@ async function ensureStructuredConversationOnce(
     nativeSessionId?: string | null;
     nativeSessionMode: 'resume' | 'load';
     reasoningEffort?: string | null;
+    projectId?: string | null;
   },
   token: object,
   signal: AbortSignal
@@ -1370,7 +1194,11 @@ async function ensureStructuredConversationOnce(
     if (connection.nativeSessionId) updateOwnedSession(ownedId, { nativeSessionId: connection.nativeSessionId });
     if (rail.activeOwnedId !== ownedId) return connection;
     setConversationConnection(connection);
-    await resyncConversation(ownedId, signal);
+    const read = selectedConversationRead;
+    if (read?.ownedId === ownedId) {
+      read.minimumGeneration = Math.max(read.minimumGeneration ?? 0, connection.generation);
+    }
+    await refreshSelectedConversation(ownedId);
     return connection;
   } finally {
     if (ensuring.get(ownedId)?.token === token) ensuring.delete(ownedId);
@@ -1418,7 +1246,7 @@ export async function sendStructuredMessage(
     model?: string | null;
     approvalPolicy?: string | null;
   }
-): Promise<void> {
+): Promise<AgentConversationSendReceipt | undefined> {
   let state = getConversationSession(ownedId);
   if (!state) return;
   if (!text.trim() && state.attachments.length === 0) return;
@@ -1470,6 +1298,7 @@ export async function sendStructuredMessage(
         cwd: owned.cwd,
         nativeSessionId: owned.nativeSessionId,
         nativeSessionMode,
+        projectId: owned.projectId,
         reasoningEffort: startConfig
           ? startConfig.reasoningEffort
           : state.agentConfig.reasoningEffort
@@ -1506,7 +1335,6 @@ export async function sendStructuredMessage(
       setConversationSending(ownedId, false);
       state.attachments.forEach(cleanupConversationAttachmentPreview);
       setConversationAttachments(ownedId, []);
-      if (rail.activeOwnedId !== ownedId) releaseConversationForRead(ownedId);
       return;
     }
     if (state.generation < 1) throw new Error('The structured conversation is not connected');
@@ -1523,9 +1351,6 @@ export async function sendStructuredMessage(
       : state.attachments as AttachmentWithBytes[];
     const prompt = remoteSend ? { text, content: [] as AgentPromptContent[] }
       : buildConversationPrompt(text, hydratedAttachments, supportsImages);
-    const liveConversationEvents = await hasBackendCapability(
-      ACP_LIVE_CONVERSATION_EVENTS_CAPABILITY
-    );
     const validatedState = getConversationSession(ownedId);
     const validatedGeneration = sendTargetGeneration(validatedState);
     if (validatedGeneration === null || !validatedState) {
@@ -1556,7 +1381,7 @@ export async function sendStructuredMessage(
     if (preparingSends.get(ownedId) === preparation) preparingSends.delete(ownedId);
     const requestedModel = startConfig?.model ?? null;
     const requestedApprovalPolicy = startConfig?.approvalPolicy ?? null;
-    await invoke('send_agent_conversation_message', {
+    const receipt: AgentConversationSendReceipt = await invoke('send_agent_conversation_message', {
       request: {
         ownedId,
         generation: validatedGeneration,
@@ -1574,22 +1399,7 @@ export async function sendStructuredMessage(
       }
     });
     setConversationAttachments(ownedId, []);
-    if (remoteSend && rail.activeOwnedId === ownedId) {
-      try {
-        // A read started before the send can be stale even after it finishes.
-        await resyncing.get(ownedId)?.work.catch(() => undefined);
-        if (rail.activeOwnedId === ownedId) await resyncConversation(ownedId);
-      } catch (_error) {
-        // The backend already accepted the prompt. Do not restore it as a
-        // failed send and invite an accidental duplicate.
-        if (rail.activeOwnedId === ownedId) {
-          setConversationProviderNotice(ownedId, 'Message sent, but the conversation could not refresh. Switch conversations to reload it.');
-        }
-      }
-    } else if (!remoteSend && !liveConversationEvents) {
-      await resyncConversation(ownedId);
-    }
-    if (rail.activeOwnedId !== ownedId) releaseConversationForRead(ownedId);
+    return receipt;
   } catch (error) {
     // A send that never went out leaves its screenshots in the composer, so
     // nothing is left waiting to be hung on a later message.
@@ -1617,7 +1427,7 @@ export async function stopStructuredTurn(ownedId: string): Promise<void> {
   });
 }
 
-/** Answers one legacy approval request through the typed native boundary. */
+/** Answers one summary-only approval request through the typed native boundary. */
 export async function respondToStructuredApproval(
   ownedId: string,
   requestId: string,
@@ -1630,7 +1440,7 @@ export async function respondToStructuredApproval(
   });
 }
 
-/** Answers a provider permission request while retaining the existing legacy fallback. */
+/** Answers the explicit decision or provider-option contract for a permission request. */
 export async function sendPermissionResponse(
   ownedId: string,
   requestId: string,
@@ -1656,12 +1466,10 @@ export async function sendPermissionResponse(
       if (getConversationSession(ownedId)?.generation === state.generation) {
         delete state.pendingApprovals[requestId];
       }
-      try { await resyncConversation(ownedId); } catch { /* Reconnect can replay the recorded expiry. */ }
+      try { await refreshSelectedConversation(ownedId); } catch { /* A later selected snapshot can replay the recorded expiry. */ }
       throw error;
     }
-    if (!/not found|unknown command|not part of the pending request/i.test(message)) throw error;
-    const decision = /reject|deny|decline|cancel/i.test(optionId) ? 'decline' : 'accept';
-    await respondToStructuredApproval(ownedId, requestId, decision);
+    throw error;
   }
 }
 

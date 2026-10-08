@@ -2,37 +2,44 @@
   DraftSessionSurface.svelte — what "+" opens.
 
   Not a form and not a dialog: an empty session, in the Session tab, with the
-  ordinary composer at the bottom and the caret already in it. Everything that
-  used to be a field of the new-session form is a control ON that composer —
-  provider, project and branch on the left of the footer, and model, effort and
-  approval through the same `ComposerConfigMenu` a running session uses.
+  ordinary composer and the caret already in it. The heading names the project
+  ("What should we build in …?") and is the project menu; the agent picker sits
+  in the composer footer beside model, effort and approval; the machine and
+  branch sit in the row under the composer.
 
-  No Assembly conversation is created here. A temporary ACP session reads the
-  selected provider's controls; its process stops after the read. The surface
-  hands one `ThreadStartPickerState` to `onSend` on the first message.
+  No Assembly conversation is created here, and opening, switching or closing a
+  draft only reads: the project list, folder listings and branch lists. Picking
+  a branch only changes the draft; a branch with no checkout is switched to in
+  the project root at the first send, before the session is created. In New
+  worktree mode the branch is the base, and the worktree is added at the first
+  send too; a discarded draft adds nothing. A
+  temporary ACP session reads the selected provider's controls; its process
+  stops after the read. The surface hands one `ThreadStartPickerState` to
+  `onSend` on the first message.
 -->
 <script lang="ts">
-  import { parseRemoteWorkspacePath } from '$lib/workspacePaths';
   import { onMount } from 'svelte';
   import { homeDir } from '@tauri-apps/api/path';
   import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
+  import Cloud from '@lucide/svelte/icons/cloud';
+  import Folder from '@lucide/svelte/icons/folder';
+  import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
-  import GitBranch from '@lucide/svelte/icons/git-branch';
-  import Search from '@lucide/svelte/icons/search';
+  import MessageCircle from '@lucide/svelte/icons/message-circle';
   import Monitor from '@lucide/svelte/icons/monitor';
-  import Server from '@lucide/svelte/icons/server';
-  import Plus from '@lucide/svelte/icons/plus';
-  import Settings2 from '@lucide/svelte/icons/settings-2';
-  import LoaderCircle from '@lucide/svelte/icons/loader-circle';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import X from '@lucide/svelte/icons/x';
 
   import { Button } from '$lib/components/ui/button/index.js';
-  import { Input } from '$lib/components/ui/input/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import PendingFirstMessage from '$lib/shell/components/conversation/PendingFirstMessage.svelte';
-  import RemoteDirectoryPicker from './RemoteDirectoryPicker.svelte';
   import RemoteConnections from '$lib/shell/components/RemoteConnections.svelte';
+  import AddProjectDialog from '$lib/shell/projects/AddProjectDialog.svelte';
+  import BranchPicker from '$lib/shell/newSession/BranchPicker.svelte';
+  import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte.ts';
+  import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
+  import { defaultDraftProjectId, projectBadge, projectMachineLabel, visibleProjects } from '$lib/shell/projects/projects.ts';
   import { checkForProviderUpdates, installProviderUpdates, restartProviders, type ProviderUpdateState } from '$lib/shell/providerUpdateService.svelte';
   import ConversationComposer from '$lib/shell/components/conversation/ConversationComposer.svelte';
   import type { ConversationAttachment } from '$lib/shell/conversation/conversationTypes.ts';
@@ -41,72 +48,51 @@
     AgentConversationConfigState
   } from '$lib/shell/conversation/conversationConfig.ts';
   import {
-    addCustomRoot,
-    hydrate,
-    initialRootPath,
-    knownRoots,
-    setSessionRoots
-  } from '$lib/shell/newSession/projectRootsStore.svelte';
-  import {
     buildThreadStartRequest,
-    canSelectThreadStartGitRef,
+    checkoutPlanFor,
     defaultThreadStartState,
     displayProvider,
-    filterThreadStartGitRefs,
     validateThreadStart,
     type ThreadStartPickerState,
     type ThreadStartProvider,
     type ThreadStartRequest
   } from '$lib/shell/newSession/threadStartFlow.ts';
   import {
-    initProjectRepository,
+    createWorktree,
     listGitRefs,
-    pickProjectFolder,
+    switchBranch,
     type BackendAnswer,
     type ProjectGitRef
   } from '$lib/shell/newSession/newSessionBackend.ts';
   import { rememberAgentConfigChoice, rememberedAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
   import {
+    listFoldersFromTauri,
     probeAgentProviderConfigFromTauri,
-    listRemoteDirectoriesFromTauri,
     readRemoteAssemblyEnvironmentFromTauri,
+    type ProjectRecord,
     type RemoteAssemblyEnvironment,
     type RemoteAssemblyProfile,
     type ExecutionEnvironment
   } from '$lib/tauriSource.ts';
 
   interface Props {
-    /** Folders the sessions on the rail are running in, so the project picker
-     * knows about projects nobody added by hand. */
-    sessionRoots: string[];
-    presetProjectPath: string | null;
     stopSignal: AbortSignal;
     onSend: (request: ThreadStartRequest, images: File[]) => void | Promise<void>;
     onClose: () => void;
   }
 
-  let { sessionRoots, presetProjectPath, stopSignal, onSend, onClose }: Props = $props();
+  let { stopSignal, onSend, onClose }: Props = $props();
 
   const PROVIDERS: readonly ThreadStartProvider[] = ['codex', 'claude', 'antigravity'];
-  /** This build has no create-worktree command, so only existing checkouts. */
-  const canCreateWorktree = false;
 
-  function preferredRoot(preset: string | null): string {
-    const requested = preset?.trim();
-    if (requested?.startsWith('/')) return requested;
-    return initialRootPath() ?? knownRoots()[0]?.path ?? '';
-  }
-
-  // The preset is applied on mount after SQLite hydration; this is only what
-  // the first frame paints.
+  // The preset is applied on mount after the registry is read; this is only
+  // what the first frame paints.
   let draft = $state<ThreadStartPickerState>(
-    { ...defaultThreadStartState({ projectPath: preferredRoot(null) }), model: '', effort: '', access: '' }
+    { ...defaultThreadStartState({ projectPath: '' }), model: '', effort: '', access: '' }
   );
   let composer = $state<{ focus(): void } | null>(null);
   let gitRefs = $state<ProjectGitRef[]>([]);
-  let refsLoading = $state(false);
   let refsMessage = $state<string | null>(null);
-  let refSearch = $state('');
   let submitting = $state(false);
   let stagedImages = $state<Array<{ file: File; attachment: ConversationAttachment }>>([]);
   let attachmentError = $state('');
@@ -118,6 +104,9 @@
   let loadSequence = 0;
   let remoteAssembly = $state<RemoteAssemblyEnvironment>({ profiles: [], readyProfileIds: [] });
   let remoteSetupOpen = $state(false);
+  let addProjectOpen = $state(false);
+  /** What to do once the machine being set up connects. */
+  let afterRemoteConnect: (() => void) | null = null;
   let remoteProfile = $state<RemoteAssemblyProfile>({
     id: '',
     name: '',
@@ -132,15 +121,15 @@
     void checkForProviderUpdates(stopSignal, pickerUpdates, draft.executionEnvironment === 'remote' ? draft.remoteProfileId ?? undefined : undefined);
   }
 
-  const roots = $derived(knownRoots());
+  const projects = $derived(visibleProjects(projectRegistry.projects, remoteAssembly.profiles.map((profile) => profile.id)));
+  const selectedProject = $derived(projects.find((project) => project.id === draft.projectId) ?? null);
+  const draftMachine = $derived(draft.executionEnvironment === 'remote' ? draft.remoteProfileId ?? '' : 'local');
   const selectedCatalogKey = $derived([
     draft.executionEnvironment, draft.remoteProfileId ?? '', draft.provider, draft.cwd
   ].join('\u0000'));
   const currentCatalog = $derived(catalogKey === selectedCatalogKey ? catalogConfig : null);
   const problems = $derived(validateThreadStart(draft, stagedImages.length > 0));
-  const filteredRefs = $derived(filterThreadStartGitRefs(gitRefs, refSearch));
   const selectedRef = $derived(gitRefs.find((ref) => ref.name === draft.branch) ?? null);
-  const projectName = $derived(draft.projectPath.split('/').filter(Boolean).at(-1) ?? '');
   const selectedRemoteProfile = $derived(
     remoteAssembly.profiles.find((profile) => profile.id === draft.remoteProfileId) ?? null
   );
@@ -231,47 +220,29 @@
     };
   });
 
-  async function loadRefs(projectPath: string): Promise<void> {
+  /** Reads the branches of a project on its own machine. Only reads: a folder
+   * with no repository simply has no branches. */
+  async function loadRefs(machine: string, projectPath: string): Promise<void> {
     const sequence = ++loadSequence;
     if (stopSignal.aborted) return;
-    refsLoading = true;
     refsMessage = null;
     let answer: BackendAnswer<ProjectGitRef[]>;
     try {
-      if (stopSignal.aborted) return;
-      const repository = await initProjectRepository(projectPath);
-      if (stopSignal.aborted) return;
-      if (repository.status === 'failed') {
-        if (sequence === loadSequence) {
-          refsLoading = false;
-          gitRefs = [];
-          refsMessage = repository.message;
-        }
-        return;
-      }
-      if (stopSignal.aborted) return;
-      answer = await listGitRefs(projectPath);
+      answer = await listGitRefs(machine, projectPath);
       if (stopSignal.aborted) return;
     } catch (error) {
       if (!stopSignal.aborted && sequence === loadSequence) {
-        refsLoading = false;
         gitRefs = [];
         refsMessage = describeError(error);
       }
       return;
     }
     if (sequence !== loadSequence) return;
-    refsLoading = false;
-    if (answer.status === 'failed') {
-      gitRefs = [];
-      refsMessage = answer.message;
-    } else {
-      gitRefs = answer.status === 'ok' ? answer.value : [];
-      if (answer.status === 'unavailable') refsMessage = answer.message;
-    }
-    const first = gitRefs.find((ref) => ref.isCurrent)
-      ?? gitRefs.find((ref) => ref.checkoutPath)
-      ?? null;
+    gitRefs = answer.status === 'ok' ? answer.value : [];
+    if (answer.status === 'unavailable') refsMessage = answer.message;
+    // Only the root's own branch: a detached root keeps the root, never some
+    // other worktree's checkout.
+    const first = gitRefs.find((ref) => ref.isCurrent) ?? null;
     updateDraft({
       cwd: first?.checkoutPath ?? projectPath,
       branch: first?.name ?? '',
@@ -279,29 +250,79 @@
     });
   }
 
-  function selectProject(path: string): void {
-    updateDraft({ projectPath: path, cwd: path, branch: '', branchesAvailable: false });
+  function clearRefs(): void {
+    loadSequence += 1;
     gitRefs = [];
-    refSearch = '';
-    void loadRefs(path);
+    refsMessage = null;
   }
 
-  async function selectNoProject(): Promise<void> {
-    const environment = draft.executionEnvironment;
-    const profileId = draft.remoteProfileId;
+  /** The machine comes from the project. */
+  function selectProject(project: ProjectRecord): void {
+    const remote = project.machine !== 'local';
+    const machineChanged = project.machine !== draftMachine;
+    clearRefs();
+    updateDraft({
+      projectId: project.id,
+      executionEnvironment: remote ? 'remote' : 'local',
+      remoteProfileId: remote ? project.machine : null,
+      projectPath: project.rootPath,
+      cwd: project.rootPath,
+      branch: '',
+      branchesAvailable: false,
+      createNewWorktree: false
+    });
+    if (machineChanged) checkSelectedMachine();
+    void loadRefs(project.machine, project.rootPath);
+  }
+
+  /** A plain conversation on `machine`, started in that machine's home folder. */
+  async function selectNoProject(machine: string): Promise<void> {
+    const sequence = ++loadSequence;
+    const remote = machine !== 'local';
     try {
-      const cwd = environment === 'remote'
-        ? (await listRemoteDirectoriesFromTauri(profileId!, '~')).path
-        : await homeDir();
-      if (stopSignal.aborted || draft.executionEnvironment !== environment || draft.remoteProfileId !== profileId) return;
-      loadSequence += 1;
-      gitRefs = [];
-      refsLoading = false;
-      refsMessage = null;
-      updateDraft({ projectPath: '', cwd, branch: '', branchesAvailable: false });
+      const cwd = remote ? (await listFoldersFromTauri(machine, '~')).path : await homeDir();
+      if (stopSignal.aborted || sequence !== loadSequence) return;
+      const machineChanged = machine !== draftMachine;
+      clearRefs();
+      updateDraft({
+        projectId: null,
+        executionEnvironment: remote ? 'remote' : 'local',
+        remoteProfileId: remote ? machine : null,
+        projectPath: '',
+        cwd,
+        branch: '',
+        branchesAvailable: false,
+        createNewWorktree: false
+      });
+      if (machineChanged) checkSelectedMachine();
     } catch (error) {
-      submitError = describeError(error);
+      if (sequence === loadSequence) submitError = describeError(error);
     }
+  }
+
+  /** Runs `then` now on a ready machine; otherwise opens that machine's setup
+   * and runs it once the machine connects. */
+  function whenMachineReady(machine: string, then: () => void): void {
+    if (machine === 'local' || remoteAssembly.readyProfileIds.includes(machine)) {
+      then();
+      return;
+    }
+    const profile = remoteAssembly.profiles.find((candidate) => candidate.id === machine);
+    remoteProfile = profile ? { ...profile } : emptyRemoteProfile();
+    afterRemoteConnect = then;
+    remoteSetupOpen = true;
+  }
+
+  function openRemoteSetup(profile: RemoteAssemblyProfile | null): void {
+    if (profile) remoteProfile = profile;
+    afterRemoteConnect = null;
+    remoteSetupOpen = true;
+  }
+
+  function remoteConnected(profile: RemoteAssemblyProfile): void {
+    const next = afterRemoteConnect ?? (() => void selectNoProject(profile.id));
+    afterRemoteConnect = null;
+    next();
   }
 
   function stageImages(files: File[]): void {
@@ -326,47 +347,6 @@
     stagedImages = stagedImages.filter((item) => item.attachment.id !== id);
   }
 
-  function selectEnvironment(
-    environment: ExecutionEnvironment,
-    profile: RemoteAssemblyProfile | null = null
-  ): void {
-    if (environment === draft.executionEnvironment && profile?.id === draft.remoteProfileId) return;
-    if (environment === 'remote') {
-      const cwd = profile?.defaultCwd.trim();
-      if (!profile) {
-        remoteProfile = emptyRemoteProfile();
-        remoteSetupOpen = true;
-        return;
-      }
-      loadSequence += 1;
-      gitRefs = [];
-      refsLoading = false;
-      refsMessage = null;
-      updateDraft({
-        executionEnvironment: environment,
-        remoteProfileId: profile.id,
-        projectPath: cwd ?? '',
-        cwd: cwd ?? '',
-        branch: '',
-        branchesAvailable: false
-      });
-      if (!cwd) void selectNoProject();
-      checkSelectedMachine();
-      return;
-    }
-    const projectPath = preferredRoot(presetProjectPath);
-    updateDraft({
-      executionEnvironment: environment,
-      remoteProfileId: null,
-      projectPath,
-      cwd: projectPath,
-      branch: '',
-      branchesAvailable: false
-    });
-    checkSelectedMachine();
-    if (projectPath) void loadRefs(projectPath);
-  }
-
   function describeError(error: unknown): string {
     if (error instanceof Error) return error.message;
     if (error && typeof error === 'object' && 'message' in error) {
@@ -376,28 +356,15 @@
     return String(error);
   }
 
-  async function addProject(): Promise<void> {
-    if (stopSignal.aborted) return;
-    const answer = await pickProjectFolder();
-    if (stopSignal.aborted) return;
-    if (answer.status !== 'ok') {
-      refsMessage = answer.message;
-      return;
-    }
-    if (!answer.value) return;
-    addCustomRoot(answer.value);
-    selectProject(answer.value);
-  }
-
   function selectProvider(provider: ThreadStartProvider): void {
     if (provider === draft.provider) return;
     updateDraft({ provider });
     if (!pickerUpdates.status && pickerUpdates.phase !== 'checking') checkSelectedMachine();
   }
 
+  /** Only the draft changes; a switch, if one is needed, waits for the first send. */
   function chooseRef(ref: ProjectGitRef): void {
-    if (!canSelectThreadStartGitRef(ref, canCreateWorktree)) return;
-    updateDraft({ cwd: ref.checkoutPath ?? draft.projectPath, branch: ref.name });
+    updateDraft({ cwd: checkoutPlanFor(draft.projectPath, ref).cwd, branch: ref.name });
   }
 
   function changeConfig(field: AgentConversationConfigField, value: string): void {
@@ -410,7 +377,7 @@
 
   async function send(): Promise<void> {
     if (submitting || stopSignal.aborted) return;
-    let request = buildThreadStartRequest(draft, stagedImages.length > 0);
+    const request = buildThreadStartRequest(draft, stagedImages.length > 0);
     if (!request) {
       submitError = problems[0]?.message ?? 'This draft is not ready to send.';
       return;
@@ -424,26 +391,28 @@
     submitting = true;
     submitError = '';
     try {
-      if (draft.executionEnvironment === 'local' && request.projectPath && !draft.branchesAvailable) {
+      // A new worktree, or a switch for a branch with no checkout, happens now,
+      // at the first send. If git refuses, its message stays on the draft and
+      // nothing starts.
+      const plan = selectedRef ? checkoutPlanFor(draft.projectPath, selectedRef) : null;
+      if (draft.createNewWorktree) {
+        const created = await createWorktree(draftMachine, draft.projectPath, draft.branch);
         if (stopSignal.aborted) return;
-        const made = await initProjectRepository(draft.projectPath);
-        if (stopSignal.aborted) return;
-        if (made.status !== 'ok') {
-          submitError = made.message;
+        if (created.status !== 'ok') {
+          submitError = created.message;
           return;
         }
+        request.cwd = created.value.path;
+        request.branch = created.value.branch;
+      } else if (plan?.kind === 'switch') {
+        const switched = await switchBranch(draftMachine, plan.root, plan.branch);
         if (stopSignal.aborted) return;
-        await loadRefs(draft.projectPath);
-        if (stopSignal.aborted) return;
-        request = buildThreadStartRequest(draft, stagedImages.length > 0);
-        if (!request) {
-          submitError = problems[0]?.message ?? 'This draft is not ready to send.';
+        if (switched.status !== 'ok') {
+          submitError = switched.message;
           return;
         }
       }
-      if (stopSignal.aborted) return;
       await onSend(request, stagedImages.map((item) => item.file));
-      if (stopSignal.aborted) return;
     } catch (error) {
       if (!stopSignal.aborted) submitError = describeError(error);
     } finally {
@@ -453,10 +422,8 @@
 
   onMount(() => {
     const owner = { active: true };
-    setSessionRoots(sessionRoots);
     const sequence = ++loadSequence;
     void hydrateDraft(owner, sequence);
-    void hydrateRemoteAssembly(owner);
     return () => {
       owner.active = false;
       loadSequence += 1;
@@ -466,34 +433,23 @@
 
   async function hydrateDraft(owner: { active: boolean }, sequence: number): Promise<void> {
     if (stopSignal.aborted) return;
-    try {
-      if (stopSignal.aborted) return;
-      await hydrate();
-      if (stopSignal.aborted) return;
-    } catch (error) {
-      if (!stopSignal.aborted && owner.active && sequence === loadSequence) submitError = describeError(error);
-      return;
-    }
+    await Promise.all([hydrateProjects(), hydrateRemoteAssembly(owner)]);
     if (stopSignal.aborted || !owner.active || sequence !== loadSequence) return;
-    const remote = presetProjectPath ? parseRemoteWorkspacePath(presetProjectPath) : null;
-    const projectPath = remote?.path ?? preferredRoot(presetProjectPath);
-    draft = { ...defaultThreadStartState({ projectPath }), model: '', effort: '', access: '' };
-    if (remote) {
-      draft = { ...draft, executionEnvironment: 'remote', remoteProfileId: remote.profileId };
-    } else if (projectPath) void loadRefs(projectPath);
+    if (projectRegistry.error) submitError = projectRegistry.error;
+    // The active session's project, else the most recent session's, among the visible ones.
+    const presetId = defaultDraftProjectId(projects, rail.owned, rail.activeOwnedId);
+    const preset = projects.find((project) => project.id === presetId) ?? null;
     hydrated = true;
-    if (!projectPath && !remote) void selectNoProject();
-    checkSelectedMachine();
+    if (preset) selectProject(preset);
+    else void selectNoProject('local');
+    if (!preset || preset.machine === 'local') checkSelectedMachine();
     composer?.focus();
   }
 
   async function hydrateRemoteAssembly(owner: { active: boolean }): Promise<void> {
-    if (stopSignal.aborted) return;
     try {
-      if (stopSignal.aborted) return;
       const environment = await readRemoteAssemblyEnvironmentFromTauri();
-      if (stopSignal.aborted) return;
-      if (!owner.active) return;
+      if (stopSignal.aborted || !owner.active) return;
       remoteAssembly = environment;
       remoteProfile = emptyRemoteProfile();
     } catch {
@@ -502,52 +458,43 @@
   }
 </script>
 
-{#snippet draftControls()}
+{#snippet projectMenu()}
   <DropdownMenu.Root>
     <DropdownMenu.Trigger>
       {#snippet child({ props })}
-        <Button {...props} data-testid="draft-session-environment" variant="ghost" size="xs" class="draft-control">
-          {draft.executionEnvironment === 'remote' ? selectedRemoteProfile?.name ?? 'Remote' : 'This Mac'}
-          <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
-        </Button>
+        <button {...props} type="button" data-testid="draft-session-project" class="draft-project-trigger">
+          {selectedProject?.title ?? 'No project'}
+          <ChevronDown aria-hidden="true" class="size-3.5 opacity-70" />
+        </button>
       {/snippet}
-    </DropdownMenu.Trigger>
-    <DropdownMenu.Content class="draft-machine-menu" side="top" align="start" sideOffset={8} avoidCollisions collisionPadding={12}>
-      <DropdownMenu.Label>Work in</DropdownMenu.Label>
-      <DropdownMenu.Item onSelect={() => selectEnvironment('local')}>
-        <Monitor aria-hidden="true" class="size-4" />
-        <span class="draft-machine-name">This Mac</span>
-        {#if draft.executionEnvironment === 'local'}<Check aria-hidden="true" class="draft-machine-selected size-4" />{/if}
-      </DropdownMenu.Item>
-      {#each remoteAssembly.profiles as profile (profile.id)}
-        <DropdownMenu.Item title={profile.defaultCwd} onSelect={() => {
-          if (remoteAssembly.readyProfileIds.includes(profile.id)) selectEnvironment('remote', profile);
-          else { remoteSetupOpen = true; remoteProfile = { ...profile }; }
-        }}>
-          <Server aria-hidden="true" class="size-4" />
-          <span class="draft-machine-name">{profile.name}</span>
-          {#if draft.remoteProfileId === profile.id}
-            <Check aria-hidden="true" class="draft-machine-selected size-4" />
-          {/if}
+    </DropdownMenu.Trigger><DropdownMenu.Content align="start" sideOffset={8} avoidCollisions collisionPadding={12} class="w-[300px]">
+      {#each projects as project (project.id)}
+        <DropdownMenu.Item
+          data-testid={`draft-session-project-${project.id}`}
+          title={`${project.rootPath} on ${projectMachineLabel(project.machine, remoteAssembly.profiles)}`}
+          onSelect={() => whenMachineReady(project.machine, () => selectProject(project))}
+        >
+          <span class="draft-project-badge" aria-hidden="true">{projectBadge(project.title)}</span>
+          <span class="draft-machine-name">{project.title}</span>
+          {#if project.machine !== 'local'}<Cloud aria-label="Remote machine" class="size-3.5 opacity-70" />{/if}
+          <span class="draft-check">{#if draft.projectId === project.id}<Check aria-hidden="true" class="size-3.5" />{/if}</span>
         </DropdownMenu.Item>
       {/each}
-      <DropdownMenu.Separator />
-      <DropdownMenu.Item onSelect={() => {
-        remoteProfile = emptyRemoteProfile();
-        remoteSetupOpen = true;
-      }}>
-        <Plus aria-hidden="true" class="size-4" />
-        <span class="draft-machine-name">Add remote machine…</span>
+      {#if projects.length > 0}<DropdownMenu.Separator />{/if}
+      <DropdownMenu.Item data-testid="draft-session-no-project" onSelect={() => void selectNoProject(draftMachine || 'local')}>
+        <MessageCircle aria-hidden="true" class="size-4" />
+        <span class="draft-machine-name">No project</span>
+        <span class="draft-check">{#if !draft.projectId}<Check aria-hidden="true" class="size-3.5" />{/if}</span>
       </DropdownMenu.Item>
-      {#if remoteAssembly.profiles.length > 0}
-        <DropdownMenu.Item onSelect={() => (remoteSetupOpen = true)}>
-          <Settings2 aria-hidden="true" class="size-4" />
-          <span class="draft-machine-name">Manage remote machines…</span>
-        </DropdownMenu.Item>
-      {/if}
+      <DropdownMenu.Item data-testid="draft-session-new-project" onSelect={() => (addProjectOpen = true)}>
+        <FolderPlus aria-hidden="true" class="size-4" />
+        <span class="draft-machine-name">New project</span>
+      </DropdownMenu.Item>
     </DropdownMenu.Content>
   </DropdownMenu.Root>
+{/snippet}
 
+{#snippet providerMenu()}
   <DropdownMenu.Root>
     <DropdownMenu.Trigger>
       {#snippet child({ props })}
@@ -575,134 +522,77 @@
       {/each}
     </DropdownMenu.Content>
   </DropdownMenu.Root>
-
-  {#if draft.executionEnvironment === 'remote' && selectedRemoteProfile}
-    <Button data-testid="draft-session-no-project" variant="ghost" size="xs" class="draft-control" onclick={() => void selectNoProject()}>
-      No project {#if !draft.projectPath}<Check aria-hidden="true" class="size-3.5" />{/if}
-    </Button>
-    <RemoteDirectoryPicker label="working folder" profileId={selectedRemoteProfile.id} sshTarget={selectedRemoteProfile.sshTarget} value={draft.cwd}
-      onChange={(path) => updateDraft({ projectPath: path, cwd: path, branch: '', branchesAvailable: false })} />
-  {:else}
-  <DropdownMenu.Root>
-    <DropdownMenu.Trigger>
-      {#snippet child({ props })}
-        <Button {...props} data-testid="draft-session-project" variant="ghost" size="xs" class="draft-control">
-          {projectName || 'No project'}
-          <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
-        </Button>
-      {/snippet}
-    </DropdownMenu.Trigger>
-    <DropdownMenu.Content
-      side="top"
-      align="start"
-      sideOffset={8}
-      avoidCollisions
-      collisionPadding={12}
-      class="w-[300px]"
-    >
-      <DropdownMenu.Label>Project workspace</DropdownMenu.Label>
-      <DropdownMenu.Item data-testid="draft-session-no-project" onSelect={() => void selectNoProject()}>
-        <span class="draft-check">{#if !draft.projectPath}<Check aria-hidden="true" class="size-3.5" />{/if}</span>
-        <span>No project</span>
-      </DropdownMenu.Item>
-      <DropdownMenu.Separator />
-      {#each roots as root (root.path)}
-        <DropdownMenu.Item
-          data-testid={`draft-session-project-${root.id}`}
-          class="items-start gap-2"
-          onSelect={() => selectProject(root.path)}
-        >
-          <span class="draft-check">
-            {#if draft.projectPath === root.path}<Check aria-hidden="true" class="size-3.5" />{/if}
-          </span>
-          <span class="flex min-w-0 flex-col gap-0.5">
-            <span>{root.name}</span>
-            <span class="draft-hint truncate">{root.path}</span>
-          </span>
-        </DropdownMenu.Item>
-      {/each}
-      {#if roots.length === 0}
-        <DropdownMenu.Item disabled>No project workspaces yet</DropdownMenu.Item>
-      {/if}
-      <DropdownMenu.Separator />
-      <DropdownMenu.Item data-testid="draft-session-new-project" onSelect={() => void addProject()}>
-        <FolderPlus aria-hidden="true" class="size-3.5" />
-        <span>New project</span>
-      </DropdownMenu.Item>
-    </DropdownMenu.Content>
-  </DropdownMenu.Root>
-  {/if}
-
-  <DropdownMenu.Root onOpenChange={(open) => { if (!open) refSearch = ''; }}>
-    <DropdownMenu.Trigger>
-      {#snippet child({ props })}
-        <Button {...props} disabled={draft.executionEnvironment === 'remote' || !draft.projectPath} data-testid="draft-session-branch" variant="ghost" size="xs" class="draft-control draft-branch">
-          <GitBranch aria-hidden="true" class="size-3.5" />
-          <span class="truncate">{(selectedRef?.name ?? draft.branch) || 'Choose a branch'}</span>
-          <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
-        </Button>
-      {/snippet}
-    </DropdownMenu.Trigger>
-    <DropdownMenu.Content
-      side="top"
-      align="start"
-      sideOffset={8}
-      avoidCollisions
-      collisionPadding={12}
-      class="max-h-[430px] w-[min(440px,calc(100vw-32px))] overflow-y-auto"
-    >
-      <div class="draft-ref-search">
-        <Search aria-hidden="true" class="size-3.5" />
-        <Input
-          data-testid="draft-session-ref-search"
-          aria-label="Search branches"
-          placeholder="Search branches"
-          bind:value={refSearch}
-          onclick={(event) => event.stopPropagation()}
-          onkeydown={(event) => event.stopPropagation()}
-          class="h-[30px] border-0 bg-transparent shadow-none"
-        />
-      </div>
-      <DropdownMenu.Separator />
-      {#if refsLoading}
-        <DropdownMenu.Item disabled>Reading branches…</DropdownMenu.Item>
-      {:else}
-        {#each filteredRefs.visible as ref (ref.name)}
-          <DropdownMenu.Item
-            data-testid={`draft-session-ref-${ref.name}`}
-            disabled={!canSelectThreadStartGitRef(ref, canCreateWorktree)}
-            title={canSelectThreadStartGitRef(ref, canCreateWorktree)
-              ? ref.checkoutPath ?? undefined
-              : 'needs a worktree'}
-            onSelect={() => chooseRef(ref)}
-          >
-            <span class="draft-check">
-              {#if draft.branch === ref.name}<Check aria-hidden="true" class="size-3.5" />{/if}
-            </span>
-            <span class="draft-ref-name">{ref.name}</span>
-            <span class="draft-ref-tags">
-              {#if ref.isCurrent}<span>current</span>{/if}
-              {#if ref.isDefault}<span>default</span>{/if}
-              {#if !canSelectThreadStartGitRef(ref, canCreateWorktree)}<small>needs a worktree</small>{/if}
-            </span>
-          </DropdownMenu.Item>
-        {/each}
-        {#if filteredRefs.total === 0}<DropdownMenu.Item disabled>No matching branches</DropdownMenu.Item>{/if}
-      {/if}
-      {#if filteredRefs.total > filteredRefs.visible.length}
-        <div class="draft-ref-footer">
-          Showing {filteredRefs.visible.length} of {filteredRefs.total} branches
-        </div>
-      {/if}
-    </DropdownMenu.Content>
-  </DropdownMenu.Root>
 {/snippet}
 
-<section class="draft-surface" data-testid="draft-session-surface" aria-label="New session">
-  <div class="draft-topline">
-    <span data-testid="draft-session-note">
-      {draft.projectPath ? 'New project folders get a local Git repository when selected. ' : ''}Your conversation starts when you send.
+{#snippet subBar()}
+  {#if selectedProject && selectedProject.machine !== 'local'}
+    <span class="draft-machine-label" data-testid="draft-session-machine">
+      <Cloud aria-hidden="true" class="size-3.5" />
+      {projectMachineLabel(selectedProject.machine, remoteAssembly.profiles)}
     </span>
+  {:else if !selectedProject}
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger>
+        {#snippet child({ props })}
+          <Button {...props} data-testid="draft-session-environment" variant="ghost" size="xs" class="draft-control">
+            {#if draft.executionEnvironment === 'remote'}<Cloud aria-hidden="true" class="size-3.5" />{:else}<Monitor aria-hidden="true" class="size-3.5" />{/if}
+            {draft.executionEnvironment === 'remote' ? selectedRemoteProfile?.name ?? 'Remote machine' : 'This Mac'}
+            <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
+          </Button>
+        {/snippet}
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content class="draft-machine-menu" side="top" align="start" sideOffset={8} avoidCollisions collisionPadding={12}>
+        <DropdownMenu.Label>Work in</DropdownMenu.Label>
+        <DropdownMenu.Item onSelect={() => void selectNoProject('local')}>
+          <Monitor aria-hidden="true" class="size-4" />
+          <span class="draft-machine-name">This Mac</span>
+          {#if draft.executionEnvironment === 'local'}<Check aria-hidden="true" class="draft-machine-selected size-4" />{/if}
+        </DropdownMenu.Item>
+        {#each remoteAssembly.profiles as profile (profile.id)}
+          <DropdownMenu.Item title={profile.sshTarget} onSelect={() => whenMachineReady(profile.id, () => void selectNoProject(profile.id))}>
+            <Cloud aria-hidden="true" class="size-4" />
+            <span class="draft-machine-name">{profile.name}</span>
+            {#if draft.remoteProfileId === profile.id}
+              <Check aria-hidden="true" class="draft-machine-selected size-4" />
+            {/if}
+          </DropdownMenu.Item>
+        {/each}
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
+  {/if}
+
+  {#if selectedProject && gitRefs.length > 0}
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger>
+        {#snippet child({ props })}
+          <Button {...props} data-testid="draft-session-workspace" variant="ghost" size="xs" class="draft-control">
+            {#if draft.createNewWorktree}<FolderGit2 aria-hidden="true" class="size-3.5" />{:else}<Folder aria-hidden="true" class="size-3.5" />{/if}
+            {draft.createNewWorktree ? 'New worktree' : 'Current checkout'}
+            <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
+          </Button>
+        {/snippet}
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content class="draft-machine-menu" side="bottom" align="start" sideOffset={8} avoidCollisions collisionPadding={12}>
+        <DropdownMenu.Label>Workspace</DropdownMenu.Label>
+        <DropdownMenu.Item data-testid="draft-session-current-checkout" onSelect={() => updateDraft({ createNewWorktree: false })}>
+          <Folder aria-hidden="true" class="size-4" />
+          <span class="draft-machine-name">Current checkout</span>
+          {#if !draft.createNewWorktree}<Check aria-hidden="true" class="draft-machine-selected size-4" />{/if}
+        </DropdownMenu.Item>
+        <DropdownMenu.Item data-testid="draft-session-new-worktree" onSelect={() => updateDraft({ createNewWorktree: true })}>
+          <FolderGit2 aria-hidden="true" class="size-4" />
+          <span class="draft-machine-name">New worktree</span>
+          {#if draft.createNewWorktree}<Check aria-hidden="true" class="draft-machine-selected size-4" />{/if}
+        </DropdownMenu.Item>
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
+    <BranchPicker refs={gitRefs} rootPath={draft.projectPath} branch={draft.branch} onPick={chooseRef} focusAfterPick={() => composer?.focus()} />
+  {/if}
+{/snippet}
+
+<section class="draft-surface" class:centred={!submitting && !remoteSetupOpen} data-testid="draft-session-surface" aria-label="New session">
+  <div class="draft-topline">
+    <span data-testid="draft-session-note">Your conversation starts when you send.</span>
     <Button
       data-testid="draft-session-close"
       variant="ghost"
@@ -719,10 +609,12 @@
     {:else if remoteSetupOpen}
       <div class="remote-setup" data-testid="draft-session-remote-setup">
         <RemoteConnections initialProfile={remoteProfile} onChange={(next) => remoteAssembly = next}
-          onConnected={(profile) => selectEnvironment('remote', profile)} onClose={() => remoteSetupOpen = false} />
+          onConnected={remoteConnected} onClose={() => remoteSetupOpen = false} />
       </div>
     {:else}
-      <p>Start the conversation below.</p>
+      <h2 class="draft-heading" data-testid="draft-session-heading">
+        {#if selectedProject}What should we build in {@render projectMenu()}?{:else}What should we build? {@render projectMenu()}{/if}
+      </h2>
     {/if}
     {#if refsMessage}
       <p class="draft-warning" data-testid="draft-session-refs-note">
@@ -743,7 +635,7 @@
 
   {#if pickerUpdates.status?.providers.find((item) => item.provider === draft.provider)?.currentVersion === null}
     <div class="draft-adapter-action" data-testid="draft-provider-install-offer">
-      {#if pickerUpdates.phase === 'installing'}<LoaderCircle aria-label="Downloading adapter" class="size-4 animate-spin" />{/if}
+      {#if pickerUpdates.phase === 'installing'}<span class="inline-flex" role="status" aria-label="Downloading adapter"><WorkingSpinner /></span>{/if}
       <span>{displayProvider(draft.provider)} is not installed on {draft.executionEnvironment === 'remote' ? 'the remote machine' : 'this machine'}.</span>
       <Button variant="secondary" size="sm" disabled={pickerUpdates.phase === 'installing'} onclick={() => void installProviderUpdates(draft.provider, stopSignal, pickerUpdates, draft.executionEnvironment === 'remote' ? draft.remoteProfileId ?? undefined : undefined)}>
         {pickerUpdates.phase === 'installing' ? 'Installing…' : 'Install'}
@@ -772,7 +664,8 @@
     pendingConfig={{}}
     commands={[]}
     sendError={submitError}
-    leadingControls={draftControls}
+    footerControls={providerMenu}
+    {subBar}
     onDraftChange={(value) => updateDraft({ prompt: value })}
     onSend={send}
     onPaste={(event) => {
@@ -788,6 +681,16 @@
     onConfigChange={changeConfig}
   />
 </section>
+
+{#if addProjectOpen}
+  <AddProjectDialog
+    profiles={remoteAssembly.profiles}
+    onAdded={(project) => { addProjectOpen = false; whenMachineReady(project.machine, () => selectProject(project)); }}
+    onAddRemote={() => openRemoteSetup(emptyRemoteProfile())}
+    onManageRemotes={() => openRemoteSetup(null)}
+    onClose={() => (addProjectOpen = false)}
+  />
+{/if}
 
 <style>
   .draft-surface {
@@ -833,6 +736,59 @@
   }
 
   .draft-transcript.pending-first-send { justify-content: flex-start; align-items: stretch; }
+
+  /* An empty draft centres the heading and the composer together, as one
+     block, in the middle of the panel. Once the first message is on its way
+     the composer goes back to the bottom like any running session. */
+  .draft-surface.centred .draft-transcript { justify-content: flex-end; padding-bottom: var(--space-4); }
+  .draft-surface.centred::after { content: ''; flex: 1; }
+  .draft-surface.centred :global(.composer-area) { position: relative; padding-top: 0; background: none; }
+
+  .draft-heading {
+    margin: 0;
+    color: var(--color-text);
+    font-size: var(--text-heading);
+    font-weight: var(--text-heading-weight);
+  }
+
+  .draft-project-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 6px;
+    border: 0;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-text) 9%, transparent);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .draft-project-trigger:hover { background: color-mix(in srgb, var(--color-text) 14%, transparent); }
+  .draft-project-trigger:focus-visible { outline: 2px solid var(--color-focus-solid); outline-offset: 1px; }
+
+  /* The two-letter project badge. Plain grey on purpose. */
+  .draft-project-badge {
+    display: inline-grid;
+    flex: none;
+    place-items: center;
+    width: 22px;
+    height: 18px;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--color-text) 11%, transparent);
+    color: var(--color-text-2);
+    font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 0.02em;
+  }
+
+  .draft-machine-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 6px;
+    color: var(--color-text-2);
+    font-size: 13px;
+  }
   .draft-transcript p { margin: 0; font-size: 13px; }
   .remote-setup {
     display: flex;
@@ -892,7 +848,7 @@
   }
 
   :global(.draft-control:hover) { color: var(--color-text); }
-  :global(.draft-branch) { max-width: 220px; min-width: 0; }
+  :global(.draft-branch) { max-width: 220px; min-width: 0; margin-left: auto; }
 
   :global(.draft-machine-menu) {
     width: 280px;
@@ -941,42 +897,4 @@
     color: var(--color-accent);
   }
 
-  .draft-hint { color: var(--secondary-label); font-size: 13px; }
-
-  .draft-ref-search {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding: 4px 5px;
-    color: var(--secondary-label);
-  }
-
-  .draft-ref-name {
-    min-width: 0;
-    flex: 1 1 auto;
-    overflow: hidden;
-    color: var(--color-text);
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .draft-ref-tags { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; }
-
-  .draft-ref-tags span {
-    padding: 1px 5px;
-    border: 1px solid var(--color-border);
-    border-radius: 4px;
-    color: var(--secondary-label);
-    font-size: 12px;
-    line-height: 1.4;
-  }
-
-  .draft-ref-tags small { color: var(--secondary-label); font-size: 12px; }
-
-  .draft-ref-footer {
-    padding: 7px 8px 4px;
-    border-top: 1px solid var(--color-border);
-    color: var(--secondary-label);
-    font-size: 12px;
-  }
 </style>

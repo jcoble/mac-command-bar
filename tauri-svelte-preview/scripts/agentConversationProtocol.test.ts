@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
 
 import {
-  applyConversationEvent,
-  createConversationState
+  createConversationState,
+  reduceConversationEvent
 } from '../src/lib/shell/conversation/conversationReducer.ts';
-import { conversationDisplayItems } from '../src/lib/shell/conversation/conversationMessages.ts';
-import type { AgentConversationEvent, ConversationSessionState } from '../src/lib/shell/conversation/conversationTypes.ts';
-const display = (state: ConversationSessionState) => conversationDisplayItems(state.transcript.getMessages());
+import { conversationDisplayItems, conversationMessagesFromEvents } from '../src/lib/shell/conversation/conversationMessages.ts';
+import type { AgentConversationEvent } from '../src/lib/shell/conversation/conversationTypes.ts';
 import { configOptionPlacement } from '../src/lib/shell/conversation/conversationTypes.ts';
 import { decideConversationActivation } from '../src/lib/shell/conversation/conversationActivation.ts';
 
@@ -22,7 +21,7 @@ const event = (overrides: Partial<AgentConversationEvent> = {}): AgentConversati
 
 // The first event establishes the live generation and sequence.
 {
-  const state = applyConversationEvent(createConversationState('owned-a', 'codex'), event());
+  const state = reduceConversationEvent(createConversationState('owned-a', 'codex'), event());
   assert.equal(state.generation, 1);
   assert.equal(state.lastSequence, 1);
   assert.equal(state.connectionState, 'connected');
@@ -30,45 +29,47 @@ const event = (overrides: Partial<AgentConversationEvent> = {}): AgentConversati
 
 // Older generations and duplicate sequences are ignored by identity.
 {
-  const current = applyConversationEvent(createConversationState('owned-a', 'codex'), event());
-  const older = applyConversationEvent(current, event({ generation: 0, sequence: 99 }));
-  const duplicate = applyConversationEvent(current, event({ sequence: 1 }));
+  const current = reduceConversationEvent(createConversationState('owned-a', 'codex'), event());
+  const older = reduceConversationEvent(current, event({ generation: 0, sequence: 99 }));
+  const duplicate = reduceConversationEvent(current, event({ sequence: 1 }));
   assert.equal(older, current);
   assert.equal(duplicate, current);
 }
 
 // A missing event is never guessed. Existing history remains visible.
 {
-  let state = applyConversationEvent(createConversationState('owned-a', 'codex'), event());
-  state = applyConversationEvent(state, event({
+  const first = event();
+  const user = event({
     sequence: 2,
     payload: { kind: 'userMessage', itemId: 'user-1', text: 'Keep this', completed: true }
-  }));
-  state = applyConversationEvent(state, event({
+  });
+  let state = reduceConversationEvent(createConversationState('owned-a', 'codex'), first);
+  state = reduceConversationEvent(state, user);
+  state = reduceConversationEvent(state, event({
     sequence: 4,
     payload: { kind: 'assistantDelta', itemId: 'assistant-1', delta: 'Missing sequence three' }
   }));
   assert.equal(state.desynchronized, true);
-  assert.equal(display(state).length, 1);
-  assert.equal(display(state)[0].text, 'Keep this');
+  const displayed = conversationDisplayItems(conversationMessagesFromEvents([first, user]));
+  assert.equal(displayed.length, 1);
+  assert.equal(displayed[0].text, 'Keep this');
 }
 
 // Assistant deltas append to one item and completion seals the authoritative text.
 {
-  let state = applyConversationEvent(createConversationState('owned-a', 'codex'), event());
-  state = applyConversationEvent(state, event({
+  const events = [event(), event({
     sequence: 2,
     payload: { kind: 'assistantDelta', itemId: 'assistant-1', delta: 'Hello' }
-  }));
-  state = applyConversationEvent(state, event({
+  }), event({
     sequence: 3,
     payload: { kind: 'assistantDelta', itemId: 'assistant-1', delta: ' world' }
-  }));
-  state = applyConversationEvent(state, event({
+  }), event({
     sequence: 4,
     payload: { kind: 'assistantMessage', itemId: 'assistant-1', text: 'Hello world', completed: true }
-  }));
-  const { metadata, turnId, blocks, ...answer } = display(state)[0];
+  })];
+  const { metadata, turnId, blocks, ...answer } = conversationDisplayItems(
+    conversationMessagesFromEvents(events)
+  )[0];
   assert.deepEqual(answer, {
     kind: 'assistant',
     itemId: 'assistant-1',
@@ -80,22 +81,20 @@ const event = (overrides: Partial<AgentConversationEvent> = {}): AgentConversati
 
 // Plan payloads replace the current generation's plan without losing ordering.
 {
-  let state = applyConversationEvent(createConversationState('owned-a', 'codex'), event());
-  state = applyConversationEvent(state, event({
+  const events = [event(), event({
     sequence: 2,
     payload: {
       kind: 'plan',
       items: [{ text: 'Inspect the change', status: 'pending' }]
     }
-  }));
-  state = applyConversationEvent(state, event({
+  }), event({
     sequence: 3,
     payload: {
       kind: 'plan',
       items: [{ text: 'Inspect the change', status: 'completed' }]
     }
-  }));
-  const plan = display(state).at(-1);
+  })];
+  const plan = conversationDisplayItems(conversationMessagesFromEvents(events)).at(-1);
   assert.equal(plan?.kind, 'plan');
   assert.deepEqual(plan?.steps.map((step) => ({ title: step.title, state: step.state })), [{ title: 'Inspect the change', state: 'completed' }]);
 }
@@ -142,16 +141,16 @@ const event = (overrides: Partial<AgentConversationEvent> = {}): AgentConversati
 
 // A provider error is additive and does not clear completed messages.
 {
-  let state = applyConversationEvent(createConversationState('owned-a', 'codex'), event({
+  const events = [event({
     payload: { kind: 'assistantMessage', itemId: 'assistant-1', text: 'Still here', completed: true }
-  }));
-  state = applyConversationEvent(state, event({
+  }), event({
     sequence: 2,
     payload: { kind: 'error', code: 'connection_lost', message: 'Reconnect', recoverable: true }
-  }));
-  assert.equal(display(state)[0].text, 'Still here');
-  assert.equal(display(state)[1].kind, 'error');
-  assert.equal(display(state)[1].metadata?.recoverable, true);
+  })];
+  const displayed = conversationDisplayItems(conversationMessagesFromEvents(events));
+  assert.equal(displayed[0].text, 'Still here');
+  assert.equal(displayed[1].kind, 'error');
+  assert.equal(displayed[1].metadata?.recoverable, true);
 }
 
 // Known categories get their fixed controls and future categories remain generic.

@@ -488,9 +488,13 @@ pub fn read_credentials() -> Result<ClaudeCredentials, ClaudeCredentialError> {
         Some(path) => Arc::new(FileStore::new(path)),
         None => Arc::new(FileStore::unavailable()),
     };
-    let mut stores = vec![file_store];
     #[cfg(target_os = "macos")]
-    stores.push(Arc::new(KeychainStore) as Arc<dyn CredentialStore>);
+    let stores = vec![
+        file_store,
+        Arc::new(KeychainStore) as Arc<dyn CredentialStore>,
+    ];
+    #[cfg(not(target_os = "macos"))]
+    let stores = vec![file_store];
     select_credentials(stores)
 }
 

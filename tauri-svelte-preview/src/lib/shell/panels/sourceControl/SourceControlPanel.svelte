@@ -34,6 +34,7 @@
    * change one, so Stage All and Commit are off there and say why: a page left
    * open on a repository must not be able to commit it by accident.
    */
+  import { selectedConversationChat, selectedConversationHistoryOwnedId } from '$lib/shell/conversation/conversationConnection';
   import { untrack } from 'svelte';
   import { conversationHasRunningTool } from '$lib/shell/conversation/conversationMessages.ts';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -166,7 +167,8 @@
   const activeTool = $derived.by(() => {
     if (!conversation) return false;
     conversation.timelineRevision;
-    return conversationHasRunningTool(conversation.transcript.getMessages());
+    return selectedConversationHistoryOwnedId() === ownedId
+      && conversationHasRunningTool(selectedConversationChat(ownedId)?.messages ?? []);
   });
   let checkoutBusy = $state(false);
   const checkoutDisabledReason = $derived.by(() => {
@@ -581,7 +583,7 @@
            branch with no upstream. -->
       <DropdownMenu.Root onOpenChange={moreMenuOpenChange}>
         <DropdownMenu.Trigger
-          class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }))}
+          class={cn(buttonVariants({ variant: 'ghost', size: 'icon-sm' }), 'rounded-full')}
           aria-label="More source-control actions"
           data-testid="source-control-more-actions"
         >
@@ -666,8 +668,8 @@
     </EmptyState>
   {:else if notARepository}
     <EmptyState
-      title="This folder is not a git repository"
-      body="There is no repository here to read, so there is nothing to show."
+      title="This folder is not a git work tree"
+      body="It is a plain folder or a bare repository, so there are no changes to show."
     >
       {#snippet icon()}<GitBranch />{/snippet}
     </EmptyState>
@@ -757,15 +759,18 @@
             <Button
               variant="secondary"
               size="sm"
-              class="flex-1"
+              class="flex-1 rounded-full"
               disabled={!canStageAll}
               title={stageHint}
               data-testid="source-control-stage-all"
               onclick={stageAll}>Stage All</Button
             >
+            <!-- A commit that cannot run yet is a plain grey button, not a
+                 dimmed green one. -->
             <Button
+              variant={(amend ? canAmend : canCommit) ? 'default' : 'secondary'}
               size="sm"
-              class="flex-1"
+              class="flex-1 rounded-full"
               disabled={amend ? !canAmend : !canCommit}
               title={commitHint}
               data-testid="source-control-commit"

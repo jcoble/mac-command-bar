@@ -1,5 +1,3 @@
-import type { StreamProcessor } from '@tanstack/ai/client';
-
 export type AgentConversationProvider = 'codex' | 'claude' | 'antigravity';
 
 export interface ConversationCommandError {
@@ -363,7 +361,7 @@ export interface AgentUserInputField {
   label: string;
   description?: string;
   required: boolean;
-  kind: 'text' | 'password' | 'select' | 'boolean';
+  kind: 'text' | 'password' | 'select' | 'multi-select' | 'boolean';
   choices?: AgentConfigOptionChoice[];
 }
 
@@ -371,11 +369,14 @@ export interface AgentUserInputRequest extends AgentRequestIdentity {
   title: string;
   description?: string;
   fields: AgentUserInputField[];
+  canDecline: boolean;
 }
 
+export type AgentUserInputAction = 'accept' | 'decline' | 'cancel';
+
 export interface AgentUserInputResponse extends AgentRequestIdentity {
-  values: Record<string, AgentConfigValue>;
-  cancelled: boolean;
+  action: AgentUserInputAction;
+  content: Record<string, AgentConfigValue>;
 }
 
 export type AgentWriterLeaseOwner = 'structured' | 'terminal' | 'none';
@@ -431,11 +432,22 @@ export type AgentConversationPayload =
       kind: 'childUpdate';
       childId: string;
       parentToolCallId: string;
+      parentId?: string;
+      transcriptId?: string;
       label?: string;
       state: string;
       latestActivity?: string;
     }
   | { kind: 'approval'; requestId: string; state: ApprovalState; summary: string }
+  | {
+      kind: 'userInputRequested';
+      requestId: string;
+      title: string;
+      description?: string;
+      fields: AgentUserInputField[];
+      canDecline?: boolean;
+    }
+  | { kind: 'userInputResolved'; requestId: string; cancelled: boolean }
   | {
       kind: 'plan';
       items?: { text: string; status: string; id?: string; title?: string; detail?: string }[];
@@ -578,6 +590,7 @@ export interface ConversationChildAgent {
   parentGeneration: number;
   parentId: string;
   parentToolCallId?: string;
+  transcriptId?: string;
   provider: AgentConversationProvider;
   title: string;
   state: string;
@@ -586,17 +599,9 @@ export interface ConversationChildAgent {
   transcriptAvailable: boolean;
 }
 
-export interface ConversationTranscriptMessage {
-  itemId: string;
-  role: 'user' | 'assistant';
-  text: string;
-  timestampMs: number;
-}
-
-export interface ConversationTranscriptSnapshot {
-  messages: ConversationTranscriptMessage[];
-  metadata: ConversationMetadata;
-  children: ConversationChildAgent[];
+export interface AgentConversationChildHistory {
+  historyOwnedId: string;
+  page: AgentConversationItemPage;
 }
 
 export interface ConversationAttachment {
@@ -627,7 +632,6 @@ export interface ConversationSessionState {
   nativeSessionId?: string;
   activeTurnId?: string;
   usage?: ConversationUsage;
-  transcript: StreamProcessor;
 }
 
 export interface AgentConversationConnection {
@@ -640,15 +644,70 @@ export interface AgentConversationConnection {
   config?: import('./conversationConfig').AgentConversationConfigState;
 }
 
+/** Identity of the user item durably admitted by the native send command. */
+export interface AgentConversationSendReceipt {
+  ownedId: string;
+  generation: number;
+  turnId: string;
+  userItemId: string;
+  admittedSequence: number;
+}
+
 /** One backward page of transcript events, with whether older history remains. */
 export interface AgentConversationEventPage {
   events: AgentConversationEvent[];
   hasMore: boolean;
 }
 
-export interface AgentConversationSnapshot {
-  connection: AgentConversationConnection;
-  suspended?: boolean;
+export interface AgentConversationEventCoverage {
+  low: number;
+  high: number;
+  startComplete: boolean;
+}
+
+export interface AgentConversationItemDescriptor {
+  stableId: string;
+  itemId: string;
+  selectionMode: string;
+  firstSequence: number;
+  firstTimestampMs: number;
   lastSequence: number;
+  authoritySeq?: number;
+  turnId?: string;
+  completed: boolean;
+  prefixComplete: boolean;
+  positionKnown: boolean;
+  requiredBytes: number;
+}
+
+export interface AgentConversationTurnFacts {
+  turnId: string;
+  startedAtMs?: number | null;
+  endedAtMs?: number | null;
+  terminalState?: string | null;
+  finalAssistantItemId?: string | null;
+}
+
+export interface AgentConversationItemPage {
+  items: AgentConversationItemDescriptor[];
   events: AgentConversationEvent[];
+  turns: AgentConversationTurnFacts[];
+  beforeCursor?: number;
+  afterCursor?: number;
+  hasBefore: boolean;
+  hasEarlierTranscript: boolean;
+  hasAfter: boolean;
+  watermark: number;
+  transferBytes: number;
+  oversized: boolean;
+  coverage?: AgentConversationEventCoverage;
+}
+
+export interface AgentConversationSelectionSnapshot {
+  connection: AgentConversationConnection;
+  suspended: boolean;
+  page: AgentConversationItemPage;
+  pendingEvents: AgentConversationEvent[];
+  pendingSequence: number;
+  activeTurnId?: string;
 }

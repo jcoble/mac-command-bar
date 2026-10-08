@@ -11,11 +11,11 @@
  * Unknown ids are expected, not exceptional: the agent gains models faster
  * than this app is rebuilt. Every function here falls back to a tidied-up
  * version of the id rather than hiding it, so a new model shows as
- * "5.7 Vega" instead of blank.
+ * "GPT-5.7 Vega" instead of blank.
  */
 
 /** Vendor prefixes that carry no meaning on screen — the model name follows. */
-const VENDOR_PREFIXES = new Set(['gpt', 'claude', 'openai', 'anthropic', 'google', 'meta']);
+const VENDOR_PREFIXES = new Set(['claude', 'openai', 'anthropic', 'google', 'meta']);
 
 /** Words that read better fully capitalised than title-cased. */
 const ALWAYS_UPPERCASE = new Set(['gpt', 'llm', 'api', 'xl']);
@@ -29,9 +29,10 @@ function titleCasePart(part: string): string {
 }
 
 /**
- * A model id as a name: `gpt-5.6-sol` → "5.6 Sol", `claude-opus-5` → "Opus 5".
- * The leading vendor word is dropped because the conversation already knows
- * which agent it is talking to.
+ * A model id as a name: `gpt-5.6-sol` → "GPT-5.6 Sol", `claude-opus-5` → "Opus 5".
+ * A leading vendor word is dropped because the conversation already knows
+ * which agent it is talking to. "GPT" is kept, joined to its version, because
+ * it is part of the model's own name.
  */
 export function modelLabel(model: string | null | undefined, labels?: Readonly<Record<string, string>>): string {
   if (!model) return 'Default';
@@ -42,6 +43,9 @@ export function modelLabel(model: string | null | undefined, labels?: Readonly<R
     .flatMap((part) => part.split(/(?<=[a-z0-9])(?=[A-Z])/))
     .filter(Boolean);
   if (parts.length === 0) return model;
+  if (parts.length > 1 && parts[0].toLowerCase() === 'gpt') {
+    return [`GPT-${parts[1]}`, ...parts.slice(2).map(titleCasePart)].join(' ');
+  }
   const withoutVendor =
     parts.length > 1 && VENDOR_PREFIXES.has(parts[0].toLowerCase()) ? parts.slice(1) : parts;
   return withoutVendor.map(titleCasePart).join(' ');
@@ -133,7 +137,7 @@ export function approvalDescription(policy: string | null | undefined): string {
 
 /**
  * What the composer's pill says: the model and how hard it is thinking, e.g.
- * "5.6 Sol Extra High". Either half may be missing on an agent that does not
+ * "GPT-5.6 Sol · Extra High". Either half may be missing on an agent that does not
  * report it, and the pill then shows only the half that exists.
  */
 export function modelEffortLabel(
@@ -144,5 +148,5 @@ export function modelEffortLabel(
   const parts: string[] = [];
   if (model) parts.push(modelLabel(model, labels));
   if (effort) parts.push(effortLabel(effort));
-  return parts.length ? parts.join(' ') : 'Agent settings';
+  return parts.length ? parts.join(' · ') : 'Agent settings';
 }

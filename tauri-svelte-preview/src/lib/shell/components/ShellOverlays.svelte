@@ -39,7 +39,7 @@
 	}
 	let { onResetLayout, message, onProblemsLocationChange, onRemoteConnected, onShowBottomDock, onUtilityStateChange }: Props = $props();
 
-	let settingsHost: { open: () => void; close: () => void } | null = null;
+	let settingsHost: { open: () => void; close: () => void; isOpen: () => boolean } | null = null;
 	let resourcePopoverHost: HTMLDivElement | null = null;
 	let usagePopoverHost: HTMLDivElement | null = null;
 	let resourceAnchor = $state<UtilityAnchor | null>(null);
@@ -100,6 +100,12 @@
 	 * `SettingsHost`'s own `open()`, one layer out. */
 	export function openSettings(): void {
 		settingsHost?.open();
+	}
+
+	/** Whether the settings screen is up. Reactive: the host's open state is
+	 * `$state`, so a caller reading this in a template follows it. */
+	export function settingsOpen(): boolean {
+		return settingsHost?.isOpen() ?? false;
 	}
 </script>
 

@@ -1,10 +1,11 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { parseRemoteWorkspacePath, workspaceChangePath } from '$lib/workspacePaths';
   /**
    * EditorPanel.svelte — the /next code-reading panel.
    *
    * Thin by construction. It owns three things and nothing else:
-   *  1. the strip of open files,
+   *  1. the open-file actions the top tab row calls (select, close, timeline),
    *  2. reading a file when one is requested, and
    *  3. handing `CodeMirrorSourceEditor` the lookup callbacks from
    *     `sourceIntelligence`.
@@ -15,7 +16,7 @@
    *  - **Nothing loads at start-up.** The panel subscribes to open-file
    *    requests when it mounts (free, no backend), and CodeMirror itself is only
    *    downloaded once a file is on screen in front of the reader — not merely
-   *    in the strip, because putting a session's files back fills the strip out
+   *    in the top row, because putting a session's files back fills the row out
    *    of sight. The language server is warmed on the first file opened per
    *    project, never before.
    *  - **Read mode is the default.** Opening a file colours it and stops
@@ -23,12 +24,13 @@
    *    editor status bar has been turned on, and turning it off stops that server. The
    *    global choice is remembered between launches.
    *  - **No `$effect` reads a file.** Every read is started by a user action: a
-   *    file-open request, or a click in the strip. The one effect that starts
+   *    file-open request, or a click on a top-row tab. The one effect that starts
    *    anything starts the editor, and only for a file already on screen.
    */
   import { onMount } from 'svelte';
   import Save from '@lucide/svelte/icons/save';
   import X from '@lucide/svelte/icons/x';
+  import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import Folder from '@lucide/svelte/icons/folder';
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import * as Breadcrumb from '$lib/components/ui/breadcrumb/index.js';
@@ -46,11 +48,13 @@
     isHtmlFile,
     isMarkdownFile,
     markdownPreviewDefault,
+    rasterImageMimeType,
     type MarkdownView
   } from './editor/markdownPreview.ts';
-  import { IconButton } from '$lib/components/ui/icon-button/index.js';
+  import { buttonVariants } from '$lib/components/ui/button/variants.js';
+  import { cn } from '$lib/utils.js';
   import LanguageIntelligenceControls from './LanguageIntelligenceControls.svelte';
-  import SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
+  import type SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import { workspaceKey } from '$lib/shell/editor/languageIntelligenceMode';
   import {
@@ -59,7 +63,6 @@
   } from '$lib/shell/editor/languageIntelligenceBar.svelte';
   import { onOpenFile, type OpenFileRequest } from '$lib/shell/openFileBus';
   import { onWorkspaceFileChange } from '$lib/shell/workspaceFileChangeBus.ts';
-  import * as ContextMenu from '$lib/components/ui/context-menu/index.js';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
   import { setEditorSourceReadDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
   import {
@@ -73,7 +76,6 @@
     editorState,
     markEditorFileLoading,
     openEditorFile,
-    pinEditorFile,
     resetEditorState,
     revealEditorLine,
     setActiveEditorFile,
@@ -157,6 +159,8 @@
 
   type CodeEditorComponent = typeof CodeMirrorSourceEditor;
   let CodeEditor = $state<CodeEditorComponent | null>(null);
+  /** Loaded the first time a Markdown file is shown as Preview. */
+  let MarkdownPreview = $state<typeof SourceMarkdownPreview | null>(null);
   let codeEditor = $state<{
     captureViewStates(paths: readonly string[]): Record<string, object>;
     disposeTabModel(path: string): boolean;
@@ -203,7 +207,6 @@
   /** Language-server processes the desktop app reports for this project. */
   let languageServerPids = $state<number[]>([]);
   let destroyed = false;
-  let fileStrip = $state<HTMLDivElement | null>(null);
 
   const activeFile = $derived(activeEditorFile());
   const activeImageMimeType = $derived(rasterImageMimeType(activeFile?.fileName));
@@ -231,9 +234,15 @@
   /** Inspection root for read-only tabs; a path alone is not enough context. */
   let readOnlyByPath = $state<Record<string, string>>({});
   const activeFileReadOnly = $derived(Boolean(activeFile && readOnlyByPath[activeFile.path]));
-  let breadcrumbFolder = $state<{ file: string; root: string; path: string } | null>(null);
-  let breadcrumbMenu = $state<{ file: string; root: string; directory: string; entries: SourceDirectoryEntry[] | null; error: string | null } | null>(null);
+  /** The breadcrumb menus open right now, outermost first: depth 0 is a
+   * segment's menu (or a folder row of the "…" menu), each deeper entry a
+   * folder's submenu. Only open menus hold entries; closing one drops it and
+   * everything below it, and a new file or root drops them all. */
+  let breadcrumbChain = $state<{ directory: string; opening: number; entries: SourceDirectoryEntry[] | null; error: string | null }[]>([]);
   let breadcrumbMenuGeneration = 0;
+  /** Numbers each menu opening, so a late answer for a folder that was closed
+   * and opened again cannot fill the newer opening. */
+  let breadcrumbOpenings = 0;
   let breadcrumbOwner = '';
   const breadcrumbRoot = $derived(activeFile
     ? (readOnlyByPath[activeFile.path] || editorState.projectRoot || '')
@@ -242,45 +251,53 @@
     const owner = `${breadcrumbRoot}\0${activeFile?.path ?? ''}`;
     if (owner === breadcrumbOwner) return;
     breadcrumbOwner = owner;
-    breadcrumbFolder = null;
-    breadcrumbMenu = null;
+    breadcrumbChain = [];
     breadcrumbMenuGeneration += 1;
   });
   const breadcrumbPath = $derived(activeFile && breadcrumbRoot && activeFile.path.startsWith(`${breadcrumbRoot}/`)
-    ? (breadcrumbFolder?.file === activeFile.path && breadcrumbFolder.root === breadcrumbRoot
-        ? breadcrumbFolder.path : activeFile.path)
+    ? activeFile.path
     : '');
+  /** Wide enough for long names; long folders scroll inside the menu. */
+  const BREADCRUMB_MENU = 'w-auto min-w-56 max-w-[min(40rem,80vw)] max-h-[60vh] overflow-y-auto';
+  /** Submenus are portaled out of their scrolling parent, so they take the
+   * shell theme scope and the top-level menu's layer with them. */
+  const BREADCRUMB_SUBMENU = `${BREADCRUMB_MENU} next-shell z-[250]`;
   const breadcrumbParts = $derived(breadcrumbPath
     ? [breadcrumbRoot, ...breadcrumbPath.slice(breadcrumbRoot.length + 1).split('/').map((_, index, parts) =>
         `${breadcrumbRoot}/${parts.slice(0, index + 1).join('/')}`)]
     : []);
+  /** Deep paths fold their middle folders into one "…" menu, so the project
+   * name and the file name both stay readable in the header. */
+  const breadcrumbHidden = $derived(breadcrumbParts.length > 4 ? breadcrumbParts.slice(1, -2) : []);
 
-  async function openBreadcrumbMenu(directory: string): Promise<void> {
+  async function openBreadcrumbMenu(directory: string, depth: number): Promise<void> {
     if (!activeFile || !breadcrumbRoot || !rootAvailable) return;
     const file = activeFile.path;
     const root = breadcrumbRoot;
-    const generation = ++breadcrumbMenuGeneration;
-    breadcrumbMenu = { file, root, directory, entries: null, error: null };
+    // Bumped only when the file or root changes, so a sibling submenu opening
+    // does not discard a parent menu's answer still on its way.
+    const generation = breadcrumbMenuGeneration;
+    const opening = ++breadcrumbOpenings;
+    breadcrumbChain = [...breadcrumbChain.slice(0, depth), { directory, opening, entries: null, error: null }];
+    const current = () => generation === breadcrumbMenuGeneration && activeFile?.path === file && breadcrumbRoot === root && breadcrumbChain[depth]?.opening === opening;
+    let answer: { entries: SourceDirectoryEntry[]; error: string | null };
     try {
-      const entries = await listSourceDirectoryFromTauri(root, directory);
-      if (generation === breadcrumbMenuGeneration && activeFile?.path === file && breadcrumbRoot === root && breadcrumbMenu?.directory === directory) {
-        breadcrumbMenu = { file, root, directory, entries: entries ?? [], error: null };
-      }
+      answer = { entries: (await listSourceDirectoryFromTauri(root, directory)) ?? [], error: null };
     } catch (error) {
-      if (generation === breadcrumbMenuGeneration && activeFile?.path === file && breadcrumbRoot === root && breadcrumbMenu?.directory === directory) {
-        breadcrumbMenu = { file, root, directory, entries: [], error: describeError(error) };
-      }
+      answer = { entries: [], error: describeError(error) };
     }
+    if (current()) breadcrumbChain = breadcrumbChain.map((menu, index) => (index === depth ? { directory, opening, ...answer } : menu));
   }
 
-  function chooseBreadcrumbEntry(entry: SourceDirectoryEntry): void {
-    if (!activeFile || !breadcrumbRoot) return;
-    if (entry.isDirectory) {
-      breadcrumbFolder = { file: activeFile.path, root: breadcrumbRoot, path: entry.path };
-    } else {
-      handleOpenFileRequest({ path: entry.path, projectRoot: breadcrumbRoot, readOnly: activeFileReadOnly });
-      breadcrumbFolder = null;
-    }
+  /** Close only the menu that is still this directory's: a sibling submenu may
+   * already have taken its depth. */
+  function closeBreadcrumbMenu(directory: string, depth: number): void {
+    if (breadcrumbChain[depth]?.directory === directory) breadcrumbChain = breadcrumbChain.slice(0, depth);
+  }
+
+  function openBreadcrumbFile(entry: SourceDirectoryEntry): void {
+    if (!breadcrumbRoot) return;
+    handleOpenFileRequest({ path: entry.path, projectRoot: breadcrumbRoot, readOnly: activeFileReadOnly });
   }
   const activeServerEnabled = $derived.by(() => {
     const language = activeFile?.language?.toLowerCase();
@@ -344,6 +361,11 @@
       ? (markdownViewByPath[activeFile.path] ?? 'raw')
       : 'raw'
   );
+  /** Preview covers the source editor, which stays mounted behind it so the
+   *  file keeps its undo history and scroll position. */
+  const markdownPreviewShown = $derived(
+    Boolean(showing && activeFile?.preview && activeFileIsMarkdown && markdownView === 'rendered')
+  );
   const MARKDOWN_VIEW_ITEMS = [
     { value: 'raw', label: 'Source' },
     { value: 'rendered', label: 'Preview' }
@@ -368,18 +390,6 @@
     if (!markdownViewByPath[path]) return;
     const { [path]: _released, ...rest } = markdownViewByPath;
     markdownViewByPath = rest;
-  }
-
-  function rasterImageMimeType(fileName: string | null | undefined): string | null {
-    const extension = fileName?.split('.').at(-1)?.toLowerCase();
-    if (extension === 'png') return 'image/png';
-    if (extension === 'jpg' || extension === 'jpeg') return 'image/jpeg';
-    if (extension === 'gif') return 'image/gif';
-    if (extension === 'webp') return 'image/webp';
-    if (extension === 'bmp') return 'image/bmp';
-    if (extension === 'ico') return 'image/x-icon';
-    if (extension === 'avif') return 'image/avif';
-    return null;
   }
 
   function releaseImagePreview(path?: string): void {
@@ -654,6 +664,15 @@
     const language = upgradeUnknownLanguage(record.path, record.language);
     return language === record.language ? record : { ...record, language };
   }
+
+  /** Download the Markdown preview the first time a file is shown that way. */
+  $effect(() => {
+    if (!markdownPreviewShown || MarkdownPreview) return;
+    import('$lib/SourceMarkdownPreview.svelte').then(
+      (module) => { if (!destroyed) MarkdownPreview = module.default; },
+      (error) => { if (!destroyed) editorLoadError = `Could not start the Markdown preview: ${describeError(error)}`; }
+    );
+  });
 
   /** Download the code editor the first time it is needed. */
   async function ensureCodeEditor(): Promise<void> {
@@ -1184,7 +1203,7 @@
     }
   }
 
-  function selectOpenFile(path: string): void {
+  export function selectFile(path: string): void {
     if (closeActionBusy) return;
     if (editorState.activePath && editorState.activePath !== path) {
       releaseImagePreview(editorState.activePath);
@@ -1229,7 +1248,8 @@
     readOnlyByPath = remaining;
   }
 
-  function closeOpenFileAt(path: string): void {
+  /** Close one file; a file with unsaved changes asks first. */
+  export function requestCloseFile(path: string): void {
     if (closeActionBusy) return;
     if (editorFileFor(path)?.dirty) {
       closeRequest = { kind: 'file', path };
@@ -1239,14 +1259,14 @@
     closeFileNow(path);
   }
 
-  function closeOtherOpenFiles(path: string): void {
+  export function closeOtherFiles(path: string): void {
     if (closeActionBusy) return;
     for (const file of editorState.openFiles) {
       if (file.path !== path && !file.dirty) closeFileNow(file.path);
     }
   }
 
-  function closeSavedOpenFiles(): void {
+  export function closeSavedFiles(): void {
     if (closeActionBusy) return;
     for (const file of editorState.openFiles) {
       if (!file.dirty) closeFileNow(file.path);
@@ -1363,12 +1383,13 @@
   }
 
   export function requestCloseActive(): void {
-    if (editorState.activePath) closeOpenFileAt(editorState.activePath);
+    if (editorState.activePath) requestCloseFile(editorState.activePath);
   }
 
-  function openTimelineFor(file: { relativePath: string }): void {
+  export function openTimeline(path: string): void {
     const projectRoot = canonicalPath(editorState.projectRoot ?? '');
-    if (!projectRoot) return;
+    const file = editorFileFor(path);
+    if (!projectRoot || !file) return;
     void openFileTimeline({ projectRoot, relativePath: file.relativePath });
   }
 
@@ -1536,16 +1557,6 @@
     void ensureCodeEditor();
   });
 
-  // Keep the selected tab on screen when opening, selecting, or restoring files.
-  $effect(() => {
-    const activePath = editorState.activePath;
-    const openFiles = editorState.openFiles;
-    if (!activePath || openFiles.length === 0 || !fileStrip) return;
-    fileStrip
-      .querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
-      ?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-  });
-
   /**
    * Keep the top strip's copy of the language-server controls in step.
    *
@@ -1607,83 +1618,94 @@
     </div>
   {:else}
     <div class="editor-header">
-      <div bind:this={fileStrip} class="file-strip" role="tablist" aria-label="Open files">
-        {#each editorState.openFiles as file (file.path)}
-          <ContextMenu.Root>
-            <ContextMenu.Trigger>
-              {#snippet child({ props })}
-                <div {...props} class="file-chip" class:active={file.path === editorState.activePath}>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={file.path === editorState.activePath}
-                    aria-label={`${file.fileName}${file.dirty ? ' (unsaved)' : ''}${readOnlyByPath[file.path] ? ` (read-only: ${readOnlyByPath[file.path]})` : ''}`}
-                    class="file-name"
-                    title={readOnlyByPath[file.path]
-                      ? `Read-only inspection in ${readOnlyByPath[file.path]}\n${file.relativePath}`
-                      : file.relativePath}
-                    onclick={() => selectOpenFile(file.path)}
-                  >
-                    <FileIcon fileName={file.fileName} size={13} />
-                    {#if file.previewTab}<em>{file.fileName}</em>{:else}{file.fileName}{/if}
-                    {#if file.dirty}<span class="chip-note" aria-hidden="true">*</span>{/if}
-                    {#if readOnlyByPath[file.path]}<span class="chip-note">read-only</span>{/if}
-                    {#if file.loading}<span class="chip-note">reading</span>{/if}
-                    {#if file.error}<span class="chip-note error">failed</span>{/if}
-                    {#if file.conflict}<span class="chip-note error">conflict</span>{/if}
-                  </button>
-                  <IconButton
-                    label={`Close ${file.fileName}`}
-                    size="sm"
-                    side="bottom"
-                    class="file-close text-[var(--color-text-2)] hover:bg-[var(--color-elevated)] hover:text-[var(--color-text)]"
-                    onclick={() => closeOpenFileAt(file.path)}
-                  >
-                    <X class="size-3.5" aria-hidden="true" />
-                  </IconButton>
-                </div>
-              {/snippet}
-            </ContextMenu.Trigger>
-            <ContextMenu.Content class="w-[220px]" aria-label={`Actions for ${file.fileName}`}>
-              {#if file.previewTab}
-                <ContextMenu.Item
-                  onSelect={() => pinEditorFile(file.path)}
-                >Pin Tab</ContextMenu.Item>
+      <!-- The open file's path on the left, its own controls on the right. The
+           language-server switch sits in this editor's status bar. -->
+      {#if activeFile && breadcrumbParts.length > 0}
+        <!-- One folder's folders and files, at one depth of the open menu chain.
+             A folder row opens its own submenu, so any depth is reachable
+             without leaving the menu; a file row opens the file. -->
+        {#snippet folderEntries(directory: string, depth: number)}
+          {@const menu = breadcrumbChain[depth]}
+          {#if menu?.directory !== directory || menu.entries === null}
+            <DropdownMenu.Item disabled><WorkingSpinner size={12} />Loading…</DropdownMenu.Item>
+          {:else if menu.error}
+            <DropdownMenu.Item disabled>{menu.error}</DropdownMenu.Item>
+          {:else if menu.entries.every((entry) => entry.excluded)}
+            <DropdownMenu.Item disabled>No files or folders</DropdownMenu.Item>
+          {:else}
+            {#each menu.entries.filter((entry) => !entry.excluded) as entry (entry.path)}
+              {#if entry.isDirectory}
+                <DropdownMenu.Sub onOpenChange={(open) => { if (open) void openBreadcrumbMenu(entry.path, depth + 1); else closeBreadcrumbMenu(entry.path, depth + 1); }}>
+                  <DropdownMenu.SubTrigger>
+                    <Folder class="size-[14px]" />
+                    <span class="truncate">{entry.name}</span>
+                  </DropdownMenu.SubTrigger>
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.SubContent class={BREADCRUMB_SUBMENU}>
+                      {@render folderEntries(entry.path, depth + 1)}
+                    </DropdownMenu.SubContent>
+                  </DropdownMenu.Portal>
+                </DropdownMenu.Sub>
+              {:else}
+                <DropdownMenu.Item onSelect={() => openBreadcrumbFile(entry)}>
+                  <FileIcon fileName={entry.name} size={14} />
+                  <span class="truncate">{entry.name}</span>
+                </DropdownMenu.Item>
               {/if}
-              <ContextMenu.Item
-                onSelect={() => closeOpenFileAt(file.path)}
-              >Close</ContextMenu.Item>
-              <ContextMenu.Item
-                disabled={!editorState.openFiles.some((candidate) => candidate.path !== file.path && !candidate.dirty)}
-                onSelect={() => closeOtherOpenFiles(file.path)}
-              >Close other clean files</ContextMenu.Item>
-              <ContextMenu.Item
-                disabled={!editorState.openFiles.some((candidate) => !candidate.dirty)}
-                onSelect={closeSavedOpenFiles}
-              >Close saved files</ContextMenu.Item>
-              <ContextMenu.Item
-                onSelect={() => openTimelineFor(file)}
-              >File Timeline</ContextMenu.Item>
-            </ContextMenu.Content>
-          </ContextMenu.Root>
-        {/each}
-      </div>
-
-      <!-- Only the open file's own controls belong here. The language-server
-           switch sits in this editor's status bar. -->
+            {/each}
+          {/if}
+        {/snippet}
+        <div class="editor-breadcrumb-row">
+          <Breadcrumb.Root>
+            <Breadcrumb.List class="m-0 list-none flex-nowrap gap-1 p-0 text-[13px]">
+              {#each breadcrumbParts as part, index (part)}
+                {#if breadcrumbHidden.includes(part)}
+                  {#if part === breadcrumbHidden[0]}
+                    <Breadcrumb.Separator class="flex shrink-0 items-center" />
+                    <Breadcrumb.Item class="shrink-0">
+                      <DropdownMenu.Root>
+                        <DropdownMenu.Trigger class="breadcrumb-trigger" aria-label="Show hidden folders">…</DropdownMenu.Trigger>
+                        <DropdownMenu.Content class={BREADCRUMB_MENU} align="start">
+                          {#each breadcrumbHidden as hidden (hidden)}
+                            <DropdownMenu.Sub onOpenChange={(open) => { if (open) void openBreadcrumbMenu(hidden, 0); else closeBreadcrumbMenu(hidden, 0); }}>
+                              <DropdownMenu.SubTrigger>
+                                <Folder class="size-[14px]" />
+                                <span class="truncate">{hidden.split('/').at(-1)}</span>
+                              </DropdownMenu.SubTrigger>
+                              <DropdownMenu.Portal>
+                                <DropdownMenu.SubContent class={BREADCRUMB_SUBMENU}>
+                                  {@render folderEntries(hidden, 0)}
+                                </DropdownMenu.SubContent>
+                              </DropdownMenu.Portal>
+                            </DropdownMenu.Sub>
+                          {/each}
+                        </DropdownMenu.Content>
+                      </DropdownMenu.Root>
+                    </Breadcrumb.Item>
+                  {/if}
+                {:else}
+                  {@const directory = part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part}
+                  <!-- The file's own segment browses the folder it sits in. -->
+                  {#if index > 0}<Breadcrumb.Separator class="flex shrink-0 items-center" />{/if}
+                  <!-- The project name and the file name give way first; the
+                       folders between them keep their width. -->
+                  <Breadcrumb.Item class={index === 0 ? 'min-w-0 max-w-36 shrink' : index === breadcrumbParts.length - 1 ? 'min-w-0 shrink' : 'shrink-0'}>
+                    <DropdownMenu.Root onOpenChange={(open) => { if (open) void openBreadcrumbMenu(directory, 0); else closeBreadcrumbMenu(directory, 0); }}>
+                      <DropdownMenu.Trigger class="breadcrumb-trigger" aria-label={`Browse ${part.split('/').at(-1)}`}>
+                        {part.split('/').at(-1)}
+                      </DropdownMenu.Trigger>
+                      <DropdownMenu.Content class={BREADCRUMB_MENU} align="start">
+                        {@render folderEntries(directory, 0)}
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Root>
+                  </Breadcrumb.Item>
+                {/if}
+              {/each}
+            </Breadcrumb.List>
+          </Breadcrumb.Root>
+        </div>
+      {/if}
       <div class="editor-controls">
-        <IconButton
-          label="Save active file"
-          size="sm"
-          side="bottom"
-          disabled={!activeFile?.dirty || Boolean(activeFile?.conflict) || activeFileReadOnly}
-          onclick={() => void saveActiveFile()}
-        >
-          <Save class="size-3.5" aria-hidden="true" />
-        </IconButton>
-        <IconButton label="Close all open editors" size="sm" side="bottom" onclick={closeAllOpenEditors}>
-          <X class="size-3.5" aria-hidden="true" />
-        </IconButton>
         <!-- Markdown and HTML read two ways, so the file says which one it is on.
              Source is the ordinary editor; Preview is the same document rendered. -->
         {#if activeFileIsMarkdown || activeFileIsHtml}
@@ -1697,47 +1719,31 @@
             />
           </span>
         {/if}
+        <!-- Save and close-all live behind one quiet "more" button; the open
+             files' own close buttons are on their tabs in the top row. -->
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger
+            class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
+            aria-label="More editor actions"
+          >
+            <Ellipsis class="size-[14px]" aria-hidden="true" />
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Content align="end">
+            <DropdownMenu.Item
+              disabled={!activeFile?.dirty || Boolean(activeFile?.conflict) || activeFileReadOnly}
+              onSelect={() => void saveActiveFile()}
+            >
+              <Save class="size-3.5" aria-hidden="true" />
+              Save active file
+            </DropdownMenu.Item>
+            <DropdownMenu.Item onSelect={closeAllOpenEditors}>
+              <X class="size-3.5" aria-hidden="true" />
+              Close all open editors
+            </DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu.Root>
       </div>
     </div>
-
-    {#if activeFile && breadcrumbParts.length > 0}
-      <div class="editor-breadcrumb-row">
-        <Breadcrumb.Root>
-          <Breadcrumb.List class="m-0 list-none flex-nowrap gap-1 p-0 text-[13px]">
-            {#each breadcrumbParts as part, index (part)}
-              {#if index > 0}<Breadcrumb.Separator class="flex shrink-0 items-center" />{/if}
-              <Breadcrumb.Item class="min-w-0 shrink-0">
-                <DropdownMenu.Root onOpenChange={(open) => { if (open) void openBreadcrumbMenu(part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part); }}>
-                  <DropdownMenu.Trigger class="breadcrumb-trigger" aria-label={`Browse ${part.split('/').at(-1)}`}>
-                    {part.split('/').at(-1)}
-                  </DropdownMenu.Trigger>
-                  <DropdownMenu.Content class="max-h-80 min-w-48 max-w-80" align="start">
-                    {#if breadcrumbMenu?.file === activeFile.path && breadcrumbMenu.root === breadcrumbRoot && breadcrumbMenu.directory === (part === activeFile.path ? part.slice(0, part.lastIndexOf('/')) : part)}
-                      {#if breadcrumbMenu.error}
-                        <DropdownMenu.Item disabled>{breadcrumbMenu.error}</DropdownMenu.Item>
-                      {:else if breadcrumbMenu.entries === null}
-                        <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
-                      {:else if breadcrumbMenu.entries.filter((entry) => !entry.excluded && (part !== activeFile.path || !entry.isDirectory)).length === 0}
-                        <DropdownMenu.Item disabled>No files or folders</DropdownMenu.Item>
-                      {:else}
-                        {#each breadcrumbMenu.entries.filter((entry) => !entry.excluded && (part !== activeFile.path || !entry.isDirectory)) as entry (entry.path)}
-                          <DropdownMenu.Item onSelect={() => chooseBreadcrumbEntry(entry)}>
-                            {#if entry.isDirectory}<Folder class="size-3.5" />{:else}<FileIcon fileName={entry.name} size={13} />{/if}
-                            <span class="truncate">{entry.name}{entry.isDirectory ? '/' : ''}</span>
-                          </DropdownMenu.Item>
-                        {/each}
-                      {/if}
-                    {:else}
-                      <DropdownMenu.Item disabled>Loading…</DropdownMenu.Item>
-                    {/if}
-                  </DropdownMenu.Content>
-                </DropdownMenu.Root>
-              </Breadcrumb.Item>
-            {/each}
-          </Breadcrumb.List>
-        </Breadcrumb.Root>
-      </div>
-    {/if}
 
     <div class="editor-canvas">
       {#if activeFile?.conflict}
@@ -1778,17 +1784,6 @@
         {:else}
           <p class="canvas-message">Reading {activeFile.fileName}…</p>
         {/if}
-      {:else if showing && activeFile?.preview && activeFileIsMarkdown && markdownView === 'rendered'}
-        {#key activeFile.path}
-          <SourceMarkdownPreview
-            content={activeFile.draftContent ?? activeFile.preview.content}
-            fileName={activeFile.fileName}
-            relativePath={activeFile.relativePath}
-            dirty={activeFile.dirty ?? false}
-            scrollTop={markdownScrollByPath.get(activeFile.path) ?? 0}
-            onScroll={(top) => { if (showing) markdownScrollByPath.set(activeFile.path, top); }}
-          />
-        {/key}
       {:else if showing && activeFile?.preview && activeFileIsHtml && markdownView === 'rendered'}
         <!-- Scripts run so script-drawn pages render, but the frame keeps an
              opaque origin: never pair allow-scripts with allow-same-origin, or
@@ -1800,6 +1795,7 @@
           srcdoc={activeFile.draftContent ?? activeFile.preview.content}
         ></iframe>
       {:else if activeFile && activePreview}
+        <div class="code-editor-slot" class:behind-preview={markdownPreviewShown}>
         {#if CodeEditor}
           <CodeEditor
             bind:this={codeEditor}
@@ -1827,38 +1823,59 @@
             onDotnetTestRequest={onStartWorkspaceCommand ? () => runDotnetWorkspace('test') : undefined}
           />
         {:else}
-          <p class="canvas-message">Starting the code editor…</p>
+          <p class="canvas-message"><WorkingSpinner size={14} /> Starting the code editor…</p>
+        {/if}
+        </div>
+        {#if markdownPreviewShown && activeFile.preview && MarkdownPreview}
+          {#key activeFile.path}
+            <MarkdownPreview
+              path={activeFile.path}
+              projectRoot={editorState.projectRoot}
+              content={activeFile.draftContent ?? activeFile.preview.content}
+              fileName={activeFile.fileName}
+              readOnly={activeFileReadOnly}
+              scrollTop={markdownScrollByPath.get(activeFile.path) ?? 0}
+              onScroll={(top) => { if (showing) markdownScrollByPath.set(activeFile.path, top); }}
+              onChange={updateActiveDraft}
+              onSave={() => void saveActiveFile()}
+            />
+          {/key}
+        {:else if markdownPreviewShown}
+          <p class="canvas-message">Starting the preview…</p>
         {/if}
       {:else}
-        <p class="canvas-message">Reading {activeFile?.fileName ?? 'file'}…</p>
+        <p class="canvas-message"><WorkingSpinner size={14} /> Reading {activeFile?.fileName ?? 'file'}…</p>
       {/if}
     </div>
 
     <div class="editor-status">
-      <span class="status-path">{activeFile?.relativePath ?? ''}</span>
-      <div class="status-right">
-        <LanguageIntelligenceControls />
-        <span class="status-detail" title={activeFile?.conflict ?? undefined}>
-          {activeFile?.language ?? ''}
-          {#if editorState.symbols.length > 0}
-            · {editorState.symbols.length}
-            {editorState.symbols.length === 1 ? 'symbol' : 'symbols'}
-          {/if}
-          {#if activeFileReadOnly}
-            · read-only
-          {:else if activeImageMimeType}
-            · preview
-          {:else if activeFile?.saving}
-            · saving
-          {:else if activeFile?.conflict}
-            · conflict
-          {:else if activeFile?.dirty}
-            · unsaved
-          {:else}
-            · editable
-          {/if}
+      <!-- One quiet row: the language and what it knows on the left, the
+           Supercharged switch and the file's state on the right. Only the
+           symbol count gives way when the pane is narrow. -->
+      <b class="status-language">{activeFile?.language ?? ''}</b>
+      {#if editorState.symbols.length > 0}
+        <span class="status-symbols">
+          {editorState.symbols.length}
+          {editorState.symbols.length === 1 ? 'symbol' : 'symbols'}
         </span>
-      </div>
+      {/if}
+      <span class="status-spacer"></span>
+      <LanguageIntelligenceControls />
+      <span class="status-state" title={activeFile?.conflict ?? undefined}>
+        {#if activeFileReadOnly}
+          read-only
+        {:else if activeImageMimeType}
+          preview
+        {:else if activeFile?.saving}
+          saving
+        {:else if activeFile?.conflict}
+          conflict
+        {:else if activeFile?.dirty}
+          unsaved
+        {:else}
+          editable
+        {/if}
+      </span>
     </div>
   {/if}
 </div>
@@ -1929,49 +1946,49 @@
     font-size: 12px;
   }
 
-  /* The strip of open files and, pinned to the right, the controls that belong
-   * to the open file. The strip scrolls when there are many files; those
-   * controls do not go with it, so they stay reachable however many tabs are
-   * open.
-   *
-   * The height is stated rather than left to the tallest child because the
-   * centre pane's pill tabs are placed directly beneath this row and read the
-   * same value. It is what the row already measured — a 28px close button
-   * between 3px of padding, over a hairline — so nothing moves. */
+  /* The editor's header band: the open file's path on the left, its own
+   * controls pinned to the right. The open files themselves are tabs in the top
+   * row. 44px, the same band as the rail and drawer headers; no rule under it,
+   * the panel surface carries on into the body. */
   .editor-header {
     display: flex;
     align-items: center;
+    justify-content: flex-end;
     gap: 8px;
     flex: 0 0 auto;
     box-sizing: border-box;
     width: 100%;
     min-width: 0;
-    height: var(--editor-tab-row-height);
+    height: 44px;
     overflow: hidden;
     background: var(--color-surface);
-    border-bottom: 1px solid var(--color-border);
-    padding: 3px 8px 3px 4px;
+    padding: 0 8px 0 10px;
   }
 
+  /* The trail never scrolls: deep paths fold into "…", and what is left
+   * truncates at the project name and the file name. */
   .editor-breadcrumb-row {
-    flex: 0 0 auto;
+    flex: 1 1 auto;
     min-width: 0;
-    overflow-x: auto;
-    padding: 2px 8px;
-    background: var(--color-surface);
-    border-bottom: 1px solid var(--color-border);
+    overflow: hidden;
   }
 
   .editor-breadcrumb-row :global(.breadcrumb-trigger) {
     min-height: 24px;
+    min-width: 0;
     max-width: 240px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    border-radius: 8px;
+    border-radius: 9999px;
     padding: 0 6px;
     color: var(--color-text-2);
     font-size: 13px;
+  }
+
+  .editor-breadcrumb-row :global(li:last-child .breadcrumb-trigger) {
+    color: var(--color-text);
+    font-weight: 500;
   }
 
   .editor-breadcrumb-row :global(.breadcrumb-trigger:hover),
@@ -1985,71 +2002,6 @@
     outline-offset: -2px;
   }
 
-  .file-strip {
-    display: flex;
-    align-items: stretch;
-    gap: 2px;
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: thin;
-    scrollbar-color: var(--color-border-strong) transparent;
-  }
-
-  .file-strip::-webkit-scrollbar {
-    height: 4px;
-  }
-
-  .file-strip::-webkit-scrollbar-thumb {
-    border-radius: 2px;
-    background: var(--color-border-strong);
-  }
-
-  .file-chip {
-    display: flex;
-    align-items: center;
-    flex: 0 0 auto;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    background: transparent;
-  }
-
-  .file-chip.active {
-    background: var(--color-elevated);
-    border-color: var(--color-border);
-  }
-
-  .file-name {
-    background: transparent;
-    border: none;
-    color: var(--color-text-2);
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 12px;
-    padding: 3px 4px 3px 8px;
-    white-space: nowrap;
-  }
-
-  /* The file-type icon sits on the same line as the name, and the gap is what
-   * keeps it off the text. */
-  .file-name {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-  }
-
-  .file-chip.active .file-name {
-    color: var(--color-text);
-  }
-
-  .file-name:hover {
-    color: var(--color-text);
-  }
-
-  /* The complete right edge is one non-shrinking sibling of the scrollable
-   * file strip. Tabs can move underneath their own clip, but these controls
-   * retain their full width and never enter that scrolling region. */
   .editor-controls {
     display: flex;
     align-items: center;
@@ -2058,21 +2010,24 @@
     min-width: max-content;
   }
 
-  .chip-note {
-    color: var(--color-text-3);
-    font-size: 12px;
-    margin-left: 5px;
-  }
-
-  .chip-note.error {
-    color: var(--color-bad);
-  }
-
   .editor-canvas {
     position: relative;
     flex: 1 1 auto;
     min-height: 0;
     overflow: hidden;
+  }
+
+  .code-editor-slot {
+    display: contents;
+  }
+
+  /* Kept laid out (so its scroll position survives) but not painted and not
+     reachable by pointer or keyboard while Preview covers it. */
+  .code-editor-slot.behind-preview {
+    position: absolute;
+    inset: 0;
+    display: block;
+    visibility: hidden;
   }
 
   .editor-conflict {
@@ -2159,37 +2114,43 @@
     background: var(--color-hover);
   }
 
+  /* The footer: 12px muted text in one row that never wraps. Everything but
+   * the symbol count keeps its width; the count is cut with an ellipsis. */
   .editor-status {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 12px;
     flex: 0 0 auto;
+    box-sizing: border-box;
+    height: 32px;
+    min-width: 0;
+    overflow: hidden;
     background: var(--color-surface);
-    border-top: 1px solid var(--color-border);
-    color: var(--color-text-2);
-    font-family: var(--font-mono);
+    color: var(--color-text-3);
     font-size: 12px;
-    padding: 3px 8px;
+    white-space: nowrap;
+    padding: 0 16px;
   }
 
-  .status-path {
+  .editor-status > * {
+    flex: 0 0 auto;
+  }
+
+  .status-language {
+    color: var(--color-text-2);
+    font-weight: 500;
+    text-transform: capitalize;
+  }
+
+  .editor-status > .status-symbols {
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
-  .status-right {
-    display: inline-flex;
-    align-items: center;
-    gap: 10px;
-    flex: 0 0 auto;
-    font-family: var(--font-ui);
-  }
-
-  .status-detail {
-    color: var(--color-text-3);
-    white-space: nowrap;
+  .editor-status > .status-spacer {
+    flex: 1 1 0;
+    min-width: 0;
   }
 </style>

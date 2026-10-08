@@ -10,16 +10,14 @@ export interface SessionHistoryFilterOptions {
   provider?: string;
   windowState?: SessionHistoryWindowState;
   /**
-   * The checkouts each repository still has on disk, keyed by repository root,
-   * as git reported them.
+   * The checkouts each project group still has on disk, keyed by the group's
+   * key, as git reported them for the group's registered folders.
    *
-   * When a repository is in here, this is the authority on which checkouts it
-   * shows: every live one appears even if nothing was ever run in it, and a
-   * folder that has since been deleted does not, along with the sessions that
-   * ran there. A repository absent from the map keeps the old behaviour of
-   * showing whichever checkouts its sessions name, which is what happens for a
-   * folder git cannot be asked about — a temporary directory, or a project whose
-   * root was never resolved.
+   * Every live checkout of a group on screen appears even if nothing was ever
+   * run in it, and a session in a folder below a checkout is filed under that
+   * checkout. A group absent from the map shows whichever checkouts its
+   * sessions name, which is what happens for "No project" and for a group with
+   * no registered folder on this Mac.
    */
   checkouts?: Readonly<Record<string, readonly RepositoryCheckout[]>>;
 }
@@ -59,7 +57,6 @@ export interface SessionHistoryWorktreeGroup {
 export interface SessionHistoryProjectGroup {
   key: string;
   name: string;
-  path: string;
   count: number;
   activityTime: number;
   singleCheckout: boolean;
@@ -87,14 +84,14 @@ export interface SessionHistoryCollapseState {
 
 type SessionHistoryGroupLevel = keyof SessionHistoryCollapseState;
 
-interface PathIdentity {
-  projectPath: string;
+interface RowIdentity {
+  projectKey: string;
   projectName: string;
   worktreePath: string;
   worktreeName: string;
 }
 
-interface IndexedRow extends SessionHistoryRow, PathIdentity {
+interface IndexedRow extends SessionHistoryRow, RowIdentity {
   searchText: string;
 }
 
@@ -142,12 +139,12 @@ function canonicalPath(value: string | null | undefined): string {
   return raw.replace(/\/$/, '');
 }
 
-/** Apply history scopes without collapsing a repository to one worktree path. */
+/** Apply history scopes: Workspace is the active folder, Project the active session's group. */
 export function filterSessionHistoryRecords(
   records: readonly SessionLibraryRecord[],
   filters: SessionHistoryFilters = {}
 ): SessionLibraryRecord[] {
-  const { scope = 'all', workspacePath, projectPath, ...libraryFilters } = filters;
+  const { scope = 'all', workspacePath, projectKey, ...libraryFilters } = filters;
   const filtered = filterSessionLibrary(records, libraryFilters);
   if (scope === 'workspace') {
     const workspace = canonicalPath(workspacePath);
@@ -156,56 +153,20 @@ export function filterSessionHistoryRecords(
       : [];
   }
   if (scope === 'project') {
-    const project = canonicalPath(projectPath);
-    return project
-      ? filtered.filter((record) => identifyPaths(record).projectPath === project)
-      : [];
+    return projectKey ? filtered.filter((record) => record.projectGroupKey === projectKey) : [];
   }
   return filtered;
-}
-
-export function sessionHistoryProjectPath(record: SessionLibraryRecord): string {
-  return identifyPaths(record).projectPath;
 }
 
 function pathName(path: string, fallback: string): string {
   return path.split('/').filter(Boolean).at(-1) || fallback;
 }
 
-/**
- * Resolve the repository represented by the shared worktree layout without
- * asking the data source for fields it does not expose yet.
- */
-function projectRootFor(path: string): string {
-  // The checkout folder under the repository's name is optional. A session run
-  // from the container itself — `…/worktrees/mac-command-bar`, no checkout after
-  // it — used to match nothing and become a SECOND project of its own, with the
-  // same name as the real one. The repository's own sessions and its worktrees
-  // then sat in one group while a decoy holding two rows and no worktrees sat in
-  // another, which is what "it's not showing the worktrees for it" was.
-  const shared = path.match(/^(.*)\/worktrees\/([^/]+)(?:\/.*)?$/);
-  if (shared) return canonicalPath(`${shared[1]}/${shared[2]}`);
-
-  const local = path.match(/^(.*)\/\.worktrees(?:\/.*)?$/);
-  if (local) return canonicalPath(local[1]);
-
-  return path;
-}
-
-function identifyPaths(record: SessionLibraryRecord): PathIdentity {
-  const worktreePath = canonicalPath(record.canonicalCwd || record.projectPath) || 'Unknown checkout';
-  const recordedProjectPath = canonicalPath(record.projectPath);
-  // Git's answer first. It knows which repository a folder belongs to even when
-  // the folder's name says nothing — a worktree's `.git` file names the main
-  // checkout outright — and it is right for every layout at once, which no
-  // reading of the path is. `projectRootFor` below is the fallback for folders
-  // git can no longer be asked about: a worktree that has since been deleted.
-  const projectPath = canonicalPath(record.projectRoot)
-    || projectRootFor(recordedProjectPath || worktreePath)
-    || projectRootFor(worktreePath);
+function identifyRow(record: SessionLibraryRecord): RowIdentity {
+  const worktreePath = canonicalPath(record.canonicalCwd) || 'Unknown checkout';
   return {
-    projectPath,
-    projectName: pathName(projectPath, 'Other sessions'),
+    projectKey: record.projectGroupKey,
+    projectName: record.projectGroupLabel,
     worktreePath,
     worktreeName: pathName(worktreePath, 'Unknown checkout')
   };
@@ -266,7 +227,7 @@ function timestamp(value: string | null): number {
 }
 
 function indexRow(record: SessionLibraryRecord): IndexedRow {
-  const paths = identifyPaths(record);
+  const paths = identifyRow(record);
   const excerpt = firstUsefulExcerpt(record);
   const displayTitle = displayTitleFor(record, excerpt);
   return {
@@ -285,7 +246,6 @@ function indexRow(record: SessionLibraryRecord): IndexedRow {
       record.firstPrompt,
       ...record.latestTurns.map((turn) => turn.text),
       paths.projectName,
-      paths.projectPath,
       paths.worktreeName,
       paths.worktreePath
     ]
@@ -325,35 +285,12 @@ export function buildSessionHistoryViewModel(
 
   const projects = new Map<string, {
     name: string;
-    path: string;
     worktrees: Map<string, { name: string; path: string; rows: SessionHistoryRow[] }>;
   }>();
 
-  // Seed each repository with the checkouts git says it still has, before any
-  // session is filed. This is what puts a worktree on screen when the only
-  // thing ever run inside it was a dispatched lane, and it fixes the order:
-  // the repository's own folder first, then its worktrees.
   const known = options.checkouts ?? {};
-  for (const [root, list] of Object.entries(known)) {
-    const projectKey = `project:${canonicalPath(root)}`;
-    const project = projects.get(projectKey) ?? {
-      name: pathName(canonicalPath(root), 'Other sessions'),
-      path: canonicalPath(root),
-      worktrees: new Map()
-    };
-    projects.set(projectKey, project);
-    for (const checkout of list) {
-      const path = canonicalPath(checkout.path);
-      const key = `worktree:${path}`;
-      if (!project.worktrees.has(key)) {
-        project.worktrees.set(key, { name: pathName(path, 'Unknown checkout'), path, rows: [] });
-      }
-    }
-  }
-
   for (const row of filtered) {
-    const projectKey = `project:${row.projectPath}`;
-    const live = known[row.projectPath];
+    const live = known[row.projectKey];
     // A session can run in a folder BELOW its checkout root. Match the longest
     // live checkout prefix so `/repo/packages/app` is filed under `/repo`, not
     // presented as a vanished worktree. If the checkout really was deleted,
@@ -366,10 +303,10 @@ export function buildSessionHistoryViewModel(
     const worktreePath = checkoutPath ?? row.worktreePath;
     const worktreeName = pathName(worktreePath, row.worktreeName);
 
-    let project = projects.get(projectKey);
+    let project = projects.get(row.projectKey);
     if (!project) {
-      project = { name: row.projectName, path: row.projectPath, worktrees: new Map() };
-      projects.set(projectKey, project);
+      project = { name: row.projectName, worktrees: new Map() };
+      projects.set(row.projectKey, project);
     }
 
     const worktreeKey = `worktree:${worktreePath}`;
@@ -381,6 +318,22 @@ export function buildSessionHistoryViewModel(
     worktree.rows.push(row);
   }
 
+  // Then the checkouts git says each group still has, which puts a worktree on
+  // screen when the only thing ever run inside it was a dispatched lane. Only
+  // groups the sessions named: the group's label comes from them.
+  for (const [key, list] of Object.entries(known)) {
+    const project = projects.get(key);
+    if (!project) continue;
+    for (const checkout of list) {
+      const path = canonicalPath(checkout.path);
+      const worktreeKey = `worktree:${path}`;
+      if (!project.worktrees.has(worktreeKey)) {
+        project.worktrees.set(worktreeKey, { name: pathName(path, 'Unknown checkout'), path, rows: [] });
+      }
+    }
+  }
+
+  // Groups read newest first, with "No project" last as in the rail.
   const projectGroups = [...projects.entries()].map(([key, project]): SessionHistoryProjectGroup => {
     const worktrees = [...project.worktrees.entries()]
       .map(([worktreeKey, worktree]): SessionHistoryWorktreeGroup => {
@@ -405,13 +358,12 @@ export function buildSessionHistoryViewModel(
     return {
       key,
       name: project.name,
-      path: project.path,
       count: worktrees.reduce((total, worktree) => total + worktree.count, 0),
       activityTime: worktrees[0]?.activityTime ?? 0,
       singleCheckout: worktrees.length === 1,
       worktrees
     };
-  }).toSorted(compareGroups);
+  }).toSorted((left, right) => Number(left.key === 'none') - Number(right.key === 'none') || compareGroups(left, right));
 
   // Counted from what was placed, not from what passed the filters: a session
   // whose checkout has been deleted is left out above, and a header claiming it

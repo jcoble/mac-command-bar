@@ -6,10 +6,11 @@
     approval: AgentPermissionRequest;
     pendingCount?: number;
     responding?: boolean;
+    disabled?: boolean;
     onDecision?(requestId: string, optionId: string): void | Promise<void>;
   }
 
-  let { approval, pendingCount = 1, responding = false, onDecision }: Props = $props();
+  let { approval, pendingCount = 1, responding = false, disabled = false, onDecision }: Props = $props();
 
   function optionLabel(option: AgentPermissionOption): string {
     const kind = option.kind?.toLowerCase() ?? '';
@@ -46,7 +47,7 @@
         class:primary={!isDeny(option) && option === approval.options[approval.options.length - 1]}
         data-testid={`conversation-approval-${option.optionId}`}
         type="button"
-        disabled={responding}
+        disabled={responding || disabled}
         onclick={() => void onDecision?.(approval.requestId, option.optionId)}
       >
         {optionLabel(option)}

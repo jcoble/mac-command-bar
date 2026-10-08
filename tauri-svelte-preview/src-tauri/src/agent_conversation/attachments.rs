@@ -131,9 +131,39 @@ pub fn read_at(
     store: &SessionStore,
     owned_id: &str,
 ) -> Result<Vec<SavedConversationAttachment>, String> {
-    store
+    let rows = store
         .list_attachments(owned_id)
-        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+    describe_rows(root, store, rows)
+}
+
+pub fn read_selected<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    store: &SessionStore,
+    owned_id: &str,
+    attachment_ids: &[String],
+) -> Result<Vec<SavedConversationAttachment>, String> {
+    read_selected_at(&vault_root(app)?, store, owned_id, attachment_ids)
+}
+
+pub fn read_selected_at(
+    root: &Path,
+    store: &SessionStore,
+    owned_id: &str,
+    attachment_ids: &[String],
+) -> Result<Vec<SavedConversationAttachment>, String> {
+    let rows = store
+        .get_attachments(owned_id, attachment_ids)
+        .map_err(|error| error.to_string())?;
+    describe_rows(root, store, rows)
+}
+
+fn describe_rows(
+    root: &Path,
+    store: &SessionStore,
+    rows: Vec<AttachmentRow>,
+) -> Result<Vec<SavedConversationAttachment>, String> {
+    rows
         .into_iter()
         .map(|row| {
             let fallback = row.clone();
@@ -565,6 +595,7 @@ mod tests {
                 title: None,
                 title_source: None,
                 project: None,
+                project_id: None,
                 state: "idle".to_owned(),
                 suspended: false,
                 created_at_ms: 1_000,

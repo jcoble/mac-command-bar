@@ -16,9 +16,10 @@
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import History from '@lucide/svelte/icons/history';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Search from '@lucide/svelte/icons/search';
   import Server from '@lucide/svelte/icons/server';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
-  import { onDestroy, untrack } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
 
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -39,7 +40,6 @@
     filterSessionHistoryRecords,
     isSessionHistoryGroupOpen,
     resetSessionHistoryWindowOnFilterChange,
-    sessionHistoryProjectPath,
     toggleSessionHistoryGroup,
     type SessionHistoryProjectGroup,
     type SessionHistoryRow,
@@ -56,14 +56,15 @@
     type SessionLibraryRecord
   } from '$lib/shell/sessionLibrary/sessionLibraryModel.ts';
   import { sessionLibraryHost } from '$lib/shell/sessionLibrary/sessionLibraryService.ts';
-  import { sessionLibraryState, setSessionLibraryQuery } from '$lib/shell/sessionLibrary/sessionLibraryStore.svelte.ts';
+  import { resetSessionLibraryState, sessionLibraryState, setSessionLibraryQuery } from '$lib/shell/sessionLibrary/sessionLibraryStore.svelte.ts';
   import {
-    ensureStructuredConversation,
-    loadConversationForRead
+    ensureStructuredConversation
   } from '$lib/shell/conversation/conversationService.ts';
+  import { refreshSelectedConversationChat } from '$lib/shell/conversation/conversationConnection';
   import { warmAgentConversationConfig } from '$lib/shell/conversation/conversationConfig.ts';
   import { setConversationAgentConfigState } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import { ownedSessionFromBackend } from '$lib/shell/ownedSessions.ts';
+  import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte.ts';
   import { addOwnedSession, rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import {
     beginAgentConversationImportFromTauri,
@@ -75,7 +76,6 @@
     type RepositoryCheckout
   } from '$lib/tauriSource.ts';
   import { openFileInEditor, showCenterTab } from '$lib/shell/workbenchNavigation.ts';
-  import type { SessionHistoryWorkspace } from '$lib/shell/sessionWorkspaces.ts';
 
   const SCOPE_OPTIONS: readonly { value: SessionHistoryScope; label: string }[] = [
     { value: 'workspace', label: 'Workspace' },
@@ -99,29 +99,20 @@
     root: string;
     /** The active session's ownedId, or null. */
     ownedId: string | null;
-    workspaceState?: SessionHistoryWorkspace;
-    onWorkspaceStateChange?(ownedId: string | null, state: SessionHistoryWorkspace): void;
   }
-  let { visible, root, ownedId, workspaceState, onWorkspaceStateChange }: Props = $props();
-  const workspaceOwnedId = untrack(() => ownedId);
-  const initialWorkspaceState = untrack(() => workspaceState);
-
-  if (initialWorkspaceState) sessionLibraryState.scope = initialWorkspaceState.scope;
+  // Keeps no state of its own between openings: every opening starts fresh.
+  let { visible, root, ownedId }: Props = $props();
 
   // Read once, at init: the page registers its actions in its own component
   // body, which runs before this panel is created.
   const host = sessionLibraryHost();
-
-  function restoredCollapseState(): ReturnType<typeof createSessionHistoryCollapseState> {
-    return {
-      projects: new Set(initialWorkspaceState?.openProjectKey ? [initialWorkspaceState.openProjectKey] : []),
-      worktrees: new Set(initialWorkspaceState?.openWorktreeKeys ?? [])
-    };
-  }
+  // The search and scope live in a shared singleton; clear them so each
+  // opening starts fresh.
+  resetSessionLibraryState();
 
   const query = $derived(sessionLibraryState.query);
   let expandedKey = $state<string | null>(null);
-  let collapseState = $state(restoredCollapseState());
+  let collapseState = $state(createSessionHistoryCollapseState());
   let windowState = $state(createSessionHistoryWindowState());
   let pendingDelete = $state<SessionLibraryRecord | null>(null);
   /** Redrawn only while the panel is on screen, so ages do not go stale in it. */
@@ -129,9 +120,7 @@
 
   const summaryLibrary = $derived(buildSessionLibrary(rail.owned, rail.available));
   const activeRecord = $derived(summaryLibrary.find((record) => record.ownedId === ownedId) ?? null);
-  const projectPath = $derived(
-    activeRecord ? sessionHistoryProjectPath(activeRecord) : root.trim()
-  );
+  const projectKey = $derived(activeRecord?.projectGroupKey ?? null);
   const historyFilters = $derived<SessionHistoryFilters>({
     query: sessionLibraryState.query,
     provider: sessionLibraryState.provider,
@@ -140,7 +129,7 @@
     dateTo: sessionLibraryState.dateTo || null,
     scope: sessionLibraryState.scope,
     workspacePath: root.trim() || null,
-    projectPath: projectPath || null
+    projectKey
   });
   const historyFilterKey = $derived([
     historyFilters.query,
@@ -150,7 +139,7 @@
     historyFilters.dateTo,
     historyFilters.scope,
     historyFilters.workspacePath,
-    historyFilters.projectPath
+    historyFilters.projectKey
   ].join('\0'));
   const summaryRecords = $derived(
     visible ? filterSessionHistoryRecords(summaryLibrary, historyFilters) : []
@@ -163,10 +152,6 @@
   let loadingProjectKey = $state<string | null>(null);
   let loadingOlder = $state(false);
   let historyViewport = $state<HTMLElement | null>(null);
-  const restoreWorktreeKeys = new Set(initialWorkspaceState?.openWorktreeKeys ?? []);
-  const restoreScrollTop = initialWorkspaceState?.scrollTop ?? 0;
-  let restoreScrollPending = restoreScrollTop > 0;
-  let restoredProjectLoaded = false;
   // Project paging and card details are independent reads. Sharing one version
   // let opening a card cancel a still-finishing project refresh, which could
   // leave the project spinner on screen indefinitely.
@@ -205,14 +190,18 @@
     releaseDetails();
   });
 
-  function publishWorkspaceState(): void {
-    onWorkspaceStateChange?.(workspaceOwnedId, {
-      scope: sessionLibraryState.scope,
-      openProjectKey: [...collapseState.projects][0] ?? null,
-      openWorktreeKeys: [...collapseState.worktrees],
-      expandedKey,
-      scrollTop: historyViewport?.scrollTop ?? restoreScrollTop
-    });
+  // The registry says which folders on this Mac belong to each group, for its checkouts.
+  onMount(() => {
+    void hydrateProjects();
+  });
+
+  /** The checkouts git lists for a group's folders registered on this Mac, under the group's key. */
+  async function groupCheckouts(key: string): Promise<Record<string, RepositoryCheckout[]> | null> {
+    const roots = projectRegistry.projects
+      .filter((project) => project.machine === 'local' && project.groupKey === key)
+      .map((project) => project.rootPath);
+    const byRoot = await listRepositoryCheckoutsFromTauri(roots);
+    return byRoot && { [key]: Object.values(byRoot).flat() };
   }
 
   /**
@@ -268,18 +257,6 @@
       query,
       provider: sessionLibraryState.provider
     });
-    publishWorkspaceState();
-  }
-
-  async function restoreProject(project: SessionHistoryProjectGroup): Promise<void> {
-    await toggleProject(project, true);
-    if (!visible) return;
-    for (const key of restoreWorktreeKeys) {
-      if (!isSessionHistoryGroupOpen(collapseState, 'worktree', key)) {
-        collapseState = toggleSessionHistoryGroup(collapseState, 'worktree', key);
-      }
-    }
-    publishWorkspaceState();
   }
 
   $effect(() => {
@@ -289,7 +266,7 @@
     loadedRecords = [];
     loadOutcome = null;
     checkouts = {};
-    collapseState = restoredCollapseState();
+    collapseState = createSessionHistoryCollapseState();
     expandedKey = null;
   });
 
@@ -302,30 +279,9 @@
     loadedRecords = [];
     loadOutcome = null;
     checkouts = {};
-    collapseState = restoredCollapseState();
+    collapseState = createSessionHistoryCollapseState();
     loadingProjectKey = null;
     expandedKey = null;
-    restoredProjectLoaded = false;
-  });
-
-  // Restore only after the root-change reset above has torn down the outgoing
-  // projection. Running these in the opposite order immediately closes the
-  // group that the incoming session asked to reopen.
-  $effect(() => {
-    const projectKey = workspaceState?.openProjectKey ?? null;
-    if (!visible || projectKey === null) return;
-    const project = summaryViewModel.projects.find((candidate) => candidate.key === projectKey);
-    if (!project || restoredProjectLoaded) return;
-    restoredProjectLoaded = true;
-    void restoreProject(project);
-  });
-
-  $effect(() => {
-    loadedRecords.length;
-    const viewport = historyViewport;
-    if (!visible || !viewport || !restoreScrollPending) return;
-    viewport.scrollTop = restoreScrollTop;
-    restoreScrollPending = false;
   });
 
   $effect(() => {
@@ -348,10 +304,7 @@
     checkouts = {};
     collapseState = createSessionHistoryCollapseState();
     loadingProjectKey = null;
-    if (closing) {
-      publishWorkspaceState();
-      return;
-    }
+    if (closing) return;
 
     const keys = new Set(project.worktrees.flatMap((worktree) =>
       worktree.rows.map((row) => row.record.key)
@@ -366,8 +319,8 @@
       const [refreshed, nextCheckouts] = await Promise.allSettled([
         fullyHeld
           ? Promise.resolve(heldRecords)
-          : host.service.refresh(keys, { projectPath: project.path }),
-        listRepositoryCheckoutsFromTauri([project.path])
+          : host.service.refresh(keys),
+        groupCheckouts(project.key)
       ]);
       if (stopSignal.aborted || !visible || version !== historyLoadVersion) {
         if (!fullyHeld) host.service.release(keys);
@@ -395,10 +348,7 @@
       // Cleared whatever happened, and only for the read still in front: a
       // slow project answering after the reader has opened another one must
       // not take that one's spinner away with it.
-      if (version === historyLoadVersion) {
-        loadingProjectKey = null;
-        publishWorkspaceState();
-      }
+      if (version === historyLoadVersion) loadingProjectKey = null;
     }
   }
 
@@ -406,7 +356,6 @@
     releaseDetails();
     expandedKey = null;
     collapseState = toggleSessionHistoryGroup(collapseState, 'worktree', key);
-    publishWorkspaceState();
   }
 
   async function showOlder(worktreeKey: string, stopSignal: AbortSignal): Promise<void> {
@@ -430,7 +379,7 @@
     if (keys.size === 0) return;
     const version = ++historyLoadVersion;
     try {
-      const refreshed = await host.service.refresh(keys, { projectPath: project.path });
+      const refreshed = await host.service.refresh(keys);
       if (stopSignal.aborted || !visible || version !== historyLoadVersion) return;
       loadedRecords = [...new Map(
         [...loadedRecords, ...refreshed].map((record) => [record.key, record])
@@ -471,7 +420,6 @@
   async function handleHistoryScroll(): Promise<void> {
     const viewport = historyViewport;
     if (!viewport) return;
-    publishWorkspaceState();
     if (viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 120) return;
     await loadOlderVisibleSessions();
   }
@@ -563,7 +511,7 @@
       // and when that read wins the race it happens before the records exist.
       // Reading it once more, after both are done, is what makes the transcript
       // appear rather than an empty session under a correct title.
-      await loadConversationForRead(ownedId);
+      await refreshSelectedConversationChat(ownedId);
       // Either half can fail on its own and the other still has value. A
       // transcript that would not load is a failed resume and is said so. An
       // agent that would not start is not: the conversation is imported, on
@@ -647,12 +595,10 @@
     if (expandedKey === row.record.key) {
       releaseDetails(new Set([row.record.key]));
       expandedKey = null;
-      publishWorkspaceState();
       return;
     }
     releaseDetails();
     expandedKey = row.record.key;
-    publishWorkspaceState();
     void loadCardDetails(row.record);
   }
 
@@ -660,7 +606,7 @@
     const key = record.key;
     const version = ++detailLoadVersion;
     detailLoadingKey = key;
-    const projectPath = record.projectPath?.trim() || record.canonicalCwd.trim();
+    const projectPath = record.canonicalCwd.trim();
     try {
       const refreshed = await host.service.refresh(
         new Set([key]),
@@ -688,7 +634,7 @@
 </script>
 
 <div class="history-panel flex h-full min-h-0 flex-col">
-  <PanelHeader title="History" count={summaryViewModel.totalCount}>
+  <PanelHeader title="History">
     {#snippet actions()}
       <IconButton
         label="Look for sessions again"
@@ -698,13 +644,12 @@
         <RefreshCw />
       </IconButton>
     {/snippet}
+    <span data-testid="session-history-host-line" class="flex min-w-0 items-center gap-1.5">
+      <Server class="size-[16px] shrink-0" aria-hidden="true" />
+      <span data-testid="session-history-host" class="truncate">{summaryViewModel.totalCount} {summaryViewModel.totalCount === 1 ? 'session' : 'sessions'} from This Mac</span>
+    </span>
   </PanelHeader>
-
-  <div data-testid="session-history-host-line" class="flex items-center gap-1.5 px-3 pt-1 text-xs text-muted-foreground">
-    <Server class="size-3.5" aria-hidden="true" />
-    <span data-testid="session-history-host">{summaryViewModel.totalCount} {summaryViewModel.totalCount === 1 ? 'session' : 'sessions'} from Local Mac</span>
-  </div>
-  <div data-testid="session-history-scope" class="px-3 py-1">
+  <div data-testid="session-history-scope" class="px-2 py-1">
     <SegmentedControl
       items={SCOPE_OPTIONS}
       value={sessionLibraryState.scope}
@@ -713,9 +658,10 @@
       onValueChange={setScope}
     />
   </div>
-  <div class="px-3 py-2">
+  <div class="relative px-2 py-2">
+    <Search class="pointer-events-none absolute top-1/2 left-6 size-[16px] -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
     <Input
-      class="h-7"
+      class="h-8 rounded-full border-transparent bg-muted dark:bg-muted pl-9 text-[13px]"
       placeholder="Search sessions"
       autocomplete="off"
       spellcheck="false"
@@ -744,7 +690,7 @@
     {/each}
     {#if worktree.olderCount > 0 && loadingOlder}
       <div class="flex justify-center px-3 py-1.5" aria-label="Loading older sessions">
-        <WorkingSpinner seed={worktree.key} size={12} />
+        <WorkingSpinner size={12} />
       </div>
     {/if}
   {/snippet}
@@ -790,7 +736,7 @@
                      focus-visible:ring-ring/50"
             >
               {#if loadingProjectKey === project.key}
-                <WorkingSpinner seed={project.key} size={14} />
+                <WorkingSpinner size={14} />
               {:else}
                 <ChevronRight
                   class={`size-3.5 shrink-0 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}

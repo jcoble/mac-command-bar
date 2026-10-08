@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   /**
    * BranchMenu.svelte — which branch this repository is on, and the moves
    * between branches: switch, create, stash and pop.
@@ -168,7 +169,7 @@
     <div class="max-h-[220px] overflow-y-auto">
       {#if loading}
         <p class="px-2 py-1.5 text-[13px] leading-[18px] text-[var(--color-text-2)]">
-          Reading branches…
+          <WorkingSpinner size={12} /> Reading branches…
         </p>
       {:else if listError}
         <p class="px-2 py-1.5 text-[13px] leading-[18px] text-[var(--color-bad)]" role="alert">

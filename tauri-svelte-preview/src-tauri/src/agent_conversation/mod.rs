@@ -24,9 +24,11 @@ use mcb_core::session_store::AnnotationRow;
 use prompt_content::prompt_from_blocks;
 use protocol::{
     AgentCapabilities, AgentConversationConfigState, AgentConversationConnection,
+    AgentConversationSendReceipt,
     AgentConversationProvider, ExecutionEnvironment,
     AgentConversationEvent, AgentConversationEventPage, AgentConversationSessionRecord,
-    AgentConversationSnapshot, ChangeAgentConversationCheckoutRequest, CommandResult,
+    AgentConversationItemPage, AgentConversationSelectionSnapshot,
+    ChangeAgentConversationCheckoutRequest, CommandResult,
     EnsureAgentConversationRequest, RespondAgentConversationApprovalRequest,
     RespondAgentConversationInputRequest, RespondAgentConversationPermissionRequest,
     SendAgentConversationMessageRequest, SetAgentConversationConfigRequest,
@@ -145,7 +147,7 @@ pub async fn send_agent_conversation_message(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     request: SendAgentConversationMessageRequest,
-) -> CommandResult<()> {
+) -> CommandResult<AgentConversationSendReceipt> {
     let owned_id = request.owned_id.clone();
     if remote.owns(&owned_id) {
         return command_result(remote.send(request).await);
@@ -297,6 +299,78 @@ pub async fn write_assembly_setting(
     command_result(manager.write_app_setting(&setting_key, &value_json))
 }
 
+fn project_record(row: mcb_core::session_store::ProjectRow) -> protocol::ProjectRecord {
+    protocol::ProjectRecord {
+        id: row.id,
+        machine: row.machine,
+        root_path: row.root_path,
+        title: row.title,
+        repo_key: row.repo_key,
+        created_at_ms: row.created_at_ms,
+        group_key: row.group_key,
+    }
+}
+
+/// Puts each record's project group on it, from one SQL statement over the
+/// records' project ids. Remote records use the ids their server stored,
+/// joined to the projects this Mac registered for that machine.
+pub(crate) fn attach_project_groups(
+    store: &mcb_core::session_store::SessionStore,
+    sessions: &mut [AgentConversationSessionRecord],
+) -> Result<(), String> {
+    let pairs: Vec<(&str, Option<&str>)> = sessions
+        .iter()
+        .map(|session| (session.owned_id.as_str(), session.project_id.as_deref()))
+        .collect();
+    let pairs_json = serde_json::to_string(&pairs).map_err(|error| error.to_string())?;
+    let groups = store.project_groups(&pairs_json).map_err(|error| error.to_string())?;
+    // One row per pair, in input order.
+    for (session, (_, key, label)) in sessions.iter_mut().zip(groups) {
+        session.project_group_key = key;
+        session.project_group_label = label;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_projects(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+) -> Result<Vec<protocol::ProjectRecord>, String> {
+    Ok(manager.list_projects()?.into_iter().map(project_record).collect())
+}
+
+#[tauri::command]
+/// Inspects the folder on the machine that owns it, then registers it. Adding
+/// the same folder again returns the project already registered.
+pub async fn add_project(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    machine: String,
+    path: String,
+) -> Result<protocol::ProjectRecord, String> {
+    let inspection: crate::project_folders::ProjectFolderInspection = if machine == "local" {
+        tauri::async_runtime::spawn_blocking(move || crate::project_folders::inspect_project_folder_sync(&path))
+            .await
+            .map_err(|error| error.to_string())??
+    } else {
+        let value = remote
+            .workspace_operation(&machine, "inspect_project_folder".into(), serde_json::json!({ "path": path }))
+            .await?;
+        serde_json::from_value(value).map_err(|error| error.to_string())?
+    };
+    let row = crate::project_folders::new_project_row(machine, inspection);
+    let project = manager.add_project(row)?;
+    if project.machine == "local" {
+        // A new local project files the older sessions in its folders now, so
+        // they regroup without a restart (amendment A1: the project set changed).
+        let store = manager.store_handle();
+        tauri::async_runtime::spawn_blocking(move || crate::project_folders::backfill_local_session_projects(&store))
+            .await
+            .map_err(|error| error.to_string())??;
+    }
+    Ok(project_record(project))
+}
+
 #[tauri::command]
 pub async fn read_assembly_setting(
     manager: tauri::State<'_, AgentRuntimeManager>,
@@ -372,8 +446,8 @@ pub async fn respond_agent_conversation_input(
                     turn_id: None,
                     item_id: None,
                 },
-                values: request.values,
-                cancelled: request.cancelled,
+                action: request.action,
+                content: request.content,
             })
             .await,
     )
@@ -592,17 +666,39 @@ pub async fn delete_agent_conversation_session(
 }
 
 #[tauri::command]
-/// Reads the durable snapshot for one conversation.
-pub async fn read_agent_conversation_snapshot(
+/// Reads one complete-item selection from the local journal.
+pub async fn read_agent_conversation_selection(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     request_id: u64,
-) -> CommandResult<Option<AgentConversationSnapshot>> {
-    if remote.owns(&owned_id) {
-        return command_result(remote.snapshot(owned_id, request_id).await);
+    max_bytes: u32,
+    minimum_generation: Option<u64>,
+) -> CommandResult<Option<AgentConversationSelectionSnapshot>> {
+    match manager.store().private_remote_child_source(&owned_id) {
+        Ok(Some(source)) => {
+            return command_result(
+                remote
+                    .child_selection_snapshot(
+                        source.remote_profile_id,
+                        source.source_owned_id,
+                        request_id,
+                        max_bytes,
+                    )
+                    .await,
+            );
+        }
+        Ok(None) => {}
+        Err(error) => return command_result(Err(error.to_string())),
     }
-    command_result(manager.latest_snapshot(&owned_id, request_id))
+    if remote.owns(&owned_id) {
+        return command_result(
+            remote
+                .selection_snapshot(owned_id, request_id, max_bytes, minimum_generation)
+                .await,
+        );
+    }
+    command_result(manager.latest_selection_snapshot(&owned_id, request_id, max_bytes))
 }
 
 #[tauri::command]
@@ -613,18 +709,9 @@ pub async fn cancel_agent_conversation_request(
     request_id: u64,
 ) -> CommandResult<()> {
     manager.cancel_snapshot(request_id);
+    manager.cancel_child_history_request(request_id);
     remote.cancel_request(request_id).await;
     Ok(())
-}
-
-#[tauri::command]
-/// Compatibility wrapper for older snapshot callers.
-pub async fn cancel_agent_conversation_snapshot(
-    manager: tauri::State<'_, AgentRuntimeManager>,
-    remote: tauri::State<'_, RemoteConnectionManager>,
-    request_id: u64,
-) -> CommandResult<()> {
-    cancel_agent_conversation_request(manager, remote, request_id).await
 }
 
 #[tauri::command]
@@ -650,19 +737,23 @@ pub async fn list_agent_conversation_sessions(
             .cmp(&left.last_activity_at_ms)
             .then_with(|| left.owned_id.cmp(&right.owned_id))
     });
+    attach_project_groups(manager.store(), &mut sessions).map_err(protocol::CommandError::from)?;
     Ok(sessions)
 }
 
 #[tauri::command]
 /// Lists remote sessions separately so an unavailable machine cannot hold the local rail open.
 pub async fn list_remote_agent_conversation_sessions(
+    manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     request_id: u64,
 ) -> CommandResult<Vec<AgentConversationSessionRecord>> {
     if !remote.is_configured() {
         return Ok(Vec::new());
     }
-    command_result(remote.list_sessions(request_id).await)
+    let mut sessions = command_result(remote.list_sessions(request_id).await)?;
+    attach_project_groups(manager.store(), &mut sessions).map_err(protocol::CommandError::from)?;
+    Ok(sessions)
 }
 
 #[tauri::command]
@@ -683,36 +774,73 @@ pub async fn list_agent_conversation_events_before(
     owned_id: String,
     before_sequence: i64,
     max_bytes: u32,
-    request_id: u64,
 ) -> CommandResult<AgentConversationEventPage> {
     if remote.owns(&owned_id) {
-        return command_result(
-            remote
-                .events_before(owned_id, before_sequence, max_bytes, request_id)
-                .await,
-        );
+        return command_result(remote.events_before(owned_id, before_sequence, max_bytes).await);
     }
     command_result(manager.list_events_before(&owned_id, before_sequence, max_bytes))
 }
 
 #[tauri::command]
-/// Lists the page of durable events just newer than the requested sequence.
-pub async fn list_agent_conversation_events_after(
+pub async fn list_agent_conversation_items_before(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    owned_id: String,
+    before_sequence: i64,
+    max_bytes: u32,
+) -> CommandResult<AgentConversationItemPage> {
+    match manager.store().private_remote_child_source(&owned_id) {
+        Ok(Some(source)) => {
+            return command_result(
+                remote
+                    .child_item_page(
+                        source.remote_profile_id,
+                        source.source_owned_id,
+                        before_sequence,
+                        max_bytes,
+                        true,
+                    )
+                    .await,
+            );
+        }
+        Ok(None) => {}
+        Err(error) => return command_result(Err(error.to_string())),
+    }
+    if remote.owns(&owned_id) {
+        return command_result(remote.item_page(owned_id, before_sequence, max_bytes, true).await);
+    }
+    command_result(manager.list_items_before(&owned_id, before_sequence, max_bytes))
+}
+
+#[tauri::command]
+pub async fn list_agent_conversation_items_after(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
     after_sequence: i64,
     max_bytes: u32,
-    request_id: u64,
-) -> CommandResult<AgentConversationEventPage> {
-    if remote.owns(&owned_id) {
-        return command_result(
-            remote
-                .events_after(owned_id, after_sequence, max_bytes, request_id)
-                .await,
-        );
+) -> CommandResult<AgentConversationItemPage> {
+    match manager.store().private_remote_child_source(&owned_id) {
+        Ok(Some(source)) => {
+            return command_result(
+                remote
+                    .child_item_page(
+                        source.remote_profile_id,
+                        source.source_owned_id,
+                        after_sequence,
+                        max_bytes,
+                        false,
+                    )
+                    .await,
+            );
+        }
+        Ok(None) => {}
+        Err(error) => return command_result(Err(error.to_string())),
     }
-    command_result(manager.list_events_after(&owned_id, after_sequence, max_bytes))
+    if remote.owns(&owned_id) {
+        return command_result(remote.item_page(owned_id, after_sequence, max_bytes, false).await);
+    }
+    command_result(manager.list_items_after(&owned_id, after_sequence, max_bytes))
 }
 
 #[tauri::command]
@@ -729,22 +857,52 @@ pub async fn update_agent_conversation_session_meta(
 }
 
 #[tauri::command]
-/// Reads a provider transcript while keeping transcript failures in the shared shape.
-pub async fn read_agent_conversation_transcript(
+/// Selects one durable child history and returns its bounded SQLite page.
+pub async fn read_agent_conversation_child_history(
+    manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
-    owned_id: String,
-    provider: String,
-    native_session_id: String,
-    child_session_id: Option<String>,
-) -> CommandResult<transcript::TranscriptSnapshot> {
-    if remote.owns(&owned_id) {
-        return command_result(remote.read_transcript(owned_id, child_session_id).await);
+    parent_owned_id: String,
+    child_session_id: String,
+    request_id: u64,
+    max_bytes: u32,
+) -> CommandResult<protocol::AgentConversationChildHistorySelection> {
+    if remote.owns(&parent_owned_id) {
+        return command_result(
+            remote
+                .select_child_history(
+                    parent_owned_id,
+                    child_session_id,
+                    request_id,
+                    max_bytes,
+                )
+                .await,
+        );
     }
-    command_result(transcript::read(
-        &provider,
-        &native_session_id,
-        child_session_id.as_deref(),
+    command_result(manager.select_child_history(
+        &parent_owned_id,
+        &child_session_id,
+        request_id,
+        max_bytes,
+        IMPORT_MAX_BYTES,
+        IMPORT_MAX_RECORDS,
     ))
+}
+
+#[tauri::command]
+pub async fn stop_agent_conversation_child_history(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    parent_owned_id: String,
+    request_id: u64,
+) -> CommandResult<bool> {
+    if remote.owns(&parent_owned_id) {
+        return command_result(
+            remote
+                .stop_child_history(parent_owned_id, request_id)
+                .await,
+        );
+    }
+    command_result(Ok(manager.stop_child_history(&parent_owned_id, request_id)))
 }
 
 /// One import page reads at most this many transcript bytes.
@@ -794,6 +952,17 @@ pub async fn extend_agent_conversation_import(
     remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
 ) -> CommandResult<transcript_import::ExtendedImport> {
+    match manager.store().private_remote_child_source(&owned_id) {
+        Ok(Some(source)) => {
+            return command_result(
+                remote
+                    .extend_child_import(source.remote_profile_id, source.source_owned_id)
+                    .await,
+            );
+        }
+        Ok(None) => {}
+        Err(error) => return command_result(Err(error.to_string())),
+    }
     if remote.owns(&owned_id) { return command_result(remote.extend_import(owned_id).await); }
     command_result(manager.extend_imported_session(&owned_id, IMPORT_MAX_BYTES, IMPORT_MAX_RECORDS))
 }
@@ -858,6 +1027,32 @@ pub async fn read_agent_conversation_attachments(
     command_result(tokio::task::spawn_blocking(move ||
         attachments::read(&app, &store, &owned_id)
     ).await.map_err(|error| error.to_string())?)
+}
+
+#[tauri::command]
+/// Lists only attachment metadata referenced by the selected item page.
+pub async fn read_agent_conversation_selected_attachments(
+    app: tauri::AppHandle,
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    owned_id: String,
+    attachment_ids: Vec<String>,
+) -> CommandResult<Vec<attachments::SavedConversationAttachment>> {
+    if remote.owns(&owned_id) {
+        return command_result(
+            remote
+                .read_selected_attachments(owned_id, attachment_ids)
+                .await,
+        );
+    }
+    let store = manager.store_handle();
+    command_result(
+        tokio::task::spawn_blocking(move || {
+            attachments::read_selected(&app, &store, &owned_id, &attachment_ids)
+        })
+        .await
+        .map_err(|error| error.to_string())?,
+    )
 }
 
 #[tauri::command]

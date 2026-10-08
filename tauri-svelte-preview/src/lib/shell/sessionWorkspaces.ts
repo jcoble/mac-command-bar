@@ -23,6 +23,7 @@ import {
   DEFAULT_RIGHT_TAB,
   isRightTabId
 } from './layout/workbenchTabs.ts';
+import { normalizeTopTabs, type SessionTopTabsWorkspace } from './layout/topTabsOps.ts';
 import type { AgentExecutionOwner } from './ownedSessions.ts';
 import type { RightTabId } from './workbenchNavigation.ts';
 
@@ -35,6 +36,13 @@ export function isDiffMode(value: unknown): value is DiffMode {
   return value === 'unified' || value === 'side-by-side';
 }
 
+export interface ConversationViewState {
+  followLatest: boolean;
+  anchor?: { itemId: string; firstSequence: number; offsetPx: number };
+  expandedTurns: Record<string, boolean>;
+  disclosures?: Record<string, boolean>;
+}
+
 export interface SessionConversationWorkspace {
   mode: 'structured' | 'raw';
   version?: number;
@@ -42,14 +50,12 @@ export interface SessionConversationWorkspace {
   owner?: AgentExecutionOwner;
   attachmentIds?: string[];
   config?: Record<string, AgentConfigValue>;
-  parentScrollTop?: number;
-  childScrollTopById?: Record<string, number>;
+  viewByHistoryId?: Record<string, ConversationViewState>;
   sequence?: number;
   telemetry?: Record<string, AgentConfigValue>;
   writerLease?: AgentWriterLease;
   writerLeaseTransition?: AgentWriterLeaseTransition | null;
   selectedChildId?: string | null;
-  scrollTop?: number;
   providerGeneration?: number;
   lastSequence?: number;
   [key: string]: unknown;
@@ -67,22 +73,18 @@ export interface SessionBrowserWorkspace {
   activeTabId: string | null;
 }
 
-export interface SessionCenterWorkspace {
-  activePanelId: string | null;
-  layout: object;
-}
-
 export interface SessionSourceControlWorkspace {
   openSectionIds: string[];
   scrollTop: number;
 }
 
-export interface SessionHistoryWorkspace {
-  scope: 'workspace' | 'project' | 'all';
-  openProjectKey: string | null;
-  openWorktreeKeys: string[];
-  expandedKey: string | null;
-  scrollTop: number;
+/** The Tasks panel's search, filters and sort; every value its query reads. */
+export interface SessionTasksWorkspace {
+  search: string;
+  filters: { status: string[]; priority: string[] };
+  projectFilter: string;
+  sortBy: string;
+  sortDirection: string;
 }
 
 export interface SessionWorkspaceFileState {
@@ -127,8 +129,8 @@ export interface SessionWorkspaceSnapshot {
   conversation?: SessionConversationWorkspace;
   /** The embedded Browser state owned by this session. */
   browser?: SessionBrowserWorkspace;
-  /** The center Dockview arrangement and active tab owned by this session. */
-  center?: SessionCenterWorkspace;
+  /** The top tab row's order and active tab owned by this session. */
+  topTabs?: SessionTopTabsWorkspace;
   /** The selected tab in the right column. */
   rightTab: RightTabId;
   /** Expanded lazy-tree directories, keyed by the root they belong to. */
@@ -139,8 +141,8 @@ export interface SessionWorkspaceSnapshot {
   sourceControlInspectionRoot?: string | null;
   /** Small view state for the lazily mounted Source Control panel. */
   sourceControl?: SessionSourceControlWorkspace;
-  /** Small view state for the lazily mounted History panel. */
-  history?: SessionHistoryWorkspace;
+  /** The Tasks panel's query, so reopening the drawer shows the same list. */
+  tasksView?: SessionTasksWorkspace;
 }
 
 /** Current checkout ownership as the /next route hands it to inspection panels. */
@@ -218,13 +220,12 @@ export function captureWorkspace(input: {
   diffMode?: DiffMode;
   conversation?: SessionConversationWorkspace;
   browser?: SessionBrowserWorkspace;
-  center?: SessionCenterWorkspace | null;
+  topTabs?: SessionTopTabsWorkspace;
   rightTab: RightTabId;
   expandedPathsByRoot?: SessionWorkspaceExpandedPathsByRoot;
   filesInspectionRoot?: string | null;
   sourceControlInspectionRoot?: string | null;
   sourceControl?: SessionSourceControlWorkspace;
-  history?: SessionHistoryWorkspace;
 }): SessionWorkspaceSnapshot {
   const activePath = input.activePath ?? null;
   // A path with no folder cannot be checked against the session being restored,
@@ -267,7 +268,12 @@ export function captureWorkspace(input: {
   if (Object.keys(fileStates).length > 0) snapshot.fileStates = fileStates;
   if (input.conversation) snapshot.conversation = normalizeConversation(input.conversation);
   if (input.browser) snapshot.browser = normalizeBrowser(input.browser);
-  if (input.center) snapshot.center = normalizeCenter(input.center) ?? undefined;
+  if (input.topTabs) {
+    snapshot.topTabs = normalizeTopTabs(input.topTabs, {
+      editorPaths: openPaths,
+      browserTabIds: snapshot.browser?.tabs.map((tab) => tab.id) ?? []
+    });
+  }
   const expandedPathsByRoot = normalizeExpandedPathsByRoot(input.expandedPathsByRoot);
   if (expandedPathsByRoot) snapshot.expandedPathsByRoot = expandedPathsByRoot;
   const filesInspectionRoot = normalizeInspectionRoot(input.filesInspectionRoot);
@@ -276,8 +282,6 @@ export function captureWorkspace(input: {
   if (sourceControlInspectionRoot) snapshot.sourceControlInspectionRoot = sourceControlInspectionRoot;
   const sourceControl = normalizeSourceControl(input.sourceControl);
   if (sourceControl) snapshot.sourceControl = sourceControl;
-  const history = normalizeHistory(input.history);
-  if (history) snapshot.history = history;
   return snapshot;
 }
 
@@ -294,6 +298,26 @@ function nonNegativeInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
+function normalizeConversationViews(value: unknown): Record<string, ConversationViewState> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([historyId, view]) => {
+    if (!isRecord(view) || typeof view.followLatest !== 'boolean') return [];
+    const anchor = view.anchor;
+    return [[historyId, {
+      followLatest: view.followLatest,
+      ...(isRecord(anchor) && typeof anchor.itemId === 'string' && anchor.itemId.length > 0
+        && typeof anchor.firstSequence === 'number' && Number.isSafeInteger(anchor.firstSequence)
+        && typeof anchor.offsetPx === 'number' && Number.isFinite(anchor.offsetPx)
+        ? { anchor: { itemId: anchor.itemId, firstSequence: anchor.firstSequence, offsetPx: anchor.offsetPx } }
+        : {}),
+      expandedTurns: Object.fromEntries(Object.entries(isRecord(view.expandedTurns) ? view.expandedTurns : {})
+        .filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean')),
+      ...(isRecord(view.disclosures) ? { disclosures: Object.fromEntries(Object.entries(view.disclosures)
+        .filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean')) } : {})
+    }]];
+  }));
+}
+
 function normalizeConversation(value: unknown): SessionConversationWorkspace {
   const entry = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -301,12 +325,13 @@ function normalizeConversation(value: unknown): SessionConversationWorkspace {
   const preserved = { ...entry };
   for (const key of [
     'mode', 'draft', 'version', 'generation', 'owner', 'attachmentIds', 'config',
-    'parentScrollTop', 'childScrollTopById', 'sequence', 'telemetry', 'writerLease',
+    'viewByHistoryId', 'parentScrollTop', 'childScrollTopById', 'sequence', 'telemetry', 'writerLease',
     'writerLeaseTransition', 'selectedChildId', 'scrollTop', 'providerGeneration', 'lastSequence'
   ]) delete preserved[key];
   return {
     ...preserved,
     mode: entry.mode === 'raw' ? 'raw' : 'structured',
+    ...(isRecord(entry.viewByHistoryId) ? { viewByHistoryId: normalizeConversationViews(entry.viewByHistoryId) } : {}),
     ...(nonNegativeInteger(entry.version) !== undefined
       ? { version: nonNegativeInteger(entry.version) }
       : {}),
@@ -318,12 +343,6 @@ function normalizeConversation(value: unknown): SessionConversationWorkspace {
       ? { attachmentIds: stringsOf(entry.attachmentIds) }
       : {}),
     ...(isRecord(entry.config) ? { config: entry.config as Record<string, AgentConfigValue> } : {}),
-    ...(typeof entry.parentScrollTop === 'number' && entry.parentScrollTop >= 0
-      ? { parentScrollTop: entry.parentScrollTop }
-      : {}),
-    ...(isScrollMap(entry.childScrollTopById)
-      ? { childScrollTopById: entry.childScrollTopById }
-      : {}),
     ...(nonNegativeInteger(entry.sequence) !== undefined
       ? { sequence: nonNegativeInteger(entry.sequence) }
       : {}),
@@ -336,9 +355,6 @@ function normalizeConversation(value: unknown): SessionConversationWorkspace {
       : {}),
     ...(typeof entry.selectedChildId === 'string' || entry.selectedChildId === null
       ? { selectedChildId: entry.selectedChildId as string | null }
-      : {}),
-    ...(typeof entry.scrollTop === 'number' && entry.scrollTop >= 0
-      ? { scrollTop: entry.scrollTop }
       : {}),
     ...(nonNegativeInteger(entry.providerGeneration) !== undefined
       ? { providerGeneration: nonNegativeInteger(entry.providerGeneration) }
@@ -361,12 +377,6 @@ function isExecutionOwner(value: unknown): value is AgentExecutionOwner {
     'transitioning-to-terminal',
     'stopped'
   ].includes(value as string);
-}
-
-function isScrollMap(value: unknown): value is Record<string, number> {
-  return isRecord(value) && Object.values(value).every(
-    (entry) => typeof entry === 'number' && entry >= 0
-  );
 }
 
 function isWriterLease(value: unknown): value is AgentWriterLease {
@@ -427,16 +437,6 @@ function normalizeBrowser(value: unknown): SessionBrowserWorkspace {
   };
 }
 
-function normalizeCenter(value: unknown): SessionCenterWorkspace | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const entry = value as Record<string, unknown>;
-  if (!entry.layout || typeof entry.layout !== 'object' || Array.isArray(entry.layout)) return null;
-  return {
-    activePanelId: typeof entry.activePanelId === 'string' ? entry.activePanelId : null,
-    layout: entry.layout as object
-  };
-}
-
 function normalizeFileStates(
   value: unknown,
   openPaths: readonly string[]
@@ -487,15 +487,18 @@ function normalizeSourceControl(value: unknown): SessionSourceControlWorkspace |
   };
 }
 
-function normalizeHistory(value: unknown): SessionHistoryWorkspace | null {
+function normalizeTasksView(value: unknown): SessionTasksWorkspace | null {
   if (!isRecord(value)) return null;
-  const scope = value.scope === 'workspace' || value.scope === 'project' ? value.scope : 'all';
+  const filters = isRecord(value.filters) ? value.filters : {};
   return {
-    scope,
-    openProjectKey: pathOf(value.openProjectKey),
-    openWorktreeKeys: [...new Set(stringsOf(value.openWorktreeKeys))],
-    expandedKey: pathOf(value.expandedKey),
-    scrollTop: typeof value.scrollTop === 'number' && value.scrollTop > 0 ? value.scrollTop : 0
+    search: typeof value.search === 'string' ? value.search : '',
+    filters: {
+      status: [...new Set(stringsOf(filters.status))],
+      priority: [...new Set(stringsOf(filters.priority))]
+    },
+    projectFilter: typeof value.projectFilter === 'string' ? value.projectFilter : '',
+    sortBy: value.sortBy === 'title' ? 'title' : 'taskNumber',
+    sortDirection: value.sortDirection === 'asc' ? 'asc' : 'desc'
   };
 }
 
@@ -559,8 +562,11 @@ export function normalizeWorkspaceSnapshot(value: unknown): SessionWorkspaceSnap
   if (fileStates) snapshot.fileStates = fileStates;
   if ('conversation' in entry) snapshot.conversation = normalizeConversation(entry.conversation);
   if ('browser' in entry) snapshot.browser = normalizeBrowser(entry.browser);
-  const center = normalizeCenter(entry.center);
-  if (center) snapshot.center = center;
+  const topTabs = normalizeTopTabs(entry.topTabs, {
+    editorPaths: openPaths,
+    browserTabIds: snapshot.browser?.tabs.map((tab) => tab.id) ?? []
+  });
+  if (topTabs) snapshot.topTabs = topTabs;
   const expandedPathsByRoot = normalizeExpandedPathsByRoot(entry.expandedPathsByRoot);
   if (expandedPathsByRoot) snapshot.expandedPathsByRoot = expandedPathsByRoot;
   const filesInspectionRoot = normalizeInspectionRoot(entry.filesInspectionRoot);
@@ -569,8 +575,8 @@ export function normalizeWorkspaceSnapshot(value: unknown): SessionWorkspaceSnap
   if (sourceControlInspectionRoot) snapshot.sourceControlInspectionRoot = sourceControlInspectionRoot;
   const sourceControl = normalizeSourceControl(entry.sourceControl);
   if (sourceControl) snapshot.sourceControl = sourceControl;
-  const history = normalizeHistory(entry.history);
-  if (history) snapshot.history = history;
+  const tasksView = normalizeTasksView(entry.tasksView);
+  if (tasksView) snapshot.tasksView = tasksView;
   return snapshot;
 }
 

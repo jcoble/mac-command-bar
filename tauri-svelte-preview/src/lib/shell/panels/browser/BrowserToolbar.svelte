@@ -1,27 +1,30 @@
 <script lang="ts">
   /**
-   * BrowserToolbar.svelte — one row: where you are, and what the pointer does.
+   * BrowserToolbar.svelte — the browser tab's one row, laid out like Codex's.
    *
-   * Everything is on the address line. The three marking tools sit to the right
-   * of the address box as icons alone, because they change the same thing the
-   * address does — what you are looking at. Widening is the whole right
-   * region's, on its tab strip, not the browser's. A second row of labelled
-   * buttons cost the page a strip of height on every screen, including the ones
-   * where nobody is marking anything.
+   * Left, one pill holding back, forward and reload; then Annotate, which arms
+   * the element marker (icon only when the pane is narrow, by a container
+   * query). The address fills the middle. Right, one pill holding the list of
+   * marks made so far and ⋯ for the other two marking tools.
    *
-   * The tools are a set of toggles rather than a segmented control: each one
-   * says in its own tooltip what it does and whether it is on, and pressing the
-   * one already on puts the pointer back to plain browsing.
+   * The ⋯ menu is a native popup menu: the page beside this row is a native
+   * view, and anything drawn in the DOM would sit underneath it. No tooltips
+   * either — Bits UI's tooltip state loops when mounted beside the native
+   * view — so every control names itself with an aria-label.
    */
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import ArrowRight from '@lucide/svelte/icons/arrow-right';
-  import Highlighter from '@lucide/svelte/icons/highlighter';
-  import MousePointer2 from '@lucide/svelte/icons/mouse-pointer-2';
+  import Ellipsis from '@lucide/svelte/icons/ellipsis';
+  import MessageSquare from '@lucide/svelte/icons/message-square';
   import RotateCw from '@lucide/svelte/icons/rotate-cw';
-  import SquareDashed from '@lucide/svelte/icons/square-dashed';
+  import SquareDashedMousePointer from '@lucide/svelte/icons/square-dashed-mouse-pointer';
+  import type { Resource } from '@tauri-apps/api/core';
+  import { CheckMenuItem, Menu } from '@tauri-apps/api/menu';
+  import { onDestroy } from 'svelte';
 
-  import { IconButton } from '$lib/components/ui/icon-button/index.js';
+  import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
+  import { cn } from '$lib/utils.js';
 
   // `browse` is none armed.
   import type { BrowserPanelTool } from '$lib/shell/browser/browserTypes.ts';
@@ -31,12 +34,16 @@
     tool: BrowserPanelTool;
     canGoBack: boolean;
     canGoForward: boolean;
+    /** Marks placed on the page so far; the list button needs at least one. */
+    annotationCount: number;
+    listOpen: boolean;
     onAddressInput(value: string): void;
     onNavigate(): void;
     onBack(): void;
     onForward(): void;
     onReload(): void;
     onToolChange(tool: BrowserPanelTool): void;
+    onToggleList(): void;
   }
 
   let {
@@ -44,49 +51,100 @@
     tool,
     canGoBack,
     canGoForward,
+    annotationCount,
+    listOpen,
     onAddressInput,
     onNavigate,
     onBack,
     onForward,
     onReload,
-    onToolChange
+    onToolChange,
+    onToggleList
   }: Props = $props();
 
-  /**
-   * What an armed tool looks like: the same tint its own hover draws, left up.
-   * Written out in full because Tailwind reads this file as text and a class it
-   * never sees written down is a class it never generates.
-   */
-  const ARMED =
-    'bg-[color-mix(in_srgb,var(--color-accent)_16%,var(--color-elevated))] text-[var(--color-accent)]';
+  const ROUND = 'size-[28px] rounded-full p-0 [&_svg]:size-[16px]';
+
+  /** The last native menu, closed when the next one opens so they never pile up. */
+  let lastMenu: Resource[] = [];
+  let destroyed = false;
+
+  async function closeAll(resources: Resource[]): Promise<void> {
+    await Promise.all(resources.map((item) => item.close()));
+  }
 
   function choose(next: BrowserPanelTool): void {
     onToolChange(next === tool ? 'browse' : next);
   }
+
+  async function openMore(): Promise<void> {
+    const previous = lastMenu;
+    lastMenu = [];
+    await closeAll(previous);
+    const region = await CheckMenuItem.new({
+      text: 'Draw a region',
+      checked: tool === 'region',
+      action: () => choose('region')
+    });
+    const marker = await CheckMenuItem.new({
+      text: 'Draw with a marker',
+      checked: tool === 'drawing',
+      action: () => choose('drawing')
+    });
+    const menu = await Menu.new({ items: [region, marker] });
+    // The toolbar may have gone while the menu was being built.
+    if (destroyed) {
+      await closeAll([menu, region, marker]);
+      return;
+    }
+    lastMenu = [menu, region, marker];
+    await menu.popup();
+  }
+
+  onDestroy(() => {
+    destroyed = true;
+    void closeAll(lastMenu);
+    lastMenu = [];
+  });
 </script>
 
-<div class="browser-toolbar" data-testid="browser-toolbar">
-  <!-- Bits UI's tooltip state loops when this toolbar is mounted beside the
-       native child view. The aria-labels still name every control. -->
-  <IconButton label="Go back" size="xs" tooltip={false} disabled={!canGoBack} data-testid="browser-back" onclick={onBack}>
-    <ArrowLeft aria-hidden="true" />
-  </IconButton>
-  <IconButton
-    label="Go forward"
-    size="xs"
-    tooltip={false}
-    disabled={!canGoForward}
-    data-testid="browser-forward"
-    onclick={onForward}
+<div class="@container flex h-[44px] items-center gap-2 px-2" data-testid="browser-toolbar">
+  <div class="flex flex-none items-center rounded-full bg-muted p-[2px]">
+    <Button variant="ghost" class={ROUND} aria-label="Go back" disabled={!canGoBack} data-testid="browser-back" onclick={onBack}>
+      <ArrowLeft aria-hidden="true" />
+    </Button>
+    <Button
+      variant="ghost"
+      class={ROUND}
+      aria-label="Go forward"
+      disabled={!canGoForward}
+      data-testid="browser-forward"
+      onclick={onForward}
+    >
+      <ArrowRight aria-hidden="true" />
+    </Button>
+    <span class="mx-[2px] h-[16px] w-px bg-border" aria-hidden="true"></span>
+    <Button variant="ghost" class={ROUND} aria-label="Reload the page" data-testid="browser-reload" onclick={onReload}>
+      <RotateCw aria-hidden="true" />
+    </Button>
+  </div>
+
+  <Button
+    variant="ghost"
+    class={cn(
+      'h-[32px] flex-none gap-1.5 rounded-full bg-muted px-3 text-[13px] @max-[640px]:px-2 [&_svg]:size-[16px]',
+      tool === 'element' && 'bg-foreground/16 text-foreground'
+    )}
+    aria-label={tool === 'element' ? 'Stop marking elements' : 'Annotate: mark an element on the page'}
+    aria-pressed={tool === 'element'}
+    data-testid="browser-tool-element"
+    onclick={() => choose('element')}
   >
-    <ArrowRight aria-hidden="true" />
-  </IconButton>
-  <IconButton label="Reload the page" size="xs" tooltip={false} data-testid="browser-reload" onclick={onReload}>
-    <RotateCw aria-hidden="true" />
-  </IconButton>
+    <SquareDashedMousePointer aria-hidden="true" />
+    <span class="@max-[640px]:hidden">Annotate</span>
+  </Button>
 
   <form
-    class="address-form"
+    class="min-w-0 flex-1"
     onsubmit={(event) => {
       event.preventDefault();
       onNavigate();
@@ -96,69 +154,26 @@
       aria-label="Address"
       placeholder="Enter an http, https, or file address"
       value={address}
+      class="h-[32px] rounded-full border-0 bg-muted px-3 text-center text-[13px] focus:text-left focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-muted"
       data-testid="browser-address"
       oninput={(event) => onAddressInput(event.currentTarget.value)}
     />
   </form>
 
-  <span class="divide" aria-hidden="true"></span>
-
-  <IconButton
-    label={tool === 'element' ? 'Stop marking elements' : 'Mark an element on the page'}
-    size="xs"
-    tooltip={false}
-    class={tool === 'element' ? ARMED : undefined}
-    data-testid="browser-tool-element"
-    onclick={() => choose('element')}
-  >
-    <MousePointer2 aria-hidden="true" />
-  </IconButton>
-  <IconButton
-    label={tool === 'region' ? 'Stop marking regions' : 'Draw a region on the page'}
-    size="xs"
-    tooltip={false}
-    class={tool === 'region' ? ARMED : undefined}
-    data-testid="browser-tool-region"
-    onclick={() => choose('region')}
-  >
-    <SquareDashed aria-hidden="true" />
-  </IconButton>
-  <IconButton
-    label={tool === 'drawing' ? 'Put the marker down' : 'Draw on the page with a marker'}
-    size="xs"
-    tooltip={false}
-    class={tool === 'drawing' ? ARMED : undefined}
-    data-testid="browser-tool-marker"
-    onclick={() => choose('drawing')}
-  >
-    <Highlighter aria-hidden="true" />
-  </IconButton>
+  <div class="flex flex-none items-center rounded-full bg-muted p-[2px]">
+    <Button
+      variant="ghost"
+      class={ROUND}
+      aria-label={listOpen ? 'Hide the list of marks' : 'Show the list of marks'}
+      aria-pressed={listOpen}
+      disabled={annotationCount === 0}
+      data-testid="browser-annotation-list-toggle"
+      onclick={onToggleList}
+    >
+      <MessageSquare aria-hidden="true" />
+    </Button>
+    <Button variant="ghost" class={ROUND} aria-label="More marking tools" data-testid="browser-more" onclick={openMore}>
+      <Ellipsis aria-hidden="true" />
+    </Button>
+  </div>
 </div>
-
-<style>
-  .browser-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    border-bottom: 1px solid var(--color-border);
-    padding: 8px 12px;
-  }
-
-  /* The address box takes whatever the two groups of buttons leave, so it grows
-     as the column is widened and the row reads as one line rather than as
-     buttons pushed apart. */
-  .address-form {
-    min-width: 0;
-    flex: 1;
-  }
-
-  /* Where the row changes subject: from the page to what the pointer does, and
-     from that to how wide the panel is. */
-  .divide {
-    width: 1px;
-    height: 16px;
-    flex: none;
-    margin: 0 2px;
-    background: var(--color-border);
-  }
-</style>

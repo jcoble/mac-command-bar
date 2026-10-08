@@ -1,12 +1,17 @@
 <script lang="ts">
+  import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
+  import { getContext } from 'svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import CircleDot from '@lucide/svelte/icons/circle-dot';
   import Users from '@lucide/svelte/icons/users';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
 
+  const disclosure = getContext<ConversationDisclosureContext>(conversationDisclosureContext);
+
   let { item }: { item: Extract<ConversationDisplayItem, { kind: 'subagent' }> } = $props();
 
   const running = $derived(/^(working|running|active|started)$/i.test(item.state));
+  const open = $derived(disclosure?.get(`${item.itemId}:subagent`) ?? running);
   const failed = $derived(/^(failed|error|cancelled)$/i.test(item.state));
   const done = $derived(/^(completed|done|finished)$/i.test(item.state));
 
@@ -24,7 +29,7 @@
   );
 </script>
 
-<details class="subagent" class:running class:failed class:done data-testid="timeline-subagent-item" open={running}>
+<details class="subagent" class:running class:failed class:done data-testid="timeline-subagent-item" {open} ontoggle={(event) => { if (event.currentTarget.open !== open) disclosure?.set(`${item.itemId}:subagent`, event.currentTarget.open); }}>
   <summary>
     <span class="chevron" aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
     <span class="agent-icon" aria-hidden="true">

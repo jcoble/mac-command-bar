@@ -51,6 +51,7 @@ mod notion_oauth;
 mod notion_tasks;
 mod orchestration;
 mod product_identity;
+mod project_folders;
 mod projection_streams;
 mod resources;
 mod resources_disk;
@@ -251,6 +252,10 @@ pub(crate) struct ProjectGitStatus {
     behind: usize,
     has_upstream: bool,
     files: Vec<GitFileStatus>,
+    /// Lines added and removed in the working tree against HEAD (tracked files
+    /// only); `None` when there is no HEAD to compare with.
+    additions: Option<usize>,
+    deletions: Option<usize>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -279,6 +284,16 @@ pub(crate) struct SourceGitDiff {
     is_binary: bool,
     original_content: Option<String>,
     modified_content: Option<String>,
+}
+
+/// Everything on the checked-out branch since it left the repository's default
+/// branch, as one diff text; the Changes tab splits it per file.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GitBranchDiff {
+    /// The branch compared with, e.g. `origin/main`.
+    base: String,
+    diff: String,
 }
 
 /// One file touched by one commit. Same three fields the working-copy status list
@@ -2441,7 +2456,7 @@ pub(crate) fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus,
             "status",
             "--porcelain=v1",
             "--branch",
-            "--untracked-files=normal",
+            "--untracked-files=all",
         ]),
         "git status",
         bounded_process::LOCAL_COMMAND_TIMEOUT,
@@ -2457,7 +2472,35 @@ pub(crate) fn project_git_status_sync(root: PathBuf) -> Result<ProjectGitStatus,
         });
     }
 
-    parse_project_git_status(&String::from_utf8_lossy(&output.stdout))
+    let mut status = parse_project_git_status(&String::from_utf8_lossy(&output.stdout))?;
+
+    // A repository with no commits has no HEAD; its counts stay absent.
+    let numstat = bounded_process::output(
+        Command::new("git").args(["-C", root_arg.as_str(), "diff", "--numstat", "HEAD"]),
+        "git diff --numstat",
+        bounded_process::LOCAL_COMMAND_TIMEOUT,
+    );
+    if let Some(numstat) = numstat.ok().filter(|numstat| numstat.status.success()) {
+        let (additions, deletions) =
+            parse_git_numstat_totals(&String::from_utf8_lossy(&numstat.stdout));
+        status.additions = Some(additions);
+        status.deletions = Some(deletions);
+    }
+    Ok(status)
+}
+
+/// Sums `git diff --numstat` lines. Binary files report `-` and are skipped.
+fn parse_git_numstat_totals(output: &str) -> (usize, usize) {
+    output.lines().fold((0, 0), |(added, removed), line| {
+        let mut fields = line.split('\t');
+        match (
+            fields.next().and_then(|value| value.parse::<usize>().ok()),
+            fields.next().and_then(|value| value.parse::<usize>().ok()),
+        ) {
+            (Some(plus), Some(minus)) => (added + plus, removed + minus),
+            _ => (added, removed),
+        }
+    })
 }
 
 fn git_history_cursor_offset(cursor: Option<String>) -> Result<usize, String> {
@@ -2703,6 +2746,26 @@ fn run_git_with_paths(root: &Path, args: &[&str], paths: &[String]) -> Result<St
     }
 
     run_git_text(root, &git_args)
+}
+
+/// Committed and uncommitted tracked changes on this branch: one `git diff`
+/// from the merge base of HEAD and `origin/HEAD` to the working tree. The app
+/// does not record which branch a worktree was cut from, so the repository's
+/// default branch is the base.
+pub(crate) fn read_git_branch_diff_sync(root: PathBuf) -> Result<GitBranchDiff, String> {
+    validate_git_root(&root)?;
+    let base = run_git_text(&root, &["rev-parse", "--abbrev-ref", "origin/HEAD"])
+        .map_err(|_| "This repository has no origin/HEAD, so there is no default branch to compare with.".to_string())?
+        .trim()
+        .to_string();
+    let merge_base = run_git_text(&root, &["merge-base", "HEAD", base.as_str()])?
+        .trim()
+        .to_string();
+    let diff = run_git_text(
+        &root,
+        &["-c", "core.quotepath=false", "diff", "--no-ext-diff", merge_base.as_str()],
+    )?;
+    Ok(GitBranchDiff { base, diff })
 }
 
 pub(crate) fn read_source_git_diff_sync(
@@ -2952,43 +3015,6 @@ pub(crate) fn list_project_git_refs_sync(root: PathBuf) -> Result<Vec<ProjectGit
         .map(|worktree| (worktree.branch, worktree.path))
         .collect::<Vec<_>>();
     Ok(classify_project_git_refs(refs, current.trim(), &checkouts))
-}
-
-pub(crate) fn init_project_repository_sync(root: PathBuf) -> Result<(), String> {
-    if root.to_string_lossy().trim().is_empty() {
-        return Err("Choose a project folder first.".to_string());
-    }
-    if !root.exists() {
-        return Err("That project folder does not exist.".to_string());
-    }
-    if !root.is_dir() {
-        return Err("That project path is not a folder.".to_string());
-    }
-    if run_git_text(&root, &["rev-parse", "--is-inside-work-tree"])
-        .is_ok_and(|inside| inside.trim() == "true")
-    {
-        return Ok(());
-    }
-
-    let init = Command::new("git")
-        .current_dir(&root)
-        .args(["init", "-b", "main"])
-        .output()
-        .map_err(|error| format!("Git could not be started: {error}"))?;
-    if !init.status.success() {
-        return Err(String::from_utf8_lossy(&init.stderr).into_owned());
-    }
-
-    let commit = Command::new("git")
-        .current_dir(&root)
-        .args(["commit", "--allow-empty", "-m", "Initial commit"])
-        .output()
-        .map_err(|error| format!("Git could not be started: {error}"))?;
-    if !commit.status.success() {
-        return Err(String::from_utf8_lossy(&commit.stderr).into_owned());
-    }
-
-    Ok(())
 }
 
 /// `force = false` is the everyday remove: it refuses anything that would lose work.
@@ -4722,6 +4748,8 @@ fn parse_project_git_status(output: &str) -> Result<ProjectGitStatus, String> {
         behind: 0,
         has_upstream: false,
         files: Vec::new(),
+        additions: None,
+        deletions: None,
     };
 
     for line in output.lines().filter(|line| !line.trim().is_empty()) {
@@ -5318,6 +5346,9 @@ fn main() {
                 })?,
                 &session_db_path,
             )?;
+            project_folders::import_saved_project_roots(&agent_runtime)?;
+            // Before any list: older local sessions join projects added since the last run.
+            project_folders::backfill_local_session_projects(agent_runtime.store())?;
             if let Some(settings) = agent_runtime.read_app_setting(LANGUAGE_SERVER_SETTINGS_KEY)? {
                 lsp::restore_language_server_settings(&settings)?;
             }
@@ -5500,6 +5531,7 @@ fn main() {
             list_source_lsp_diagnostics_for_root,
             project_git_status,
             read_source_git_diff,
+            read_git_branch_diff,
             stage_git_paths,
             unstage_git_paths,
             commit_git_repository,
@@ -5520,6 +5552,7 @@ fn main() {
             github::read_github_pull_request_file,
             github::submit_github_pull_request_review,
             github::reply_github_pull_request_comment,
+            github::comment_github_pull_request,
             github::merge_github_pull_request,
             git_workspace::discard_git_paths,
             git_workspace::discard_all_git_changes,
@@ -5534,7 +5567,6 @@ fn main() {
             list_project_worktrees,
             list_repository_checkouts,
             list_project_git_refs,
-            init_project_repository,
             remove_project_worktree,
             archive_project_worktree,
             list_git_repository_summaries,
@@ -5616,6 +5648,10 @@ fn main() {
             agent_conversation::clear_agent_conversation_workspace_tabs,
             agent_conversation::write_assembly_setting,
             agent_conversation::read_assembly_setting,
+            agent_conversation::list_projects,
+            agent_conversation::add_project,
+            project_folders::list_folders,
+            project_folders::create_project_worktree,
             agent_conversation::respond_agent_conversation_approval,
             agent_conversation::respond_agent_conversation_permission,
             agent_conversation::respond_agent_conversation_input,
@@ -5630,16 +5666,17 @@ fn main() {
             agent_conversation::read_agent_conversation_capabilities,
             agent_conversation::close_agent_conversation,
             agent_conversation::delete_agent_conversation_session,
-            agent_conversation::read_agent_conversation_snapshot,
+            agent_conversation::read_agent_conversation_selection,
             agent_conversation::cancel_agent_conversation_request,
-            agent_conversation::cancel_agent_conversation_snapshot,
             agent_conversation::list_agent_conversation_sessions,
             agent_conversation::list_remote_agent_conversation_sessions,
             agent_conversation::list_agent_conversation_events,
             agent_conversation::list_agent_conversation_events_before,
-            agent_conversation::list_agent_conversation_events_after,
+            agent_conversation::list_agent_conversation_items_before,
+            agent_conversation::list_agent_conversation_items_after,
             agent_conversation::update_agent_conversation_session_meta,
-            agent_conversation::read_agent_conversation_transcript,
+            agent_conversation::read_agent_conversation_child_history,
+            agent_conversation::stop_agent_conversation_child_history,
             agent_conversation::begin_agent_conversation_import,
             agent_conversation::finish_agent_conversation_import,
             agent_conversation::extend_agent_conversation_import,
@@ -5653,6 +5690,7 @@ fn main() {
             projection_streams::unregister_terminal_output_stream,
             agent_conversation::save_agent_conversation_attachment,
             agent_conversation::read_agent_conversation_attachments,
+            agent_conversation::read_agent_conversation_selected_attachments,
             agent_conversation::read_agent_conversation_attachment_file,
             agent_conversation::discard_agent_conversation_original,
             agent_conversation::delete_agent_conversation_attachment,
@@ -5774,56 +5812,6 @@ mod tests {
         assert_eq!(classified.len(), 500);
         assert!(classified[0].is_default);
         assert!(classified[0].is_current);
-    }
-
-    #[test]
-    fn a_plain_folder_becomes_a_repository_on_main() {
-        let root = unique_temp_root();
-        std::fs::create_dir_all(&root).unwrap();
-
-        with_test_git_identity(|| init_project_repository_sync(root.clone())).unwrap();
-
-        assert!(root.join(".git").exists());
-        assert_eq!(
-            git_text_for_test(&root, &["rev-parse", "--abbrev-ref", "HEAD"]),
-            "main"
-        );
-        assert_eq!(
-            git_text_for_test(&root, &["rev-list", "--count", "HEAD"]),
-            "1"
-        );
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn an_existing_repository_is_left_alone() {
-        let root = unique_temp_root();
-        std::fs::create_dir_all(&root).unwrap();
-
-        with_test_git_identity(|| init_project_repository_sync(root.clone())).unwrap();
-        init_project_repository_sync(root.clone()).unwrap();
-
-        assert_eq!(
-            git_text_for_test(&root, &["rev-list", "--count", "HEAD"]),
-            "1"
-        );
-
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn a_project_folder_inside_an_existing_repository_is_left_alone() {
-        let root = unique_temp_root();
-        let nested = root.join("nested-project");
-        std::fs::create_dir_all(&nested).unwrap();
-
-        with_test_git_identity(|| init_project_repository_sync(root.clone())).unwrap();
-        init_project_repository_sync(nested.clone()).unwrap();
-
-        assert!(!nested.join(".git").exists());
-
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -7000,6 +6988,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_git_numstat_totals_sums_text_files_and_skips_binary() {
+        let output = "12\t3\tsrc/a.ts\n-\t-\tlogo.png\n6\t8\tsrc/b.rs\n0\t0\tempty\n";
+        assert_eq!(parse_git_numstat_totals(output), (18, 11));
+        assert_eq!(parse_git_numstat_totals(""), (0, 0));
+    }
+
+    #[test]
     fn git_status_parser_handles_clean_branch_header() {
         let status = parse_project_git_status("## feature/source-browser\n").unwrap();
 
@@ -7060,6 +7055,41 @@ mod tests {
         let no_commits = parse_git_branch_header("No commits yet on feature/source-browser");
         assert_eq!(no_commits.branch.as_deref(), Some("feature/source-browser"));
         assert!(!no_commits.has_upstream);
+    }
+
+    #[test]
+    fn branch_diff_covers_commits_and_working_changes_since_the_default_branch() {
+        let root = unique_temp_root();
+        std::fs::create_dir_all(&root).unwrap();
+        let commit = |message: &str| {
+            run_git_for_test(&root, &["add", "."]);
+            run_git_for_test(
+                &root,
+                &["-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-m", message],
+            );
+        };
+        run_git_for_test(&root, &["init", "-b", "main"]);
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        commit("initial");
+        run_git_for_test(&root, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        run_git_for_test(&root, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        run_git_for_test(&root, &["checkout", "-b", "feature"]);
+        std::fs::write(root.join("a.txt"), "two\n").unwrap();
+        commit("committed change");
+        std::fs::write(root.join("b.txt"), "unstaged\n").unwrap();
+        run_git_for_test(&root, &["add", "-N", "b.txt"]);
+        std::fs::write(root.join("a.txt"), "three\n").unwrap();
+
+        let branch = read_git_branch_diff_sync(root.clone()).unwrap();
+
+        assert_eq!(branch.base, "origin/main");
+        assert!(branch.diff.contains("-one"), "{}", branch.diff);
+        assert!(branch.diff.contains("+three"), "{}", branch.diff);
+        assert!(branch.diff.contains("+unstaged"), "{}", branch.diff);
+
+        run_git_for_test(&root, &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"]);
+        assert!(read_git_branch_diff_sync(root.clone()).unwrap_err().contains("origin/HEAD"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -9081,50 +9111,5 @@ mod tests {
             "git {args:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-    }
-
-    fn git_text_for_test(root: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(args)
-            .output()
-            .unwrap_or_else(|error| panic!("could not run git {args:?}: {error}"));
-        assert!(
-            output.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    }
-
-    fn with_test_git_identity<T>(action: impl FnOnce() -> T) -> T {
-        static GIT_TEMPLATE_LOCK: Mutex<()> = Mutex::new(());
-        let _guard = GIT_TEMPLATE_LOCK.lock().unwrap();
-        let template = unique_temp_root();
-        std::fs::create_dir_all(&template).unwrap();
-        for (key, value) in [
-            ("user.name", "Test User"),
-            ("user.email", "test@example.invalid"),
-        ] {
-            let output = Command::new("git")
-                .args(["config", "--file"])
-                .arg(template.join("config"))
-                .args([key, value])
-                .output()
-                .unwrap();
-            assert!(output.status.success());
-        }
-
-        let previous = std::env::var_os("GIT_TEMPLATE_DIR");
-        std::env::set_var("GIT_TEMPLATE_DIR", &template);
-        let result = action();
-        if let Some(previous) = previous {
-            std::env::set_var("GIT_TEMPLATE_DIR", previous);
-        } else {
-            std::env::remove_var("GIT_TEMPLATE_DIR");
-        }
-        std::fs::remove_dir_all(template).unwrap();
-        result
     }
 }

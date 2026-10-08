@@ -253,7 +253,7 @@ export interface GitService {
   refreshHistory(): Promise<void>;
   /** Ask for another page of older commits. Does nothing once the list is whole. */
   loadMoreHistory(): Promise<void>;
-  /** Read the first history page if a visible graph has no rows yet. */
+  /** Read the first history page if a visible graph has no rows yet. A failed read waits for Refresh or another folder: callers run this on every effect pass. */
   ensureHistorySurface(): void;
   /** Release commit rows when no graph surface owns them. */
   releaseHistorySurface(): void;
@@ -263,6 +263,9 @@ export interface GitService {
   clearHistoryPath(): Promise<void>;
   /** Show this file's diff. */
   selectFile(file: ProjectGitFileStatus, owner?: GitSurfaceOwner): Promise<void>;
+  /** Read one working-copy file's diff without selecting it. Null outside the
+   * desktop app and the dev server, or when the panel has no repository. */
+  readWorkingDiff(relativePath: string): Promise<SourceGitDiff | null>;
   /**
    * Put back a diff a session remembered, pointing the panel at that session's
    * repository first if it is somewhere else. The Diff tab is one tab for the
@@ -449,7 +452,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   function ensureHistorySurface(): void {
     historySurfaceVisible = true;
     if (!state.root || state.historyLoading || state.historyLoadingMore) return;
-    if (state.history.length > 0 || state.historyComplete) return;
+    if (state.history.length > 0 || state.historyComplete || state.historyError) return;
     void loadHistory(null, false);
   }
 
@@ -676,6 +679,15 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     selectFile,
     showStoredDiff,
     clearSelection,
+
+    async readWorkingDiff(relativePath: string): Promise<SourceGitDiff | null> {
+      const root = state.root;
+      if (!root) return null;
+      return withGitDiffTimeout(
+        backend.readDiff(root, absolutePathWithin(root, relativePath)),
+        diffTimeoutMs
+      );
+    },
 
     async stagePaths(paths: string[]): Promise<void> {
       const wanted = cleanPaths(paths);

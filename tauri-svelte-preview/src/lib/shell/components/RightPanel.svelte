@@ -1,15 +1,11 @@
 <script lang="ts">
   /**
-   * RightPanel.svelte — the right column of the workbench.
+   * RightPanel.svelte — the body of the right drawer.
    *
-   * One panel body fills this region. Its icon tab strip lives in the global
-   * window chrome, where it remains available without consuming panel height.
-   * The Resources/Usage strip now runs the full width of the window as
-   * the shell's status bar, so it no longer lives here. Files keeps one bounded
-   * panel instance for the active session because repeatedly reconstructing the
-   * virtual tree makes WebKit retain allocator pages. Browser also keeps one
-   * controller while this region is open so switching tabs only hides its
-   * native child view; closing the region still releases it. Every other panel
+   * One panel body fills the drawer under its tab row. The browser is not
+   * here: it is a tab of the top row, in the tab pane. Closing the drawer
+   * hides it without unmounting: Files keeps one bounded panel instance (so
+   * its scroll and expansion survive in the DOM), and every other panel
    * mounts only while it is visible.
    *
    * No backend IO and no state of its own beyond the layout. Which tab is open
@@ -19,13 +15,11 @@
   import type { RightTabId } from '$lib/shell/workbenchNavigation';
   import type {
     CheckoutScope,
-    SessionHistoryWorkspace,
-    SessionBrowserWorkspace,
-    SessionSourceControlWorkspace
+    SessionSourceControlWorkspace,
+    SessionTasksWorkspace
   } from '$lib/shell/sessionWorkspaces';
 
   import AgentsPanel from '$lib/shell/panels/agents/AgentsPanel.svelte';
-  import BrowserPanel from '$lib/shell/panels/browser/BrowserPanel.svelte';
   import FilesPanel from '$lib/shell/panels/files/FilesPanel.svelte';
   import HistoryPanel from '$lib/shell/panels/history/HistoryPanel.svelte';
   import RunPanel from '$lib/shell/panels/run/RunPanel.svelte';
@@ -33,10 +27,9 @@
   import SourceControlPanel from '$lib/shell/panels/sourceControl/SourceControlPanel.svelte';
   import WorktreesPanel from '$lib/shell/panels/worktrees/WorktreesPanel.svelte';
   import TasksPanel from '$lib/shell/panels/tasks/TasksPanel.svelte';
-  import type { OwnedSession } from '$lib/shell/ownedSessions';
 
   interface Props {
-    /** False while the whole right grid region is closed. */
+    /** False while the drawer is closed. */
     visible: boolean;
     /** The tab on screen. */
     activeId: RightTabId;
@@ -48,11 +41,11 @@
     checkoutScope?: CheckoutScope;
     /** The active session's ownedId, or null. */
     ownedId: string | null;
-    /** The active session's rail record, shown in the Files header card. */
-    session?: OwnedSession | null;
     /** Optional tree-only projection while rail selection is rebuilt in layers. */
     filesRoot?: string;
     filesOwnedId?: string | null;
+    /** Bumped by the page to focus the Files filter. */
+    filesFilterFocusRequest?: number;
     onRootUnavailable?(root: string): void | Promise<void>;
     expandedPathsByRoot?: Readonly<Record<string, readonly string[]>>;
     onExpandedPathsChange?(ownedId: string, root: string, paths: readonly string[]): void;
@@ -62,10 +55,9 @@
     onFilesInspectionRootChange?(root: string | null): void;
     onSourceControlInspectionRootChange?(root: string | null): void;
     sourceControlWorkspace?: SessionSourceControlWorkspace;
-    historyWorkspace?: SessionHistoryWorkspace;
     onSourceControlWorkspaceChange?(ownedId: string | null, state: SessionSourceControlWorkspace): void;
-    onHistoryWorkspaceChange?(ownedId: string | null, state: SessionHistoryWorkspace): void;
-    onBrowserWorkspaceChange?(ownedId: string, state: SessionBrowserWorkspace): void;
+    tasksView?: SessionTasksWorkspace;
+    onTasksViewChange?(ownedId: string, view: SessionTasksWorkspace): void;
     onUseSessionCheckout?(root: string): void | Promise<void>;
   }
   let {
@@ -75,9 +67,9 @@
     rootAvailable = true,
     checkoutScope,
     ownedId,
-    session = null,
     filesRoot,
     filesOwnedId,
+    filesFilterFocusRequest = 0,
     onRootUnavailable,
     expandedPathsByRoot,
     onExpandedPathsChange,
@@ -87,10 +79,9 @@
     onFilesInspectionRootChange,
     onSourceControlInspectionRootChange,
     sourceControlWorkspace,
-    historyWorkspace,
     onSourceControlWorkspaceChange,
-    onHistoryWorkspaceChange,
-    onBrowserWorkspaceChange,
+    tasksView,
+    onTasksViewChange,
     onUseSessionCheckout
   }: Props = $props();
 </script>
@@ -106,6 +97,7 @@
         visible={visible && activeId === 'files'}
         root={filesRoot ?? root}
         ownedId={filesOwnedId === undefined ? ownedId : filesOwnedId}
+        filterFocusRequest={filesFilterFocusRequest}
         {onRootUnavailable}
         {expandedPathsByRoot}
         {onExpandedPathsChange}
@@ -113,24 +105,10 @@
         onInspectionRootChange={onFilesInspectionRootChange}
         {checkoutDiscoveryRoots}
         {onUseSessionCheckout}
-        {session}
-      />
-    </div>
-    <div
-      class="panel-body"
-      class:showing={visible && activeId === 'browser'}
-      aria-hidden={!visible || activeId !== 'browser'}
-    >
-      <BrowserPanel
-        visible={visible && activeId === 'browser'}
-        panelOpen={visible}
-        {root}
-        {ownedId}
-        onWorkspaceChange={onBrowserWorkspaceChange}
       />
     </div>
     {#if visible && activeId === 'source-control'}
-      <div class="panel-body carded showing">
+      <div class="panel-body showing">
         <SourceControlPanel
           visible={true}
           {root}
@@ -145,25 +123,19 @@
         />
       </div>
     {:else if visible && activeId === 'worktrees'}
-      <div class="panel-body carded showing"><WorktreesPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body showing"><WorktreesPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'run'}
-      <div class="panel-body carded showing"><RunPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body showing"><RunPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'context'}
-      <div class="panel-body carded showing"><SessionContextPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body showing"><SessionContextPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'agents'}
-      <div class="panel-body carded showing"><AgentsPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body showing"><AgentsPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'history'}
-      <div class="panel-body carded showing">
-        <HistoryPanel
-          visible={true}
-          {root}
-          {ownedId}
-          workspaceState={historyWorkspace}
-          onWorkspaceStateChange={onHistoryWorkspaceChange}
-        />
+      <div class="panel-body showing">
+        <HistoryPanel visible={true} {root} {ownedId} />
       </div>
     {:else if visible && activeId === 'tasks'}
-      <div class="panel-body carded showing"><TasksPanel {root} /></div>
+      <div class="panel-body showing"><TasksPanel {root} {ownedId} initialView={tasksView} onViewChange={onTasksViewChange} /></div>
     {/if}
   </div>
 </div>
@@ -203,14 +175,5 @@
 
   .panel-body.showing {
     display: block;
-  }
-
-  /* Every panel but Files and Browser sits in the same rounded card surface as
-     the Files header, header row included. Files carries its own header card
-     over the tree; Browser hosts a native view that follows its own box. */
-  .panel-body.carded {
-    inset: var(--space-3);
-    border-radius: var(--radius-sm);
-    background: var(--color-elevated);
   }
 </style>

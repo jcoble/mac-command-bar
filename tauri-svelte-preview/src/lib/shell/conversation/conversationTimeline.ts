@@ -7,6 +7,7 @@ import type {
   AgentItemType,
   AgentApprovalRequest,
   AgentConversationEvent,
+  AgentConversationTurnFacts,
   AgentPermissionOption,
   AgentPermissionRequest,
   AgentUserInputRequest,
@@ -116,6 +117,8 @@ export interface ConversationTurnGroup {
   readonly tailItemIds: readonly string[];
   readonly completed: boolean;
   readonly elapsedMs: number | null;
+  readonly startedAtMs: number | null;
+  readonly running: boolean;
 }
 
 /**
@@ -161,17 +164,20 @@ export function conversationFileLinkProvenance(
  */
 export function toolFilePath(item: Extract<ConversationDisplayItem, { kind: 'tool' }>): string {
   const meta = item.metadata as Record<string, unknown> | undefined;
-  const fallback = item.path ?? '';
-  if (!meta) return fallback;
-  const rawArgs = (meta.args || meta.arguments || meta.parameters || meta.input || meta.rawInput) as Record<string, unknown> | undefined;
+  if (item.path?.trim()) return item.path.trim();
+  if (!meta) return '';
+  let rawArgs: unknown = meta.args ?? meta.arguments ?? meta.parameters ?? meta.input ?? meta.rawInput;
+  if (typeof rawArgs === 'string') {
+    try { rawArgs = JSON.parse(rawArgs); } catch { rawArgs = undefined; }
+  }
   const direct = meta.AbsolutePath || meta.TargetFile || meta.filePath || meta.file_path || meta.path || meta.file || meta.target;
   if (typeof direct === 'string' && direct.trim()) return direct.trim();
-  if (rawArgs) {
-    const fromArgs = rawArgs.AbsolutePath || rawArgs.TargetFile || rawArgs.filePath || rawArgs.file_path || rawArgs.path || rawArgs.file || rawArgs.target;
+  if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) {
+    const args = rawArgs as Record<string, unknown>;
+    const fromArgs = args.AbsolutePath || args.TargetFile || args.filePath || args.file_path || args.path || args.file || args.target;
     if (typeof fromArgs === 'string' && fromArgs.trim()) return fromArgs.trim();
   }
-  if (typeof meta.path === 'string' && meta.path.trim()) return meta.path.trim();
-  return fallback;
+  return '';
 }
 
 const FOLDABLE_TURN_KINDS = new Set<ConversationDisplayItem['kind']>([
@@ -186,16 +192,7 @@ const FOLDABLE_TURN_KINDS = new Set<ConversationDisplayItem['kind']>([
   'tasks'
 ]);
 
-/** Whether a row has stopped waiting on anything.
- *
- * Only a row that waits can say its turn is unfinished: a tool that has not
- * returned, a sub-agent still working, a request sitting in front of the
- * reader. Writing is not waiting. This used to read the `completed` flag on
- * every row first, and a message is marked unfinished the moment its first
- * chunk arrives and is never marked finished afterwards — the provider streams
- * the text and sends nothing to say it ended. So every turn holding a reply
- * counted as unfinished for ever, and the fold that only a finished turn draws
- * never appeared again once a conversation had any writing in it. */
+/** Tool-run display state; native turn metadata separately owns turn completion. */
 function turnItemSettled(item: ConversationDisplayItem): boolean {
   if (item.kind === 'toolRun') return Boolean(item.completed && item.items.every(turnItemSettled));
   if (item.kind === 'tool') return item.state === 'completed' || item.state === 'failed';
@@ -216,35 +213,35 @@ function turnItemSettled(item: ConversationDisplayItem): boolean {
   return true;
 }
 
-function turnGroup(turnId: string | null, items: readonly ConversationDisplayItem[], running: boolean): ConversationTurnGroup {
-  let tailStart = items.length;
-  while (tailStart > 0 && items[tailStart - 1].kind === 'assistant') tailStart -= 1;
-  const hasFoldableWork = items.some((item) => FOLDABLE_TURN_KINDS.has(item.kind));
-  const workItemIds = hasFoldableWork
-    ? items
-      .filter((item, index) => FOLDABLE_TURN_KINDS.has(item.kind) || (item.kind === 'assistant' && index < tailStart))
-      .map((item) => item.itemId)
-    : [];
-  const tailItemIds = items
-    .filter((item, index) => item.kind === 'user' || (item.kind === 'assistant' && index >= tailStart))
+function turnGroup(
+  turnId: string | null,
+  items: readonly ConversationDisplayItem[],
+  running: boolean,
+  facts: AgentConversationTurnFacts | undefined
+): ConversationTurnGroup {
+  const finalItemId = facts?.finalAssistantItemId;
+  const workItemIds = items
+    .filter((item) => FOLDABLE_TURN_KINDS.has(item.kind)
+      || (item.kind === 'assistant' && !!finalItemId && item.itemId !== finalItemId))
     .map((item) => item.itemId);
-  const firstTimestamp = items[0]?.timestampMs;
-  const lastTimestamp = items[items.length - 1]?.timestampMs;
-  const span = Number.isFinite(firstTimestamp) && Number.isFinite(lastTimestamp)
-    ? Math.max(0, lastTimestamp - firstTimestamp)
-    : 0;
-  // Zero is not a length of time anyone worked for. Every row of an older
-  // import carries the moment the import ran rather than the moment the work
-  // happened, so the whole turn reads as one instant; the fold says "Worked"
-  // in that case instead of claiming "Worked for 0.0s".
-  const elapsedMs = span > 0 ? span : null;
+  const tailItemIds = items
+    .filter((item) => item.kind === 'user'
+      || (item.kind === 'assistant' && (!finalItemId || item.itemId === finalItemId)))
+    .map((item) => item.itemId);
+  const startedAtMs = facts?.startedAtMs ?? null;
+  const endedAtMs = facts?.endedAtMs;
+  const completed = !running && !!facts?.terminalState;
   return {
     turnId,
     items,
     workItemIds,
     tailItemIds,
-    completed: !running && items.every(turnItemSettled),
-    elapsedMs
+    running,
+    completed,
+    startedAtMs,
+    elapsedMs: completed && startedAtMs !== null && endedAtMs != null
+      ? Math.max(0, endedAtMs - startedAtMs)
+      : null
   };
 }
 
@@ -345,30 +342,33 @@ export function summarizeToolRun(items: readonly ConversationDisplayItem[]): {
   icon: 'pencil' | 'book' | 'terminal' | 'search' | 'sparkles';
 } {
   let editCount = 0;
+  const editedPaths = new Set<string>();
+  let failedCount = 0;
   let readCount = 0;
   let commandCount = 0;
   let searchCount = 0;
   let reasoningCount = 0;
+  let toolCount = 0;
 
   for (const item of items) {
+    if (item.kind === 'tool' && item.state === 'failed') { failedCount += 1; continue; }
     if (item.kind === 'file' || item.kind === 'fileEdits' || (item.kind === 'tool' && item.toolKind === 'file-edit')) {
-      if (item.kind === 'fileEdits') editCount += item.edits.length;
-      else editCount += 1;
-    } else if (item.kind === 'command' || (item.kind === 'tool' && (item.toolKind === 'command' || item.title?.toLowerCase().includes('command') || item.title?.toLowerCase().includes('run') || item.title?.toLowerCase() === 'bash'))) {
+      const paths = item.kind === 'fileEdits' ? item.edits.map((edit) => edit.path)
+        : [item.kind === 'tool' ? toolFilePath(item) : metadataString(item.metadata, ['path'])];
+      for (const path of paths) {
+        if (!path || !editedPaths.has(path)) editCount += 1;
+        if (path) editedPaths.add(path);
+      }
+    } else if (item.kind === 'command' || (item.kind === 'tool' && item.toolKind === 'command')) {
       commandCount += 1;
-    } else if (item.kind === 'tool' && (item.toolKind === 'search' || item.title?.toLowerCase().includes('search') || item.title?.toLowerCase().includes('grep') || item.title?.toLowerCase().includes('glob') || item.title?.toLowerCase().includes('find'))) {
+    } else if (item.kind === 'tool' && item.toolKind === 'search') {
       searchCount += 1;
-    } else if (item.kind === 'tool' && (item.toolKind === 'fetch' || item.title?.toLowerCase().startsWith('read') || item.title?.toLowerCase().startsWith('view') || item.title?.toLowerCase() === 'cat')) {
+    } else if (item.kind === 'tool' && item.toolKind === 'fetch' && toolFilePath(item) && !/^https?:/i.test(toolFilePath(item))) {
       readCount += 1;
     } else if (item.kind === 'reasoning') {
       reasoningCount += 1;
     } else if (item.kind === 'tool') {
-      const name = item.title?.toLowerCase() ?? '';
-      if (name === 'edit' || name === 'write' || name.includes('edit') || name.includes('write')) editCount += 1;
-      else if (name === 'read' || name === 'view' || name.includes('read') || name.includes('view')) readCount += 1;
-      else if (name === 'bash' || name === 'sh' || name.includes('cmd') || name.includes('command') || name.includes('exec') || name.includes('run')) commandCount += 1;
-      else if (name === 'grep' || name === 'glob' || name.includes('search') || name.includes('find')) searchCount += 1;
-      else commandCount += 1;
+      toolCount += 1;
     }
   }
 
@@ -385,6 +385,11 @@ export function summarizeToolRun(items: readonly ConversationDisplayItem[]): {
   if (searchCount === 1) parts.push('searched codebase');
   else if (searchCount > 1) parts.push('searched files');
 
+  if (toolCount === 1) parts.push('used a tool');
+  else if (toolCount > 1) parts.push('used tools');
+
+  if (failedCount > 0) parts.push(`${failedCount} failed ${failedCount === 1 ? 'call' : 'calls'}`);
+
   if (parts.length === 0) {
     if (reasoningCount > 0) return { summary: 'Thinking', icon: 'sparkles' };
     return { summary: 'Worked', icon: 'sparkles' };
@@ -400,6 +405,16 @@ export function summarizeToolRun(items: readonly ConversationDisplayItem[]): {
   else if (searchCount > 0) icon = 'search';
 
   return { summary, icon };
+}
+
+/** Summarize recorded successful work; native facts own turn completion. */
+export function summarizeCompletedWork(items: readonly ConversationDisplayItem[]): string | null {
+  const actions = items.flatMap((item) => item.kind === 'toolRun' ? item.items : [item])
+    .filter((item) => item.kind === 'tool' ? item.state === 'completed'
+      : (item.kind === 'command' || item.kind === 'file' || item.kind === 'fileEdits') && item.completed === true);
+  const hasEdit = actions.some((item) => item.kind === 'file' || item.kind === 'fileEdits'
+    || (item.kind === 'tool' && item.toolKind === 'file-edit'));
+  return actions.length >= 2 || hasEdit ? summarizeToolRun(actions).summary : null;
 }
 
 /** What a running turn is doing, read from the newest row of the transcript.
@@ -474,18 +489,14 @@ export function foldToolRuns(
   return folded;
 }
 
-/** Groups adjacent display rows without changing their transcript order.
- *
- * The turn the agent is still writing into is the newest one. It cannot be
- * found by matching `activeTurnId` against the rows: most providers put no turn
- * id on what they send, so the rows of a live turn carry an id read off the
- * prompt that opened it, which is never the id the session reports. There is a
- * turn running only while the session names one, and while one runs it is the
- * last group. */
+/** Group rows in transcript order; native facts own turn state and timing.
+ * A history window ending in an older turn never makes that turn active. */
 export function conversationTurnGroups(
   items: readonly ConversationDisplayItem[],
-  activeTurnId: string | null = null
+  activeTurnId: string | null = null,
+  turnFacts: readonly AgentConversationTurnFacts[] = []
 ): readonly ConversationTurnGroup[] {
+  const facts = new Map(turnFacts.map((turn) => [turn.turnId, turn]));
   const turnIds = turnIdsOf(items);
   const partitions: { turnId: string | null; items: ConversationDisplayItem[] }[] = [];
   items.forEach((item, index) => {
@@ -493,10 +504,11 @@ export function conversationTurnGroups(
     if (open && turnIds[index] === open.turnId) open.items.push(item);
     else partitions.push({ turnId: turnIds[index], items: [item] });
   });
-  return partitions.map((partition, index) => turnGroup(
+  return partitions.map((partition) => turnGroup(
     partition.turnId,
     partition.items,
-    activeTurnId !== null && index === partitions.length - 1
+    activeTurnId !== null && partition.turnId === activeTurnId,
+    partition.turnId ? facts.get(partition.turnId) : undefined
   ));
 }
 
@@ -723,6 +735,7 @@ function toolKindOf(...values: unknown[]): ConversationToolKind {
       case 'web-search':
       case 'websearch':
       case 'image-view':
+      case 'file-read':
       case 'read-file':
       case 'view-file':
       case 'read-url-content':
@@ -792,8 +805,8 @@ function permissionOptionsOf(value: unknown): AgentPermissionOption[] {
 
 function defaultPermissionOptions(): AgentPermissionOption[] {
   return [
-    { optionId: 'accept', name: 'Allow', kind: 'allow_once' },
-    { optionId: 'decline', name: 'Deny', kind: 'reject_once' }
+    { optionId: 'accept', name: 'Allow', kind: 'allow_once', synthetic: true },
+    { optionId: 'decline', name: 'Deny', kind: 'reject_once', synthetic: true }
   ];
 }
 

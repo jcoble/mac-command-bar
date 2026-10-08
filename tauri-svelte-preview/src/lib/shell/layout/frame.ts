@@ -1,7 +1,7 @@
 /**
  * frame.ts — the /next shell's Gridview root. Left to right: the sessions
- * column, the center dock, and the right panel; the bottom dock sits under the
- * center only. It owns only DOM and Dockview state; persistence is supplied by
+ * column, the center (the chat), and the tab pane (tools = tab pane, present
+ * only while the top row has tabs); the bottom dock sits under the center only. It owns only DOM and Dockview state; persistence is supplied by
  * the shell.
  *
  * Teleport contract: every region's content is a Svelte-owned element that
@@ -29,12 +29,13 @@ const REGION_IDS: readonly ShellRegionId[] = ['sessions', 'center', 'tools', 'do
 /**
  * The regions a stored layout must carry to be worth restoring.
  *
- * The dock is absent from this list because it is absent from the grid
- * whenever the Problems list is not at the bottom — a layout saved in that
- * state has three regions, and demanding four would throw it away and rebuild
- * the default arrangement on every launch, losing both column widths.
+ * The dock and the tab pane are absent from this list because each is absent
+ * from the grid much of the time — the dock whenever the Problems list is not
+ * at the bottom, the pane whenever no top tab is open. Demanding them would
+ * throw such a layout away and rebuild the default on every launch, losing the
+ * column widths.
  */
-const REQUIRED_REGION_IDS: readonly ShellRegionId[] = ['sessions', 'center', 'tools'];
+const REQUIRED_REGION_IDS: readonly ShellRegionId[] = ['sessions', 'center'];
 
 /** Every required region is there, and nothing this frame does not own is. */
 function storedRegionsUsable(ids: Iterable<string>): boolean {
@@ -48,11 +49,11 @@ function storedRegionsUsable(ids: Iterable<string>): boolean {
 const COMPONENT = 'shell-region';
 
 /** What the two side columns open at, in px, before anyone drags a divider.
- * The sessions column opens wider than the tool column because its rows carry
- * a provider mark, three lines of text and a reserved column for their hover
- * actions; at 300 the title had 68px to live in and truncated to a word. */
-export const SESSIONS_WIDTH = 360;
-export const TOOLS_WIDTH = 320;
+ * The sessions column opens so its card is 320px wide, the approved mockup's
+ * rail: the region is the card plus its 3px gutter on each side. The tab pane
+ * opens wide enough for a diff or an editor beside the chat. */
+export const SESSIONS_WIDTH = 326;
+export const TOOLS_WIDTH = 720;
 
 /**
  * How narrow and how wide the tool column may be dragged. It stops short of
@@ -60,8 +61,8 @@ export const TOOLS_WIDTH = 320;
  * else happens. Wider than this is the whole right region widened over the
  * center (`setToolsExpanded`), not a dragged seam.
  */
-export const TOOLS_MIN_WIDTH = 240;
-export const TOOLS_MAX_WIDTH = 960;
+export const TOOLS_MIN_WIDTH = 360;
+export const TOOLS_MAX_WIDTH = 1600;
 
 /** What the middle keeps. A conversation narrower than this is unreadable. */
 export const CENTER_MIN_WIDTH = 420;
@@ -303,22 +304,18 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
       minimumWidth: SESSIONS_MIN_WIDTH,
       maximumWidth: SESSIONS_MAX_WIDTH
     });
-    // Every panel — files, source control, worktrees, run, context, agents,
-    // browser, history — shares one column on the right, and only one of them
-    // is open at a time.
-    addTools();
+    // The tab pane is not part of the default: only `setToolsPresent(true)`
+    // adds it, when the top row gets its first tab.
     addDock();
-    // Say the two side widths again, now that every region exists.
+    // Say the sessions width again, now that every region exists.
     //
     // The dock above is what makes this necessary: putting it under the middle
     // turns the middle from one region into a column of two, and dockview does
     // that by lifting the middle out of the row and putting it back. The width
     // it gave up goes round the other regions on the way out and comes back
-    // unevenly — in practice the tool column ends up squashed to its minimum and
-    // the sessions column keeps the difference. Asking for the two widths once
-    // the arrangement is finished settles them where they were meant to be.
+    // unevenly. Asking for the width once the arrangement is finished settles
+    // it where it was meant to be.
     setRegionWidth('sessions', SESSIONS_WIDTH);
-    setRegionWidth('tools', TOOLS_WIDTH);
   };
 
   /**
@@ -568,7 +565,13 @@ export function createShellFrame(container: HTMLElement, options: ShellFrameOpti
       persistSoon();
     },
     layout(width: number, height: number): void {
+      // The grid lays out proportionally, so a narrower frame (the drawer
+      // opening beside it, a smaller window) would take a share from the
+      // sessions rail too. Asking for the rail's width again afterwards puts
+      // the whole change on the center and the pane.
+      const sessions = regionWidth('sessions');
       api.layout(width, height);
+      if (sessions !== null && regionWidth('sessions') !== sessions) setRegionWidth('sessions', sessions);
     },
     dispose(): void {
       disposed = true;
