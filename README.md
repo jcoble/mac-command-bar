@@ -244,7 +244,7 @@ Work is tracked in [GitHub Issues](https://github.com/jcoble/mac-command-bar/iss
 
 ## License
 
-License: TBD — see LICENSE.
+Assembly is licensed under the [Apache License 2.0](LICENSE). Contributions are accepted under the same license.
 
 ## Acknowledgements
 
