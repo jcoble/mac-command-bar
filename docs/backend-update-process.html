@@ -1,1 +1,75 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Assembly backend update process — TSK-1351</title><style>body{max-width:960px;margin:48px auto;padding:0 24px;font:17px/1.55 system-ui;color:#242a36;background:#f7f8fa}h1,h2{line-height:1.2}section{background:white;border:1px solid #dce1e8;padding:24px;margin:20px 0;border-radius:12px}code{background:#eef0f4;padding:2px 5px}li{margin:8px 0}a{color:#224eb3}small{color:#596475}</style><h1>Reliable backend updates</h1><p>Assembly must offer a compatible backend before saying it is up to date. Updating keeps the remote conversations; uninstalling is unnecessary.</p><small>TSK-1351 · 1 October 2026 · Plan reviewed by SOL medium before implementation</small><section><h2>What failed</h2><p>Main required protocol 8 while the newest published backend, 0.1.13, still used protocol 7. The version-only status called it up to date. Backend releases required a manually pushed tag; the daily adapter release did not update the backend.</p></section><section><h2>The corrected process</h2><ol><li>Backend build inputs land on main, or the owner starts the backend workflow manually on main. Explicit backend release tags remain supported.</li><li>One release job selects the next patch version from remote backend tags, tests packaging, and builds the triggering commit.</li><li>The workflow signs the package and metadata, creates a draft targeting that commit, uploads every asset, then publishes.</li><li>Connections verifies the signed metadata and checks protocol compatibility before showing update status. A newer protocol asks for a client update; an older protocol explains that a matching backend release is still needed.</li><li>The owner clicks Update. The existing installer downloads directly onto the remote machine, verifies it, preserves data, restarts the service, and reconnects.</li></ol><p>Updates interrupt work running in that backend service. Installation remains an explicit action.</p></section><section><h2>Scope and acceptance</h2><p>Changes are limited to the release workflow, its small version selector and tests, existing remote installer verification, Connections refresh wiring, package tests, and architecture documentation. No new protocol, database, cache, timer, or update setting.</p><p>Expected diff: 250–350 lines. Required checks: version selection, package integrity, focused Rust installer tests, frontend type/build checks, and the Connections refresh/error flow. A native install is separate proof from a browser simulation.</p></section><section><h2>Recovery release</h2><p><a href="https://github.com/jcoble/mac-command-bar/releases/tag/assembly-backend-v0.1.14">Backend 0.1.14</a> was built successfully from <code>2c2a2040</code> with protocol 8. All four release assets are published. This establishes package availability; it does not by itself prove installation on the Workbox.</p><p><a href="https://github.com/jcoble/mac-command-bar/actions/runs/36860501847">Build receipt</a> · <a href="https://app.notion.com/p/3ec394b0689d81f9aaa3d3b0e2211c40">Task and verification record</a></p></section><section><h2>Verification status</h2><p>Mac: three version-selection tests, three package integrity tests, and six Rust installer tests passed. TypeScript and the production build passed. Code/spec review found and corrected a manual-dispatch gate so only main may be manually released.</p><p>UI proof remains pending: computer use returned ERR_BLOCKED_BY_CLIENT for the isolated local fixture and does not list the unbundled dev app. No native update was performed, and no remote service was interrupted. This limitation must be resolved before treating the task as fully verified.</p></section></html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assembly development and updates — TSK-1351</title>
+<style>
+body{max-width:1000px;margin:40px auto;padding:0 24px;font:17px/1.55 system-ui;color:#242a36;background:#f7f8fa}h1,h2{line-height:1.2}section{background:white;border:1px solid #dce1e8;padding:24px;margin:20px 0;border-radius:12px}code{background:#eef0f4;padding:2px 5px}li{margin:8px 0}a{color:#224eb3}small{color:#596475}table{width:100%;border-collapse:collapse;font-size:15px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #e3e7ed;padding:12px 8px}img{width:100%;height:auto;border:1px solid #dce1e8;border-radius:8px}
+</style>
+</head>
+<body>
+<h1>Develop and update Assembly without guessing</h1>
+<p>Desktop, remote backend, ACP adapters, and provider CLIs are separate installations. Each check now explains what it checked and which machine an update affects.</p>
+<small>TSK-1351 · Updated October 7, 2026 · Implementation and native checks completed; PR #130 awaits owner merge.</small>
+<section>
+<h2>Fast development loop</h2>
+<ol>
+<li>Pull the desired checkout and run <code>pnpm app:dev</code>. Frontend edits hot reload. Rust changes rebuild through Tauri; restart this command when starting from newly pulled Rust code.</li>
+<li>A development desktop uses its checkout. Its Updates screen says this directly and avoids the packaged desktop updater, including the misleading temporary-path error.</li>
+<li>To prepare a signed remote backend from a task branch, dispatch <strong>Release Assembly Remote Backend</strong> in GitHub Actions and select that branch. The desktop version does not need to change.</li>
+<li>After this workflow change is merged, backend build inputs landing on main also trigger a release. The existing Rust cache is reused; the job selects the next unused backend patch version and builds the triggering commit.</li>
+<li>The release remains a draft until the signed archive and metadata are uploaded. Then Connections can verify the release and offer installation.</li>
+</ol>
+<p>Publishing is handled by GitHub Actions. Backend installation is an explicit action and may interrupt work running in that backend service.</p>
+</section>
+<section>
+<h2>What each control means</h2>
+<table>
+<thead><tr><th>Installation</th><th>Where to find it</th><th>What is checked or updated</th></tr></thead>
+<tbody>
+<tr><td>Assembly desktop</td><td>Settings → Updates</td><td>Development: the selected source checkout. Release: the latest published signed desktop release. This says nothing about the remote backend.</td></tr>
+<tr><td>Remote backend</td><td>Settings → Connections → Check for backend updates</td><td>The signed release metadata and its protocol must match the client. “Matches latest compatible release” compares the installed backend version to that compatible release. Connect still verifies the running backend’s protocol.</td></tr>
+<tr><td>ACP adapters</td><td>Existing provider adapter controls</td><td>The signed adapter packages, independently of Assembly and the provider CLIs.</td></tr>
+<tr><td>Codex / Claude CLI on Mac</td><td>Settings → Updates → Provider CLIs · This Mac</td><td>Read installed versions or run the selected CLI’s own updater. Its installed version is read again before reporting success.</td></tr>
+<tr><td>Codex / Claude CLI on Workbox</td><td>Settings → Connections → Provider CLIs · saved machine</td><td>The same operations execute on that machine over SSH, even while the Assembly backend is disconnected or incompatible.</td></tr>
+</tbody>
+</table>
+<p>Only the selected provider on the selected machine shows update activity. CLI updates do not restart Assembly or its backend. Antigravity’s runtime updates with its ACP bundle.</p>
+</section>
+<section>
+<h2>When the two sides do not match</h2>
+<ul>
+<li><strong>Published backend is older:</strong> the message names both protocol versions and explains that a compatible backend release must finish publishing. Reinstalling the same release will not resolve it.</li>
+<li><strong>Published backend is newer:</strong> update or rebuild the desktop from current main before installing that backend.</li>
+<li><strong>Status cannot be verified:</strong> the screen reports unverified compatibility or the check’s error, rather than claiming the machine is up to date.</li>
+<li><strong>A CLI operation fails:</strong> its error is shown and its spinner stops. SSH and provider updater output are retained; failure is not reported as an update success.</li>
+</ul>
+</section>
+<section>
+<h2>Verification · October 7</h2>
+<table>
+<thead><tr><th>Check</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>Backend version selector</td><td>4 tests passed: main, explicit tags, branch dispatch, and rejected invalid references.</td></tr>
+<tr><td>Backend package integrity</td><td>3 tests passed.</td></tr>
+<tr><td>Rust CLI commands</td><td>3 tests passed: fixed commands, rejected injection, and nonempty version receipts.</td></tr>
+<tr><td>Rust installer</td><td>7 tests passed, including both protocol mismatch directions, signatures, and useful stdout/stderr failure text.</td></tr>
+<tr><td>CLI service and existing adapter service</td><td>Host/provider isolation, single flight, late responses, and error handling passed.</td></tr>
+<tr><td>Compile and build</td><td>TypeScript and production frontend build passed. Svelte check: zero errors, six existing warnings. Rust check with warnings denied and the isolated native build passed.</td></tr>
+<tr><td>Native Mac UI</td><td>Both Codex and Claude Update CLI buttons ran successfully. Readback: codex-cli 0.161.0 and Claude Code 2.1.293. Development desktop guidance was visible.</td></tr>
+<tr><td>Native Workbox UI</td><td>Both CLI updates ran successfully through SSH while disconnected. Same installed-version readbacks. Codex-only update spinner observed. Backend 0.1.19 matched the signed protocol-14 release, and Connect completed the actual backend handshake successfully.</td></tr>
+<tr><td>Idle resource checks</td><td>App process: 0.0–0.2% CPU across ten seconds before connecting. A second ten-second sample covering connection settling ended with both app and its identified WebContent process at 0.0%; earlier WebContent samples reached 2.4% during connection. Update spinners ended; native document.getAnimations() reported zero animations and zero running animations.</td></tr>
+<tr><td>Combined code/spec review</td><td>SOL medium PASS after retaining remote updater failure text from both stdout and stderr.</td></tr>
+</tbody>
+</table>
+<p>Native proof used a separate test app and database, a 1710×990 window, and three screenshots. The owner’s main-checkout edits and running sessions were preserved.</p>
+<p><strong>Publication boundary:</strong> the revised automatic/manual release workflow has not been run in live CI in this takeover. The existing compatible release was verified; no new backend release or installation was performed. The workflow will be available on main after owner-approved merge.</p>
+<p><a href="https://github.com/jcoble/mac-command-bar/pull/130">PR #130</a> · <a href="https://app.notion.com/p/3ec394b0689d81f9aaa3d3b0e2211c40">Task, plan review and verification record</a></p>
+</section>
+<section>
+<h2>Earlier recovery</h2>
+<p>The original October 1 incident was a protocol-8 desktop facing a protocol-7 published backend. <a href="https://github.com/jcoble/mac-command-bar/releases/tag/assembly-backend-v0.1.14">Backend 0.1.14</a> was built from <code>2c2a2040</code> with protocol 8; <a href="https://github.com/jcoble/mac-command-bar/actions/runs/36860501847">its build receipt</a> established package availability. That earlier run did not prove native installation. The October 7 native checks above cover the newly added controls.</p>
+</section>
+</body>
+</html>

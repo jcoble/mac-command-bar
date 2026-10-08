@@ -545,7 +545,7 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-async fn ssh_output(target: &str, remote_command: &str) -> Result<String, String> {
+pub(crate) async fn ssh_output(target: &str, remote_command: &str) -> Result<String, String> {
     command_output(
         tokio::process::Command::new("ssh").args([
             "-o",
@@ -576,7 +576,8 @@ async fn command_output(
         .await
         .map_err(|error| format!("{label} could not start: {error}"))?;
     if !output.status.success() {
-        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let message = [String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)]
+            .iter().map(|part| part.trim()).filter(|part| !part.is_empty()).collect::<Vec<_>>().join("\n");
         return Err(if message.is_empty() {
             format!("{label} failed")
         } else {
@@ -588,6 +589,14 @@ async fn command_output(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn failed_remote_command_retains_stdout_and_stderr() {
+        let error = super::command_output(
+            tokio::process::Command::new("sh").args(["-c", "printf 'upgrade failed'; printf 'check permissions' >&2; exit 1"]),
+            "Remote backend command",
+        ).await.unwrap_err();
+        assert_eq!(error, "Remote backend command failed: upgrade failed\ncheck permissions");
+    }
     use super::*;
 
     #[test]

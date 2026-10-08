@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   release:
-    if: github.ref == 'refs/heads/main' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/assembly-backend-v'))
+    if: (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/')) || github.ref == 'refs/heads/main' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/assembly-backend-v'))
     permissions:
       contents: write
     runs-on: ubuntu-24.04

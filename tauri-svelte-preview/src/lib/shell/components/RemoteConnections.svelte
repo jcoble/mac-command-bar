@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import ProviderCliUpdateControl from './ProviderCliUpdateControl.svelte';
   import ProviderUpdateControl from './ProviderUpdateControl.svelte';
   import WorkingSpinner from './conversation/WorkingSpinner.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -68,13 +69,13 @@
 
   function backendLabel(profileId: string): string {
     const backend = backends[profileId];
-    if (!backend) return 'Backend version unknown';
+    if (!backend) return 'Backend compatibility not verified';
     if (!backend.installed) return 'Backend not installed';
     const installed = backend.installedVersion ?? 'unknown version';
-    if (backend.updateAvailable === null) return `Backend ${installed}`;
+    if (backend.updateAvailable === null) return `Backend ${installed} · compatibility not verified`;
     return backend.updateAvailable
       ? `Backend ${installed} · update to ${backend.latestVersion} available`
-      : `Backend ${installed} · up to date`;
+      : `Backend ${installed} · matches latest compatible release`;
   }
 
   onMount(() => {
@@ -216,6 +217,7 @@
       {#if environment.readyProfileIds.includes(saved.id)}
         <ProviderUpdateControl profileId={saved.id} machineName={saved.name} />
       {/if}
+      <ProviderCliUpdateControl profileId={saved.id} machineName={saved.name} />
       {#if confirmingUninstallId === saved.id}
         <div class="uninstall-confirm">
           <strong>Uninstall the backend from {saved.name}?</strong>
