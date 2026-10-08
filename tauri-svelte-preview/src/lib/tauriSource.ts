@@ -881,6 +881,12 @@ export async function continueAppExit(kind: AppExitKind): Promise<void> {
   await invoke('continue_app_exit', { kind });
 }
 
+/** The person kept the app open; the next close or quit warns again. */
+export async function cancelAppExit(): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cancel_app_exit');
+}
+
 const sourceScanProgressSubscribers = new Set<SourceScanProgressSubscriber>();
 let sourceScanProgressUnlisten: (() => void) | null = null;
 let sourceScanProgressSetup: Promise<void> | null = null;

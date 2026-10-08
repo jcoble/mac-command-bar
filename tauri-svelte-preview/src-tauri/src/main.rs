@@ -5302,22 +5302,48 @@ const EXIT_REQUESTED_EVENT: &str = "assembly_exit_requested";
 /// Cmd-Q would never reach the exit guard.
 const QUIT_MENU_ID: &str = "assembly-quit";
 
-/// Holds every window close and app quit until the frontend has checked for
-/// local background work. `continue_app_exit` lets exactly one through.
+/// Holds a window close or app quit until the frontend has checked for local
+/// background work. `continue_app_exit` lets exactly one through. A second
+/// request while the first is unanswered also goes through, so a frozen
+/// frontend can never make the app impossible to quit.
 #[derive(Default)]
 struct ExitRequestGuard {
-    approved: AtomicBool,
+    state: Mutex<ExitRequestState>,
+}
+
+#[derive(Default)]
+struct ExitRequestState {
+    approved: bool,
+    pending: bool,
 }
 
 impl ExitRequestGuard {
-    /// True when this request must wait for the frontend; uses up an approval.
+    /// True when this request must wait for the frontend. An approval or an
+    /// unanswered earlier request lets it through and is used up.
     fn hold(&self) -> bool {
-        !self.approved.swap(false, Ordering::SeqCst)
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let through = state.approved || state.pending;
+        state.approved = false;
+        state.pending = !through;
+        !through
     }
 
     fn approve(&self) {
-        self.approved.store(true, Ordering::SeqCst);
+        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.approved = true;
+        state.pending = false;
     }
+
+    /// The person chose Cancel: the next request warns again.
+    fn cancel(&self) {
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).pending = false;
+    }
+}
+
+/// The person chose Cancel in the quit warning.
+#[tauri::command]
+fn cancel_app_exit(guard: tauri::State<'_, ExitRequestGuard>) {
+    guard.cancel();
 }
 
 /// The frontend found nothing to warn about, or the person chose Quit Anyway.
@@ -5813,7 +5839,8 @@ fn main() {
             helper::read_helper_settings,
             helper::write_helper_settings,
             helper::test_helper,
-            continue_app_exit
+            continue_app_exit,
+            cancel_app_exit
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. }
@@ -5872,11 +5899,26 @@ mod tests {
         // The first close or quit waits for the frontend to check for work.
         assert!(guard.hold());
         // Cancel approves nothing, so the next request is held again.
+        guard.cancel();
         assert!(guard.hold());
         // One approval lets exactly one request through...
         guard.approve();
         assert!(!guard.hold());
         // ...and is used up, so a later request warns again.
+        assert!(guard.hold());
+    }
+
+    #[test]
+    fn exit_request_guard_lets_a_repeat_through_when_unanswered() {
+        let guard = ExitRequestGuard::default();
+        assert!(guard.hold());
+        // A frozen or absent frontend never answers; a second close or quit
+        // goes ahead rather than leaving the app impossible to quit.
+        assert!(!guard.hold());
+        // That repeat used up the outstanding request, so the next one warns.
+        assert!(guard.hold());
+        // Cancel clears the outstanding request, so the next attempt warns again.
+        guard.cancel();
         assert!(guard.hold());
     }
 

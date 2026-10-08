@@ -18,6 +18,7 @@
   import type { BackgroundWorkItem } from '$lib/tauriSource.ts';
   import { conversationItemHasVisibleContent } from '$lib/shell/conversation/conversationItemVisibility.ts';
   import { setConversationTimelineDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
+  import { Button } from '$lib/components/ui/button/index.js';
   import TimelineItem from './TimelineItem.svelte';
   import ConversationToolGroup from './ConversationToolGroup.svelte';
   import ConversationTurnElapsed from './ConversationTurnElapsed.svelte';
@@ -629,12 +630,12 @@
                 {#each backgroundWork as work, index (work.id)}
                   {#if index > 0}<span class="background-sep" aria-hidden="true">·</span>{/if}
                   <span class="background-item">
-                    <button class="background-link" type="button"
+                    <Button variant="ghost" size="xs" iconPosition="start" class="min-w-0 text-[13px] font-normal text-muted-foreground"
                       title={work.kind === 'subagent' ? 'Open this sub-agent in the Agents panel' : 'Show this command in the conversation'}
                       onclick={() => openBackgroundWork(work)}>
-                      {#if work.kind === 'subagent'}<Bot size={13} aria-hidden="true" />{:else}<Terminal size={13} aria-hidden="true" />{/if}
-                      <span class="background-label">{backgroundWorkLabel(work)}</span>
-                    </button>
+                      {#if work.kind === 'subagent'}<Bot data-icon="inline-start" aria-hidden="true" />{:else}<Terminal data-icon="inline-start" aria-hidden="true" />{/if}
+                      <span class="max-w-[24ch] truncate">{backgroundWorkLabel(work)}</span>
+                    </Button>
                     <span class="background-elapsed">{formatBackgroundElapsed(backgroundNow - work.startedAtMs)}</span>
                   </span>
                 {/each}
@@ -667,12 +668,9 @@
   .run-summary{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .working-row{flex:none;display:flex;align-items:center;gap:8px;height:24px;overflow:hidden;white-space:nowrap;color:var(--color-text-3);font-size:13px}
-  .background-row{gap:6px}
+  /* Taller than the turn's line so the kit button's focus ring is not clipped. */
+  .background-row{gap:6px;height:32px;padding:4px 0}
   .background-item{display:inline-flex;align-items:center;gap:6px;min-width:0}
-  .background-link{display:inline-flex;align-items:center;gap:5px;min-width:0;height:24px;padding:0 6px;border:0;border-radius:8px;background:transparent;color:var(--color-text-2);font:inherit;cursor:pointer}
-  .background-link:hover{background:color-mix(in srgb,var(--color-hover) 50%,transparent);color:var(--color-text)}
-  .background-link:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:-2px}
-  .background-label{max-width:24ch;overflow:hidden;text-overflow:ellipsis}
   .background-elapsed{font-variant-numeric:tabular-nums}
   .background-sep{color:var(--color-text-3)}
   /* A disc under the middle of the transcript, holding one arrow. It sits over

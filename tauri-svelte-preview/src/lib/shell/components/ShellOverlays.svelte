@@ -16,7 +16,7 @@
 
 	import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
 	import type { ProblemsLocation } from "$lib/settingsStore.svelte";
-	import { continueAppExit, listenToAppExitRequests, type AppExitKind } from "$lib/tauriSource";
+	import { cancelAppExit, continueAppExit, listenToAppExitRequests, type AppExitKind } from "$lib/tauriSource";
 	import { backgroundWorkSummary, localBackgroundWorkSessions } from "$lib/shell/ownedSessions";
 	import { sessionLabel } from "$lib/shell/sessionStrip";
 	import { rail } from "$lib/shell/stores/sessionRailStore.svelte";
@@ -167,7 +167,14 @@
 >
 	<UsagePopover />
 </div>
-<AlertDialog.Root open={exitRequest !== null} onOpenChange={(open) => { if (!open) exitRequest = null; }}>
+<AlertDialog.Root
+	open={exitRequest !== null}
+	onOpenChange={(open) => {
+		if (open || !exitRequest) return;
+		exitRequest = null;
+		void cancelAppExit();
+	}}
+>
 	<AlertDialog.Content
 		class="rounded-lg bg-background text-foreground ring-[var(--color-border)] shadow-[var(--shadow-lg)]"
 		data-testid="quit-warning"
