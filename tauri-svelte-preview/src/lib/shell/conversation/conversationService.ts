@@ -12,6 +12,7 @@ import {
   stopAgentConversationChildHistoryFromTauri,
   writeTerminalSessionFromTauri,
   type AgentConversationSessionRecord,
+  type BackgroundWorkItem,
   type ExecutionEnvironment,
   type ProjectionStreamRegistration,
   type StreamEnvelope
@@ -974,7 +975,7 @@ async function refreshRemoteSessionActivity(streamGeneration: number): Promise<v
         activeTurnId: record.activeTurnId,
         pendingPermission: record.pendingPermission,
         pendingInput: record.pendingInput,
-        backgroundTaskIds: record.backgroundTaskIds ?? []
+        backgroundWork: record.backgroundWork
       });
       synchronizeSessionPresenceWork(record.ownedId, record.activeTurnId, false, null);
       const current = getConversationSession(record.ownedId);
@@ -989,6 +990,24 @@ async function refreshRemoteSessionActivity(streamGeneration: number): Promise<v
     if (read !== remoteActivityRead) return;
     rail.error = `Could not refresh remote turn activity: ${error instanceof Error ? error.message : String(error)}`;
   }
+}
+
+function updateBackgroundWork(
+  work: BackgroundWorkItem[],
+  item: Omit<BackgroundWorkItem, 'startedAtMs'>,
+  timestampMs: number,
+  terminal: boolean
+): BackgroundWorkItem[] {
+  if (terminal) return work.filter((entry) => entry.id !== item.id);
+  const existing = work.find((entry) => entry.id === item.id);
+  const next = {
+    ...item,
+    label: item.label || existing?.label || '',
+    startedAtMs: existing?.startedAtMs ?? timestampMs
+  };
+  return existing
+    ? work.map((entry) => entry.id === item.id ? next : entry)
+    : [...work, next];
 }
 
 async function reacquireSelectedChildHistory(
@@ -1048,13 +1067,35 @@ async function handleConversationStreamEnvelope(
   if (row?.kind === 'tool' && row.state === 'completed' && row.path && row.diff) {
     publishWorkspaceFileChange({ ownedId: payload.ownedId, path: row.path });
   }
+  if (payload.provider === 'claude' && payload.payload.kind === 'childUpdate') {
+    const owned = rail.owned.find((session) => session.ownedId === payload.ownedId);
+    if (owned) {
+      const terminalChild = ['finished', 'failed', 'cancelled', 'disconnected'].includes(payload.payload.state);
+      updateOwnedSession(payload.ownedId, {
+        backgroundWork: updateBackgroundWork(
+          owned.backgroundWork ?? [],
+          {
+            id: `claude-child:${payload.payload.childId}`,
+            kind: 'subagent',
+            label: payload.payload.label ?? ''
+          },
+          payload.timestampMs,
+          terminalChild
+        )
+      });
+    }
+  }
   if (payload.payload.kind === 'tool' && payload.payload.itemId.startsWith('background-task:')) {
     const owned = rail.owned.find((session) => session.ownedId === payload.ownedId);
     if (owned) {
-      const ids = new Set(owned.backgroundTaskIds ?? []);
-      if (payload.payload.state === 'started' || payload.payload.state === 'updated') ids.add(payload.payload.itemId);
-      else ids.delete(payload.payload.itemId);
-      updateOwnedSession(payload.ownedId, { backgroundTaskIds: [...ids] });
+      updateOwnedSession(payload.ownedId, {
+        backgroundWork: updateBackgroundWork(
+          owned.backgroundWork ?? [],
+          { id: payload.payload.itemId, kind: 'command', label: payload.payload.name },
+          payload.timestampMs,
+          payload.payload.state !== 'started' && payload.payload.state !== 'updated'
+        )
+      });
     }
   }
   const transition = sessionPresenceEventFromConversation(displayEvent);

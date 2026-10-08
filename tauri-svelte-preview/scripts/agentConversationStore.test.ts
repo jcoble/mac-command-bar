@@ -1656,9 +1656,10 @@ await test('an unchanged sidebar row update leaves the row list untouched', asyn
   } finally {
     rmSync(railOutput, { force: true });
   }
-  railStore.hydrateOwned([{ ownedId: 'row-a', title: 'A', state: 'background', backgroundTaskIds: ['t1'] }]);
+  const backgroundWork = [{ id: 't1', kind: 'command', label: 'Task', startedAtMs: 1 }];
+  railStore.hydrateOwned([{ ownedId: 'row-a', title: 'A', state: 'background', backgroundWork }]);
   const before = railStore.rail.owned;
-  railStore.updateOwnedSession('row-a', { state: 'background', backgroundTaskIds: ['t1'] });
+  railStore.updateOwnedSession('row-a', { state: 'background', backgroundWork });
   assert.equal(railStore.rail.owned, before, 'a reconnect refresh with the same values must not re-render the rail');
   railStore.updateOwnedSession('row-a', { state: 'live' });
   assert.notEqual(railStore.rail.owned, before);

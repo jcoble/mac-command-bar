@@ -522,7 +522,7 @@ impl AcpClient {
         if provider == AgentConversationProvider::Claude {
             request.client_capabilities.meta = Some(serde_json::Map::from_iter([(
                 "jetbrains".to_string(),
-                json!({"air": {"version": 1, "capabilities": ["asyncTasks", "nativeSubagentSessions"]}}),
+                json!({"air": {"version": 1, "capabilities": ["asyncTasks", "nativeSubagentSessions", "backgroundSubagents"]}}),
             )]));
         }
         let mut request = json!(request);
@@ -1518,6 +1518,21 @@ if [ "${{MAX_THINKING_TOKENS+x}}" = "x" ]; then
 else
   printf 'MAX_THINKING_TOKENS=<unset>\n' >> "$log"
 fi
+if [ "${{fixture%_feed}}" != "$fixture" ]; then
+  : >> "$log.feed"
+  parent=$$
+  (
+    fed=0
+    while kill -0 "$parent" 2>/dev/null; do
+      total=$(wc -l < "$log.feed" | tr -d ' ')
+      if [ "$total" -gt "$fed" ]; then
+        sed -n "$((fed + 1)),${{total}}p" "$log.feed"
+        fed=$total
+      fi
+      sleep 0.01
+    done
+  ) &
+fi
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$log"
   id=$(printf '%s\n' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
@@ -1608,6 +1623,8 @@ while IFS= read -r line; do
         fi
       elif [ "$fixture" = "dies_midturn" ]; then
         exit 0
+      elif [ "${{fixture%_feed}}" != "$fixture" ]; then
+        case "$line" in *'"text":"exit"'*) exit 0 ;; esac
       elif [ "$fixture" = "child_then_dies" ]; then
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"new-session","update":{{"sessionUpdate":"subagent_spawned","subagentSessionId":"child-agent","name":"Reviewer"}}}}}}\n'
         sleep 0.01
@@ -2214,7 +2231,7 @@ done"#,
             .find(|frame| frame["method"] == "initialize").unwrap();
         assert_eq!(
             initialize["params"]["clientCapabilities"]["_meta"]["jetbrains"]["air"]["capabilities"],
-            json!(["asyncTasks", "nativeSubagentSessions"])
+            json!(["asyncTasks", "nativeSubagentSessions", "backgroundSubagents"])
         );
         assert_eq!(initialize["params"]["clientCapabilities"]["elicitation"], json!({"form": {}}));
         assert!(frames.contains(r#""method":"session/set_model""#));
