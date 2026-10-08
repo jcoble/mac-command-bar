@@ -505,6 +505,13 @@ export type AgentConversationSessionMeta = {
   scannedLastActivity: string | null;
 };
 
+export type BackgroundWorkItem = {
+  id: string;
+  kind: 'subagent' | 'command';
+  label: string;
+  startedAtMs: number;
+};
+
 export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   ownedId: string;
   executionEnvironment: ExecutionEnvironment;
@@ -520,7 +527,7 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   activeTurnId: string | null;
   pendingPermission: boolean;
   pendingInput: boolean;
-  backgroundTaskIds?: string[];
+  backgroundWork: BackgroundWorkItem[];
   nativeSessionId: string | null;
   projectId: string | null;
   /** The session's project group, computed in SQL on this Mac: `repo:<key>`, `project:<id>` or `none`. */

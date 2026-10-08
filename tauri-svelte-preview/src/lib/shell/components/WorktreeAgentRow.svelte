@@ -81,7 +81,7 @@
 	const activeTurnId = $derived(session.activeTurnId ?? presenceHistory.activeTurnId);
 	const suspended = $derived(session.runtimeState === "suspended");
 	const backgroundActive = $derived(
-		(session.backgroundTaskIds?.length ?? 0) > 0
+		(session.backgroundWork?.length ?? 0) > 0
 			&& (session.executionEnvironment !== "remote" || rail.remoteConnections[session.remoteProfileId ?? ""] === "connected"),
 	);
 	const presenceSignals = $derived(

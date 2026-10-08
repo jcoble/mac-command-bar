@@ -189,7 +189,7 @@
     turnActive && conversation && !conversation.selectedHasAfter
       ? turnActivityLabel(visibleTimeline, activeTurnId, pendingApprovals.length, pendingInputs.length)
       : active && conversation && !conversation.selectedHasAfter
-        && (active.backgroundTaskIds?.length ?? 0) > 0
+        && active.backgroundWork?.some((item) => item.kind === 'command')
         && (active.executionEnvironment !== 'remote' || rail.remoteConnections[active.remoteProfileId ?? ''] === 'connected')
         ? 'Background command running'
         : null

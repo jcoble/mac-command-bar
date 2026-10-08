@@ -9,6 +9,7 @@ import type {
   AgentConversationSessionMeta,
   AgentConversationSessionRecord,
   AgentSession,
+  BackgroundWorkItem,
   ExecutionEnvironment,
   TerminalSessionInfo
 } from '../tauriSource';
@@ -42,7 +43,7 @@ export interface OwnedAgentRuntimeFields {
   activeTurnId: string | null;
   pendingPermission?: boolean;
   pendingInput?: boolean;
-  backgroundTaskIds: string[];
+  backgroundWork: BackgroundWorkItem[];
   capabilityRevision: number;
   lastRuntimeError: string | null;
 }
@@ -280,7 +281,7 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
     activeTurnId: record.activeTurnId,
     pendingPermission: record.pendingPermission,
     pendingInput: record.pendingInput,
-    backgroundTaskIds: record.backgroundTaskIds ?? [],
+    backgroundWork: record.backgroundWork,
     capabilityRevision: 0,
     lastRuntimeError: null,
     completedAt: record.completedAt,

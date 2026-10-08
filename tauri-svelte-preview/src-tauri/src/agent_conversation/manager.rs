@@ -30,7 +30,7 @@ use super::protocol::{
     AgentConversationItemPage, AgentConversationPayload, AgentConversationProvider,
     AgentConversationSelectionSnapshot, AgentConversationTurnFacts,
     AgentConversationSendReceipt, AgentConversationSessionMeta, AgentConversationSessionRecord,
-    AgentConversationSnapshot,
+    AgentConversationSnapshot, BackgroundWorkItem, BackgroundWorkKind,
     AgentEvent, AgentEventType, AgentExecutionOwner, AgentImplementation,
     AgentInteractionCapabilities, AgentNativeSessionMode, AgentPromptCapabilities,
     AgentRequestIdentity, AgentRuntimeState, AgentSessionCapabilities, AgentUserInputAction,
@@ -215,7 +215,7 @@ pub struct ManagedAgentSession {
     /// The reply the agent is streaming: its message id, the text of the
     /// deltas stored for it so far, and the autonomous turn it belongs to.
     streaming_reply: Option<(String, String, Option<String>)>,
-    background_work: HashSet<String>,
+    background_work: HashMap<String, BackgroundWorkEntry>,
     /// The journal turn for Claude's own work between two prompts — the
     /// replies it writes when a background sub-agent or command finishes.
     /// It lasts from the first such update until Claude Code reports idle.
@@ -232,6 +232,13 @@ pub struct ManagedAgentSession {
     /// recorded carries none, and counts as the first prompt.
     title_source: Option<String>,
     suspending: bool,
+}
+
+#[derive(Clone, Debug)]
+struct BackgroundWorkEntry {
+    kind: BackgroundWorkKind,
+    label: String,
+    started_at_ms: i64,
 }
 
 /// Holds only the in-memory fields that an event is allowed to advance.
@@ -1733,7 +1740,7 @@ impl AgentRuntimeManager {
                 last_activity_ms: created_at_ms,
                 live_tool_calls: HashSet::new(),
                 streaming_reply: None,
-                background_work: HashSet::new(),
+                background_work: HashMap::new(),
                 autonomous_turn_id: None,
                 claude_reports_state: false,
                 child_rollout_scan: None,
@@ -3380,7 +3387,7 @@ impl AgentRuntimeManager {
                     active_turn_id,
                     pending_permission,
                     pending_input,
-                    background_task_ids,
+                    background_work,
                     native_session_id,
                     mut meta,
                 ) = if let Some(session) = live {
@@ -3390,10 +3397,7 @@ impl AgentRuntimeManager {
                         session.active_turn_id.clone(),
                         !session.permission_requests.is_empty(),
                         !session.user_input_requests.is_empty(),
-                        session.background_work.iter()
-                            .filter(|id| id.starts_with("background-task:"))
-                            .cloned()
-                            .collect(),
+                        projected_background_work(session),
                         session.native_session_id.clone(),
                         session.rail_meta.clone(),
                     )
@@ -3429,7 +3433,7 @@ impl AgentRuntimeManager {
                     active_turn_id,
                     pending_permission,
                     pending_input,
-                    background_task_ids,
+                    background_work,
                     native_session_id,
                     project_id: row.project_id,
                     // Filled by the list command, in one SQL statement for the whole list.
@@ -4798,7 +4802,7 @@ fn recovered_session_from_row(
         last_activity_ms: row.last_activity_at_ms.max(0) as u128,
         live_tool_calls: HashSet::new(),
         streaming_reply: None,
-        background_work: HashSet::new(),
+        background_work: HashMap::new(),
         autonomous_turn_id: None,
         claude_reports_state: false,
         child_rollout_scan: None,
@@ -5506,7 +5510,12 @@ async fn pump_inbound(
                             session.background_work.remove(CLAUDE_SESSION_RUNNING);
                             session.autonomous_turn_id = None;
                         } else {
-                            session.background_work.insert(CLAUDE_SESSION_RUNNING.to_string());
+                            insert_background_work(
+                                &mut session.background_work,
+                                CLAUDE_SESSION_RUNNING.to_string(),
+                                BackgroundWorkKind::Command,
+                                String::new(),
+                            );
                         }
                         break 'update session_is_quiescent(session);
                     }
@@ -5863,7 +5872,7 @@ async fn settle_closed_transport(
                 );
             }
             disconnect_claude_children(session, &emitter);
-            for item_id in session.background_work.drain().collect::<Vec<_>>() {
+            for (item_id, _) in session.background_work.drain().collect::<Vec<_>>() {
                 if item_id.starts_with("background-task:") {
                     let _ = record_payload_for_session_and_dispatch(
                         session,
@@ -6224,11 +6233,16 @@ fn claude_native_child_payload(
     );
     let work_id = format!("claude-child:{child_id}");
     if terminal {
-        if session.background_work.remove(&work_id) {
+        if session.background_work.remove(&work_id).is_some() {
             expect_claude_wake(session);
         }
     } else {
-        session.background_work.insert(work_id);
+        insert_background_work(
+            &mut session.background_work,
+            work_id,
+            BackgroundWorkKind::Subagent,
+            label.clone().unwrap_or_default(),
+        );
     }
     session.claude_children.insert(
         child_id.clone(),
@@ -6338,29 +6352,43 @@ fn update_raw_liveness(session: &mut ManagedAgentSession, params: &Value) -> boo
     } else {
         identifier
     };
-    let target = if kind.contains("tool") {
-        &mut session.live_tool_calls
-    } else if kind.contains("task")
+    if kind.contains("tool") {
+        if terminal {
+            session.live_tool_calls.remove(&identifier);
+        } else {
+            session.live_tool_calls.insert(identifier);
+        }
+        return session_is_quiescent(session);
+    }
+    if !(kind.contains("task")
         || kind.contains("child")
         || kind.contains("subagent")
-        || kind.contains("background")
+        || kind.contains("background"))
     {
-        &mut session.background_work
-    } else {
-        return false;
-    };
-    if !terminal {
-        target.insert(identifier);
         return false;
     }
-    if target.remove(&identifier) && !kind.contains("tool") {
+    if !terminal {
+        let label = update
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        insert_background_work(
+            &mut session.background_work,
+            identifier,
+            BackgroundWorkKind::Command,
+            label,
+        );
+        return false;
+    }
+    if session.background_work.remove(&identifier).is_some() {
         expect_claude_wake(session);
     }
     session_is_quiescent(session)
 }
 
 fn stopped_background_task_payload(
-    background_work: &mut HashSet<String>,
+    background_work: &mut HashMap<String, BackgroundWorkEntry>,
     params: &Value,
 ) -> Option<AgentConversationPayload> {
     let update = params.get("update").unwrap_or(params);
@@ -6378,7 +6406,7 @@ fn stopped_background_task_payload(
         return None;
     }
     let item_id = format!("background-task:{task_id}");
-    if !background_work.remove(&item_id) {
+    if background_work.remove(&item_id).is_none() {
         return None;
     }
     Some(AgentConversationPayload::Tool {
@@ -7906,12 +7934,64 @@ fn session_is_checkout_quiescent(session: &ManagedAgentSession) -> bool {
 /// Background work held while Claude Code reports it is running.
 const CLAUDE_SESSION_RUNNING: &str = "claude-session:running";
 
+fn insert_background_work(
+    background_work: &mut HashMap<String, BackgroundWorkEntry>,
+    id: String,
+    kind: BackgroundWorkKind,
+    label: String,
+) {
+    background_work
+        .entry(id)
+        .and_modify(|entry| {
+            entry.kind = kind;
+            if !label.is_empty() {
+                entry.label.clone_from(&label);
+            }
+        })
+        .or_insert_with(|| BackgroundWorkEntry {
+            kind,
+            label,
+            started_at_ms: store_timestamp(timestamp_millis()),
+        });
+}
+
+fn projected_background_work(session: &ManagedAgentSession) -> Vec<BackgroundWorkItem> {
+    let mut work = session
+        .background_work
+        .iter()
+        .filter_map(|(id, entry)| {
+            let visible = id.starts_with("claude-child:") || id.starts_with("background-task:");
+            visible.then(|| BackgroundWorkItem {
+                id: id.clone(),
+                kind: entry.kind,
+                label: id
+                    .strip_prefix("claude-child:")
+                    .and_then(|child_id| session.claude_children.get(child_id))
+                    .and_then(|child| child.label.clone())
+                    .unwrap_or_else(|| entry.label.clone()),
+                started_at_ms: entry.started_at_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+    work.sort_by(|left, right| {
+        left.started_at_ms
+            .cmp(&right.started_at_ms)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    work
+}
+
 /// Claude Code wakes the agent that owned finished background work — a shell,
 /// or a sub-agent — to report it, even after it reported idle. Until its next
 /// idle the session still has work in hand.
 fn expect_claude_wake(session: &mut ManagedAgentSession) {
     if session.claude_reports_state {
-        session.background_work.insert(CLAUDE_SESSION_RUNNING.to_string());
+        insert_background_work(
+            &mut session.background_work,
+            CLAUDE_SESSION_RUNNING.to_string(),
+            BackgroundWorkKind::Command,
+            String::new(),
+        );
     }
 }
 
@@ -9480,7 +9560,7 @@ mod tests {
     fn claude_running(fixture: &FixtureManager) -> bool {
         fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
             .background_work
-            .contains("claude-session:running")
+            .contains_key("claude-session:running")
     }
 
     /// The runtime is gone. The suspended session then leaves memory, so its
@@ -9825,7 +9905,7 @@ mod tests {
     fn holds_work(fixture: &FixtureManager, id: &str) -> bool {
         fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
             .background_work
-            .contains(id)
+            .contains_key(id)
     }
 
     /// The child is finished, or the session already left memory because it
@@ -12166,14 +12246,21 @@ mod tests {
     fn successful_claude_task_stop_clears_background_work() {
         let task_id = "bxjxskfnq";
         let item_id = format!("background-task:{task_id}");
-        let mut background_work = HashSet::from([item_id.clone()]);
+        let mut background_work = HashMap::from([(
+            item_id.clone(),
+            BackgroundWorkEntry {
+                kind: BackgroundWorkKind::Command,
+                label: "sleep 90".into(),
+                started_at_ms: 1,
+            },
+        )]);
         let failed = serde_json::json!({"update": {
             "sessionUpdate": "tool_call_update", "status": "failed",
             "_meta": {"claudeCode": {"toolName": "TaskStop"}},
             "rawOutput": r#"{"message":"Successfully stopped task: bxjxskfnq (sleep 90)","task_id":"bxjxskfnq"}"#
         }});
         assert!(stopped_background_task_payload(&mut background_work, &failed).is_none());
-        assert!(background_work.contains(&item_id));
+        assert!(background_work.contains_key(&item_id));
 
         let stopped = serde_json::json!({"update": {
             "sessionUpdate": "tool_call_update", "status": "completed",
@@ -12204,6 +12291,10 @@ mod tests {
             let session = sessions.get_mut(&fixture.owned_id).unwrap();
             assert!(!update_raw_liveness(session, &spawned));
             assert_eq!(session.background_work.len(), 1);
+            let item = &session.background_work["background-task:task-1"];
+            assert_eq!(item.kind, BackgroundWorkKind::Command);
+            assert_eq!(item.label, "Background command");
+            assert!(item.started_at_ms > 0);
         }
         assert!(!fixture.manager.suspend_if_quiescent(&fixture.owned_id, fixture.generation).await.unwrap());
         assert!(matches!(background_task_payload(&finished), Some(AgentConversationPayload::Tool {
@@ -12241,6 +12332,122 @@ mod tests {
         }
         assert!(fixture.manager.suspend_if_quiescent(&fixture.owned_id, fixture.generation).await.unwrap());
         assert!(fixture.manager.resource_roots().is_empty());
+        fixture.manager.close(&fixture.owned_id, fixture.generation).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn owned_session_record_exposes_background_work_metadata() {
+        let fixture = fixture_manager_with_provider(
+            "owned_session_background_work",
+            AgentConversationProvider::Claude,
+            None,
+        )
+        .await;
+        let (child_started_at, command_started_at) = {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            let native_session_id = session.native_session_id.clone().unwrap();
+            let child = serde_json::json!({
+                "sessionId": native_session_id,
+                "update": {
+                    "sessionUpdate": "subagent_spawned",
+                    "subagentSessionId": "agent-a",
+                    "name": "Reviewer"
+                }
+            });
+            assert!(claude_native_child_payload(session, &child).is_some());
+            std::thread::sleep(Duration::from_millis(2));
+            let command = serde_json::json!({"update": {
+                "sessionUpdate": "async_task_spawned",
+                "asyncTaskId": "task-1",
+                "name": "Run checks"
+            }});
+            assert!(!update_raw_liveness(session, &command));
+            insert_background_work(
+                &mut session.background_work,
+                CLAUDE_SESSION_RUNNING.to_string(),
+                BackgroundWorkKind::Command,
+                String::new(),
+            );
+            drop(sessions);
+
+            let value = serde_json::to_value(&fixture.manager.list_sessions().unwrap()[0]).unwrap();
+            let work = value["backgroundWork"].as_array().expect("background work array");
+            assert_eq!(work.len(), 2);
+            assert_eq!(work[0]["id"], "claude-child:agent-a");
+            assert_eq!(work[0]["kind"], "subagent");
+            assert_eq!(work[0]["label"], "Reviewer");
+            assert_eq!(work[1]["id"], "background-task:task-1");
+            assert_eq!(work[1]["kind"], "command");
+            assert_eq!(work[1]["label"], "Run checks");
+            assert!(work.iter().all(|item| item["id"] != CLAUDE_SESSION_RUNNING));
+            (
+                work[0]["startedAtMs"].as_i64().expect("child start time"),
+                work[1]["startedAtMs"].as_i64().expect("command start time"),
+            )
+        };
+
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            let native_session_id = session.native_session_id.clone().unwrap();
+            let child_progress = serde_json::json!({
+                "sessionId": native_session_id,
+                "update": {
+                    "sessionUpdate": "subagent_state_update",
+                    "subagentSessionId": "agent-a",
+                    "name": "Reviewer updated",
+                    "state": "running"
+                }
+            });
+            assert!(claude_native_child_payload(session, &child_progress).is_some());
+            let command_progress = serde_json::json!({"update": {
+                "sessionUpdate": "async_task_progress",
+                "asyncTaskId": "task-1",
+                "name": "Run checks updated"
+            }});
+            assert!(!update_raw_liveness(session, &command_progress));
+        }
+        let updated = serde_json::to_value(&fixture.manager.list_sessions().unwrap()[0]).unwrap();
+        let updated = updated["backgroundWork"].as_array().unwrap();
+        assert_eq!(updated[0]["startedAtMs"], child_started_at);
+        assert_eq!(updated[0]["label"], "Reviewer updated");
+        assert_eq!(updated[1]["startedAtMs"], command_started_at);
+        assert_eq!(updated[1]["label"], "Run checks updated");
+
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            let native_session_id = session.native_session_id.clone().unwrap();
+            let child_finished = serde_json::json!({
+                "sessionId": native_session_id,
+                "update": {
+                    "sessionUpdate": "subagent_state_update",
+                    "subagentSessionId": "agent-a",
+                    "state": "completed"
+                }
+            });
+            assert!(claude_native_child_payload(session, &child_finished).is_some());
+        }
+        let child_finished = serde_json::to_value(&fixture.manager.list_sessions().unwrap()[0]).unwrap();
+        let child_finished = child_finished["backgroundWork"].as_array().unwrap();
+        assert_eq!(child_finished.len(), 1);
+        assert_eq!(child_finished[0]["id"], "background-task:task-1");
+
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            let command_finished = serde_json::json!({"update": {
+                "sessionUpdate": "async_task_state_update",
+                "asyncTaskId": "task-1",
+                "state": "completed"
+            }});
+            assert!(!update_raw_liveness(session, &command_finished));
+        }
+        let finished = serde_json::to_value(&fixture.manager.list_sessions().unwrap()[0]).unwrap();
+        assert!(finished["backgroundWork"].as_array().unwrap().is_empty());
+
         fixture.manager.close(&fixture.owned_id, fixture.generation).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }

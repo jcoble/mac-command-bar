@@ -859,6 +859,22 @@ pub struct UpdateAgentConversationSessionMetaRequest {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BackgroundWorkItem {
+    pub id: String,
+    pub kind: BackgroundWorkKind,
+    pub label: String,
+    pub started_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackgroundWorkKind {
+    Subagent,
+    Command,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentConversationSessionRecord {
     pub owned_id: String,
     pub execution_environment: ExecutionEnvironment,
@@ -876,7 +892,7 @@ pub struct AgentConversationSessionRecord {
     pub pending_permission: bool,
     pub pending_input: bool,
     #[serde(default)]
-    pub background_task_ids: Vec<String>,
+    pub background_work: Vec<BackgroundWorkItem>,
     pub native_session_id: Option<String>,
     #[serde(default)]
     pub project_id: Option<String>,
@@ -936,7 +952,12 @@ mod contract_tests {
             active_turn_id: None,
             pending_permission: false,
             pending_input: false,
-            background_task_ids: Vec::new(),
+            background_work: vec![BackgroundWorkItem {
+                id: "background-task:task-1".into(),
+                kind: BackgroundWorkKind::Command,
+                label: "Run checks".into(),
+                started_at_ms: 3,
+            }],
             native_session_id: None,
             project_id: Some("p1".into()),
             project_group_key: String::new(),
@@ -945,11 +966,16 @@ mod contract_tests {
         };
         let value = serde_json::to_value(&record).unwrap();
         assert_eq!(value["projectId"], "p1");
+        assert_eq!(value["backgroundWork"][0]["id"], "background-task:task-1");
+        assert_eq!(value["backgroundWork"][0]["kind"], "command");
+        assert_eq!(value["backgroundWork"][0]["label"], "Run checks");
+        assert_eq!(value["backgroundWork"][0]["startedAtMs"], 3);
         assert!(value.get("meta").is_none());
         // Ungrouped, as a remote server sends it: the protocol-13 wire has no group fields.
         assert!(value.get("projectGroupKey").is_none() && value.get("projectGroupLabel").is_none());
         let read_back: AgentConversationSessionRecord = serde_json::from_value(value).unwrap();
         assert_eq!(read_back.project_id.as_deref(), Some("p1"));
+        assert_eq!(read_back.background_work[0].kind, BackgroundWorkKind::Command);
         assert_eq!(read_back.project_group_key, "");
     }
 
