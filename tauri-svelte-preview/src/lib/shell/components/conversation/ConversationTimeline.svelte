@@ -9,7 +9,7 @@
   import Search from '@lucide/svelte/icons/search';
   import Sparkles from '@lucide/svelte/icons/sparkles';
   import type { AgentConversationTurnFacts } from '$lib/shell/conversation/conversationTypes.ts';
-  import { conversationTurnGroups, foldToolRuns, summarizeCompletedWork, toolFilePath, type ConversationTurnGroup, type ConversationDisplayItem, type ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { anchorRowIndex, continueHistoryPaging, conversationTurnGroups, foldToolRuns, summarizeCompletedWork, toolFilePath, turnRows, type ConversationTurnGroup, type ConversationDisplayItem, type ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
   import { USER_SEND_ANCHOR_OFFSET_PX, type ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import type { ConversationViewState } from '$lib/shell/sessionWorkspaces.ts';
@@ -79,7 +79,7 @@
   let dragging = false;
   let lastScrollTop = 0;
   let pendingSendAnchor = $state<ConversationSendAnchorRequest | null>(null);
-  let pageRequest: { older: boolean; edge: number; windowId: string; visibleKeys: string } | null = null;
+  let pageRequest: { older: boolean; edge: number; windowId: string; height: number } | null = null;
   const renderedItems = $derived(items.filter(conversationItemHasVisibleContent));
   const groups = $derived(conversationTurnGroups(renderedItems, activeTurnId, turnFacts));
 
@@ -92,6 +92,7 @@
     edit?: { path: string; added: number; removed: number };
     activity?: boolean;
     workSummary?: string;
+    folded?: boolean;
   };
   // Retain a run's identity when older calls are prepended to that same run.
   let previousRunWindow = '';
@@ -113,11 +114,12 @@
       items.filter((item) => item.kind === 'toolRun').map((item) => item.itemId)));
     for (const { group, items: groupedItems } of foldedGroups) {
       const summary = group.completed ? summarizeCompletedWork(group.items) : null;
-      let headingAdded = false;
-      for (const item of groupedItems) {
-        if ((group.running || group.completed) && !headingAdded && item.kind !== 'user') {
-          result.push({ key: `turn-work:${group.turnId}`, group, workSummary: summary ?? '' });
-          headingAdded = true;
+      const opened = disclosures[`turn:${group.turnId}:open`];
+      for (const item of turnRows(group, groupedItems, opened)) {
+        if (item === 'heading') {
+          result.push({ key: `turn-work:${group.turnId}`, group, workSummary: summary ?? '',
+            folded: group.completed && group.workItemIds.length ? opened !== true : undefined });
+          continue;
         }
         let run: Row['run'];
         if (item.kind === 'toolRun') {
@@ -318,8 +320,7 @@
   });
 
   function restoreAnchor(anchor: NonNullable<ConversationViewState['anchor']>): boolean {
-    const index = rows.findIndex((row) => row.anchorItemId === anchor.itemId
-      || row.run?.items.some((item) => item.itemId === anchor.itemId));
+    const index = anchorRowIndex(rows, anchor.itemId);
     if (index < 0) return false;
     return positionRow(rows[index].key, anchor.offsetPx);
   }
@@ -357,6 +358,20 @@
     });
   }
 
+  function toggleTurn(group: ConversationTurnGroup): void {
+    const key = `turn-work:${group.turnId}`;
+    const node = host?.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(key)}"]`);
+    const offsetPx = node && host ? node.getBoundingClientRect().top - host.getBoundingClientRect().top : null;
+    follow = false;
+    disclosures = { ...disclosures, [`turn:${group.turnId}:open`]: disclosures[`turn:${group.turnId}:open`] !== true };
+    const windowId = renderWindowId;
+    void tick().then(() => {
+      if (windowId !== renderWindowId) return;
+      if (offsetPx !== null) positionRow(key, offsetPx);
+      saveView();
+    });
+  }
+
   let disclosureWindow = '';
   let previousLiveTail: string | undefined;
   let previousActiveTurn: string | null = null;
@@ -388,7 +403,7 @@
     if (!host || restoring || jumping || pageRequest) return;
     if (older ? !hasOlder || loadingOlder || host.scrollTop > 80 : !hasNewer || loadingNewer || !atEnd()) return;
     pageRequest = { older, edge: older ? oldestSequence : newestSequence, windowId: renderWindowId,
-      visibleKeys: rows.map((row) => row.key).join('\0') };
+      height: host.scrollHeight };
     if (older) onLoadOlder?.(); else onLoadNewer?.();
   }
 
@@ -397,10 +412,10 @@
     const request = pageRequest;
     const landed = request.windowId === renderWindowId && (request.older ? oldestSequence < request.edge : newestSequence > request.edge);
     pageRequest = null;
-    // Collapsed work can add no visible height: keep reading until a visible page arrives.
+    // Folded work can add no visible height: keep reading until a visible page arrives.
     if (landed) void tick().then(() => {
-      if (request.windowId === renderWindowId
-        && request.visibleKeys === rows.map((row) => row.key).join('\0')) requestPage(request.older);
+      if (request.windowId === renderWindowId && host && continueHistoryPaging(true,
+        request.older ? host.scrollTop <= 80 : atEnd(), request.height, host.scrollHeight)) requestPage(request.older);
     });
   });
 
@@ -560,8 +575,16 @@
             {/if}
             {#if row.workSummary !== undefined && row.group}
               <div class="work-summary" data-testid="conversation-work-summary">
-                <span class="work-duration"><ConversationTurnElapsed running={row.group.running} completed={row.group.completed} startedAtMs={row.group.startedAtMs} elapsedMs={row.group.elapsedMs} /></span>
-                {#if row.workSummary}<span>{row.workSummary}</span>{/if}
+                {#if row.folded !== undefined}
+                  <button class="run-header work-toggle" type="button" aria-expanded={!row.folded} onclick={() => toggleTurn(row.group!)}>
+                    <span class="work-duration"><ConversationTurnElapsed running={row.group.running} completed={row.group.completed} startedAtMs={row.group.startedAtMs} elapsedMs={row.group.elapsedMs} /></span>
+                    <span class="run-summary">{row.workSummary}</span>
+                    <span class="turn-fold-chevron" class:open={!row.folded} aria-hidden="true"><ChevronRight size={13} /></span>
+                  </button>
+                {:else}
+                  <span class="work-duration"><ConversationTurnElapsed running={row.group.running} completed={row.group.completed} startedAtMs={row.group.startedAtMs} elapsedMs={row.group.elapsedMs} /></span>
+                  {#if row.workSummary}<span>{row.workSummary}</span>{/if}
+                {/if}
               </div>
             {/if}
             {#if row.item}<TimelineItem item={row.item} {assistantLabel} {onApprovalDecision} {onFileLink} {onPlanOpen} />{/if}
@@ -585,6 +608,7 @@
   .turn-row.compact-tool{gap:0;padding-bottom:6px}
   .work-summary{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 16px;border-top:1px solid var(--color-border);padding-top:12px;color:var(--color-text-2);font-size:13px}
   .work-duration{flex:none;font-variant-numeric:tabular-nums}
+  .work-toggle{flex:1;margin:-3px -6px}
   .turn-fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
   .turn-fold-chevron.open{transform:rotate(90deg)}
   .run-header{display:flex;align-items:center;gap:8px;min-height:30px;padding:3px 6px;border:0;border-radius:8px;background:transparent;color:var(--color-text-2);font-size:13px;text-align:left;cursor:pointer}
