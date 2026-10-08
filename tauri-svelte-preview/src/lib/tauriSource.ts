@@ -245,8 +245,8 @@ export type GithubPullRequestPage = {
 
 export type GithubPullRequestQuery = {
   roots: string[];
-  mode: 'open' | 'mine' | 'needs-review';
   projectFilter: string | null;
+  /** GitHub search terms after `is:pr` and the repositories; see pullRequestSearch.ts. */
   search: string | null;
   cursor: string | null;
   pageSize: number;
@@ -268,6 +268,11 @@ export type GithubPullRequestDetail = {
   isDraft: boolean;
   mergeable: string;
   reviewDecision: string;
+  createdAt: string;
+  mergedAt: string;
+  mergedBy: string;
+  closedAt: string;
+  commits: Array<{ oid: string; headline: string; author: string; committedAt: string }>;
   comments: Array<{ id: string; author: string; body: string; createdAt: string; path: string | null; line: number | null; side: string | null; replyToId: number | null }>;
   reviews: Array<{ author: string; body: string; state: string; submittedAt: string }>;
   reviewers: string[];
@@ -303,6 +308,12 @@ export type GithubReviewReply = {
   number: number;
   expectedHeadSha: string;
   commentId: number;
+  body: string;
+};
+
+export type GithubIssueComment = {
+  root: string;
+  number: number;
   body: string;
 };
 
@@ -460,12 +471,12 @@ export type AgentSession = {
    */
   latestTurns?: AgentSessionTurn[];
   /**
-   * The repository this session's folder belongs to, as git reported it during
-   * the scan. The History panel groups on this, so a repository's main checkout
-   * and its worktrees sit together under the project folder's name. Left out
-   * when the folder is gone from disk or was never in a repository.
+   * The project group the scan command matched this session's folder to, in
+   * SQL against the project registry: `repo:<key>`, `project:<id>` or `none`,
+   * and the label History shows for it.
    */
-  projectRoot?: string | null;
+  projectGroupKey: string;
+  projectGroupLabel: string;
 };
 
 /** One remembered turn of a scanned session: who spoke, and what they said. */
@@ -486,6 +497,7 @@ export type AgentConversationSessionMeta = {
   resumeCommand: string | null;
   completedAt: string | null;
   settledAt: string | null;
+  pinnedAt: string | null;
   taskId: string | null;
   pullRequest: string | null;
   messageCount: number | null;
@@ -511,6 +523,9 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   backgroundTaskIds?: string[];
   nativeSessionId: string | null;
   projectId: string | null;
+  /** The session's project group, computed in SQL on this Mac: `repo:<key>`, `project:<id>` or `none`. */
+  projectGroupKey: string;
+  projectGroupLabel: string;
 };
 
 export type ExecutionEnvironment = 'local' | 'remote';
@@ -1735,6 +1750,12 @@ export async function submitGithubPullRequestReviewFromTauri(
   if (!isTauriRuntime()) throw new Error('Reviews can only be submitted from the desktop app.');
   const { invoke } = await import('./workspaceInvoke');
   return invoke<string>('submit_github_pull_request_review', { submission });
+}
+
+export async function commentGithubPullRequestFromTauri(comment: GithubIssueComment): Promise<string> {
+  if (!isTauriRuntime()) throw new Error('Comments can only be posted from the desktop app.');
+  const { invoke } = await import('./workspaceInvoke');
+  return invoke<string>('comment_github_pull_request', { comment });
 }
 
 export async function replyGithubPullRequestCommentFromTauri(
@@ -3095,7 +3116,8 @@ async function postLocalSourceBridge<T>(
   return body as T;
 }
 
-export type ProjectRecord = { id: string; machine: string; rootPath: string; title: string; repoKey: string; createdAtMs: number };
+/** A registered project. `groupKey` is the rail group its sessions share, computed in SQL. */
+export type ProjectRecord = { id: string; machine: string; rootPath: string; title: string; repoKey: string; createdAtMs: number; groupKey: string };
 export type FolderListing = { path: string; directories: string[]; truncated: boolean };
 
 export async function listProjectsFromTauri(): Promise<ProjectRecord[]> {

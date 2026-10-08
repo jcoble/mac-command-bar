@@ -3,6 +3,7 @@
   import { onDestroy } from 'svelte';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { createTrackedObjectUrl, revokeTrackedObjectUrl } from '$lib/shell/resourceDiagnostics.svelte';
+  import WorkingSpinner from './WorkingSpinner.svelte';
 
   let {
     src,
@@ -129,7 +130,7 @@
       <img {src} alt={name} loading="lazy" decoding="async" onload={() => thumbnailLoaded = true} onerror={() => thumbnailLoaded = true} style:opacity={thumbnailLoaded ? 1 : 0} />
     {/if}
     {#if (!src && previewLoading) || (src && !thumbnailLoaded)}
-      <span class="attachment-spinner" role="status" aria-label={`Loading ${name}`}></span>
+      <span class="attachment-loading" role="status" aria-label={`Loading ${name}`}><WorkingSpinner size={18} /></span>
     {:else if !src}
       <span>{name}</span>
     {/if}
@@ -140,7 +141,7 @@
   >
     <Dialog.Title class="sr-only">{name}</Dialog.Title>
     {#if open && loadError}<p class="text-destructive text-[13px]" role="alert">{loadError}</p>{/if}
-    {#if open && loadingFull}<span class="attachment-spinner attachment-spinner-full" role="status" aria-label={`Loading enlarged ${name}`}></span>{/if}
+    {#if open && loadingFull}<span class="attachment-loading-full" role="status" aria-label={`Loading enlarged ${name}`}><WorkingSpinner size={24} /></span>{/if}
     <Dialog.Close class="attachment-lightbox-full-image" aria-label={`Close enlarged ${name}`}>
       {#if open && fullObjectUrl}
         <img src={fullObjectUrl} alt={name} onload={() => loadingFull = false} onerror={() => { loadingFull = false; loadError = 'Image display failed'; }} style:opacity={loadingFull ? 0 : 1} />
@@ -153,7 +154,7 @@
   :global(.attachment-lightbox-thumbnail){display:block;overflow:hidden;padding:0;border:0;background:transparent;cursor:zoom-in}
   :global(.attachment-lightbox-thumbnail img){display:block;width:100%;height:100%;object-fit:cover}
   :global(.attachment-lightbox-thumbnail){position:relative}
-  :global(.attachment-lightbox-thumbnail .attachment-spinner){position:absolute;inset:0;margin:auto}
+  :global(.attachment-lightbox-thumbnail .attachment-loading){position:absolute;inset:0;display:grid;place-items:center}
   :global(.attachment-lightbox-thumbnail.composer){width:60px;height:52px;border-radius:7px}
   /* A fixed box, held whether or not the image has landed, so a transcript row
      never changes height when a screenshot finishes loading. The box itself
@@ -165,7 +166,5 @@
   :global(.attachment-lightbox-thumbnail:focus-visible){outline:2px solid var(--color-focus-solid);outline-offset:2px}
   :global(.attachment-lightbox-full-image){display:block;padding:0;border:0;background:transparent;cursor:zoom-out}
   :global(.attachment-lightbox-full-image img){display:block;width:auto;height:auto;max-width:calc(100vw - 48px);max-height:calc(100vh - 48px);object-fit:contain}
-  :global(.attachment-spinner){display:block;width:17px;height:17px;border:2px solid color-mix(in srgb,var(--color-text-2) 35%,transparent);border-top-color:var(--color-text-1);border-radius:50%;animation:attachment-spin .7s linear infinite}
-  :global(.attachment-spinner-full){width:24px;height:24px;margin:28px auto}
-  @keyframes attachment-spin{to{transform:rotate(360deg)}}
+  :global(.attachment-loading-full){display:flex;justify-content:center;margin:28px auto}
 </style>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { AgentPlanStep, ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
+  import WorkingSpinner from './WorkingSpinner.svelte';
 
   /** How many files the running turn touched, and by how many lines. A turn
    * that changed files without a diff to read has no line counts, and the chip
@@ -45,12 +46,17 @@
   const showLineCounts = $derived(!!fileChanges && fileChanges.added + fileChanges.removed > 0);
 </script>
 
-{#snippet stateGlyph(state: AgentPlanStep['state'])}
-  <span class="glyph" class:running data-state={state} aria-hidden="true">
-    <svg viewBox="0 0 16 16">
-      <circle class="glyph-track" cx="8" cy="8" r="6" />
-      <circle class="glyph-arc" cx="8" cy="8" r="6" pathLength="100" />
-    </svg>
+<!-- A running step shows the working spinner; the shut panel's steps never
+     mount one, since `visibility: hidden` does not stop it the way scrolling off screen does. -->
+{#snippet stateGlyph(state: AgentPlanStep['state'], spin: boolean)}
+  <span class="glyph" data-state={state} aria-hidden="true">
+    {#if spin && state === 'in-progress'}<WorkingSpinner size={14} />
+    {:else}
+      <svg viewBox="0 0 16 16">
+        <circle class="glyph-track" cx="8" cy="8" r="6" />
+        <circle class="glyph-arc" cx="8" cy="8" r="6" pathLength="100" />
+      </svg>
+    {/if}
   </span>
 {/snippet}
 
@@ -59,7 +65,7 @@
     <ol>
       {#each plan.steps as step (step.id)}
         <li data-state={step.state}>
-          {@render stateGlyph(step.state)}
+          {@render stateGlyph(step.state, running && expanded)}
           <span>{step.title}</span>
         </li>
       {/each}
@@ -74,7 +80,7 @@
     onclick={() => { if (plan) onToggle(); }}
   >
     {#if plan}
-      {@render stateGlyph(currentState)}
+      {@render stateGlyph(currentState, running)}
       <span class="plan-step">Step {currentStep} / {plan.steps.length}</span>
     {/if}
     {#if fileLabel}
@@ -152,7 +158,7 @@
   .plan-panel .glyph { margin-top: 1px; }
 
   /* One mark for every step state, in the pill and in the panel alike:
-     an open ring waiting, a turning arc while it runs, a filled disc once it
+     an open ring waiting, the working spinner while it runs, a filled disc once it
      has finished one way or the other. */
   .glyph { display: inline-flex; flex: none; }
   .glyph svg { width: 14px; height: 14px; }
@@ -164,19 +170,12 @@
     stroke-width: 2;
     stroke-linecap: round;
     stroke-dasharray: 30 100;
-    transform-origin: 50% 50%;
-  }
-  .glyph.running[data-state='in-progress'] .glyph-arc {
-    animation: plan-glyph-spin 1.3s linear infinite;
   }
   .glyph[data-state='completed'] .glyph-track { fill: var(--color-accent); stroke: var(--color-accent); }
   .glyph[data-state='failed'] .glyph-track { fill: var(--color-bad); stroke: var(--color-bad); }
   .glyph[data-state='blocked'] .glyph-track { fill: var(--color-attention); stroke: var(--color-attention); }
 
-  @keyframes plan-glyph-spin { to { transform: rotate(360deg); } }
-
   @media (prefers-reduced-motion: reduce) {
     .plan-pill, .plan-panel { transition: none; }
-    .glyph.running[data-state='in-progress'] .glyph-arc { animation: none; }
   }
 </style>

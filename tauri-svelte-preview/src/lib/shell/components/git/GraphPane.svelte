@@ -31,6 +31,7 @@
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { onMount } from 'svelte';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
@@ -227,7 +228,7 @@
       disabled={!panel.activated || panel.historyLoading}
       onclick={() => void service.refreshHistory()}
     >
-      <RefreshCw class={cn('size-3', panel.historyLoading && 'animate-spin')} aria-hidden="true" />
+      {#if panel.historyLoading}<WorkingSpinner size={12} />{:else}<RefreshCw class="size-3" aria-hidden="true" />{/if}
     </button>
   </div>
 
@@ -239,7 +240,7 @@
         </p>
       {:else if panel.historyLoading && commits.length === 0}
         <p class="px-2 py-1 text-[13px] leading-[18px] text-[var(--color-text-2)]">
-          Reading the commit history…
+          <WorkingSpinner size={12} /> Reading the commit history…
         </p>
       {:else if commits.length === 0}
         <p class="px-2 py-1 text-[13px] leading-[18px] text-[var(--color-text-2)]">
@@ -418,9 +419,7 @@
               title="Read another {COMMIT_HISTORY_LIMIT} commits further back in this branch's history"
               onclick={() => void service.loadMoreHistory()}
             >
-              {panel.historyLoadingMore
-                ? 'Reading older commits…'
-                : `Load ${COMMIT_HISTORY_LIMIT} more`}
+              {#if panel.historyLoadingMore}<WorkingSpinner size={12} /> Reading older commits…{:else}Load {COMMIT_HISTORY_LIMIT} more{/if}
             </button>
           {/if}
         </div>

@@ -21,7 +21,7 @@
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
-  import { resolveOwnedSessionProject, type OwnedSession } from '$lib/shell/ownedSessions';
+  import type { OwnedSession } from '$lib/shell/ownedSessions';
   import { AGENT_ICONS } from '$lib/shell/agentIcons';
   import { openSessionLibrary } from '$lib/shell/sessionLibrary/sessionLibraryNavigation';
   import SessionRail from './SessionRail.svelte';
@@ -56,6 +56,9 @@
     onReopen?(ownedId: string): void;
     onSettle?(ownedId: string): void;
     onUnsettle?(ownedId: string): void;
+    onPin?(ownedId: string, pinned: boolean): void;
+    onRename?(ownedId: string, title: string): void;
+    onConnect?(ownedId: string): void;
     onAskRemove?(ownedId: string): void;
   }
 
@@ -70,6 +73,9 @@
     onReopen,
     onSettle,
     onUnsettle,
+    onPin,
+    onRename,
+    onConnect,
     onAskRemove
   }: Props = $props();
 
@@ -102,11 +108,17 @@
   const MY_WORK_FILTERS_SETTING_KEY = 'rail.my-work-filters';
   let filtersVersion = 0;
 
+  /** The order rows were dragged into, as owned ids; read by the Custom order sort. */
+  let manualOrder = $state<string[]>([]);
+  const MY_WORK_ORDER_SETTING_KEY = 'rail.session-order';
+  let manualOrderVersion = 0;
+
   onMount(() => {
     const owner = { active: true };
     const restoreVersion = viewOptionsVersion;
     void restoreViewOptions(owner, restoreVersion);
     void restoreFilters(owner, filtersVersion);
+    void restoreManualOrder(owner, manualOrderVersion);
     return () => {
       owner.active = false;
     };
@@ -162,6 +174,27 @@
     }
   }
 
+  async function restoreManualOrder(owner: { active: boolean }, restoreVersion: number): Promise<void> {
+    try {
+      const stored = await readAssemblySettingFromTauri(MY_WORK_ORDER_SETTING_KEY);
+      if (owner.active && manualOrderVersion === restoreVersion && Array.isArray(stored)) {
+        manualOrder = stored.filter((ownedId): ownedId is string => typeof ownedId === 'string');
+      }
+    } catch {
+      // Custom order starts empty when local settings are unavailable.
+    }
+  }
+
+  /** A drop saves the new order and switches the rail to it. */
+  function reorder(order: string[]): void {
+    manualOrderVersion += 1;
+    manualOrder = order;
+    if (viewOptions.sortBy !== 'manual') setViewOptions({ sortBy: 'manual' });
+    void writeAssemblySettingFromTauri(MY_WORK_ORDER_SETTING_KEY, order).catch(() => {
+      // The order stays for this visit when local settings are unavailable.
+    });
+  }
+
   /** Searching sessions means the full Session History tab, not a rail popover. */
   export function openFinder(): void {
     openSessionLibrary();
@@ -178,7 +211,7 @@
     if (!needle) return byPills;
     return byPills.filter((session) => {
       const title = sessionLabel(session).toLowerCase();
-      const project = resolveOwnedSessionProject(session).label.toLowerCase();
+      const project = session.projectGroupLabel.toLowerCase();
       return title.includes(needle) || project.includes(needle);
     });
   });
@@ -324,15 +357,18 @@
                   onValueChange={(value) => setViewOptions({ sortBy: value as MyWorkSort })}
                 >
                   <Select.Trigger size="sm" class="min-w-[132px]" aria-label="Sort My Work sessions">
-                    {viewOptions.sortBy === 'recent' ? 'Recent activity' : 'Name'}
+                    {{ recent: 'Recent activity', name: 'Name', manual: 'Custom order' }[viewOptions.sortBy]}
                   </Select.Trigger>
                   <Select.Content>
                     <Select.Item value="recent" label="Recent activity" />
                     <Select.Item value="name" label="Name" />
+                    <Select.Item value="manual" label="Custom order" />
                   </Select.Content>
                 </Select.Root>
               </div>
 
+              <!-- Custom order is the dragged order; it has no direction to turn. -->
+              {#if viewOptions.sortBy !== 'manual'}
               <div class="flex min-h-8 items-center justify-between gap-3">
                 <span class="text-[13px] text-foreground">Direction</span>
                 <Select.Root
@@ -362,6 +398,7 @@
                   </Select.Content>
                 </Select.Root>
               </div>
+              {/if}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
           {@render action('New session', Plus, onNewSession)}
@@ -395,12 +432,17 @@
         <SessionRail
           sessions={filtered}
           options={viewOptions}
+          {manualOrder}
+          onReorder={reorder}
           {activeOwnedId}
           onSelectSession={selectFilteredSession}
           {onComplete}
           {onReopen}
           {onSettle}
           {onUnsettle}
+          {onPin}
+          {onRename}
+          {onConnect}
           {onAskRemove}
         />
       </div>

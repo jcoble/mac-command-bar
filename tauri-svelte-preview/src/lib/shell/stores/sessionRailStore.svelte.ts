@@ -5,7 +5,7 @@
  * projection from backend records and refreshes conversation state from stored
  * snapshots/events; this module performs no I/O.
  */
-import type { AgentSession } from '../../tauriSource.ts';
+import type { AgentSession, RemoteAssemblyProfile } from '../../tauriSource.ts';
 import type { ConversationWorkspaceState } from '../conversation/conversationStore.svelte.ts';
 import type { OwnedSession } from '../ownedSessions.ts';
 import type { SessionWorkspaceSnapshot } from '../sessionWorkspaces.ts';
@@ -34,13 +34,16 @@ export const rail = $state<{
   scanning: boolean;
   error: string | null;
   remoteConnections: Record<string, RemoteConnectionState>;
+  /** The saved remote machines, so a row can name the machine it runs on. */
+  remoteProfiles: RemoteAssemblyProfile[];
 }>({
   owned: [],
   available: [],
   activeOwnedId: null,
   scanning: false,
   error: null,
-  remoteConnections: {}
+  remoteConnections: {},
+  remoteProfiles: []
 });
 
 /** One machine's state, keyed by the profile id a remote session carries. */
@@ -72,19 +75,17 @@ export function updateOwnedSession(ownedId: string, patch: Partial<OwnedSession>
   );
 }
 
-export function setOwnedSessionStatus(
-  ownedId: string,
+/** The lifecycle dates that move a session to Working, Done or Settled. */
+export function ownedSessionStatusPatch(
+  session: Pick<OwnedSession, 'completedAt'>,
   status: 'working' | 'done' | 'settled',
   when: Date
-): OwnedSession | null {
-  const session = rail.owned.find((row) => row.ownedId === ownedId);
-  if (!session) return null;
+): Pick<OwnedSession, 'completedAt' | 'settledAt'> {
   const stamp = when.toISOString();
-  updateOwnedSession(ownedId, {
+  return {
     completedAt: status === 'working' ? null : session.completedAt ?? stamp,
     settledAt: status === 'settled' ? stamp : null
-  });
-  return rail.owned.find((row) => row.ownedId === ownedId) ?? null;
+  };
 }
 
 export function removeOwnedSession(ownedId: string): void {

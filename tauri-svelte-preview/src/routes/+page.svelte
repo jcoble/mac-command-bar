@@ -26,6 +26,7 @@
 		selectBrowserPageTab,
 	} from "$lib/shell/browser/browserStore.svelte";
 	import PendingFirstMessage from "$lib/shell/components/conversation/PendingFirstMessage.svelte";
+	import WorkingSpinner from "$lib/shell/components/conversation/WorkingSpinner.svelte";
 	import ConversationSurface from "$lib/shell/components/ConversationSurface.svelte";
 	import DockPanel from "$lib/shell/components/DockPanel.svelte";
 	import EditorPanel from "$lib/shell/components/EditorPanel.svelte";
@@ -58,10 +59,10 @@
 	import { registerSessionHistoryHost } from "$lib/shell/history/sessionHistoryHost";
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
 	import type { ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow";
-	import { ownedSessionMetaForBackend } from "$lib/shell/ownedSessions";
+	import { ownedSessionMetaForBackend, type OwnedSession } from "$lib/shell/ownedSessions";
 	import { diffPathFor } from "$lib/shell/sessionWorkspaces";
-	import { setOwnedSessionStatus, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
-	import type { CenterTabId, OpenPullRequestDiffRequest } from "$lib/shell/workbenchNavigation";
+	import { ownedSessionStatusPatch, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
+	import type { CenterTabId } from "$lib/shell/workbenchNavigation";
 	import { clearWorkbenchNavigation, registerWorkbenchNavigation } from "$lib/shell/workbenchNavigation";
 	import { updateAgentConversationSessionMetaFromTauri } from "$lib/tauriSource";
 
@@ -83,7 +84,8 @@
 	// Zero until the frame reports the pane's laid-out width: the browser may
 	// place its native view only once the pane really has a size.
 	let toolsRailWidth = $state(0);
-	let pullRequestDiff = $state<OpenPullRequestDiffRequest | null>(null);
+	/** The +/- totals the Changes view last showed; the Changes tab title reads these. */
+	let diffTotals = $state({ added: 0, removed: 0 });
 	let routeDisposal: Promise<void> | null = null;
 	/** The right drawer's card width; its left edge drags it between these. */
 	const DRAWER_MIN_WIDTH = 240;
@@ -103,20 +105,49 @@
 	let popupOpen = $state(false);
 
 	async function changeSessionStatus(ownedId: string, status: "working" | "done" | "settled"): Promise<void> {
+		const session = selection.railOwned.find((row) => row.ownedId === ownedId);
+		if (session) await saveSessionChange(ownedId, ownedSessionStatusPatch(session, status, new Date()));
+	}
+
+	/** The last metadata write queued for each row; a row's writes go out one at a time. */
+	const sessionSaves = new Map<string, Promise<void>>();
+
+	/**
+	 * Saves a person's own change to a session row. The row changes at once; the
+	 * write waits for that row's earlier writes and sends the row as it is when
+	 * the write starts. A failed write puts back only the fields still showing
+	 * its own value, so it never undoes a newer change.
+	 */
+	function saveSessionChange(
+		ownedId: string,
+		patch: Partial<Pick<OwnedSession, "completedAt" | "settledAt" | "pinnedAt" | "title">>,
+	): Promise<void> {
 		const before = selection.railOwned.find((session) => session.ownedId === ownedId);
-		const updated = setOwnedSessionStatus(ownedId, status, new Date());
-		if (!before || !updated) return;
-		try {
-			await updateAgentConversationSessionMetaFromTauri({
-				ownedId,
-				model: null,
-				effort: null,
-				meta: ownedSessionMetaForBackend(updated),
-			});
-		} catch (error) {
-			updateOwnedSession(ownedId, { completedAt: before.completedAt, settledAt: before.settledAt });
-			console.error("Could not change session status", error);
-		}
+		if (!before) return Promise.resolve();
+		const keys = Object.keys(patch) as (keyof typeof patch)[];
+		updateOwnedSession(ownedId, patch);
+		const write = (sessionSaves.get(ownedId) ?? Promise.resolve()).then(async () => {
+			const current = selection.railOwned.find((session) => session.ownedId === ownedId);
+			if (!current) return;
+			try {
+				await updateAgentConversationSessionMetaFromTauri({
+					ownedId,
+					model: null,
+					effort: null,
+					meta: ownedSessionMetaForBackend(current),
+				});
+			} catch (error) {
+				const latest = selection.railOwned.find((session) => session.ownedId === ownedId);
+				const stillOurs = keys.filter((key) => latest && Object.is(latest[key], patch[key]));
+				updateOwnedSession(ownedId, Object.fromEntries(stillOurs.map((key) => [key, before[key]])));
+				console.error("Could not save the session change", error);
+			}
+		});
+		sessionSaves.set(ownedId, write);
+		void write.finally(() => {
+			if (sessionSaves.get(ownedId) === write) sessionSaves.delete(ownedId);
+		});
+		return write;
 	}
 
 	if (import.meta.hot) {
@@ -166,8 +197,8 @@
 						kind: "diff",
 						label: "Changes",
 						detail: gitPanel.selectedPath || "Working tree changes",
-						additions: gitPanel.status?.additions ?? 0,
-						deletions: gitPanel.status?.deletions ?? 0,
+						additions: diffTotals.added,
+						deletions: diffTotals.removed,
 					},
 				];
 			if (ref.kind === "git-history")
@@ -243,12 +274,10 @@
 			showRightTab: selectRightTab,
 			openDiff: async (request) => {
 				if (!selection.activeRootAvailable) return;
-				pullRequestDiff = null;
 				await gitService.showStoredDiff(request.projectRoot, request.relativePath);
 			},
-			openPullRequestDiff: (request) => {
-				pullRequestDiff = request;
-				workbench.setDiffMode("side-by-side");
+			openPullRequest: (link) => {
+				pullRequestSelection.link = link;
 			},
 			openFileTimeline: async (request) => {
 				const ownedId = selection.activeOwnedId;
@@ -310,7 +339,6 @@
 
 	async function selectSession(ownedId: string): Promise<void> {
 		if (selection.activeOwnedId === ownedId && selection.activeWorkspaceSnapshot !== null) return;
-		pullRequestDiff = null;
 		if (selection.activeOwnedId !== null) {
 			selection.rememberWorkspaceState(workbench.captureSessionState());
 		}
@@ -324,6 +352,14 @@
 	async function connectSelectedRemote(): Promise<void> {
 		const profileId = await selection.connectSelectedRemote();
 		if (profileId) await refreshRemoteConnection(profileId);
+	}
+
+	/** A row's Connect: the same connect as the conversation pane's, for that row's session. */
+	async function connectSessionRow(ownedId: string): Promise<void> {
+		await selectSession(ownedId);
+		// Another row may have been chosen while this one was opening.
+		if (selection.activeOwnedId !== ownedId) return;
+		await connectSelectedRemote();
 	}
 
 	async function refreshRemoteConnection(profileId: string): Promise<void> {
@@ -368,10 +404,8 @@
 		} else {
 			topTabs.forget(key);
 			if (ref.kind === "browser") closeBrowserPageTab(ref.id);
-			else if (ref.kind === "diff") {
-				pullRequestDiff = null;
-				gitService.clearSelection();
-			} else if (ref.kind === "pull-requests") pullRequestSelection.selected = null;
+			else if (ref.kind === "diff") gitService.clearSelection();
+			else if (ref.kind === "pull-requests") pullRequestSelection.selected = null;
 		}
 		persistTabs();
 	}
@@ -469,6 +503,10 @@
 				onReopen={(ownedId) => void changeSessionStatus(ownedId, "working")}
 				onSettle={(ownedId) => void changeSessionStatus(ownedId, "settled")}
 				onUnsettle={(ownedId) => void changeSessionStatus(ownedId, "done")}
+				onPin={(ownedId, pinned) =>
+					void saveSessionChange(ownedId, { pinnedAt: pinned ? new Date().toISOString() : null })}
+				onRename={(ownedId, title) => void saveSessionChange(ownedId, { title })}
+				onConnect={(ownedId) => void connectSessionRow(ownedId)}
 			/>
 		</div>
 	</div>
@@ -541,15 +579,15 @@
 				aria-label={selection.selectionError ? "Conversation unavailable" : "Loading conversation"}
 			>
 				{#if selection.newSession.pendingFirstMessage?.ownedId === selection.activeOwnedId}
-					<PendingFirstMessage text={selection.newSession.pendingFirstMessage.text} />
+					<PendingFirstMessage text={selection.newSession.pendingFirstMessage.text} seed={selection.newSession.pendingFirstMessage.ownedId} />
 				{:else if selection.selectionError}
 					<p>{selection.selectionError}</p>
 					{#if selection.disconnectedRemoteProfileId || selection.connectingRemote}
 						<Button disabled={selection.connectingRemote} onclick={() => void connectSelectedRemote()}
-							>{selection.connectingRemote ? "Connecting…" : "Connect"}</Button
+							>{#if selection.connectingRemote}<WorkingSpinner size={14} />Connecting…{:else}Connect{/if}</Button
 						>
 					{/if}
-				{:else}<p>Loading conversation…</p>{/if}
+				{:else}<p><WorkingSpinner size={14} /> Loading conversation…</p>{/if}
 			</div>
 		{:else if !selection.activeOwnedId}
 			<div class="conversation-data-isolation" aria-label="No session selected">
@@ -617,11 +655,11 @@
 		{#if topTabs.activeKind === "diff"}
 			<div class="pane-body showing">
 				<GitDiffView
-					showing={true}
-					rootAvailable={pullRequestDiff !== null || selection.activeRootAvailable}
-					{pullRequestDiff}
+					rootAvailable={selection.activeRootAvailable}
+					sessionRoot={selection.durableSessionRoot}
 					mode={workbench.diffMode}
 					onModeChange={(mode) => workbench.setDiffMode(mode)}
+					onTotals={(totals) => (diffTotals = totals)}
 				/>
 			</div>
 		{/if}

@@ -263,6 +263,9 @@ export interface GitService {
   clearHistoryPath(): Promise<void>;
   /** Show this file's diff. */
   selectFile(file: ProjectGitFileStatus, owner?: GitSurfaceOwner): Promise<void>;
+  /** Read one working-copy file's diff without selecting it. Null outside the
+   * desktop app and the dev server, or when the panel has no repository. */
+  readWorkingDiff(relativePath: string): Promise<SourceGitDiff | null>;
   /**
    * Put back a diff a session remembered, pointing the panel at that session's
    * repository first if it is somewhere else. The Diff tab is one tab for the
@@ -676,6 +679,15 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     selectFile,
     showStoredDiff,
     clearSelection,
+
+    async readWorkingDiff(relativePath: string): Promise<SourceGitDiff | null> {
+      const root = state.root;
+      if (!root) return null;
+      return withGitDiffTimeout(
+        backend.readDiff(root, absolutePathWithin(root, relativePath)),
+        diffTimeoutMs
+      );
+    },
 
     async stagePaths(paths: string[]): Promise<void> {
       const wanted = cleanPaths(paths);

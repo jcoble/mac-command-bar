@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   /**
    * RunPanel.svelte — the Run tab of the right column.
    *
@@ -233,7 +234,7 @@
         disabled={stacks.loading}
         onclick={() => void refreshStacks()}
       >
-        <RefreshCw />
+        {#if stacks.loading}<WorkingSpinner />{:else}<RefreshCw />{/if}
       </IconButton>
     {/snippet}
   </PanelHeader>

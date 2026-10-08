@@ -774,7 +774,21 @@ pub struct ProjectRow {
     pub title: String,
     pub repo_key: String,
     pub created_at_ms: i64,
+    /// The rail group its sessions share (`PROJECT_GROUP_KEY_SQL`), read with
+    /// the row; ignored when a row is written.
+    pub group_key: String,
 }
+
+/// A session's project group as the rail and History show it: `repo:<repo_key>`
+/// in lower case when the project has a remote URL, so both machines' copies of
+/// a repository share one group however the URL is cased; `project:<id>` without
+/// one; `none` for no project, or an id this Mac has never seen. `p` is a LEFT
+/// JOINed `projects` row.
+const PROJECT_GROUP_KEY_SQL: &str =
+    "CASE WHEN p.id IS NULL THEN 'none' WHEN p.repo_key <> '' THEN 'repo:' || lower(p.repo_key) ELSE 'project:' || p.id END";
+const PROJECT_GROUP_LABEL_SQL: &str = "COALESCE(p.title, 'No project')";
+/// The newest local project creation time the back-fill has already run for.
+const PROJECT_BACKFILL_MARK_KEY: &str = "projects.backfilled-through";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrivateRemoteChildSource {
@@ -2132,10 +2146,10 @@ impl SessionStore {
     pub fn list_projects(&self) -> Result<Vec<ProjectRow>> {
         let connection = self.lock()?;
         let mut statement = connection
-            .prepare(
-                "SELECT id, machine, root_path, title, repo_key, created_at
-                 FROM projects ORDER BY created_at, id",
-            )
+            .prepare(&format!(
+                "SELECT p.id, p.machine, p.root_path, p.title, p.repo_key, p.created_at, {PROJECT_GROUP_KEY_SQL}
+                 FROM projects p ORDER BY p.created_at, p.id"
+            ))
             .map_err(|error| StoreError::sqlite("could not prepare the project list", error))?;
         let rows = statement
             .query_map([], project_from_row)
@@ -2158,12 +2172,155 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not save the project", error))?;
         connection
             .query_row(
-                "SELECT id, machine, root_path, title, repo_key, created_at
-                 FROM projects WHERE machine = ? AND root_path = ?",
+                &format!(
+                    "SELECT p.id, p.machine, p.root_path, p.title, p.repo_key, p.created_at, {PROJECT_GROUP_KEY_SQL}
+                     FROM projects p WHERE p.machine = ? AND p.root_path = ?"
+                ),
                 params![row.machine, row.root_path],
                 project_from_row,
             )
             .map_err(|error| StoreError::sqlite("could not read the project", error))
+    }
+
+    /// The project group for each `[id, project_id]` pair in `pairs_json`, as
+    /// `(id, key, label)` in input order, in one statement against `projects`.
+    /// The id is whatever the caller keys its records by: an owned id or a folder.
+    pub fn project_groups(&self, pairs_json: &str) -> Result<Vec<(String, String, String)>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT json_extract(e.value, '$[0]'), {PROJECT_GROUP_KEY_SQL}, {PROJECT_GROUP_LABEL_SQL}
+                 FROM json_each(?1) e LEFT JOIN projects p ON p.id = json_extract(e.value, '$[1]')
+                 ORDER BY e.key"
+            ))
+            .map_err(|error| StoreError::sqlite("could not prepare the project groups", error))?;
+        let rows = statement
+            .query_map([pairs_json], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|error| StoreError::sqlite("could not read the project groups", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read the project groups", error))
+    }
+
+    /// Each folder in `folders_json` (a JSON array of paths) that sits in a
+    /// local project, as `(folder, project_id)`: the project rooted exactly
+    /// there, else the deepest root above it (an exact root is the deepest),
+    /// ties going to the oldest project.
+    pub fn match_folders_by_path(&self, folders_json: &str) -> Result<Vec<(String, String)>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT folder, project_id FROM (
+                    SELECT f.value AS folder, (
+                        SELECT p.id FROM projects p
+                        WHERE p.machine = 'local'
+                          AND (f.value = p.root_path OR substr(f.value, 1, length(p.root_path) + 1) = p.root_path || '/')
+                        ORDER BY length(p.root_path) DESC, p.created_at, p.id
+                        LIMIT 1
+                    ) AS project_id
+                    FROM json_each(?1) f
+                 ) WHERE project_id IS NOT NULL",
+            )
+            .map_err(|error| StoreError::sqlite("could not prepare the folder match", error))?;
+        let rows = statement
+            .query_map([folders_json], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|error| StoreError::sqlite("could not match folders to projects", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not match folders to projects", error))
+    }
+
+    /// Folders the path rules left unmatched, matched to the oldest local
+    /// project whose root shares their git common directory. Both arguments
+    /// are JSON arrays of `[path, common_dir]`: the folders, and the local
+    /// project roots.
+    pub fn match_folders_by_common_dir(&self, folders_json: &str, roots_json: &str) -> Result<Vec<(String, String)>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "WITH f AS (SELECT json_extract(value, '$[0]') AS folder, json_extract(value, '$[1]') AS common FROM json_each(?1)),
+                      r AS (SELECT json_extract(value, '$[0]') AS root, json_extract(value, '$[1]') AS common FROM json_each(?2))
+                 SELECT folder, project_id FROM (
+                    SELECT f.folder, (
+                        SELECT p.id FROM projects p JOIN r ON r.root = p.root_path
+                        WHERE p.machine = 'local' AND r.common = f.common
+                        ORDER BY p.created_at, p.id
+                        LIMIT 1
+                    ) AS project_id
+                    FROM f
+                 ) WHERE project_id IS NOT NULL",
+            )
+            .map_err(|error| StoreError::sqlite("could not prepare the common-dir match", error))?;
+        let rows = statement
+            .query_map([folders_json, roots_json], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|error| StoreError::sqlite("could not match folders by git common dir", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not match folders by git common dir", error))
+    }
+
+    /// The root folders of this Mac's projects.
+    pub fn local_project_roots(&self) -> Result<Vec<String>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare("SELECT root_path FROM projects WHERE machine = 'local' ORDER BY created_at, id")
+            .map_err(|error| StoreError::sqlite("could not prepare the project roots", error))?;
+        let rows = statement
+            .query_map([], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not list the project roots", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not list the project roots", error))
+    }
+
+    /// The distinct folders of local sessions that have no project yet.
+    pub fn unassigned_local_session_cwds(&self) -> Result<Vec<String>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT DISTINCT cwd FROM sessions
+                 WHERE project_id IS NULL AND cached_remote_profile_id IS NULL AND cwd <> ''
+                 ORDER BY cwd",
+            )
+            .map_err(|error| StoreError::sqlite("could not prepare the unassigned folders", error))?;
+        let rows = statement
+            .query_map([], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not list the unassigned folders", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not list the unassigned folders", error))
+    }
+
+    /// Files local sessions that have no project yet under the project matched
+    /// to their folder. `matches_json` is a JSON array of `[folder, project_id]`.
+    /// A session that already has a project keeps it. Returns the rows changed.
+    pub fn assign_session_projects(&self, matches_json: &str) -> Result<usize> {
+        let connection = self.lock_write()?;
+        connection
+            .execute(
+                "UPDATE sessions SET project_id = json_extract(m.value, '$[1]')
+                 FROM json_each(?1) m
+                 WHERE sessions.project_id IS NULL AND sessions.cached_remote_profile_id IS NULL
+                   AND sessions.cwd = json_extract(m.value, '$[0]')",
+                [matches_json],
+            )
+            .map_err(|error| StoreError::sqlite("could not file sessions under their projects", error))
+    }
+
+    /// The newest local project's creation time, when it is newer than the last
+    /// back-fill (amendment A1); `None` means the back-fill has nothing to do.
+    pub fn project_newer_than_backfill(&self) -> Result<Option<i64>> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT MAX(created_at) FROM projects WHERE machine = 'local'
+                 HAVING MAX(created_at) > COALESCE(
+                    (SELECT CAST(value_json AS INTEGER) FROM app_settings WHERE setting_key = ?1), -1)",
+                [PROJECT_BACKFILL_MARK_KEY],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| StoreError::sqlite("could not read the back-fill mark", error))
+    }
+
+    /// Records that the back-fill has run for every local project up to `created_at_ms`.
+    pub fn mark_project_backfill(&self, created_at_ms: i64) -> Result<()> {
+        self.upsert_app_setting(PROJECT_BACKFILL_MARK_KEY, &created_at_ms.to_string())
     }
 
     pub fn get_app_setting(&self, setting_key: &str) -> Result<Option<String>> {
@@ -3774,6 +3931,7 @@ fn project_from_row(row: &Row<'_>) -> rusqlite::Result<ProjectRow> {
         title: row.get(3)?,
         repo_key: row.get(4)?,
         created_at_ms: row.get(5)?,
+        group_key: row.get(6)?,
     })
 }
 
@@ -4462,6 +4620,7 @@ mod tests {
             title: "repo".to_owned(),
             repo_key: "github.com/a/repo".to_owned(),
             created_at_ms,
+            group_key: "repo:github.com/a/repo".to_owned(),
         }
     }
 
@@ -4488,6 +4647,94 @@ mod tests {
         }
         assert_eq!(store.get_session("owned").unwrap().unwrap().project_id.as_deref(), Some("p1"));
         assert_eq!(store.list_sessions().unwrap()[0].project_id.as_deref(), Some("p1"));
+    }
+
+    #[test]
+    fn project_matching_and_groups_follow_the_registry() {
+        let (_directory, _path, store) = open_temp_store();
+        let mut plain = fixture_project("plain", "local", "/work/plain", 30);
+        plain.repo_key = String::new();
+        for project in [
+            fixture_project("repo", "local", "/work/repo", 10),
+            fixture_project("deep", "local", "/work/repo/packages/app", 20),
+            fixture_project("registered-worktree", "local", "/work/wt/registered", 40),
+            fixture_project("box-copy", "box", "/home/me/repo", 1),
+            ProjectRow { repo_key: "github.com/A/Repo".to_owned(), ..fixture_project("box-cased", "box", "/home/me/cased", 2) },
+            plain,
+        ] {
+            store.insert_or_get_project(&project).unwrap();
+        }
+
+        // An exact root, then the deepest root above; a sibling with a shared
+        // prefix and another machine's root match nothing.
+        let matched = store.match_folders_by_path(&serde_json::json!([
+            "/work/repo", "/work/repo/src", "/work/repo/packages/app", "/work/repo/packages/app/ui",
+            "/work/repository", "/home/me/repo", "/elsewhere"
+        ]).to_string()).unwrap();
+        assert_eq!(matched, vec![
+            ("/work/repo".to_owned(), "repo".to_owned()),
+            ("/work/repo/src".to_owned(), "repo".to_owned()),
+            ("/work/repo/packages/app".to_owned(), "deep".to_owned()),
+            ("/work/repo/packages/app/ui".to_owned(), "deep".to_owned()),
+        ]);
+
+        // Two roots share the repository's common dir: the oldest project wins.
+        let by_common_dir = store.match_folders_by_common_dir(
+            &serde_json::json!([["/work/wt/feature", "/work/repo/.git"], ["/tmp/x", "/tmp/x/.git"]]).to_string(),
+            &serde_json::json!([
+                ["/work/wt/registered", "/work/repo/.git"], ["/work/repo", "/work/repo/.git"], ["/work/plain", "/work/plain/.git"]
+            ]).to_string(),
+        ).unwrap();
+        assert_eq!(by_common_dir, vec![("/work/wt/feature".to_owned(), "repo".to_owned())]);
+
+        // Both machines' copies of one repository share a key, whatever the letter case
+        // of its URL; no remote URL keys by id; no project and an unknown id are both "No project".
+        let groups = store.project_groups(&serde_json::json!([
+            ["a", "repo"], ["b", "box-copy"], ["c", "plain"], ["d", null], ["e", "gone"], ["f", "box-cased"]
+        ]).to_string()).unwrap();
+        let group = |key: &str, label: &str| (key.to_owned(), label.to_owned());
+        assert_eq!(groups.into_iter().map(|(id, key, label)| (id, group(&key, &label))).collect::<Vec<_>>(), vec![
+            ("a".to_owned(), group("repo:github.com/a/repo", "repo")),
+            ("b".to_owned(), group("repo:github.com/a/repo", "repo")),
+            ("c".to_owned(), group("project:plain", "repo")),
+            ("d".to_owned(), group("none", "No project")),
+            ("e".to_owned(), group("none", "No project")),
+            ("f".to_owned(), group("repo:github.com/a/repo", "repo")),
+        ]);
+        assert_eq!(store.list_projects().unwrap().iter().find(|p| p.id == "plain").unwrap().group_key, "project:plain");
+    }
+
+    #[test]
+    fn project_backfill_assigns_only_unfiled_local_sessions_once_per_new_project() {
+        let (_directory, _path, store) = open_temp_store();
+        assert_eq!(store.project_newer_than_backfill().unwrap(), None);
+        let mut filed = fixture_session("filed", 1);
+        filed.cwd = "/work/repo".to_owned();
+        filed.project_id = Some("other".to_owned());
+        let mut unfiled = fixture_session("unfiled", 2);
+        unfiled.cwd = "/work/repo".to_owned();
+        let mut elsewhere = fixture_session("elsewhere", 3);
+        elsewhere.cwd = "/tmp/x".to_owned();
+        for row in [&filed, &unfiled, &elsewhere] {
+            store.upsert_session(row).unwrap();
+        }
+        store.insert_or_get_project(&fixture_project("repo", "local", "/work/repo", 10)).unwrap();
+        store.insert_or_get_project(&fixture_project("box", "box", "/work/box", 50)).unwrap();
+
+        // Only local projects open the gate.
+        assert_eq!(store.project_newer_than_backfill().unwrap(), Some(10));
+        assert_eq!(store.unassigned_local_session_cwds().unwrap(), ["/tmp/x", "/work/repo"]);
+        let changed = store.assign_session_projects(&serde_json::json!([["/work/repo", "repo"]]).to_string()).unwrap();
+        assert_eq!(changed, 1);
+        store.mark_project_backfill(10).unwrap();
+        assert_eq!(store.project_newer_than_backfill().unwrap(), None);
+        let project_of = |id: &str| store.get_session(id).unwrap().unwrap().project_id;
+        assert_eq!(project_of("filed").as_deref(), Some("other"));
+        assert_eq!(project_of("unfiled").as_deref(), Some("repo"));
+        assert_eq!(project_of("elsewhere"), None);
+
+        store.insert_or_get_project(&fixture_project("tmp", "local", "/tmp/x", 20)).unwrap();
+        assert_eq!(store.project_newer_than_backfill().unwrap(), Some(20));
     }
 
     #[test]

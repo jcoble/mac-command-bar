@@ -1,4 +1,5 @@
 <script lang="ts">
+  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ExternalLink from '@lucide/svelte/icons/external-link';
   import FileText from '@lucide/svelte/icons/file-text';
@@ -89,8 +90,9 @@
   let sortBy = $state(restoredView?.sortBy ?? 'taskNumber');
   let sortDirection = $state(restoredView?.sortDirection ?? 'desc');
   /** A restored project choice wins over the session's own project until that
-   * project first resolves; later changes of it are followed again. */
-  let keepRestoredProject = restoredView !== undefined;
+   * project first resolves; later changes of it are followed again. A restored
+   * "All projects" is not a choice: the list still defaults to the open project. */
+  let keepRestoredProject = Boolean(restoredView?.projectFilter);
   let loading = $state(true);
   let refreshing = $state(false);
   let saving = $state(false);
@@ -536,7 +538,7 @@
               <Button variant="ghost" disabled={saving} onclick={() => void disconnect()}>Disconnect</Button>
             {/if}
             <Button disabled={saving || (!settings?.hasToken && !token.trim())} onclick={() => void saveSetup()}>
-              {saving ? 'Connecting…' : 'Connect developer token'}
+              {#if saving}<WorkingSpinner size={14} />Connecting…{:else}Connect developer token{/if}
             </Button>
           </div>
         </div>
@@ -550,7 +552,9 @@
 
   <ScrollArea class="min-h-0 flex-1" bind:viewportRef={taskViewport}>
     {#if loading && tasks.length === 0}
-      <EmptyState title="Loading tasks…" body="Reading the last successful local snapshot." />
+      <EmptyState title="Loading tasks…" body="Reading the last successful local snapshot.">
+        {#snippet icon()}<WorkingSpinner size={24} />{/snippet}
+      </EmptyState>
     {:else if tasks.length === 0}
       <EmptyState
         title={showSetup

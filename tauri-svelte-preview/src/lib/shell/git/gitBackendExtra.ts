@@ -240,6 +240,25 @@ export async function readCommitFileDiff(
   return postGitBridge<SourceGitDiff>('commit-file-diff', { root, sha, relativePath });
 }
 
+/** Everything on the checked-out branch since the default branch, as one diff text. */
+export interface GitBranchDiff {
+  /** The branch compared with, e.g. `origin/main`. */
+  base: string;
+  diff: string;
+}
+
+/** Mirrors `read_git_branch_diff`: committed and uncommitted tracked changes
+ * since the merge base with `origin/HEAD`. `null` when nothing can answer. */
+export async function readBranchDiff(root: string): Promise<GitBranchDiff | null> {
+  const fromDesktop = await askDesktop(async () => {
+    if (!isTauriRuntime()) return null;
+    const { invoke } = await import('../../workspaceInvoke');
+    return invoke<GitBranchDiff>('read_git_branch_diff', { root });
+  });
+  if (fromDesktop) return fromDesktop;
+  return postGitBridge<GitBranchDiff>('branch-diff', { root });
+}
+
 /**
  * The panel's usual backend, answered by the dev server instead of the desktop
  * app, so the whole surface can be looked at in a browser.

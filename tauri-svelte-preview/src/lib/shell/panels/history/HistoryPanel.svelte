@@ -19,7 +19,7 @@
   import Search from '@lucide/svelte/icons/search';
   import Server from '@lucide/svelte/icons/server';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
 
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -40,7 +40,6 @@
     filterSessionHistoryRecords,
     isSessionHistoryGroupOpen,
     resetSessionHistoryWindowOnFilterChange,
-    sessionHistoryProjectPath,
     toggleSessionHistoryGroup,
     type SessionHistoryProjectGroup,
     type SessionHistoryRow,
@@ -65,6 +64,7 @@
   import { warmAgentConversationConfig } from '$lib/shell/conversation/conversationConfig.ts';
   import { setConversationAgentConfigState } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import { ownedSessionFromBackend } from '$lib/shell/ownedSessions.ts';
+  import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte.ts';
   import { addOwnedSession, rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import {
     beginAgentConversationImportFromTauri,
@@ -120,9 +120,7 @@
 
   const summaryLibrary = $derived(buildSessionLibrary(rail.owned, rail.available));
   const activeRecord = $derived(summaryLibrary.find((record) => record.ownedId === ownedId) ?? null);
-  const projectPath = $derived(
-    activeRecord ? sessionHistoryProjectPath(activeRecord) : root.trim()
-  );
+  const projectKey = $derived(activeRecord?.projectGroupKey ?? null);
   const historyFilters = $derived<SessionHistoryFilters>({
     query: sessionLibraryState.query,
     provider: sessionLibraryState.provider,
@@ -131,7 +129,7 @@
     dateTo: sessionLibraryState.dateTo || null,
     scope: sessionLibraryState.scope,
     workspacePath: root.trim() || null,
-    projectPath: projectPath || null
+    projectKey
   });
   const historyFilterKey = $derived([
     historyFilters.query,
@@ -141,7 +139,7 @@
     historyFilters.dateTo,
     historyFilters.scope,
     historyFilters.workspacePath,
-    historyFilters.projectPath
+    historyFilters.projectKey
   ].join('\0'));
   const summaryRecords = $derived(
     visible ? filterSessionHistoryRecords(summaryLibrary, historyFilters) : []
@@ -191,6 +189,20 @@
     stopHistoryLoads();
     releaseDetails();
   });
+
+  // The registry says which folders on this Mac belong to each group, for its checkouts.
+  onMount(() => {
+    void hydrateProjects();
+  });
+
+  /** The checkouts git lists for a group's folders registered on this Mac, under the group's key. */
+  async function groupCheckouts(key: string): Promise<Record<string, RepositoryCheckout[]> | null> {
+    const roots = projectRegistry.projects
+      .filter((project) => project.machine === 'local' && project.groupKey === key)
+      .map((project) => project.rootPath);
+    const byRoot = await listRepositoryCheckoutsFromTauri(roots);
+    return byRoot && { [key]: Object.values(byRoot).flat() };
+  }
 
   /**
    * The checkouts each repository still has, asked of git once the sessions have
@@ -307,8 +319,8 @@
       const [refreshed, nextCheckouts] = await Promise.allSettled([
         fullyHeld
           ? Promise.resolve(heldRecords)
-          : host.service.refresh(keys, { projectPath: project.path }),
-        listRepositoryCheckoutsFromTauri([project.path])
+          : host.service.refresh(keys),
+        groupCheckouts(project.key)
       ]);
       if (stopSignal.aborted || !visible || version !== historyLoadVersion) {
         if (!fullyHeld) host.service.release(keys);
@@ -367,7 +379,7 @@
     if (keys.size === 0) return;
     const version = ++historyLoadVersion;
     try {
-      const refreshed = await host.service.refresh(keys, { projectPath: project.path });
+      const refreshed = await host.service.refresh(keys);
       if (stopSignal.aborted || !visible || version !== historyLoadVersion) return;
       loadedRecords = [...new Map(
         [...loadedRecords, ...refreshed].map((record) => [record.key, record])
@@ -594,7 +606,7 @@
     const key = record.key;
     const version = ++detailLoadVersion;
     detailLoadingKey = key;
-    const projectPath = record.projectPath?.trim() || record.canonicalCwd.trim();
+    const projectPath = record.canonicalCwd.trim();
     try {
       const refreshed = await host.service.refresh(
         new Set([key]),
@@ -634,7 +646,7 @@
     {/snippet}
     <span data-testid="session-history-host-line" class="flex min-w-0 items-center gap-1.5">
       <Server class="size-[16px] shrink-0" aria-hidden="true" />
-      <span data-testid="session-history-host" class="truncate">{summaryViewModel.totalCount} {summaryViewModel.totalCount === 1 ? 'session' : 'sessions'} from Local Mac</span>
+      <span data-testid="session-history-host" class="truncate">{summaryViewModel.totalCount} {summaryViewModel.totalCount === 1 ? 'session' : 'sessions'} from This Mac</span>
     </span>
   </PanelHeader>
   <div data-testid="session-history-scope" class="px-2 py-1">

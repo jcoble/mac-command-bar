@@ -926,6 +926,7 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
     });
     stopRemoteConnections = trackTauriListener(stopRemoteConnectionEvents);
     const remoteEnvironment = await readRemoteAssemblyEnvironmentFromTauri();
+    rail.remoteProfiles = remoteEnvironment.profiles;
     const readyRemoteProfiles = new Set(remoteEnvironment.readyProfileIds);
     for (const profile of remoteEnvironment.profiles) {
       if (remoteConnectionEventsSeen.has(profile.id)) continue;

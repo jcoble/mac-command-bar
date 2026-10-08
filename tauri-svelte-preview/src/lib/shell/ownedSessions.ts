@@ -59,9 +59,11 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
   title: string;
   /** Model reported by the session scanner, when one was available. */
   model?: string | null;
-  projectPath: string | null;
   /** The registry project the session was started in; null for older sessions and "No project". */
   projectId: string | null;
+  /** The rail group SQL computed from projectId: `repo:<key>`, `project:<id>` or `none`, and its label. */
+  projectGroupKey: string;
+  projectGroupLabel: string;
   cwd: string;
   resumeCommand: string | null;
   nativeSessionId: string | null;
@@ -88,6 +90,8 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
    * `null`.
    */
   settledAt: string | null;
+  /** When the user pinned this session to the top of the rail; absent or `null` when unpinned. */
+  pinnedAt?: string | null;
   /**
    * What the scanner worked out about the session — the branch it is on, the
    * task it belongs to, the pull request it opened. Copied off the scanned
@@ -129,13 +133,6 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
   startedAtMs?: number | null;
 };
 
-export interface OwnedSessionProject {
-  /** The best path we have for this session, used by detail views. */
-  path: string;
-  /** A compact label that is always useful in the rail. */
-  label: string;
-}
-
 const KNOWN_AGENTS: AgentKind[] = ['codex', 'claude', 'antigravity', 'gemini', 'opencode'];
 const KNOWN_STATES: OwnedSessionState[] = ['live', 'background', 'exited'];
 const KNOWN_EXECUTION_OWNERS: AgentExecutionOwner[] = [
@@ -169,41 +166,6 @@ export function normalizeProvider(provider: string): { agent: AgentKind; viaCmux
   return { agent, viaCmux };
 }
 
-function cleanSessionPath(value: string | null | undefined): string {
-  const cleaned = (value ?? '').trim().replaceAll('\\', '/').replace(/\/+$/, '');
-  const normalized = cleaned.toLowerCase();
-  return normalized === 'no project recorded' || normalized === 'no project' ? '' : cleaned;
-}
-
-function folderName(value: string): string {
-  const parts = value.split('/').filter(Boolean);
-  return parts.at(-1) ?? '';
-}
-
-function providerFallback(agent: AgentKind | null | undefined, viaCmux: boolean): string {
-  const name = (agent ?? '').trim();
-  if (!name) return 'Session';
-  return viaCmux ? `${name} session` : name;
-}
-
-/**
- * Resolve the project identity once, at the session-record boundary.
- *
- * The scanner's recorded project wins. If it has no project, a worktree/cwd
- * folder is still more useful than a placeholder. A provider label is the
- * final truthful fallback when neither path exists.
- */
-export function resolveOwnedSessionProject(
-  session: Pick<OwnedSession, 'projectPath' | 'cwd'> &
-    Partial<Pick<OwnedSession, 'agent' | 'viaCmux'>>
-): OwnedSessionProject {
-  const recorded = cleanSessionPath(session.projectPath);
-  const worktree = cleanSessionPath(session.cwd);
-  const path = recorded || worktree;
-  const label = folderName(path) || providerFallback(session.agent, session.viaCmux === true);
-  return { path, label };
-}
-
 export function adoptAgentSession(record: AgentSession, mintId: () => string = defaultMintId): OwnedSession {
   const { agent, viaCmux } = normalizeProvider(record.provider);
   return {
@@ -216,8 +178,9 @@ export function adoptAgentSession(record: AgentSession, mintId: () => string = d
     source: 'scanned',
     title: record.title,
     model: isNonEmptyString(record.model) ? record.model : null,
-    projectPath: record.projectPath,
     projectId: null,
+    projectGroupKey: record.projectGroupKey,
+    projectGroupLabel: record.projectGroupLabel,
     cwd: record.projectPath ?? '',
     resumeCommand: record.resumeCommands[0] ?? null,
     nativeSessionId: record.id,
@@ -257,8 +220,9 @@ export function createFreshSession(
     source: 'fresh',
     title: opts.title ?? defaultTitle,
     model: null,
-    projectPath: null,
     projectId: null,
+    projectGroupKey: 'none',
+    projectGroupLabel: 'No project',
     cwd: opts.cwd,
     resumeCommand: null,
     nativeSessionId: null,
@@ -299,8 +263,11 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
     source: record.source ?? 'fresh',
     title: record.title ?? '',
     model: record.model,
-    projectPath: record.project,
     projectId: record.projectId ?? null,
+    // Both are left out of the record when empty, which only happens for a record that skipped the
+    // desktop's grouping pass; it reads as "No project" until the next list.
+    projectGroupKey: record.projectGroupKey || 'none',
+    projectGroupLabel: record.projectGroupLabel || 'No project',
     cwd: record.cwd,
     resumeCommand: record.resumeCommand,
     nativeSessionId: record.nativeSessionId,
@@ -318,6 +285,7 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
     lastRuntimeError: null,
     completedAt: record.completedAt,
     settledAt: record.settledAt,
+    pinnedAt: record.pinnedAt ?? null,
     // The rail prints the branch straight into the row, so anything that is not
     // a name has to stop here rather than reach the row as "[object Object]".
     // The two constructors below already read it this way.
@@ -336,7 +304,7 @@ export function ownedSessionMetaForBackend(session: OwnedSession): AgentConversa
     worktree: session.cwd || null,
     branch: session.branch,
     title: session.title || null,
-    project: session.projectPath,
+    project: null,
     ptySessionId: session.ptySessionId,
     origin: session.origin ?? null,
     source: session.source,
@@ -344,6 +312,7 @@ export function ownedSessionMetaForBackend(session: OwnedSession): AgentConversa
     resumeCommand: session.resumeCommand,
     completedAt: session.completedAt,
     settledAt: session.settledAt,
+    pinnedAt: session.pinnedAt ?? null,
     taskId: session.taskId,
     pullRequest: session.pullRequest,
     messageCount: session.messageCount,
@@ -414,8 +383,9 @@ export function parseStoredOwnedSessions(raw: string | null): OwnedSession[] {
       source: candidate.source === 'fresh' ? 'fresh' : 'scanned',
       title: isNonEmptyString(candidate.title) ? candidate.title : '',
       model: isNonEmptyString(candidate.model) ? candidate.model : null,
-      projectPath: isNonEmptyString(candidate.projectPath) ? candidate.projectPath : null,
       projectId: isNonEmptyString(candidate.projectId) ? candidate.projectId : null,
+      projectGroupKey: isNonEmptyString(candidate.projectGroupKey) ? candidate.projectGroupKey : 'none',
+      projectGroupLabel: isNonEmptyString(candidate.projectGroupLabel) ? candidate.projectGroupLabel : 'No project',
       cwd: candidate.cwd,
       resumeCommand: isNonEmptyString(candidate.resumeCommand) ? candidate.resumeCommand : null,
       nativeSessionId: isNonEmptyString(candidate.nativeSessionId) ? candidate.nativeSessionId : null,

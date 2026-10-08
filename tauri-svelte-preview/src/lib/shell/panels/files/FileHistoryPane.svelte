@@ -1,4 +1,5 @@
 <script lang="ts">
+	import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
 	import ChevronRight from "@lucide/svelte/icons/chevron-right";
 	import FileUp from "@lucide/svelte/icons/file-up";
 	import History from "@lucide/svelte/icons/history";
@@ -131,7 +132,7 @@
 			{#if !relativePath}
 				<p>Select a file to see its history.</p>
 			{:else if panel.historyLoading}
-				<p>Reading the file history…</p>
+				<p><WorkingSpinner size={12} /> Reading the file history…</p>
 			{:else if panel.historyError && isNotARepositoryError(panel.historyError)}
 				<p>This folder’s Git history is unavailable.</p>
 			{:else if panel.historyError}
@@ -158,7 +159,7 @@
 							</li>
 						{/each}
 						{#if panel.historyLoadingMore}
-							<li class="loading-more">Reading older commits…</li>
+							<li class="loading-more"><WorkingSpinner size={12} /> Reading older commits…</li>
 						{/if}
 					</ol>
 				</ScrollArea>

@@ -307,7 +307,29 @@ fn project_record(row: mcb_core::session_store::ProjectRow) -> protocol::Project
         title: row.title,
         repo_key: row.repo_key,
         created_at_ms: row.created_at_ms,
+        group_key: row.group_key,
     }
+}
+
+/// Puts each record's project group on it, from one SQL statement over the
+/// records' project ids. Remote records use the ids their server stored,
+/// joined to the projects this Mac registered for that machine.
+pub(crate) fn attach_project_groups(
+    store: &mcb_core::session_store::SessionStore,
+    sessions: &mut [AgentConversationSessionRecord],
+) -> Result<(), String> {
+    let pairs: Vec<(&str, Option<&str>)> = sessions
+        .iter()
+        .map(|session| (session.owned_id.as_str(), session.project_id.as_deref()))
+        .collect();
+    let pairs_json = serde_json::to_string(&pairs).map_err(|error| error.to_string())?;
+    let groups = store.project_groups(&pairs_json).map_err(|error| error.to_string())?;
+    // One row per pair, in input order.
+    for (session, (_, key, label)) in sessions.iter_mut().zip(groups) {
+        session.project_group_key = key;
+        session.project_group_label = label;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -337,7 +359,16 @@ pub async fn add_project(
         serde_json::from_value(value).map_err(|error| error.to_string())?
     };
     let row = crate::project_folders::new_project_row(machine, inspection);
-    Ok(project_record(manager.add_project(row)?))
+    let project = manager.add_project(row)?;
+    if project.machine == "local" {
+        // A new local project files the older sessions in its folders now, so
+        // they regroup without a restart (amendment A1: the project set changed).
+        let store = manager.store_handle();
+        tauri::async_runtime::spawn_blocking(move || crate::project_folders::backfill_local_session_projects(&store))
+            .await
+            .map_err(|error| error.to_string())??;
+    }
+    Ok(project_record(project))
 }
 
 #[tauri::command]
@@ -706,19 +737,23 @@ pub async fn list_agent_conversation_sessions(
             .cmp(&left.last_activity_at_ms)
             .then_with(|| left.owned_id.cmp(&right.owned_id))
     });
+    attach_project_groups(manager.store(), &mut sessions).map_err(protocol::CommandError::from)?;
     Ok(sessions)
 }
 
 #[tauri::command]
 /// Lists remote sessions separately so an unavailable machine cannot hold the local rail open.
 pub async fn list_remote_agent_conversation_sessions(
+    manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     request_id: u64,
 ) -> CommandResult<Vec<AgentConversationSessionRecord>> {
     if !remote.is_configured() {
         return Ok(Vec::new());
     }
-    command_result(remote.list_sessions(request_id).await)
+    let mut sessions = command_result(remote.list_sessions(request_id).await)?;
+    attach_project_groups(manager.store(), &mut sessions).map_err(protocol::CommandError::from)?;
+    Ok(sessions)
 }
 
 #[tauri::command]
