@@ -5334,9 +5334,9 @@ impl ExitRequestGuard {
         state.pending = false;
     }
 
-    /// The person chose Cancel: the next request warns again.
+    /// The person chose Cancel, or Quit Anyway failed: the next request warns again.
     fn cancel(&self) {
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).pending = false;
+        *self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = ExitRequestState::default();
     }
 }
 
@@ -5354,18 +5354,21 @@ fn continue_app_exit(
     kind: String,
 ) -> Result<(), String> {
     guard.approve();
-    match kind.as_str() {
+    let result = match kind.as_str() {
         "close" => app
             .get_webview_window("main")
-            .ok_or_else(|| "The main window is already closed.".to_string())?
-            .close()
-            .map_err(|error| error.to_string()),
+            .ok_or_else(|| "The main window is already closed.".to_string())
+            .and_then(|window| window.close().map_err(|error| error.to_string())),
         "quit" => {
             app.exit(0);
             Ok(())
         }
         other => Err(format!("Unknown exit kind: {other}")),
+    };
+    if result.is_err() {
+        guard.cancel();
     }
+    result
 }
 
 fn main() {
@@ -5918,6 +5921,16 @@ mod tests {
         // That repeat used up the outstanding request, so the next one warns.
         assert!(guard.hold());
         // Cancel clears the outstanding request, so the next attempt warns again.
+        guard.cancel();
+        assert!(guard.hold());
+    }
+
+    #[test]
+    fn exit_request_guard_forgets_an_approval_whose_close_failed() {
+        let guard = ExitRequestGuard::default();
+        assert!(guard.hold());
+        guard.approve();
+        // Quit Anyway could not close the window, so nothing used the approval.
         guard.cancel();
         assert!(guard.hold());
     }
