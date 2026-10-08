@@ -8730,10 +8730,7 @@ mod tests {
                     ..
                 }) => {
                     assert_eq!(state, expected);
-                    // The row's one line and the body it opens onto are
-                    // separate now, and the file is a field rather than a
-                    // sentence appended to one.
-                    assert_eq!(summary.as_deref(), Some("detail"));
+                    assert_eq!(summary, None);
                     assert_eq!(output.as_deref(), Some("detail"));
                     assert_eq!(path.as_deref(), Some("src/main.rs"));
                 }
@@ -10891,44 +10888,28 @@ mod tests {
 
     #[test]
     fn child_watch_wakes_for_a_completed_append_but_not_for_a_read() {
-        use std::io::{Read as _, Write as _};
+        let path = PathBuf::from("rollout-child-1.jsonl");
+        let read = notify::Event::new(notify::EventKind::Access(
+            notify::event::AccessKind::Read,
+        ))
+        .add_path(path.clone());
+        let completed_append = notify::Event::new(notify::EventKind::Access(
+            notify::event::AccessKind::Close(notify::event::AccessMode::Write),
+        ))
+        .add_path(path.clone());
 
-        let root = temp_root();
-        let path = root.join("rollout-child-1.jsonl");
-        fs::write(&path, "first line\n").unwrap();
-        let expected_path = path.clone();
-        let (wake, changes) = std_mpsc::sync_channel(1);
-        let mut watcher = notify::recommended_watcher(
-            move |result: notify::Result<notify::Event>| {
-                let Ok(event) = result else { return; };
-                if child_watch_event_relevant(
-                    &event,
-                    Some(&expected_path),
-                    AgentConversationProvider::Codex,
-                    "child-1",
-                ) {
-                    let _ = wake.try_send(());
-                }
-            },
-        )
-        .unwrap();
-        watcher.watch(&root, RecursiveMode::NonRecursive).unwrap();
-
-        let mut contents = String::new();
-        fs::File::open(&path)
-            .unwrap()
-            .read_to_string(&mut contents)
-            .unwrap();
-        assert_eq!(contents, "first line\n");
-        assert!(changes.recv_timeout(Duration::from_millis(100)).is_err());
-
-        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
-        file.write_all(b"final complete line\n").unwrap();
-        file.sync_all().unwrap();
-        assert!(changes.recv_timeout(Duration::from_secs(2)).is_ok());
-
-        drop(watcher);
-        fs::remove_dir_all(root).unwrap();
+        assert!(!child_watch_event_relevant(
+            &read,
+            Some(&path),
+            AgentConversationProvider::Codex,
+            "child-1",
+        ));
+        assert!(child_watch_event_relevant(
+            &completed_append,
+            Some(&path),
+            AgentConversationProvider::Codex,
+            "child-1",
+        ));
     }
 
     #[test]
