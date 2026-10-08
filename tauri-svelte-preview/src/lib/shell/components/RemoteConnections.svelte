@@ -75,7 +75,7 @@
     if (backend.updateAvailable === null) return `Backend ${installed} · compatibility not verified`;
     return backend.updateAvailable
       ? `Backend ${installed} · update to ${backend.latestVersion} available`
-      : `Backend ${installed} · matches latest compatible release`;
+      : 'Installed package matches the latest compatible release';
   }
 
   onMount(() => {

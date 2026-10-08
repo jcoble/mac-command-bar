@@ -1,8 +1,41 @@
 use serde::Serialize;
+use std::collections::HashSet;
 use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::agent_conversation::{remote::RemoteConnectionManager, remote_install::ssh_output};
+
+static PENDING_CLI_UPDATES: OnceLock<Mutex<HashSet<(String, String)>>> = OnceLock::new();
+
+#[derive(Debug)]
+struct PendingCliUpdate {
+    key: (String, String),
+}
+
+impl PendingCliUpdate {
+    fn claim(machine: &str, provider: &str) -> Result<Self, String> {
+        let key = (machine.to_string(), provider.to_string());
+        let mut pending = PENDING_CLI_UPDATES
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .map_err(|_| "Provider CLI update lock failed".to_string())?;
+        if !pending.insert(key.clone()) {
+            return Err(format!(
+                "An update for {provider} on {machine} is already running."
+            ));
+        }
+        Ok(Self { key })
+    }
+}
+
+impl Drop for PendingCliUpdate {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = PENDING_CLI_UPDATES.get().unwrap().lock() {
+            pending.remove(&self.key);
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,6 +159,9 @@ pub async fn update_provider_cli(
     provider: String,
 ) -> Result<CliStatus, String> {
     let target = saved_target(&remote, profile_id)?;
+    cli_command(&provider, true)?;
+    let machine = target.as_deref().unwrap_or("This Mac");
+    let _pending = PendingCliUpdate::claim(machine, &provider)?;
     run_cli(target.as_deref(), &provider, true).await?;
     let status = cli_status(target.as_deref(), &provider).await;
     if let Some(error) = &status.error {
@@ -153,6 +189,14 @@ mod tests {
         assert_eq!(
             checked_version("codex-cli 0.161.0".into()).unwrap(),
             "codex-cli 0.161.0"
+        );
+    }
+    #[test]
+    fn duplicate_update_for_the_same_machine_and_provider_is_rejected() {
+        let _first = PendingCliUpdate::claim("agent-workbox", "codex").unwrap();
+        assert_eq!(
+            PendingCliUpdate::claim("agent-workbox", "codex").unwrap_err(),
+            "An update for codex on agent-workbox is already running."
         );
     }
     #[tokio::test]

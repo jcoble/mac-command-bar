@@ -17,9 +17,9 @@ body{max-width:1000px;margin:40px auto;padding:0 24px;font:17px/1.55 system-ui;c
 <ol>
 <li>Pull the desired checkout and run <code>pnpm app:dev</code>. Frontend edits hot reload. Rust changes rebuild through Tauri; restart this command when starting from newly pulled Rust code.</li>
 <li>A development desktop uses its checkout. Its Updates screen says this directly and avoids the packaged desktop updater, including the misleading temporary-path error.</li>
-<li>To prepare a signed remote backend from a task branch, dispatch <strong>Release Assembly Remote Backend</strong> in GitHub Actions and select that branch. The desktop version does not need to change.</li>
-<li>After this workflow change is merged, backend build inputs landing on main also trigger a release. The existing Rust cache is reused; the job selects the next unused backend patch version and builds the triggering commit.</li>
-<li>The release remains a draft until the signed archive and metadata are uploaded. Then Connections can verify the release and offer installation.</li>
+<li>For a development build, run <code>pnpm deploy:remote-backend-dev &lt;ssh-host&gt;</code> from <code>tauri-svelte-preview</code>; the host defaults to <code>agent-workbox</code>. It syncs the current checkout, including uncommitted source changes, builds with a persistent remote Cargo cache, and restarts the existing service without signing or publishing.</li>
+<li>The development command replaces only the binary and keeps the previous one as <code>assembly-remote-server.prev</code>; it does not touch sessions or configuration. Connections compares the installed package version, so after a development deploy it may still show the last signed release.</li>
+<li>Production backend releases come only from main or an explicit <code>assembly-backend-v*</code> tag. The release remains a draft until its signed archive and metadata are uploaded.</li>
 </ol>
 <p>Publishing is handled by GitHub Actions. Backend installation is an explicit action and may interrupt work running in that backend service.</p>
 </section>
@@ -29,7 +29,7 @@ body{max-width:1000px;margin:40px auto;padding:0 24px;font:17px/1.55 system-ui;c
 <thead><tr><th>Installation</th><th>Where to find it</th><th>What is checked or updated</th></tr></thead>
 <tbody>
 <tr><td>Assembly desktop</td><td>Settings → Updates</td><td>Development: the selected source checkout. Release: the latest published signed desktop release. This says nothing about the remote backend.</td></tr>
-<tr><td>Remote backend</td><td>Settings → Connections → Check for backend updates</td><td>The signed release metadata and its protocol must match the client. “Matches latest compatible release” compares the installed backend version to that compatible release. Connect still verifies the running backend’s protocol.</td></tr>
+<tr><td>Remote backend</td><td>Settings → Connections → Check for backend updates</td><td>The signed release metadata and its protocol must match the client. “Installed package matches the latest compatible release” compares the installed package version to that release. Connect still verifies the running backend’s protocol.</td></tr>
 <tr><td>ACP adapters</td><td>Existing provider adapter controls</td><td>The signed adapter packages, independently of Assembly and the provider CLIs.</td></tr>
 <tr><td>Codex / Claude CLI on Mac</td><td>Settings → Updates → Provider CLIs · This Mac</td><td>Read installed versions or run the selected CLI’s own updater. Its installed version is read again before reporting success.</td></tr>
 <tr><td>Codex / Claude CLI on Workbox</td><td>Settings → Connections → Provider CLIs · saved machine</td><td>The same operations execute on that machine over SSH, even while the Assembly backend is disconnected or incompatible.</td></tr>
@@ -47,13 +47,13 @@ body{max-width:1000px;margin:40px auto;padding:0 24px;font:17px/1.55 system-ui;c
 </ul>
 </section>
 <section>
-<h2>Verification · October 7</h2>
+<h2>Verification · October 7–8</h2>
 <table>
 <thead><tr><th>Check</th><th>Result</th></tr></thead>
 <tbody>
-<tr><td>Backend version selector</td><td>4 tests passed: main, explicit tags, branch dispatch, and rejected invalid references.</td></tr>
+<tr><td>Backend version selector</td><td>3 tests passed: main, explicit tags, and rejected branch or invalid references.</td></tr>
 <tr><td>Backend package integrity</td><td>3 tests passed.</td></tr>
-<tr><td>Rust CLI commands</td><td>3 tests passed: fixed commands, rejected injection, and nonempty version receipts.</td></tr>
+<tr><td>Rust CLI commands</td><td>4 tests passed: fixed commands, rejected injection, nonempty version receipts, and duplicate update rejection.</td></tr>
 <tr><td>Rust installer</td><td>7 tests passed, including both protocol mismatch directions, signatures, and useful stdout/stderr failure text.</td></tr>
 <tr><td>CLI service and existing adapter service</td><td>Host/provider isolation, single flight, late responses, and error handling passed.</td></tr>
 <tr><td>Compile and build</td><td>TypeScript and production frontend build passed. Svelte check: zero errors, six existing warnings. Rust check with warnings denied and the isolated native build passed.</td></tr>

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const prefix = 'assembly-backend-v';
 const stableTag = /^assembly-backend-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
-export function backendReleaseVersion(ref: string, remoteTags: string, event: string): string {
+export function backendReleaseVersion(ref: string, remoteTags: string): string {
   const tags = remoteTags.trim().split(/\s+/).filter((value) => value.startsWith('refs/tags/'))
     .map((value) => value.slice('refs/tags/'.length));
   if (ref.startsWith('refs/tags/')) {
@@ -13,8 +13,8 @@ export function backendReleaseVersion(ref: string, remoteTags: string, event: st
     if (!stableTag.test(tag) || !tags.includes(tag)) throw new Error('Expected an existing stable backend tag');
     return tag.slice(prefix.length);
   }
-  if (ref !== 'refs/heads/main' && !(event === 'workflow_dispatch' && ref.startsWith('refs/heads/') && ref.length > 11)) {
-    throw new Error('Backend releases require main, an existing backend tag, or an explicitly dispatched branch');
+  if (ref !== 'refs/heads/main') {
+    throw new Error('Backend releases require main or an existing backend tag');
   }
   const versions = tags.flatMap((tag) => {
     const match = stableTag.exec(tag);
@@ -26,7 +26,7 @@ export function backendReleaseVersion(ref: string, remoteTags: string, event: st
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const tags = execFileSync('git', ['ls-remote', '--tags', 'origin', `${prefix}*`], { encoding: 'utf8' });
-  const version = backendReleaseVersion(process.env.GITHUB_REF ?? '', tags, process.env.GITHUB_EVENT_NAME ?? '');
+  const version = backendReleaseVersion(process.env.GITHUB_REF ?? '', tags);
   if (!process.env.GITHUB_OUTPUT) throw new Error('GITHUB_OUTPUT is required');
   appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\ntag=${prefix}${version}\n`);
 }
