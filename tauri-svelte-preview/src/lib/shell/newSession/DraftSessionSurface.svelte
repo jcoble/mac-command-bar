@@ -18,7 +18,7 @@
   `onSend` on the first message.
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { homeDir } from '@tauri-apps/api/path';
   import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
@@ -101,6 +101,8 @@
   let catalogKey = $state('');
   let catalogError = $state('');
   let hydrated = $state(false);
+  /** Send was pressed before the provider's model choices arrived; it goes when they do. */
+  let sendWhenReady = $state(false);
   let loadSequence = 0;
   let remoteAssembly = $state<RemoteAssemblyEnvironment>({ profiles: [], readyProfileIds: [] });
   let remoteSetupOpen = $state(false);
@@ -218,6 +220,13 @@
       controller.abort();
       stopSignal.removeEventListener('abort', cancel);
     };
+  });
+
+  $effect(() => {
+    if (!sendWhenReady || (!currentCatalog && !catalogError)) return;
+    sendWhenReady = false;
+    submitting = false;
+    untrack(() => void send());
   });
 
   /** Reads the branches of a project on its own machine. Only reads: a folder
@@ -380,6 +389,12 @@
     const request = buildThreadStartRequest(draft, stagedImages.length > 0);
     if (!request) {
       submitError = problems[0]?.message ?? 'This draft is not ready to send.';
+      return;
+    }
+    if (!currentCatalog && !catalogError) {
+      // The choices are still loading: show the message going out and send it when they arrive.
+      submitting = true;
+      sendWhenReady = true;
       return;
     }
     if (!currentCatalog || !currentCatalog.availableModels.includes(draft.model)
