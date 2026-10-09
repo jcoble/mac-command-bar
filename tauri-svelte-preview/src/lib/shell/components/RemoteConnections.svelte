@@ -230,7 +230,7 @@
           {#if backend && !backend.installed}
             <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Install</Button>
           {:else if backend?.backendBuildKind === 'development'}
-            <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Install signed {backend.latestVersion}</Button>
+            <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Install signed {backend.latestVersion ?? 'release'}</Button>
           {:else if backend?.updateAvailable === true}
             <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Update</Button>
           {/if}
