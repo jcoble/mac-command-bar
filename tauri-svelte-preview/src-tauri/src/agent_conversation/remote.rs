@@ -2150,15 +2150,18 @@ pub async fn deploy_remote_backend_dev(
     on_event: tauri::ipc::Channel<String>,
 ) -> Result<(), String> {
     let (program, args) = remote_backend_dev_process(&destination)?;
+    // Own process group, so a timeout also stops the script's rsync and ssh children.
+    let mut child = tokio::process::Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("Could not start development backend deploy: {error}"))?;
+    let process_group = child.id().map(|pid| -(pid as i32));
     let operation = async {
-        let mut child = tokio::process::Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|error| format!("Could not start development backend deploy: {error}"))?;
         let mut stdout = BufReader::new(child.stdout.take().expect("stdout is piped")).lines();
         let mut stderr = BufReader::new(child.stderr.take().expect("stderr is piped")).lines();
         let mut stdout_done = false;
@@ -2195,9 +2198,14 @@ pub async fn deploy_remote_backend_dev(
             })
         }
     };
-    tokio::time::timeout(Duration::from_secs(30 * 60), operation)
-        .await
-        .map_err(|_| "Development backend deploy timed out after 30 minutes".to_string())?
+    let outcome = tokio::time::timeout(Duration::from_secs(30 * 60), operation).await;
+    if outcome.is_err() {
+        if let Some(process_group) = process_group {
+            // SAFETY: `process_group(0)` made the child's PID its process-group ID.
+            unsafe { libc::kill(process_group, libc::SIGKILL) };
+        }
+    }
+    outcome.map_err(|_| "Development backend deploy timed out after 30 minutes".to_string())?
 }
 
 #[tauri::command]
