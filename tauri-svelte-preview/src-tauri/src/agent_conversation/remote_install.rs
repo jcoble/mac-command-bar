@@ -135,8 +135,17 @@ pub struct InstallReceipt {
 pub struct BackendStatus {
     pub installed: bool,
     pub installed_version: Option<String>,
+    pub backend_build_kind: BackendBuildKind,
+    pub backend_commit: Option<String>,
     pub latest_version: String,
     pub update_available: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BackendBuildKind {
+    Release,
+    Development,
 }
 
 struct LocalStage(PathBuf);
@@ -271,14 +280,31 @@ pub async fn read_status(
     let output = ssh_output(
         ssh_target,
         &format!(
-            "if test -x {binary}; then printf 'installed\\n'; test ! -f {manifest} || sed -n 's/.*\"version\": \"\\([^\"]*\\)\".*/\\1/p' {manifest} | head -n 1; else printf 'not-installed\\n'; fi"
+            "if test -x {binary}; then printf 'installed\\n'; if test -f {manifest}; then sed -n 's/.*\"version\":[[:space:]]*\"\\([^\"]*\\)\".*/version=\\1/p' {manifest} | head -n 1; sed -n 's/.*\"buildKind\":[[:space:]]*\"\\([^\"]*\\)\".*/buildKind=\\1/p' {manifest} | head -n 1; sed -n 's/.*\"commit\":[[:space:]]*\"\\([^\"]*\\)\".*/commit=\\1/p' {manifest} | head -n 1; fi; else printf 'not-installed\\n'; fi"
         ),
     )
     .await?;
+    parse_status_output(&output, latest_version)
+}
+
+fn parse_status_output(output: &str, latest_version: &str) -> Result<BackendStatus, String> {
     let mut lines = output.lines();
     let installed = lines.next() == Some("installed");
-    let installed_version = installed
-        .then(|| lines.next().unwrap_or_default().trim().to_string())
+    let fields = lines
+        .filter_map(|line| line.split_once('='))
+        .collect::<std::collections::HashMap<_, _>>();
+    let installed_version = fields
+        .get("version")
+        .map(|value| (*value).to_string())
+        .filter(|value| !value.is_empty());
+    let backend_build_kind = if fields.get("buildKind") == Some(&"development") {
+        BackendBuildKind::Development
+    } else {
+        BackendBuildKind::Release
+    };
+    let backend_commit = fields
+        .get("commit")
+        .map(|value| (*value).to_string())
         .filter(|value| !value.is_empty());
     let latest = semver::Version::parse(latest_version)
         .map_err(|_| format!("Invalid latest backend version: {latest_version}"))?;
@@ -290,6 +316,8 @@ pub async fn read_status(
     Ok(BackendStatus {
         installed,
         installed_version,
+        backend_build_kind,
+        backend_commit,
         latest_version: latest_version.to_string(),
         update_available,
     })
@@ -612,6 +640,27 @@ mod tests {
         ] {
             assert!(super::super::remote::validate_ssh_target(target).is_err());
         }
+    }
+
+    #[test]
+    fn backend_manifest_status_defaults_releases_and_identifies_development_builds() {
+        let release =
+            parse_status_output("installed\nversion=0.1.18\ncommit=abc123", "0.1.19").unwrap();
+        assert_eq!(release.backend_build_kind, BackendBuildKind::Release);
+        assert_eq!(release.backend_commit.as_deref(), Some("abc123"));
+        let development = parse_status_output(
+            "installed\nversion=0.1.19\nbuildKind=development\ncommit=15add6b2-dirty",
+            "0.1.19",
+        )
+        .unwrap();
+        assert_eq!(
+            development.backend_build_kind,
+            BackendBuildKind::Development
+        );
+        assert_eq!(
+            development.backend_commit.as_deref(),
+            Some("15add6b2-dirty")
+        );
     }
 
     #[test]

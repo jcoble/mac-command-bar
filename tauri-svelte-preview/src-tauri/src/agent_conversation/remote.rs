@@ -1,6 +1,8 @@
 //! One authenticated WebSocket boundary for conversations owned by a remote machine.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+#[cfg(debug_assertions)]
+use std::collections::VecDeque;
 use std::future::IntoFuture;
 use std::net::{TcpListener as StdTcpListener, TcpStream};
 use std::path::PathBuf;
@@ -19,6 +21,8 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use futures_util::{future::join_all, SinkExt, StreamExt};
 use mcb_core::session_store::SessionStore;
 use serde::{Deserialize, Serialize};
+#[cfg(debug_assertions)]
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TungsteniteMessage};
 
@@ -2120,6 +2124,82 @@ pub async fn install_remote_assembly(
     Ok(result)
 }
 
+#[cfg(debug_assertions)]
+fn remote_backend_dev_process(destination: &str) -> Result<(&'static str, Vec<String>), String> {
+    validate_ssh_target(destination)?;
+    let preview_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or_else(|| "Could not resolve the development checkout".to_string())?
+        .to_path_buf();
+    let quoted_root = format!("'{}'", preview_root.display().to_string().replace('\'', "'\\''"));
+    Ok((
+        "/bin/zsh",
+        vec![
+            "-lic".into(),
+            format!("cd {quoted_root} && exec node --experimental-strip-types scripts/deployRemoteBackendDev.ts \"$1\""),
+            "zsh".into(),
+            destination.into(),
+        ],
+    ))
+}
+
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub async fn deploy_remote_backend_dev(
+    destination: String,
+    on_event: tauri::ipc::Channel<String>,
+) -> Result<(), String> {
+    let (program, args) = remote_backend_dev_process(&destination)?;
+    let operation = async {
+        let mut child = tokio::process::Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| format!("Could not start development backend deploy: {error}"))?;
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout is piped")).lines();
+        let mut stderr = BufReader::new(child.stderr.take().expect("stderr is piped")).lines();
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+        let mut stderr_tail = VecDeque::with_capacity(20);
+        while !stdout_done || !stderr_done {
+            tokio::select! {
+                line = stdout.next_line(), if !stdout_done => match line {
+                    Ok(Some(line)) => { let _ = on_event.send(line); }
+                    Ok(None) => stdout_done = true,
+                    Err(error) => return Err(format!("Could not read development deploy output: {error}")),
+                },
+                line = stderr.next_line(), if !stderr_done => match line {
+                    Ok(Some(line)) => {
+                        let _ = on_event.send(line.clone());
+                        if stderr_tail.len() == 20 { stderr_tail.pop_front(); }
+                        stderr_tail.push_back(line);
+                    }
+                    Ok(None) => stderr_done = true,
+                    Err(error) => return Err(format!("Could not read development deploy error output: {error}")),
+                },
+            }
+        }
+        let status = child.wait().await
+            .map_err(|error| format!("Could not wait for development backend deploy: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            let detail = stderr_tail.into_iter().collect::<Vec<_>>().join("\n");
+            Err(if detail.is_empty() {
+                format!("Development backend deploy failed with {status}")
+            } else {
+                format!("Development backend deploy failed:\n{detail}")
+            })
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(30 * 60), operation)
+        .await
+        .map_err(|_| "Development backend deploy timed out after 30 minutes".to_string())?
+}
+
 #[tauri::command]
 pub async fn read_remote_backend_statuses(
     profiles: Vec<RemoteAssemblyProfile>,
@@ -3380,6 +3460,24 @@ pub(super) fn validate_ssh_target(target: &str) -> Result<(), String> {
 #[cfg(test)]
 mod connection_tests {
     use super::*;
+
+    #[test]
+    fn deploy_remote_backend_dev_uses_a_positional_validated_destination() {
+        let preview_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .display()
+            .to_string();
+        let (program, args) = remote_backend_dev_process("person@host.example").unwrap();
+        assert_eq!(program, "/bin/zsh");
+        assert_eq!(args, vec![
+            "-lic".to_string(),
+            format!("cd '{preview_root}' && exec node --experimental-strip-types scripts/deployRemoteBackendDev.ts \"$1\""),
+            "zsh".to_string(),
+            "person@host.example".to_string(),
+        ]);
+        assert!(remote_backend_dev_process("host; false").is_err());
+    }
 
     #[test]
     fn attachment_chunks_use_base64_on_both_wire_directions() {
