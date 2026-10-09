@@ -6,6 +6,7 @@ import {
   type UIMessage
 } from '@tanstack/ai-svelte';
 import {
+  attachmentDisplayMetadata,
   discardRestoredAttachments,
   readNewerSelectedConversationItems,
   readOlderSelectedConversationItems,
@@ -763,7 +764,8 @@ function disposeConversationChat(selection: ActiveConversation): void {
   selection.controller.abort();
   selection.rejectReady?.(new DOMException('Conversation selection disposed', 'AbortError'));
   selection.releaseSelectionSignal?.();
-  rejectPendingAdmission(selection, new DOMException('Conversation selection disposed', 'AbortError'));
+  // A pending send is not rejected here: leaving the session does not stop it,
+  // so its receipt or its own failure settles the admission.
   selection.chat.dispose();
 }
 
@@ -796,7 +798,9 @@ export async function selectedConversationChatReady(
 
 export function sendSelectedConversationMessage(
   workspaceOwnedId: string,
-  text: string
+  text: string,
+  id?: string,
+  attachments: readonly ConversationAttachment[] = []
 ): Promise<AgentConversationSendReceipt> {
   const selection = active;
   if (!selection || selection.workspaceOwnedId !== workspaceOwnedId) {
@@ -815,9 +819,16 @@ export function sendSelectedConversationMessage(
   selection.pendingAdmission = admission;
   // The timeline orders rows by start time. Without one, the chat's own copy of
   // the message drew above the whole history, and the send anchor scrolled there.
+  // The id lets the surface scroll to this copy at once; its screenshots draw
+  // with it rather than when the backend's copy claims them.
   void selection.chat.sendMessage({
+    id,
     content: [{ type: 'text', content: text }],
-    metadata: { itemType: 'user-message', startedAtMs: Date.now() }
+    metadata: {
+      itemType: 'user-message',
+      startedAtMs: Date.now(),
+      ...(attachments.length ? { attachments: attachments.map(attachmentDisplayMetadata) } : {})
+    }
   })
     .catch((error) => rejectPendingAdmission(selection, error))
     .finally(() => {

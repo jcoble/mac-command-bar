@@ -318,9 +318,10 @@ export async function saveConversationClipboardImage(
       throw error;
     }
   }
-  const localBytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-  const attachment: AttachmentWithBytes = { ...restoreConversationAttachmentPreview(saved), bytes: localBytes };
-  return attachment;
+  // No bytes are kept here: held in the composer's reactive state, a number
+  // array is read element by element through its proxy at send, which held the
+  // main thread for hundreds of milliseconds. The send reads the saved file.
+  return restoreConversationAttachmentPreview(saved);
 }
 
 function isRemoteConversation(ownedId: string): boolean {
@@ -355,7 +356,9 @@ async function hydrateAttachmentBytes(attachment: AttachmentWithBytes): Promise<
   };
 }
 
-function attachmentDisplayMetadata(attachment: ConversationAttachment): ConversationAttachment {
+/** The transcript keeps only display metadata: thumbnails show what went out,
+ * and no provider echoes the image back for it to render from. */
+export function attachmentDisplayMetadata(attachment: ConversationAttachment): ConversationAttachment {
   const metadata: ConversationAttachment = {
     id: attachment.id,
     name: attachment.name,
@@ -1298,6 +1301,15 @@ export async function sendStructuredMessage(
   const preparation = { cancelled: false };
   preparingSends.set(ownedId, preparation);
   setConversationSending(ownedId, true);
+  // The composer empties the moment Send is pressed. The screenshots are held
+  // for the transcript until the backend's copy of the message claims them —
+  // recorded before the request, because the backend records and dispatches
+  // its own copy while the request is still running.
+  const attachments = state.attachments;
+  if (attachments.length) {
+    recordSentConversationAttachments(ownedId, attachments.map(attachmentDisplayMetadata));
+    setConversationAttachments(ownedId, []);
+  }
   try {
     const owned = rail.owned.find((session) => session.ownedId === ownedId) ?? null;
     let terminalSessionId = owned?.ptySessionId;
@@ -1359,8 +1371,8 @@ export async function sendStructuredMessage(
         || state.writerLease.owner !== 'terminal') {
         throw new Error('The terminal writer lease is not confirmed for this session');
       }
-      const attachmentText = state.attachments.length
-        ? `\n\nAttached screenshots:\n${state.attachments.map((item) => `- ${item.path}`).join('\n')}`
+      const attachmentText = attachments.length
+        ? `\n\nAttached screenshots:\n${attachments.map((item) => `- ${item.path}`).join('\n')}`
         : '';
       const outgoingText = `${text}${attachmentText}`;
       // Match a real terminal paste followed by a separate Enter key. Sending
@@ -1374,8 +1386,9 @@ export async function sendStructuredMessage(
       const submitted = await writeTerminalSessionFromTauri(terminalSessionId, '\r');
       if (!submitted) throw new Error('The terminal session is no longer running');
       setConversationSending(ownedId, false);
-      state.attachments.forEach(cleanupConversationAttachmentPreview);
-      setConversationAttachments(ownedId, []);
+      // The terminal echoes no user message to claim the hold.
+      recordSentConversationAttachments(ownedId, []);
+      attachments.forEach(cleanupConversationAttachmentPreview);
       return;
     }
     if (state.generation < 1) throw new Error('The structured conversation is not connected');
@@ -1383,13 +1396,19 @@ export async function sendStructuredMessage(
     // send here left a screenshot that could never go out and no way to learn
     // why, so only a connected session's own answer refuses.
     const supportsImages = sendSupportsImages(state.capabilities, state.connectionState);
-    if (state.attachments.length && !supportsImages) {
+    if (attachments.length && !supportsImages) {
       throw new Error('This conversation provider does not advertise image prompts');
     }
     const remoteSend = owned?.executionEnvironment === 'remote';
+    if (attachments.length && supportsImages && !remoteSend) {
+      // Image bytes cross the IPC as a JSON number array, which holds the main
+      // thread (~80 ms per 600 KB measured). Wait out the send's scroll glide
+      // (~250 ms in WebKit) so the message lands smoothly before that work.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    }
     const hydratedAttachments = supportsImages && !remoteSend
-      ? await Promise.all(state.attachments.map((attachment) => hydrateAttachmentBytes(attachment as AttachmentWithBytes)))
-      : state.attachments as AttachmentWithBytes[];
+      ? await Promise.all(attachments.map((attachment) => hydrateAttachmentBytes(attachment as AttachmentWithBytes)))
+      : attachments as AttachmentWithBytes[];
     const prompt = remoteSend ? { text, content: [] as AgentPromptContent[] }
       : buildConversationPrompt(text, hydratedAttachments, supportsImages);
     const validatedState = getConversationSession(ownedId);
@@ -1407,12 +1426,6 @@ export async function sendStructuredMessage(
         nativeSessionId: state.nativeSessionId ?? owned.nativeSessionId
       });
     }
-    // Recorded before the request because the backend records and dispatches
-    // its own copy of the user message while the request is still running.
-    // Recorded afterwards, the screenshots would arrive too late to be claimed.
-    // The transcript keeps only display metadata: thumbnails show what went out,
-    // and no provider echoes the image back for it to render from.
-    recordSentConversationAttachments(ownedId, state.attachments.map(attachmentDisplayMetadata));
     if (preparation.cancelled) {
       if (!turnWasAlreadyActive) await invoke('stop_agent_conversation_turn', {
         request: { ownedId, generation: validatedGeneration }
@@ -1430,7 +1443,7 @@ export async function sendStructuredMessage(
         content: prompt.content,
         // Named on the recorded user message so a restart can find the saved
         // files again; the in-memory hold above does not survive one.
-        attachmentIds: state.attachments.map((attachment) => attachment.id),
+        attachmentIds: attachments.map((attachment) => attachment.id),
         model: requestedModel,
         approvalPolicy:
           requestedApprovalPolicy
@@ -1439,12 +1452,14 @@ export async function sendStructuredMessage(
             : null
       }
     });
-    setConversationAttachments(ownedId, []);
     return receipt;
   } catch (error) {
-    // A send that never went out leaves its screenshots in the composer, so
+    // A send that never went out puts its screenshots back in the composer, so
     // nothing is left waiting to be hung on a later message.
     recordSentConversationAttachments(ownedId, []);
+    if (attachments.length) {
+      setConversationAttachments(ownedId, [...attachments, ...(getConversationSession(ownedId)?.attachments ?? [])]);
+    }
     if (!turnWasAlreadyActive) setConversationSending(ownedId, false);
     throw error;
   } finally {

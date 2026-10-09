@@ -146,7 +146,10 @@ assert.equal(legacy.topTabs, undefined);
   obsoleteOwner.abort();
   assert.equal(api.selectedConversationChat('parent-a', 'history-c'), next, 'obsolete owner cannot dispose the replacement');
   assert.equal(states.has('history-b'), false);
+  const parentSelection = api.parent();
   parentOwner.abort();
+  assert.equal(parentSelection.pendingAdmission, admission,
+    'leaving a session after Send does not un-send it: the send settles its own admission');
   assert.equal(api.selectedConversationChat('parent-a'), null);
   assert.equal(api.selectedConversationChat('parent-a', 'history-c'), null);
   assert.equal(states.has('history-c'), false);

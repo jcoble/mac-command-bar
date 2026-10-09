@@ -73,8 +73,12 @@ export function conversationDisplayItems(
   previous: readonly ConversationDisplayItem[] = [],
   sentAttachments: Readonly<Record<string, readonly ConversationAttachment[]>> = {}
 ): ConversationDisplayItem[] {
-  const rows = messages.map(conversationMessageDisplayItem).map((item) => {
-    const attachments = item.kind === 'user' ? sentAttachments[item.itemId] : undefined;
+  const rows = messages.map((message) => {
+    const item = conversationMessageDisplayItem(message);
+    // A message still on its way carries its own screenshots until the backend's copy claims them.
+    const attachments = item.kind === 'user'
+      ? sentAttachments[item.itemId] ?? message.metadata?.attachments as readonly ConversationAttachment[] | undefined
+      : undefined;
     return attachments?.length ? { ...item, attachments } : item;
   }).sort((a, b) => a.timestampMs - b.timestampMs);
   return reuseConversationDisplayItems(withoutRepeatedPlans(rows), previous);

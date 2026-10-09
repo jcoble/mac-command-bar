@@ -253,7 +253,7 @@ assert.match(
 // request is still running, so screenshots recorded after it are never claimed.
 assert.match(
   serviceSource,
-  /recordSentConversationAttachments\(ownedId, state\.attachments\.map\(attachmentDisplayMetadata\)\);[\s\S]*?await invoke\('send_agent_conversation_message'/,
+  /recordSentConversationAttachments\(ownedId, attachments\.map\(attachmentDisplayMetadata\)\);[\s\S]*?await invoke\('send_agent_conversation_message'/,
   'sent screenshot metadata is recorded before the send request, not after it'
 );
 assert.match(
