@@ -146,7 +146,7 @@ const remainingRichKinds = displayItemsFromConversationEvents([
   event(2, { kind: 'turnDiff', turnId: 'turn-rich', diff: '@@ -1 +1 @@\n-old\n+new' }),
   event(3, { kind: 'availableCommandsUpdate', availableCommands: [{ id: '/review', label: 'Review' }] })
 ]);
-assert.deepEqual(remainingRichKinds.map((item) => item.kind), ['plan', 'tool', 'tool']);
+assert.deepEqual(remainingRichKinds.map((item) => item.kind), ['plan', 'tool'], 'a commands update adds no row');
 assert.equal(remainingRichKinds[1].toolKind, 'file-edit');
 assert.equal(remainingRichKinds[1].state, 'completed');
 assert.equal(remainingRichKinds[1].diff, '@@ -1 +1 @@\n-old\n+new');
@@ -817,10 +817,10 @@ for (const name of ['Read', 'file_read']) {
 const unknownTool = { ...toolWithoutPath('mcp__tasks__run_search', 'read and edit a file'), state: 'completed' as const };
 assert.equal(summarizeToolRun([unknownTool]).summary, 'Used a tool');
 assert.equal(summarizeToolRun([unknownTool, { ...unknownTool, itemId: 'other' }]).summary, 'Used tools');
-assert.equal(summarizeCompletedWork([unknownTool]), null);
+assert.equal(summarizeCompletedWork([unknownTool]), 'Used a tool');
 const completedRead = { ...readWithPath, state: 'completed' as const };
 assert.equal(summarizeCompletedWork([completedRead, unknownTool]), 'Read a file, used a tool');
-assert.equal(summarizeCompletedWork([completedRead, { ...unknownTool, state: 'failed' }]), null);
+assert.equal(summarizeCompletedWork([completedRead, { ...unknownTool, state: 'failed' }]), 'Read a file, 1 failed call');
 const edit = { ...completedRead, toolKind: 'file-edit' as const };
 assert.equal(summarizeCompletedWork([edit]), 'Edited a file');
 assert.equal(summarizeCompletedWork([{ ...edit, state: 'running' }]), null);
@@ -893,14 +893,14 @@ assert.equal(summarizeToolRun([{ ...unknownTool, state: 'failed' }, { ...edit, s
   const done = { turnId: 'fold-turn', startedAtMs: 0, endedAtMs: 5_000, terminalState: 'completed', finalAssistantItemId: 'fold-answer' };
 
   const running = conversationTurnGroups(items, 'fold-turn', [{ turnId: 'fold-turn', startedAtMs: 0 }])[0];
-  assert.deepEqual(shown(running), ['fold-user', 'heading', 'tool-run:fold-tool-a', 'fold-note', 'tool-run:fold-tool-b', 'fold-answer'],
+  assert.deepEqual(shown(running), ['fold-user', 'heading', 'fold-tool-a', 'fold-note', 'fold-tool-b', 'fold-answer'],
     'a running turn shows all its work under the heading');
   assert.deepEqual(shown(running, false), shown(running), 'a running turn never folds');
 
   const completed = conversationTurnGroups(items, null, [done])[0];
   assert.deepEqual(shown(completed), ['fold-user', 'heading', 'fold-answer'],
     'a completed turn folds by itself: prompt, heading, final reply');
-  assert.deepEqual(shown(completed, true), ['fold-user', 'heading', 'tool-run:fold-tool-a', 'fold-note', 'tool-run:fold-tool-b', 'fold-answer'],
+  assert.deepEqual(shown(completed, true), ['fold-user', 'heading', 'fold-tool-a', 'fold-note', 'fold-tool-b', 'fold-answer'],
     'opening the heading shows the work in order');
   assert.deepEqual(shown(completed, false), shown(completed), 'closing it hides the work again');
 
@@ -935,3 +935,47 @@ assert.equal(summarizeToolRun([{ ...unknownTool, state: 'failed' }, { ...edit, s
   assert.equal(continueHistoryPaging(true, false, 4_000, 4_000), false, 'the view moved away from the edge');
   assert.equal(continueHistoryPaging(false, true, 4_000, 4_000), false, 'a failed or empty page stops the chain');
 }
+
+// TSK-1401: tool calls and turn folds as they were before the TanStack move.
+{
+  // A lone tool call is its own row: no group heading over a single call.
+  const lone = foldToolRuns([
+    textItem('user', 'lone-user', 'lone-turn', 0),
+    toolItem('lone-tool', 'lone-turn', 1),
+    textItem('assistant', 'lone-answer', 'lone-turn', 2)
+  ]);
+  assert.deepEqual(lone.map((item) => item.kind), ['user', 'tool', 'assistant'], 'a single-item run has no group disclosure');
+  assert.deepEqual(foldToolRuns([toolItem('pair-a', 't', 1), toolItem('pair-b', 't', 2)]).map((item) => item.kind), ['toolRun'],
+    'two neighbouring calls still group');
+
+  // The command catalog is not a transcript row, live or stored.
+  const catalog = { ownedId: 'o', provider: 'codex', generation: 1, sequence: 4, timestampMs: 4, turnId: 'turn-a',
+    payload: { kind: 'availableCommandsUpdate', availableCommands: [{ id: '/review', label: 'Review' }] } } as never;
+  assert.equal(agentItemFromEvent(catalog), null, 'a commands update produces no item');
+  assert.equal(conversationDisplayItems(conversationMessagesFromEvents([catalog])).length, 0, 'stored commands updates draw nothing');
+
+  // One finished action still names what was done.
+  assert.equal(summarizeCompletedWork([toolItem('one-command', 't', 1)]), 'Ran a command', 'a single non-edit action yields a summary');
+
+  // A stored turn with no end fact folds once a later prompt exists.
+  const stored = conversationTurnGroups([
+    textItem('user', 'stored-user', null, 0),
+    toolItem('stored-tool', null, 1),
+    textItem('assistant', 'stored-note', null, 2),
+    textItem('assistant', 'stored-answer', null, 3),
+    textItem('user', 'stored-next', null, 4)
+  ]);
+  assert.equal(stored[0].completed, true, 'a synthetic turn with a later user message is completed');
+  assert.deepEqual(stored[0].workItemIds, ['stored-tool', 'stored-note'], 'its last reply stays out of the fold');
+  assert.equal(stored[1].completed, false, 'the newest stored turn waits for its end fact');
+  const native = conversationTurnGroups([
+    textItem('user', 'native-user', 'native-turn', 0),
+    toolItem('native-tool', 'native-turn', 1),
+    textItem('assistant', 'native-answer', 'native-turn', 2),
+    textItem('user', 'native-next', 'native-next-turn', 3)
+  ], null, [{ turnId: 'native-turn', startedAtMs: 0 }]);
+  assert.equal(native[0].completed, true, 'a native turn missing its end fact folds once a later prompt exists');
+  assert.equal(conversationTurnGroups(native[0].items, 'native-turn', [])[0].completed, false, 'the active turn never folds');
+}
+
+console.log('conversationTimeline: TSK-1401 tool calls and folds passed');
