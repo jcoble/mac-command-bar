@@ -211,7 +211,7 @@ cd assembly-backend && sh install.sh
 
 The **Install** button in Settings installs only signed releases from this repository. Those come from [`.github/workflows/release-remote-backend.yml`](.github/workflows/release-remote-backend.yml) when an `assembly-backend-v<version>` tag is pushed.
 
-For a development-only deploy of the current checkout, including uncommitted changes, run `cd tauri-svelte-preview && pnpm deploy:remote-backend-dev <ssh-host>` (the host defaults to `agent-workbox`). This builds on the host with an incremental Cargo cache and replaces only the service binary; Connections still compares the installed package version, so it may show the last signed release.
+For a development-only deploy of the current checkout, including uncommitted changes, run `cd tauri-svelte-preview && pnpm deploy:remote-backend-dev <ssh-host>` (the host defaults to `agent-workbox`). This builds on the host with an incremental Cargo cache, replaces only the service binary, and records a development manifest so Connections can show `Development build · <commit>`.
 
 ## Project layout
 

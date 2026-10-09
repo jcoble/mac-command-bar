@@ -18,7 +18,7 @@ body{max-width:1000px;margin:40px auto;padding:0 24px;font:17px/1.55 system-ui;c
 <li>Pull the desired checkout and run <code>pnpm app:dev</code>. Frontend edits hot reload. Rust changes rebuild through Tauri; restart this command when starting from newly pulled Rust code.</li>
 <li>A development desktop uses its checkout. Its Updates screen says this directly and avoids the packaged desktop updater, including the misleading temporary-path error.</li>
 <li>For a development build, run <code>pnpm deploy:remote-backend-dev &lt;ssh-host&gt;</code> from <code>tauri-svelte-preview</code>; the host defaults to <code>agent-workbox</code>. It syncs the current checkout, including uncommitted source changes, builds with a persistent remote Cargo cache, and restarts the existing service without signing or publishing.</li>
-<li>The development command replaces only the binary and keeps the previous one as <code>assembly-remote-server.prev</code>; it does not touch sessions or configuration. Connections compares the installed package version, so after a development deploy it may still show the last signed release.</li>
+<li>The development command replaces only the binary and keeps the previous one as <code>assembly-remote-server.prev</code>; it does not touch sessions or configuration, and it records a development manifest so Connections can show <code>Development build · &lt;commit&gt;</code>.</li>
 <li>Production backend releases come only from main or an explicit <code>assembly-backend-v*</code> tag. The release remains a draft until its signed archive and metadata are uploaded.</li>
 </ol>
 <p>Publishing is handled by GitHub Actions. Backend installation is an explicit action and may interrupt work running in that backend service.</p>

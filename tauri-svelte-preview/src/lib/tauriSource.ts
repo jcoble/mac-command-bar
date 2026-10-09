@@ -546,6 +546,8 @@ export type RemoteBackendProfileStatus = {
   profileId: string;
   installed: boolean;
   installedVersion: string | null;
+  backendBuildKind: 'release' | 'development';
+  backendCommit: string | null;
   latestVersion: string;
   updateAvailable: boolean | null;
 };
@@ -2212,6 +2214,16 @@ export async function installRemoteAssemblyFromTauri(
   } finally {
     signal.removeEventListener('abort', cancel);
   }
+}
+
+export async function deployRemoteBackendDev(
+  destination: string,
+  onLine: (line: string) => void
+): Promise<void> {
+  if (!isTauriRuntime()) throw new Error('Development deployment is available in the desktop app.');
+  const { invoke, Channel } = await import('@tauri-apps/api/core');
+  const onEvent = new Channel<string>(onLine);
+  await invoke('deploy_remote_backend_dev', { destination, onEvent });
 }
 
 export async function uninstallRemoteAssemblyFromTauri(
