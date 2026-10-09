@@ -91,7 +91,7 @@
   .status { border-radius: 999px; padding: 0.2rem 0.45rem; background: color-mix(in srgb, var(--color-accent) 18%, transparent); font-size: 0.75rem; }
   .metadata { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.5rem; margin: 1rem 0; }
   .metadata div { flex-direction: column; align-items: flex-start; gap: 0.1rem; }
-  dt { color: var(--color-text-2); font-size: 0.7rem; }
+  dt { color: var(--color-text-2); font-size: 0.75rem; }
   dd { margin: 0; font-size: 0.8rem; }
   fieldset { margin: 0; border: 1px solid var(--color-border); border-radius: 6px; padding: 0.5rem; }
   legend { padding: 0 0.25rem; color: var(--color-text-2); font-size: 0.75rem; }

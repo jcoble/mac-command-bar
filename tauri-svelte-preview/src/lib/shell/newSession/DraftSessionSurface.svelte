@@ -777,7 +777,7 @@
     border-radius: 5px;
     background: color-mix(in srgb, var(--color-text) 11%, transparent);
     color: var(--color-text-2);
-    font: 600 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
     letter-spacing: 0.02em;
   }
 

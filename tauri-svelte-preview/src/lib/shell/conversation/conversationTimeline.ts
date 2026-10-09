@@ -512,6 +512,46 @@ export function conversationTurnGroups(
   ));
 }
 
+/** What a turn shows, in order, with its heading before the first row that is not the prompt.
+ * A completed turn hides its work under the heading until the reader opens it. `opened` is
+ * only ever the reader's click: running is read from the group, never stored, so a turn
+ * folds by itself the moment it completes. */
+export function turnRows(
+  group: ConversationTurnGroup,
+  items: readonly ConversationDisplayItem[],
+  opened: boolean | undefined
+): readonly (ConversationDisplayItem | 'heading')[] {
+  const folded = group.completed && !group.running && opened !== true;
+  const work = new Set(group.workItemIds);
+  const result: (ConversationDisplayItem | 'heading')[] = [];
+  let heading = !(group.running || group.completed);
+  for (const item of items) {
+    if (!heading && item.kind !== 'user') { result.push('heading'); heading = true; }
+    if (folded && (item.kind === 'toolRun' || work.has(item.itemId))) continue;
+    result.push(item);
+  }
+  return result;
+}
+
+/** The row that restores a reading anchor: its own row, the tool run holding it, or the
+ * heading of the folded turn hiding it. */
+export function anchorRowIndex(
+  rows: readonly { anchorItemId?: string; run?: { items: readonly { itemId: string }[] };
+    folded?: boolean; group?: { workItemIds: readonly string[] } }[],
+  itemId: string
+): number {
+  return rows.findIndex((row) => row.anchorItemId === itemId
+    || row.run?.items.some((item) => item.itemId === itemId)
+    || (row.folded === true && !!row.group?.workItemIds.includes(itemId)));
+}
+
+/** Whether a landed history page asks for the next one at once. A page that left the view
+ * at its edge and the content height within 80 px added nothing the reader can see (it
+ * landed inside a folded turn). A failed load, a moved view or a visible page stops. */
+export function continueHistoryPaging(landed: boolean, atEdge: boolean, heightBefore: number, heightAfter: number): boolean {
+  return landed && atEdge && Math.abs(heightAfter - heightBefore) <= 80;
+}
+
 export function formatWorkedFor(elapsedMs: number): string {
   const safeElapsedMs = Math.max(0, elapsedMs);
   if (safeElapsedMs < 10_000) return `${(safeElapsedMs / 1_000).toFixed(1)}s`;

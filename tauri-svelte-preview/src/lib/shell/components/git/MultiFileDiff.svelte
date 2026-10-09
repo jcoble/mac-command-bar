@@ -605,7 +605,7 @@
     height: 24px;
     padding: 0 12px;
     line-height: 24px;
-    font-size: 11px;
+    font-size: 12px;
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }

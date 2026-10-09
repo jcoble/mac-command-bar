@@ -564,7 +564,7 @@
 		align-items: center;
 		gap: 5px;
 		color: var(--color-attention);
-		font-size: 11px;
+		font-size: 12px;
 		font-weight: 500;
 		white-space: nowrap;
 	}
@@ -573,7 +573,7 @@
 	.background-work {
 		flex: 0 0 auto;
 		color: var(--primary);
-		font-size: 11px;
+		font-size: 12px;
 		font-weight: 500;
 		white-space: nowrap;
 	}
@@ -592,7 +592,7 @@
 		align-items: center;
 		gap: 5px;
 		color: var(--primary);
-		font-size: 11px;
+		font-size: 12px;
 		font-weight: 500;
 		white-space: nowrap;
 	}
@@ -610,7 +610,7 @@
 		flex: 0 1 auto;
 		overflow: hidden;
 		color: var(--color-bad);
-		font-size: 11px;
+		font-size: 12px;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
