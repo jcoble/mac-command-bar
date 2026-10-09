@@ -65,6 +65,8 @@ const project = (id: string, machine: string): ProjectRecord => ({
   assert.equal(isNewFolderPath('/Users/me/dev/new-app', listing), true);
   assert.equal(isNewFolderPath(' /Users/me/dev/new-app ', listing), true);
   assert.equal(isNewFolderPath('/Users/me/dev/app', listing), false);
+  assert.equal(isNewFolderPath('/Users/me/dev/new-app/', listing), true);
+  assert.equal(isNewFolderPath('/Users/me/dev/app/', listing), false);
   assert.equal(isNewFolderPath('/Users/me/dev/', listing), false);
   assert.equal(isNewFolderPath('/Users/me/dev/..', listing), false);
   assert.equal(isNewFolderPath('/Users/me/other/new-app', listing), false);

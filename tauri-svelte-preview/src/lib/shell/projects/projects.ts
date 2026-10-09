@@ -61,7 +61,7 @@ export function isNewFolderPath(
   path: string,
   listing: { path: string; directories: readonly string[] } | null
 ): boolean {
-  const trimmed = path.trim();
+  const trimmed = path.trim().replace(/\/+$/, '');
   const slash = trimmed.lastIndexOf('/');
   const name = trimmed.slice(slash + 1);
   const parent = trimmed.slice(0, slash) || '/';

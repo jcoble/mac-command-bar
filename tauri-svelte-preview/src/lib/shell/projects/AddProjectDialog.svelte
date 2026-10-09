@@ -52,7 +52,7 @@
   let listSequence = 0;
 
   const machineLabel = $derived(projectMachineLabel(machine, profiles));
-  const canAdd = $derived(Boolean(path.trim()) && path !== refusedPath && !adding);
+  const canAdd = $derived(Boolean(listing) && Boolean(path.trim()) && path !== refusedPath && !adding);
   /** The path names a folder that is not there yet: Enter and the button create it. */
   const newFolder = $derived(isNewFolderPath(path, listing));
 
@@ -88,7 +88,7 @@
       const next = await listFoldersFromTauri(machine, folder);
       if (sequence !== listSequence) return;
       listing = next;
-      if (folder === '~') path = withSlash(next.path);
+      if (folder === '~' && !path) path = withSlash(next.path);
       message = '';
     } catch (error) {
       if (sequence !== listSequence) return;
@@ -158,7 +158,7 @@
   }
 
   function pathInput(): void {
-    if (path.endsWith('/')) void list(path);
+    if (path.endsWith('/') && !newFolder) void list(path);
   }
 </script>
 
