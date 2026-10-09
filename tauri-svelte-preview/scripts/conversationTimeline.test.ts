@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import {
   agentItemFromEvent,
+  anchorRowIndex,
+  continueHistoryPaging,
   conversationTurnGroups,
   displayItemFromAgentItem,
+  foldToolRuns,
   diffLineCounts,
   foldFileEdits,
   formatWorkedFor,
@@ -12,6 +15,7 @@ import {
   summarizeCompletedWork,
   turnActivityLabel,
   turnFileChanges,
+  turnRows,
   USER_MESSAGE_FOLD_LINES,
   userMessageOverflowsFold,
   type ConversationDisplayItem
@@ -869,4 +873,65 @@ assert.equal(summarizeToolRun([{ ...unknownTool, state: 'failed' }, { ...edit, s
     'the background task stays in the turn that started it');
   assert.ok(groups[0].items.some((item) => item.itemId === 'background-task:idle'),
     'a task started between turns stays where it started');
+}
+
+// The turn fold: a completed turn shows its prompt, its heading and its reply;
+// the work stays under the heading until the reader opens it. A running turn
+// shows everything. Running is read from the group, never stored as "opened",
+// so a turn folds by itself the moment it completes.
+{
+  const items = [
+    textItem('user', 'fold-user', 'fold-turn', 0),
+    toolItem('fold-tool-a', 'fold-turn', 1_000),
+    textItem('assistant', 'fold-note', 'fold-turn', 2_000),
+    toolItem('fold-tool-b', 'fold-turn', 3_000),
+    textItem('assistant', 'fold-answer', 'fold-turn', 4_000)
+  ];
+  const ids = (rows: ReturnType<typeof turnRows>) => rows.map((row) => row === 'heading' ? 'heading' : row.itemId);
+  const shown = (group: ReturnType<typeof conversationTurnGroups>[number], opened?: boolean) =>
+    ids(turnRows(group, foldToolRuns(group.items), opened));
+  const done = { turnId: 'fold-turn', startedAtMs: 0, endedAtMs: 5_000, terminalState: 'completed', finalAssistantItemId: 'fold-answer' };
+
+  const running = conversationTurnGroups(items, 'fold-turn', [{ turnId: 'fold-turn', startedAtMs: 0 }])[0];
+  assert.deepEqual(shown(running), ['fold-user', 'heading', 'tool-run:fold-tool-a', 'fold-note', 'tool-run:fold-tool-b', 'fold-answer'],
+    'a running turn shows all its work under the heading');
+  assert.deepEqual(shown(running, false), shown(running), 'a running turn never folds');
+
+  const completed = conversationTurnGroups(items, null, [done])[0];
+  assert.deepEqual(shown(completed), ['fold-user', 'heading', 'fold-answer'],
+    'a completed turn folds by itself: prompt, heading, final reply');
+  assert.deepEqual(shown(completed, true), ['fold-user', 'heading', 'tool-run:fold-tool-a', 'fold-note', 'tool-run:fold-tool-b', 'fold-answer'],
+    'opening the heading shows the work in order');
+  assert.deepEqual(shown(completed, false), shown(completed), 'closing it hides the work again');
+
+  // The turn completes before its final reply is named; a late update names it.
+  const early = conversationTurnGroups(items.slice(0, 4), null, [{ ...done, finalAssistantItemId: null }])[0];
+  assert.deepEqual(shown(early), ['fold-user', 'heading', 'fold-note'], 'tools fold as soon as the turn completes');
+  const late = conversationTurnGroups([...items.slice(0, 4), textItem('assistant', 'fold-answer', 'fold-turn', 4_000, false)], null, [done])[0];
+  assert.deepEqual(shown(late), ['fold-user', 'heading', 'fold-answer'], 'a late final reply leaves the turn folded');
+
+  // A window holding only the middle of a long folded turn still shows its heading.
+  const middle = conversationTurnGroups(items.slice(1, 4), null, [done])[0];
+  assert.deepEqual(shown(middle), ['heading'], 'hidden work keeps the heading on screen');
+
+  // A reading anchor hidden inside a folded turn restores to that turn's heading.
+  const rows = [
+    { anchorItemId: 'fold-user' },
+    { folded: true, group: completed },
+    { anchorItemId: 'fold-answer' }
+  ];
+  assert.equal(anchorRowIndex(rows, 'fold-answer'), 2, 'a visible row restores to itself');
+  assert.equal(anchorRowIndex(rows, 'fold-tool-b'), 1, 'a hidden work row restores to its turn heading');
+  assert.equal(anchorRowIndex([{ folded: false, group: completed }, { run: { items: [{ itemId: 'fold-tool-b' }] } }], 'fold-tool-b'), 1,
+    'an open turn restores to the run holding the row');
+  assert.equal(anchorRowIndex(rows, 'missing'), -1);
+
+  // Paging through folded turns: a page that leaves the view at its edge and
+  // the content within 80 px asks for the next one at once.
+  assert.equal(continueHistoryPaging(true, true, 4_000, 4_000), true, 'a page of hidden work continues');
+  assert.equal(continueHistoryPaging(true, true, 4_000, 4_060), true, 'a short prompt or heading still continues');
+  assert.equal(continueHistoryPaging(true, true, 4_000, 4_300), false, 'a visible page stops the chain');
+  assert.equal(continueHistoryPaging(true, true, 4_000, 3_700), false, 'a page that trimmed the far end stops the chain');
+  assert.equal(continueHistoryPaging(true, false, 4_000, 4_000), false, 'the view moved away from the edge');
+  assert.equal(continueHistoryPaging(false, true, 4_000, 4_000), false, 'a failed or empty page stops the chain');
 }
