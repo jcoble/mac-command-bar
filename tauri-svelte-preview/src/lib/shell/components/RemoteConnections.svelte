@@ -8,7 +8,7 @@
   import { hydrateOwned, rail } from '$lib/shell/stores/sessionRailStore.svelte';
   import { ownedSessionFromBackend } from '$lib/shell/ownedSessions';
   import {
-    connectRemoteAssemblyFromTauri, disconnectRemoteAssemblyFromTauri,
+    connectRemoteAssemblyFromTauri, deployRemoteBackendDev, disconnectRemoteAssemblyFromTauri,
     installRemoteAssemblyFromTauri, readRemoteAssemblyEnvironmentFromTauri,
     readRemoteBackendStatusesFromTauri, removeRemoteAssemblyProfileFromTauri,
     uninstallRemoteAssemblyFromTauri,
@@ -71,11 +71,12 @@
     const backend = backends[profileId];
     if (!backend) return 'Backend compatibility not verified';
     if (!backend.installed) return 'Backend not installed';
+    if (backend.backendBuildKind === 'development') return `Development build · ${backend.backendCommit ?? 'unknown commit'}`;
     const installed = backend.installedVersion ?? 'unknown version';
     if (backend.updateAvailable === null) return `Backend ${installed} · compatibility not verified`;
     return backend.updateAvailable
       ? `Backend ${installed} · update to ${backend.latestVersion} available`
-      : 'Installed package matches the latest compatible release';
+      : `Backend ${installed} · latest compatible release`;
   }
 
   onMount(() => {
@@ -152,6 +153,26 @@
     finally { if (mounted) busy = false; }
   }
 
+  async function deployDevBuild(selected: RemoteAssemblyProfile) {
+    if (busy) return;
+    busy = true;
+    operationArea = 'saved';
+    status = `Deploying this checkout to ${selected.name}…`;
+    error = '';
+    const timings: string[] = [];
+    try {
+      await deployRemoteBackendDev(selected.sshTarget, (line) => {
+        if (!mounted) return;
+        if (/: \d+(\.\d+)?s$/.test(line)) timings.push(line);
+        else status = line;
+      });
+      if (!mounted) return;
+      await readBackends(environment.profiles);
+      status = `Development build deployed to ${selected.name}. ${timings.join(' · ')}`;
+    } catch (reason) { if (mounted) { status = ''; error = reason instanceof Error ? reason.message : String(reason); } }
+    finally { if (mounted) busy = false; }
+  }
+
   async function uninstallBackend(selected: RemoteAssemblyProfile, deleteData: boolean) {
     if (busy) return;
     busy = true;
@@ -207,8 +228,13 @@
         {/if}
         {#if backend && !backend.installed}
           <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Install</Button>
+        {:else if backend?.backendBuildKind === 'development'}
+          <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Install signed {backend.latestVersion}</Button>
         {:else if backend?.updateAvailable === true}
           <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Update</Button>
+        {/if}
+        {#if import.meta.env.DEV}
+          <Button variant="ghost" size="xs" disabled={busy} onclick={() => void deployDevBuild(saved)}>Deploy from this checkout</Button>
         {/if}
         <Button variant="ghost" size="xs" disabled={busy} onclick={() => { editing = { ...saved }; status = ''; error = ''; }}>Edit</Button>
         <Button variant="ghost" size="xs" disabled={busy} onclick={() => { confirmingUninstallId = saved.id; status = ''; error = ''; }}>Uninstall</Button>

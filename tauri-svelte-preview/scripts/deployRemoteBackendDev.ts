@@ -38,6 +38,7 @@ function failureMessage(error: unknown): string {
 }
 
 async function step(label: string, runner: CommandRunner, file: string, args: string[], log: (message: string) => void): Promise<void> {
+  log(`${label}…`);
   const started = Date.now();
   try {
     await runner(file, args);
