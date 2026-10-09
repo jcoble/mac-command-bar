@@ -330,7 +330,7 @@ assert.equal(saved.writerLease.owner, 'terminal');
   }]);
   store.applySelectedConversationEventState(ownedId, {
     ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 500,
-    payload: { kind: 'userMessage', itemId: 'user-turn-sent', text: 'Look', completed: true }
+    payload: { kind: 'userMessage', itemId: 'user-turn-sent', text: 'Look', completed: true, attachmentIds: ['image-sent'] }
   });
   assert.equal(store.getConversationSession(ownedId).sentAttachments['user-turn-sent'][0].id, 'image-sent');
   assert.equal('transcript' in store.getConversationSession(ownedId), false);
@@ -356,7 +356,7 @@ test('attachment previews are revoked when replaced, but not while shown in a se
     store.setConversationConnection({ ownedId, provider: 'claude', generation: 1, state: 'connected' });
     store.applySelectedConversationEventState(ownedId, {
       ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 1,
-      payload: { kind: 'userMessage', itemId: 'sent', text: 'See image', completed: true }
+      payload: { kind: 'userMessage', itemId: 'sent', text: 'See image', completed: true, attachmentIds: ['replacement'] }
     });
     assert.equal(store.getConversationSession(ownedId).sentAttachments.sent[0].previewUrl, 'blob:replacement');
 
@@ -1181,6 +1181,54 @@ await test('sendStructuredMessage resolves the terminal from the owned session, 
 
   await sendStructuredMessage(ownedId, 'Route this message');
   assert.deepEqual(terminalWrites.map((write) => write.terminalId), [terminalId, terminalId]);
+});
+
+await test('two quick sends with screenshots each keep their own thumbnails', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const block = source.match(/export async function sendStructuredMessage\([\s\S]*?\n\}\n\n\/\*\* Stops the active turn/);
+  assert.ok(block);
+  const code = stripTypeScriptTypes(block[0].replace(/\n\n\/\*\* Stops the active turn$/, '').replace('export async function', 'async function'), { mode: 'strip' });
+  const ownedId = 'owned-two-sends';
+  store.applySelectedConversationSnapshotState(ownedId, ownedId, {
+    connection: { ownedId, provider: 'claude', generation: 1, state: 'connected' },
+    suspended: false,
+    page: {
+      items: [], events: [], turns: [], hasBefore: false, hasEarlierTranscript: false,
+      hasAfter: false, watermark: 0, transferBytes: 0, oversized: false
+    },
+    pendingEvents: [], pendingSequence: 0
+  });
+  const shot = (id: string) => ({ id, name: `${id}.png`, mimeType: 'image/png', path: `/managed/${id}.png`, previewUrl: `blob:${id}` });
+  const dependencies = {
+    getConversationSession: store.getConversationSession,
+    setConversationSending: () => undefined,
+    rail: { activeOwnedId: ownedId, owned: [{ ownedId, agent: 'claude', state: 'live', origin: 'app', executionEnvironment: 'remote' }] },
+    get, sessionPresenceHistory,
+    shouldReviveBeforeSend: () => false,
+    sendSupportsImages: () => true,
+    buildConversationPrompt: (text: string) => ({ text, content: [] }),
+    sendTargetGeneration: () => 1,
+    updateOwnedSession: () => undefined,
+    recordSentConversationAttachments: store.recordSentConversationAttachments,
+    attachmentDisplayMetadata: (attachment: object) => ({ ...attachment }),
+    invoke: () => new Promise(() => {}),
+    setConversationAttachments: store.setConversationAttachments
+  };
+  const send = Function(...Object.keys(dependencies), `const preparingSends = new Map();\n${code}\nreturn sendStructuredMessage;`)(...Object.values(dependencies)) as (id: string, text: string) => Promise<unknown>;
+  store.setConversationAttachments(ownedId, [shot('big')]);
+  void send(ownedId, 'First');
+  store.setConversationAttachments(ownedId, [shot('small')]);
+  void send(ownedId, 'Second');
+  // The backend names each message's screenshots on its own user event.
+  for (const [sequence, itemId, attachmentId] of [[1, 'user-first', 'big'], [2, 'user-second', 'small']] as const) {
+    store.applySelectedConversationEventState(ownedId, {
+      ownedId, provider: 'claude', generation: 1, sequence, timestampMs: sequence,
+      payload: { kind: 'userMessage', itemId, text: itemId, completed: true, attachmentIds: [attachmentId] }
+    });
+  }
+  const sent = store.getConversationSession(ownedId).sentAttachments;
+  assert.deepEqual(sent['user-first']?.map((item: { id: string }) => item.id), ['big']);
+  assert.deepEqual(sent['user-second']?.map((item: { id: string }) => item.id), ['small']);
 });
 
 await test('Send empties the composer before the request, and a failed send puts the screenshots back', async () => {

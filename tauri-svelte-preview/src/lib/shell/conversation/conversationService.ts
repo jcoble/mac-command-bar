@@ -1306,8 +1306,10 @@ export async function sendStructuredMessage(
   // recorded before the request, because the backend records and dispatches
   // its own copy while the request is still running.
   const attachments = state.attachments;
+  const releaseHold = (): void => recordSentConversationAttachments(ownedId,
+    (getConversationSession(ownedId)?.unclaimedSentAttachments ?? []).filter((held) => !attachments.some((item) => item.id === held.id)));
   if (attachments.length) {
-    recordSentConversationAttachments(ownedId, attachments.map(attachmentDisplayMetadata));
+    recordSentConversationAttachments(ownedId, [...(state.unclaimedSentAttachments ?? []), ...attachments.map(attachmentDisplayMetadata)]);
     setConversationAttachments(ownedId, []);
   }
   try {
@@ -1387,7 +1389,7 @@ export async function sendStructuredMessage(
       if (!submitted) throw new Error('The terminal session is no longer running');
       setConversationSending(ownedId, false);
       // The terminal echoes no user message to claim the hold.
-      recordSentConversationAttachments(ownedId, []);
+      releaseHold();
       attachments.forEach(cleanupConversationAttachmentPreview);
       return;
     }
@@ -1456,8 +1458,8 @@ export async function sendStructuredMessage(
   } catch (error) {
     // A send that never went out puts its screenshots back in the composer, so
     // nothing is left waiting to be hung on a later message.
-    recordSentConversationAttachments(ownedId, []);
     if (attachments.length) {
+      releaseHold();
       setConversationAttachments(ownedId, [...attachments, ...(getConversationSession(ownedId)?.attachments ?? [])]);
     }
     if (!turnWasAlreadyActive) setConversationSending(ownedId, false);

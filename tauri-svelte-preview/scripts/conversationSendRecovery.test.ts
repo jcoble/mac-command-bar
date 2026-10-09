@@ -253,12 +253,12 @@ assert.match(
 // request is still running, so screenshots recorded after it are never claimed.
 assert.match(
   serviceSource,
-  /recordSentConversationAttachments\(ownedId, attachments\.map\(attachmentDisplayMetadata\)\);[\s\S]*?await invoke\('send_agent_conversation_message'/,
+  /recordSentConversationAttachments\(ownedId, \[[^\n]*attachments\.map\(attachmentDisplayMetadata\)\]\);[\s\S]*?await invoke\('send_agent_conversation_message'/,
   'sent screenshot metadata is recorded before the send request, not after it'
 );
 assert.match(
   serviceSource,
-  /catch \(error\) \{[\s\S]*?recordSentConversationAttachments\(ownedId, \[\]\);[\s\S]*?setConversationSending\(ownedId, false\);[\s\S]*?throw error;/,
+  /catch \(error\) \{[\s\S]*?releaseHold\(\);[\s\S]*?setConversationSending\(ownedId, false\);[\s\S]*?throw error;/,
   'a failed first send releases its screenshot claim and clears the send gate'
 );
 
