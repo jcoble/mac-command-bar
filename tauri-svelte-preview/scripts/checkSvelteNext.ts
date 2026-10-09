@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * checkSvelteNext.mjs — type-check the Svelte components the /next shell owns.
+ * checkSvelteNext.ts — type-check the Svelte components the /next shell owns.
  *
  * WHY THIS WRAPPER EXISTS
  * `pnpm run check` runs `tsc --noEmit`, and TypeScript cannot read a `.svelte`
@@ -24,7 +24,8 @@
  * the backlog stays visible without being in the way. If you fix the old shell,
  * widen OWNED.
  *
- * Usage: node scripts/checkSvelteNext.mjs   (or `pnpm run check:svelte`)
+ * Usage: node --experimental-strip-types scripts/checkSvelteNext.ts
+ *        (or `pnpm run check:svelte`)
  */
 
 import { spawn } from 'node:child_process';
@@ -61,7 +62,7 @@ function unescape(value) {
   return value.replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
 }
 
-function run() {
+function run(): Promise<{ out: string; err: string; status: number | null; signal: string | null }> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
@@ -80,25 +81,30 @@ function run() {
     child.stdout.on('data', (chunk) => (out += chunk));
     child.stderr.on('data', (chunk) => (err += chunk));
     child.on('error', reject);
-    child.on('close', () => resolve({ out, err }));
+    child.on('close', (status, signal) => resolve({ out, err, status, signal }));
   });
 }
 
-const { out, err } = await run();
+const { out, err, status, signal } = await run();
 
 const ownedErrors = [];
 const ownedWarnings = [];
 let otherErrors = 0;
-let completed = null;
+let parsedErrors = 0;
+let parsedWarnings = 0;
+let totals = null;
 
 for (const line of out.split('\n')) {
-  if (line.startsWith('COMPLETED') || / COMPLETED /.test(line)) {
-    completed = line.trim();
+  const completed = /(?:^\d+\s+)?COMPLETED\s+\d+\s+FILES\s+(\d+)\s+ERRORS\s+(\d+)\s+WARNINGS\b/.exec(line.trim());
+  if (completed) {
+    totals = { errors: Number(completed[1]), warnings: Number(completed[2]) };
     continue;
   }
   const match = RECORD.exec(line.trim());
   if (!match) continue;
   const [, severity, file, row, column, message] = match;
+  if (severity === 'ERROR') parsedErrors += 1;
+  else parsedWarnings += 1;
   const entry = { file, row, column, message: unescape(message) };
   if (!isOwned(file)) {
     if (severity === 'ERROR') otherErrors += 1;
@@ -108,9 +114,24 @@ for (const line of out.split('\n')) {
   else ownedWarnings.push(entry);
 }
 
-if (!completed) {
+if (!totals) {
   console.error('svelte-check did not finish. Its output was:');
   console.error(out.trim() || '(nothing on stdout)');
+  if (err.trim()) console.error(err.trim());
+  process.exit(2);
+}
+
+if (parsedErrors !== totals.errors || parsedWarnings !== totals.warnings) {
+  console.error(
+    `svelte-check reported ${totals.errors} error(s) and ${totals.warnings} warning(s), ` +
+      `but the wrapper parsed ${parsedErrors} error(s) and ${parsedWarnings} warning(s).`
+  );
+  process.exit(2);
+}
+
+const expectedBacklogFailure = status === 1 && totals.errors > 0 && otherErrors === totals.errors;
+if (status !== 0 && !expectedBacklogFailure) {
+  console.error(`svelte-check failed with ${signal ? `signal ${signal}` : `exit status ${status}`}.`);
   if (err.trim()) console.error(err.trim());
   process.exit(2);
 }
@@ -131,9 +152,9 @@ console.log(
 
 // ── The font floor ───────────────────────────────────────────────────────────
 // The shell's rule is 13px body / 12px meta, and the class-based Tailwind trap
-// is documented — but a raw `font-size: 11px` in a component's <style> block is
-// invisible to a type checker, which is exactly how two panes shipped below the
-// floor. Walk the owned .svelte files and fail on any hardcoded size under 12px.
+// is documented — but raw font-size and font shorthand values in a component's
+// <style> block are invisible to a type checker. Walk the owned .svelte files
+// and fail on any hardcoded px or rem size under 12px.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 
 function svelteFilesUnder(dir) {
@@ -158,10 +179,15 @@ for (const prefix of OWNED) {
   }
   for (const file of files) {
     const text = readFileSync(file, 'utf8');
-    for (const match of text.matchAll(/font-size:\s*(\d+)px/g)) {
-      if (Number(match[1]) < 12) {
+    for (const match of text.matchAll(/(?<![-\w])(font-size|font)\s*:\s*([^;}]*)/g)) {
+      const size = /(\d*\.?\d+)(px|rem)\b/.exec(match[2]);
+      if (!size) continue;
+      const pixels = Number(size[1]) * (size[2] === 'rem' ? 16 : 1);
+      if (pixels < 12) {
         const row = text.slice(0, match.index).split('\n').length;
-        fontFloorHits.push(`${path.relative(projectRoot, file)}:${row}  font-size: ${match[1]}px`);
+        fontFloorHits.push(
+          `${path.relative(projectRoot, file)}:${row}  ${match[1]}: ${size[1]}${size[2]}`
+        );
       }
     }
   }
