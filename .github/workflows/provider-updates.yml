@@ -48,9 +48,9 @@ jobs:
         working-directory: tauri-svelte-preview
         run: |
           pnpm install --frozen-lockfile
-          # Claude stays on the pinned, patched 0.86.0 until upstream releases
-          # agentclientprotocol/claude-agent-acp#1262; the patch names that version.
-          pnpm update @agentclientprotocol/codex-acp --latest
+          # Both follow upstream. Assembly's Claude patch applies to any version;
+          # if a new release breaks it, install fails here and nothing is published.
+          pnpm update @agentclientprotocol/codex-acp @agentclientprotocol/claude-agent-acp --latest
       - name: Package and sign adapters
         working-directory: tauri-svelte-preview
         env:
