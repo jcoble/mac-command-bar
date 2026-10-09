@@ -700,6 +700,8 @@
   .run-header:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
   .run-icon{display:grid;place-items:center;flex:none;color:var(--color-text-3)}
   .run-summary{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* A tool group's arrow sits beside its label, as each call's does. */
+  [data-run-id] .run-summary{flex:0 1 auto}
   .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .working-row{flex:none;display:flex;align-items:center;gap:8px;height:24px;overflow:hidden;white-space:nowrap;color:var(--color-text-3);font-size:13px}
   /* Taller than the turn's line so the kit button's focus ring is not clipped. */
