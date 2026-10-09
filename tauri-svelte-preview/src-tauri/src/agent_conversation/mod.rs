@@ -339,25 +339,54 @@ pub async fn list_projects(
     Ok(manager.list_projects()?.into_iter().map(project_record).collect())
 }
 
+/// Inspects `path` on the machine that owns it: here, or through the remote's
+/// `inspect_project_folder` operation.
+async fn inspect_folder_on(
+    remote: &RemoteConnectionManager,
+    machine: &str,
+    path: String,
+) -> Result<crate::project_folders::ProjectFolderInspection, String> {
+    if machine == "local" {
+        return tauri::async_runtime::spawn_blocking(move || crate::project_folders::inspect_project_folder_sync(&path))
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    let value = remote
+        .workspace_operation(machine, "inspect_project_folder".into(), serde_json::json!({ "path": path }))
+        .await?;
+    serde_json::from_value(value).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 /// Inspects the folder on the machine that owns it, then registers it. Adding
-/// the same folder again returns the project already registered.
+/// the same folder again returns the project already registered. With `create`
+/// it first makes the folder (one level, no `git init`) on that machine, after
+/// checking the folder it goes in so a refusal leaves nothing behind.
 pub async fn add_project(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     machine: String,
     path: String,
+    create: bool,
 ) -> Result<protocol::ProjectRecord, String> {
-    let inspection: crate::project_folders::ProjectFolderInspection = if machine == "local" {
-        tauri::async_runtime::spawn_blocking(move || crate::project_folders::inspect_project_folder_sync(&path))
-            .await
-            .map_err(|error| error.to_string())??
-    } else {
-        let value = remote
-            .workspace_operation(&machine, "inspect_project_folder".into(), serde_json::json!({ "path": path }))
-            .await?;
-        serde_json::from_value(value).map_err(|error| error.to_string())?
-    };
+    if create {
+        let parent = std::path::Path::new(&path)
+            .parent()
+            .filter(|_| path.starts_with('/'))
+            .ok_or_else(|| "Folder path must be absolute".to_string())?;
+        let parent = inspect_folder_on(&remote, &machine, parent.to_string_lossy().into_owned()).await?;
+        crate::project_folders::refuse_repository_parent(&parent)?;
+        let made = if machine == "local" {
+            std::fs::create_dir(&path).map_err(|error| error.to_string())
+        } else {
+            remote
+                .workspace_operation(&machine, "workspace_mkdir".into(), serde_json::json!({ "path": path }))
+                .await
+                .map(|_| ())
+        };
+        made.map_err(|error| format!("The folder could not be created: {error}"))?;
+    }
+    let inspection = inspect_folder_on(&remote, &machine, path).await?;
     let row = crate::project_folders::new_project_row(machine, inspection);
     let project = manager.add_project(row)?;
     if project.machine == "local" {

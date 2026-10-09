@@ -3166,11 +3166,14 @@ export async function listProjectsFromTauri(): Promise<ProjectRecord[]> {
   return invoke<ProjectRecord[]>('list_projects');
 }
 
-/** Inspects the folder on its machine and registers it; the same folder returns the same project. */
-export async function addProjectFromTauri(machine: string, path: string): Promise<ProjectRecord> {
+/**
+ * Inspects the folder on its machine and registers it; the same folder returns the same project.
+ * With `create`, the folder is made first.
+ */
+export async function addProjectFromTauri(machine: string, path: string, create: boolean): Promise<ProjectRecord> {
   if (!isTauriRuntime()) throw new Error('Projects are available in the desktop app.');
   const { invoke } = await import('@tauri-apps/api/core');
-  return invoke<ProjectRecord>('add_project', { machine, path });
+  return invoke<ProjectRecord>('add_project', { machine, path, create });
 }
 
 /** The folders inside `path` on `machine` ('local' or a saved remote profile id). `~` is that machine's home. */

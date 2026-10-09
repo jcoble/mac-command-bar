@@ -4,8 +4,9 @@
   Two steps in one command dialog: choose the machine, then browse its folders
   and add one. The folder is checked on the machine that owns it; a refusal
   (git's own folder, a folder inside a repository, a missing path) is shown
-  under the path field and Add stays off until the path changes. Nothing here
-  writes to the folder.
+  under the path field and Add stays off until the path changes. A path that
+  names a new folder in the listed one is created there first (no `git init`);
+  otherwise nothing here writes to the folder.
 -->
 <script lang="ts">
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -22,7 +23,7 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import { pickProjectFolder } from '$lib/shell/newSession/newSessionBackend.ts';
   import { addProject } from '$lib/shell/projects/projectRegistry.svelte.ts';
-  import { projectMachineLabel } from '$lib/shell/projects/projects.ts';
+  import { isNewFolderPath, projectMachineLabel } from '$lib/shell/projects/projects.ts';
   import { listFoldersFromTauri, type FolderListing, type ProjectRecord, type RemoteAssemblyProfile } from '$lib/tauriSource.ts';
 
   interface Props {
@@ -51,7 +52,9 @@
   let listSequence = 0;
 
   const machineLabel = $derived(projectMachineLabel(machine, profiles));
-  const canAdd = $derived(Boolean(path.trim()) && path !== refusedPath && !adding);
+  const canAdd = $derived(Boolean(listing) && Boolean(path.trim()) && path !== refusedPath && !adding);
+  /** The path names a folder that is not there yet: Enter and the button create it. */
+  const newFolder = $derived(isNewFolderPath(path, listing));
 
   // The folder step opens with the path field focused so typing goes there.
   $effect(() => {
@@ -85,7 +88,7 @@
       const next = await listFoldersFromTauri(machine, folder);
       if (sequence !== listSequence) return;
       listing = next;
-      if (folder === '~') path = withSlash(next.path);
+      if (folder === '~' && !path) path = withSlash(next.path);
       message = '';
     } catch (error) {
       if (sequence !== listSequence) return;
@@ -116,7 +119,7 @@
     adding = true;
     const requested = path;
     try {
-      const project = await addProject(machine, requested.trim());
+      const project = await addProject(machine, requested.trim(), newFolder);
       open = false;
       onAdded(project);
     } catch (error) {
@@ -144,7 +147,7 @@
   }
 
   function pathKeydown(event: KeyboardEvent): void {
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey || newFolder)) {
       event.preventDefault();
       event.stopPropagation();
       void add();
@@ -155,7 +158,7 @@
   }
 
   function pathInput(): void {
-    if (path.endsWith('/')) void list(path);
+    if (path.endsWith('/') && !newFolder) void list(path);
   }
 </script>
 
@@ -221,7 +224,7 @@
         <Button variant="ghost" size="sm" onclick={() => void openInFinder()}>Open in Finder</Button>
       {/if}
       <Button size="sm" disabled={!canAdd} onclick={() => void add()}>
-        Add <span class="opacity-70">{isMac ? '⌘' : 'Ctrl'} Enter</span>
+        {newFolder ? 'Create' : 'Add'} <span class="opacity-70">{isMac ? '⌘' : 'Ctrl'} Enter</span>
       </Button>
     </div>
     {#if message}
@@ -248,7 +251,7 @@
   {/if}
   <div class="flex items-center gap-3 border-t px-3 py-2 text-sm text-muted-foreground">
     <span><kbd class="add-project-key">↑</kbd> <kbd class="add-project-key">↓</kbd> Navigate</span>
-    <span><kbd class="add-project-key">Enter</kbd> {step === 'machine' ? 'Select' : 'Open'}</span>
+    <span><kbd class="add-project-key">Enter</kbd> {step === 'machine' ? 'Select' : newFolder ? 'Create folder and add' : 'Open'}</span>
     <span><kbd class="add-project-key">Backspace</kbd> Back</span>
     <span><kbd class="add-project-key">Esc</kbd> Close</span>
   </div>

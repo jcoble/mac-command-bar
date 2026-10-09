@@ -206,6 +206,15 @@ pub(crate) fn inspect_project_folder_sync(path: &str) -> Result<ProjectFolderIns
     Ok(ProjectFolderInspection { root_path, title, repo_key, is_git: true })
 }
 
+/// A new project folder may not be made inside a repository; `parent` is the
+/// inspection of the folder it would be made in.
+pub(crate) fn refuse_repository_parent(parent: &ProjectFolderInspection) -> Result<(), String> {
+    if parent.is_git {
+        return Err(format!("That would be inside the repository at {}. Choose a folder outside it.", parent.root_path));
+    }
+    Ok(())
+}
+
 /// `host/owner/repo` for https, ssh and `user@host:path` remote URLs; `''` otherwise.
 pub(crate) fn normalize_repo_key(url: &str) -> String {
     let url = url.trim();
@@ -413,6 +422,18 @@ mod tests {
         for folder in [repo.join(".git"), repo.join(".git/refs"), bare] {
             assert_eq!(inspect_project_folder_sync(text(&folder)).unwrap_err(), GIT_INTERNAL, "{folder:?}");
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_new_project_folder_may_not_go_inside_a_repository() {
+        let root = temp_dir();
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        let refusal = format!("That would be inside the repository at {}. Choose a folder outside it.", repo.display());
+        assert_eq!(refuse_repository_parent(&inspect_project_folder_sync(text(&repo)).unwrap()).unwrap_err(), refusal);
+        assert_eq!(refuse_repository_parent(&inspect_project_folder_sync(text(&root)).unwrap()), Ok(()));
         std::fs::remove_dir_all(root).unwrap();
     }
 

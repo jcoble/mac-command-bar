@@ -28,11 +28,11 @@ export async function hydrateProjects(): Promise<void> {
 }
 
 /**
- * Inspects and registers a folder; adding the same folder again returns the same project.
+ * Inspects and registers a folder, made first when `create` is set; adding the same folder again returns the same project.
  * A local add also files older local sessions under it in SQL, so the rail takes their new groups.
  */
-export async function addProject(machine: string, path: string): Promise<ProjectRecord> {
-  const project = await addProjectFromTauri(machine, path);
+export async function addProject(machine: string, path: string, create: boolean): Promise<ProjectRecord> {
+  const project = await addProjectFromTauri(machine, path, create);
   if (!projectRegistry.projects.some((existing) => existing.id === project.id)) {
     projectRegistry.projects = [...projectRegistry.projects, project];
   }
