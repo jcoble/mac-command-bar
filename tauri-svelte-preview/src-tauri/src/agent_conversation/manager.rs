@@ -220,6 +220,7 @@ pub struct ManagedAgentSession {
     /// replies it writes when a background sub-agent or command finishes.
     /// It lasts from the first such update until Claude Code reports idle.
     autonomous_turn_id: Option<String>,
+    autonomous_turn_started: bool,
     /// The Claude adapter forwards Claude Code's running and idle state.
     claude_reports_state: bool,
     child_rollout_scan: Option<tokio::task::JoinHandle<()>>,
@@ -1742,6 +1743,7 @@ impl AgentRuntimeManager {
                 streaming_reply: None,
                 background_work: HashMap::new(),
                 autonomous_turn_id: None,
+                autonomous_turn_started: false,
                 claude_reports_state: false,
                 child_rollout_scan: None,
                 child_rollout_parent_path: None,
@@ -2347,6 +2349,12 @@ impl AgentRuntimeManager {
                 .ordered_events
                 .clone()
                 .ok_or_else(|| "Structured event pump has not started".to_string())?;
+            finish_autonomous_turn(
+                session,
+                &self.emitter,
+                super::protocol::TurnState::Completed,
+                AgentRuntimeState::Ready,
+            );
             session.active_turn_id = Some(turn_id.clone());
             if session_title_is_empty(session.rail_meta.title.as_deref()) {
                 let is_first_user_prompt = session
@@ -4046,6 +4054,12 @@ impl AgentRuntimeManager {
                 );
                 pending_inputs.push(pending);
             }
+            finish_autonomous_turn(
+                session,
+                &self.emitter,
+                super::protocol::TurnState::Interrupted,
+                AgentRuntimeState::Ready,
+            );
             record_payload_for_session_and_dispatch_with_lifecycle(
                 session,
                 &self.emitter,
@@ -4804,6 +4818,7 @@ fn recovered_session_from_row(
         streaming_reply: None,
         background_work: HashMap::new(),
         autonomous_turn_id: None,
+        autonomous_turn_started: false,
         claude_reports_state: false,
         child_rollout_scan: None,
         child_rollout_parent_path: None,
@@ -5295,6 +5310,37 @@ fn record_finished_reply(
     }
 }
 
+fn finish_autonomous_turn(
+    session: &mut ManagedAgentSession,
+    emitter: &Arc<Mutex<Option<ConversationEmitter>>>,
+    state: super::protocol::TurnState,
+    runtime_state: AgentRuntimeState,
+) {
+    record_finished_reply(session, emitter);
+    let turn_id = match (session.autonomous_turn_started, session.autonomous_turn_id.clone()) {
+        (true, Some(turn_id)) => turn_id,
+        _ => {
+            session.autonomous_turn_id = None;
+            session.autonomous_turn_started = false;
+            return;
+        }
+    };
+    let lifecycle = lifecycle_update_for_state(session, runtime_state, session.connection.state);
+    // Clear the turn only once its end is stored, so a failed write is retried at the next end.
+    match record_payload_for_session_and_dispatch_with_lifecycle(
+        session,
+        emitter,
+        AgentConversationPayload::Turn { turn_id, state },
+        lifecycle,
+    ) {
+        Ok(_) => {
+            session.autonomous_turn_id = None;
+            session.autonomous_turn_started = false;
+        }
+        Err(error) => crate::debug_log::stderr_log!("Could not finish autonomous Claude turn: {error}"),
+    }
+}
+
 /// Describes a state-only lifecycle change while preserving current ownership.
 fn lifecycle_update_for_state(
     session: &ManagedAgentSession,
@@ -5495,21 +5541,55 @@ async fn pump_inbound(
                     }
                     // Native child content belongs to the child's provider transcript.
                     // The parent journal carries only spawn/state metadata.
-                    if child_content {
-                        // A shell a sub-agent started can outlive it, so its
-                        // task still keeps the runtime.
-                        if session_update_kind(&params).is_some_and(|kind| kind.starts_with("async_task_")) {
-                            break 'update update_raw_liveness(session, &params);
-                        }
+                    if child_content
+                        && !session_update_kind(&params)
+                            .is_some_and(|kind| kind.starts_with("async_task_"))
+                    {
                         break 'update false;
                     }
                     if let Some(state) = claude_session_state(session, &params) {
                         session.claude_reports_state = true;
                         if state == "idle" {
-                            record_finished_reply(session, &emitter);
+                            finish_autonomous_turn(
+                                session,
+                                &emitter,
+                                super::protocol::TurnState::Completed,
+                                AgentRuntimeState::Ready,
+                            );
                             session.background_work.remove(CLAUDE_SESSION_RUNNING);
-                            session.autonomous_turn_id = None;
                         } else {
+                            if state == "running"
+                                && session.active_turn_id.is_none()
+                                && !session.autonomous_turn_started
+                                && session.writer_lease.owner == AgentWriterLeaseOwner::Structured
+                            {
+                                let turn_id = session
+                                    .autonomous_turn_id
+                                    .get_or_insert_with(|| format!("turn-{}", uuid::Uuid::new_v4()))
+                                    .clone();
+                                let lifecycle = lifecycle_update_for_state(
+                                    session,
+                                    AgentRuntimeState::Working,
+                                    session.connection.state,
+                                );
+                                match record_payload_for_session_and_dispatch_with_lifecycle(
+                                    session,
+                                    &emitter,
+                                    AgentConversationPayload::Turn {
+                                        turn_id: turn_id.clone(),
+                                        state: super::protocol::TurnState::Started,
+                                    },
+                                    lifecycle,
+                                ) {
+                                    Ok(_) => {
+                                        session.autonomous_turn_id = Some(turn_id);
+                                        session.autonomous_turn_started = true;
+                                    }
+                                    Err(error) => crate::debug_log::stderr_log!(
+                                        "Could not start autonomous Claude turn: {error}"
+                                    ),
+                                }
+                            }
                             insert_background_work(
                                 &mut session.background_work,
                                 CLAUDE_SESSION_RUNNING.to_string(),
@@ -5891,8 +5971,12 @@ async fn settle_closed_transport(
                     );
                 }
             }
-            record_finished_reply(session, &emitter);
-            session.autonomous_turn_id = None;
+            finish_autonomous_turn(
+                session,
+                &emitter,
+                super::protocol::TurnState::Failed,
+                AgentRuntimeState::Failed,
+            );
             session.claude_reports_state = false;
             if let Some(turn_id) = session.active_turn_id.take() {
                 let _ = record_payload_for_session_and_dispatch(
@@ -6658,7 +6742,9 @@ async fn handle_ordered_session_event(
             if session.writer_lease.owner != AgentWriterLeaseOwner::Structured {
                 return true;
             }
-            let next_state = if session.active_turn_id.is_some() {
+            let next_state = if session.active_turn_id.is_some()
+                || session.autonomous_turn_started
+            {
                 AgentRuntimeState::Working
             } else {
                 AgentRuntimeState::Ready
@@ -9554,6 +9640,13 @@ mod tests {
             .clone()
     }
 
+    fn turn_states(seen: &SeenEvents, turn_id: &str) -> Vec<super::super::protocol::TurnState> {
+        seen.lock().unwrap().iter().filter_map(|event| match &event.payload {
+            AgentConversationPayload::Turn { turn_id: id, state } if id == turn_id => Some(*state),
+            _ => None,
+        }).collect::<Vec<_>>()
+    }
+
     fn claude_running(fixture: &FixtureManager) -> bool {
         fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
             .background_work
@@ -9627,21 +9720,40 @@ mod tests {
         feed(
             &fixture,
             &[
+                child_spawned("keeper"),
                 claude_state("running"),
+            ],
+        );
+        wait_until(|| completed_turns(&seen) == 0 && autonomous_turn(&fixture).is_some()).await;
+        assert_eq!(fixture.manager.sessions.lock().unwrap()[&fixture.owned_id].state,
+            AgentRuntimeState::Working);
+        feed(
+            &fixture,
+            &[
                 reply_chunk("m-auto", "late summary", true),
                 claude_state("idle"),
             ],
         );
-        wait_until(|| suspended(&fixture)).await;
+        wait_until(|| completed_turns(&seen) == 1).await;
+        assert_eq!(fixture.manager.sessions.lock().unwrap()[&fixture.owned_id].state,
+            AgentRuntimeState::Ready);
         let turns = delta_turns(&seen, "late summary");
         assert_eq!(turns.len(), 1);
         let autonomous = turns[0].clone().expect("the summary has a journal turn");
         assert!(autonomous.starts_with("turn-"));
         assert_eq!(finished_turn(&seen, "late summary"), Some(Some(autonomous.clone())));
-        assert!(!seen.lock().unwrap().iter().any(|event| matches!(
-            &event.payload,
-            AgentConversationPayload::Turn { turn_id, .. } if *turn_id == autonomous
-        )));
+        let seen = seen.lock().unwrap();
+        let order = seen.iter().filter_map(|event| match &event.payload {
+            AgentConversationPayload::Turn { turn_id, state: super::super::protocol::TurnState::Started }
+                if turn_id == &autonomous => Some("started"),
+            AgentConversationPayload::AssistantDelta { delta, .. } if delta == "late summary" => Some("delta"),
+            AgentConversationPayload::AssistantMessage { text, .. } if text == "late summary" => Some("message"),
+            AgentConversationPayload::Turn { turn_id, state: super::super::protocol::TurnState::Completed }
+                if turn_id == &autonomous => Some("completed"),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(order, vec!["started", "delta", "message", "completed"]);
+        drop(seen);
         finish(fixture).await;
     }
 
@@ -9674,7 +9786,10 @@ mod tests {
         let autonomous = autonomous[0].clone().expect("the summary has a journal turn");
         assert_ne!(autonomous, user_turn);
         assert_eq!(finished_turn(&seen, "answer"), Some(Some(user_turn)));
-        assert_eq!(finished_turn(&seen, "summary"), Some(Some(autonomous)));
+        assert_eq!(finished_turn(&seen, "summary"), Some(Some(autonomous.clone())));
+        feed(&fixture, &[claude_state("running"), claude_state("idle")]);
+        wait_until(|| turn_states(&seen, &autonomous).len() == 2).await;
+        assert_eq!(turn_states(&seen, &autonomous), vec![super::super::protocol::TurnState::Started, super::super::protocol::TurnState::Completed]);
         finish(fixture).await;
     }
 
@@ -9705,7 +9820,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn stop_and_send_ignore_autonomous_turn() {
+    async fn stop_ignores_but_send_completes_autonomous_turn() {
         let (fixture, seen) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
         feed(
             &fixture,
@@ -9732,7 +9847,8 @@ mod tests {
             .clone()
             .expect("the prompt opens its own turn");
         assert_ne!(user_turn, autonomous);
-        assert_eq!(autonomous_turn(&fixture), Some(autonomous));
+        assert_eq!(autonomous_turn(&fixture), None);
+        assert_eq!(turn_states(&seen, &autonomous), vec![super::super::protocol::TurnState::Started, super::super::protocol::TurnState::Completed]);
         finish(fixture).await;
     }
 
@@ -9865,26 +9981,22 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn transport_closed_clears_autonomous_turn_and_running_marker() {
-        let (fixture, _) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+    async fn transport_closed_ends_autonomous_turn_and_running_marker() {
+        let (fixture, seen) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
         feed(
             &fixture,
             &[claude_state("running"), reply_chunk("m-auto", "summary", true)],
         );
         wait_until(|| claude_running(&fixture) && autonomous_turn(&fixture).is_some()).await;
-        fixture
-            .manager
-            .prompt(&fixture.owned_id, fixture.generation, test_prompt("exit"))
-            .await
-            .expect("prompt starts");
-        wait_until(|| {
-            fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
-                .transport
-                .is_none()
-        })
-        .await;
+        let autonomous = autonomous_turn(&fixture).unwrap();
+        fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
+            .state = AgentRuntimeState::WaitingApproval;
+        let transport = fixture.manager.sessions.lock().unwrap()[&fixture.owned_id]
+            .transport.clone().unwrap();
+        settle_closed_transport(&fixture.manager, &transport, "fixture exit").await;
         assert_eq!(autonomous_turn(&fixture), None);
         assert!(!claude_running(&fixture));
+        assert_eq!(turn_states(&seen, &autonomous), vec![super::super::protocol::TurnState::Started, super::super::protocol::TurnState::Failed]);
         finish(fixture).await;
     }
 
@@ -9918,7 +10030,7 @@ mod tests {
     // ends; the runtime has to outlive both.
     #[tokio::test(flavor = "current_thread")]
     async fn child_owned_shell_keeps_runtime_until_the_wake_idle() {
-        let (fixture, _) =
+        let (fixture, seen) =
             feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
         feed(
             &fixture,
@@ -9934,6 +10046,8 @@ mod tests {
         settle().await;
         assert!(!suspended(&fixture), "the sub-agent's shell still runs");
         assert!(holds_work(&fixture, "background-task:shell-1"));
+        assert!(seen.lock().unwrap().iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::Tool { item_id, state: ToolState::Started, .. } if item_id == "background-task:shell-1")));
         feed(
             &fixture,
             &[
@@ -9945,6 +10059,8 @@ mod tests {
         wait_until(|| child_finished(&fixture, "agent-a:generation:2")).await;
         settle().await;
         assert!(!suspended(&fixture), "Claude Code still owes the parent its report");
+        assert!(seen.lock().unwrap().iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::Tool { item_id, state: ToolState::Completed, .. } if item_id == "background-task:shell-1")));
         feed(&fixture, &[claude_state("running"), claude_state("idle")]);
         wait_until(|| suspended(&fixture)).await;
         finish(fixture).await;
