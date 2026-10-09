@@ -180,6 +180,8 @@ for (const prefix of OWNED) {
   for (const file of files) {
     const text = readFileSync(file, 'utf8');
     for (const match of text.matchAll(/(?<![-\w])(font-size|font)\s*:\s*([^;}]*)/g)) {
+      // A calc() size has more than one number; reading only the first one misjudges it.
+      if (match[2].includes('calc(')) continue;
       const size = /(\d*\.?\d+)(px|rem)\b/.exec(match[2]);
       if (!size) continue;
       const pixels = Number(size[1]) * (size[2] === 'rem' ? 16 : 1);
