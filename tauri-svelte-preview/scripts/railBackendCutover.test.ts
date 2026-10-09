@@ -10,7 +10,6 @@ const railStore = read('../src/lib/shell/stores/sessionRailStore.svelte.ts');
 const conversationService = read('../src/lib/shell/conversation/conversationService.ts');
 const source = read('../src/lib/tauriSource.ts');
 const row = read('../src/lib/shell/components/WorktreeAgentRow.svelte');
-const rowVisual = read('../src/lib/shell/components/SessionRowVisual.svelte');
 const rail = read('../src/lib/shell/components/SessionRail.svelte');
 const filesPanel = read('../src/lib/shell/panels/files/FilesPanel.svelte');
 const fileTreeWatch = read('../src/lib/shell/panels/files/fileTreeWatch.ts');
@@ -60,12 +59,8 @@ assert.match(source, /invoke<AgentConversationSessionRecord\[]>\('list_agent_con
 assert.match(source, /invoke<AgentConversationEvent\[]>\('list_agent_conversation_events'/);
 assert.match(source, /invoke<AgentConversationSessionRecord>\('update_agent_conversation_session_meta'/);
 assert.match(row, /session\.runtimeState === ["']suspended["']/);
-assert.match(row, /\{onOpenEditor\}/);
-assert.match(row, /\{onOpenSourceControl\}/);
-assert.match(rowVisual, /runShortcut\(event, onOpenEditor \?\? onSelect\)/);
-assert.match(rowVisual, /runShortcut\(event, onOpenSourceControl \?\? onSelect\)/);
-assert.match(rail, /onOpenEditor=\{\(\) => void jumpTo\(session, "editor"\)\}/);
-assert.match(rail, /onOpenSourceControl=\{\(\) => void jumpTo\(session, "source-control"\)\}/);
+assert.match(rail, /action === "open-in-editor"\) void jumpTo\(session, "editor"\)/);
+assert.match(rail, /action === "open-source-control"\) void jumpTo\(session, "source-control"\)/);
 assert.match(page, /registerSessionRowJumpTarget\(\{/);
 assert.match(page, /showCenterPanel: \(_ownedId, id\) => selectCenterTab\(id\)/);
 assert.match(page, /showSidebarView: \(_ownedId, id\) => selectRightTab\(id\)/);
@@ -104,7 +99,6 @@ assert.doesNotMatch(
   'the composer can submit steering text during an active turn'
 );
 assert.match(elapsed, /if \(totalHours < 24\)/);
-assert.match(rowVisual, /\.row-visual:hover :global\(\.line-title\)/);
 assert.match(page, /visible=\{workbench\.rightPanelOpen\}/);
 assert.match(frame, /setToolsPresent[\s\S]*?api\.removePanel\(panel\)/);
 assert.doesNotMatch(
