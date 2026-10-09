@@ -951,6 +951,13 @@ assert.equal(summarizeToolRun([{ ...unknownTool, state: 'failed' }, { ...edit, s
   assert.deepEqual(foldToolRuns([thought, toolItem('lone-after-thought', 't', 1)]).map((item) => item.kind), ['reasoning', 'tool'],
     'thinking beside one call does not put that call under a group heading');
 
+  // A finished turn folds its answered approval cards with the rest of its work.
+  const approval = { kind: 'approval', itemId: 'approval:r1', turnId: 'ask', requestId: 'r1', title: 'Approval needed', toolTitle: 'Edit',
+    summary: 'Edit', state: 'accepted', options: [], timestampMs: 1 } as ConversationDisplayItem;
+  const [asked] = conversationTurnGroups([textItem('user', 'ask-user', 'ask', 0), approval, textItem('assistant', 'ask-answer', 'ask', 2),
+    textItem('user', 'next-user', 'next', 3)]);
+  assert.ok(asked.workItemIds.includes('approval:r1'), 'an answered approval folds with its finished turn');
+
   // The command catalog is not a transcript row, live or stored.
   const catalog = { ownedId: 'o', provider: 'codex', generation: 1, sequence: 4, timestampMs: 4, turnId: 'turn-a',
     payload: { kind: 'availableCommandsUpdate', availableCommands: [{ id: '/review', label: 'Review' }] } } as never;

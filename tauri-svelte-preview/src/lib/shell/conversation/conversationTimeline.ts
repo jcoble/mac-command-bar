@@ -189,7 +189,9 @@ const FOLDABLE_TURN_KINDS = new Set<ConversationDisplayItem['kind']>([
   'file',
   'subagent',
   'plan',
-  'tasks'
+  'tasks',
+  // Only a finished turn folds, so an approval still waiting for an answer is never hidden.
+  'approval'
 ]);
 
 /** Tool-run display state; native turn metadata separately owns turn completion. */
