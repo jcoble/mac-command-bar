@@ -5,9 +5,9 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@agentclientprotocol/claude-agent-acp@0.88.0':
+  '@agentclientprotocol/claude-agent-acp':
     hash: 924fb2c8e0e5e4ced360587a5c088c122a3a8d218c585bbe3de1becd6894762b
-    path: patches/@agentclientprotocol__claude-agent-acp@0.88.0.patch
+    path: patches/@agentclientprotocol__claude-agent-acp.patch
   '@keenmate/svelte-treeview@4.8.0':
     hash: 3de2051c6bf236ed156980aa27d669a0a9000a58d95f94a0c35da4b9c5bba49a
     path: patches/@keenmate__svelte-treeview@4.8.0.patch

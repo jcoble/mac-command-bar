@@ -1,5 +1,5 @@
 patchedDependencies:
-  '@agentclientprotocol/claude-agent-acp@0.88.0': patches/@agentclientprotocol__claude-agent-acp@0.88.0.patch
+  '@agentclientprotocol/claude-agent-acp': patches/@agentclientprotocol__claude-agent-acp.patch
   '@keenmate/svelte-treeview@4.8.0': patches/@keenmate__svelte-treeview@4.8.0.patch
   '@tanstack/ai-svelte@0.24.3': patches/@tanstack__ai-svelte@0.24.3.patch
   bits-ui@2.18.1: patches/bits-ui@2.18.1.patch
