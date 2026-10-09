@@ -42,7 +42,7 @@
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
 
   import AgentRow from './AgentRow.svelte';
-  import { agentActivityRows } from './agentActivityModel.ts';
+  import { AGENT_STATUS_TONE, AGENT_STATUS_WORD, agentActivityRows } from './agentActivityModel.ts';
   import WorkflowRuns from './WorkflowRuns.svelte';
 
   interface Props {
@@ -56,13 +56,13 @@
   let transcriptError = $state('');
   let fileError = $state('');
   let reader: AbortController | null = null;
+  /** The child whose transcript this panel last opened; a different selection opens it. */
+  let openedChildId: string | null = null;
 
   const VIEW_OPTIONS = [
     { value: 'session', label: 'Session' },
     { value: 'workflows', label: 'Workflows' }
   ] as const;
-  const STATUS_TONE = { working: 'live', done: 'good', failed: 'bad', idle: 'neutral' } as const;
-  const STATUS_WORD = { working: 'Working', done: 'Done', failed: 'Failed', idle: 'Idle' } as const;
   const conversation = $derived(ownedId ? getConversationSession(ownedId) : null);
   const selectedChildId = $derived(conversation?.selectedChildId ?? null);
   // List rows use metadata; returning to the list releases the child body.
@@ -114,6 +114,7 @@
     stopChildConversationHistory(parentId);
     disposeChildConversationChat(parentId);
     setConversationSelectedChild(parentId, null);
+    openedChildId = null;
     previousHistoryId = null;
     previousItems = [];
     // These lazy projections must drop their old body even when the list is shown.
@@ -130,10 +131,17 @@
     return () => { if (parentId) untrack(() => release(parentId)); };
   });
 
+  // A child chosen outside this panel (the chat's sub-agent link) opens here too.
+  $effect(() => {
+    const childId = selectedChildId;
+    if (childId && visible && view === 'session') untrack(() => void select(childId));
+  });
+
   async function select(childId: string): Promise<void> {
-    if (!ownedId || !conversation || !visible || view !== 'session' || selectedChildId === childId) return;
+    if (!ownedId || !conversation || !visible || view !== 'session' || openedChildId === childId) return;
     const parentId = ownedId;
     release(parentId);
+    openedChildId = childId;
     setConversationSelectedChild(parentId, childId);
     const child = conversation.children.find((entry) => entry.childId === childId);
     if (!child?.transcriptAvailable) return;
@@ -192,7 +200,7 @@
         <ArrowLeft data-icon="inline-start" />Back
       </Button>
       <span class="min-w-0 flex-1 truncate">{selectedRow.label}</span>
-      <Chip tone={STATUS_TONE[selectedRow.status]}>{STATUS_WORD[selectedRow.status]}</Chip>
+      <Chip tone={AGENT_STATUS_TONE[selectedRow.status]}>{AGENT_STATUS_WORD[selectedRow.status]}</Chip>
     </div>
     {#if error}
       <EmptyState title="Could not load transcript" body={error} data-testid="agent-transcript-error" />

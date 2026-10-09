@@ -42,6 +42,7 @@
     "test:session-scan-filter": "node --experimental-strip-types scripts/sessionScanFilter.test.mjs",
     "test:live-terminals": "node --experimental-strip-types scripts/liveConversationTerminals.test.ts",
     "test:owned-sessions": "node --experimental-strip-types scripts/ownedSessions.test.ts",
+    "test:background-work-presentation": "node --experimental-strip-types scripts/backgroundWorkPresentation.test.ts",
     "test:rail-backend-cutover": "node --experimental-strip-types scripts/railBackendCutover.test.ts",
     "test:next-terminal-service": "node --experimental-strip-types scripts/nextTerminalService.test.ts",
     "test:terminal-view-lifecycle": "node --import ./scripts/svelteRuneTestSetup.ts --experimental-strip-types scripts/terminalViewLifecycle.test.ts",
@@ -125,7 +126,7 @@
     "test:notion-project-match": "node --experimental-strip-types src/lib/shell/notionProjectMatch.test.ts"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.81.2",
+    "@agentclientprotocol/claude-agent-acp": "0.86.0",
     "@agentclientprotocol/codex-acp": "1.13.1",
     "@codemirror/autocomplete": "6.20.3",
     "@codemirror/commands": "6.11.0",

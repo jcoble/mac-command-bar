@@ -16,7 +16,25 @@ import type { UIMessage } from '@tanstack/ai/client';
 import type { ConversationChildAgent } from '../../conversation/conversationTypes.ts';
 import { conversationMessageDisplayItem } from '../../conversation/conversationMessages.ts';
 
-export type AgentStatus = 'working' | 'done' | 'failed' | 'idle';
+export type AgentStatus = 'working' | 'done' | 'failed' | 'disconnected' | 'stopped' | 'idle';
+
+/** The word and chip tone each status shows in the Agents panel. */
+export const AGENT_STATUS_WORD: Record<AgentStatus, string> = {
+  working: 'Working',
+  done: 'Done',
+  failed: 'Failed',
+  disconnected: 'Disconnected',
+  stopped: 'Stopped',
+  idle: 'Idle'
+};
+export const AGENT_STATUS_TONE = {
+  working: 'live',
+  done: 'good',
+  failed: 'bad',
+  disconnected: 'neutral',
+  stopped: 'neutral',
+  idle: 'neutral'
+} as const satisfies Record<AgentStatus, string>;
 
 export interface AgentActivityRow {
   childId: string;
@@ -37,13 +55,16 @@ const ACTIVITY_LINE_LIMIT = 80;
 const WORKING_STATES = new Set(['active', 'running', 'in_progress', 'in-progress', 'working', 'started']);
 const DONE_STATES = new Set(['completed', 'complete', 'done', 'finished', 'succeeded', 'success']);
 const FAILED_STATES = new Set(['failed', 'failure', 'error', 'errored']);
+const STOPPED_STATES = new Set(['cancelled', 'canceled']);
 
-/** Maps the provider's raw state string onto the four statuses. Unknown states become 'idle'. */
+/** Maps the provider's raw state string onto a status. Unknown states become 'idle'. */
 export function agentStatus(state: string): AgentStatus {
   const normalized = state.trim().toLowerCase();
   if (WORKING_STATES.has(normalized)) return 'working';
   if (DONE_STATES.has(normalized)) return 'done';
   if (FAILED_STATES.has(normalized)) return 'failed';
+  if (normalized === 'disconnected') return 'disconnected';
+  if (STOPPED_STATES.has(normalized)) return 'stopped';
   return 'idle';
 }
 

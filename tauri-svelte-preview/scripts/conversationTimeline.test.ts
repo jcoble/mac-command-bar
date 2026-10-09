@@ -211,6 +211,19 @@ const commentaryOnly = conversationTurnGroups([
 assert.deepEqual(commentaryOnly[0].workItemIds, ['interleaved-commentary'],
   'commentary stays summary work when tool rows and the final reply are outside the window');
 
+// Claude's own work between prompts — the reply it writes when a background
+// sub-agent finishes — is its own turn with no prompt and no turn facts.
+const autonomous = conversationTurnGroups([
+  textItem('user', 'prompted-user', 'prompted-turn', 1),
+  textItem('assistant', 'prompted-reply', 'prompted-turn', 2),
+  toolItem('autonomous-tool', 'autonomous-turn', 3),
+  textItem('assistant', 'autonomous-summary', 'autonomous-turn', 4)
+], null, [{ turnId: 'prompted-turn', startedAtMs: 1, endedAtMs: 2, terminalState: 'completed', finalAssistantItemId: 'prompted-reply' }]);
+assert.equal(autonomous.length, 2, 'the autonomous work is a group of its own');
+assert.deepEqual(autonomous[1].tailItemIds, ['autonomous-summary'], 'a group with no prompt still shows its reply');
+assert.deepEqual(autonomous[1].workItemIds, ['autonomous-tool']);
+assert.equal(autonomous[1].running, false, 'the autonomous group is not the active turn');
+
 const noWork = conversationTurnGroups([
   textItem('user', 'plain-user', 'plain-turn', 1),
   textItem('assistant', 'plain-assistant', 'plain-turn', 2)

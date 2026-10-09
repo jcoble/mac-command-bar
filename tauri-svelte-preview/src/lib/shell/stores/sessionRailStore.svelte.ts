@@ -60,10 +60,17 @@ export function addOwnedSession(session: OwnedSession): void {
   rail.owned = [...rail.owned, session];
 }
 
+// List items (such as background work records) are compared one level deep.
+const sameItem = (left: unknown, right: unknown): boolean =>
+  Object.is(left, right)
+  || (typeof left === 'object' && typeof right === 'object' && left !== null && right !== null
+    && Object.keys(left).length === Object.keys(right).length
+    && Object.entries(left).every(([key, value]) => Object.is(value, (right as Record<string, unknown>)[key])));
+
 const sameValue = (left: unknown, right: unknown): boolean =>
   Object.is(left, right)
   || (Array.isArray(left) && Array.isArray(right)
-    && left.length === right.length && left.every((value, index) => Object.is(value, right[index])));
+    && left.length === right.length && left.every((value, index) => sameItem(value, right[index])));
 
 export function updateOwnedSession(ownedId: string, patch: Partial<OwnedSession>): void {
   const existing = rail.owned.find((session) => session.ownedId === ownedId);

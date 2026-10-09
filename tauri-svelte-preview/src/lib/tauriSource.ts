@@ -505,6 +505,13 @@ export type AgentConversationSessionMeta = {
   scannedLastActivity: string | null;
 };
 
+export type BackgroundWorkItem = {
+  id: string;
+  kind: 'subagent' | 'command';
+  label: string;
+  startedAtMs: number;
+};
+
 export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   ownedId: string;
   executionEnvironment: ExecutionEnvironment;
@@ -520,7 +527,7 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   activeTurnId: string | null;
   pendingPermission: boolean;
   pendingInput: boolean;
-  backgroundTaskIds?: string[];
+  backgroundWork: BackgroundWorkItem[];
   nativeSessionId: string | null;
   projectId: string | null;
   /** The session's project group, computed in SQL on this Mac: `repo:<key>`, `project:<id>` or `none`. */
@@ -857,6 +864,27 @@ export async function cancelSourceScanFromTauri(scanId: string): Promise<boolean
 
   const { invoke } = await import('./workspaceInvoke');
   return invoke<boolean>('cancel_source_scan', { scanId });
+}
+
+/** The red close button or Cmd-Q; the native side holds it until `continueAppExit`. */
+export type AppExitKind = 'close' | 'quit';
+
+export async function listenToAppExitRequests(handler: (kind: AppExitKind) => void): Promise<() => void> {
+  if (!isTauriRuntime()) return () => {};
+  const { listen } = await import('@tauri-apps/api/event');
+  return trackTauriListener(await listen<{ kind: AppExitKind }>('assembly_exit_requested', (event) => handler(event.payload.kind)));
+}
+
+/** Let the held close or quit go ahead, once. */
+export async function continueAppExit(kind: AppExitKind): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('continue_app_exit', { kind });
+}
+
+/** The person kept the app open; the next close or quit warns again. */
+export async function cancelAppExit(): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cancel_app_exit');
 }
 
 const sourceScanProgressSubscribers = new Set<SourceScanProgressSubscriber>();

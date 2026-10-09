@@ -10,7 +10,7 @@
   import { Chip } from '$lib/components/ui/chip/index.js';
   import { ListRow } from '$lib/components/ui/list-row/index.js';
 
-  import type { AgentActivityRow, AgentStatus } from './agentActivityModel.ts';
+  import { AGENT_STATUS_TONE, AGENT_STATUS_WORD, type AgentActivityRow } from './agentActivityModel.ts';
 
   interface Props {
     row: AgentActivityRow;
@@ -18,21 +18,6 @@
     onselect: (childId: string) => void;
   }
   let { row, selected, onselect }: Props = $props();
-
-  const STATUS_TONE = {
-    working: 'live',
-    done: 'good',
-    failed: 'bad',
-    idle: 'neutral'
-  } as const;
-
-  const STATUS_WORD: Record<AgentStatus, string> = {
-    working: 'Working',
-    done: 'Done',
-    failed: 'Failed',
-    idle: 'Idle'
-  };
-
 </script>
 
 <ListRow
@@ -44,7 +29,7 @@
   <span class="flex min-w-0 flex-1 flex-col gap-0.5 py-0.5">
     <span class="flex min-w-0 items-center gap-2">
       <span class="min-w-0 flex-1 truncate text-[13px] leading-tight">{row.label}</span>
-      <Chip tone={STATUS_TONE[row.status]}>{STATUS_WORD[row.status]}</Chip>
+      <Chip tone={AGENT_STATUS_TONE[row.status]}>{AGENT_STATUS_WORD[row.status]}</Chip>
       {#if row.messageCount !== null}
         <Chip tone="count">{row.messageCount} msgs</Chip>
       {/if}
