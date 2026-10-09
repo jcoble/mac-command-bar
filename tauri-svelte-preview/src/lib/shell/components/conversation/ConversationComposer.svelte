@@ -171,7 +171,10 @@
     if (event.key === 'Escape' && planExpanded) planExpanded = false;
   }
 
-  $effect(() => {
+  /* A pre-effect, so a draft cleared from outside (a send, a steer) reaches
+     the box before the template writes it; as a plain effect the measuring
+     effect below could run first and keep the open box's height. */
+  $effect.pre(() => {
     if (draft === observedDraft) return;
     if (slashCommandQuery(inputDraft) === null && slashCommandQuery(draft) !== null) {
       commandSnapshot = snapshotConversationCommands(commands);
@@ -202,6 +205,10 @@
       turnSettled = false;
       return;
     }
+    /* The turn now holds the box open, so the sent message's latch lets go
+       here rather than at the click: a remote turn starts a beat after the
+       draft clears, and letting go at the click shut the box for that beat. */
+    hasOpened = false;
     const timer = setTimeout(() => (turnSettled = true), 5000);
     return () => clearTimeout(timer);
   });
@@ -315,7 +322,8 @@
   /** Hand the message off and let the box return to its resting height. */
   function submitPrompt(): void {
     if (composerLocked || sendDisabled) return;
-    hasOpened = false;
+    // A steer joins a turn whose five seconds already ran; nothing reopens it.
+    if (sending) hasOpened = false;
     void onSend?.();
   }
 
@@ -440,6 +448,7 @@
             bind:this={promptHost}
             data-testid="conversation-composer-input"
             aria-label="Message"
+            rows="1"
             spellcheck="false"
             autocapitalize="off"
             placeholder={pendingApproval ? 'Resolve the approval above to continue' : pendingInputs.length ? 'Complete the requested input above' : `Message ${provider}`}
@@ -585,6 +594,15 @@
     border: 1px solid transparent;
     border-radius: 12px;
     background: var(--muted);
+  }
+  /* At rest — empty, and no turn in its first five seconds — the message
+     shares one slim row with the controls, so the box takes no more of the
+     transcript than its controls need. Typing relaxes it into the two rows
+     above, growing upward; `relaxed` in the script decides when. Narrower
+     than this the controls would squeeze the placeholder away, so a narrow
+     pane keeps the two rows at rest too. */
+  @container composer (min-width: 760px) {
+    .composer-box:not(.relaxed) { grid-template-areas: 'panels panels panels' 'lead prompt trail' 'hint hint hint'; gap: 0 var(--space-2); padding-block: var(--space-2); }
   }
   .composer-box:focus-within { border-color: var(--composer-border-focus); }
   .composer-box.dragging { border-color: var(--color-accent); background: var(--composer-surface-drop); }
