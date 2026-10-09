@@ -8,7 +8,7 @@ use super::protocol::{
 };
 
 pub const CODEX_ACP_VERSION: &str = "1.13.1";
-pub const CLAUDE_AGENT_ACP_VERSION: &str = "0.86.0";
+pub const CLAUDE_AGENT_ACP_VERSION: &str = "0.88.0";
 pub const AGY_ACP_VERSION: &str = "1.2.1";
 
 pub fn validate_manifest(manifest: &AgentProviderManifest) -> Result<(), String> {

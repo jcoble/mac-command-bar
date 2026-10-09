@@ -1,5 +1,5 @@
 diff --git a/dist/acp-agent.js b/dist/acp-agent.js
-index 31d3921ad826ca24fb515cdb66084942ba8c4f57..9a6cdfed3eea54b1764c722fa078147900630233 100644
+index 28ead902971a5baf6ec5b52065df5fde56fdcf9b..73ab7428bb2e1c6600e20508a431f74590249ffa 100644
 --- a/dist/acp-agent.js
 +++ b/dist/acp-agent.js
 @@ -4,7 +4,7 @@ import { GOAL_ACTIONS, GOAL_CONTROL_METHOD, GOAL_EXTENSION_VERSION, goalUpdateFr
@@ -8,10 +8,10 @@ index 31d3921ad826ca24fb515cdb66084942ba8c4f57..9a6cdfed3eea54b1764c722fa0781479
  import { isNativeSubagentControlTool, isNativeSubagentControlUpdate, NativeSubagentRuntime, nativeSubagentState, resumedNativeSubagentId, sendMessageResumePrompt, } from "./native-subagents.js";
 -import { AIR_ASYNC_TASKS_CAPABILITY, AIR_DIFF_PATCH_CAPABILITY, AIR_PLAN_FILE_CAPABILITY, AIR_GOAL_KEY, AIR_KIND_KEY, AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY, AIR_SKILL_PATH_KEY, clientSupportsAirCapability, withAirMeta, } from "./air-extension.js";
 +import { AIR_ASYNC_TASKS_CAPABILITY, AIR_BACKGROUND_SUBAGENTS_CAPABILITY, AIR_OUT_OF_TURN_KEY, AIR_SESSION_STATE_KEY, AIR_DIFF_PATCH_CAPABILITY, AIR_PLAN_FILE_CAPABILITY, AIR_GOAL_KEY, AIR_KIND_KEY, AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY, AIR_SKILL_PATH_KEY, clientSupportsAirCapability, withAirMeta, } from "./air-extension.js";
- import { AsyncTaskRuntime, backgroundBashTaskFromToolResult, clientSupportsAsyncTasks, } from "./async-tasks.js";
+ import { AsyncTaskRuntime, backgroundBashTaskFromToolResult, backgroundedBashToolCallIds, clientSupportsAsyncTasks, } from "./async-tasks.js";
  import { AUTH_STATUS_PROBE_TIMEOUT_MS, AUTH_STATUS_UPDATE_METHOD, authStatusCapability, fromAccountInfo, fromCliStatus, gatewayAuthStatus, mergeAuthStatus, notLoggedInAuthStatus, sameAuthStatus, } from "./auth-status.js";
  import { execFile } from "node:child_process";
-@@ -252,7 +252,8 @@ const AUTONOMOUS_RESULT_ORIGINS = new Set([
+@@ -282,7 +282,8 @@ const AUTONOMOUS_RESULT_ORIGINS = new Set([
  /** Whether this turn's terminal result arrived but its settlement is being
   *  held for background subagents it spawned (see Turn.deferredSettle). The
   *  single spelling of the hold predicate, shared by the consumer's settle
@@ -21,7 +21,7 @@ index 31d3921ad826ca24fb515cdb66084942ba8c4f57..9a6cdfed3eea54b1764c722fa0781479
  function isHeldOpen(turn) {
      return turn != null && turn.deferredSettle !== undefined && !turn.settled;
  }
-@@ -1163,6 +1164,16 @@ export class ClaudeAcpAgent {
+@@ -1193,6 +1194,16 @@ export class ClaudeAcpAgent {
       * express: see {@link ToolCallClientCapabilities.v2}.
       */
      v2;
@@ -38,7 +38,7 @@ index 31d3921ad826ca24fb515cdb66084942ba8c4f57..9a6cdfed3eea54b1764c722fa0781479
      constructor(client, logger, options = {}) {
          this.v2 = options.v2 ?? false;
          this.sessions = {};
-@@ -1381,7 +1392,9 @@ export class ClaudeAcpAgent {
+@@ -1411,7 +1422,9 @@ export class ClaudeAcpAgent {
              // `jetbrains.air`.
              _meta: {
                  ...(this.toolCallCapabilities.air.client
@@ -49,7 +49,7 @@ index 31d3921ad826ca24fb515cdb66084942ba8c4f57..9a6cdfed3eea54b1764c722fa0781479
                          version: GOAL_EXTENSION_VERSION,
                          controlMethod: GOAL_CONTROL_METHOD,
                          actions: [...GOAL_ACTIONS],
-@@ -2520,7 +2533,22 @@ export class ClaudeAcpAgent {
+@@ -2551,7 +2564,22 @@ export class ClaudeAcpAgent {
                      session.titles.onAssistantText(update.content);
                  }
              }
@@ -73,7 +73,7 @@ index 31d3921ad826ca24fb515cdb66084942ba8c4f57..9a6cdfed3eea54b1764c722fa0781479
              if (toolCallId &&
                  update.sessionUpdate === "tool_call_update" &&
                  (update.status === "completed" || update.status === "failed")) {
-@@ -2870,7 +2898,8 @@ export class ClaudeAcpAgent {
+@@ -2936,7 +2964,8 @@ export class ClaudeAcpAgent {
          };
          /** Registers a live background task (see `liveBackgroundTasks`). A
           *  subagent is also recorded on the active turn, so that turn holds until
@@ -83,7 +83,7 @@ index 31d3921ad826ca24fb515cdb66084942ba8c4f57..9a6cdfed3eea54b1764c722fa0781479
          const registerLiveTask = (taskId, parentToolUseId, isSubagent) => {
              session.liveBackgroundTasks.set(taskId, { parentToolUseId, isSubagent });
              if (parentToolUseId)
-@@ -2883,8 +2912,9 @@ export class ClaudeAcpAgent {
+@@ -2949,8 +2978,9 @@ export class ClaudeAcpAgent {
          const settleLiveTask = (taskId) => settleLiveBackgroundTask(session, taskId);
          /** Registers a settled subagent again when the SDK resumes it without a
           *  new `task_started`. The active turn is the one that resumed it, so it
@@ -95,7 +95,7 @@ index 31d3921ad826ca24fb515cdb66084942ba8c4f57..9a6cdfed3eea54b1764c722fa0781479
          const resumeLiveTask = (taskId) => {
              if (session.liveBackgroundTasks.has(taskId))
                  return;
-@@ -2895,9 +2925,12 @@ export class ClaudeAcpAgent {
+@@ -2961,9 +2991,12 @@ export class ClaudeAcpAgent {
          /** Whether any background subagent this turn spawned is still live —
           *  while true, the turn's settlement stays deferred so the subagent's
           *  output and permission requests land inside it (see
@@ -110,7 +110,7 @@ index 31d3921ad826ca24fb515cdb66084942ba8c4f57..9a6cdfed3eea54b1764c722fa0781479
                  return false;
              }
              for (const taskId of turn.spawnedTaskIds) {
-@@ -2928,7 +2961,8 @@ export class ClaudeAcpAgent {
+@@ -2994,7 +3027,8 @@ export class ClaudeAcpAgent {
           *  turn open (see Turn.deferredSettle). Every result-time settle of a
           *  turn that can have spawned subagents must route through here: a site
           *  calling settleActive directly bypasses the hold and re-opens the
@@ -120,7 +120,7 @@ index 31d3921ad826ca24fb515cdb66084942ba8c4f57..9a6cdfed3eea54b1764c722fa0781479
          const settleOrDefer = async (outcome) => {
              // No result ends a steered turn: the steer aborted the cycle this result
              // may belong to, and the steered one is still to come. Record the outcome
-@@ -3517,6 +3551,18 @@ export class ClaudeAcpAgent {
+@@ -3593,6 +3627,18 @@ export class ClaudeAcpAgent {
                              case "session_state_changed": {
                                  const previousState = session.lastSessionState;
                                  session.lastSessionState = message.state;
@@ -139,27 +139,7 @@ index 31d3921ad826ca24fb515cdb66084942ba8c4f57..9a6cdfed3eea54b1764c722fa0781479
                                  if (message.state === "running" &&
                                      previousState !== "running" &&
                                      session.owedTrailingIdles > 0) {
-@@ -4092,7 +4138,18 @@ export class ClaudeAcpAgent {
-                         // the user's prompt's. Autonomous results must never touch the
-                         // user-turn lifecycle (stop reason, settles, failActive,
-                         // slash-command output forwarding), though their cost is real.
--                        const isAutonomousResult = message.origin != null && AUTONOMOUS_RESULT_ORIGINS.has(message.origin.kind);
-+                        // Except a cycle that folded in a prompt sent mid-cycle: the CLI
-+                        // keeps the cycle's origin but names the folded send in
-+                        // user_message_uuids, and emits no other result for it — so a
-+                        // result naming an unsettled, not-held turn is that turn's own.
-+                        // Leaving it autonomous would hang the prompt (the hazard above).
-+                        const isAutonomousResult = message.origin != null &&
-+                            AUTONOMOUS_RESULT_ORIGINS.has(message.origin.kind) &&
-+                            !(message.user_message_uuids ??
-+                                (message.user_message_uuid !== undefined ? [message.user_message_uuid] : [])).some((uuid) => {
-+                                const turn = findUnsettledTurn(uuid);
-+                                return turn !== undefined && !isHeldOpen(turn);
-+                            });
-                         const pendingExitPlanModeInterruption = session.pendingExitPlanModeInterruption;
-                         const pendingExitPlanContextReset = session.pendingExitPlanContextReset;
-                         try {
-@@ -4346,6 +4403,23 @@ export class ClaudeAcpAgent {
+@@ -4443,6 +4489,23 @@ export class ClaudeAcpAgent {
                                      await settleOrDefer({ ...heldTurn.deferredSettle, stopReason: "cancelled" });
                                      break;
                                  }
@@ -183,7 +163,7 @@ index 31d3921ad826ca24fb515cdb66084942ba8c4f57..9a6cdfed3eea54b1764c722fa0781479
                                  // CLI 2.1.274+ answers background-task completions that were
                                  // already queued with ONE model call: every queued
                                  // notification still gets its own result, but all except the
-@@ -4594,7 +4668,9 @@ export class ClaudeAcpAgent {
+@@ -4691,7 +4754,9 @@ export class ClaudeAcpAgent {
                              // permission requests, and the model's promised summary all land
                              // inside the turn. `session/cancel` and the next prompt's echo
                              // hand-off still settle a deferred turn early, so a long-running
@@ -194,7 +174,7 @@ index 31d3921ad826ca24fb515cdb66084942ba8c4f57..9a6cdfed3eea54b1764c722fa0781479
                              //
                              // is_error/auth already settled via failActive (activeTurn is null
                              // then, so both branches no-op); cancellation is left to the
-@@ -6330,6 +6406,11 @@ export class ClaudeAcpAgent {
+@@ -6438,6 +6503,11 @@ export class ClaudeAcpAgent {
                  defaultToNo,
                  availableModes: this.sessionModes.availableModeIds(session.modes),
                  prePlanMode: session.prePlanMode,
@@ -231,35 +211,6 @@ index 38cf467bf66db1b1fb0af32ad7174fda35b88b90..65de33f390400ab2bd20ca44944ab088
  export const AIR_SESSION_FAILURE_CAPABILITY = "sessionFailure";
  export const AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY = "recommendedValue";
  export const AIR_DIFF_PATCH_CAPABILITY = "diffPatch";
-diff --git a/dist/native-subagents.js b/dist/native-subagents.js
-index 52c398271fc1907b8d3198c8247e736e79dfc9e4..08efe58b3d154a3b205863e4e2d2af88dd875ba4 100644
---- a/dist/native-subagents.js
-+++ b/dist/native-subagents.js
-@@ -242,8 +242,10 @@ export class NativeSubagentRuntime {
-     /**
-      * The route of the work that a child tool call started, for example an async
-      * task. The route sends each update to the child generation that owned the
--     * tool call when the work started, and drops the update after that child
--     * finished. `undefined` means that the root session owns the tool call.
-+     * tool call when the work started. After that child finished, an async task
-+     * update still goes to it, so the client sees work the child left running
-+     * end; any other update is dropped. `undefined` means that the root session
-+     * owns the tool call.
-      * `eagerSessionId` is the session where a permission request created the
-      * tool call before the stream routed it.
-      */
-@@ -252,7 +254,10 @@ export class NativeSubagentRuntime {
-             return undefined;
-         const owner = this.childByToolCall.get(toolCallId) ??
-             (eagerSessionId ? this.childOfSession(eagerSessionId) : undefined);
--        return owner && ((notification) => this.toChild(owner, notification, undefined));
-+        return (owner &&
-+            ((notification) => String(notification.update.sessionUpdate).startsWith("async_task_")
-+                ? { ...notification, sessionId: owner.sessionId }
-+                : this.toChild(owner, notification, undefined)));
-     }
-     rememberToolCallOwner(toolCallId, child) {
-         this.childByToolCall.delete(toolCallId);
 diff --git a/dist/permissions/options/tools.js b/dist/permissions/options/tools.js
 index 3ca1365e30d9c7469186ab46e1cc6c968531e3a1..c679fcb00d3d08fe92099999889ba1a60d897cc7 100644
 --- a/dist/permissions/options/tools.js

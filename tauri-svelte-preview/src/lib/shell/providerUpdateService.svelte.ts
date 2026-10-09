@@ -119,6 +119,15 @@ export async function restartProviders(state: ProviderUpdateState, profileId?: s
   }
 }
 
+// An arrow only for a real update; a newer local adapter is not a downgrade.
+export function providerVersionLine(provider: ProviderUpdateVersion): string {
+  const name = provider.provider === 'antigravity' ? 'Antigravity' : provider.provider;
+  const current = provider.currentVersion;
+  if (provider.updateAvailable || !current) return `${name}: ${current ?? 'Not installed'} → ${provider.availableVersion}`;
+  if (current === provider.availableVersion) return `${name}: ${current}`;
+  return `${name}: ${current} installed · Assembly release ${provider.availableVersion}`;
+}
+
 function providerVersionMessage(status: ProviderUpdateStatus): string {
   return status.providers
     .filter((provider) => provider.updateAvailable)
