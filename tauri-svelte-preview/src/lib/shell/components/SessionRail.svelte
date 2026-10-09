@@ -350,7 +350,7 @@
 		border: 0;
 		background: var(--card);
 		color: var(--muted-foreground);
-		font-size: 11px;
+		font-size: 12px;
 		letter-spacing: 0.06em;
 		text-transform: uppercase;
 		text-align: left;
