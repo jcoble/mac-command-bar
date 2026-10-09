@@ -3781,6 +3781,35 @@ impl AgentRuntimeManager {
         });
     }
 
+    /// Stop local adapter transports and persist interrupted work before app exit.
+    /// Runtime locks can be held by prompts, so shutdown uses transports directly.
+    pub async fn shutdown(&self) {
+        let mut transports: Vec<_> = self
+            .adapter_pools
+            .lock()
+            .await
+            .values()
+            .map(|pool| Arc::clone(&pool.transport))
+            .collect();
+        {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for transport in sessions.values().filter_map(|session| session.transport.as_ref()) {
+                if !transports.iter().any(|current| Arc::ptr_eq(current, transport)) {
+                    transports.push(Arc::clone(transport));
+                }
+            }
+        }
+        for transport in transports {
+            transport.stop().await;
+            // Do not leave terminal journal writes to tasks the exiting runtime
+            // may abandon. The existing disconnect handler preserves native IDs.
+            settle_closed_transport(self, &transport, "Assembly exited").await;
+        }
+    }
+
     pub async fn suspend_if_quiescent(
         &self,
         owned_id: &str,
@@ -13028,6 +13057,32 @@ mod tests {
             .close(&fixture.owned_id, fixture.generation)
             .await
             .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_persists_terminal_turn_and_keeps_native_session() {
+        let fixture = fixture_manager_with_acp_session("permission_midturn").await;
+        let before = fixture.manager.store().get_session(&fixture.owned_id).unwrap().unwrap();
+        fixture.manager.prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await.unwrap();
+        let transport = fixture.manager.sessions.lock().unwrap()
+            .get(&fixture.owned_id).unwrap().transport.clone().unwrap();
+        let pid = transport.process_id().unwrap() as i32;
+        fixture.manager.shutdown().await;
+        let saved = fixture.manager.store().get_session(&fixture.owned_id).unwrap().unwrap();
+        assert_eq!(saved.native_session_id, before.native_session_id);
+        assert!(saved.native_session_id.is_some());
+        assert_ne!(saved.state, "closed");
+        assert!(fixture.manager.sessions.lock().unwrap()
+            .get(&fixture.owned_id).unwrap().active_turn_id.is_none());
+        let snapshot = fixture.manager.snapshot(&fixture.owned_id).unwrap().unwrap();
+        assert!(snapshot.events.iter().any(|event| matches!(event.payload,
+            AgentConversationPayload::Turn { state: super::super::protocol::TurnState::Failed, .. }
+                | AgentConversationPayload::Turn { state: super::super::protocol::TurnState::Completed, .. }
+        )));
+        assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "adapter survived shutdown");
+        assert!(fixture.manager.adapter_pools.lock().await.is_empty());
         fs::remove_dir_all(fixture.root).unwrap();
     }
 

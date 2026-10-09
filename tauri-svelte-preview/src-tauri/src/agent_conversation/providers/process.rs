@@ -230,9 +230,8 @@ impl SidecarProcessHandle {
     /// Ask the process group to leave, and kill whatever has not left in time.
     ///
     /// The group leader answers SIGTERM at once and is waited for here. Its
-    /// descendants finish what they were writing and leave on their own; a
-    /// watchdog kills the group if any of them is still there when the grace
-    /// runs out, so nothing idles on for long either way.
+    /// descendants finish what they were writing and leave on their own. Final
+    /// group cleanup is awaited so app exit cannot abandon a detached watchdog.
     pub async fn stop(&mut self) {
         let Some(pid) = self.child.id() else {
             return;
@@ -250,13 +249,11 @@ impl SidecarProcessHandle {
             stop_process_group(&mut self.child);
             let _ = self.child.wait().await;
         }
-        tokio::spawn(async move {
-            tokio::time::sleep(STOP_GRACE).await;
-            signal_process_identities(&detached, libc::SIGKILL);
-            if unsafe { libc::kill(group, 0) } == 0 {
-                let _ = unsafe { libc::kill(group, libc::SIGKILL) };
-            }
-        });
+        tokio::time::sleep(STOP_GRACE).await;
+        signal_process_identities(&detached, libc::SIGKILL);
+        if unsafe { libc::kill(group, 0) } == 0 {
+            let _ = unsafe { libc::kill(group, libc::SIGKILL) };
+        }
     }
 
     pub fn process_id(&self) -> Option<u32> {

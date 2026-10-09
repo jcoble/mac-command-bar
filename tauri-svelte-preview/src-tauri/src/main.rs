@@ -5881,6 +5881,11 @@ fn main() {
             let _ = app_handle.emit(EXIT_REQUESTED_EVENT, serde_json::json!({ "kind": "quit" }));
         }
         tauri::RunEvent::Exit => {
+            tauri::async_runtime::block_on(
+                app_handle
+                    .state::<agent_conversation::manager::AgentRuntimeManager>()
+                    .shutdown(),
+            );
             app_handle.state::<browser::BrowserRegistry>().shutdown();
             app_handle
                 .state::<agent_conversation::remote::RemoteConnectionManager>()
