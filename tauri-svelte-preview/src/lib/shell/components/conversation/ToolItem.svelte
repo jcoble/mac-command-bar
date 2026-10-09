@@ -33,7 +33,7 @@
   const detailsOpen = $derived(disclosure?.get(`${item.itemId}:details`) ?? false);
   const filePath = $derived(toolFilePath(item));
   const fileAction = $derived(item.toolKind === 'file-edit' || (item.toolKind === 'fetch' && !!filePath && !/^https?:/i.test(filePath)));
-  const label = $derived(fileAction ? item.toolKind === 'file-edit' ? 'Edited' : 'Read' : item.title);
+  const label = $derived(fileAction ? item.toolKind === 'file-edit' ? 'Edited' : 'Read' : item.toolKind === 'command' ? 'Ran' : item.title);
   const shownLines = $derived(detailsOpen ? highlightCode(output, languageForPath(filePath)) : []);
   /* Call arguments remain inspectable even when the tool returns no output. */
   const expandable = $derived(!!(input || output || item.diff));

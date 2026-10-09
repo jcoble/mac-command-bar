@@ -189,7 +189,9 @@ const FOLDABLE_TURN_KINDS = new Set<ConversationDisplayItem['kind']>([
   'file',
   'subagent',
   'plan',
-  'tasks'
+  'tasks',
+  // Only a finished turn folds, so an approval still waiting for an answer is never hidden.
+  'approval'
 ]);
 
 /** Tool-run display state; native turn metadata separately owns turn completion. */
@@ -407,14 +409,12 @@ export function summarizeToolRun(items: readonly ConversationDisplayItem[]): {
   return { summary, icon };
 }
 
-/** Summarize recorded successful work; native facts own turn completion. */
+/** Summarize a finished turn's recorded work, even a single action; native facts own turn completion. */
 export function summarizeCompletedWork(items: readonly ConversationDisplayItem[]): string | null {
   const actions = items.flatMap((item) => item.kind === 'toolRun' ? item.items : [item])
-    .filter((item) => item.kind === 'tool' ? item.state === 'completed'
-      : (item.kind === 'command' || item.kind === 'file' || item.kind === 'fileEdits') && item.completed === true);
-  const hasEdit = actions.some((item) => item.kind === 'file' || item.kind === 'fileEdits'
-    || (item.kind === 'tool' && item.toolKind === 'file-edit'));
-  return actions.length >= 2 || hasEdit ? summarizeToolRun(actions).summary : null;
+    .filter((item) => item.kind === 'tool' ? item.state === 'completed' || item.state === 'failed'
+      : item.kind === 'reasoning' || ((item.kind === 'command' || item.kind === 'file' || item.kind === 'fileEdits') && item.completed === true));
+  return actions.length ? summarizeToolRun(actions).summary : null;
 }
 
 /** What a running turn is doing, read from the newest row of the transcript.
@@ -458,6 +458,8 @@ export function foldToolRuns(
 
   const closeRun = (): void => {
     if (!run.length) return;
+    // A lone call is its own row, even beside thinking: a group heading over one call is a second disclosure.
+    if (run.filter((item) => item.kind !== 'reasoning').length <= 1) { folded.push(...run); run = []; return; }
     const { summary, icon } = summarizeToolRun(run);
     const allCompleted = run.every(turnItemSettled);
     folded.push({
@@ -504,12 +506,20 @@ export function conversationTurnGroups(
     if (open && turnIds[index] === open.turnId) open.items.push(item);
     else partitions.push({ turnId: turnIds[index], items: [item] });
   });
-  return partitions.map((partition) => turnGroup(
-    partition.turnId,
-    partition.items,
-    activeTurnId !== null && partition.turnId === activeTurnId,
-    partition.turnId ? facts.get(partition.turnId) : undefined
-  ));
+  // A stored turn that never recorded its end is over once a later prompt exists; its last
+  // reply is the final one.
+  let laterPrompt = false;
+  const groups: ConversationTurnGroup[] = [];
+  for (const partition of partitions.toReversed()) {
+    const known = partition.turnId ? facts.get(partition.turnId) : undefined;
+    const ended = known?.terminalState || !laterPrompt ? known : {
+      ...known, turnId: partition.turnId ?? '', terminalState: 'completed',
+      finalAssistantItemId: known?.finalAssistantItemId ?? partition.items.findLast((item) => item.kind === 'assistant')?.itemId
+    };
+    groups.push(turnGroup(partition.turnId, partition.items, activeTurnId !== null && partition.turnId === activeTurnId, ended));
+    if (partition.items.some((item) => item.kind === 'user')) laterPrompt = true;
+  }
+  return groups.reverse();
 }
 
 /** What a turn shows, in order, with its heading before the first row that is not the prompt.
@@ -1271,21 +1281,8 @@ export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
   if (payloadKind === 'turnDiff') {
     return toolItemFromPayload(event, { ...payload, title: stringOf(payload.title, 'Edited files'), toolKind: 'file-edit', status: stringOf(payload.status, 'completed') }, payloadKind);
   }
-  if (payloadKind === 'availableCommandsUpdate') {
-    const commands = Array.isArray(payload.availableCommands) ? payload.availableCommands : [];
-    return {
-      id: eventIdentity(event, { ...payload, itemId: `commands:${event.generation}` }, 'commands'),
-      type: 'mcp-tool',
-      content: [],
-      providerMetadata: eventMetadata(event, payload, {
-        title: 'Commands updated',
-        toolKind: 'search',
-        state: 'completed',
-        completed: true,
-        summary: `${commands.length} command${commands.length === 1 ? '' : 's'} available`
-      })
-    };
-  }
+  // The command catalog reads this event separately; it is not a transcript row.
+  if (payloadKind === 'availableCommandsUpdate') return null;
 
   if (payloadKind === 'error') {
     // Error text lives under `message`, unlike the ordinary content events.

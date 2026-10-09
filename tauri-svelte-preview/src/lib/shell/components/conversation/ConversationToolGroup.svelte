@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { tick, untrack } from 'svelte';
+  import { getContext, setContext, tick, untrack } from 'svelte';
   import { createVirtualizer } from '@tanstack/svelte-virtual';
+  import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import type { ConversationDisplayItem, ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
   import TimelineItem from './TimelineItem.svelte';
 
@@ -34,6 +35,16 @@
     if (!host || initialized) return;
     initialized = true;
     if (active) void tick().then(() => $virtualizer.scrollToEnd());
+  });
+  // A call opened inside this bounded list moves to its top, so its diff or output shows.
+  const disclosure = getContext<ConversationDisclosureContext>(conversationDisclosureContext);
+  setContext<ConversationDisclosureContext>(conversationDisclosureContext, {
+    get: (key) => disclosure?.get(key),
+    set(key, open) {
+      disclosure?.set(key, open);
+      const index = open ? items.findIndex((item) => key === `${item.itemId}:details`) : -1;
+      if (index >= 0) $virtualizer.scrollToIndex(index, { align: 'start' });
+    }
   });
   function measure(node: HTMLDivElement) {
     $virtualizer.measureElement(node);

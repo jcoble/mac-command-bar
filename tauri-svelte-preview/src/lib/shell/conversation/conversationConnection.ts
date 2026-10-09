@@ -134,6 +134,8 @@ function messagesFromPage(page: AgentConversationItemPage): UIMessage[] {
       metadata: {
         ...message.metadata,
         historyStableId: item.stableId,
+        // A page may hold only an item's last event; order it by its first, as live does.
+        startedAtMs: item.firstTimestampMs,
         firstSequence: item.firstSequence,
         lastSequence: item.lastSequence,
         positionKnown: item.positionKnown,
