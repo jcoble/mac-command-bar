@@ -18,7 +18,7 @@ on:
       - 'assembly-backend-v*'
 
 concurrency:
-  group: assembly-remote-backend-release
+  group: assembly-remote-backend-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

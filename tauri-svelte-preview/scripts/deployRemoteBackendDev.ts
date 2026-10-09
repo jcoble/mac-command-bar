@@ -51,11 +51,13 @@ export async function deployRemoteBackendDev(host: string, options: DeployOption
   const log = options.log ?? console.log;
   const sshArgs = (command: string) => ['--', host, command];
   const build = `set -eu; if test -f "$HOME/.cargo/env"; then . "$HOME/.cargo/env"; fi; cd "${remoteRoot}/tauri-svelte-preview"; pnpm install --frozen-lockfile; pnpm build; CARGO_TARGET_DIR="${targetRoot}" cargo build --locked --release --manifest-path src-tauri/Cargo.toml --bin ${binary}`;
-  const install = `set -eu; src="${targetRoot}/release/${binary}"; dst="$HOME/.local/bin/assembly-remote-server"; install -d "$HOME/.local/bin"; if test -f "$dst"; then cp -p "$dst" "$dst.prev"; fi; install -m 755 "$src" "$dst.new"; mv "$dst.new" "$dst"; systemctl --user restart assembly-remote.service`;
-  const verify = `set -eu; for _ in $(seq 30); do systemctl --user is-active --quiet assembly-remote.service && test -n "$(ss -ltnH 'sport = :7777')" && break; sleep 1; done; systemctl --user is-active --quiet assembly-remote.service; listeners=$(ss -ltnH 'sport = :7777'); test -n "$listeners"; printf '%s\\n' "$listeners" | awk '$4 != "127.0.0.1:7777" { exit 1 } END { if (NR == 0) exit 1 }'; built=$(sha256sum "${targetRoot}/release/${binary}" | awk '{print $1}'); installed=$(sha256sum "$HOME/.local/bin/assembly-remote-server" | awk '{print $1}'); test "$installed" = "$built"; printf '%s\\n' "$installed"`;
+  const install = `set -eu; src="${targetRoot}/release/${binary}"; dst="$HOME/.local/bin/assembly-remote-server"; install -d "$HOME/.local/bin"; if test -f "$dst"; then cp -p "$dst" "$dst.prev.new"; mv "$dst.prev.new" "$dst.prev"; fi; install -m 755 "$src" "$dst.new"; mv "$dst.new" "$dst"; systemctl --user restart assembly-remote.service`;
+  const verify = `set -eu; trap 'test $? -eq 0 || systemctl --user --no-pager status assembly-remote.service >&2' EXIT; for _ in $(seq 30); do systemctl --user is-active --quiet assembly-remote.service && test -n "$(ss -ltnH 'sport = :7777')" && break; sleep 1; done; systemctl --user is-active --quiet assembly-remote.service; listeners=$(ss -ltnH 'sport = :7777'); test -n "$listeners"; printf '%s\\n' "$listeners" | awk '$4 != "127.0.0.1:7777" { exit 1 } END { if (NR == 0) exit 1 }'; built=$(sha256sum "${targetRoot}/release/${binary}" | awk '{print $1}'); installed=$(sha256sum "$HOME/.local/bin/assembly-remote-server" | awk '{print $1}'); test "$installed" = "$built"; printf '%s\\n' "$installed"`;
 
   log('Development build — not a signed release');
-  await step('Sync sources', rsync, 'rsync', ['-az', '--delete', '--exclude=.git', '--exclude=target/',
+  await step('Sync sources', rsync, 'rsync', ['-az', '--delete',
+    // Ignored files (build output, local secrets) stay on this Mac.
+    '--filter=:- .gitignore', '--exclude=.env*', '--exclude=.git', '--exclude=target/',
     '--exclude=node_modules/', '--exclude=build/', '--exclude=remote-backend-release/',
     `${checkoutRoot}/`, `${host}:~/dev/work/assembly-backend-dev/`], log);
   await step('Build backend', ssh, 'ssh', sshArgs(build), log);
