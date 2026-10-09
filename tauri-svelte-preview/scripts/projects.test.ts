@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   defaultDraftProjectId,
+  isNewFolderPath,
   projectBadge,
   projectMachineLabel,
   visibleProjects
@@ -55,6 +56,20 @@ const project = (id: string, machine: string): ProjectRecord => ({
   assert.equal(projectMachineLabel('local', profiles), 'This Mac');
   assert.equal(projectMachineLabel('workbox', profiles), 'Workbox');
   assert.equal(projectMachineLabel('gone', profiles), 'Remote machine');
+}
+
+// A typed path names a folder to create when its parent is the listed folder
+// and nothing of that name is listed there; anything else is not new.
+{
+  const listing = { path: '/Users/me/dev', directories: ['app', 'site'], truncated: false };
+  assert.equal(isNewFolderPath('/Users/me/dev/new-app', listing), true);
+  assert.equal(isNewFolderPath(' /Users/me/dev/new-app ', listing), true);
+  assert.equal(isNewFolderPath('/Users/me/dev/app', listing), false);
+  assert.equal(isNewFolderPath('/Users/me/dev/', listing), false);
+  assert.equal(isNewFolderPath('/Users/me/dev/..', listing), false);
+  assert.equal(isNewFolderPath('/Users/me/other/new-app', listing), false);
+  assert.equal(isNewFolderPath('/Users/me/dev/new-app', null), false);
+  assert.equal(isNewFolderPath('/fresh', { path: '/', directories: ['Users'], truncated: false }), true);
 }
 
 console.log('projects.test.ts passed');

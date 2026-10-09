@@ -52,3 +52,19 @@ export function projectMachineLabel(
   if (machine === 'local') return 'This Mac';
   return profiles.find((profile) => profile.id === machine)?.name ?? 'Remote machine';
 }
+
+/**
+ * Whether the Add project path names a folder to create: its parent is the
+ * listed folder and nothing of that name is listed there.
+ */
+export function isNewFolderPath(
+  path: string,
+  listing: { path: string; directories: readonly string[] } | null
+): boolean {
+  const trimmed = path.trim();
+  const slash = trimmed.lastIndexOf('/');
+  const name = trimmed.slice(slash + 1);
+  const parent = trimmed.slice(0, slash) || '/';
+  return Boolean(listing) && slash >= 0 && parent === listing!.path
+    && name !== '' && name !== '.' && name !== '..' && !listing!.directories.includes(name);
+}

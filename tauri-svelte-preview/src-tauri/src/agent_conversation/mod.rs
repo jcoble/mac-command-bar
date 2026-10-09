@@ -341,18 +341,34 @@ pub async fn list_projects(
 
 #[tauri::command]
 /// Inspects the folder on the machine that owns it, then registers it. Adding
-/// the same folder again returns the project already registered.
+/// the same folder again returns the project already registered. With `create`
+/// it first makes the folder (one level, no `git init`) on that machine.
 pub async fn add_project(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     machine: String,
     path: String,
+    create: bool,
 ) -> Result<protocol::ProjectRecord, String> {
     let inspection: crate::project_folders::ProjectFolderInspection = if machine == "local" {
-        tauri::async_runtime::spawn_blocking(move || crate::project_folders::inspect_project_folder_sync(&path))
-            .await
-            .map_err(|error| error.to_string())??
+        tauri::async_runtime::spawn_blocking(move || {
+            if create {
+                if !std::path::Path::new(&path).is_absolute() {
+                    return Err("Folder path must be absolute".to_string());
+                }
+                std::fs::create_dir(&path).map_err(|error| format!("The folder could not be created: {error}"))?;
+            }
+            crate::project_folders::inspect_project_folder_sync(&path)
+        })
+        .await
+        .map_err(|error| error.to_string())??
     } else {
+        if create {
+            remote
+                .workspace_operation(&machine, "workspace_mkdir".into(), serde_json::json!({ "path": path }))
+                .await
+                .map_err(|error| format!("The folder could not be created: {error}"))?;
+        }
         let value = remote
             .workspace_operation(&machine, "inspect_project_folder".into(), serde_json::json!({ "path": path }))
             .await?;
