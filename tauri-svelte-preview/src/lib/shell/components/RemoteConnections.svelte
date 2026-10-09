@@ -221,24 +221,26 @@
       {@const backend = backends[saved.id]}
       <div class="connection-row">
         <span><strong>{saved.name}</strong><small><span class="status-dot" class:connected={environment.readyProfileIds.includes(saved.id)} aria-hidden="true"></span>{saved.sshTarget} · {environment.readyProfileIds.includes(saved.id) ? 'Connected' : 'Disconnected'} · {backendLabel(saved.id)}</small></span>
-        {#if environment.readyProfileIds.includes(saved.id)}
-          <Button variant="secondary" size="sm" disabled={busy} onclick={() => void changeConnection(saved)}>Disconnect</Button>
-        {:else}
-          <Button variant="secondary" size="sm" disabled={busy} onclick={() => void runConnection(saved)}>Connect</Button>
-        {/if}
-        {#if backend && !backend.installed}
-          <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Install</Button>
-        {:else if backend?.backendBuildKind === 'development'}
-          <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Install signed {backend.latestVersion}</Button>
-        {:else if backend?.updateAvailable === true}
-          <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Update</Button>
-        {/if}
-        {#if import.meta.env.DEV}
-          <Button variant="ghost" size="xs" disabled={busy} onclick={() => void deployDevBuild(saved)}>Deploy from this checkout</Button>
-        {/if}
-        <Button variant="ghost" size="xs" disabled={busy} onclick={() => { editing = { ...saved }; status = ''; error = ''; }}>Edit</Button>
-        <Button variant="ghost" size="xs" disabled={busy} onclick={() => { confirmingUninstallId = saved.id; status = ''; error = ''; }}>Uninstall</Button>
-        <Button variant="ghost" size="xs" disabled={busy} onclick={() => void changeConnection(saved, true)}>Remove</Button>
+        <div class="connection-actions">
+          {#if environment.readyProfileIds.includes(saved.id)}
+            <Button variant="secondary" size="sm" disabled={busy} onclick={() => void changeConnection(saved)}>Disconnect</Button>
+          {:else}
+            <Button variant="secondary" size="sm" disabled={busy} onclick={() => void runConnection(saved)}>Connect</Button>
+          {/if}
+          {#if backend && !backend.installed}
+            <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Install</Button>
+          {:else if backend?.backendBuildKind === 'development'}
+            <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Install signed {backend.latestVersion}</Button>
+          {:else if backend?.updateAvailable === true}
+            <Button variant="ghost" size="xs" disabled={busy} onclick={() => void runConnection(saved, true, 'saved')}>Update</Button>
+          {/if}
+          {#if import.meta.env.DEV}
+            <Button variant="ghost" size="xs" disabled={busy} onclick={() => void deployDevBuild(saved)}>Deploy from this checkout</Button>
+          {/if}
+          <Button variant="ghost" size="xs" disabled={busy} onclick={() => { editing = { ...saved }; status = ''; error = ''; }}>Edit</Button>
+          <Button variant="ghost" size="xs" disabled={busy} onclick={() => { confirmingUninstallId = saved.id; status = ''; error = ''; }}>Uninstall</Button>
+          <Button variant="ghost" size="xs" disabled={busy} onclick={() => void changeConnection(saved, true)}>Remove</Button>
+        </div>
       </div>
       {#if environment.readyProfileIds.includes(saved.id)}
         <ProviderUpdateControl profileId={saved.id} machineName={saved.name} />
@@ -287,8 +289,9 @@
   .section-heading { display: flex; flex-direction: column; gap: 3px; }
   p, small { margin: 0; color: var(--color-text-3); font-size: 12px; }
   .connection-row, .connection-heading, .connection-actions { display: flex; align-items: center; gap: 8px; }
-  .connection-row { padding: 12px 0; border-bottom: 1px solid var(--color-border); }
-  .connection-row > span { display: flex; flex: 1; min-width: 0; flex-direction: column; }
+  .connection-row { flex-wrap: wrap; padding: 12px 0; border-bottom: 1px solid var(--color-border); }
+  .connection-row > span { display: flex; flex: 1 1 240px; min-width: 0; flex-direction: column; }
+  .connection-row > .connection-actions { margin-left: auto; }
   small { overflow-wrap: anywhere; }
   .status-dot { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--color-text-3); }
   .status-dot.connected { background: var(--color-accent); }
