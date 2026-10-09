@@ -34,9 +34,6 @@
 		nowMs: number;
 		active?: boolean;
 		onSelect?(): void;
-		onOpenSession?(): void;
-		onOpenEditor?(): void;
-		onOpenSourceControl?(): void;
 		onContextMenu?(event: MouseEvent): void;
 		/** The row shows a name field over its title while this is on. */
 		renaming?: boolean;
@@ -53,9 +50,6 @@
 		nowMs,
 		active = false,
 		onSelect,
-		onOpenSession,
-		onOpenEditor,
-		onOpenSourceControl,
 		onContextMenu,
 		renaming = false,
 		onRename,
@@ -188,13 +182,7 @@
 	class="row"
 	oncontextmenu={onContextMenu}
 >
-	<SessionRowVisual
-		{active}
-		{onSelect}
-		{onOpenSession}
-		{onOpenEditor}
-		{onOpenSourceControl}
-	>
+	<SessionRowVisual {active} {onSelect}>
 		<!-- The 32px provider tile. It carries the provider and, in its corner
                dot, whether this session is working, waiting or failed, and
                nothing else: no action is ever drawn on top of it. -->

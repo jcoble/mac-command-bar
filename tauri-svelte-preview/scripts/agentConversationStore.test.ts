@@ -330,7 +330,7 @@ assert.equal(saved.writerLease.owner, 'terminal');
   }]);
   store.applySelectedConversationEventState(ownedId, {
     ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 500,
-    payload: { kind: 'userMessage', itemId: 'user-turn-sent', text: 'Look', completed: true }
+    payload: { kind: 'userMessage', itemId: 'user-turn-sent', text: 'Look', completed: true, attachmentIds: ['image-sent'] }
   });
   assert.equal(store.getConversationSession(ownedId).sentAttachments['user-turn-sent'][0].id, 'image-sent');
   assert.equal('transcript' in store.getConversationSession(ownedId), false);
@@ -356,7 +356,7 @@ test('attachment previews are revoked when replaced, but not while shown in a se
     store.setConversationConnection({ ownedId, provider: 'claude', generation: 1, state: 'connected' });
     store.applySelectedConversationEventState(ownedId, {
       ownedId, provider: 'claude', generation: 1, sequence: 1, timestampMs: 1,
-      payload: { kind: 'userMessage', itemId: 'sent', text: 'See image', completed: true }
+      payload: { kind: 'userMessage', itemId: 'sent', text: 'See image', completed: true, attachmentIds: ['replacement'] }
     });
     assert.equal(store.getConversationSession(ownedId).sentAttachments.sent[0].previewUrl, 'blob:replacement');
 
@@ -1183,6 +1183,98 @@ await test('sendStructuredMessage resolves the terminal from the owned session, 
   assert.deepEqual(terminalWrites.map((write) => write.terminalId), [terminalId, terminalId]);
 });
 
+await test('two quick sends with screenshots each keep their own thumbnails', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const block = source.match(/export async function sendStructuredMessage\([\s\S]*?\n\}\n\n\/\*\* Stops the active turn/);
+  assert.ok(block);
+  const code = stripTypeScriptTypes(block[0].replace(/\n\n\/\*\* Stops the active turn$/, '').replace('export async function', 'async function'), { mode: 'strip' });
+  const ownedId = 'owned-two-sends';
+  store.applySelectedConversationSnapshotState(ownedId, ownedId, {
+    connection: { ownedId, provider: 'claude', generation: 1, state: 'connected' },
+    suspended: false,
+    page: {
+      items: [], events: [], turns: [], hasBefore: false, hasEarlierTranscript: false,
+      hasAfter: false, watermark: 0, transferBytes: 0, oversized: false
+    },
+    pendingEvents: [], pendingSequence: 0
+  });
+  const shot = (id: string) => ({ id, name: `${id}.png`, mimeType: 'image/png', path: `/managed/${id}.png`, previewUrl: `blob:${id}` });
+  const dependencies = {
+    getConversationSession: store.getConversationSession,
+    setConversationSending: () => undefined,
+    rail: { activeOwnedId: ownedId, owned: [{ ownedId, agent: 'claude', state: 'live', origin: 'app', executionEnvironment: 'remote' }] },
+    get, sessionPresenceHistory,
+    shouldReviveBeforeSend: () => false,
+    sendSupportsImages: () => true,
+    buildConversationPrompt: (text: string) => ({ text, content: [] }),
+    sendTargetGeneration: () => 1,
+    updateOwnedSession: () => undefined,
+    recordSentConversationAttachments: store.recordSentConversationAttachments,
+    attachmentDisplayMetadata: (attachment: object) => ({ ...attachment }),
+    invoke: () => new Promise(() => {}),
+    setConversationAttachments: store.setConversationAttachments
+  };
+  const send = Function(...Object.keys(dependencies), `const preparingSends = new Map();\n${code}\nreturn sendStructuredMessage;`)(...Object.values(dependencies)) as (id: string, text: string) => Promise<unknown>;
+  store.setConversationAttachments(ownedId, [shot('big')]);
+  void send(ownedId, 'First');
+  store.setConversationAttachments(ownedId, [shot('small')]);
+  void send(ownedId, 'Second');
+  // The backend names each message's screenshots on its own user event.
+  for (const [sequence, itemId, attachmentId] of [[1, 'user-first', 'big'], [2, 'user-second', 'small']] as const) {
+    store.applySelectedConversationEventState(ownedId, {
+      ownedId, provider: 'claude', generation: 1, sequence, timestampMs: sequence,
+      payload: { kind: 'userMessage', itemId, text: itemId, completed: true, attachmentIds: [attachmentId] }
+    });
+  }
+  const sent = store.getConversationSession(ownedId).sentAttachments;
+  assert.deepEqual(sent['user-first']?.map((item: { id: string }) => item.id), ['big']);
+  assert.deepEqual(sent['user-second']?.map((item: { id: string }) => item.id), ['small']);
+});
+
+await test('Send empties the composer before the request, and a failed send puts the screenshots back', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const block = source.match(/export async function sendStructuredMessage\([\s\S]*?\n\}\n\n\/\*\* Stops the active turn/);
+  assert.ok(block);
+  const code = stripTypeScriptTypes(block[0].replace(/\n\n\/\*\* Stops the active turn$/, '').replace('export async function', 'async function'), { mode: 'strip' });
+  const ownedId = 'composer-clears-at-send';
+  const shot = { id: 'shot', previewUrl: 'blob:shot' };
+  const state = { sending: false, generation: 1, attachments: [shot] as Array<{ id: string; previewUrl: string }>, capabilities: null, connectionState: 'connected', agentConfig: { availableApprovalPolicies: [] } };
+  const held: Array<Array<{ id: string }>> = [];
+  let settle!: { resolve(value: unknown): void; reject(error: unknown): void };
+  const dependencies = {
+    getConversationSession: () => state,
+    setConversationSending: (_id: string, sending: boolean) => { state.sending = sending; },
+    rail: { activeOwnedId: ownedId, owned: [{ ownedId, agent: 'claude', state: 'live', origin: 'app', executionEnvironment: 'remote' }] },
+    get, sessionPresenceHistory,
+    shouldReviveBeforeSend: () => false,
+    sendSupportsImages: () => true,
+    buildConversationPrompt: (text: string) => ({ text, content: [] }),
+    sendTargetGeneration: () => 1,
+    updateOwnedSession: () => undefined,
+    recordSentConversationAttachments: (_id: string, list: Array<{ id: string }>) => { held.push(list); },
+    attachmentDisplayMetadata: (attachment: { id: string }) => ({ ...attachment }),
+    invoke: () => new Promise((resolve, reject) => { settle = { resolve, reject }; }),
+    setConversationAttachments: (_id: string, list: Array<{ id: string; previewUrl: string }>) => { state.attachments = list; }
+  };
+  const send = Function(...Object.keys(dependencies), `const preparingSends = new Map();\n${code}\nreturn sendStructuredMessage;`)(...Object.values(dependencies)) as (id: string, text: string) => Promise<unknown>;
+
+  const failing = send(ownedId, 'Look at this');
+  assert.deepEqual(state.attachments, [], 'the composer is empty before the request goes out');
+  assert.deepEqual(held.at(-1)?.map((item) => item.id), ['shot'], 'the transcript holds the screenshots for the sent message');
+  state.attachments = [{ id: 'pasted-later', previewUrl: 'blob:later' }];
+  settle.reject(new Error('offline'));
+  await assert.rejects(failing, /offline/);
+  assert.deepEqual(state.attachments.map((item) => item.id), ['shot', 'pasted-later'],
+    'a failed send puts its screenshots back without dropping ones added since');
+
+  const sent = send(ownedId, 'Look again');
+  state.attachments = [{ id: 'pasted-during-send', previewUrl: 'blob:during' }];
+  settle.resolve({ ownedId, generation: 1, turnId: 'turn', userItemId: 'user', admittedSequence: 1 });
+  await sent;
+  assert.deepEqual(state.attachments.map((item) => item.id), ['pasted-during-send'],
+    'a delivered send does not clear screenshots pasted while it was in flight');
+});
+
 await test('an admitted send returns the native receipt', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
   const block = source.match(/export async function sendStructuredMessage\([\s\S]*?\n\}\n\n\/\*\* Stops the active turn/);
@@ -1778,6 +1870,36 @@ await test('a sent message draws below the history it was sent after', () => {
   const shown = conversationDisplayItems(processor.getMessages());
   assert.deepEqual(shown.map((item) => item.kind === 'user' ? item.text : item.kind), ['Earlier', 'Next question'],
     'the sent copy is the newest row, so the send anchor scrolls to it rather than to the top of the history');
+});
+
+await test('a sent message draws its screenshots in the same step as its text', () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('export function sendSelectedConversationMessage('), source.indexOf('export async function refreshSelectedConversationChat('))
+    .replace('export ', '');
+  const processor = new StreamProcessor();
+  const active = {
+    workspaceOwnedId: 'owned-shots',
+    pendingAdmission: null,
+    chat: {
+      sendMessage(input: { id?: string; content: any; metadata?: Record<string, unknown> }) {
+        processor.addUserMessage(input.content, input.id, input.metadata);
+        return new Promise(() => {});
+      }
+    }
+  };
+  const send = Function('active', 'rejectPendingAdmission', 'attachmentDisplayMetadata',
+    `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn sendSelectedConversationMessage;`
+  )(active, () => {}, ({ bytes: _bytes, ...shown }: Record<string, unknown>) => shown);
+  void send('owned-shots', 'Look at this', 'user-optimistic', [
+    { id: 'shot', name: 'shot.png', mimeType: 'image/png', path: '/vault/shot.png', previewUrl: 'blob:shot', bytes: [1, 2, 3] }
+  ]);
+  const [shown] = conversationDisplayItems(processor.getMessages());
+  assert.equal(shown.itemId, 'user-optimistic', 'the surface knows the row it will scroll to');
+  assert.equal(shown.kind, 'user');
+  const attachments = shown.kind === 'user' ? shown.attachments ?? [] : [];
+  assert.deepEqual(attachments.map((item) => item.previewUrl), ['blob:shot'],
+    'the thumbnail draws with the text, before any backend receipt');
+  assert.equal('bytes' in attachments[0], false, 'the transcript copy carries no image bytes');
 });
 
 await test('displayed child state is isolated and eviction preserves parent controls and previews', () => {

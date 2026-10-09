@@ -190,11 +190,11 @@
 
   function atEnd(): boolean { return $virtualizer.isAtEnd(80); }
   function scrollToEnd(): void { $virtualizer.scrollToEnd(); }
-  function positionRow(key: string, offsetPx: number): boolean {
+  function positionRow(key: string, offsetPx: number, behavior: ScrollBehavior = 'auto'): boolean {
     const index = rows.findIndex((row) => row.key === key);
     if (index < 0) return false;
     $virtualizer.setOptions({ scrollPaddingStart: offsetPx });
-    $virtualizer.scrollToIndex(index, { align: 'start' });
+    $virtualizer.scrollToIndex(index, { align: 'start', behavior });
     return true;
   }
   function measureRow(node: HTMLDivElement) {
@@ -312,7 +312,10 @@
     savedAnchor = saved.anchor;
     restoring = true;
     pendingSendAnchor = null;
-    anchoredSendItemId = null;
+    // A view saved with its row pinned to the top keeps the room below that
+    // pinning needs; without it the saved place is past the end of the list,
+    // the restore lands short and the row ends up under the composer.
+    anchoredSendItemId = saved.followLatest ? null : saved.anchor?.itemId ?? null;
     pageRequest = null;
     jumping = false;
     seenSendRequest = anchorRequest?.requestId ?? 0;
@@ -593,7 +596,7 @@
       const index = rows.findIndex((row) => row.key === itemId);
       if (index < 0) return;
       const topInset = host ? Number.parseFloat(getComputedStyle(host).getPropertyValue('--center-head-height')) || 0 : 0;
-      positionRow(itemId, topInset + USER_SEND_ANCHOR_OFFSET_PX);
+      positionRow(itemId, topInset + USER_SEND_ANCHOR_OFFSET_PX, 'smooth');
       saveView();
     });
   });
@@ -697,6 +700,8 @@
   .run-header:focus-visible{outline:2px solid var(--color-focus-solid);outline-offset:2px}
   .run-icon{display:grid;place-items:center;flex:none;color:var(--color-text-3)}
   .run-summary{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* A tool group's arrow sits beside its label, as each call's does. */
+  [data-run-id] .run-summary{flex:0 1 auto}
   .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .working-row{flex:none;display:flex;align-items:center;gap:8px;height:24px;overflow:hidden;white-space:nowrap;color:var(--color-text-3);font-size:13px}
   /* Taller than the turn's line so the kit button's focus ring is not clipped. */
