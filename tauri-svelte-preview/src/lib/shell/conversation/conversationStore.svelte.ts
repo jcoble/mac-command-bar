@@ -308,9 +308,13 @@ function applyConversationEventControls(
   appendRecentEvent(current, event);
   Object.assign(current, next);
   const displayEvent = displayEventFrom(event);
-  if (event.payload.kind === 'userMessage' && current.unclaimedSentAttachments.length) {
-    current.sentAttachments[event.payload.itemId] = current.unclaimedSentAttachments;
-    current.unclaimedSentAttachments = [];
+  // Each user event claims the held screenshots it names, so two quick sends
+  // keep their own whichever order the backend admits them in.
+  const claimedIds = event.payload.kind === 'userMessage' ? event.payload.attachmentIds ?? [] : [];
+  const claimed = current.unclaimedSentAttachments.filter((item) => claimedIds.includes(item.id));
+  if (event.payload.kind === 'userMessage' && claimed.length) {
+    current.sentAttachments[event.payload.itemId] = claimed;
+    current.unclaimedSentAttachments = current.unclaimedSentAttachments.filter((item) => !claimedIds.includes(item.id));
   }
   applyTypedEventPayload(current, displayEvent);
   return { current, displayEvent };
@@ -829,9 +833,9 @@ export function restoreConversationAttachmentIds(ownedId: string, ids: readonly 
   if (current && current.attachments.length === 0) current.attachmentIds = [...ids];
 }
 
-/** Hold the screenshots a send is delivering until the user message they
- * produce arrives, so the transcript can show them beside the typed text.
- * An empty list clears the hold when a send fails. */
+/** Hold the screenshots sends are delivering until the user messages naming
+ * them arrive, so the transcript can show them beside the typed text. The
+ * caller passes the whole hold: a failed send passes it without its own. */
 export function recordSentConversationAttachments(
   ownedId: string,
   attachments: ConversationAttachment[]

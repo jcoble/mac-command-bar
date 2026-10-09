@@ -190,11 +190,11 @@
 
   function atEnd(): boolean { return $virtualizer.isAtEnd(80); }
   function scrollToEnd(): void { $virtualizer.scrollToEnd(); }
-  function positionRow(key: string, offsetPx: number): boolean {
+  function positionRow(key: string, offsetPx: number, behavior: ScrollBehavior = 'auto'): boolean {
     const index = rows.findIndex((row) => row.key === key);
     if (index < 0) return false;
     $virtualizer.setOptions({ scrollPaddingStart: offsetPx });
-    $virtualizer.scrollToIndex(index, { align: 'start' });
+    $virtualizer.scrollToIndex(index, { align: 'start', behavior });
     return true;
   }
   function measureRow(node: HTMLDivElement) {
@@ -312,7 +312,10 @@
     savedAnchor = saved.anchor;
     restoring = true;
     pendingSendAnchor = null;
-    anchoredSendItemId = null;
+    // A view saved with its row pinned to the top keeps the room below that
+    // pinning needs; without it the saved place is past the end of the list,
+    // the restore lands short and the row ends up under the composer.
+    anchoredSendItemId = saved.followLatest ? null : saved.anchor?.itemId ?? null;
     pageRequest = null;
     jumping = false;
     seenSendRequest = anchorRequest?.requestId ?? 0;
@@ -593,7 +596,7 @@
       const index = rows.findIndex((row) => row.key === itemId);
       if (index < 0) return;
       const topInset = host ? Number.parseFloat(getComputedStyle(host).getPropertyValue('--center-head-height')) || 0 : 0;
-      positionRow(itemId, topInset + USER_SEND_ANCHOR_OFFSET_PX);
+      positionRow(itemId, topInset + USER_SEND_ANCHOR_OFFSET_PX, 'smooth');
       saveView();
     });
   });

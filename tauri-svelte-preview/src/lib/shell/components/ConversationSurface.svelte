@@ -485,11 +485,20 @@
     }
     setConversationDraft(ownedId, '');
     setConversationSendError(ownedId, '');
+    // A new message glides to the top as it is drawn, not when the backend
+    // admits it; the receipt below re-anchors the same row under its real id.
+    const messageId = steering ? undefined : crypto.randomUUID();
+    if (messageId) sendAnchorRequest = { requestId: ++sendAnchorRequestId, conversationId: ownedId, userItemId: messageId };
+    const attachments = conversation.attachments;
+    // The saved draft is cleared alongside the send, not before it: the clear is
+    // a round trip (to the workbox for a remote session) and the message draws
+    // when it is sent. Best effort, like the flush below: a delivered message is
+    // not reported unsent because its saved draft lingered.
+    void clearConversationSessionDraft(ownedId).catch(() => {});
     try {
-      await clearConversationSessionDraft(ownedId);
       const receipt = steering
         ? await sendStructuredMessage(ownedId, text)
-        : await sendSelectedConversationMessage(ownedId, text);
+        : await sendSelectedConversationMessage(ownedId, text, messageId, attachments);
       if (receipt && activeOwnedId === ownedId) {
         sendAnchorRequest = {
           requestId: ++sendAnchorRequestId,
@@ -498,8 +507,8 @@
         };
       }
     } catch (error) {
-      // Restore the draft. The service intentionally leaves attachments in the
-      // store on every failure, so the user can retry without data loss. The
+      // Restore the draft. The service puts the attachments back in the
+      // composer on every failure, so the user can retry without data loss. The
       // reason has to be said out loud: a swallowed failure here reads as a
       // composer that silently refuses every Enter.
       setConversationSendError(ownedId, error instanceof Error ? error.message : String(error));
