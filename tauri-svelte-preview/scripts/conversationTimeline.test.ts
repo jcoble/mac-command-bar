@@ -947,6 +947,9 @@ assert.equal(summarizeToolRun([{ ...unknownTool, state: 'failed' }, { ...edit, s
   assert.deepEqual(lone.map((item) => item.kind), ['user', 'tool', 'assistant'], 'a single-item run has no group disclosure');
   assert.deepEqual(foldToolRuns([toolItem('pair-a', 't', 1), toolItem('pair-b', 't', 2)]).map((item) => item.kind), ['toolRun'],
     'two neighbouring calls still group');
+  const thought = { kind: 'reasoning', itemId: 'lone-thought', text: 'Think', completed: true, turnId: 't', timestampMs: 0 } as const;
+  assert.deepEqual(foldToolRuns([thought, toolItem('lone-after-thought', 't', 1)]).map((item) => item.kind), ['reasoning', 'tool'],
+    'thinking beside one call does not put that call under a group heading');
 
   // The command catalog is not a transcript row, live or stored.
   const catalog = { ownedId: 'o', provider: 'codex', generation: 1, sequence: 4, timestampMs: 4, turnId: 'turn-a',

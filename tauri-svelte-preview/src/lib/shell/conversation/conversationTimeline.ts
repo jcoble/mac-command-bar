@@ -456,8 +456,8 @@ export function foldToolRuns(
 
   const closeRun = (): void => {
     if (!run.length) return;
-    // A lone call is its own row: a group heading over one call is a second disclosure.
-    if (run.length === 1) { folded.push(run[0]); run = []; return; }
+    // A lone call is its own row, even beside thinking: a group heading over one call is a second disclosure.
+    if (run.filter((item) => item.kind !== 'reasoning').length <= 1) { folded.push(...run); run = []; return; }
     const { summary, icon } = summarizeToolRun(run);
     const allCompleted = run.every(turnItemSettled);
     folded.push({
