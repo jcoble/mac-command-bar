@@ -839,7 +839,7 @@
                     {:else if id === 'app-update-install'}
                       {@render settingRow(id, appUpdateInstallControl)}
                     {:else if id === 'provider-updates'}
-                      {@render settingRow(id, providerUpdateControl)}
+                      {@render settingRow(id, providerUpdateControl, true)}
                     {:else if id === 'helper-route'}
                       {@render settingRow(id, helperRouteControl)}
                     {:else if id === 'helper-vendor'}
@@ -1095,8 +1095,11 @@
 {/snippet}
 
 {#snippet providerUpdateControl()}
-  <ProviderUpdateControl />
-  <ProviderCliUpdateControl />
+  <!-- Stacked like Connections: the adapter list, then the CLIs under it. -->
+  <div class="flex flex-col items-end gap-1.5">
+    <ProviderUpdateControl />
+    <ProviderCliUpdateControl />
+  </div>
 {/snippet}
 
 {#snippet helperVendorControl()}
