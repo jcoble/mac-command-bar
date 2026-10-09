@@ -76,7 +76,6 @@
   data-testid="timeline-tool-item"
 >
   <summary aria-disabled={!expandable}>
-    <span class="chevron" class:hidden={!expandable} aria-hidden="true"><ChevronRight size={14} strokeWidth={1.8} /></span>
     <span class="tool-icon" aria-hidden="true">
       {#if item.toolKind === 'command'}<Terminal size={14} strokeWidth={1.8} />
       {:else if item.toolKind === 'file-edit'}<FilePenLine size={14} strokeWidth={1.8} />
@@ -95,6 +94,8 @@
         <span class="preview" title={fileAction ? filePath : preview}>{preview}</span>
       {/if}
     {/if}
+    <!-- The same small arrow as the group heading, beside the label, so a group and its calls read as one list. -->
+    <span class="chevron" class:hidden={!expandable} aria-hidden="true"><ChevronRight size={12} /></span>
     <!-- How the call ended, as one mark: done, failed, or still owed an answer. -->
     <span class="status-mark" title={statusLabel} aria-label={statusLabel} data-testid="timeline-tool-status">
       {#if item.state === 'completed'}<Check size={13} strokeWidth={2.2} />
@@ -133,7 +134,7 @@
   .chevron.hidden{visibility:hidden}
   details[open] .chevron{transform:rotate(90deg)}
   strong{flex:none;max-width:50%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 13px/22px var(--font-mono)}
-  .preview{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text-3);font-size:13px;line-height:22px}
+  .preview{min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-text-3);font-size:13px;line-height:22px}
   .target-link{padding:0;border:0;background:transparent;color:var(--color-accent);font:inherit;text-align:left;text-decoration:underline;text-underline-offset:2px;cursor:pointer}
   .status-mark{display:grid;place-items:center;flex:none;margin-left:auto;color:var(--color-text-3)}
 
