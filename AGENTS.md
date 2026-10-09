@@ -22,6 +22,8 @@ repository's worktrees). Paste this rule into every dispatch that may commit.
 
 Anything that changes the chat (history, turn folds, tool calls and their grouping, live versus stored rows, the composer) must work the same for Claude Code, Codex and Antigravity, each on a local and a remote session. Verify all six in a running app before calling it done, and report a six-row table (provider × local/remote: pass/fail + evidence). A scenario you cannot run is reported as blocked with the exact error, never skipped silently. Antigravity is now used daily, so it is a first-class provider, not an afterthought.
 
+Remote scenarios run on the test machine "Workbox Test" (SSH alias `workbox-test`, see `tools/workbox-test/README.md`), added in the proof app's Settings → Connections with **Install and connect**. Lanes never connect a proof app to the owner's machines ("Agent Workbox" or any other saved machine), because their sessions land in the owner's session list.
+
 ## ⛔ ACP runtimes stop when quiescent; Assembly sessions do not own model context (2026-08-21, owner)
 
 Keep these three lifetimes separate in every diagnosis and implementation:
