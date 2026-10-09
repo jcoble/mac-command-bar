@@ -5317,19 +5317,27 @@ fn finish_autonomous_turn(
     runtime_state: AgentRuntimeState,
 ) {
     record_finished_reply(session, emitter);
-    let turn_id = session.autonomous_turn_id.take();
-    if !std::mem::take(&mut session.autonomous_turn_started) {
-        return;
-    }
-    let Some(turn_id) = turn_id else { return };
+    let turn_id = match (session.autonomous_turn_started, session.autonomous_turn_id.clone()) {
+        (true, Some(turn_id)) => turn_id,
+        _ => {
+            session.autonomous_turn_id = None;
+            session.autonomous_turn_started = false;
+            return;
+        }
+    };
     let lifecycle = lifecycle_update_for_state(session, runtime_state, session.connection.state);
-    if let Err(error) = record_payload_for_session_and_dispatch_with_lifecycle(
+    // Clear the turn only once its end is stored, so a failed write is retried at the next end.
+    match record_payload_for_session_and_dispatch_with_lifecycle(
         session,
         emitter,
         AgentConversationPayload::Turn { turn_id, state },
         lifecycle,
     ) {
-        crate::debug_log::stderr_log!("Could not finish autonomous Claude turn: {error}");
+        Ok(_) => {
+            session.autonomous_turn_id = None;
+            session.autonomous_turn_started = false;
+        }
+        Err(error) => crate::debug_log::stderr_log!("Could not finish autonomous Claude turn: {error}"),
     }
 }
 
