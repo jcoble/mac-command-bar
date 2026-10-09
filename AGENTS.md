@@ -18,6 +18,10 @@ Enforced by `.githooks/commit-msg`: a commit that neither stages the page nor ca
 refused. One-time setup per clone: `git config core.hooksPath .githooks` (already set for this
 repository's worktrees). Paste this rule into every dispatch that may commit.
 
+## ⛔ Test chat behaviour in all six scenarios (2026-10-09, owner)
+
+Anything that changes the chat (history, turn folds, tool calls and their grouping, live versus stored rows, the composer) must work the same for Claude Code, Codex and Antigravity, each on a local and a remote session. Verify all six in a running app before calling it done, and report a six-row table (provider × local/remote: pass/fail + evidence). A scenario you cannot run is reported as blocked with the exact error, never skipped silently. Antigravity is now used daily, so it is a first-class provider, not an afterthought.
+
 ## ⛔ ACP runtimes stop when quiescent; Assembly sessions do not own model context (2026-08-21, owner)
 
 Keep these three lifetimes separate in every diagnosis and implementation:
