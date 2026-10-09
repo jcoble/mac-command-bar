@@ -34,8 +34,10 @@ test('builds a deterministic remote backend package contract', async () => {
       schemaVersion: number; version: string; protocolVersion: number; target: string;
       archiveFile: string; bytes: number; sha256: string;
     };
+    const protocolSource = await readFile(new URL('../src-tauri/src/agent_conversation/remote.rs', import.meta.url), 'utf8');
+    assert.match(protocolSource, new RegExp(`const PROTOCOL_VERSION: u16 = ${record.protocolVersion};`));
     assert.deepEqual(record, {
-      schemaVersion: 1, version: '1.2.3', protocolVersion: 5,
+      schemaVersion: 1, version: '1.2.3', protocolVersion: record.protocolVersion,
       target: 'x86_64-unknown-linux-gnu', archiveFile: path.basename(archive),
       bytes: archiveBytes.length, sha256: createHash('sha256').update(archiveBytes).digest('hex')
     });

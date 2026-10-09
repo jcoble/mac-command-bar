@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import ProviderCliUpdateControl from './ProviderCliUpdateControl.svelte';
   import ProviderUpdateControl from './ProviderUpdateControl.svelte';
   import WorkingSpinner from './conversation/WorkingSpinner.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -68,13 +69,13 @@
 
   function backendLabel(profileId: string): string {
     const backend = backends[profileId];
-    if (!backend) return 'Backend version unknown';
+    if (!backend) return 'Backend compatibility not verified';
     if (!backend.installed) return 'Backend not installed';
     const installed = backend.installedVersion ?? 'unknown version';
-    if (backend.updateAvailable === null) return `Backend ${installed}`;
+    if (backend.updateAvailable === null) return `Backend ${installed} · compatibility not verified`;
     return backend.updateAvailable
       ? `Backend ${installed} · update to ${backend.latestVersion} available`
-      : `Backend ${installed} · up to date`;
+      : 'Installed package matches the latest compatible release';
   }
 
   onMount(() => {
@@ -123,6 +124,7 @@
         : 'Connected. Your conversations are available in Sessions.';
       onConnected?.(result.profile);
     } catch (reason) {
+      if (!attempt.signal.aborted) await readBackends(environment.profiles);
       if (mounted) {
         status = '';
         error = attempt.signal.aborted ? `${install ? 'Installation' : 'Connection'} cancelled.` : reason instanceof Error ? reason.message : typeof reason === 'object' && reason !== null && 'message' in reason ? String(reason.message) : String(reason);
@@ -188,6 +190,11 @@
 <div class="remote-connections">
   <section>
     <div class="section-heading"><strong>Saved machines</strong><small>Connect to an installed backend or update it from the latest signed release.</small></div>
+    <div class="connection-actions"><Button variant="ghost" size="xs" disabled={busy} onclick={async () => {
+      busy = true; error = ''; operationArea = 'saved';
+      try { await readBackends(environment.profiles); }
+      finally { if (mounted) busy = false; }
+    }}>Check for backend updates</Button></div>
     {#if environment.profiles.length === 0}<p>No remote machines saved yet.</p>{/if}
     {#each environment.profiles as saved (saved.id)}
       {@const backend = backends[saved.id]}
@@ -210,6 +217,7 @@
       {#if environment.readyProfileIds.includes(saved.id)}
         <ProviderUpdateControl profileId={saved.id} machineName={saved.name} />
       {/if}
+      <ProviderCliUpdateControl profileId={saved.id} machineName={saved.name} />
       {#if confirmingUninstallId === saved.id}
         <div class="uninstall-confirm">
           <strong>Uninstall the backend from {saved.name}?</strong>

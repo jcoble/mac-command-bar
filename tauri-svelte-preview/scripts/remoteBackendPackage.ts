@@ -148,7 +148,9 @@ export async function writeRemoteBackendPackage(input: RemoteBackendPackageInput
       path.join(staging, 'SHA256SUMS'),
       `${files.map((file) => `${file.sha256}  ${file.path}`).join('\n')}\n`
     );
-    await execFileAsync('tar', ['-czf', archivePath, '-C', staging, '.']);
+    await execFileAsync('tar', ['-czf', archivePath, '-C', staging, '.'], {
+      env: { ...process.env, COPYFILE_DISABLE: '1' }
+    });
     await writeFile(`${archivePath}.download.json`, `${JSON.stringify({
       schemaVersion: 1,
       version: input.version,

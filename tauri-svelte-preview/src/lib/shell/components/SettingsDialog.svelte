@@ -41,6 +41,7 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import SettingsSelect from '$lib/shell/components/SettingsSelect.svelte';
+  import ProviderCliUpdateControl from '$lib/shell/components/ProviderCliUpdateControl.svelte';
   import ProviderUpdateControl from '$lib/shell/components/ProviderUpdateControl.svelte';
   import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { Slider } from '$lib/components/ui/slider/index.js';
@@ -1095,6 +1096,7 @@
 
 {#snippet providerUpdateControl()}
   <ProviderUpdateControl />
+  <ProviderCliUpdateControl />
 {/snippet}
 
 {#snippet helperVendorControl()}
