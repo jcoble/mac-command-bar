@@ -168,7 +168,7 @@
        edge; drawing them again here doubled the rule. Labels sit a step below
        the muted text so the bar stays quiet; values take the muted colour. */
     color: color-mix(in srgb, var(--muted-foreground) 62%, var(--card));
-    font-size: 11px;
+    font-size: 12px;
     container-type: inline-size;
     user-select: none;
   }

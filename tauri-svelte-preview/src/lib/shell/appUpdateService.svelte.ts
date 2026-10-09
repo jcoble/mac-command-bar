@@ -24,6 +24,12 @@ export async function checkForAppUpdate(
 ): Promise<void> {
   if (stopSignal.aborted || appUpdateState.phase === 'installing') return;
   const generation = ++checkGeneration;
+  if (import.meta.env.DEV) {
+    appUpdateState.phase = 'current';
+    appUpdateState.version = '';
+    appUpdateState.message = 'Development build: this checkout supplies the desktop app. Pull changes; frontend edits hot reload. Restart pnpm app:dev after Rust changes. Check backend compatibility in Connections.';
+    return;
+  }
   appUpdateState.phase = 'checking';
   appUpdateState.message = automatic ? '' : 'Checking for updates…';
 
@@ -38,7 +44,7 @@ export async function checkForAppUpdate(
     } else {
       appUpdateState.phase = 'current';
       appUpdateState.version = '';
-      appUpdateState.message = 'Assembly is up to date.';
+      appUpdateState.message = 'Desktop matches the latest published release. Backend compatibility is checked separately in Connections.';
     }
   } catch (error) {
     if (stopped(stopSignal, generation)) return;
@@ -63,7 +69,7 @@ export async function installAppUpdate(stopSignal: AbortSignal): Promise<void> {
     if (!update) {
       appUpdateState.phase = 'current';
       appUpdateState.version = '';
-      appUpdateState.message = 'Assembly is up to date.';
+      appUpdateState.message = 'Desktop matches the latest published release. Backend compatibility is checked separately in Connections.';
       return;
     }
     await update.downloadAndInstall(undefined, { timeout: 120_000 });

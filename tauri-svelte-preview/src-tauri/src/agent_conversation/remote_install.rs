@@ -222,20 +222,7 @@ pub async fn install_latest(
 ) -> Result<InstallReceipt, String> {
     super::remote::validate_ssh_target(ssh_target)?;
     let _ = status.send("Finding the latest signed backend…".into());
-    let (archive_asset, record_asset, signature_asset) = latest_assets().await?;
-    let local_stage = LocalStage::create()?;
-    let record_path = local_stage.0.join(&record_asset.name);
-    let signature_path = local_stage.0.join(&signature_asset.name);
-    tokio::fs::write(&record_path, download_small(&record_asset).await?)
-        .await.map_err(|error| format!("Could not stage backend record: {error}"))?;
-    tokio::fs::write(&signature_path, download_small(&signature_asset).await?)
-        .await.map_err(|error| format!("Could not stage backend signature: {error}"))?;
-    verify_signature(&record_path, &signature_path)?;
-    let record: DownloadRecord = serde_json::from_slice(&std::fs::read(&record_path)
-        .map_err(|error| format!("Could not read signed backend record: {error}"))?)
-        .map_err(|error| format!("Signed backend record is invalid: {error}"))?;
-    validate_record(&record, &archive_asset, &release_version_from_archive(&archive_asset.name)?)?;
-    validate_public_url(&archive_asset.browser_download_url)?;
+    let (archive_asset, record) = verified_latest_release().await?;
 
     let _ = status.send("Checking the remote operating system and download tools…".into());
     let platform = ssh_output(ssh_target, "printf '%s %s' \"$(uname -s)\" \"$(uname -m)\"").await?;
@@ -267,8 +254,8 @@ pub async fn install_latest(
 }
 
 pub async fn latest_version() -> Result<String, String> {
-    let (archive, _, _) = latest_assets().await?;
-    release_version_from_archive(&archive.name)
+    let (_, record) = verified_latest_release().await?;
+    Ok(record.version)
 }
 
 pub async fn read_status(
@@ -298,7 +285,7 @@ pub async fn read_status(
     let update_available = installed_version.as_deref().and_then(|version| {
         semver::Version::parse(version)
             .ok()
-            .map(|installed| installed < latest)
+            .and_then(|installed| (installed <= latest).then_some(installed < latest))
     });
     Ok(BackendStatus {
         installed,
@@ -339,8 +326,24 @@ pub async fn uninstall(ssh_target: &str, delete_data: bool) -> Result<(), String
     Ok(())
 }
 
-async fn latest_assets() -> Result<(GithubAsset, GithubAsset, GithubAsset), String> {
-    release_assets(latest_release().await?)
+// Status and installation must accept exactly the same signed, compatible release.
+async fn verified_latest_release() -> Result<(GithubAsset, DownloadRecord), String> {
+    let (archive_asset, record_asset, signature_asset) = release_assets(latest_release().await?)?;
+    let local_stage = LocalStage::create()?;
+    let record_path = local_stage.0.join(&record_asset.name);
+    let signature_path = local_stage.0.join(&signature_asset.name);
+    tokio::fs::write(&record_path, download_small(&record_asset).await?)
+        .await.map_err(|error| format!("Could not stage backend record: {error}"))?;
+    tokio::fs::write(&signature_path, download_small(&signature_asset).await?)
+        .await.map_err(|error| format!("Could not stage backend signature: {error}"))?;
+    verify_signature(&record_path, &signature_path)?;
+    let record: DownloadRecord = serde_json::from_slice(&std::fs::read(&record_path)
+        .map_err(|error| format!("Could not read signed backend record: {error}"))?)
+        .map_err(|error| format!("Signed backend record is invalid: {error}"))?;
+    validate_record(&record, &archive_asset, &release_version_from_archive(&archive_asset.name)?)?;
+    validate_public_url(&archive_asset.browser_download_url)?;
+
+    Ok((archive_asset, record))
 }
 
 async fn latest_release() -> Result<GithubRelease, String> {
@@ -424,8 +427,12 @@ fn validate_record(record: &DownloadRecord, archive: &GithubAsset, version: &str
         || !record.sha256.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
         return Err("Signed backend download record does not match this release".into());
     }
-    if record.protocol_version != super::remote::PROTOCOL_VERSION {
-        return Err(format!("Backend release protocol {} is incompatible with this Assembly client protocol {}; choose a matching release", record.protocol_version, super::remote::PROTOCOL_VERSION));
+    let client_protocol = super::remote::PROTOCOL_VERSION;
+    if record.protocol_version < client_protocol {
+        return Err(format!("The latest published backend ({}) uses protocol {}, but this Assembly requires {}. A matching backend release has not been published yet. Check for backend updates after the release build finishes; reinstalling the current release will not help.", record.version, record.protocol_version, client_protocol));
+    }
+    if record.protocol_version > client_protocol {
+        return Err(format!("The latest backend ({}) requires protocol {}, but this Assembly uses {}. Update or rebuild Assembly from latest main before installing this backend.", record.version, record.protocol_version, client_protocol));
     }
     Ok(())
 }
@@ -538,7 +545,7 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-async fn ssh_output(target: &str, remote_command: &str) -> Result<String, String> {
+pub(crate) async fn ssh_output(target: &str, remote_command: &str) -> Result<String, String> {
     command_output(
         tokio::process::Command::new("ssh").args([
             "-o",
@@ -569,7 +576,8 @@ async fn command_output(
         .await
         .map_err(|error| format!("{label} could not start: {error}"))?;
     if !output.status.success() {
-        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let message = [String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)]
+            .iter().map(|part| part.trim()).filter(|part| !part.is_empty()).collect::<Vec<_>>().join("\n");
         return Err(if message.is_empty() {
             format!("{label} failed")
         } else {
@@ -581,6 +589,14 @@ async fn command_output(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn failed_remote_command_retains_stdout_and_stderr() {
+        let error = super::command_output(
+            tokio::process::Command::new("sh").args(["-c", "printf 'upgrade failed'; printf 'check permissions' >&2; exit 1"]),
+            "Remote backend command",
+        ).await.unwrap_err();
+        assert_eq!(error, "Remote backend command failed: upgrade failed\ncheck permissions");
+    }
     use super::*;
 
     #[test]
@@ -634,7 +650,10 @@ mod tests {
             archive_file: name, bytes: 12, sha256: "0".repeat(64) };
         assert!(validate_record(&record, &archive, "1.2.3").is_ok());
         record.protocol_version += 1;
-        assert!(validate_record(&record, &archive, "1.2.3").unwrap_err().contains("incompatible"));
+        assert!(validate_record(&record, &archive, "1.2.3").unwrap_err().contains("Update or rebuild Assembly"));
+        record.protocol_version -= 2;
+        assert!(validate_record(&record, &archive, "1.2.3").unwrap_err().contains("has not been published yet"));
+        record.protocol_version += 2;
         record.protocol_version -= 1;
         record.bytes -= 1;
         assert!(validate_record(&record, &archive, "1.2.3").is_err());

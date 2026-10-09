@@ -370,7 +370,7 @@
   .donut-total { position: absolute; inset: 0; display: grid; max-width: 92px; margin: auto; place-content: center; text-align: center; }
   .donut-total span { color: var(--color-text-3); font-size: 0.75rem; }
   .donut-total strong { font-size: 0.94rem; font-variant-numeric: tabular-nums; }
-  .unpriced-note { color: var(--color-text-3); font-size: 0.68rem; font-weight: 500; line-height: 1.25; }
+  .unpriced-note { color: var(--color-text-3); font-size: 0.75rem; font-weight: 500; line-height: 1.25; }
   .cost-copy { display: grid; gap: 13px; }
   .cost-copy > div:first-child { display: grid; gap: 3px; }
   .cost-legend { display: grid; gap: 8px; }

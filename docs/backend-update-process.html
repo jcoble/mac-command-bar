@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Assembly development and updates — TSK-1351</title>
+<style>
+body{max-width:1000px;margin:40px auto;padding:0 24px;font:17px/1.55 system-ui;color:#242a36;background:#f7f8fa}h1,h2{line-height:1.2}section{background:white;border:1px solid #dce1e8;padding:24px;margin:20px 0;border-radius:12px}code{background:#eef0f4;padding:2px 5px}li{margin:8px 0}a{color:#224eb3}small{color:#596475}table{width:100%;border-collapse:collapse;font-size:15px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #e3e7ed;padding:12px 8px}img{width:100%;height:auto;border:1px solid #dce1e8;border-radius:8px}
+</style>
+</head>
+<body>
+<h1>Develop and update Assembly without guessing</h1>
+<p>Desktop, remote backend, ACP adapters, and provider CLIs are separate installations. Each check now explains what it checked and which machine an update affects.</p>
+<small>TSK-1351 · Updated October 7, 2026 · Implementation and native checks completed; PR #130 awaits owner merge.</small>
+<section>
+<h2>Fast development loop</h2>
+<ol>
+<li>Pull the desired checkout and run <code>pnpm app:dev</code>. Frontend edits hot reload. Rust changes rebuild through Tauri; restart this command when starting from newly pulled Rust code.</li>
+<li>A development desktop uses its checkout. Its Updates screen says this directly and avoids the packaged desktop updater, including the misleading temporary-path error.</li>
+<li>For a development build, run <code>pnpm deploy:remote-backend-dev &lt;ssh-host&gt;</code> from <code>tauri-svelte-preview</code>; the host defaults to <code>agent-workbox</code>. It syncs the current checkout, including uncommitted source changes, builds with a persistent remote Cargo cache, and restarts the existing service without signing or publishing.</li>
+<li>The development command replaces only the binary and keeps the previous one as <code>assembly-remote-server.prev</code>; it does not touch sessions or configuration. Connections compares the installed package version, so after a development deploy it may still show the last signed release.</li>
+<li>Production backend releases come only from main or an explicit <code>assembly-backend-v*</code> tag. The release remains a draft until its signed archive and metadata are uploaded.</li>
+</ol>
+<p>Publishing is handled by GitHub Actions. Backend installation is an explicit action and may interrupt work running in that backend service.</p>
+</section>
+<section>
+<h2>What each control means</h2>
+<table>
+<thead><tr><th>Installation</th><th>Where to find it</th><th>What is checked or updated</th></tr></thead>
+<tbody>
+<tr><td>Assembly desktop</td><td>Settings → Updates</td><td>Development: the selected source checkout. Release: the latest published signed desktop release. This says nothing about the remote backend.</td></tr>
+<tr><td>Remote backend</td><td>Settings → Connections → Check for backend updates</td><td>The signed release metadata and its protocol must match the client. “Installed package matches the latest compatible release” compares the installed package version to that release. Connect still verifies the running backend’s protocol.</td></tr>
+<tr><td>ACP adapters</td><td>Existing provider adapter controls</td><td>The signed adapter packages, independently of Assembly and the provider CLIs.</td></tr>
+<tr><td>Codex / Claude CLI on Mac</td><td>Settings → Updates → Provider CLIs · This Mac</td><td>Read installed versions or run the selected CLI’s own updater. Its installed version is read again before reporting success.</td></tr>
+<tr><td>Codex / Claude CLI on Workbox</td><td>Settings → Connections → Provider CLIs · saved machine</td><td>The same operations execute on that machine over SSH, even while the Assembly backend is disconnected or incompatible.</td></tr>
+</tbody>
+</table>
+<p>Only the selected provider on the selected machine shows update activity. CLI updates do not restart Assembly or its backend. Antigravity’s runtime updates with its ACP bundle.</p>
+</section>
+<section>
+<h2>When the two sides do not match</h2>
+<ul>
+<li><strong>Published backend is older:</strong> the message names both protocol versions and explains that a compatible backend release must finish publishing. Reinstalling the same release will not resolve it.</li>
+<li><strong>Published backend is newer:</strong> update or rebuild the desktop from current main before installing that backend.</li>
+<li><strong>Status cannot be verified:</strong> the screen reports unverified compatibility or the check’s error, rather than claiming the machine is up to date.</li>
+<li><strong>A CLI operation fails:</strong> its error is shown and its spinner stops. SSH and provider updater output are retained; failure is not reported as an update success.</li>
+</ul>
+</section>
+<section>
+<h2>Verification · October 7–8</h2>
+<table>
+<thead><tr><th>Check</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>Backend version selector</td><td>3 tests passed: main, explicit tags, and rejected branch or invalid references.</td></tr>
+<tr><td>Backend package integrity</td><td>3 tests passed.</td></tr>
+<tr><td>Rust CLI commands</td><td>4 tests passed: fixed commands, rejected injection, nonempty version receipts, and duplicate update rejection.</td></tr>
+<tr><td>Rust installer</td><td>7 tests passed, including both protocol mismatch directions, signatures, and useful stdout/stderr failure text.</td></tr>
+<tr><td>CLI service and existing adapter service</td><td>Host/provider isolation, single flight, late responses, and error handling passed.</td></tr>
+<tr><td>Compile and build</td><td>TypeScript and production frontend build passed. Svelte check: zero errors, six existing warnings. Rust check with warnings denied and the isolated native build passed.</td></tr>
+<tr><td>Native Mac UI</td><td>Both Codex and Claude Update CLI buttons ran successfully. Readback: codex-cli 0.161.0 and Claude Code 2.1.293. Development desktop guidance was visible.</td></tr>
+<tr><td>Native Workbox UI</td><td>Both CLI updates ran successfully through SSH while disconnected. Same installed-version readbacks. Codex-only update spinner observed. Backend 0.1.19 matched the signed protocol-14 release, and Connect completed the actual backend handshake successfully.</td></tr>
+<tr><td>Idle resource checks</td><td>App process: 0.0–0.2% CPU across ten seconds before connecting. A second ten-second sample covering connection settling ended with both app and its identified WebContent process at 0.0%; earlier WebContent samples reached 2.4% during connection. Update spinners ended; native document.getAnimations() reported zero animations and zero running animations.</td></tr>
+<tr><td>Combined code/spec review</td><td>SOL medium PASS after retaining remote updater failure text from both stdout and stderr.</td></tr>
+</tbody>
+</table>
+<p>Native proof used a separate test app and database, a 1710×990 window, and three screenshots. The owner’s main-checkout edits and running sessions were preserved.</p>
+<p><strong>Publication boundary:</strong> the revised automatic/manual release workflow has not been run in live CI in this takeover. The existing compatible release was verified; no new backend release or installation was performed. The workflow will be available on main after owner-approved merge.</p>
+<p><a href="https://github.com/jcoble/mac-command-bar/pull/130">PR #130</a> · <a href="https://app.notion.com/p/3ec394b0689d81f9aaa3d3b0e2211c40">Task, plan review and verification record</a></p>
+</section>
+<section>
+<h2>Earlier recovery</h2>
+<p>The original October 1 incident was a protocol-8 desktop facing a protocol-7 published backend. <a href="https://github.com/jcoble/mac-command-bar/releases/tag/assembly-backend-v0.1.14">Backend 0.1.14</a> was built from <code>2c2a2040</code> with protocol 8; <a href="https://github.com/jcoble/mac-command-bar/actions/runs/36860501847">its build receipt</a> established package availability. That earlier run did not prove native installation. The October 7 native checks above cover the newly added controls.</p>
+</section>
+</body>
+</html>

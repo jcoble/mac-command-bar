@@ -4,6 +4,7 @@ pub(crate) mod authentication;
 mod packaged;
 pub mod process;
 pub mod updates;
+pub mod cli_updates;
 
 pub use acp::{AcpRuntimeAdapter, StructuredRuntimeHandle};
 pub use acp_client::AcpClient;

@@ -341,14 +341,14 @@
 
 	time {
 		color: var(--color-text-3);
-		font-size: 11px;
+		font-size: 12px;
 	}
 
 	li.loading-more {
 		display: block;
 		padding-left: 25px;
 		color: var(--color-text-2);
-		font-size: 11px;
+		font-size: 12px;
 	}
 
 	@media (prefers-reduced-motion: reduce) {

@@ -5802,6 +5802,8 @@ fn main() {
             agent_conversation::agent_conversation_list_session_annotations,
             agent_conversation::agent_conversation_delete_session_annotation,
             agent_conversation::handoff::handoff_agent_conversation,
+            agent_conversation::providers::cli_updates::check_provider_clis,
+            agent_conversation::providers::cli_updates::update_provider_cli,
             agent_conversation::providers::updates::check_provider_updates,
             agent_conversation::providers::updates::install_provider_updates,
             agent_conversation::providers::updates::restart_for_provider_updates,
