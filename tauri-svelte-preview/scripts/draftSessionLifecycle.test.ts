@@ -137,4 +137,19 @@ assert.match(surface, /onConfigChange=\{changeConfig\}/);
 // Nothing in the draft surface may create a session or touch the rail.
 assert.doesNotMatch(surface, /addOwnedSession|sendStructuredMessage|ensureStructuredConversation/);
 
+// TSK-1411: Send is enabled as soon as there is text, but the provider's model
+// choices take ~1 s (Antigravity up to ~7 s) to arrive. A press in that window
+// is kept and goes out when they arrive, never dropped with a notice the
+// arriving choices then wipe.
+const draftSend = surface.slice(surface.indexOf('async function send()'), surface.indexOf('onMount('));
+const keepPress = draftSend.indexOf('if (!currentCatalog && !catalogError) {');
+assert.notEqual(keepPress, -1, 'a press made while the model choices load must be kept');
+assert.match(draftSend.slice(keepPress), /^[^}]*submitting = true;[^}]*sendWhenReady = true;[^}]*return;/);
+assert.ok(keepPress < draftSend.indexOf('Wait for this machine’s model choices'), 'the press is kept before the refusal');
+assert.match(
+  surface,
+  /\$effect\(\(\) => \{\s*if \(!sendWhenReady \|\| \(!currentCatalog && !catalogError\)\) return;\s*sendWhenReady = false;\s*submitting = false;\s*untrack\(\(\) => void send\(\)\);/,
+  'the kept press is sent once the choices, or their error, arrive'
+);
+
 console.log('draftSessionLifecycle.test.ts passed');
