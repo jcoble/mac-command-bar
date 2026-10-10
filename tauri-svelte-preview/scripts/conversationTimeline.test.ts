@@ -3,6 +3,7 @@ import {
   agentItemFromEvent,
   anchorRowIndex,
   continueHistoryPaging,
+  nextToolGroupPinned,
   conversationTurnGroups,
   displayItemFromAgentItem,
   foldToolRuns,
@@ -1000,3 +1001,14 @@ console.log('conversationTimeline: TSK-1401 tool calls and folds passed');
 }
 
 console.log('conversationTimeline: TSK-1357 turn end passed');
+
+// TSK-1422: a live tool group stays pinned to its newest row until the reader scrolls it up.
+{
+  assert.equal(nextToolGroupPinned(true, 100, 100, 400), true, 'rows added below a pinned group keep it pinned');
+  assert.equal(nextToolGroupPinned(true, 100, 160, 300), true, 'a scroll toward the end that lands short stays pinned');
+  assert.equal(nextToolGroupPinned(true, 100, 60, 40), false, 'scrolling up unpins');
+  assert.equal(nextToolGroupPinned(false, 60, 90, 200), false, 'scrolling down short of the end stays unpinned');
+  assert.equal(nextToolGroupPinned(false, 90, 280, 10), true, 'reaching the end pins again');
+}
+
+console.log('conversationTimeline: TSK-1422 tool group pin passed');
