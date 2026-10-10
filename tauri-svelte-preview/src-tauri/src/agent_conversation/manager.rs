@@ -2398,7 +2398,7 @@ impl AgentRuntimeManager {
 
         self.start_child_rollout_scan(owned_id, generation)?;
         let params = prompt_params(native_session_id, input);
-        spawn_prompt_completion(transport, ordered_events, turn_id.clone(), params);
+        spawn_prompt_completion(transport, ordered_events, turn_id.clone(), params).await;
         Ok(AgentConversationSendReceipt {
             owned_id: owned_id.to_string(),
             generation,
@@ -5437,14 +5437,21 @@ pub(crate) fn prompt_params(native_session_id: String, input: AgentPrompt) -> Va
     serde_json::json!({ "sessionId": native_session_id, "prompt": prompt })
 }
 
-fn spawn_prompt_completion(
+/// Writes the prompt before returning, while the caller still holds the
+/// session lock, so a cancel that waits on that lock reaches the agent after
+/// the prompt. Only the wait for the result runs on its own.
+async fn spawn_prompt_completion(
     transport: Arc<AcpTransport>,
     ordered_events: UnboundedSender<OrderedSessionEvent>,
     turn_id: String,
     params: Value,
 ) {
+    let response = transport.send_request("session/prompt", params).await;
     tokio::spawn(async move {
-        let result = transport.request("session/prompt", params).await;
+        let result = match response {
+            Ok(response) => response.await,
+            Err(error) => Err(error),
+        };
         let _ = ordered_events.send(OrderedSessionEvent::PromptResult { turn_id, result });
     });
 }
@@ -14714,6 +14721,28 @@ mod tests {
         cancel.await.unwrap().unwrap();
         let log = fixture.root.join("cancelled_turn.jsonl");
         wait_until(|| fs::read_to_string(&log).unwrap_or_default().contains("session/cancel")).await;
+        fixture.manager.close(&fixture.owned_id, generation).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancel_right_after_prompt_reaches_the_agent_after_the_prompt() {
+        let fixture = fixture_manager_with_acp_session("cancelled_turn").await;
+        let generation = fixture.generation;
+        fixture.manager.prompt(&fixture.owned_id, generation, test_prompt("hello"))
+            .await.unwrap();
+        fixture.manager.cancel_turn(&fixture.owned_id, generation).await.unwrap();
+        let log = fixture.root.join("cancelled_turn.jsonl");
+        wait_until(|| {
+            let log = fs::read_to_string(&log).unwrap_or_default();
+            log.contains(r#""method":"session/prompt""#) && log.contains(r#""method":"session/cancel""#)
+        })
+        .await;
+        let log = fs::read_to_string(&log).unwrap();
+        assert!(
+            log.find(r#""method":"session/prompt""#) < log.find(r#""method":"session/cancel""#),
+            "the agent received the cancel before the prompt it should stop"
+        );
         fixture.manager.close(&fixture.owned_id, generation).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
