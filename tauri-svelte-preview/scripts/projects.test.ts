@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 
 import {
   defaultDraftProjectId,
+  filterProjects,
   isNewFolderPath,
   projectBadge,
+  projectCountsByMachine,
   projectMachineLabel,
+  shortProjectPath,
   visibleProjects
 } from '../src/lib/shell/projects/projects.ts';
 import type { ProjectRecord } from '../src/lib/tauriSource.ts';
@@ -72,6 +75,39 @@ const project = (id: string, machine: string): ProjectRecord => ({
   assert.equal(isNewFolderPath('/Users/me/other/new-app', listing), false);
   assert.equal(isNewFolderPath('/Users/me/dev/new-app', null), false);
   assert.equal(isNewFolderPath('/fresh', { path: '/', directories: ['Users'], truncated: false }), true);
+}
+
+// The Projects screen narrows the list by the chosen machine and by a search
+// that matches the name or the folder, ignoring case.
+{
+  const projects = [
+    { ...project('EdiPlatform', 'workbox'), rootPath: '/home/me/dev/EdiPlatform' },
+    { ...project('rental', 'workbox'), rootPath: '/home/me/dev/rental-management' },
+    { ...project('assembly', 'local'), rootPath: '/Users/me/dev/mac-command-bar' }
+  ];
+  const ids = (rows: ProjectRecord[]) => rows.map((row) => row.id);
+  assert.deepEqual(ids(filterProjects(projects, null, '')), ['EdiPlatform', 'rental', 'assembly']);
+  assert.deepEqual(ids(filterProjects(projects, 'workbox', '')), ['EdiPlatform', 'rental']);
+  assert.deepEqual(ids(filterProjects(projects, 'local', '')), ['assembly']);
+  assert.deepEqual(ids(filterProjects(projects, null, 'edi')), ['EdiPlatform']);
+  assert.deepEqual(ids(filterProjects(projects, null, ' MANAGEMENT ')), ['rental']);
+  assert.deepEqual(ids(filterProjects(projects, 'local', 'edi')), []);
+}
+
+// Each machine's count of projects; a machine with none has no entry.
+{
+  const projects = [project('a', 'workbox'), project('b', 'workbox'), project('c', 'local')];
+  assert.deepEqual(projectCountsByMachine(projects), { workbox: 2, local: 1 });
+  assert.deepEqual(projectCountsByMachine([]), {});
+}
+
+// A folder under a home directory is shown from `~`; anything else is unchanged.
+{
+  assert.equal(shortProjectPath('/Users/me/dev/mac-command-bar'), '~/dev/mac-command-bar');
+  assert.equal(shortProjectPath('/home/blackcolours/dev/work/EdiPlatform'), '~/dev/work/EdiPlatform');
+  assert.equal(shortProjectPath('/home/me'), '~');
+  assert.equal(shortProjectPath('/srv/app'), '/srv/app');
+  assert.equal(shortProjectPath('/homework/app'), '/homework/app');
 }
 
 console.log('projects.test.ts passed');

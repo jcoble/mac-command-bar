@@ -58,7 +58,10 @@ assert.match(surface, /data-testid="draft-session-new-project"/);
 assert.match(backend, /invokeOn<boolean>\(machine, 'project_root_is_bare', \{ root \}\)/);
 assert.match(nativeSource, /project_folders::project_root_is_bare,/);
 
-assert.match(controller, /open\(\): void/);
+assert.match(controller, /open\(projectId: string \| null = null\): void/);
+// A project chosen on the Projects screen reaches the draft and wins over its default.
+assert.match(page, /projectId=\{selection\.newSession\.projectId\}/);
+assert.match(surface, /const presetId = projectId \?\? defaultDraftProjectId\(/);
 assert.doesNotMatch(page, /const providerConfigs = \$derived/);
 
 // The first-send request keeps every chosen picker value and runs in the

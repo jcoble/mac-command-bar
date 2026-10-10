@@ -48,6 +48,8 @@
 
   let SettingsDialog = $state<SettingsDialogComponent | null>(null);
   let dialogOpen = $state(false);
+  let section = $state('appearance');
+  let query = $state('');
   let loadFailure = $state<string | null>(null);
   /** Guards a second open() while the first load is still in flight. */
   let loading = false;
@@ -67,10 +69,14 @@
   });
 
   /**
-   * Show the settings dialog. Safe to call repeatedly; the first call
-   * loads the panel, later calls just reopen it.
+   * Show the settings dialog, at `atSection` when given. Safe to call
+   * repeatedly; the first call loads the panel, later calls just reopen it.
    */
-  export function open(): void {
+  export function open(atSection?: string): void {
+    if (atSection) {
+      section = atSection;
+      query = '';
+    }
     void openDialog();
   }
 
@@ -110,7 +116,7 @@
 </script>
 
 {#if SettingsDialog}
-  <SettingsDialog bind:open={dialogOpen} {onProblemsLocationChange} {onRemoteConnected} />
+  <SettingsDialog bind:open={dialogOpen} bind:activeSection={section} bind:query {onProblemsLocationChange} {onRemoteConnected} />
 {/if}
 
 {#if loadFailure}
