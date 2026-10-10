@@ -1,6 +1,8 @@
 # Workflows and orchestration — design spec
 
-Date: 2026-10-10. Status: approved by the owner section by section in a brainstorm on 2026-10-10.
+Date: 2026-10-10. Status: approved by the owner section by section in a brainstorm on 2026-10-10;
+revised the same day after spec review (`~/dev/work/reports/tsk-1416/spec-review.md` on the
+workbox, 10 findings, all accepted).
 Task: TSK-1416 (Workflows and orchestration) — https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8
 
 Builds on, and where it differs replaces:
@@ -54,9 +56,9 @@ The engine runs the checks itself.
 |---|---|---|
 | Workflow file | `.assembly/workflows/<name>.yml` plus prompt files beside it | Git |
 | Run engine | Reads the file, starts steps, runs script steps, applies loop and merge rules, owns run state | Backend where the run was started |
-| Main orchestrator | One ordinary agent session per machine, with extra tools to start, list, pause and resume runs | Same backend |
+| Main orchestrator | One ordinary agent session with extra tools to start, list, pause and resume runs | The **home machine** (§4.5) |
 | Worker sessions | Ordinary Assembly sessions created by the engine for agent and review steps | Same backend as the run |
-| Messaging | Assembly MCP server: directory, send, delivery receipts | Every backend |
+| Messaging | One endpoint per backend plus the `assembly` MCP server: directory, send, delivery receipts | Every backend |
 | Inbox | Every item waiting for the owner: run pauses, gates, agent permission requests | Every backend's database |
 | Run history | Every step attempt, message, check result, decision, proof link | Every backend's database |
 | Desktop views | New run, run list, run view, inbox, sessions grouped under runs | App |
@@ -66,9 +68,9 @@ Principle: **the engine decides what happens next, never an agent.** Agents do t
 scripts verify it; rules choose the next step; the owner decides anything outside the rules.
 
 Principle: **build on what exists.** Reuse the current engine (`tauri-svelte-preview/src-tauri/src/workflow.rs`),
-its ledger (`orchestration_events` via `orchestration.rs:99-101,283-347`), the broker tables and
-safe-boundary delivery (`core/src/broker.rs:81-180`, `manager.rs:1108-1233`), owned-session ids
-and remote routing (`protocol.rs:596-652`). Change only what this spec requires.
+its ledger (`orchestration_events` via `orchestration.rs:99-101,283-347`), the broker's message
+store and safe-boundary delivery (`core/src/broker.rs:81-180`, `manager.rs:1108-1233`), and
+remote session routing (`agent_conversation/mod.rs:110-170`). Change only what this spec requires.
 
 ## 4. Messaging
 
@@ -77,49 +79,72 @@ and remote routing (`protocol.rs:596-652`). Change only what this spec requires.
 - Every session keeps its permanent hidden id (the owned id). It also gets a **readable name**:
   workers are `<task-key>/<step>` (for example `tsk-1412/build`); the main orchestrator is
   `orchestrator`; owner-created sessions use their title, made unique per machine.
-- The **directory** lists every session the caller can reach: name, id, provider, project,
-  machine, state (`running`, `idle`, `waiting`, `stopped`), and its run and step if any.
-- Names resolve to ids at send time. An ambiguous or unknown name is an error returned to the
-  sender, never a guess.
+- The **directory** lists every session on the backend: name, id, provider, project, state
+  (`running`, `idle`, `waiting`, `stopped`), and its run and step if any.
+- Names resolve to owned ids at send time. An ambiguous or unknown name is an error returned
+  to the sender, never a guess.
 
-### 4.2 Agent tools (one MCP server, every provider)
+### 4.2 Hosting and caller identity
 
-Assembly runs an MCP server, `assembly`, and passes it to every session it starts through the
-ACP `session/new` / `session/load` `mcpServers` field (today `acp_client.rs:621` sends only the
-working folder). Tools:
+- Each backend (desktop app, remote backend) exposes **one local messaging endpoint**
+  (loopback only).
+- The `assembly` MCP server is a **small stdio client** of that endpoint. Assembly passes it to
+  every session it starts through ACP `session/new` / `session/load` `mcpServers` (command plus
+  environment), including a **backend-issued token bound to that owned session**.
+- The endpoint identifies the caller **only from the token**, never from a name in the prompt,
+  and checks the caller's allowed tools server-side (orchestrator-only tools, review-only
+  `report_review`).
+- Adapter support (verify in slice 1, with real tool calls):
+  - Claude Code via `claude-agent-acp` 0.88.0: assumed to forward `mcpServers`; verify.
+  - Codex via the repo bridge (`tools/codex-acp-bridge/bridge.mjs:1042-1067`): reads `cwd` and
+    the session id but **ignores `mcpServers`** today. Slice 1 adds forwarding to
+    `thread/start` / `thread/resume`.
+  - Codex via the packaged `@agentclientprotocol/codex-acp` 1.13.1 (if it is the one in use):
+    verify.
+  - Codex mid-turn delivery: the bridge implements `turn/steer` (`bridge.mjs:1152-1163`); verify
+    the installed Codex app-server accepts it before enabling immediate delivery.
+
+### 4.3 Agent tools
 
 | Tool | Who gets it | What it does |
 |---|---|---|
 | `list_sessions()` | every session | The directory above |
-| `send_message(to, text, reply_to?)` | every session | Queue a message; returns its id and status |
-| `report_review(verdict, findings[])` | review steps | Structured verdict the engine counts (§5.3) |
-| `start_run(workflow, tasks[], machine?, i_merge?)` | orchestrator | Start one run per task |
+| `send_message(to, text)` | every session | Queue a message; returns its id and status |
+| `report_review(verdict, findings[])` | review steps | Structured verdict the engine counts (§6.2) |
+| `start_run(workflow, tasks[], machine?, i_merge?)` | orchestrator | Start one run per task; each task is `{key, title, body}` (§5.3) |
 | `list_runs()`, `get_run(id)` | orchestrator | Run state and history |
 | `pause_run(id)`, `resume_run(id)`, `stop_run(id)` | orchestrator | Control runs |
 | `ask_owner(question, options[])` | orchestrator | Put a confirm item in the inbox (D13) |
 
-Providers that cannot take an MCP server at session start are out of scope until one exists;
-Claude Code and Codex both accept MCP servers.
+Replies need no separate field: the sender's name travels with every message, and the receiver
+answers with `send_message`.
 
-### 4.3 Delivery
+### 4.4 Delivery
 
-- Every message is stored first (existing `workflow_messages` table; sender id, target id,
-  message id, text, time, `reply_to`, status).
+- Every message is stored first (existing `workflow_messages` table). Today messages are scoped
+  to a broker group and delivery takes the target's first open group
+  (`core/src/session_store.rs:618-637`, `manager.rs:1126-1133,1186-1202`). This changes to **one
+  queue per backend keyed by the target's owned id**, so any session can reach any session
+  whether or not it belongs to a run. Run membership is recorded on the message for the
+  timeline, not used for routing.
 - **Idle target:** delivered as a normal prompt, prefixed `[message from <sender name>]`.
 - **Busy target:** held until the current turn ends, then delivered (works for every
-  provider). Where a provider supports adding input to a running turn — Codex app-server
-  `turn/steer` — deliver immediately instead. Other mid-turn routes are added only when
-  verified.
+  provider). For Codex, once `turn/steer` is verified (§4.2), deliver into the running turn.
 - Status shown to sender and owner: `queued → delivered | failed`. Nothing claims "read".
 - Messages appear in the receiving session's chat as a labelled message from the sender, and in
-  the run timeline (§7.3).
+  the run timeline (§7).
 - Messages from agents are never approvals (D13).
 
-### 4.4 Across machines
+### 4.5 Across machines, and where the orchestrator lives
 
-A run and its workers live on one machine, so normal messaging stays on one backend. A message
-to a session on another machine is relayed by the desktop app while it is connected to both;
-otherwise it fails with a clear error. No backend-to-backend link in this version.
+- A run and its workers live on one machine, so normal messaging stays on one backend.
+- A message to a session on another machine is relayed by the desktop app while it is
+  connected to both; otherwise `send_message` returns "target machine not reachable". No
+  backend-to-backend link in this version.
+- The main orchestrator lives on one **home machine**, chosen in Settings, **default: the
+  workbox remote** (it stays up when the Mac is closed). The desktop and the phone both reach it
+  directly on that backend. `start_run(..., machine?)` defaults to the home machine; a run on
+  another machine is started through the desktop while it is connected to that machine.
 
 ## 5. Workflow files
 
@@ -147,13 +172,14 @@ steps:
   build:
     needs: [spec-review]
     agent: { provider: codex, model: gpt-6-sol }
-    prompt: prompts/build.md
+    prompt: prompts/build.md          # the build agent commits its work on the run branch
   checks:
     needs: [build]
-    run: |
-      npx tsc --noEmit
-      pnpm run check:svelte
-      cd core && cargo test
+    run:                              # each command counts separately (§5.2)
+      - cd tauri-svelte-preview && npx tsc --noEmit
+      - cd tauri-svelte-preview && pnpm run check:svelte
+      - cd core && cargo test
+    repeat: true                      # safe to rerun after a restart (§6.5)
     on_fail: build
   code-review:
     needs: [checks]
@@ -162,36 +188,49 @@ steps:
     needs: [code-review]
     agent: { provider: claude, model: opus }
     prompt: prompts/proof.md
-    expect_files: ["proof/*.png"]
+    expect_files: ["${{ run.proof_dir }}/*.png"]
   pr:
     needs: [proof]
-    run: gh pr create --fill
+    run:
+      - git push -u origin HEAD
+      - gh pr create --fill --body-file "${{ run.pr_body }}"
   merge:
     needs: [pr]
-    gate: { ask_owner_if: "${{ inputs.i_merge }}" }
-    run: gh pr merge --merge
+    if: "${{ !inputs.i_merge }}"
+    run:
+      - ALLOW_MERGE=1 gh pr merge --merge
 ```
 
 ### 5.2 Step kinds
 
 | Kind | Meaning |
 |---|---|
-| `agent` | Start a worker session with the prompt file, provider and model. Done when its turn ends. |
-| `run` | A shell script the engine runs in the run's worktree. Exit code is the result; output is stored. |
-| `review` | An agent step that must call `report_review`. Findings send the step named in `of` back to redo. |
-| `gate` | Pauses for the owner when its condition is true; otherwise passes. May carry a `run`. |
+| `agent` | Start a worker session with the prompt file, provider and model. Done when its turn ends; a failed or cancelled turn fails the step. |
+| `run` | A list of shell commands the engine runs in the run's worktree, each from the repo root. Every command runs; the step passes only if all exit 0. The **failing-command count** is the step's finding count for the loop rule. Output is stored. |
+| `review` | An agent step that must call `report_review` **exactly once**. Findings send the step named in `of` back to redo. |
+| `gate` | Pauses for the owner with given options. Not used by the dev pipeline. |
 
-`needs` lists dependencies. `on_fail` names the step a failed `run` sends back to. `expect_files`
-are checked by the engine after an agent step; missing files fail the step.
+Fields: `needs` lists dependencies. `on_fail` names the step a failed `run` sends back to.
+`expect_files` are checked by the engine after an agent step; missing files fail the step.
+`if` skips the step when false. `repeat: true` marks a `run` step safe to rerun after a restart.
+
+Engine-provided values: `run.proof_dir` (a folder outside the repo, linked in run history) and
+`run.pr_body` (a file the engine writes: task link, step summaries, final review verdict, proof
+file list).
 
 ### 5.3 Data between steps
 
-- Prompt files are templates. The engine fills `${{ inputs.* }}`, `${{ task.title }}`,
-  `${{ task.body }}`, `${{ steps.<id>.summary }}`, `${{ steps.<id>.files }}` and, on a redo,
-  `${{ redo.findings }}` / `${{ redo.output }}`.
+- Prompt files are templates. The engine fills `${{ inputs.* }}`, `${{ task.key }}`,
+  `${{ task.title }}`, `${{ task.body }}`, `${{ steps.<id>.summary }}`, `${{ steps.<id>.files }}`
+  and, on a redo, `${{ redo.findings }}` / `${{ redo.output }}`.
 - A step's **summary** is its final agent reply (or the last 200 lines of script output).
-- **Notion task binding:** the engine reads the task's title, key and body when the run starts
-  (existing Notion task API, `notion_tasks.rs:91-115`) and records the task key on the run.
+- **Notion task binding:** the caller that starts a run sends a **task snapshot**
+  `{key, title, body}` to the owning backend; the backend never needs a Notion token.
+  - The desktop New run dialog builds it with the existing detail call
+    `read_notion_task_detail` (`notion_tasks.rs:366-373,500-534`).
+  - The orchestrator builds it with its own Notion access (its CLI's Notion tools) and passes it
+    to `start_run`.
+  - The task key is recorded on the run.
 
 ### 5.4 Existing templates
 
@@ -209,48 +248,64 @@ use by the owner).
    project's worktree root, on branch `tsk-<id>-<slug>`.
 2. Steps start when their `needs` are done, at most `max_sessions` agent sessions at once
    across all runs on that machine.
-3. Step states: `waiting`, `running`, `passed`, `failed`, `redoing`. Every attempt is numbered
-   and kept.
-4. Run states: `running`, `paused` (by the owner), `waiting-for-owner`, `merged`, `stopped`,
-   `failed`. The worktree is removed when the run merges or is stopped.
+3. Step states: `waiting`, `running`, `passed`, `failed`, `redoing`, `skipped`. Every attempt is
+   numbered and kept.
+4. Run states: `running`, `paused` (by the owner), `waiting-for-owner`, `done` (merged, or PR
+   open when "I'll merge" is on), `stopped`, `failed`.
+5. Worktree cleanup: removed when the run's PR is merged and the worktree is clean. A dirty or
+   unmerged worktree is **never** removed by the engine; the run keeps its path, branch and
+   `git status` and the owner decides.
 
 ### 6.2 Loops
 
-- A review with findings sends its `of` step back. The redo goes to the **same** worker session
-  (it keeps its context). Each review round uses a **fresh** reviewer session.
-- A failed `run` step sends its `on_fail` step back with the failing output.
-- Both count as rounds against one loop per step pair. Continue while each round's finding
-  count (or failing-check count) is lower than the last; otherwise pause for the owner. Stop
-  at `max_rounds`.
+- **Reviews.** A review attempt passes only with one valid `report_review` with verdict PASS.
+  No call, a second call, or a failed turn fails the attempt and pauses for the owner. Findings
+  send the `of` step back.
+- **Checks.** A failed `run` step sends its `on_fail` step back with the failing output.
+- **Redo invalidates downstream.** When a step is redone, every step that depends on it, directly
+  or indirectly, returns to `waiting` and runs again in order. Nothing merges on results from
+  before a redo.
+- **The rule (D5).** The first set of findings always allows a redo. After that, continue while
+  each round's count (review findings, or failing commands) is lower than the previous round's;
+  otherwise pause for the owner. At `max_rounds` the run pauses regardless.
+- Redo goes to the **same** worker session (it keeps its context). Each review round uses a
+  **fresh** reviewer session.
 
 ### 6.3 Pause, resume, stop
 
 - **Pause**: no new step starts; running agent turns finish; the run shows `paused`.
 - **Resume**: scheduling continues.
-- **Stop**: running turns are cancelled, worker sessions stopped, worktree removed.
+- **Stop**: running turns are cancelled and worker sessions stopped. The worktree follows §6.1.5.
 
 ### 6.4 Waiting for the owner (inbox)
 
 Each pause becomes one inbox item: what happened, links to evidence, buttons ("Run another
-round", "Accept as is", "Stop the run", or the gate's options) and a reply box. Sources:
-loop rule, red check at the round limit, step timeout, gate, `ask_owner`, and **agent permission
-requests** from any session (the existing per-session permission prompt is also listed here).
-An answer is recorded as the owner's decision in the run history. The reply text goes to the
-orchestrator labelled as from the owner.
+round", "Accept as is", "Stop the run", or a gate's options) and a reply box. Sources: loop rule,
+round limit, review without a valid verdict, step timeout, gate, `ask_owner`, restart
+uncertainty (§6.5), and **agent permission requests** from any session (the existing
+per-session permission prompt is also listed here). An answer is recorded as the owner's
+decision in the run history. The reply text goes to the orchestrator labelled as from the owner.
 
 ### 6.5 Restart
 
-Run state is in the ledger. On backend start, the engine reloads runs that were `running`:
-agent steps resume their native session where the provider supports it; otherwise the step is
-restarted once, then pauses for the owner. `run` steps are re-run. Paused and waiting runs stay
-as they were.
+Run state is in the ledger. Today startup marks interrupted stages failed
+(`workflow.rs:2242-2258`, called from `main.rs:5463-5466`). New behaviour on backend start, for
+each step that was `running`:
+- a recorded completion is honoured;
+- a `run` step marked `repeat: true` is rerun;
+- an agent step whose native session can be resumed is resumed **without** sending its prompt
+  again;
+- anything else (including `pr` and `merge`) pauses for the owner with what is known, for
+  example whether the PR already exists.
+
+Paused and waiting runs stay as they were.
 
 ### 6.6 Remote
 
 Today dispatch is hard-wired to local (`workflow.rs:557-570`) and the engine is built over the
 local store only (`main.rs:5443-5466`). The engine moves to code both backends run, and the
-remote command set (`remote.rs:72-165`) gains the run and inbox commands. The desktop shows runs
-from every connected machine.
+remote command set (`remote.rs:72-165`) gains the run, inbox and messaging commands. The desktop
+shows runs from every connected machine.
 
 ## 7. Desktop views
 
@@ -271,8 +326,8 @@ Visual target: `2026-08-20-workflow-board-mockup.html`. DESIGN.md is binding.
 
 - Flutter, Android first, in `mobile/` in this repo; project shell and messaging UI taken from
   Rental Command's Android app (`~/dev/work/rental-management/mobile`).
-- Talks to each backend over Tailscale through a small HTTP API: orchestrator chat (send,
-  stream replies), runs (list, state, pause, resume), inbox (list, answer).
+- Talks directly to backends over Tailscale through a small HTTP API: orchestrator chat on the
+  home machine (send, stream replies), runs (list, state, pause, resume), inbox (list, answer).
 - Pairing: a QR code in Assembly Settings gives the phone a token.
 - Push: the backend notifies the phone when an inbox item appears; the phone spec chooses the
   mechanism after checking what Rental Command uses.
@@ -284,10 +339,10 @@ Each slice is one PR that works on its own, built on the workbox through the lan
 
 | # | Slice | Proven by |
 |---|---|---|
-| 1 | Messaging: MCP server on every session, names and directory, `list_sessions`, `send_message`, delivery and receipts, messages in chat | Two sessions message each other in all four scenarios (Claude Code and Codex × This Mac and Workbox Test) |
-| 2 | Engine: YAML loader, four step kinds, loop rule, worktree per run, pause/resume/stop, restart, local and remote | Rust tests for loop rule, gate and restart; a demo workflow whose check fails, loops, then passes, on This Mac and Workbox Test |
-| 3 | Desktop views: New run (many tasks), run list, run view and timeline, rail grouping | Screenshots of a real run on This Mac and Workbox Test |
-| 4 | Main orchestrator, inbox (including permission requests), Notion binding, `dev-pipeline.yml` and prompts, merge rule and "I'll merge" | The dev pipeline takes one small real task to a merged PR on the workbox |
+| 1 | Messaging: per-backend endpoint, `assembly` MCP stdio client with per-session token, MCP forwarding in the Codex bridge, names and directory, owned-id queue, `list_sessions`, `send_message`, delivery and receipts, messages in chat | Two sessions message each other with real tool calls in all four scenarios (Claude Code and Codex × This Mac and Workbox Test); Codex `turn/steer` verified or left off |
+| 2 | Engine: YAML loader, step kinds, loop rule with downstream invalidation, worktree per run, pause/resume/stop, restart rules, local and remote. Includes **minimal commands** to start a run from a YAML file with a task snapshot, inspect it, and answer a pause; the existing Agents-panel run list (`WorkflowRuns.svelte`) shows it until slice 3 | Rust tests for loop rule, invalidation, review-verdict enforcement and restart; a demo workflow whose check fails, loops, then passes, on This Mac and Workbox Test |
+| 3 | Desktop views: New run (many tasks, Notion snapshot), run list, run view and timeline, inbox view, rail grouping | Screenshots of a real run on This Mac and Workbox Test |
+| 4 | Main orchestrator on the home machine with its tools, permission requests in the inbox, `dev-pipeline.yml` and prompts, merge rule and "I'll merge" | The dev pipeline takes one small real task to a merged PR on the workbox |
 | 5 | Phone app (separate spec): Android shell, pairing, chat, runs, inbox, push | Answering a paused run and a permission request from the phone |
 
 ## 10. Testing
@@ -314,7 +369,9 @@ Each slice is one PR that works on its own, built on the workbox through the lan
 | Risk | Guard |
 |---|---|
 | Agents chatter endlessly or loop | Loop rule, round ceiling, `max_sessions`, step timeout |
-| An agent claims work it did not do | `run` steps and `expect_files` are checked by the engine |
+| An agent claims work it did not do | `run` steps and `expect_files` are checked by the engine; reviews must report through the tool |
+| An agent impersonates another session or the owner | Caller identity comes from the per-session token; approvals only from owner buttons |
 | Token cost | One orchestrator, workers end with their step, fresh reviewers only per round |
-| Message arrives too late to matter | Codex mid-turn delivery; status visible to sender |
-| Quitting the desktop app stops local runs | Long runs are started on the workbox (D7) |
+| Message arrives too late to matter | Codex mid-turn delivery once verified; status visible to sender |
+| A crash repeats a PR or merge | Restart pauses non-repeatable steps for the owner |
+| Quitting the desktop app stops local runs | Long runs and the orchestrator live on the workbox by default |
