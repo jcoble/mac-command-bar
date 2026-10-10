@@ -26,7 +26,7 @@ const allowedHits = new Set([
   // One fifteen-second interval for every rail row's age label; it skips hidden windows and unmounting clears it.
   'src/lib/shell/components/SessionRail.svelte:setInterval:const tick = window.setInterval(() => {',
   // The remote-restart warning's one-second countdown; cancel, finishing and unmounting clear it.
-  "src/lib/shell/components/ProviderUpdateControl.svelte:setInterval:const timer = window.setInterval(() => stepCountdown('tick'), 1000);",
+  "src/lib/shell/components/RestartProvidersButton.svelte:setInterval:const timer = window.setInterval(() => stepCountdown('tick'), 1000);",
   // Svelte tick is awaited only after mounting a user-requested lazy surface.
   "src/lib/shell/components/DockPanel.svelte:tick:import { tick } from 'svelte';",
   'src/lib/shell/components/DockPanel.svelte:tick:await tick();',
