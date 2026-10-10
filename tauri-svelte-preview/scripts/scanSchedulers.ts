@@ -42,7 +42,10 @@ const allowedHits = new Set([
   // One five-second shot per active turn; the effect clears it when the turn ends or the composer unmounts.
   'src/lib/shell/components/conversation/ConversationComposer.svelte:setTimeout:const timer = setTimeout(() => (turnSettled = true), 5000);',
   // One ten-second shot while a filter group is open; closing the group or unmounting clears it.
-  'src/lib/components/ui/filter-pills/filter-pills.svelte:setTimeout:timer = window.setTimeout(close, AUTO_CLOSE_MS);'
+  'src/lib/components/ui/filter-pills/filter-pills.svelte:setTimeout:timer = window.setTimeout(close, AUTO_CLOSE_MS);',
+  // TSK-1424 E/H: one one-second clock for every running workflow stage's elapsed time. It runs only
+  // while the panel is visible and a stage is running; the effect cleanup clears it on hide, finish or unmount.
+  'src/lib/shell/panels/agents/WorkflowRuns.svelte:setInterval:const timer = window.setInterval(() => (now = Date.now()), 1000);'
 ]);
 
 interface Hit {

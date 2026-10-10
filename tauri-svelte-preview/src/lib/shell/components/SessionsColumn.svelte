@@ -190,9 +190,15 @@
     manualOrderVersion += 1;
     manualOrder = order;
     if (viewOptions.sortBy !== 'manual') setViewOptions({ sortBy: 'manual' });
-    void writeAssemblySettingFromTauri(MY_WORK_ORDER_SETTING_KEY, order).catch(() => {
+    void saveManualOrder(order);
+  }
+
+  async function saveManualOrder(order: string[]): Promise<void> {
+    try {
+      await writeAssemblySettingFromTauri(MY_WORK_ORDER_SETTING_KEY, order);
+    } catch {
       // The order stays for this visit when local settings are unavailable.
-    });
+    }
   }
 
   /** Searching sessions means the full Session History tab, not a rail popover. */

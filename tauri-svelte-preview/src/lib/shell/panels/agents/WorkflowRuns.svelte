@@ -186,13 +186,7 @@
       else upsertWorkflowSnapshot(snapshot);
     }));
     void refresh(controller.signal, generation);
-    readAssemblySettingFromTauri(TEMPLATES_SETTING_KEY)
-      .then((value) => {
-        if (!controller.signal.aborted && Array.isArray(value)) templates = value as SavedWorkflowTemplate[];
-      })
-      .catch((error) => {
-        if (!controller.signal.aborted) workflowState.error = `Could not load saved workflows: ${message(error)}`;
-      });
+    void loadTemplates(controller.signal);
     return () => {
       controller.abort();
       actionController?.abort();
@@ -202,6 +196,15 @@
       resetWorkflowStore();
     };
   });
+
+  async function loadTemplates(signal: AbortSignal): Promise<void> {
+    try {
+      const value = await readAssemblySettingFromTauri(TEMPLATES_SETTING_KEY);
+      if (!signal.aborted && Array.isArray(value)) templates = value as SavedWorkflowTemplate[];
+    } catch (error) {
+      if (!signal.aborted) workflowState.error = `Could not load saved workflows: ${message(error)}`;
+    }
+  }
 
   $effect(() => {
     if (!visible || !runningNode?.startedAtMs || !runningDefinition) return;

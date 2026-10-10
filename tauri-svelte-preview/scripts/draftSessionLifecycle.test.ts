@@ -162,7 +162,7 @@ const startBody = controller.slice(controller.indexOf('\tasync start('), control
 assert.match(startBody, /discardSession: \(ownedId: string\) => Promise<void>/);
 assert.match(
   startBody,
-  /catch \(error\) \{[^}]*?const discarded = !promptAccepted && !stopSignal\.aborted\s*&& await discardSession\(owned\.ownedId\)[^;]*;\s*if \(discarded\) throw error;/,
+  /catch \(error\) \{[^}]*?let discarded = false;\s*if \(!promptAccepted && !stopSignal\.aborted\) \{\s*try \{\s*await discardSession\(owned\.ownedId\);\s*discarded = true;[\s\S]*?if \(discarded\) throw error;/,
   'a failed first send with the draft still open discards its row before rethrowing'
 );
 assert.match(page, /\(ownedId\) => selection\.removeSession\(ownedId\),?\s*\);/, 'the page discards through the ordinary remove');
@@ -174,7 +174,8 @@ assert.match(page, /startingOwnedId=\{selection\.newSession\.pendingFirstMessage
 assert.match(surface, /draft=\{starting \? starting\.draft : draft\.prompt\}/);
 assert.match(surface, /supportsSteering=\{starting\?\.capabilities\?\.session\.steering === true\}/);
 assert.match(surface, /setConversationDraft\(starting\.ownedId, value\);\s*persistConversationSessionDraft\(starting\.ownedId, value\);/);
-assert.match(surface, /onStop=\{\(\) => \{ if \(starting\) void stopStructuredTurn\(starting\.ownedId\)/);
+assert.match(surface, /onStop=\{\(\) => \{ if \(starting\) void stopStarting\(starting\.ownedId\); \}\}/);
+assert.match(surface, /async function stopStarting\(ownedId: string\): Promise<void> \{\s*try \{\s*await stopStructuredTurn\(ownedId\);/);
 // When the draft closes on the accepted first message, typing carries on in the
 // new session's composer.
 assert.match(page, /if \(selection\.newSession\.draftOpen \|\| !selection\.newSession\.pendingFirstMessage\) return;\s*if \(document\.activeElement === document\.body\) untrack\(\(\) => conversationSurface\?\.focusComposer\(\)\);/);
