@@ -2,7 +2,7 @@
   import { getContext, setContext, tick, untrack } from 'svelte';
   import { createVirtualizer } from '@tanstack/svelte-virtual';
   import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
-  import type { ConversationDisplayItem, ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { nextToolGroupPinned, type ConversationDisplayItem, type ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
   import TimelineItem from './TimelineItem.svelte';
 
   let { items, active, assistantLabel, onApprovalDecision, onFileLink, onPlanOpen }: {
@@ -21,14 +21,23 @@
   });
   const virtualRows = $derived($virtualizer.getVirtualItems());
   const totalSize = $derived($virtualizer.getTotalSize());
+  // Pinned while the reader hasn't scrolled the list up: every append or growing row then
+  // keeps the newest row in view, however much was added at once.
+  let pinned = $state(true);
+  let lastTop = 0;
+  function onscroll() {
+    if (!host) return;
+    pinned = nextToolGroupPinned(pinned, lastTop, host.scrollTop, host.scrollHeight - host.clientHeight - host.scrollTop);
+    lastTop = host.scrollTop;
+  }
   $effect.pre(() => {
     const currentItems = items;
     const element = host;
-    const follow = active;
+    const follow = active && pinned;
     untrack(() => $virtualizer.setOptions({
       count: currentItems.length, getScrollElement: () => element ?? null,
       getItemKey: (index) => currentItems[index].itemId,
-      followOnAppend: follow, scrollEndThreshold: follow ? 16 : -1
+      followOnAppend: follow, scrollEndThreshold: follow ? Infinity : -1
     }));
   });
   $effect(() => {
@@ -53,7 +62,7 @@
 </script>
 
 <div class="tool-scroll" data-tool-scroll tabindex="0" role="region" aria-label="Tool calls"
-  bind:this={host} style:height={`${Math.min(180, totalSize)}px`}
+  bind:this={host} {onscroll} style:height={`${Math.min(180, totalSize)}px`}
 >
   <div class="tool-list" style:height={`${totalSize}px`}>
     {#each virtualRows as row (row.key)}
