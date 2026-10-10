@@ -668,11 +668,19 @@
   /** Download the Markdown preview the first time a file is shown that way. */
   $effect(() => {
     if (!markdownPreviewShown || MarkdownPreview) return;
-    import('$lib/SourceMarkdownPreview.svelte').then(
-      (module) => { if (!destroyed) MarkdownPreview = module.default; },
-      (error) => { if (!destroyed) editorLoadError = `Could not start the Markdown preview: ${describeError(error)}`; }
-    );
+    const controller = new AbortController();
+    void loadMarkdownPreview(controller.signal);
+    return () => controller.abort();
   });
+
+  async function loadMarkdownPreview(signal: AbortSignal): Promise<void> {
+    try {
+      const module = await import('$lib/SourceMarkdownPreview.svelte');
+      if (!signal.aborted) MarkdownPreview = module.default;
+    } catch (error) {
+      if (!signal.aborted) editorLoadError = `Could not start the Markdown preview: ${describeError(error)}`;
+    }
+  }
 
   /** Download the code editor the first time it is needed. */
   async function ensureCodeEditor(): Promise<void> {

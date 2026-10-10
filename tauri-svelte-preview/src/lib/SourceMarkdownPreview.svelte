@@ -47,13 +47,19 @@
   };
 
   /** Math is rare, so KaTeX and its stylesheet load the first time a file has some. */
-  let katexRenderer: Promise<Component<{ text: string; displayMode?: boolean }>> | null = null;
-  function loadKatex() {
-    katexRenderer ??= Promise.all([
+  type KatexComponent = Component<{ text: string; displayMode?: boolean }>;
+  let katexRenderer: Promise<KatexComponent> | null = null;
+  async function loadKatex(): Promise<KatexComponent> {
+    katexRenderer ??= importKatex();
+    return await katexRenderer;
+  }
+
+  async function importKatex(): Promise<KatexComponent> {
+    const [module] = await Promise.all([
       import('@humanspeak/svelte-markdown/extensions/katex'),
       import('katex/dist/katex.min.css')
-    ]).then(([module]) => module.KatexRenderer);
-    return katexRenderer;
+    ]);
+    return module.KatexRenderer;
   }
 </script>
 
@@ -108,14 +114,28 @@
 
   /** Local images, read once per path while this view is open. */
   const localImages = new Map<string, Promise<string>>();
-  function localImageUrl(file: string): Promise<string> {
+  async function localImageUrl(file: string): Promise<string> {
     let url = localImages.get(file);
     if (!url) {
-      const type = rasterImageMimeType(file) ?? (file.toLowerCase().endsWith('.svg') ? 'image/svg+xml' : '');
-      url = readSourceImageFromTauri(file).then((bytes) => URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type })));
+      url = readLocalImage(file);
       localImages.set(file, url);
     }
-    return url;
+    return await url;
+  }
+
+  async function readLocalImage(file: string): Promise<string> {
+    const type = rasterImageMimeType(file) ?? (file.toLowerCase().endsWith('.svg') ? 'image/svg+xml' : '');
+    const bytes = await readSourceImageFromTauri(file);
+    return URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type }));
+  }
+
+  /** A read still in flight on destroy is revoked once it settles. */
+  async function revokeLocalImage(url: Promise<string>): Promise<void> {
+    try {
+      URL.revokeObjectURL(await url);
+    } catch {
+      // the read failed, so there is no URL to free
+    }
   }
 
   /** The tokens the library last rendered, and the text it parsed them from. */
@@ -145,7 +165,7 @@
   });
 
   onDestroy(() => {
-    for (const url of localImages.values()) void url.then(URL.revokeObjectURL, () => {});
+    for (const url of localImages.values()) void revokeLocalImage(url);
     // The library keeps parsed documents for reuse; leaving Preview frees them.
     tokenCache.clearAllTokens();
   });

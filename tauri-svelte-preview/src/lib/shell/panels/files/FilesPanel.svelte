@@ -344,10 +344,16 @@
 
 	$effect(() => {
 		if (!visible) return;
-		void tick().then(() => {
-			if (visible) refreshFiles();
-		});
+		const controller = new AbortController();
+		void refreshFilesAfterRender(controller.signal);
+		return () => controller.abort();
 	});
+
+	/** Hiding the panel or unmounting it aborts the signal before the refresh. */
+	async function refreshFilesAfterRender(signal: AbortSignal): Promise<void> {
+		await tick();
+		if (!signal.aborted) refreshFiles();
+	}
 
 	async function loadCheckouts(
 		roots: readonly string[],
