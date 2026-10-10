@@ -1,5 +1,5 @@
 /**
- * problemsStore.test.mjs — the /next Problems panel's store, run in plain node.
+ * problemsStore.test.mjs — the shell Problems panel's store, run in plain node.
  *
  * `problemsStore.svelte.ts` is a runes module, so node cannot import it as it
  * stands: `$state` is compiler syntax, not a function. The test therefore does

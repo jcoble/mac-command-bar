@@ -100,8 +100,12 @@ const draft: ThreadStartPickerState = {
 
 // "+" opens a draft in the Session tab. It does not open a dialog, and the old
 // form is gone from the overlay layer altogether.
-assert.match(page, /onNewSession=\{openNewSession\}/);
-assert.match(page, /selection\.newSession\.open\(\)/);
+assert.match(page, /onNewSession=\{\(\) => openNewSession\(\)\}/);
+assert.match(page, /selection\.newSession\.open\(projectId\)/);
+// "+" or the same project on an open draft keeps it and its typing; only a
+// different project starts a fresh draft (the surface is keyed on the signal).
+assert.match(controller, /if \(this\.draftOpen && \(projectId === null \|\| projectId === this\.projectId\)\) return;/);
+assert.match(page, /\{#key selection\.newSession\.stopSignal\}/);
 assert.match(controller, /this\.draftOpen = true;/);
 assert.doesNotMatch(page, /openNewSession\(projectPath\?: string\): void;/);
 assert.doesNotMatch(overlays, /ThreadStartHost|onStartNewSession|newSessionRoots/);

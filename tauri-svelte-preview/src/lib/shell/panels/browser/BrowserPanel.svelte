@@ -533,8 +533,6 @@
         const asked = pendingPoint;
         const epoch = hoverEpoch;
         pendingPoint = null;
-        // Still inside the box already outlined: the answer cannot change.
-        if (hovered && withinRect(hovered, asked)) continue;
         const found = await elementAt(asked);
         if (epoch !== hoverEpoch) return;
         hovered = found?.rect ?? null;
@@ -544,15 +542,6 @@
     } finally {
       askingPage = false;
     }
-  }
-
-  function withinRect(rect: BrowserRect, point: { x: number; y: number }): boolean {
-    return (
-      point.x >= rect.x
-      && point.x <= rect.x + rect.width
-      && point.y >= rect.y
-      && point.y <= rect.y + rect.height
-    );
   }
 
   /**
