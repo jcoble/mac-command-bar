@@ -36,15 +36,15 @@ const palettePanel = read('../src/lib/shell/components/PalettePanel.svelte');
 const sourceControlPanel = read('../src/lib/shell/panels/sourceControl/SourceControlPanel.svelte');
 
 assert.match(shellStartup, /listAgentConversationSessionsFromTauri\(\)/);
-assert.match(shellStartup, /listRemoteAgentConversationSessionsFromTauri\(stopSignal\)/);
-assert.match(shellStartup, /hydrateRemoteSessionsForOwner\(generation, controller\.signal\)/);
+// a0b9ca6d0 folded the remote list into the start-up Promise.all; it keeps the shell stop signal and generation guard.
+assert.match(shellStartup, /listRemoteAgentConversationSessionsFromTauri\(controller\.signal\)/);
+assert.match(
+  shellStartup,
+  /listRemoteAgentConversationSessionsFromTauri\(controller\.signal\)[\s\S]*?\]\);\s*if \(!shellActive\(generation, controller\.signal\)\) return;[\s\S]*?hydrateOwned\(combined\)/
+);
 assert.match(selectionController, /private async drainSelections\(\): Promise<void>/);
 assert.match(selectionController, /this\.selectionAbort\?\.abort\(\);[\s\S]*?await this\.selectionWork/);
-assert.match(
-  selectionController,
-  /canonicalPath\(this\.sessionSelectionLayers\.treeRoot\) !== requestedRoot[\s\S]*?clearTreeView\(\)/,
-  'a candidate selection tears down the file tree only when its checkout root changes'
-);
+// 03ddf7023 removed the same-root tree reuse on purpose: each session now restores its own file tree.
 assert.doesNotMatch(
   page.slice(page.indexOf('async function selectOwned'), page.indexOf('function handoffInput')),
   /ensureStructuredConversation/
@@ -69,21 +69,24 @@ assert.doesNotMatch(
   /const sessionKey = `\$\{ownedId/,
   'the file-tree owner is the checkout root, not each session id'
 );
-assert.match(filesPanel, /const rootChanged = nextRoot !== scopedRoot;/);
+// 03ddf7023 scoped the tree to the session as well as the root; 50b05288e stopped a missing root from clearing it.
+assert.match(filesPanel, /const rootChanged = nextRoot !== scopedRoot \|\| nextOwnedId !== scopedOwnedId;/);
 assert.match(
   filesPanel,
-  /else if \(rootChanged \|\| !nextRoot\) \{\s*activateExplorer\(null\);/,
-  'hiding Files parks its bounded tree; only a changed or missing root clears it'
+  /else if \(rootChanged\) \{[\s\S]*?activateExplorer\(null\);/,
+  'hiding Files parks its bounded tree; only a changed session or root clears it'
 );
-assert.match(filesPanel, /watchFileTree\(directories, signal, refreshChangedPaths\)/);
+// bc7a3dcda routes watcher changes through the workspace file-change bus.
+assert.match(filesPanel, /watchFileTree\(directories, signal, \(paths\) =>/);
 assert.match(filesPanel, /listRepositoryCheckoutsFromTauri\(roots\)/);
 assert.match(filesPanel, /data-testid="files-use-session-checkout"/);
 assert.match(filesPanel, /if \(inspectionRoot === undefined\) return;/);
 assert.match(sourceControlPanel, /if \(inspectionRoot === undefined\) return;/);
 assert.match(page, /onUseSessionCheckout=\{[\s\S]*?selection\.useSessionCheckout\(root\)/);
+// 725896a73 passes the remote checkout's own path when the root is a remote workspace path.
 assert.match(
   selectionController,
-  /async useSessionCheckout\(requestedRoot: string\): Promise<boolean>[\s\S]*?validateProjectRootFromTauri\(root, owner\.signal\)[\s\S]*?changeStructuredConversationCheckout\(ownedId, root\)/,
+  /async useSessionCheckout\(requestedRoot: string\): Promise<boolean>[\s\S]*?validateProjectRootFromTauri\(root, owner\.signal\)[\s\S]*?changeStructuredConversationCheckout\(ownedId, parseRemoteWorkspacePath\(root\)\?\.path \?\? root\)/,
   'checkout promotion is owned by the cancellable session-selection controller'
 );
 assert.match(editorSessions, /async resetForCheckoutChange\(stopSignal: AbortSignal, checkoutRoot: string\)/);
@@ -92,7 +95,8 @@ assert.match(fileTreeWatch, /unwatch\?\.\(\)/);
 assert.match(fileTreeWatch, /\{ recursive: false, delayMs: 350 \}/);
 assert.doesNotMatch(fileTreeWatch, /recursive: true/);
 assert.match(composer, /aria-label=\{sending \? 'Steer current turn' : 'Send message'\}/);
-assert.match(conversationSurface, /const steering = conversation\.sending/);
+// aec869436 derives steering from turnActive, which still includes conversation.sending.
+assert.match(conversationSurface, /const turnActive = \$derived\(Boolean\(\s*conversation\?\.sending[\s\S]*?const steering = turnActive/);
 assert.doesNotMatch(
   conversationSurface.slice(conversationSurface.indexOf('async function send()'), conversationSurface.indexOf('async function selectChild')),
   /conversation\.sending \|\|/,
@@ -101,9 +105,10 @@ assert.doesNotMatch(
 assert.match(elapsed, /if \(totalHours < 24\)/);
 assert.match(page, /visible=\{workbench\.rightPanelOpen\}/);
 assert.match(frame, /setToolsPresent[\s\S]*?api\.removePanel\(panel\)/);
+// 2eb707b75 added a deliberate release at the session switch; the right-panel paths must still not release it.
 assert.doesNotMatch(
-  workbenchController,
-  /releaseBrowserWorkspace/,
+  workbenchController.replace(/beginSessionSwitch\(\): void \{[\s\S]*?\n\t\}/, ''),
+  /releaseBrowserWorkspace\(/,
   'the right-panel controller must not release the Browser before Svelte hides its owner'
 );
 assert.match(
@@ -113,7 +118,8 @@ assert.match(
 );
 assert.match(
   browserPanel,
-  /untrack\(\(\) => subscribeToBrowserNavigation\(syncBrowserNavigation\)\)/,
+  // 81b08dbf0 wraps the listener to also persist the workspace.
+  /untrack\(\(\) => subscribeToBrowserNavigation\(\(event\) => \{\s*syncBrowserNavigation\(event\)/,
   'Browser navigation diagnostics cannot become a dependency of their subscribing effect'
 );
 assert.doesNotMatch(
@@ -143,7 +149,8 @@ assert.match(settingsDialog, /bind:checked=\{settings\.terminal\.cursorBlink\}/)
 assert.doesNotMatch(settingsDialog, /id: 'terminal-theme'/);
 assert.match(
   settingsDialog,
-  /shownSection\.id === 'general'[\s\S]*?resetSettings\('general'\);[\s\S]*?resetSettings\('panels'\);[\s\S]*?resetSettings\('intelligence'\);[\s\S]*?onProblemsLocationChange\?\.\(settings\.panels\.problemsLocation\)[\s\S]*?await switchLanguageServers\(defaults\.languageServers\)[\s\S]*?await switchLanguageServer\(id, defaults\.languageServerEnabled\[id\]\)/,
+  // 725896a73 moved the reset into resetSection(section) behind a confirmation dialog.
+  /section === 'general'[\s\S]*?resetSettings\('general'\);[\s\S]*?resetSettings\('panels'\);[\s\S]*?resetSettings\('intelligence'\);[\s\S]*?onProblemsLocationChange\?\.\(settings\.panels\.problemsLocation\)[\s\S]*?await switchLanguageServers\(defaults\.languageServers\)[\s\S]*?await switchLanguageServer\(id, defaults\.languageServerEnabled\[id\]\)/,
   'resetting General must reset every settings-store section represented on that screen and apply the Problems layout immediately'
 );
 assert.match(
@@ -166,8 +173,9 @@ assert.match(codeMirrorSourceEditor, />Peek References<\/ContextMenu\.Item>/);
 assert.match(xtermFactory, /terminal\.options\.cursorBlink = appearance\.cursorBlink/);
 assert.match(languageControls, /serverState === 'ready'[\s\S]*?'running'[\s\S]*?'waiting'/);
 assert.match(page, /onCloseAllEditors=\{\(\) => selection\.editorSessions\.clearActiveEditors\(\)\}/);
-assert.match(editorSessions, /async clearActiveEditors\(\): Promise<boolean>/);
-assert.match(editorSessions, /openPaths: \[\],[\s\S]*?activePath: null/);
+// 193547d08 lets a checkout change keep unsaved drafts; with no kept files it still persists an empty editor.
+assert.match(editorSessions, /async clearActiveEditors\(keptFiles: [^)]*= \[\]\): Promise<boolean>/);
+assert.match(editorSessions, /openFiles: keptFiles,[\s\S]*?openPaths: fallback\.openPaths,\s*activePath: null/);
 assert.match(
   sourceControlPanel,
   /function releaseHistorySurface\(\): void \{\s*if \(historyRoot === ''\) return;/,
