@@ -446,11 +446,20 @@ pub async fn set_project_pinned(manager: tauri::State<'_, AgentRuntimeManager>, 
 
 #[tauri::command]
 /// Takes the project off the list, keeping or deleting its sessions. Files stay.
+/// Remote sessions are deleted on their machine first; the manager deletes the rest.
 pub async fn remove_project(
     manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
     id: String,
     delete_sessions: bool,
 ) -> Result<(), String> {
+    if delete_sessions {
+        for owned_id in manager.store().project_session_ids(&id).map_err(|error| error.to_string())? {
+            if remote.owns(&owned_id) {
+                remote.delete(owned_id).await?;
+            }
+        }
+    }
     manager.remove_project(&id, delete_sessions).await
 }
 

@@ -573,11 +573,8 @@ impl AgentRuntimeManager {
     /// disk are never touched.
     pub async fn remove_project(&self, id: &str, delete_sessions: bool) -> Result<(), String> {
         if delete_sessions {
-            // A remote project's sessions live on its host, not in this store.
-            let project = self.store.get_project(id).map_err(|error| error.to_string())?;
-            if project.is_some_and(|project| project.machine != "local") {
-                return Err("Deleting sessions isn't available for remote projects yet. Remove the project and keep its sessions instead.".into());
-            }
+            // A remote session left here (the remote command deletes them first)
+            // is not this manager's, so `delete` answers false for it.
             for owned_id in self.store.project_session_ids(id).map_err(|error| error.to_string())? {
                 self.delete(&owned_id).await?;
             }

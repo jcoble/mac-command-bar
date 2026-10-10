@@ -572,6 +572,10 @@ impl RemoteConnectionManager {
                 .then_with(|| left.owned_id.cmp(&right.owned_id))
         });
         self.save_cached_sessions(next)?;
+        self.history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .file_sessions(profile_id, sessions)?;
         let mut routing = self
             .remote_sessions
             .lock()
@@ -4086,6 +4090,29 @@ mod connection_tests {
         assert_eq!(restarted.cached_sessions(), vec![session("remote-1", "workbox", 10)]);
         assert!(restarted.owns("remote-1"));
         assert_eq!(restarted.connection_state("workbox"), RemoteConnectionState::Disconnected);
+    }
+
+    #[test]
+    fn listing_files_the_remote_row_under_its_project_before_any_event() {
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            shared.clone(),
+        )
+        .unwrap();
+        let mut listed = session("large-history", "workbox", 10);
+        listed.project_id = Some("p1".into());
+        manager.replace_cached_profile_sessions("workbox", &[listed]).unwrap();
+
+        let key = RemoteHistory::key("workbox", "large-history");
+        let row = shared.get_session(&key).unwrap().unwrap();
+        assert_eq!((row.project_id.as_deref(), row.last_activity_at_ms), (Some("p1"), 10));
+        assert!(manager.history.lock().unwrap().read_selection_snapshot("workbox", "large-history", 1024).unwrap().is_none(),
+            "an event-less row still opens from the server");
+
+        manager.history_event_sink("workbox")(vec![history_event(5)]).unwrap();
+        assert_eq!(shared.get_session(&key).unwrap().unwrap().project_id.as_deref(), Some("p1"), "live events keep the project");
     }
 
     #[test]
