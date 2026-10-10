@@ -49,8 +49,9 @@ export type ThreadStartPickerState = {
   projectId: string | null;
   projectPath: string;
   cwd: string;
-  /** The project folder is a bare repository: it has no files to work on. */
-  rootIsBare: boolean;
+  /** Why the project folder can't be used: a bare repository, or the folder
+   * check's own error. Empty when the folder is fine or not yet checked. */
+  rootProblem: string;
 };
 
 export type ThreadStartProblem = {
@@ -274,7 +275,7 @@ export function defaultThreadStartState(input: {
     projectId: input.projectId ?? null,
     projectPath: tidy(input.projectPath),
     cwd: tidy(input.cwd) || tidy(input.projectPath),
-    rootIsBare: false
+    rootProblem: ''
   };
 }
 
@@ -331,7 +332,7 @@ export function validateThreadStart(state: ThreadStartPickerState, hasAttachment
   if (!tidy(state.cwd).startsWith('/')) {
     const message = !tidy(state.projectPath)
       ? 'Choose an existing checkout first.'
-      : state.rootIsBare ? BARE_ROOT_MESSAGE : 'Checking the project folder. Try again in a moment.';
+      : state.rootProblem || 'Checking the project folder. Try again in a moment.';
     problems.push({ field: 'project', message });
   }
   if (state.executionEnvironment === 'remote' && !tidy(state.remoteProfileId)) {

@@ -79,16 +79,24 @@ import { sessionTitleFromPrompt } from '../src/lib/shell/sessionStrip.ts';
 {
   const bare = '/Users/me/dev/mac-command-bar';
   assert.equal(projectCwd(bare, true), '');
-  const state = { ...defaultThreadStartState({ projectId: 'p', projectPath: bare }), prompt: 'hi', cwd: '', rootIsBare: true };
+  const state = { ...defaultThreadStartState({ projectId: 'p', projectPath: bare }), prompt: 'hi', cwd: '', rootProblem: BARE_ROOT_MESSAGE };
   assert.deepEqual(validateThreadStart(state), [{ field: 'project', message: BARE_ROOT_MESSAGE }]);
   assert.equal(buildThreadStartRequest(state), null);
   assert.equal(
     BARE_ROOT_MESSAGE,
     'This folder is a bare Git repository with no files to work on. Remove this project and add a checked-out folder instead.'
   );
-  assert.deepEqual(validateThreadStart({ ...state, rootIsBare: false }), [
+  assert.deepEqual(validateThreadStart({ ...state, rootProblem: '' }), [
     { field: 'project', message: 'Checking the project folder. Try again in a moment.' }
   ]);
+}
+
+// A failed folder check is the reason Send gives, not "checking" forever.
+{
+  const rootProblem = 'The project folder could not be checked: project_root_is_bare is not available for remote workspaces';
+  const failed = { ...defaultThreadStartState({ projectId: 'p', projectPath: '/srv/app' }), prompt: 'hi', cwd: '', rootProblem };
+  assert.deepEqual(validateThreadStart(failed), [{ field: 'project', message: rootProblem }]);
+  assert.equal(buildThreadStartRequest(failed), null);
 }
 
 const providerConfigs = [

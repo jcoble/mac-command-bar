@@ -235,10 +235,11 @@
     if (stopSignal.aborted || sequence !== loadSequence) return;
     if (answer.status !== 'ok') {
       folderMessage = answer.message;
+      updateDraft({ rootProblem: answer.message });
       return;
     }
     if (answer.value) folderMessage = BARE_ROOT_MESSAGE;
-    updateDraft({ rootIsBare: answer.value, cwd: projectCwd(projectPath, answer.value) });
+    updateDraft({ rootProblem: answer.value ? BARE_ROOT_MESSAGE : '', cwd: projectCwd(projectPath, answer.value) });
   }
 
   function clearFolderCheck(): void {
@@ -258,7 +259,7 @@
       projectPath: project.rootPath,
       // Set once the folder check answers, so nothing runs in a bare root meanwhile.
       cwd: '',
-      rootIsBare: false
+      rootProblem: ''
     });
     if (machineChanged) checkSelectedMachine();
     void checkRoot(project.machine, project.rootPath);
@@ -279,7 +280,7 @@
         remoteProfileId: remote ? machine : null,
         projectPath: '',
         cwd,
-        rootIsBare: false
+        rootProblem: ''
       });
       if (machineChanged) checkSelectedMachine();
     } catch (error) {
