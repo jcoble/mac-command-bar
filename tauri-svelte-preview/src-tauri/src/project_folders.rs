@@ -264,37 +264,16 @@ pub(crate) async fn list_folders(path: String) -> Result<FolderListing, String> 
         .map_err(|error| error.to_string())?
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CreatedWorktree {
-    pub path: String,
-    pub branch: String,
-}
-
-/// Adds a worktree on a new `assembly-<hex>` branch from `base`, under
-/// `~/dev/work/worktrees/<repo>/<branch>`. A refusal carries git's own words.
-pub(crate) fn create_project_worktree_sync(root: &Path, base: &str) -> Result<CreatedWorktree, String> {
-    let repo = inspect_project_folder_sync(&root.to_string_lossy())?.title;
-    let branch = format!("assembly-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
-    let path = expand_home("~")?.join("dev/work/worktrees").join(repo).join(&branch);
-    // Making the folder first means a permissions failure stops before git creates the branch.
-    std::fs::create_dir_all(&path).map_err(|error| error.to_string())?;
-    let output = Command::new("git")
-        .arg("-C").arg(root)
-        .args(["worktree", "add", "-b", &branch]).arg(&path).arg(base)
-        .output()
-        .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim_end().to_owned());
-    }
-    Ok(CreatedWorktree { path: path.to_string_lossy().into_owned(), branch })
+/// Is `root` a bare repository? It has no files to work on, so no session starts there.
+pub(crate) fn project_root_is_bare_sync(root: &Path) -> bool {
+    git_text(root, &["rev-parse", "--is-bare-repository"]).as_deref() == Some("true")
 }
 
 #[tauri::command]
-pub(crate) async fn create_project_worktree(root: String, base: String) -> Result<CreatedWorktree, String> {
-    tauri::async_runtime::spawn_blocking(move || create_project_worktree_sync(Path::new(&root), &base))
+pub(crate) async fn project_root_is_bare(root: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || project_root_is_bare_sync(Path::new(&root)))
         .await
-        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) fn new_project_row(machine: String, inspection: ProjectFolderInspection) -> ProjectRow {
@@ -383,34 +362,16 @@ mod tests {
     }
 
     #[test]
-    fn create_project_worktree_adds_the_branch_at_the_expected_path() {
+    fn project_root_is_bare_tells_a_bare_repository_from_a_checkout() {
         let root = temp_dir();
         let repo = repo_with_main(&root);
-        let home = root.join("home");
-        let created = with_home(&home, || create_project_worktree_sync(&repo, "main")).unwrap();
-        let hex = created.branch.strip_prefix("assembly-").unwrap();
-        assert_eq!(hex.len(), 8);
-        assert!(hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "{hex}");
-        let expected = home.join("dev/work/worktrees/Mac-Command-Bar").join(&created.branch);
-        assert_eq!(created.path, text(&expected));
-        assert!(expected.is_dir());
-        let listed = Command::new("git").args(["worktree", "list", "--porcelain"]).current_dir(&repo).output().unwrap();
-        let listed = String::from_utf8_lossy(&listed.stdout);
-        assert!(listed.contains(&format!("worktree {}\n", created.path)), "{listed}");
-        assert!(listed.contains(&format!("branch refs/heads/{}", created.branch)), "{listed}");
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn create_project_worktree_returns_git_stderr_when_the_base_is_missing() {
-        let root = temp_dir();
-        let repo = repo_with_main(&root);
-        let home = root.join("home");
-        let error = with_home(&home, || create_project_worktree_sync(&repo, "no-such-base")).unwrap_err();
-        assert!(error.starts_with("fatal: "), "{error}");
-        assert!(error.contains("no-such-base"), "{error}");
-        let branches = Command::new("git").args(["branch", "--list", "assembly-*"]).current_dir(&repo).output().unwrap();
-        assert!(branches.stdout.is_empty());
+        let bare = root.join("bare");
+        git(&root, &["clone", "-q", "--bare", text(&repo), text(&bare)]);
+        let plain = root.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(project_root_is_bare_sync(&bare));
+        assert!(!project_root_is_bare_sync(&repo));
+        assert!(!project_root_is_bare_sync(&plain), "a folder with no repository is not bare");
         std::fs::remove_dir_all(root).unwrap();
     }
 

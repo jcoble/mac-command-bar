@@ -2,9 +2,9 @@
  * newSessionBackend.ts — the ONLY place the new-session thread pane talks to the
  * outside world.
  *
- * Three questions and one action: which folder did the user choose in the
- * system dialog, is a typed-in folder really a project, and which checkouts
- * does this project have. Nothing here runs at import, nothing polls, nothing
+ * Three questions: which folder did the user choose in the system dialog, is
+ * a typed-in folder really a project, and is a project's folder a bare
+ * repository. Nothing here runs at import, nothing polls, nothing
  * runs from an `$effect`; the thread pane calls them when the user does something.
  *
  * Every call is counted with `countInvoke('<command name>')` so the development
@@ -19,21 +19,9 @@
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import {
   isNativeTauriRuntime,
-  listProjectWorktreesFromTauri,
   validateProjectRootFromTauri,
-  type ProjectRootValidationResult,
-  type ProjectWorktree
+  type ProjectRootValidationResult
 } from '../../tauriSource.ts';
-
-export type ProjectGitRef = {
-  name: string;
-  isDefault: boolean;
-  isCurrent: boolean;
-  checkoutPath: string | null;
-  lastCommitMs: number | null;
-  /** Absent from a remote server older than this field. */
-  rootIsBare?: boolean;
-};
 
 /**
  * What came back: an answer, "this only works in the desktop app", or a failure
@@ -114,88 +102,17 @@ export async function validateProjectRoot(
   }
 }
 
-/**
- * The checkouts git knows about for `root` — the project itself plus any
- * worktrees of it.
- *
- * Only ever READS. There is no command here that makes a worktree, and this
- * lane never adds one: the pane offers what already exists and hands over the
- * `git worktree add` line for anything else.
- */
-export async function listWorktrees(root: string): Promise<BackendAnswer<ProjectWorktree[]>> {
-  const trimmed = root.trim();
-  if (!trimmed) {
-    return { status: 'failed', message: 'Choose a project folder first.' };
-  }
-  try {
-    countInvoke('list_project_worktrees');
-    const worktrees = await listProjectWorktreesFromTauri(trimmed);
-    if (!worktrees) {
-      return { status: 'unavailable', message: DESKTOP_ONLY_MESSAGE };
-    }
-    return { status: 'ok', value: worktrees };
-  } catch (error) {
-    return {
-      status: 'failed',
-      message: `The working copies for this project could not be listed: ${describeError(error)}`
-    };
-  }
-}
-
-/** Every local branch on the project's machine, newest commit first, with
- * checkout locations attached. */
-export async function listGitRefs(machine: string, root: string): Promise<BackendAnswer<ProjectGitRef[]>> {
-  const trimmed = root.trim();
-  if (!trimmed) {
-    return { status: 'failed', message: 'Choose a project folder first.' };
-  }
+/** Is the project's folder a bare repository, with no files to work on? Asked
+ * on the project's own machine. */
+export async function projectRootIsBare(machine: string, root: string): Promise<BackendAnswer<boolean>> {
   if (!isNativeTauriRuntime()) {
     return { status: 'unavailable', message: DESKTOP_ONLY_MESSAGE };
   }
   try {
-    countInvoke('list_project_git_refs');
-    const refs = await invokeOn<ProjectGitRef[] | null>(machine, 'list_project_git_refs', { root: trimmed });
-    // A folder with no git repository behind it answers with nothing rather
-    // than an empty list. That is "no branches", not a list, and handing the
-    // non-list straight to the branch picker throws while the picker is opening
-    // — which leaves the picker stuck open with no content to dismiss.
-    return { status: 'ok', value: Array.isArray(refs) ? refs : [] };
+    countInvoke('project_root_is_bare');
+    return { status: 'ok', value: await invokeOn<boolean>(machine, 'project_root_is_bare', { root }) };
   } catch (error) {
-    return {
-      status: 'failed',
-      message: `The branches for this project could not be listed: ${describeError(error)}`
-    };
-  }
-}
-
-/** `git switch <name>` in `root` on the project's machine. The only write this
- * pane makes, and only at the first send. A failure carries git's own words. */
-export async function switchBranch(machine: string, root: string, name: string): Promise<BackendAnswer<null>> {
-  if (!isNativeTauriRuntime()) {
-    return { status: 'unavailable', message: DESKTOP_ONLY_MESSAGE };
-  }
-  try {
-    countInvoke('switch_git_branch');
-    await invokeOn(machine, 'switch_git_branch', { root, name });
-    return { status: 'ok', value: null };
-  } catch (error) {
-    return { status: 'failed', message: describeError(error) };
-  }
-}
-
-export type CreatedWorktree = { path: string; branch: string };
-
-/** `git worktree add -b assembly-<hex> <path> <base>` on the project's machine,
- * at the first send of a New worktree draft. A failure carries git's own words. */
-export async function createWorktree(machine: string, root: string, base: string): Promise<BackendAnswer<CreatedWorktree>> {
-  if (!isNativeTauriRuntime()) {
-    return { status: 'unavailable', message: DESKTOP_ONLY_MESSAGE };
-  }
-  try {
-    countInvoke('create_project_worktree');
-    return { status: 'ok', value: await invokeOn<CreatedWorktree>(machine, 'create_project_worktree', { root, base }) };
-  } catch (error) {
-    return { status: 'failed', message: describeError(error) };
+    return { status: 'failed', message: `The project folder could not be checked: ${describeError(error)}` };
   }
 }
 

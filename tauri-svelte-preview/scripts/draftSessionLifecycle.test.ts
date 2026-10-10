@@ -52,8 +52,7 @@ function send(state: ThreadStartPickerState): void {
 
 const draft: ThreadStartPickerState = {
   ...defaultThreadStartState({ projectPath: '/Users/me/dev/work/mac-command-bar' }),
-  cwd: '/Users/me/dev/work/mac-command-bar',
-  branch: 'main'
+  cwd: '/Users/me/dev/work/mac-command-bar'
 };
 
 // Abandoned: opened, configured, typed into, then thrown away. Nothing started.
@@ -88,7 +87,6 @@ const draft: ThreadStartPickerState = {
   assert.equal(request.approvalPolicy, 'acceptedits');
   assert.equal(request.projectPath, '/Users/me/dev/work/mac-command-bar');
   assert.equal(request.cwd, '/Users/me/dev/work/mac-command-bar');
-  assert.equal(request.branch, 'main');
   assert.equal(request.title, 'Add the draft session surface');
 }
 
@@ -128,7 +126,7 @@ assert.match(selectionController, /shellPanels\.sessionPicked\(this\.activeRootA
 assert.match(page, /selectCenterTab\("session"\);\s*\n\s*workbench\.rightTab = "files";/);
 
 // The draft's controls are the composer's own: the same settings menu a running
-// session uses, plus the project and branch pickers in the footer beside it.
+// session uses, plus the project picker and the machine row beside it.
 assert.match(surface, /<ConversationComposer/);
 assert.match(surface, /data-testid="draft-session-provider"/);
 assert.match(surface, /data-testid="draft-session-project"/);

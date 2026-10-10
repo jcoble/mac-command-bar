@@ -27,10 +27,6 @@ const nativeSource = readFileSync(
   new URL('../src-tauri/src/main.rs', import.meta.url),
   'utf8'
 );
-const nativeSourceControl = readFileSync(
-  new URL('../src-tauri/src/commands/source_control.rs', import.meta.url),
-  'utf8'
-);
 const conversationService = readFileSync(
   new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url),
   'utf8'
@@ -57,17 +53,16 @@ assert.match(surface, /<ConversationComposer/);
 assert.match(surface, /data-testid="draft-session-project"/);
 assert.match(surface, /data-testid="draft-session-provider"/);
 assert.match(surface, /data-testid="draft-session-new-project"/);
-// A project with no repository behind it answers with nothing, so the reply is
-// read as a list only when it really is one — see newSessionGitRefs.test.ts.
-assert.match(backend, /Array\.isArray\(refs\) \? refs : \[]/);
-assert.match(nativeSourceControl, /async fn list_project_git_refs\(/);
-assert.match(nativeSource, /list_project_git_refs,/);
+// The draft asks the project's own machine whether its folder is a bare
+// repository, locally and through a remote server.
+assert.match(backend, /invokeOn<boolean>\(machine, 'project_root_is_bare', \{ root \}\)/);
+assert.match(nativeSource, /project_folders::project_root_is_bare,/);
 
 assert.match(controller, /open\(\): void/);
 assert.doesNotMatch(page, /const providerConfigs = \$derived/);
 
-// The first-send request keeps every chosen picker value and rejects the
-// unsupported worktree branch before any route-owned side effect can run.
+// The first-send request keeps every chosen picker value and runs in the
+// project's own folder.
 const request = buildThreadStartRequest({
   prompt: 'Build the new thread pane',
   provider: 'codex',
@@ -75,13 +70,10 @@ const request = buildThreadStartRequest({
   effort: 'max',
   access: 'on-request',
   projectPath: '/Users/me/dev/work/mac-command-bar',
-  cwd: '/Users/me/dev/work/worktrees/mac-command-bar/tsk-808-thread',
-  branch: 'tsk-808-thread',
-  createNewWorktree: false
+  cwd: '/Users/me/dev/work/mac-command-bar'
 });
 assert.equal(request?.prompt, 'Build the new thread pane');
-assert.equal(request?.cwd.endsWith('tsk-808-thread'), true);
-assert.equal(request?.branch, 'tsk-808-thread');
+assert.equal(request?.cwd, '/Users/me/dev/work/mac-command-bar');
 assert.equal(request?.model, 'gpt-5.6-luna');
 assert.equal(request?.reasoningEffort, 'max');
 assert.equal(request?.approvalPolicy, 'on-request');
@@ -94,7 +86,7 @@ assert.match(startNewSession, /return owned\.ownedId;/);
 assert.match(startNewSession, /createFreshSession\(\{[\s\S]*?cwd: request\.cwd,[\s\S]*?title: request\.title/);
 // The new row sits in its project's rail group before the first reply.
 assert.match(startNewSession, /projectGroupKey: project\?\.groupKey \?\? 'none'/);
-assert.match(startNewSession, /branch: request\.branch/);
+assert.doesNotMatch(startNewSession, /request\.branch/);
 assert.match(startNewSession, /await selectSession\(owned\.ownedId\)/);
 assert.doesNotMatch(startNewSession, /setAgentConversationConfig\(/);
 // Since 11984b792 a first message with screenshots opens the conversation so the

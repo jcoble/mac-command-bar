@@ -72,7 +72,6 @@ export class NewSessionController {
 			projectId: request.projectId,
 			projectGroupKey: project?.groupKey ?? 'none',
 			projectGroupLabel: project?.title ?? 'No project',
-			branch: request.branch,
 			resumeCommand: null,
 			origin: 'app' as const,
 		};

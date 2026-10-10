@@ -126,6 +126,8 @@ Order: **1 → 2 → 3 → 4 → 5 → 6 (slice 1 proof) → 7 → 8 (worktree a
 
 **Files:** Modify `workflow.rs:662-730,1115-1147,1230-1293,1414-1450,1923-2150`, `project_folders.rs:273-292` (existing worktree creation), and `main.rs:5443-5466`. Update architecture page.
 
+**Note (2026-10-10, TSK-1421):** `create_project_worktree_sync` was removed when new sessions stopped using worktrees (a session runs in its project's root folder, by the owner's decision); this task must add back the worktree creation it needs.
+
 **Interfaces:** Before Task 9 executes any step, start from freshly fetched `main` in a branch `tsk-<number>-<slug>` under the project worktree root. One run owns one path; redo reuses it. `max_sessions` limits running agent steps **across all runs on that backend** (one shared engine), not per run. Pause stops new dispatch while active turns finish; resume schedules again; stop cancels turns. Remove a worktree only after the PR is merged **and** it is clean. Otherwise preserve path/branch/`git status --short` in the run record for owner action. Never invoke `git reset --hard`.
 
 - [ ] **Red tests:** `run_worktree_is_reused_on_redo_and_preserved_when_dirty`; `shared_session_limit_blocks_second_run`; `pause_does_not_cancel_active_turn` in `workflow.rs` using a disposable git repo under `/var/tmp/tsk-1416-*`, with cleanup by the test.

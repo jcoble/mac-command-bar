@@ -2,14 +2,13 @@ import assert from 'node:assert/strict';
 
 import {
   accessChoicesFor,
+  BARE_ROOT_MESSAGE,
   buildThreadStartRequest,
-  checkoutPlanFor,
   defaultThreadStartState,
   draftEffortFor,
   effortChoicesFor,
-  filterThreadStartGitRefs,
   groupProviderModels,
-  startingCwd,
+  projectCwd,
   titleFromPrompt,
   validateThreadStart
 } from '../src/lib/shell/newSession/threadStartFlow.ts';
@@ -19,8 +18,7 @@ import { sessionTitleFromPrompt } from '../src/lib/shell/sessionStrip.ts';
 {
   const state = defaultThreadStartState({
     projectId: 'project-1',
-    projectPath: '/Users/me/dev/alpha',
-    branch: 'main'
+    projectPath: '/Users/me/dev/alpha'
   });
   assert.equal(state.projectId, 'project-1');
   assert.equal(buildThreadStartRequest({ ...state, prompt: 'hello' })?.projectId, 'project-1');
@@ -51,7 +49,6 @@ import { sessionTitleFromPrompt } from '../src/lib/shell/sessionStrip.ts';
   const state = defaultThreadStartState({
     projectPath: '/Users/me/dev/work/app',
     cwd: '/Users/me/dev/work/app',
-    branch: 'main',
     providerConfigs: currentCodex
   });
   assert.equal(state.model, 'gpt-6-astra[medium]');
@@ -66,72 +63,41 @@ import { sessionTitleFromPrompt } from '../src/lib/shell/sessionStrip.ts';
   assert.equal(request?.approvalPolicy, 'agent');
 }
 
-{
-  const refs = Array.from({ length: 120 }, (_, index) => ({
-    name: index === 0 ? 'main' : `feature/${index}`,
-    checkoutPath: index < 2 ? `/checkout/${index}` : null
-  }));
-  const all = filterThreadStartGitRefs(refs, '');
-  assert.equal(all.visible.length, 100);
-  assert.equal(all.total, 120);
-  const searched = filterThreadStartGitRefs(refs, 'feature/119');
-  assert.deepEqual(searched.visible.map((ref) => ref.name), ['feature/119']);
-}
-
-// Picking a branch decides what the first send does; nothing runs at the pick.
+// A project's session runs in the project's own root folder: there is no
+// branch or worktree to pick.
 {
   const root = '/Users/me/dev/alpha';
-  assert.deepEqual(
-    checkoutPlanFor(root, { name: 'main', isCurrent: true, checkoutPath: root }),
-    { kind: 'none', cwd: root },
-    'the branch the root is on needs no git command'
-  );
-  assert.deepEqual(
-    checkoutPlanFor(root, { name: 'feature', isCurrent: false, checkoutPath: '/Users/me/dev/worktrees/alpha/feature' }),
-    { kind: 'none', cwd: '/Users/me/dev/worktrees/alpha/feature' },
-    'a branch checked out elsewhere points the session at that worktree'
-  );
-  assert.deepEqual(
-    checkoutPlanFor(root, { name: 'idle', isCurrent: false, checkoutPath: null }),
-    { kind: 'switch', root, branch: 'idle', cwd: root },
-    'a branch with no checkout is switched to in the root'
-  );
-  assert.deepEqual(
-    checkoutPlanFor(root, { name: 'main', isCurrent: false, checkoutPath: root }),
-    { kind: 'none', cwd: root },
-    "the root's own checkout needs no git command"
-  );
+  assert.equal(projectCwd(root, false), root);
+  const state = { ...defaultThreadStartState({ projectId: 'p', projectPath: root, cwd: projectCwd(root, false) }), prompt: 'hi' };
+  assert.deepEqual(validateThreadStart(state), []);
+  const request = buildThreadStartRequest(state);
+  assert.equal(request?.cwd, root);
+  assert.equal(request?.projectPath, root);
 }
 
-// A bare repository folder has no files of its own: a draft never starts there.
+// A bare repository has no files to work on: the draft never starts there and
+// says why. Until the folder check answers, nothing is sent either.
 {
   const bare = '/Users/me/dev/mac-command-bar';
-  const worktree = '/Users/me/dev/worktrees/mac-command-bar/main';
-  const refs = [
-    { name: 'feature', isCurrent: false, checkoutPath: null, rootIsBare: true },
-    { name: 'main', isCurrent: true, checkoutPath: worktree, rootIsBare: true }
-  ];
-  assert.equal(startingCwd(bare, refs), worktree, "the bare repo's own branch starts in its worktree");
+  assert.equal(projectCwd(bare, true), '');
+  const state = { ...defaultThreadStartState({ projectId: 'p', projectPath: bare }), prompt: 'hi', cwd: '', rootProblem: BARE_ROOT_MESSAGE };
+  assert.deepEqual(validateThreadStart(state), [{ field: 'project', message: BARE_ROOT_MESSAGE }]);
+  assert.equal(buildThreadStartRequest(state), null);
   assert.equal(
-    startingCwd(bare, [{ ...refs[1], checkoutPath: null }]),
-    '',
-    'a bare root whose branch has no worktree leaves the draft with no folder'
+    BARE_ROOT_MESSAGE,
+    'This folder is a bare Git repository with no files to work on. Remove this project and add a checked-out folder instead.'
   );
-  assert.deepEqual(
-    checkoutPlanFor(bare, refs[0]),
-    { kind: 'none', cwd: '' },
-    'a branch with no worktree is never switched to in a bare root'
-  );
-  const state = { ...defaultThreadStartState({ projectId: 'p', projectPath: bare }), prompt: 'hi', cwd: '' };
-  assert.deepEqual(validateThreadStart(state), [
-    { field: 'branch', message: 'Wait for the branches to load, or choose a branch that has a worktree.' }
+  assert.deepEqual(validateThreadStart({ ...state, rootProblem: '' }), [
+    { field: 'project', message: 'Checking the project folder. Try again in a moment.' }
   ]);
-  assert.equal(buildThreadStartRequest(state), null, 'the draft refuses to send without a folder');
+}
 
-  const root = '/Users/me/dev/alpha';
-  assert.equal(startingCwd(root, [{ name: 'main', isCurrent: true, checkoutPath: root }]), root);
-  assert.equal(startingCwd(root, []), root, 'a folder with no branches starts in the folder');
-  assert.equal(startingCwd(root, [{ name: 'main', isCurrent: false, checkoutPath: null }]), root, 'a detached root keeps the root');
+// A failed folder check is the reason Send gives, not "checking" forever.
+{
+  const rootProblem = 'The project folder could not be checked: project_root_is_bare is not available for remote workspaces';
+  const failed = { ...defaultThreadStartState({ projectId: 'p', projectPath: '/srv/app' }), prompt: 'hi', cwd: '', rootProblem };
+  assert.deepEqual(validateThreadStart(failed), [{ field: 'project', message: rootProblem }]);
+  assert.equal(buildThreadStartRequest(failed), null);
 }
 
 const providerConfigs = [
@@ -211,7 +177,6 @@ const providerConfigs = [
   const state = defaultThreadStartState({
     projectPath: '/Users/me/dev/work/edi',
     cwd: '/Users/me/dev/work/edi',
-    branch: 'main',
     provider: 'claude',
     providerConfigs: remembered
   });
@@ -221,7 +186,6 @@ const providerConfigs = [
   const stale = defaultThreadStartState({
     projectPath: '/Users/me/dev/work/edi',
     cwd: '/Users/me/dev/work/edi',
-    branch: 'main',
     provider: 'claude',
     providerConfigs: [{ ...remembered[0], approvalPolicy: 'acceptedits', reasoningEffort: 'xhigh' }]
   });
@@ -247,7 +211,6 @@ const providerConfigs = [
   const state = defaultThreadStartState({
     projectPath: '/Users/me/dev/work/mac-command-bar',
     cwd: '/Users/me/dev/work/mac-command-bar',
-    branch: 'main',
     provider: 'antigravity'
   });
   assert.equal(state.model, 'Gemini 3.7 Flash (High)');
@@ -266,7 +229,6 @@ const providerConfigs = [
   const state = defaultThreadStartState({
     projectPath: '/Users/me/dev/work/mac-command-bar',
     cwd: '/Users/me/dev/work/mac-command-bar',
-    branch: 'main',
     providerConfigs
   });
   assert.equal(state.prompt, '');
@@ -274,7 +236,6 @@ const providerConfigs = [
   assert.equal(state.model, 'gpt-5.6-luna');
   assert.equal(state.effort, 'high');
   assert.equal(state.access, 'on-request');
-  assert.equal(state.createNewWorktree, false);
   assert.deepEqual(validateThreadStart(state), [
     { field: 'prompt', message: 'Write a message or attach an image.' }
   ]);
@@ -282,7 +243,6 @@ const providerConfigs = [
   const claudeState = defaultThreadStartState({
     projectPath: state.projectPath,
     cwd: state.cwd,
-    branch: state.branch,
     provider: 'claude',
     providerConfigs
   });
@@ -302,9 +262,7 @@ const providerConfigs = [
     effort: 'high',
     access: 'acceptedits',
     projectPath: '/Users/me/dev/work/mac-command-bar',
-    cwd: '/Users/me/dev/work/worktrees/mac-command-bar/tsk-808-rail',
-    branch: 'tsk-808-rail',
-    createNewWorktree: false
+    cwd: '/Users/me/dev/work/mac-command-bar'
   });
   // WIP: disabled. buildThreadStartRequest requires `executionEnvironment`; this state omits it.
   // assert.deepEqual(request, {
@@ -314,30 +272,9 @@ const providerConfigs = [
   //   reasoningEffort: 'high',
   //   approvalPolicy: 'acceptedits',
   //   projectPath: '/Users/me/dev/work/mac-command-bar',
-  //   cwd: '/Users/me/dev/work/worktrees/mac-command-bar/tsk-808-rail',
-  //   branch: 'tsk-808-rail',
-  //   createNewWorktree: false,
+  //   cwd: '/Users/me/dev/work/mac-command-bar',
   //   title: 'Add a compact session rail'
   // });
-}
-
-// New worktree is a real choice: the request validates and carries the base
-// branch with `createNewWorktree: true`. The worktree itself is made at the
-// first send, not here.
-{
-  const state = {
-    ...defaultThreadStartState({ projectId: 'p1', projectPath: '/Users/me/dev/work/mac-command-bar' }),
-    prompt: 'Create the thread-first flow',
-    branch: 'main',
-    branchesAvailable: true,
-    createNewWorktree: true
-  };
-  assert.deepEqual(validateThreadStart(state), []);
-  const request = buildThreadStartRequest(state);
-  assert.equal(request?.createNewWorktree, true);
-  assert.equal(request?.branch, 'main');
-  assert.equal(request?.projectId, 'p1');
-  assert.deepEqual(validateThreadStart({ ...state, branch: '' }).map((problem) => problem.field), ['branch']);
 }
 
 assert.equal(
@@ -366,9 +303,7 @@ assert.equal(
     effort: 'high',
     access: 'acceptedits',
     projectPath: '/Users/me/dev/work/mac-command-bar',
-    cwd: '/Users/me/dev/work/worktrees/mac-command-bar/tsk-808-rail',
-    branch: 'tsk-808-rail',
-    createNewWorktree: false
+    cwd: '/Users/me/dev/work/mac-command-bar'
   });
   assert.equal(request?.title, sessionTitleFromPrompt(longPrompt));
   assert.equal(request?.title.length, 64);
@@ -399,38 +334,11 @@ assert.equal(
   assert.equal(buildThreadStartRequest(plain)?.projectPath, null);
   assert.equal(buildThreadStartRequest(plain)?.cwd, '/home/user');
   assert.equal(buildThreadStartRequest({ ...plain, executionEnvironment: 'remote', remoteProfileId: 'workbox' })?.projectPath, null);
-  assert.deepEqual(validateThreadStart({ ...plain, cwd: '' }).map((problem) => problem.field), ['branch']);
+  assert.deepEqual(validateThreadStart({ ...plain, cwd: '' }).map((problem) => problem.field), ['project']);
   assert.equal(buildThreadStartRequest({ ...plain, prompt: '' }, true)?.title, 'New conversation');
 }
 
 console.log('threadStartFlow.test.ts passed');
-
-// --- A project with no branches is not a dead end ----------------------------
-{
-  const empty = defaultThreadStartState({ projectPath: '/tmp/brand-new' });
-  const draft = { ...empty, prompt: 'Build me a todo list', branch: '', branchesAvailable: false };
-
-  assert.deepEqual(
-    validateThreadStart(draft).map((problem) => problem.field),
-    [],
-    'an empty folder starts without a branch: the agent makes the repository'
-  );
-  assert.ok(buildThreadStartRequest(draft), 'and the request is assembled');
-
-  // A project that does have branches still has to have one chosen.
-  assert.deepEqual(
-    validateThreadStart({ ...draft, branchesAvailable: true }).map((problem) => problem.field),
-    ['branch'],
-    'a project with branches still needs one picked'
-  );
-  assert.deepEqual(
-    validateThreadStart({ ...draft, branchesAvailable: true, branch: 'main' }),
-    [],
-    'and is satisfied once it is'
-  );
-}
-
-console.log('threadStartFlow: a branchless project can start');
 
 // Model IDs remain wire values while labels come from the live provider catalog.
 {

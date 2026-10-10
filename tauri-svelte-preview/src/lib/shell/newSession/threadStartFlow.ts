@@ -51,15 +51,13 @@ export type ThreadStartPickerState = {
   projectId: string | null;
   projectPath: string;
   cwd: string;
-  branch: string;
-  /** Does this project have any branch to choose? A folder with no repository
-   * behind it, and a repository with no commit yet, both have none. */
-  branchesAvailable: boolean;
-  createNewWorktree: boolean;
+  /** Why the project folder can't be used: a bare repository, or the folder
+   * check's own error. Empty when the folder is fine or not yet checked. */
+  rootProblem: string;
 };
 
 export type ThreadStartProblem = {
-  field: 'prompt' | 'project' | 'branch';
+  field: 'prompt' | 'project';
   message: string;
 };
 
@@ -74,17 +72,11 @@ export type ThreadStartRequest = {
   projectId: string | null;
   projectPath: string | null;
   cwd: string;
-  branch: string;
-  createNewWorktree: boolean;
   title: string;
 };
 
-export type ThreadStartGitRef = {
-  name: string;
-  checkoutPath: string | null;
-  /** The project folder is a bare repository: it has no files to work in. */
-  rootIsBare?: boolean;
-};
+export const BARE_ROOT_MESSAGE =
+  'This folder is a bare Git repository with no files to work on. Remove this project and add a checked-out folder instead.';
 
 const PROVIDER_ORDER: readonly ThreadStartProvider[] = ['codex', 'claude', 'antigravity'];
 
@@ -164,54 +156,10 @@ function unique(values: readonly string[]): string[] {
   return [...new Set(values.map(tidy).filter(Boolean))];
 }
 
-export function filterThreadStartGitRefs<T extends Pick<ThreadStartGitRef, 'name'>>(
-  refs: readonly T[],
-  search: string,
-  limit = 100
-): { visible: T[]; total: number } {
-  const query = tidy(search).toLocaleLowerCase();
-  const matches = query
-    ? refs.filter((ref) => ref.name.toLocaleLowerCase().includes(query))
-    : [...refs];
-  return { visible: matches.slice(0, Math.max(0, limit)), total: matches.length };
-}
-
-export type ThreadStartCheckoutPlan =
-  | { kind: 'none'; cwd: string }
-  | { kind: 'switch'; root: string; branch: string; cwd: string };
-
-/**
- * What the first send does for the picked branch. Picking runs nothing: a
- * branch already checked out (in the root or another worktree) is used where
- * it is, and any other branch is switched to in the root at the first send.
- * A bare root has nowhere to switch, so such a branch leaves no folder.
- */
-export function checkoutPlanFor(
-  rootPath: string,
-  ref: ThreadStartGitRef & { isCurrent: boolean }
-): ThreadStartCheckoutPlan {
-  if (ref.checkoutPath) return { kind: 'none', cwd: ref.checkoutPath };
-  if (ref.rootIsBare) return { kind: 'none', cwd: '' };
-  if (ref.isCurrent) return { kind: 'none', cwd: rootPath };
-  return { kind: 'switch', root: rootPath, branch: ref.name, cwd: rootPath };
-}
-
-/** Where a draft starts once the project's branches are known: the root's own
- * branch where it is checked out. A detached root keeps the root; a bare root
- * never does. */
-export function startingCwd(
-  rootPath: string,
-  refs: readonly (ThreadStartGitRef & { isCurrent: boolean })[]
-): string {
-  const current = refs.find((ref) => ref.isCurrent);
-  if (current) return checkoutPlanFor(rootPath, current).cwd;
-  return refs.some((ref) => ref.rootIsBare) ? '' : rootPath;
-}
-
-/** The quiet note beside a branch in the picker. */
-export function refNote(ref: ThreadStartGitRef & { isCurrent: boolean }, rootPath: string): string {
-  if (ref.isCurrent) return 'current';
-  return ref.checkoutPath && ref.checkoutPath !== rootPath ? 'in another worktree' : '';
+/** A project's session runs in the project's root folder. A bare repository
+ * has no files to work on, so it gives no folder at all. */
+export function projectCwd(rootPath: string, rootIsBare: boolean): string {
+  return rootIsBare ? '' : rootPath;
 }
 
 function modelLabel(model: string): string {
@@ -304,7 +252,6 @@ export function defaultThreadStartState(input: {
   projectId?: string | null;
   projectPath: string;
   cwd?: string;
-  branch?: string;
   provider?: ThreadStartProvider;
   providerConfigs?: readonly ThreadStartProviderConfig[];
 }): ThreadStartPickerState {
@@ -330,9 +277,7 @@ export function defaultThreadStartState(input: {
     projectId: input.projectId ?? null,
     projectPath: tidy(input.projectPath),
     cwd: tidy(input.cwd) || tidy(input.projectPath),
-    branch: tidy(input.branch),
-    branchesAvailable: false,
-    createNewWorktree: false
+    rootProblem: ''
   };
 }
 
@@ -396,10 +341,7 @@ export function titleFromPrompt(prompt: string, projectPath: string): string {
   return sessionTitleFromPrompt(tidy(prompt)) ?? `Build in ${fallback}`;
 }
 
-/**
- * Validate only what can be settled before a backend call. In New worktree
- * mode the branch is the base; the worktree itself is made at the first send.
- */
+/** Validate only what can be settled before a backend call. */
 export function validateThreadStart(state: ThreadStartPickerState, hasAttachments = false): ThreadStartProblem[] {
   const problems: ThreadStartProblem[] = [];
   if (!tidy(state.prompt) && !hasAttachments) {
@@ -409,19 +351,13 @@ export function validateThreadStart(state: ThreadStartPickerState, hasAttachment
     problems.push({ field: 'project', message: 'Choose a project workspace first.' });
   }
   if (!tidy(state.cwd).startsWith('/')) {
-    const message = tidy(state.projectPath) ? 'Wait for the branches to load, or choose a branch that has a worktree.' : 'Choose an existing checkout first.';
-    problems.push({ field: 'branch', message });
+    const message = !tidy(state.projectPath)
+      ? 'Choose an existing checkout first.'
+      : state.rootProblem || 'Checking the project folder. Try again in a moment.';
+    problems.push({ field: 'project', message });
   }
   if (state.executionEnvironment === 'remote' && !tidy(state.remoteProfileId)) {
     problems.push({ field: 'project', message: 'Choose a remote machine first.' });
-  }
-  // Only when there is one to choose. A brand new project is an empty folder:
-  // no repository, so no branch, and asking for one is a door with no handle —
-  // the reader cannot satisfy it and cannot get past it. The agent makes the
-  // repository itself and lands on its default branch, which is what the
-  // folder being empty means in the first place.
-  if (state.projectPath && state.branchesAvailable && !tidy(state.branch)) {
-    problems.push({ field: 'branch', message: 'Choose an existing branch first.' });
   }
   return problems;
 }
@@ -446,8 +382,6 @@ export function buildThreadStartRequest(
     projectId: state.projectId ?? null,
     projectPath: tidy(state.projectPath) || null,
     cwd: tidy(state.cwd),
-    branch: tidy(state.branch),
-    createNewWorktree: state.createNewWorktree,
     title: titleFromPrompt(state.prompt, state.projectPath)
   };
 }
