@@ -525,6 +525,13 @@ impl AcpClient {
                 json!({"air": {"version": 1, "capabilities": ["asyncTasks", "nativeSubagentSessions", "backgroundSubagents"]}}),
             )]));
         }
+        if provider == AgentConversationProvider::Codex {
+            // Codex then names each model's default effort on its effort control.
+            request.client_capabilities.meta = Some(serde_json::Map::from_iter([(
+                "jetbrains".to_string(),
+                json!({"air": {"version": 1, "capabilities": ["recommendedValue"]}}),
+            )]));
+        }
         let mut request = json!(request);
         if provider == AgentConversationProvider::Claude {
             request["clientCapabilities"]["elicitation"] = json!({"form": {}});
@@ -1340,6 +1347,12 @@ fn apply_config_options(value: &Value, config: &mut AgentConversationConfigState
         if !values.is_empty() {
             *available = values;
         }
+        let recommended = option.pointer("/_meta/jetbrains/air/recommendedValue").and_then(Value::as_str);
+        if let (Some("effort" | "reasoning_effort"), Some(effort), Some(model)) =
+            (option.get("id").and_then(Value::as_str), recommended, config.model.clone())
+        {
+            config.model_default_efforts.insert(model, effort.to_string());
+        }
     }
 }
 
@@ -1429,6 +1442,8 @@ fn parse_standard_conversation_config(
     let modes = value.get("modes");
     let mut config = AgentConversationConfigState {
         model_labels: Default::default(),
+        model_efforts: Default::default(),
+        model_default_efforts: Default::default(),
         model: models
             .and_then(|models| models.get("currentModelId"))
             .and_then(Value::as_str)
@@ -1456,7 +1471,18 @@ fn parse_standard_conversation_config(
             .map(str::to_string)
             .collect(),
     };
+    if provider == Some(AgentConversationProvider::Codex) {
+        // Codex's legacy model ids are `model[effort]`, one per effort a model has.
+        for id in &config.available_models {
+            if let Some((model, effort)) = id.strip_suffix(']').and_then(|id| id.rsplit_once('[')) {
+                config.model_efforts.entry(model.to_string()).or_default().push(effort.to_string());
+            }
+        }
+    }
     apply_config_options(value, &mut config);
+    if let Some(model) = config.model.clone().filter(|_| !config.model_efforts.is_empty()) {
+        config.model_efforts.insert(model, config.available_efforts.clone());
+    }
     if provider == Some(AgentConversationProvider::Claude) {
         for model_id in CLAUDE_VERIFIED_EXTRA_MODELS {
             if !config
@@ -1568,6 +1594,8 @@ while IFS= read -r line; do
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"sessionUpdate":"usage_update","used":120,"size":4096}}}}}}\n'
       elif [ "$fixture" = "config_update_failure" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","_meta":{{"availableEfforts":["low","medium","high","xhigh","max"]}}}}}}\n' "$id"
+      elif [ "$fixture" = "codex_catalog" ]; then
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","models":{{"currentModelId":"gpt-a[high]","availableModels":[{{"modelId":"gpt-a[low]"}},{{"modelId":"gpt-a[high]"}},{{"modelId":"gpt-b[low]"}},{{"modelId":"gpt-b[medium]"}}]}},"configOptions":[{{"id":"model","currentValue":"gpt-a","options":[{{"value":"gpt-a"}},{{"value":"gpt-b"}}]}},{{"id":"reasoning_effort","currentValue":"high","options":[{{"value":"low"}},{{"value":"high"}}],"_meta":{{"jetbrains":{{"air":{{"version":1,"recommendedValue":"high"}}}}}}}}]}}}}\n' "$id"
       elif [ "$fixture" = "config_options" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"new-session","modes":{{"currentModeId":"auto","availableModes":[{{"id":"auto","name":"Auto"}},{{"id":"default","name":"Manual"}},{{"id":"acceptEdits","name":"Accept Edits"}}]}},"configOptions":[{{"id":"mode","name":"Mode","category":"mode","type":"select","currentValue":"auto","options":[{{"value":"auto","name":"Auto"}},{{"value":"default","name":"Manual"}},{{"value":"acceptEdits","name":"Accept Edits"}}]}},{{"id":"model","name":"Model","category":"model","type":"select","currentValue":"claude-fable-5[1m]","options":[{{"value":"default","name":"Default (recommended)"}},{{"value":"opus[1m]","name":"Opus (1M context)"}},{{"value":"claude-fable-5[1m]","name":"Fable"}},{{"value":"sonnet","name":"Sonnet"}},{{"value":"haiku","name":"Haiku"}}]}},{{"id":"effort","name":"Effort","category":"thought_level","type":"select","currentValue":"xhigh","options":[{{"value":"default","name":"Default"}},{{"value":"low","name":"Low"}},{{"value":"medium","name":"Medium"}},{{"value":"high","name":"High"}},{{"value":"xhigh","name":"Xhigh"}},{{"value":"max","name":"Max"}}]}}]}}}}\n' "$id"
       elif [ "$fixture" = "standard_config" ]; then
@@ -1737,7 +1765,9 @@ while IFS= read -r line; do
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"%s","stopReason":"end_turn"}}}}\n' "$id" "$turn"
       fi ;;
 	    *'"method":"session/set_config_option"'*)
-      if [ "$fixture" = "config_options" ]; then
+      if [ "$fixture" = "codex_catalog" ]; then
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"configOptions":[{{"id":"model","currentValue":"gpt-b","options":[{{"value":"gpt-a"}},{{"value":"gpt-b"}}]}},{{"id":"reasoning_effort","currentValue":"medium","options":[{{"value":"low"}},{{"value":"medium"}}],"_meta":{{"jetbrains":{{"air":{{"version":1,"recommendedValue":"medium"}}}}}}}}]}}}}\n' "$id"
+      elif [ "$fixture" = "config_options" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"configOptions":[{{"id":"mode","name":"Mode","category":"mode","type":"select","currentValue":"auto","options":[{{"value":"auto","name":"Auto"}},{{"value":"default","name":"Manual"}},{{"value":"acceptEdits","name":"Accept Edits"}}]}},{{"id":"model","name":"Model","category":"model","type":"select","currentValue":"sonnet","options":[{{"value":"default","name":"Default (recommended)"}},{{"value":"opus[1m]","name":"Opus (1M context)"}},{{"value":"claude-fable-5[1m]","name":"Fable"}},{{"value":"sonnet","name":"Sonnet"}},{{"value":"haiku","name":"Haiku"}}]}},{{"id":"effort","name":"Effort","category":"thought_level","type":"select","currentValue":"high","options":[{{"value":"default","name":"Default"}},{{"value":"low","name":"Low"}},{{"value":"medium","name":"Medium"}},{{"value":"high","name":"High"}},{{"value":"xhigh","name":"Xhigh"}},{{"value":"max","name":"Max"}}]}}]}}}}\n' "$id"
       elif [ "$fixture" = "config_update_failure" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"error":{{"code":-32002,"message":"fixture config update failed"}}}}\n' "$id"
@@ -2110,13 +2140,19 @@ done"#,
                         { "value": "low" },
                         { "value": "medium" },
                         { "value": "high" }
-                    ]
+                    ],
+                    "_meta": { "jetbrains": { "air": { "version": 1, "recommendedValue": "low" } } }
                 }
             ]
         });
 
         let config =
             parse_standard_conversation_config(&result, Some(AgentConversationProvider::Codex));
+        // Each model keeps its own efforts; the current model's come from its control.
+        assert_eq!(config.model_efforts.get("gpt-6-astra").unwrap(), &["low", "medium", "high"]);
+        assert_eq!(config.model_efforts.get("gpt-5.6-sol").unwrap(), &["medium"]);
+        assert_eq!(config.model_default_efforts.get("gpt-6-astra").map(String::as_str), Some("low"));
+        assert_eq!(config.model_default_efforts.len(), 1);
 
         assert_eq!(config.model.as_deref(), Some("gpt-6-astra"));
         assert_eq!(config.available_models, ["gpt-6-astra", "gpt-5.6-sol"]);
@@ -2154,6 +2190,12 @@ done"#,
         client.close().await.unwrap();
         let frames = std::fs::read_to_string(&log).unwrap();
         std::fs::remove_dir_all(root).unwrap();
+        let initialize = frames.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|frame| frame["method"] == "initialize").unwrap();
+        assert_eq!(
+            initialize["params"]["clientCapabilities"]["_meta"]["jetbrains"]["air"]["capabilities"],
+            json!(["recommendedValue"])
+        );
         let configured = result.expect("model reply makes effort available in the same update");
         assert_eq!(configured.model.as_deref(), Some("sonnet"));
         assert_eq!(configured.reasoning_effort.as_deref(), Some("high"));
@@ -2186,6 +2228,8 @@ done"#,
             started.config,
             AgentConversationConfigState {
                 model_labels: Default::default(),
+                model_efforts: Default::default(),
+                model_default_efforts: Default::default(),
                 model: Some("default".into()),
                 available_models: vec![
                     "default".into(),

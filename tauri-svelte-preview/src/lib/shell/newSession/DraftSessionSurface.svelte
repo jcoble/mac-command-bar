@@ -50,6 +50,7 @@
     buildThreadStartRequest,
     defaultThreadStartState,
     displayProvider,
+    draftEffortFor,
     projectCwd,
     validateThreadStart,
     type ThreadStartPickerState,
@@ -127,6 +128,7 @@
     draft.executionEnvironment, draft.remoteProfileId ?? '', draft.provider, draft.cwd
   ].join('\u0000'));
   const currentCatalog = $derived(catalogKey === selectedCatalogKey ? catalogConfig : null);
+  const draftEfforts = $derived(currentCatalog ? draftEffortFor(currentCatalog, draft.model, null).efforts : []);
   const problems = $derived(validateThreadStart(draft, stagedImages.length > 0));
   const selectedRemoteProfile = $derived(
     remoteAssembly.profiles.find((profile) => profile.id === draft.remoteProfileId) ?? null
@@ -153,7 +155,7 @@
     availableModels: currentCatalog?.availableModels ?? [],
     modelLabels: currentCatalog?.modelLabels ?? {},
     reasoningEffort: currentCatalog ? (draft.effort || null) : null,
-    availableEfforts: currentCatalog?.availableEfforts ?? [],
+    availableEfforts: draftEfforts,
     approvalPolicy: currentCatalog ? (draft.access || null) : null,
     availableApprovalPolicies: currentCatalog?.availableApprovalPolicies ?? []
   });
@@ -197,10 +199,11 @@
         if (controller.signal.aborted || stopSignal.aborted || selectedCatalogKey !== key || !config) return;
         if (!config.availableModels.length) throw new Error('The provider did not advertise any models for this machine.');
         const remembered = rememberedAgentConfigChoice(provider);
+        const model = offeredChoice(remembered?.model, config.model, config.availableModels);
         draft = {
           ...draft,
-          model: offeredChoice(remembered?.model, config.model, config.availableModels),
-          effort: offeredChoice(remembered?.reasoningEffort, config.reasoningEffort, config.availableEfforts),
+          model,
+          effort: draftEffortFor(config, model, remembered?.reasoningEffort).effort,
           access: offeredChoice(remembered?.approvalPolicy, config.approvalPolicy, config.availableApprovalPolicies)
         };
         catalogConfig = config;
@@ -351,7 +354,11 @@
   }
 
   function changeConfig(field: AgentConversationConfigField, value: string): void {
-    if (field === 'model') updateDraft({ model: value });
+    if (field === 'model') {
+      // A model offers its own efforts: keep the remembered one if it has it.
+      const wanted = rememberedAgentConfigChoice(draft.provider)?.reasoningEffort || draft.effort;
+      updateDraft({ model: value, effort: currentCatalog ? draftEffortFor(currentCatalog, value, wanted).effort : draft.effort });
+    }
     else if (field === 'reasoningEffort') updateDraft({ effort: value });
     else updateDraft({ access: value });
     // A pick here is the choice the next new session opens on.
@@ -372,7 +379,7 @@
       return;
     }
     if (!currentCatalog || !currentCatalog.availableModels.includes(draft.model)
-      || (draft.effort && !currentCatalog.availableEfforts.includes(draft.effort))
+      || (draft.effort && !draftEfforts.includes(draft.effort))
       || (draft.provider !== 'antigravity' && draft.access && !currentCatalog.availableApprovalPolicies.includes(draft.access))) {
       submitError = catalogError || 'Wait for this machine’s model choices before sending.';
       return;

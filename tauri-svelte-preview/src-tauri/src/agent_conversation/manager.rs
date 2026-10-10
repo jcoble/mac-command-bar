@@ -1011,10 +1011,20 @@ impl AgentRuntimeManager {
             );
             let result = async {
                 adapter.initialize(InitializeAgentInput { provider }).await?;
-                adapter
-                    .new_session(NewAgentSession { cwd })
-                    .await
-                    .map(|started| started.config)
+                let started = adapter.new_session(NewAgentSession { cwd }).await?;
+                let mut config = started.config;
+                // A model's default effort is only reported while it is the
+                // session's model, so each other model is selected once here.
+                let others = config.model_efforts.iter()
+                    .filter(|(model, efforts)| !efforts.is_empty() && Some(model.as_str()) != config.model.as_deref())
+                    .map(|(model, _)| model.clone()).collect::<Vec<_>>();
+                for model in others {
+                    let update = AgentConversationConfigUpdate { model: Some(model), ..Default::default() };
+                    if let Ok(switched) = adapter.set_conversation_config_on(&started.native_session_id, &update).await {
+                        config.model_default_efforts.extend(switched.model_default_efforts);
+                    }
+                }
+                Ok::<_, AgentRuntimeError>(config)
             }
             .await;
             // session/new may leave a provider-native empty session, but its
@@ -8359,6 +8369,8 @@ mod tests {
     fn stale_codex_composite_choice_becomes_live_model_and_effort_controls() {
         let current = AgentConversationConfigState {
             model_labels: Default::default(),
+            model_efforts: Default::default(),
+            model_default_efforts: Default::default(),
             model: Some("gpt-6-astra".into()),
             available_models: vec!["gpt-6-astra".into(), "gpt-5.6-sol".into()],
             reasoning_effort: Some("medium".into()),
@@ -14381,9 +14393,32 @@ mod tests {
             .await.unwrap();
         assert!(config.available_models.contains(&"opus[1m]".to_string()));
         assert_eq!(config.model_labels.get("opus[1m]").map(String::as_str), Some("Opus (1M context)"));
+        assert!(config.model_efforts.is_empty());
         assert_eq!(manager.resource_diagnostics().unwrap().durable_session_rows, 0);
         let requests = fs::read_to_string(&log).unwrap();
         assert!(requests.contains("session/new"));
+        assert!(!requests.contains("session/prompt"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_probe_reads_each_models_efforts_and_default() {
+        let root = temp_root();
+        let log = root.join("codex-catalog.jsonl");
+        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&log, "codex_catalog");
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)]).unwrap();
+        let manager = AgentRuntimeManager::new(providers);
+        let config = manager.probe_provider_config(AgentConversationProvider::Codex, root.to_str().unwrap())
+            .await.unwrap();
+        // The draft opens on the starting model; the other models' defaults come from one switch each.
+        assert_eq!(config.model.as_deref(), Some("gpt-a"));
+        assert_eq!(config.available_efforts, ["low", "high"]);
+        assert_eq!(config.model_efforts.get("gpt-a").unwrap(), &["low", "high"]);
+        assert_eq!(config.model_efforts.get("gpt-b").unwrap(), &["low", "medium"]);
+        assert_eq!(config.model_default_efforts.get("gpt-a").map(String::as_str), Some("high"));
+        assert_eq!(config.model_default_efforts.get("gpt-b").map(String::as_str), Some("medium"));
+        let requests = fs::read_to_string(&log).unwrap();
+        assert_eq!(requests.matches("session/set_config_option").count(), 1);
         assert!(!requests.contains("session/prompt"));
         fs::remove_dir_all(root).unwrap();
     }

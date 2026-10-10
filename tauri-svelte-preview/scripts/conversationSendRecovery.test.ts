@@ -253,8 +253,15 @@ assert.match(
 // request is still running, so screenshots recorded after it are never claimed.
 assert.match(
   serviceSource,
-  /recordSentConversationAttachments\(ownedId, \[[^\n]*attachments\.map\(attachmentDisplayMetadata\)\]\);[\s\S]*?await invoke\('send_agent_conversation_message'/,
+  /recordSentConversationAttachments\(ownedId, \[[^\n]*attachments\.map\(attachmentDisplayMetadata\)\]\);[\s\S]*?invoke\('send_agent_conversation_message'/,
   'sent screenshot metadata is recorded before the send request, not after it'
+);
+// The first send of an unstarted session saves model and effort together, so the
+// start applies the model before the effort; Stop during that save still cancels.
+assert.match(
+  serviceSource,
+  /if \(startConfig\?\.model && !state\.nativeSessionId\) \{[\s\S]*?await setAgentConversationConfig\(\{[\s\S]*?model: startConfig\.model,[\s\S]*?reasoningEffort: startConfig\.reasoningEffort[\s\S]*?\}\);[\s\S]*?if \(preparation\.cancelled\)[\s\S]*?await invoke\('send_agent_conversation_message'/,
+  'model and effort are saved before the cancellation check and the send request'
 );
 assert.match(
   serviceSource,
