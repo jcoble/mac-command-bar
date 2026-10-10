@@ -33,6 +33,8 @@ export type SessionSelectionOwner = {
 export class SessionSelectionLayers {
   treeOwnedId = $state<string | null>(null);
   treeRoot = $state('');
+  /** The root the last tree fill asked for, kept even when that folder was missing. */
+  treeRequestedRoot = $state('');
   hasTreeProjection = $state(false);
   chatOwnedId = $state<string | null>(null);
   hasChatProjection = $state(false);
@@ -58,6 +60,7 @@ export class SessionSelectionLayers {
   ): Promise<void> {
     if (!this.isCurrent(owner)) return;
     const root = sessionWorkspaceRoot(session, projectRegistry.projects);
+    this.treeRequestedRoot = root;
 
     if (!root || (session.executionEnvironment === 'remote'
       && rail.remoteConnections[session.remoteProfileId ?? ''] !== 'connected')) {

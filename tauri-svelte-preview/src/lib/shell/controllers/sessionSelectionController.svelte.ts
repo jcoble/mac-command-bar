@@ -93,11 +93,12 @@ export class SessionSelectionController {
 		return canonicalPath(sessionWorkspaceRoot(session, projectRegistry.projects));
 	}
 
-	/** The open tree no longer matches the session's root, as when its project's folder changed. */
+	/** The tree was filled for another root than the session's, as when its project's folder changed. */
 	get treeRootMoved(): boolean {
-		const shown = this.filesProjectionRoot;
+		const layers = this.sessionSelectionLayers;
 		const root = this.durableSessionRoot;
-		return Boolean(shown) && Boolean(root) && canonicalPath(shown) !== root;
+		return layers.hasTreeProjection && layers.treeOwnedId === this.activeOwnedId
+			&& Boolean(root) && canonicalPath(layers.treeRequestedRoot) !== root;
 	}
 
 	get controlledEditorRootAvailable(): boolean {
@@ -302,7 +303,9 @@ export class SessionSelectionController {
 			if (!this.isCurrent(owner)) return true;
 
 			this.expansionOwnedId = null;
-			await this.editorSessions.resetForCheckoutChange(owner.signal, root);
+			// Unsaved files follow the root the session is shown at; a session with a project stays there.
+			const moved = rail.owned.find((session) => session.ownedId === ownedId);
+			await this.editorSessions.resetForCheckoutChange(owner.signal, moved ? canonicalPath(sessionWorkspaceRoot(moved, projectRegistry.projects)) : root);
 			if (!this.isCurrent(owner)) return true;
 			this.expandedPathsByRoot = {};
 			this.sessionSelectionLayers.clearTreeView();
