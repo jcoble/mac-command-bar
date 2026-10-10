@@ -69,6 +69,26 @@ export function usableHostRect(rect: PanelRect | null): rect is PanelRect {
 }
 
 /**
+ * Whether an open popup (menu, list, card or dialog) is drawn over the page.
+ * The page is a native view above every DOM layer, so only a popup that
+ * overlaps it needs it out of the way; one beside it leaves it showing. A
+ * popup not laid out yet covers nothing, and a page that can't be measured
+ * steps aside for any popup.
+ */
+export function popupCoversPage(popups: readonly PanelRect[], page: PanelRect | null): boolean {
+  if (!page) return popups.length > 0;
+  return popups.some(
+    (p) =>
+      p.width > 0 &&
+      p.height > 0 &&
+      p.x < page.x + page.width &&
+      p.x + p.width > page.x &&
+      p.y < page.y + page.height &&
+      p.y + p.height > page.y
+  );
+}
+
+/**
  * A docked page may fill its page host, but it may not escape the right tools
  * region or overlap the center. Gridview briefly moves adopted DOM while a
  * removed region is being restored; rejecting that intermediate rectangle

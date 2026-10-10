@@ -1,5 +1,5 @@
 /**
- * stackStore.test.mjs — the /next stack runner's store, run in plain node.
+ * stackStore.test.mjs — the shell stack runner's store, run in plain node.
  *
  * `stackStore.svelte.ts` is a runes module, so node cannot import it as it
  * stands: `$state` is compiler syntax, not a function. The test therefore does

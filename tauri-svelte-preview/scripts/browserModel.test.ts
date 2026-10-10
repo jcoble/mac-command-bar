@@ -6,8 +6,32 @@ const { createBrowserWorkspace } = await import('../src/lib/shell/browser/browse
 const { createBrowserModel } = await import(
   '../src/lib/shell/browser/browserModel.ts'
 );
-const { hostRectFitsPanel } = await import(
+const { hostRectFitsPanel, popupCoversPage } = await import(
   '../src/lib/shell/panels/browser/browserPanelBounds.ts'
+);
+
+// TSK-1427: only a popup drawn over the page may hide the native page.
+const pageRect = { x: 400, y: 100, width: 700, height: 800 };
+assert.equal(popupCoversPage([], pageRect), false, 'no popup leaves the page showing');
+assert.equal(
+  popupCoversPage([{ x: 1330, y: 175, width: 355, height: 290 }], pageRect),
+  false,
+  "the right drawer's menu beside the page leaves it showing"
+);
+assert.equal(
+  popupCoversPage([{ x: 900, y: 150, width: 220, height: 200 }], pageRect),
+  true,
+  "the Browser's own menu dropping over the page hides it"
+);
+assert.equal(
+  popupCoversPage([{ x: 0, y: 0, width: 0, height: 0 }], pageRect),
+  false,
+  'a popup not laid out yet does not hide the page'
+);
+assert.equal(
+  popupCoversPage([{ x: 10, y: 10, width: 100, height: 100 }], null),
+  true,
+  'a page that cannot be measured steps aside for any popup, as before'
 );
 
 assert.equal(
