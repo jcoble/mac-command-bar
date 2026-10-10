@@ -11,7 +11,7 @@
   import Sparkles from '@lucide/svelte/icons/sparkles';
   import type { AgentConversationTurnFacts } from '$lib/shell/conversation/conversationTypes.ts';
   import { anchorRowIndex, continueHistoryPaging, conversationTurnGroups, foldToolRuns, summarizeCompletedWork, toolFilePath, turnRows, type ConversationTurnGroup, type ConversationDisplayItem, type ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
-  import { USER_SEND_ANCHOR_OFFSET_PX, type ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
+  import { USER_SEND_ANCHOR_OFFSET_PX, sendTurnRunning, type ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import type { ConversationViewState } from '$lib/shell/sessionWorkspaces.ts';
   import { backgroundWorkLabel, backgroundWorkTarget, formatBackgroundElapsed } from '$lib/shell/ownedSessions.ts';
@@ -633,6 +633,26 @@
       if (index < 0) return;
       const topInset = host ? Number.parseFloat(getComputedStyle(host).getPropertyValue('--center-head-height')) || 0 : 0;
       positionRow(itemId, topInset + USER_SEND_ANCHOR_OFFSET_PX, 'smooth');
+      saveView();
+    });
+  });
+
+  // When the turn ends, give back the screen of room the send anchor held under
+  // the reply, then follow again if nothing is left below: a short reply
+  // settles above the composer and the Jump to latest arrow goes.
+  let turnWindow = '';
+  let turnWasRunning = false;
+  $effect(() => {
+    const running = sendTurnRunning(localTurnActive, activeTurnId);
+    const ended = turnWindow === renderWindowId && turnWasRunning && !running;
+    turnWindow = renderWindowId;
+    turnWasRunning = running;
+    if (!ended || !untrack(() => anchoredSendItemId)) return;
+    anchoredSendItemId = null;
+    const windowId = renderWindowId;
+    void tick().then(() => {
+      if (windowId !== renderWindowId || restoring || jumping || hasNewer || !atEnd()) return;
+      follow = true;
       saveView();
     });
   });
