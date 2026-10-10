@@ -5,42 +5,59 @@
   as it was, so Back returns to it. Choosing a machine narrows the list to that
   machine and makes it the one New project and Add folder start on. Clicking a
   project opens a new session there. In a narrow window the two panes become
-  tabs.
+  tabs. Each project's ⋯ menu renames it, changes its folder on the same
+  machine, pins it to the top, or removes it (its files always stay).
 -->
 <script lang="ts">
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Cloud from '@lucide/svelte/icons/cloud';
+  import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
   import Laptop from '@lucide/svelte/icons/laptop';
+  import Pin from '@lucide/svelte/icons/pin';
   import Plus from '@lucide/svelte/icons/plus';
   import X from '@lucide/svelte/icons/x';
   import { onMount } from 'svelte';
 
+  import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
+  import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { ListRow } from '$lib/components/ui/list-row/index.js';
   import * as Tabs from '$lib/components/ui/tabs/index.js';
   import RemoteConnections from '$lib/shell/components/RemoteConnections.svelte';
   import AddProjectDialog from '$lib/shell/projects/AddProjectDialog.svelte';
-  import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte.ts';
+  import { hydrateProjects, projectRegistry, refreshRailProjects } from '$lib/shell/projects/projectRegistry.svelte.ts';
+  import { rail, removeOwnedSession } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import {
     filterProjects,
     projectCountsByMachine,
+    projectLastUsedLabel,
     projectMachineLabel,
     shortProjectPath,
     visibleProjects
   } from '$lib/shell/projects/projects.ts';
-  import { readRemoteAssemblyEnvironmentFromTauri, type RemoteAssemblyEnvironment } from '$lib/tauriSource.ts';
+  import {
+    readRemoteAssemblyEnvironmentFromTauri,
+    removeProjectFromTauri,
+    renameProjectFromTauri,
+    setProjectPinnedFromTauri,
+    setProjectRootFromTauri,
+    type ProjectRecord,
+    type RemoteAssemblyEnvironment
+  } from '$lib/tauriSource.ts';
 
   interface Props {
     onBack: () => void;
     onOpenProject: (projectId: string) => void;
+    /** The rail's own delete, so an open session that goes away is closed the same way. */
+    removeSession: (ownedId: string) => Promise<void>;
   }
 
-  let { onBack, onOpenProject }: Props = $props();
+  let { onBack, onOpenProject, removeSession }: Props = $props();
 
   let environment = $state<RemoteAssemblyEnvironment>({ profiles: [], readyProfileIds: [] });
   let machine = $state<string | null>(null);
@@ -50,6 +67,13 @@
   let width = $state(0);
   let machinesError = $state('');
   let searchField = $state<HTMLInputElement | null>(null);
+  let actionError = $state('');
+  let renaming = $state<ProjectRecord | null>(null);
+  let newName = $state('');
+  let moving = $state<ProjectRecord | null>(null);
+  let removing = $state<ProjectRecord | null>(null);
+  /** Last used is read against the time the screen opened; it is open briefly. */
+  const now = new Date();
 
   const projects = $derived(visibleProjects(projectRegistry.projects, environment.profiles.map((profile) => profile.id)));
   const rows = $derived(filterProjects(projects, machine, query));
@@ -81,6 +105,57 @@
       if (!signal.aborted) machinesError = error instanceof Error ? error.message : String(error);
     }
   }
+
+  /** Waits for one project change, then reads the list again; a refusal is shown on the screen. */
+  async function applyProjectChange(change: Promise<void>): Promise<boolean> {
+    actionError = '';
+    try {
+      await change;
+    } catch (error) {
+      actionError = error instanceof Error ? error.message : String(error);
+      return false;
+    }
+    await hydrateProjects();
+    return true;
+  }
+
+  async function rename(): Promise<void> {
+    const project = renaming;
+    if (!project || !await applyProjectChange(renameProjectFromTauri(project.id, newName))) return;
+    renaming = null;
+    await refreshRailProjects();
+  }
+
+  /** A refusal belongs to the rename it answered, so it goes when the dialog does. */
+  function closeRename(): void {
+    renaming = null;
+    actionError = '';
+  }
+
+  /** The folder picker shows a refusal itself, so this one lets it through. */
+  async function changeFolder(path: string): Promise<void> {
+    if (!moving) return;
+    await setProjectRootFromTauri(moving.id, path);
+    await hydrateProjects();
+  }
+
+  async function remove(deleteSessions: boolean): Promise<void> {
+    const project = removing;
+    removing = null;
+    if (!project) return;
+    const sessionIds = rail.owned.filter((session) => session.projectId === project.id).map((session) => session.ownedId);
+    const openId = rail.activeOwnedId;
+    if (!await applyProjectChange(removeProjectFromTauri(project.id, deleteSessions))) return;
+    if (!deleteSessions) return refreshRailProjects();
+    for (const ownedId of sessionIds) if (ownedId !== openId) removeOwnedSession(ownedId);
+    if (openId && sessionIds.includes(openId)) {
+      try {
+        await removeSession(openId);
+      } catch (error) {
+        actionError = error instanceof Error ? error.message : String(error);
+      }
+    }
+  }
 </script>
 
 {#snippet projectsPane()}
@@ -99,8 +174,8 @@
       <Button class="ml-auto" size="sm" onclick={() => (addProjectOpen = true)}><Plus />New project</Button>
       <Button variant="ghost" size="sm" onclick={() => (addProjectOpen = true)}><FolderPlus />Add folder</Button>
     </div>
-    {#if projectRegistry.error || machinesError}
-      <p class="text-[13px] text-destructive">{projectRegistry.error || machinesError}</p>
+    {#if actionError || projectRegistry.error || machinesError}
+      <p class="text-[13px] text-destructive">{actionError || projectRegistry.error || machinesError}</p>
     {/if}
     <div class="pane-list">
       {#if projects.length === 0}
@@ -114,10 +189,31 @@
         <p class="px-2 py-4 text-[13px] text-muted-foreground">No projects match.</p>
       {:else}
         {#each rows as project (project.id)}
-          <ListRow data-testid="projects-row" onclick={() => onOpenProject(project.id)}>
+          <ListRow data-testid="projects-row" actionsLabel="Project actions" onclick={() => onOpenProject(project.id)}>
+            {#if project.pinnedAtMs !== null}<Pin class="size-3.5 shrink-0 text-muted-foreground" aria-label="Pinned" />{/if}
             <span class="truncate font-medium">{project.title}</span>
             <Chip>{projectMachineLabel(project.machine, environment.profiles)}</Chip>
             <span class="ml-auto truncate text-sm text-muted-foreground" title={project.rootPath}>{shortProjectPath(project.rootPath)}</span>
+            <!-- The right margin keeps the ⋯ button clear of the label. -->
+            <span class="mr-8 w-8 shrink-0 text-right text-sm text-muted-foreground">{projectLastUsedLabel(project.lastUsedMs, now)}</span>
+            {#snippet actions()}
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger>
+                  {#snippet child({ props })}
+                    <Button {...props} variant="ghost" size="icon-sm" aria-label={`Actions for ${project.title}`}><Ellipsis /></Button>
+                  {/snippet}
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Content class="w-44" align="end">
+                  <DropdownMenu.Item onSelect={() => { actionError = ''; newName = project.title; renaming = project; }}>Rename…</DropdownMenu.Item>
+                  <DropdownMenu.Item onSelect={() => (moving = project)}>Change folder…</DropdownMenu.Item>
+                  <DropdownMenu.Item onSelect={() => void applyProjectChange(setProjectPinnedFromTauri(project.id, project.pinnedAtMs === null))}>
+                    {project.pinnedAtMs === null ? 'Pin' : 'Unpin'}
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Separator />
+                  <DropdownMenu.Item variant="destructive" onSelect={() => (removing = project)}>Remove…</DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu.Root>
+            {/snippet}
           </ListRow>
         {/each}
       {/if}
@@ -189,6 +285,51 @@
     onClose={() => (addProjectOpen = false)}
   />
 {/if}
+
+{#if moving}
+  <AddProjectDialog
+    profiles={environment.profiles}
+    machine={moving.machine}
+    chooseFolder={changeFolder}
+    onAdded={() => (moving = null)}
+    onAddRemote={() => (machinesOpen = true)}
+    onManageRemotes={() => (machinesOpen = true)}
+    onClose={() => (moving = null)}
+  />
+{/if}
+
+<Dialog.Root open={renaming !== null} onOpenChange={(next) => { if (!next) closeRename(); }}>
+  <Dialog.Content class="sm:max-w-[420px]">
+    <Dialog.Header>
+      <Dialog.Title>Rename project</Dialog.Title>
+      <Dialog.Description>Only the name changes. The folder stays where it is.</Dialog.Description>
+    </Dialog.Header>
+    <form class="flex flex-col gap-3" onsubmit={(event) => { event.preventDefault(); void rename(); }}>
+      <Input aria-label="Project name" bind:value={newName} />
+      {#if actionError}<p class="text-[13px] text-destructive">{actionError}</p>{/if}
+      <Dialog.Footer>
+        <Button type="button" variant="ghost" size="sm" onclick={closeRename}>Cancel</Button>
+        <Button type="submit" size="sm">Rename</Button>
+      </Dialog.Footer>
+    </form>
+  </Dialog.Content>
+</Dialog.Root>
+
+<AlertDialog.Root open={removing !== null} onOpenChange={(next) => { if (!next) removing = null; }}>
+  <AlertDialog.Content class="data-[size=default]:sm:max-w-md">
+    <AlertDialog.Header>
+      <AlertDialog.Title>Remove {removing?.title}?</AlertDialog.Title>
+      <AlertDialog.Description>
+        It leaves the project list. Its files stay where they are. Choose what happens to its sessions.
+      </AlertDialog.Description>
+    </AlertDialog.Header>
+    <AlertDialog.Footer class="bg-transparent">
+      <AlertDialog.Cancel size="sm">Cancel</AlertDialog.Cancel>
+      <AlertDialog.Action size="sm" variant="destructive" onclick={() => void remove(true)}>Delete its sessions too</AlertDialog.Action>
+      <AlertDialog.Action size="sm" onclick={() => void remove(false)}>Keep its sessions</AlertDialog.Action>
+    </AlertDialog.Footer>
+  </AlertDialog.Content>
+</AlertDialog.Root>
 
 <Dialog.Root bind:open={machinesOpen}>
   <Dialog.Content class="max-h-[85vh] overflow-y-auto p-0 sm:max-w-[640px]">
