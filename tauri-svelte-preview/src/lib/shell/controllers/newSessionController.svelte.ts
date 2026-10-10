@@ -55,6 +55,7 @@ export class NewSessionController {
 		selectSession: (ownedId: string) => Promise<void>,
 		showSession: () => void,
 		persistAttachmentIds: (ownedId: string, ids: readonly string[]) => Promise<void>,
+		discardSession: (ownedId: string) => Promise<void>,
 	): Promise<string> {
 		const stopSignal = this.stopSignal;
 		if (stopSignal.aborted) throw new Error('the new session draft was closed');
@@ -134,6 +135,12 @@ export class NewSessionController {
 			return owned.ownedId;
 		} catch (error) {
 			const detail = this.describeError(error);
+			// The draft is still open with the prompt and this error on it, so the
+			// row made for the send would only be a second, failed copy in the rail.
+			// If it cannot be removed, it is kept and marked failed below.
+			const discarded = !promptAccepted && !stopSignal.aborted
+				&& await discardSession(owned.ownedId).then(() => true, () => false);
+			if (discarded) throw error;
 			if (!promptAccepted) {
 				const currentDraft = getConversationSession(owned.ownedId)?.draft ?? '';
 				const draft = currentDraft ? `${request.prompt}\n\n${currentDraft}` : request.prompt;

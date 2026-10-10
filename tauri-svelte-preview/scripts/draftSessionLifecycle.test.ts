@@ -152,4 +152,17 @@ assert.match(
   'the kept press is sent once the choices, or their error, arrive'
 );
 
+// TSK-1364: a first send that fails while the draft is still open leaves the
+// owner on the draft with the prompt and the error, so the row made for that
+// send is removed, not left in the rail as a second, failed copy. A draft
+// closed mid-send keeps the failed row: it is the only place the prompt is kept.
+const startBody = controller.slice(controller.indexOf('\tasync start('), controller.indexOf('\n\tdispose():'));
+assert.match(startBody, /discardSession: \(ownedId: string\) => Promise<void>/);
+assert.match(
+  startBody,
+  /catch \(error\) \{[^}]*?const discarded = !promptAccepted && !stopSignal\.aborted\s*&& await discardSession\(owned\.ownedId\)[^;]*;\s*if \(discarded\) throw error;/,
+  'a failed first send with the draft still open discards its row before rethrowing'
+);
+assert.match(page, /\(ownedId\) => selection\.removeSession\(ownedId\),?\s*\);/, 'the page discards through the ordinary remove');
+
 console.log('draftSessionLifecycle.test.ts passed');
