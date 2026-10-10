@@ -18,7 +18,7 @@ use crate::agent_conversation::protocol::AgentConversationProvider;
 
 const RELEASE_BASE_URL: &str = "https://github.com/jcoble/mac-command-bar/releases/download/assembly-providers-stable";
 const SIGNING_PUBLIC_KEY: &str = "RWQZvQJuc5RPnp9xO8+V9ppE3cCiodEFHPYqJpIMMVRhAnaxo0udp8xh";
-static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 // Google’s official Linux server is 919,951,920 bytes in the signed 1.2.1 release.
