@@ -184,3 +184,45 @@ const store = await import('../src/lib/shell/editor/editorStore.svelte.ts');
   assert.equal(store.editorFileFor(record.path)?.dirty, false);
 }
 console.log('editor refresh preserves drafts and reports actual disk changes');
+
+// Switching sessions stores a draft and puts it back before its file is read.
+// That first read reports a conflict only when the disk revision really moved.
+{
+  const { captureWorkspace, normalizeWorkspaceSnapshot, planWorkspaceRestore } =
+    await import('../src/lib/shell/sessionWorkspaces.ts');
+  const record = recordFor('restored-draft.ts');
+  const saved = { ...record, content: 'saved', lineCount: 1, revision: 'rev-saved' };
+  const external = { ...saved, content: 'external edit', revision: 'rev-external' };
+  const switchAwayAndBack = () => {
+    const snapshot = captureWorkspace({
+      openFiles: store.editorState.openFiles,
+      activePath: record.path,
+      selectedPath: null,
+      scrollTop: 0,
+      rightTab: 'files'
+    });
+    const plan = planWorkspaceRestore(normalizeWorkspaceSnapshot(snapshot));
+    store.restoreEditorFiles(plan.openFiles, plan.activePath);
+  };
+  store.resetEditorState();
+  store.openEditorFile(record);
+  store.setEditorFilePreview(record.path, saved);
+  store.setEditorFileDraft(record.path, 'my draft');
+
+  switchAwayAndBack();
+  store.setEditorFilePreview(record.path, saved);
+  assert.equal(store.editorFileFor(record.path)?.conflict, null);
+  assert.equal(store.editorFileFor(record.path)?.dirty, true);
+  assert.equal(store.editorFileFor(record.path)?.draftContent, 'my draft');
+
+  switchAwayAndBack();
+  store.setEditorFilePreview(record.path, external);
+  assert.match(store.editorFileFor(record.path)?.conflict ?? '', /changed on disk/);
+  assert.equal(store.editorFileFor(record.path)?.draftContent, 'my draft');
+
+  // A draft already in conflict stays in conflict after another switch.
+  switchAwayAndBack();
+  store.setEditorFilePreview(record.path, external);
+  assert.match(store.editorFileFor(record.path)?.conflict ?? '', /changed on disk/);
+}
+console.log('a restored draft reports a conflict only when the file changed on disk');

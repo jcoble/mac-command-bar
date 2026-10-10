@@ -90,6 +90,8 @@ export interface SessionTasksWorkspace {
 export interface SessionWorkspaceFileState {
   /** Unsaved text only. Saved file contents are always read from disk. */
   draftContent?: string;
+  /** Disk revision the draft was edited from, so a restore can tell if the file changed. */
+  baseRevision?: string;
   /** CodeMirror cursor, scroll and folding state. */
   viewState?: object;
 }
@@ -205,6 +207,7 @@ export function captureWorkspace(input: {
     path: string;
     draftContent?: string | null;
     dirty?: boolean;
+    baseRevision?: string | null;
   }[];
   activePath: string | null;
   viewStates?: Record<string, unknown>;
@@ -250,6 +253,7 @@ export function captureWorkspace(input: {
     const state: SessionWorkspaceFileState = {};
     if (file?.dirty === true && typeof file.draftContent === 'string') {
       state.draftContent = file.draftContent;
+      if (typeof file.baseRevision === 'string') state.baseRevision = file.baseRevision;
     }
     const viewState = input.viewStates?.[path];
     if (isRecord(viewState)) state.viewState = viewState;
@@ -448,6 +452,7 @@ function normalizeFileStates(
     if (!allowed.has(path) || !isRecord(rawState)) continue;
     const state: SessionWorkspaceFileState = {};
     if (typeof rawState.draftContent === 'string') state.draftContent = rawState.draftContent;
+    if (typeof rawState.baseRevision === 'string') state.baseRevision = rawState.baseRevision;
     if (isRecord(rawState.viewState)) state.viewState = rawState.viewState;
     if (Object.keys(state).length > 0) normalized[path] = state;
   }
