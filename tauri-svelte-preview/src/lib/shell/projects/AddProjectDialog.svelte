@@ -4,7 +4,7 @@
   Two steps in one command dialog: choose the machine, then browse its folders
   and add one. The folder is checked on the machine that owns it; a refusal
   (git's own folder, a folder inside a repository, a missing path) is shown
-  under the path field and Add stays off until the path changes. A path that
+  under the path field, and Add checks again when pressed again. A path that
   names a new folder in the listed one is created there first (no `git init`);
   otherwise nothing here writes to the folder.
 -->
@@ -45,14 +45,12 @@
   let path = $state('');
   let listing = $state<FolderListing | null>(null);
   let message = $state('');
-  /** The path the last refusal was about; Add stays off until the field differs. */
-  let refusedPath = $state<string | null>(null);
   let adding = $state(false);
   let pathField = $state<HTMLInputElement | null>(null);
   let listSequence = 0;
 
   const machineLabel = $derived(projectMachineLabel(machine, profiles));
-  const canAdd = $derived(Boolean(listing) && Boolean(path.trim()) && path !== refusedPath && !adding);
+  const canAdd = $derived(Boolean(path.trim()) && !adding);
   /** The path names a folder that is not there yet: Enter and the button create it. */
   const newFolder = $derived(isNewFolderPath(path, listing));
 
@@ -103,20 +101,19 @@
     search = '';
     path = '';
     listing = null;
-    refusedPath = null;
     message = '';
     void list('~');
   }
 
   function openFolder(folder: string): void {
     path = withSlash(folder);
-    refusedPath = null;
     void list(path);
   }
 
   async function add(): Promise<void> {
     if (!canAdd) return;
     adding = true;
+    message = '';
     const requested = path;
     try {
       const project = await addProject(machine, requested.trim(), newFolder);
@@ -124,7 +121,6 @@
       onAdded(project);
     } catch (error) {
       message = describe(error);
-      refusedPath = requested;
     } finally {
       adding = false;
     }
