@@ -143,8 +143,15 @@ export class NewSessionController {
 			// The draft is still open with the prompt and this error on it, so the
 			// row made for the send would only be a second, failed copy in the rail.
 			// If it cannot be removed, it is kept and marked failed below.
-			const discarded = !promptAccepted && !stopSignal.aborted
-				&& await discardSession(owned.ownedId).then(() => true, () => false);
+			let discarded = false;
+			if (!promptAccepted && !stopSignal.aborted) {
+				try {
+					await discardSession(owned.ownedId);
+					discarded = true;
+				} catch {
+					// The row stays and is marked failed below.
+				}
+			}
 			if (discarded) throw error;
 			if (!promptAccepted) {
 				const currentDraft = getConversationSession(owned.ownedId)?.draft ?? '';

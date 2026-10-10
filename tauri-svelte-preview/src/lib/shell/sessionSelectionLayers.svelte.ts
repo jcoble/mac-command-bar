@@ -129,16 +129,22 @@ export class SessionSelectionLayers {
     this.chatOwnedId = session.ownedId;
     if (!offline && session.executionEnvironment === 'remote' && session.nativeSessionId) {
       const generation = getConversationSession(session.ownedId)?.generation;
-      if (generation !== undefined) void warmAgentConversationConfig(session.ownedId, generation).then((config) => {
-        if (this.isCurrent(owner)) setConversationAgentConfigState(session.ownedId, config);
-      }).catch((error: unknown) => {
-        if (this.isCurrent(owner)) setConversationAgentConfigError(session.ownedId, error instanceof Error ? error.message : String(error));
-      });
+      if (generation !== undefined) void this.warmRemoteConfig(session.ownedId, generation, owner);
     }
     if (departingOwnedId && departingOwnedId !== session.ownedId) {
       disposeSelectedConversationChat(departingOwnedId);
     }
     evictInactiveConversationSessions(session.ownedId);
+  }
+
+  // The warm-up itself is not cancelled; a selection that moved on drops its answer.
+  private async warmRemoteConfig(ownedId: string, generation: number, owner: SessionSelectionOwner): Promise<void> {
+    try {
+      const config = await warmAgentConversationConfig(ownedId, generation);
+      if (this.isCurrent(owner)) setConversationAgentConfigState(ownedId, config);
+    } catch (error) {
+      if (this.isCurrent(owner)) setConversationAgentConfigError(ownedId, error instanceof Error ? error.message : String(error));
+    }
   }
 
   abandonSelection(owner: SessionSelectionOwner): void {

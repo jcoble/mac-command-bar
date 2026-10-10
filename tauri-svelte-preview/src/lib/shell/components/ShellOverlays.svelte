@@ -101,13 +101,19 @@
 		const stopObservingResources = observeUtilityState("resources");
 		const stopObservingUsage = observeUtilityState("usage");
 		let stopExitRequests: (() => void) | null = null;
-		let unmounted = false;
-		void listenToAppExitRequests(exitRequested).then((stop) => {
-			if (unmounted) stop();
-			else stopExitRequests = stop;
-		});
+		const controller = new AbortController();
+		async function listenForExitRequests(signal: AbortSignal): Promise<void> {
+			try {
+				const stop = await listenToAppExitRequests(exitRequested);
+				if (signal.aborted) stop();
+				else stopExitRequests = stop;
+			} catch (error) {
+				console.warn('Could not listen for app exit requests', error);
+			}
+		}
+		void listenForExitRequests(controller.signal);
 		return () => {
-			unmounted = true;
+			controller.abort();
 			stopExitRequests?.();
 			stopObservingResources();
 			stopObservingUsage();

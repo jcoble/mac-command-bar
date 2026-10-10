@@ -194,35 +194,49 @@
     stopSignal.addEventListener('abort', cancel, { once: true });
     catalogConfig = null;
     catalogError = '';
-    void (async () => {
-      try {
-        const config = await probeAgentProviderConfigFromTauri({
-          provider, executionEnvironment, remoteProfileId, cwd
-        }, controller.signal);
-        if (controller.signal.aborted || stopSignal.aborted || selectedCatalogKey !== key || !config) return;
-        if (!config.availableModels.length) throw new Error('The provider did not advertise any models for this machine.');
-        const remembered = rememberedAgentConfigChoice(provider);
-        const model = offeredChoice(remembered?.model, config.model, config.availableModels);
-        draft = {
-          ...draft,
-          model,
-          effort: draftEffortFor(config, model, remembered?.reasoningEffort).effort,
-          access: offeredChoice(remembered?.approvalPolicy, config.approvalPolicy, config.availableApprovalPolicies)
-        };
-        catalogConfig = config;
-        catalogKey = key;
-        submitError = '';
-      } catch (error) {
-        if (controller.signal.aborted || stopSignal.aborted || selectedCatalogKey !== key) return;
-        catalogError = describeError(error);
-        submitError = catalogError;
-      }
-    })();
+    void loadCatalog(key, { provider, executionEnvironment, remoteProfileId, cwd }, controller.signal);
     return () => {
       controller.abort();
       stopSignal.removeEventListener('abort', cancel);
     };
   });
+
+  /** Asks the draft's machine which models it offers. The effect's signal stops it. */
+  async function loadCatalog(
+    key: string,
+    target: { provider: ThreadStartProvider; executionEnvironment: ExecutionEnvironment; remoteProfileId: string | null; cwd: string },
+    signal: AbortSignal
+  ): Promise<void> {
+    try {
+      const config = await probeAgentProviderConfigFromTauri(target, signal);
+      if (signal.aborted || stopSignal.aborted || selectedCatalogKey !== key || !config) return;
+      if (!config.availableModels.length) throw new Error('The provider did not advertise any models for this machine.');
+      const remembered = rememberedAgentConfigChoice(target.provider);
+      const model = offeredChoice(remembered?.model, config.model, config.availableModels);
+      draft = {
+        ...draft,
+        model,
+        effort: draftEffortFor(config, model, remembered?.reasoningEffort).effort,
+        access: offeredChoice(remembered?.approvalPolicy, config.approvalPolicy, config.availableApprovalPolicies)
+      };
+      catalogConfig = config;
+      catalogKey = key;
+      submitError = '';
+    } catch (error) {
+      if (signal.aborted || stopSignal.aborted || selectedCatalogKey !== key) return;
+      catalogError = describeError(error);
+      submitError = catalogError;
+    }
+  }
+
+  /** Stop is best effort: a turn that already ended has nothing to stop. */
+  async function stopStarting(ownedId: string): Promise<void> {
+    try {
+      await stopStructuredTurn(ownedId);
+    } catch (error) {
+      console.warn('Could not stop the starting session', error);
+    }
+  }
 
   $effect(() => {
     if (!sendWhenReady || (!currentCatalog && !catalogError)) return;
@@ -621,7 +635,7 @@
       persistConversationSessionDraft(starting.ownedId, value);
     }}
     onSend={send}
-    onStop={() => { if (starting) void stopStructuredTurn(starting.ownedId).catch(() => {}); }}
+    onStop={() => { if (starting) void stopStarting(starting.ownedId); }}
     onPaste={(event) => {
       const files = [...(event.clipboardData?.files ?? [])];
       if (!files.length) files.push(...[...(event.clipboardData?.items ?? [])]
