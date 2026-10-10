@@ -176,10 +176,12 @@
       const keys = new Set(currentRows.map((row) => row.key));
       // An older page can rename the row at the top (a turn's heading takes its
       // id from the first item loaded), and the virtualizer then drops its own
-      // place-keeping. Pin the first visible row that survives the insert.
+      // place-keeping. Note the first visible row that survives the insert.
       const top = $virtualizer.scrollOffset ?? 0;
-      const kept = pageRequest?.older && $virtualizer.options.count
-        && currentRows[0]?.key !== $virtualizer.options.getItemKey(0)
+      const anchor = pageRequest?.older && $virtualizer.options.count
+        ? $virtualizer.getVirtualItemForOffset(top)
+        : undefined;
+      const kept = anchor && !keys.has(String(anchor.key))
         ? $virtualizer.getVirtualItems().find((row) => row.end > top && keys.has(String(row.key)))
         : undefined;
       $virtualizer.setOptions({
@@ -190,7 +192,12 @@
         followOnAppend: following ? 'smooth' : false,
         scrollEndThreshold: following ? 80 : -1
       });
-      if (kept) positionRow(String(kept.key), kept.start - top);
+      // Put it back once the taller page is in the DOM, in one write as the
+      // virtualizer's own restore does, so the reader can keep scrolling.
+      if (kept) void tick().then(() => {
+        const row = $virtualizer.measurementsCache.find((item) => item.key === kept.key);
+        if (row) $virtualizer.scrollToOffset(row.start + top - kept.start);
+      });
       for (const key of $virtualizer.itemSizeCache.keys()) {
         if (!keys.has(String(key))) $virtualizer.itemSizeCache.delete(key);
       }
