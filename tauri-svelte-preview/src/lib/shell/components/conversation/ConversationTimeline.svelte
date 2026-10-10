@@ -760,8 +760,9 @@
   [data-run-id] .run-summary{flex:0 1 auto}
   .empty{display:grid;flex:1;place-items:center;min-height:100%;margin:0;color:var(--color-text-2);font-size:13px}
   .working-row{flex:none;display:flex;align-items:center;gap:8px;height:24px;overflow:hidden;white-space:nowrap;color:var(--color-text-3);font-size:13px}
-  /* Taller than the turn's line so the kit button's focus ring is not clipped. */
-  .background-row{gap:6px;height:32px;padding:4px 0}
+  /* Taller than the turn's line so the kit button's focus ring is not clipped.
+     It wraps: the kit button never shrinks, so on one line many labels overlap. */
+  .background-row{flex-wrap:wrap;gap:2px 6px;height:auto;min-height:32px;padding:4px 0}
   .background-item{display:inline-flex;align-items:center;gap:6px;min-width:0}
   .background-elapsed{font-variant-numeric:tabular-nums}
   .background-sep{color:var(--color-text-3)}
