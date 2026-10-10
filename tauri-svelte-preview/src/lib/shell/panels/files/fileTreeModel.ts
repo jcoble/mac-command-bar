@@ -110,3 +110,19 @@ export function windowFileTreeNodes<T extends FileTreeNode>(
     totalHeight: virtual.totalHeight
   };
 }
+
+/**
+ * The file File History shows for the selected path. The tree may not have
+ * loaded the path yet (a file opened in the editor from a chat link), so only
+ * a loaded folder rules it out. `null` for no selection or a path outside `root`.
+ */
+export function fileHistoryTarget(
+  root: string,
+  selectedPath: string | null,
+  nodes: readonly FileTreeNode[]
+): { path: string; name: string; relativePath: string } | null {
+  if (!root || !selectedPath?.startsWith(`${root}/`)) return null;
+  if (nodes.some((node) => node.path === selectedPath && node.isDirectory)) return null;
+  const relativePath = selectedPath.slice(root.length + 1);
+  return { path: selectedPath, name: relativePath.slice(relativePath.lastIndexOf('/') + 1), relativePath };
+}

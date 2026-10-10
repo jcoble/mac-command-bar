@@ -5,7 +5,10 @@ import {
   filesPanelActions,
   type FilesPanelActionId
 } from '../src/lib/shell/panels/files/filesPanelActions.ts';
-import type { FileTreeNode } from '../src/lib/shell/panels/files/fileTreeModel.ts';
+import {
+  fileHistoryTarget,
+  type FileTreeNode
+} from '../src/lib/shell/panels/files/fileTreeModel.ts';
 import { fileIconForName } from '../src/lib/shell/components/explorer/fileIcons.ts';
 
 const filesPanel = readFileSync(
@@ -110,5 +113,25 @@ assert.deepEqual(fileIconForName('FilesPanel.svelte'), {
   tone: 'svelte',
   label: 'Svelte component'
 });
+
+// File History shows the selected file even when the tree has not loaded it,
+// as when the file was opened in the editor from a chat link (TSK-1359).
+assert.deepEqual(fileHistoryTarget('/repo', '/repo/docs/guide/README.md', []), {
+  path: '/repo/docs/guide/README.md',
+  name: 'README.md',
+  relativePath: 'docs/guide/README.md'
+});
+assert.deepEqual(fileHistoryTarget('/repo', '/repo/src/App.ts', [node('/repo/src/App.ts', false)]), {
+  path: '/repo/src/App.ts',
+  name: 'App.ts',
+  relativePath: 'src/App.ts'
+});
+// A folder has no file history, a path outside the root is not this tree's,
+// and nothing selected still asks for a file.
+assert.equal(fileHistoryTarget('/repo', '/repo/src', [node('/repo/src', true)]), null);
+assert.equal(fileHistoryTarget('/repo', '/other/README.md', []), null);
+assert.equal(fileHistoryTarget('/repo', '/repository/README.md', []), null);
+assert.equal(fileHistoryTarget('', '/repo/README.md', []), null);
+assert.equal(fileHistoryTarget('/repo', null, []), null);
 
 console.log('filesPanelActions tests passed');
