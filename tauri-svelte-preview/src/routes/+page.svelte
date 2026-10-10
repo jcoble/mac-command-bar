@@ -477,6 +477,7 @@
 				workbench.rightTab = "files";
 			},
 			(ownedId, ids) => selection.persistConversationAttachmentIds(ownedId, ids),
+			(ownedId) => selection.removeSession(ownedId),
 		);
 	}
 </script>
