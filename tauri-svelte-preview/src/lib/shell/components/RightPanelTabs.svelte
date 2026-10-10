@@ -60,7 +60,8 @@
 
 <!-- 44px: the header band the rail and editor headers share. -->
 <div class="flex h-11 min-w-0 flex-none items-center gap-1 px-2">
-  <Tabs.Root value={activeId} onValueChange={(id) => onSelect(id as RightTabId)} class="min-w-0 flex-1">
+  <!-- A function binding, so the row never keeps its own copy of the active tab. -->
+  <Tabs.Root bind:value={() => activeId, (id) => onSelect(id as RightTabId)} class="min-w-0 flex-1">
     <Tabs.List class="gap-0.5 rounded-full bg-muted p-[3px] group-data-[orientation=horizontal]/tabs:h-auto" aria-label="Side panel">
       {#each shown as tab (tab.id)}
         <Tooltip.Root>

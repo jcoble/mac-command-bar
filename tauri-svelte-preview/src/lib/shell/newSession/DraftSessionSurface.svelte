@@ -76,9 +76,11 @@
     onClose: () => void;
     /** The session the first send is starting, until the view switches to it. */
     startingOwnedId?: string | null;
+    /** Open in this project instead of the default one. */
+    projectId?: string | null;
   }
 
-  let { stopSignal, onSend, onClose, startingOwnedId = null }: Props = $props();
+  let { stopSignal, onSend, onClose, startingOwnedId = null, projectId = null }: Props = $props();
   /* While the first send starts its session, this composer is that session's:
      what is typed lands in its draft, so it is still there after the switch. */
   const starting = $derived(startingOwnedId ? conversationSessions[startingOwnedId] ?? null : null);
@@ -412,8 +414,8 @@
     await Promise.all([hydrateProjects(), hydrateRemoteAssembly(owner)]);
     if (stopSignal.aborted || !owner.active || sequence !== loadSequence) return;
     if (projectRegistry.error) submitError = projectRegistry.error;
-    // The active session's project, else the most recent session's, among the visible ones.
-    const presetId = defaultDraftProjectId(projects, rail.owned, rail.activeOwnedId);
+    // The project asked for, else the active session's, else the most recent session's, among the visible ones.
+    const presetId = projectId ?? defaultDraftProjectId(projects, rail.owned, rail.activeOwnedId);
     const preset = projects.find((project) => project.id === presetId) ?? null;
     hydrated = true;
     if (preset) selectProject(preset);

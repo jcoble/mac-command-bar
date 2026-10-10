@@ -1,5 +1,5 @@
 /**
- * playwrightStore.test.ts — the /next Playwright card's store, run in plain node.
+ * playwrightStore.test.ts — the shell Playwright card's store, run in plain node.
  *
  * `playwrightStore.svelte.ts` is a runes module, so node cannot import it as it
  * stands: `$state` is compiler syntax, not a function. The test does what vite

@@ -562,6 +562,13 @@ export function continueHistoryPaging(landed: boolean, atEdge: boolean, heightBe
   return landed && atEdge && Math.abs(heightAfter - heightBefore) <= 80;
 }
 
+/** Whether a live tool group stays pinned to its newest row after a scroll. Reaching the end
+ * pins it and scrolling up unpins it. Anything else keeps it as it was, so our own scroll to
+ * the end that lands just before a new row grows the list does not unpin it. */
+export function nextToolGroupPinned(pinned: boolean, previousTop: number, top: number, distanceFromEnd: number): boolean {
+  return distanceFromEnd <= 16 || (pinned && top >= previousTop);
+}
+
 export function formatWorkedFor(elapsedMs: number): string {
   const safeElapsedMs = Math.max(0, elapsedMs);
   if (safeElapsedMs < 10_000) return `${(safeElapsedMs / 1_000).toFixed(1)}s`;

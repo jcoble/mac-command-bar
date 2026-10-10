@@ -25,6 +25,29 @@ export function visibleProjects(
   return projects.filter((project) => project.machine === 'local' || savedProfileIds.includes(project.machine));
 }
 
+/** Projects on `machine` (all machines when null) whose name or folder contains `query`, ignoring case. */
+export function filterProjects(
+  projects: readonly ProjectRecord[],
+  machine: string | null,
+  query: string
+): ProjectRecord[] {
+  const needle = query.trim().toLowerCase();
+  return projects.filter((project) => (machine === null || project.machine === machine)
+    && (!needle || project.title.toLowerCase().includes(needle) || project.rootPath.toLowerCase().includes(needle)));
+}
+
+/** How many projects each machine has, keyed by machine id. */
+export function projectCountsByMachine(projects: readonly ProjectRecord[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const project of projects) counts[project.machine] = (counts[project.machine] ?? 0) + 1;
+  return counts;
+}
+
+/** A folder under a home directory, shown from `~`. */
+export function shortProjectPath(path: string): string {
+  return path.replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, '~');
+}
+
 type DraftOwnedSession = { ownedId: string; projectId: string | null; lastActivity: string | null };
 
 /**

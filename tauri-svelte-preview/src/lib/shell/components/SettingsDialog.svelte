@@ -90,9 +90,13 @@
      */
     onProblemsLocationChange?: (location: ProblemsLocation) => void;
     onRemoteConnected?: (profileId: string) => void;
+    /** The section on screen; the host sets it to open Settings at one section. */
+    activeSection?: string;
+    /** The search text; the host clears it when it opens at a section. */
+    query?: string;
   }
 
-  let { open = $bindable(false), onProblemsLocationChange, onRemoteConnected }: Props = $props();
+  let { open = $bindable(false), onProblemsLocationChange, onRemoteConnected, activeSection = $bindable('appearance'), query = $bindable('') }: Props = $props();
 
   // ── Option lists ────────────────────────────────────────────────────────
   /** The themes the app actually ships, straight from the registry. */
@@ -372,8 +376,6 @@
     }
   ];
 
-  let activeSection = $state('appearance');
-  let query = $state('');
   let searchField = $state<HTMLElement | null>(null);
   let resetSectionPending = $state<'appearance' | 'editor' | 'terminal' | 'general' | null>(null);
   const resetSectionLabel = $derived(
