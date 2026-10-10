@@ -355,7 +355,7 @@ async fn inspect_folder_on(
             .map_err(|error| error.to_string())?;
     }
     let value = remote
-        .workspace_operation(machine, "inspect_project_folder".into(), serde_json::json!({ "path": path }))
+        .workspace_operation(machine, "inspect_project_folder".into(), serde_json::json!({ "path": path }), None)
         .await?;
     serde_json::from_value(value).map_err(|error| error.to_string())
 }
@@ -384,7 +384,7 @@ pub async fn add_project(
             std::fs::create_dir(&path).map_err(|error| error.to_string())
         } else {
             remote
-                .workspace_operation(&machine, "workspace_mkdir".into(), serde_json::json!({ "path": path }))
+                .workspace_operation(&machine, "workspace_mkdir".into(), serde_json::json!({ "path": path }), None)
                 .await
                 .map(|_| ())
         };
@@ -871,6 +871,7 @@ pub async fn list_agent_conversation_items_before(
     owned_id: String,
     before_sequence: i64,
     max_bytes: u32,
+    request_id: u64,
 ) -> CommandResult<AgentConversationItemPage> {
     match manager.store().private_remote_child_source(&owned_id) {
         Ok(Some(source)) => {
@@ -882,6 +883,7 @@ pub async fn list_agent_conversation_items_before(
                         before_sequence,
                         max_bytes,
                         true,
+                        request_id,
                     )
                     .await,
             );
@@ -890,7 +892,7 @@ pub async fn list_agent_conversation_items_before(
         Err(error) => return command_result(Err(error.to_string())),
     }
     if remote.owns(&owned_id) {
-        return command_result(remote.item_page(owned_id, before_sequence, max_bytes, true).await);
+        return command_result(remote.item_page(owned_id, before_sequence, max_bytes, true, request_id).await);
     }
     command_result(manager.list_items_before(&owned_id, before_sequence, max_bytes))
 }
@@ -902,6 +904,7 @@ pub async fn list_agent_conversation_items_after(
     owned_id: String,
     after_sequence: i64,
     max_bytes: u32,
+    request_id: u64,
 ) -> CommandResult<AgentConversationItemPage> {
     match manager.store().private_remote_child_source(&owned_id) {
         Ok(Some(source)) => {
@@ -913,6 +916,7 @@ pub async fn list_agent_conversation_items_after(
                         after_sequence,
                         max_bytes,
                         false,
+                        request_id,
                     )
                     .await,
             );
@@ -921,7 +925,7 @@ pub async fn list_agent_conversation_items_after(
         Err(error) => return command_result(Err(error.to_string())),
     }
     if remote.owns(&owned_id) {
-        return command_result(remote.item_page(owned_id, after_sequence, max_bytes, false).await);
+        return command_result(remote.item_page(owned_id, after_sequence, max_bytes, false, request_id).await);
     }
     command_result(manager.list_items_after(&owned_id, after_sequence, max_bytes))
 }

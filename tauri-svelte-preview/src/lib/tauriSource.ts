@@ -1332,12 +1332,12 @@ export async function readSourceFromTauri(record: SourceRecord): Promise<SourceP
 }
 
 /** Read one raster image for the editor without turning its bytes into JSON. */
-export async function readSourceImageFromTauri(path: string): Promise<Uint8Array> {
+export async function readSourceImageFromTauri(path: string, signal?: AbortSignal): Promise<Uint8Array> {
   if (!isTauriRuntime()) {
     throw new Error('Image preview is available in the desktop app.');
   }
   const { invoke } = await import('./workspaceInvoke.ts');
-  const buffer = await invoke<ArrayBuffer>('read_source_image', { path });
+  const buffer = await invoke<ArrayBuffer>('read_source_image', { path }, undefined, signal);
   return new Uint8Array(buffer);
 }
 
@@ -1547,14 +1547,15 @@ export async function readProjectGitStatusFromTauri(
 
 export async function readSourceGitDiffFromTauri(
   root: string,
-  path: string
+  path: string,
+  signal?: AbortSignal
 ): Promise<SourceGitDiff | null> {
   if (!isTauriRuntime()) {
     return null;
   }
 
   const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<SourceGitDiff>('read_source_git_diff', { root, path });
+  return invoke<SourceGitDiff>('read_source_git_diff', { root, path }, undefined, signal);
 }
 
 export async function stageGitPathsFromTauri(
@@ -1660,13 +1661,13 @@ export async function discardAllGitChangesFromTauri(
   return invoke<GitActionResult>('discard_all_git_changes', { root, includeUntracked });
 }
 
-export async function listGitBranchesFromTauri(root: string): Promise<GitBranchList | null> {
+export async function listGitBranchesFromTauri(root: string, signal?: AbortSignal): Promise<GitBranchList | null> {
   if (!isTauriRuntime()) {
     return null;
   }
 
   const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<GitBranchList>('list_git_branches', { root });
+  return invoke<GitBranchList>('list_git_branches', { root }, undefined, signal);
 }
 
 export async function createGitBranchFromTauri(
@@ -1752,11 +1753,12 @@ export async function listOpenPullRequestsFromTauri(
 }
 
 export async function listGithubPullRequestsFromTauri(
-  query: GithubPullRequestQuery
+  query: GithubPullRequestQuery,
+  signal?: AbortSignal
 ): Promise<GithubPullRequestPage | null> {
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<GithubPullRequestPage>('list_github_pull_requests', { query });
+  return invoke<GithubPullRequestPage>('list_github_pull_requests', { query }, undefined, signal);
 }
 
 export async function readGithubPullRequestFromTauri(
@@ -2165,7 +2167,7 @@ export async function connectRemoteAssemblyFromTauri(
   const operationId = crypto.randomUUID();
   let registered = false;
   const cancel = () => {
-    if (registered) void invoke('cancel_remote_connection', { operationId }).catch(() => {});
+    if (registered) void cancelRemoteConnection(operationId);
   };
   const status = new Channel<string>((message) => {
     registered = true;
@@ -2177,6 +2179,16 @@ export async function connectRemoteAssemblyFromTauri(
     return await invoke('connect_remote_assembly', { profile, operationId, status });
   } finally {
     signal.removeEventListener('abort', cancel);
+  }
+}
+
+/** Stops a running connect or install; a failed cancel leaves the attempt to its own timeout. */
+async function cancelRemoteConnection(operationId: string): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  try {
+    await invoke('cancel_remote_connection', { operationId });
+  } catch (error) {
+    console.warn('Could not cancel the remote connection', error);
   }
 }
 
@@ -2196,7 +2208,7 @@ export async function installRemoteAssemblyFromTauri(
   const operationId = crypto.randomUUID();
   let registered = false;
   const cancel = () => {
-    if (registered) void invoke('cancel_remote_connection', { operationId }).catch(() => {});
+    if (registered) void cancelRemoteConnection(operationId);
   };
   const status = new Channel<string>((message) => {
     registered = true;
@@ -2291,9 +2303,12 @@ export async function listAgentConversationItemsBeforeFromTauri(
 ): Promise<AgentConversationItemPage | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
+  const requestId = createAgentConversationRequestId();
+  const cancel = (): void => { void cancelAgentConversationRequestInBackground(requestId); };
+  signal?.addEventListener('abort', cancel, { once: true });
   try {
     const page = await invoke<AgentConversationItemPage>('list_agent_conversation_items_before', {
-      ownedId, beforeSequence, maxBytes
+      ownedId, beforeSequence, maxBytes, requestId
     });
     return signal?.aborted ? null : {
       ...page,
@@ -2303,6 +2318,8 @@ export async function listAgentConversationItemsBeforeFromTauri(
   } catch (error) {
     if (signal?.aborted) return null;
     throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
   }
 }
 
@@ -2314,9 +2331,12 @@ export async function listAgentConversationItemsAfterFromTauri(
 ): Promise<AgentConversationItemPage | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
+  const requestId = createAgentConversationRequestId();
+  const cancel = (): void => { void cancelAgentConversationRequestInBackground(requestId); };
+  signal?.addEventListener('abort', cancel, { once: true });
   try {
     const page = await invoke<AgentConversationItemPage>('list_agent_conversation_items_after', {
-      ownedId, afterSequence, maxBytes
+      ownedId, afterSequence, maxBytes, requestId
     });
     return signal?.aborted ? null : {
       ...page,
@@ -2326,6 +2346,17 @@ export async function listAgentConversationItemsAfterFromTauri(
   } catch (error) {
     if (signal?.aborted) return null;
     throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
+/** For an abort listener: cancels the request and reports, rather than throws, a failure. */
+export async function cancelAgentConversationRequestInBackground(requestId: number): Promise<void> {
+  try {
+    await cancelAgentConversationRequestFromTauri(requestId);
+  } catch (error) {
+    console.warn('Could not cancel the backend request', error);
   }
 }
 
