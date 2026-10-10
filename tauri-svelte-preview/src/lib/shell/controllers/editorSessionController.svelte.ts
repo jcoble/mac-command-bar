@@ -238,9 +238,11 @@ export class EditorSessionController {
 		else delete snapshot.fileStates;
 
 		if (stopSignal.aborted) return;
+		const before = this.activeSnapshot;
 		await writeAgentConversationWorkspaceFromTauri(ownedId, snapshot);
 		if (stopSignal.aborted) return;
-		this.activeSnapshot = snapshot;
+		// Keep any workspace change made while the write was pending.
+		if (this.activeSnapshot === before) this.activeSnapshot = snapshot;
 	}
 
 	private releaseActiveEditorResources(): void {

@@ -14,12 +14,16 @@ for (const statement of [...parsed.statements].reverse()) {
 code = stripTypeScriptTypes(code.replace('export class EditorSessionController', 'class EditorSessionController'));
 interface Controller {
   restoreEditorWorkspaceForSession(id: string, root: string, available: boolean, signal: AbortSignal): Promise<unknown>;
+  rememberWorkspaceState(patch: object): Record<string, unknown> | null;
+  persistWorkspaceState(id: string): Promise<void>;
 }
 const reads: string[] = [];
 const writes: string[] = [];
 let writeFailure: unknown;
 let readFailure: unknown;
 let root: string | null = null;
+let writeGate: Promise<void> | null = null;
+let lastWrite: unknown;
 const dependencies = {
   rail: { owned: [], remoteConnections: {} },
   parseRemoteWorkspacePath: () => null,
@@ -36,8 +40,10 @@ const dependencies = {
     if (readFailure && id === 'other') throw readFailure;
     return { openPaths: [], activePath: null, owner: id };
   },
-  writeAgentConversationWorkspaceFromTauri: async (id: string) => {
+  writeAgentConversationWorkspaceFromTauri: async (id: string, snapshot: unknown) => {
     writes.push(id);
+    lastWrite = snapshot;
+    if (writeGate) await writeGate;
     if (writeFailure) throw writeFailure;
   },
 };
@@ -80,4 +86,20 @@ const aborted = AbortSignal.abort();
 const count = reads.length;
 await controller.restoreEditorWorkspaceForSession('cancelled', '/cancelled', true, aborted);
 assert.equal(reads.length, count);
-console.log('editorWorkspaceRecovery: deleted outgoing session, repeat switching, save/read failures and cancellation passed');
+
+// A workspace change made while a checkpoint write is pending survives that write.
+const racing = new ControllerClass();
+await racing.restoreEditorWorkspaceForSession('race', '/race', true, signal);
+let releaseWrite!: () => void;
+writeGate = new Promise((resolve) => { releaseWrite = resolve; });
+const firstSave = racing.persistWorkspaceState('race');
+await new Promise((resolve) => setTimeout(resolve, 0));
+racing.rememberWorkspaceState({ browser: { url: 'https://newer.example' } });
+const secondSave = racing.persistWorkspaceState('race');
+writeGate = null;
+releaseWrite();
+await firstSave;
+await secondSave;
+assert.deepEqual(racing.rememberWorkspaceState({})?.browser, { url: 'https://newer.example' }, 'newer state stays in memory');
+assert.deepEqual((lastWrite as { browser?: unknown }).browser, { url: 'https://newer.example' }, 'the next save writes the newer state');
+console.log('editorWorkspaceRecovery: deleted outgoing session, repeat switching, save/read failures, cancellation and changes during a save passed');
