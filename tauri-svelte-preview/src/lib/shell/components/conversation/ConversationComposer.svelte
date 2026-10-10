@@ -569,7 +569,7 @@
      the ramp holds off before it converges, so lines thin out over the length
      of it instead of meeting an edge. It is opaque by the time it reaches the
      box, or the transcript would read through beside the capsule. */
-  .composer-area { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; padding: var(--composer-fade) 0 var(--space-3); container-type: inline-size; container-name: composer; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--color-surface) 45%, transparent) calc(var(--composer-fade) * 0.55), var(--color-surface) var(--composer-fade)); }
+  .composer-area { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; padding: var(--composer-fade) 0 0; container-type: inline-size; container-name: composer; background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--color-surface) 45%, transparent) calc(var(--composer-fade) * 0.55), var(--color-surface) var(--composer-fade)); }
   .composer-form { width: min(820px, calc(100% - 44px)); margin: 0 auto; }
   /* The chip is centred on the capsule and takes the same width, so its
      panel opens inside the composer's own column rather than the panel's. */

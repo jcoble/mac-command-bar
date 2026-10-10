@@ -877,7 +877,7 @@
 	.window-chrome {
 		display: grid;
 		grid-template-columns: var(--sessions-rail-width) minmax(0, 1fr);
-		flex: 0 0 calc(var(--center-head-row-height) + 6px);
+		flex: 0 0 var(--center-head-row-height);
 		align-items: center;
 		min-height: 0;
 		background: var(--color-bg);
