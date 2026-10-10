@@ -27,6 +27,8 @@ export interface OpenEditorFile {
   draftContent: string | null;
   /** Whether `draftContent` differs from the last content read or saved. */
   dirty: boolean;
+  /** Disk revision the draft was edited from; kept with a stored draft. */
+  baseRevision: string | null;
   /** A single-click file tab that becomes permanent on edit, double-click or pin. */
   previewTab: boolean;
   /** A dirty draft and the file on disk both changed since the last clean baseline. */
@@ -51,6 +53,7 @@ export interface OpenEditorFilePatch {
   preview?: SourcePreview | null;
   draftContent?: string | null;
   dirty?: boolean;
+  baseRevision?: string | null;
   conflict?: string | null;
   saving?: boolean;
   loading?: boolean;
@@ -76,6 +79,7 @@ export function openEditorFileFromRecord(record: SourceRecord): OpenEditorFile {
     preview: null,
     draftContent: null,
     dirty: false,
+    baseRevision: null,
     previewTab: false,
     conflict: null,
     saving: false,

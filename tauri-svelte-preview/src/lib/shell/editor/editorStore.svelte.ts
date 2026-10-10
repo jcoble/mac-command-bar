@@ -159,7 +159,12 @@ export function setEditorFilePreview(
       && file?.dirty
       && retainedDraft !== null
       && retainedDraft !== preview.content
-      && (file.conflict !== null || file.preview?.content !== preview.content)
+      && (file.conflict !== null
+        || (file.preview
+          ? file.preview.content !== preview.content
+          // A draft restored after a session switch has no read yet: compare
+          // the disk revision it was edited from instead.
+          : file.baseRevision !== null && file.baseRevision !== preview.revision))
       ? file.conflict
         ?? 'File changed on disk while this draft has unsaved edits.'
       : null;
@@ -167,6 +172,7 @@ export function setEditorFilePreview(
     preview,
     draftContent: readOnly ? null : retainedDraft ?? preview.content,
     dirty: !readOnly && retainedDraft !== null && retainedDraft !== preview.content,
+    baseRevision: conflict ? file?.baseRevision ?? null : preview.revision,
     conflict,
     saving: false,
     loading: false,
@@ -248,13 +254,14 @@ export function setEditorSymbols(symbols: SourceSymbol[]): void {
  * Put a session's lightweight tab descriptors back without reading a file.
  */
 export function restoreEditorFiles(
-  files: readonly { path: string; draftContent?: string }[],
+  files: readonly { path: string; draftContent?: string; baseRevision?: string }[],
   activePath: string | null = null
 ): void {
   editorState.openFiles = files.map((file) => ({
     ...openEditorFileFromRecord(sourceRecordFromPath(editorState.projectRoot, file.path)),
     draftContent: file.draftContent ?? null,
     dirty: file.draftContent !== undefined,
+    baseRevision: file.baseRevision ?? null,
     conflict: null
   }));
   editorState.activePath = editorState.openFiles.some((file) => file.path === activePath)
