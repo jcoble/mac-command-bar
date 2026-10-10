@@ -13,3 +13,9 @@ Before editing files for a substantial task:
 ## Assembly chat scope
 
 TanStack guidance applies to chat-session work. Keep Assembly’s Rust backend, Tauri commands, channels/WebSockets, native session/context ownership and SQLite authority. For migration work, read `docs/tanstack-chat-implementation-plan.html` at the repository root. It proposes the next implementation; `main-architecture-explained.html` remains the current architecture. Do not extend the migration into the editor or other tabs. Read package source when examples and installed behavior differ.
+
+## Async lifecycle
+
+Every timer and promise chain in `src/` follows the async-lifecycle rule in the repository root
+`AGENTS.md` / `CLAUDE.md` (owner, 2026-10-10): `async`/`await` with an `AbortSignal`, timers cleared by
+their owner on destroy, and a backend cancel for real work. `pnpm test:async-lifecycle` enforces it.
