@@ -31,6 +31,8 @@ export type ProjectGitRef = {
   isCurrent: boolean;
   checkoutPath: string | null;
   lastCommitMs: number | null;
+  /** Absent from a remote server older than this field. */
+  rootIsBare?: boolean;
 };
 
 /**

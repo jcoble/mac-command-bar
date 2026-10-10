@@ -67,6 +67,9 @@ fn git_common_dir(dir: &str) -> Option<String> {
         } else if dot_git.join("HEAD").is_file() {
             // Git skips a `.git` folder that is not a repository, such as an empty one.
             dot_git
+        } else if folder.join("HEAD").is_file() && folder.join("objects").is_dir() && folder.join("refs").is_dir() {
+            // A bare repository is its own git dir.
+            folder.to_path_buf()
         } else {
             continue;
         };
@@ -514,7 +517,8 @@ mod tests {
         let bare_worktree = root.join("bare-worktree");
         git(&root, &["init", "--bare", text(&bare)]);
         git(&bare, &["worktree", "add", text(&bare_worktree)]);
-        for folder in [repo.clone(), repo.join("src"), linked, bare_worktree] {
+        // An older project saved on the bare folder itself matches its worktrees too.
+        for folder in [repo.clone(), repo.join("src"), linked, bare_worktree, bare] {
             let output = Command::new("git")
                 .arg("-C").arg(&folder)
                 .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
