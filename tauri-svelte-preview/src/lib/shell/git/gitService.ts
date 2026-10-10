@@ -461,10 +461,10 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
 
   function releaseHistorySurface(): void {
     historySurfaceVisible = false;
-    statusGuard.invalidate();
     historyGuard.invalidate();
+    // A status read in flight still lands: the Changes tab may be waiting on
+    // it, and status is already null, so the tab would never ask again.
     state.status = null;
-    state.statusLoading = false;
     state.statusError = '';
     state.history = [];
     state.historyPath = '';
