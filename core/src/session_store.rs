@@ -777,6 +777,11 @@ pub struct ProjectRow {
     /// The rail group its sessions share (`PROJECT_GROUP_KEY_SQL`), read with
     /// the row; ignored when a row is written.
     pub group_key: String,
+    /// When it was pinned; ignored when a row is written.
+    pub pinned_at_ms: Option<i64>,
+    /// The latest activity of its sessions on this Mac, read with the row;
+    /// ignored when a row is written.
+    pub last_used_ms: Option<i64>,
 }
 
 /// A session's project group as the rail and History show it: `repo:<repo_key>`
@@ -787,6 +792,15 @@ pub struct ProjectRow {
 const PROJECT_GROUP_KEY_SQL: &str =
     "CASE WHEN p.id IS NULL THEN 'none' WHEN p.repo_key <> '' THEN 'repo:' || lower(p.repo_key) ELSE 'project:' || p.id END";
 const PROJECT_GROUP_LABEL_SQL: &str = "COALESCE(p.title, 'No project')";
+
+/// Selects `projects p` rows in `project_from_row`'s order, with `rest` after the FROM.
+fn project_query(rest: &str) -> String {
+    format!(
+        "SELECT p.id, p.machine, p.root_path, p.title, p.repo_key, p.created_at, {PROJECT_GROUP_KEY_SQL}, p.pinned_at,
+                (SELECT MAX(s.last_activity_at) FROM sessions s WHERE s.project_id = p.id) AS last_used
+         FROM projects p {rest}"
+    )
+}
 /// The newest local project creation time the back-fill has already run for.
 const PROJECT_BACKFILL_MARK_KEY: &str = "projects.backfilled-through";
 
@@ -2146,10 +2160,7 @@ impl SessionStore {
     pub fn list_projects(&self) -> Result<Vec<ProjectRow>> {
         let connection = self.lock()?;
         let mut statement = connection
-            .prepare(&format!(
-                "SELECT p.id, p.machine, p.root_path, p.title, p.repo_key, p.created_at, {PROJECT_GROUP_KEY_SQL}
-                 FROM projects p ORDER BY p.created_at, p.id"
-            ))
+            .prepare(&project_query("ORDER BY p.pinned_at IS NULL, last_used DESC, p.created_at, p.id"))
             .map_err(|error| StoreError::sqlite("could not prepare the project list", error))?;
         let rows = statement
             .query_map([], project_from_row)
@@ -2159,10 +2170,10 @@ impl SessionStore {
     }
 
     /// Adds the project, or returns the one already registered for the same
-    /// folder on the same machine.
-    pub fn insert_or_get_project(&self, row: &ProjectRow) -> Result<ProjectRow> {
+    /// folder on the same machine, with whether it was already there.
+    pub fn insert_or_get_project(&self, row: &ProjectRow) -> Result<(ProjectRow, bool)> {
         let connection = self.lock_write()?;
-        connection
+        let inserted = connection
             .execute(
                 "INSERT INTO projects (id, machine, root_path, title, repo_key, created_at)
                  VALUES (?, ?, ?, ?, ?, ?)
@@ -2170,16 +2181,91 @@ impl SessionStore {
                 params![row.id, row.machine, row.root_path, row.title, row.repo_key, row.created_at_ms],
             )
             .map_err(|error| StoreError::sqlite("could not save the project", error))?;
-        connection
+        let project = connection
             .query_row(
-                &format!(
-                    "SELECT p.id, p.machine, p.root_path, p.title, p.repo_key, p.created_at, {PROJECT_GROUP_KEY_SQL}
-                     FROM projects p WHERE p.machine = ? AND p.root_path = ?"
-                ),
+                &project_query("WHERE p.machine = ? AND p.root_path = ?"),
                 params![row.machine, row.root_path],
                 project_from_row,
             )
+            .map_err(|error| StoreError::sqlite("could not read the project", error))?;
+        Ok((project, inserted == 0))
+    }
+
+    pub fn get_project(&self, id: &str) -> Result<Option<ProjectRow>> {
+        let connection = self.lock()?;
+        connection
+            .query_row(&project_query("WHERE p.id = ?"), [id], project_from_row)
+            .optional()
             .map_err(|error| StoreError::sqlite("could not read the project", error))
+    }
+
+    /// Changes the title only. Answers whether the project exists.
+    pub fn rename_project(&self, id: &str, title: &str) -> Result<bool> {
+        let connection = self.lock_write()?;
+        let changed = connection
+            .execute("UPDATE projects SET title = ? WHERE id = ?", params![title, id])
+            .map_err(|error| StoreError::sqlite("could not rename the project", error))?;
+        Ok(changed == 1)
+    }
+
+    /// Moves the project to another folder on its machine. Answers false when
+    /// the project is gone or another project already has that folder.
+    pub fn set_project_root(&self, id: &str, root_path: &str, repo_key: &str) -> Result<bool> {
+        let connection = self.lock_write()?;
+        let changed = connection
+            .execute(
+                "UPDATE OR IGNORE projects SET root_path = ?, repo_key = ? WHERE id = ?",
+                params![root_path, repo_key, id],
+            )
+            .map_err(|error| StoreError::sqlite("could not change the project folder", error))?;
+        Ok(changed == 1)
+    }
+
+    /// Pins the project (keeping the first pin time) or unpins it. Answers
+    /// whether the project exists.
+    pub fn set_project_pinned(&self, id: &str, pinned: bool) -> Result<bool> {
+        let connection = self.lock_write()?;
+        let changed = connection
+            .execute(
+                "UPDATE projects SET pinned_at = CASE WHEN ?2
+                    THEN COALESCE(pinned_at, CAST(strftime('%s', 'now') AS INTEGER) * 1000) END
+                 WHERE id = ?1",
+                params![id, pinned],
+            )
+            .map_err(|error| StoreError::sqlite("could not pin the project", error))?;
+        Ok(changed == 1)
+    }
+
+    /// The sessions filed under the project.
+    pub fn project_session_ids(&self, id: &str) -> Result<Vec<String>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare("SELECT owned_id FROM sessions WHERE project_id = ? ORDER BY owned_id")
+            .map_err(|error| StoreError::sqlite("could not prepare the project sessions", error))?;
+        let rows = statement
+            .query_map([id], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not list the project sessions", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read the project sessions", error))
+    }
+
+    /// Deletes the project and leaves its sessions without one, in one
+    /// transaction. Answers whether the project existed.
+    pub fn remove_project(&self, id: &str) -> Result<bool> {
+        let mut connection = self.lock_write()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| StoreError::sqlite("could not begin removing the project", error))?;
+        transaction
+            .execute("UPDATE sessions SET project_id = NULL WHERE project_id = ?", [id])
+            .map_err(|error| StoreError::sqlite("could not unfile the project sessions", error))?;
+        let removed = transaction
+            .execute("DELETE FROM projects WHERE id = ?", [id])
+            .map_err(|error| StoreError::sqlite("could not remove the project", error))?;
+        transaction
+            .commit()
+            .map_err(|error| StoreError::sqlite("could not finish removing the project", error))?;
+        Ok(removed == 1)
     }
 
     /// The project group for each `[id, project_id]` pair in `pairs_json`, as
@@ -3854,6 +3940,14 @@ fn add_project_schema(connection: &Connection) -> Result<()> {
             .execute_batch("ALTER TABLE sessions ADD COLUMN project_id TEXT;")
             .map_err(|error| StoreError::sqlite("could not add the session project column", error))?;
     }
+    let pinned_exists: bool = connection
+        .query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('projects') WHERE name = 'pinned_at')", [], |row| row.get(0))
+        .map_err(|error| StoreError::sqlite("could not inspect the project pin column", error))?;
+    if !pinned_exists {
+        connection
+            .execute_batch("ALTER TABLE projects ADD COLUMN pinned_at INTEGER;")
+            .map_err(|error| StoreError::sqlite("could not add the project pin column", error))?;
+    }
     connection
         .execute_batch("CREATE INDEX IF NOT EXISTS sessions_project_idx ON sessions(project_id);")
         .map_err(|error| StoreError::sqlite("could not index the session project column", error))
@@ -3932,6 +4026,8 @@ fn project_from_row(row: &Row<'_>) -> rusqlite::Result<ProjectRow> {
         repo_key: row.get(4)?,
         created_at_ms: row.get(5)?,
         group_key: row.get(6)?,
+        pinned_at_ms: row.get(7)?,
+        last_used_ms: row.get(8)?,
     })
 }
 
@@ -4608,7 +4704,7 @@ mod tests {
             [], |row| row.get(0),
         ).unwrap();
         assert_eq!(version, 20);
-        assert_eq!(project_columns, ["id", "machine", "root_path", "title", "repo_key", "created_at"]);
+        assert_eq!(project_columns, ["id", "machine", "root_path", "title", "repo_key", "created_at", "pinned_at"]);
         assert!(column_exists);
     }
 
@@ -4621,6 +4717,8 @@ mod tests {
             repo_key: "github.com/a/repo".to_owned(),
             created_at_ms,
             group_key: "repo:github.com/a/repo".to_owned(),
+            pinned_at_ms: None,
+            last_used_ms: None,
         }
     }
 
@@ -4628,13 +4726,83 @@ mod tests {
     fn insert_or_get_project_returns_the_existing_row_for_the_same_folder() {
         let (_directory, _path, store) = open_temp_store();
         let first = fixture_project("b", "local", "/work/repo", 10);
-        assert_eq!(store.insert_or_get_project(&first).unwrap(), first);
+        assert_eq!(store.insert_or_get_project(&first).unwrap(), (first.clone(), false));
         let again = store.insert_or_get_project(&fixture_project("c", "local", "/work/repo", 20)).unwrap();
-        assert_eq!(again, first);
+        assert_eq!(again, (first.clone(), true), "the same folder reports that it already existed");
         let remote = fixture_project("a", "box", "/work/repo", 10);
-        assert_eq!(store.insert_or_get_project(&remote).unwrap(), remote);
+        assert_eq!(store.insert_or_get_project(&remote).unwrap(), (remote.clone(), false));
         let projects = store.list_projects().unwrap();
         assert_eq!(projects, vec![remote, first]);
+    }
+
+    #[test]
+    fn project_edits_rename_move_and_pin() {
+        let (_directory, _path, store) = open_temp_store();
+        store.insert_or_get_project(&fixture_project("a", "local", "/work/a", 1)).unwrap();
+        store.insert_or_get_project(&fixture_project("b", "local", "/work/b", 2)).unwrap();
+
+        assert!(store.rename_project("a", "Renamed").unwrap());
+        assert!(!store.rename_project("gone", "Renamed").unwrap());
+        let a = store.get_project("a").unwrap().unwrap();
+        assert_eq!((a.title.as_str(), a.root_path.as_str()), ("Renamed", "/work/a"));
+
+        assert!(store.set_project_root("a", "/work/a2", "").unwrap());
+        let a = store.get_project("a").unwrap().unwrap();
+        assert_eq!((a.root_path.as_str(), a.repo_key.as_str(), a.group_key.as_str()), ("/work/a2", "", "project:a"));
+        assert!(!store.set_project_root("a", "/work/b", "").unwrap(), "another project's folder is refused");
+        assert_eq!(store.get_project("a").unwrap().unwrap().root_path, "/work/a2");
+
+        assert!(store.set_project_pinned("b", true).unwrap());
+        let pinned_at = store.get_project("b").unwrap().unwrap().pinned_at_ms;
+        assert!(pinned_at.is_some());
+        assert!(store.set_project_pinned("b", true).unwrap());
+        assert_eq!(store.get_project("b").unwrap().unwrap().pinned_at_ms, pinned_at, "pinning again keeps the time");
+        assert!(store.set_project_pinned("b", false).unwrap());
+        assert_eq!(store.get_project("b").unwrap().unwrap().pinned_at_ms, None);
+        assert_eq!(store.get_project("gone").unwrap(), None);
+    }
+
+    #[test]
+    fn project_list_puts_pinned_first_then_last_used() {
+        let (_directory, _path, store) = open_temp_store();
+        for (id, created) in [("old", 1), ("busy", 2), ("idle", 3), ("pinned", 4)] {
+            store.insert_or_get_project(&fixture_project(id, "local", &format!("/work/{id}"), created)).unwrap();
+        }
+        for (owned_id, project_id, activity) in [("s1", "old", 100), ("s2", "busy", 50), ("s3", "busy", 300), ("s4", "pinned", 10)] {
+            let mut session = fixture_session(owned_id, activity);
+            session.project_id = Some(project_id.to_owned());
+            store.upsert_session(&session).unwrap();
+        }
+        store.set_project_pinned("pinned", true).unwrap();
+
+        let listed: Vec<(String, Option<i64>)> =
+            store.list_projects().unwrap().into_iter().map(|p| (p.id, p.last_used_ms)).collect();
+        assert_eq!(listed, vec![
+            ("pinned".to_owned(), Some(10)),
+            ("busy".to_owned(), Some(300)),
+            ("old".to_owned(), Some(100)),
+            ("idle".to_owned(), None),
+        ]);
+    }
+
+    #[test]
+    fn removing_a_project_unlinks_its_sessions_in_one_step() {
+        let (_directory, _path, store) = open_temp_store();
+        store.insert_or_get_project(&fixture_project("p", "local", "/work/p", 1)).unwrap();
+        for (owned_id, project_id) in [("mine", Some("p")), ("other", Some("q")), ("loose", None)] {
+            let mut session = fixture_session(owned_id, 1);
+            session.project_id = project_id.map(str::to_owned);
+            store.upsert_session(&session).unwrap();
+        }
+        assert_eq!(store.project_session_ids("p").unwrap(), ["mine"]);
+
+        assert!(store.remove_project("p").unwrap());
+        assert!(!store.remove_project("p").unwrap());
+        assert_eq!(store.get_project("p").unwrap(), None);
+        let project_of = |id: &str| store.get_session(id).unwrap().unwrap().project_id;
+        assert_eq!(project_of("mine"), None, "the session stays, without a project");
+        assert_eq!(project_of("other").as_deref(), Some("q"));
+        assert_eq!(project_of("loose"), None);
     }
 
     #[test]
