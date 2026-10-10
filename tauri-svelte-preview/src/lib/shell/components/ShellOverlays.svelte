@@ -46,7 +46,7 @@
 	}
 	let { onResetLayout, message, onProblemsLocationChange, onRemoteConnected, onShowBottomDock, onUtilityStateChange }: Props = $props();
 
-	let settingsHost: { open: () => void; close: () => void; isOpen: () => boolean } | null = null;
+	let settingsHost: { open: (section?: string) => void; close: () => void; isOpen: () => boolean } | null = null;
 	let resourcePopoverHost: HTMLDivElement | null = null;
 	let usagePopoverHost: HTMLDivElement | null = null;
 	let resourceAnchor = $state<UtilityAnchor | null>(null);
@@ -132,8 +132,8 @@
 	/** Open the settings dialog from outside — the gear on the activity bar is
 	 * over in the left column, and the dialog lives here. Same shape as
 	 * `SettingsHost`'s own `open()`, one layer out. */
-	export function openSettings(): void {
-		settingsHost?.open();
+	export function openSettings(section?: string): void {
+		settingsHost?.open(section);
 	}
 
 	/** Whether the settings screen is up. Reactive: the host's open state is

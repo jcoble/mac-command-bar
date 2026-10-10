@@ -22,8 +22,11 @@ import { updateAgentConversationSessionMetaFromTauri } from '../../tauriSource';
 
 export class NewSessionController {
 	draftOpen = $state(false);
+	/** The project the draft opens in; null lets the draft choose its default. */
+	projectId = $state<string | null>(null);
 
-	private draftWork = new AbortController();
+	// State so the surface follows a re-open: a new signal is a new draft.
+	private draftWork = $state.raw(new AbortController());
 	private startingOwnedId: string | null = null;
 	pendingFirstMessage = $state<{ ownedId: string; text: string } | null>(null);
 
@@ -31,9 +34,12 @@ export class NewSessionController {
 		return this.draftWork.signal;
 	}
 
-	open(): void {
+	/** An open draft is kept, typing and all, unless a different project is asked for. */
+	open(projectId: string | null = null): void {
+		if (this.draftOpen && (projectId === null || projectId === this.projectId)) return;
 		this.stopDraftWork();
 		this.draftWork = new AbortController();
+		this.projectId = projectId;
 		this.draftOpen = true;
 	}
 

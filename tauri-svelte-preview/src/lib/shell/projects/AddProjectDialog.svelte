@@ -17,6 +17,7 @@
   import Laptop from '@lucide/svelte/icons/laptop';
   import Plus from '@lucide/svelte/icons/plus';
   import Settings2 from '@lucide/svelte/icons/settings-2';
+  import { onMount } from 'svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import * as Command from '$lib/components/ui/command/index.js';
@@ -28,20 +29,25 @@
 
   interface Props {
     profiles: RemoteAssemblyProfile[];
+    /** Start on this machine's folders instead of asking for a machine. */
+    machine?: string | null;
     onAdded: (project: ProjectRecord) => void;
     onAddRemote: () => void;
     onManageRemotes: () => void;
     onClose: () => void;
   }
 
-  let { profiles, onAdded, onAddRemote, onManageRemotes, onClose }: Props = $props();
+  let { profiles, machine: startMachine = null, onAdded, onAddRemote, onManageRemotes, onClose }: Props = $props();
 
   const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
 
   let open = $state(true);
-  let step = $state<'machine' | 'folder'>('machine');
+  // The starting machine is read once: the dialog is mounted per use.
+  // svelte-ignore state_referenced_locally
+  let step = $state<'machine' | 'folder'>(startMachine ? 'folder' : 'machine');
   let search = $state('');
-  let machine = $state('local');
+  // svelte-ignore state_referenced_locally
+  let machine = $state(startMachine ?? 'local');
   let path = $state('');
   let listing = $state<FolderListing | null>(null);
   let message = $state('');
@@ -53,6 +59,16 @@
   const canAdd = $derived(Boolean(path.trim()) && !adding);
   /** The path names a folder that is not there yet: Enter and the button create it. */
   const newFolder = $derived(isNewFolderPath(path, listing));
+
+  onMount(() => {
+    if (step === 'folder') void startOnFolder();
+  });
+
+  /** Opened on a machine: list its home, then take focus back from the dialog's own first-focus. */
+  async function startOnFolder(): Promise<void> {
+    await list('~');
+    pathField?.focus();
+  }
 
   // The folder step opens with the path field focused so typing goes there.
   $effect(() => {

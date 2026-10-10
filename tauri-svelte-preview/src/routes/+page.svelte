@@ -32,6 +32,7 @@
 	import EditorPanel from "$lib/shell/components/EditorPanel.svelte";
 	import GitHistoryView from "$lib/shell/components/git/GitHistoryView.svelte";
 	import GitDiffView from "$lib/shell/components/GitDiffView.svelte";
+	import HomeButton from "$lib/shell/components/HomeButton.svelte";
 	import { pullRequestSelection } from "$lib/shell/components/github/pullRequestSelection.svelte";
 	import PullRequestWorkspace from "$lib/shell/components/github/PullRequestWorkspace.svelte";
 	import RightPanel from "$lib/shell/components/RightPanel.svelte";
@@ -60,6 +61,7 @@
 	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
 	import type { ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow";
 	import { ownedSessionMetaForBackend, type OwnedSession } from "$lib/shell/ownedSessions";
+	import ProjectsScreen from "$lib/shell/projects/ProjectsScreen.svelte";
 	import { diffPathFor } from "$lib/shell/sessionWorkspaces";
 	import { ownedSessionStatusPatch, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
 	import type { CenterTabId } from "$lib/shell/workbenchNavigation";
@@ -87,6 +89,8 @@
 	});
 	let overlays = $state<ShellOverlays | null>(null);
 	let openUtility = $state<UtilityId | null>(null);
+	/** The Projects screen covers the frame; everything under it stays as it was. */
+	let projectsOpen = $state(false);
 	let sessionsRailWidth = $state(326);
 	// Zero until the frame reports the pane's laid-out width: the browser may
 	// place its native view only once the pane really has a size.
@@ -467,8 +471,9 @@
 		if (ownedId) selection.persistWorkspaceState(ownedId, workbench.captureSessionState());
 	}
 
-	function openNewSession(): void {
-		selection.newSession.open();
+	function openNewSession(projectId: string | null = null): void {
+		projectsOpen = false;
+		selection.newSession.open(projectId);
 		selectCenterTab("session");
 	}
 
@@ -502,7 +507,7 @@
 				activeOwnedId={selection.activeOwnedId}
 				collapsed={workbench.sessionsCollapsed}
 				onCollapse={(collapsed) => workbench.collapseSessions(collapsed)}
-				onNewSession={openNewSession}
+				onNewSession={() => openNewSession()}
 				onSelectSession={(ownedId) => {
 					void selectSession(ownedId);
 				}}
@@ -608,12 +613,15 @@
 			</div>
 		{/if}
 		{#if selection.newSession.draftOpen}
+			{#key selection.newSession.stopSignal}
 			<DraftSessionSurface
 				stopSignal={selection.newSession.stopSignal}
+				projectId={selection.newSession.projectId}
 				startingOwnedId={selection.newSession.pendingFirstMessage?.ownedId ?? null}
 				onSend={startNewSession}
 				onClose={() => selection.newSession.close()}
 			/>
+			{/key}
 		{/if}
 	</div>
 {/snippet}
@@ -642,7 +650,8 @@
 					topTabs.activeKind === "browser" &&
 					toolsRailWidth > 0 &&
 					!overlays?.settingsOpen() &&
-					!popupOpen}
+					!popupOpen &&
+					!projectsOpen}
 				panelOpen={paneShowing}
 				root={browserRoot}
 				ownedId={selection.activeOwnedId}
@@ -692,7 +701,13 @@
 	}}
 >
 	<div class="window-chrome" data-tauri-drag-region>
-		<div class="window-sessions-cap" data-tauri-drag-region></div>
+		<div class="window-sessions-cap" data-tauri-drag-region>
+			<HomeButton
+				onOpenProjects={() => (projectsOpen = true)}
+				onOpenSettings={() => overlays?.openSettings()}
+				onOpenUpdate={() => overlays?.openSettings("updates")}
+			/>
+		</div>
 		<TopTabRow
 			tabs={topTabViews}
 			activeKey={topTabs.activeKey}
@@ -767,6 +782,9 @@
 				{@render drawerArea()}
 			</div>
 		</aside>
+		{#if projectsOpen}
+			<ProjectsScreen onBack={() => (projectsOpen = false)} onOpenProject={openNewSession} />
+		{/if}
 	</div>
 
 	<UtilityStrip
@@ -886,7 +904,9 @@
 
 	.window-chrome {
 		display: grid;
-		grid-template-columns: var(--sessions-rail-width) minmax(0, 1fr);
+		/* Never narrower than the home button with its circles out, so a folded
+		   sessions column cannot put the first tab over them. */
+		grid-template-columns: max(var(--sessions-rail-width), 172px) minmax(0, 1fr);
 		flex: 0 0 var(--center-head-row-height);
 		align-items: center;
 		min-height: 0;
