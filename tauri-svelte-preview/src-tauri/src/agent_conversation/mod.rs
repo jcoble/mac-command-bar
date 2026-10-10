@@ -308,6 +308,9 @@ fn project_record(row: mcb_core::session_store::ProjectRow) -> protocol::Project
         repo_key: row.repo_key,
         created_at_ms: row.created_at_ms,
         group_key: row.group_key,
+        pinned_at_ms: row.pinned_at_ms,
+        last_used_ms: row.last_used_ms,
+        already_existed: false,
     }
 }
 
@@ -359,7 +362,8 @@ async fn inspect_folder_on(
 
 #[tauri::command]
 /// Inspects the folder on the machine that owns it, then registers it. Adding
-/// the same folder again returns the project already registered. With `create`
+/// the same folder again returns the project already registered, marked
+/// `alreadyExisted`. With `create`
 /// it first makes the folder (one level, no `git init`) on that machine, after
 /// checking the folder it goes in so a refusal leaves nothing behind.
 pub async fn add_project(
@@ -388,7 +392,7 @@ pub async fn add_project(
     }
     let inspection = inspect_folder_on(&remote, &machine, path).await?;
     let row = crate::project_folders::new_project_row(machine, inspection);
-    let project = manager.add_project(row)?;
+    let (project, already_existed) = manager.add_project(row)?;
     if project.machine == "local" {
         // A new local project files the older sessions in its folders now, so
         // they regroup without a restart (amendment A1: the project set changed).
@@ -397,7 +401,57 @@ pub async fn add_project(
             .await
             .map_err(|error| error.to_string())??;
     }
-    Ok(project_record(project))
+    Ok(protocol::ProjectRecord { already_existed, ..project_record(project) })
+}
+
+const PROJECT_GONE: &str = "That project no longer exists.";
+
+#[tauri::command]
+/// Changes the project's title only.
+pub async fn rename_project(manager: tauri::State<'_, AgentRuntimeManager>, id: String, name: String) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("A project needs a name.".into());
+    }
+    match manager.store().rename_project(&id, name).map_err(|error| error.to_string())? {
+        true => Ok(()),
+        false => Err(PROJECT_GONE.into()),
+    }
+}
+
+#[tauri::command]
+/// Moves the project to another folder on the same machine, after the same
+/// checks as adding one. Its sessions keep the folders they were started in.
+pub async fn set_project_root(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    id: String,
+    root: String,
+) -> Result<(), String> {
+    let project = manager.store().get_project(&id).map_err(|error| error.to_string())?.ok_or(PROJECT_GONE)?;
+    let inspection = inspect_folder_on(&remote, &project.machine, root).await?;
+    match manager.store().set_project_root(&id, &inspection.root_path, &inspection.repo_key).map_err(|error| error.to_string())? {
+        true => Ok(()),
+        false => Err("Another project already uses that folder.".into()),
+    }
+}
+
+#[tauri::command]
+pub async fn set_project_pinned(manager: tauri::State<'_, AgentRuntimeManager>, id: String, pinned: bool) -> Result<(), String> {
+    match manager.store().set_project_pinned(&id, pinned).map_err(|error| error.to_string())? {
+        true => Ok(()),
+        false => Err(PROJECT_GONE.into()),
+    }
+}
+
+#[tauri::command]
+/// Takes the project off the list, keeping or deleting its sessions. Files stay.
+pub async fn remove_project(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    id: String,
+    delete_sessions: bool,
+) -> Result<(), String> {
+    manager.remove_project(&id, delete_sessions).await
 }
 
 #[tauri::command]

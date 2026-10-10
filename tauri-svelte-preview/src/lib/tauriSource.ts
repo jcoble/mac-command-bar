@@ -3189,8 +3189,23 @@ async function postLocalSourceBridge<T>(
   return body as T;
 }
 
-/** A registered project. `groupKey` is the rail group its sessions share, computed in SQL. */
-export type ProjectRecord = { id: string; machine: string; rootPath: string; title: string; repoKey: string; createdAtMs: number; groupKey: string };
+/**
+ * A registered project. `groupKey` is the rail group its sessions share and `lastUsedMs` its sessions' latest
+ * activity on this Mac, both computed in SQL. `alreadyExisted` is set only on an `add_project` answer for a folder
+ * that was already a project.
+ */
+export type ProjectRecord = {
+  id: string;
+  machine: string;
+  rootPath: string;
+  title: string;
+  repoKey: string;
+  createdAtMs: number;
+  groupKey: string;
+  pinnedAtMs: number | null;
+  lastUsedMs: number | null;
+  alreadyExisted?: boolean;
+};
 export type FolderListing = { path: string; directories: string[]; truncated: boolean };
 
 export async function listProjectsFromTauri(): Promise<ProjectRecord[]> {
@@ -3207,6 +3222,29 @@ export async function addProjectFromTauri(machine: string, path: string, create:
   if (!isTauriRuntime()) throw new Error('Projects are available in the desktop app.');
   const { invoke } = await import('@tauri-apps/api/core');
   return invoke<ProjectRecord>('add_project', { machine, path, create });
+}
+
+/** Changes the project's title only. */
+export async function renameProjectFromTauri(id: string, name: string): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('rename_project', { id, name });
+}
+
+/** Moves the project to another folder on its machine, after the same checks as adding one. */
+export async function setProjectRootFromTauri(id: string, root: string): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('set_project_root', { id, root });
+}
+
+export async function setProjectPinnedFromTauri(id: string, pinned: boolean): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('set_project_pinned', { id, pinned });
+}
+
+/** Takes the project off the list; its sessions stay without a project unless `deleteSessions`. Files stay. */
+export async function removeProjectFromTauri(id: string, deleteSessions: boolean): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('remove_project', { id, deleteSessions });
 }
 
 /** The folders inside `path` on `machine` ('local' or a saved remote profile id). `~` is that machine's home. */
