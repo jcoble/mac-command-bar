@@ -36,6 +36,7 @@ import {
   sendTargetGeneration,
   shouldReviveBeforeSend
 } from './conversationActivation.ts';
+import { setAgentConversationConfig } from './conversationConfig.ts';
 import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
 import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
 import { shouldClearConversationSending } from './conversationReducer.ts';
@@ -1435,6 +1436,13 @@ export async function sendStructuredMessage(
       throw new Error('Message cancelled before sending.');
     }
     if (preparingSends.get(ownedId) === preparation) preparingSends.delete(ownedId);
+    if (startConfig?.model && !state.nativeSessionId) {
+      // Stored together, so the start applies the model before the effort.
+      await setAgentConversationConfig({
+        ownedId, generation: validatedGeneration, model: startConfig.model,
+        ...(startConfig.reasoningEffort ? { reasoningEffort: startConfig.reasoningEffort } : {})
+      });
+    }
     const requestedModel = startConfig?.model ?? null;
     const requestedApprovalPolicy = startConfig?.approvalPolicy ?? null;
     const receipt: AgentConversationSendReceipt = await invoke('send_agent_conversation_message', {

@@ -710,6 +710,12 @@ pub struct AgentConversationConfigState {
     pub model_labels: std::collections::BTreeMap<String, String>,
     pub reasoning_effort: Option<String>,
     pub available_efforts: Vec<String>,
+    /// Each model's own efforts, for providers that publish them (Codex).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub model_efforts: std::collections::BTreeMap<String, Vec<String>>,
+    /// Each model's default effort, where the adapter recommends one.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub model_default_efforts: std::collections::BTreeMap<String, String>,
     pub approval_policy: Option<String>,
     pub available_approval_policies: Vec<String>,
 }
@@ -1059,6 +1065,8 @@ mod contract_tests {
     fn conversation_config_contract_uses_camel_case_fields() {
         let config = AgentConversationConfigState {
             model_labels: Default::default(),
+            model_efforts: Default::default(),
+            model_default_efforts: Default::default(),
             model: Some("gpt-5.6-sol".into()),
             available_models: vec!["gpt-5.6-sol".into(), "gpt-5.6-terra".into()],
             reasoning_effort: Some("xhigh".into()),
