@@ -14,6 +14,8 @@
  * parentheses.
  */
 
+import { sessionWorkspaceRoot } from '../../../workspacePaths.ts';
+
 export type PullRequestState = 'open' | 'merged' | 'closed' | 'all';
 export type PullRequestScope = 'everyone' | 'mine' | 'needs-review';
 
@@ -44,4 +46,20 @@ export function pullRequestSearchQuery(state: PullRequestState, scope: PullReque
     return plain ? `(${word} OR head:${word} OR author:${word})` : word;
   });
   return [STATE_TERMS[state], SCOPE_TERMS[scope], ...words, 'sort:updated-desc'].filter(Boolean).join(' ');
+}
+
+type SessionForProject = Parameters<typeof sessionWorkspaceRoot>[0] & { projectId: string | null; projectGroupKey: string };
+type ProjectForFilter = { id: string; machine: string; rootPath: string; repoKey: string; groupKey: string };
+
+/**
+ * The project filter for the active session: a remote session's own workspace,
+ * or the local GitHub project it belongs to (by id, then by the project group a
+ * worktree shares with it). Anything else is '' — every local project.
+ */
+export function sessionProjectFilter(session: SessionForProject | undefined, projects: ProjectForFilter[]): string {
+  if (!session) return '';
+  if (session.executionEnvironment === 'remote') return sessionWorkspaceRoot(session);
+  const github = projects.filter((project) => project.machine === 'local' && project.repoKey.toLowerCase().startsWith('github.com/'));
+  const project = github.find((candidate) => candidate.id === session.projectId) ?? github.find((candidate) => candidate.groupKey && candidate.groupKey === session.projectGroupKey);
+  return project?.rootPath ?? '';
 }
