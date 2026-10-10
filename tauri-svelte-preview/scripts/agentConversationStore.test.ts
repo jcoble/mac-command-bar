@@ -1067,8 +1067,8 @@ await test('start-up registers the event stream before it opens the remembered s
     applyStoredTheme: () => undefined, applyStoredFonts: () => undefined,
     hydrateShellSettings: async () => undefined, shellActive: () => true,
     listAgentConversationSessionsFromTauri: async () => [],
-    listRemoteAgentConversationSessionsFromTauri: async () => [{ ownedId: 'remembered' }],
-    readAssemblySettingFromTauri: async () => 'remembered', ACTIVE_OWNED_SESSION_SETTING_KEY: 'active',
+    readRemoteSessions: async () => [{ ownedId: 'remembered' }],
+    readStoredActiveOwnedId: async () => 'remembered',
     ownedSessionFromBackend: (session: unknown) => session, hydrateOwned: () => undefined,
     shellPanels: { allowSessionLoads: () => undefined }, rail: { error: null },
     startConversationEventsForOwner: async () => {

@@ -5586,6 +5586,38 @@ async fn pump_inbound(
             settle_closed_transport(&manager, &transport_runtime, reason).await;
             return;
         }
+        // The agent withdrew a permission request: expire its card, since no answer can reach it.
+        if let AcpInbound::RequestCancelled { wire_id } = &inbound {
+            let mut sessions = manager
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for session in sessions.values_mut().filter(|session| {
+                session
+                    .transport
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &transport_runtime))
+            }) {
+                let withdrawn = session
+                    .permission_requests
+                    .iter()
+                    .find(|(_, pending)| &pending.wire_id == wire_id)
+                    .map(|(request_id, _)| request_id.clone());
+                let Some((request_id, pending)) =
+                    withdrawn.and_then(|id| session.permission_requests.remove_entry(&id))
+                else {
+                    continue;
+                };
+                if let Some(ordered_events) = &session.ordered_events {
+                    let _ = ordered_events.send(OrderedSessionEvent::ApprovalResolved {
+                        request_id,
+                        state: ApprovalState::Expired,
+                        summary: pending.summary,
+                    });
+                }
+            }
+            continue;
+        }
         let target = {
             let sessions = manager
                 .sessions
@@ -5998,7 +6030,9 @@ async fn pump_inbound(
                     ),
                 }
             }
-            AcpInbound::TransportClosed { .. } => unreachable!("handled before session routing"),
+            AcpInbound::RequestCancelled { .. } | AcpInbound::TransportClosed { .. } => {
+                unreachable!("handled before session routing")
+            }
         }
     }
 }
@@ -6129,7 +6163,7 @@ fn routed_session_for_inbound(
 ) -> Option<(String, u64)> {
     let params = match inbound {
         AcpInbound::SessionUpdate(params) | AcpInbound::AgentRequest { params, .. } => Some(params),
-        AcpInbound::TransportClosed { .. } => None,
+        AcpInbound::RequestCancelled { .. } | AcpInbound::TransportClosed { .. } => None,
     };
     let native_session_id = params.and_then(inbound_native_session_id);
     let matching_transport = |session: &&ManagedAgentSession| {
@@ -13500,6 +13534,47 @@ mod tests {
             fixture_log.contains(r#""outcome":{"outcome":"selected","optionId":"allow""#),
             "permission response must select a valid allow option: {fixture_log}"
         );
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_permission_the_agent_withdraws_expires_instead_of_staying_pending() {
+        let fixture = fixture_manager_with_acp_session("permission_withdrawn").await;
+        let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
+        let sink = Arc::clone(&seen);
+        fixture
+            .manager
+            .set_emitter(Arc::new(move |event| sink.lock().unwrap().push(event)));
+        fixture
+            .manager
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await
+            .expect("prompt starts");
+        wait_until(|| {
+            seen.lock().unwrap().iter().any(|event| {
+                matches!(
+                    event.payload,
+                    AgentConversationPayload::Approval {
+                        state: ApprovalState::Expired,
+                        ..
+                    }
+                )
+            })
+        })
+        .await;
+        assert!(fixture
+            .manager
+            .sessions
+            .lock()
+            .unwrap()
+            .get(&fixture.owned_id)
+            .is_some_and(|session| session.permission_requests.is_empty()));
 
         fixture
             .manager

@@ -82,13 +82,21 @@
   onMount(() => {
     mounted = true;
     if (initialProfile) editing = { ...initialProfile };
-    void readRemoteAssemblyEnvironmentFromTauri().then(async (next) => {
-      if (!mounted) return;
+    const controller = new AbortController();
+    void loadEnvironment(controller.signal);
+    return () => { mounted = false; controller.abort(); owner?.abort(); };
+  });
+
+  async function loadEnvironment(signal: AbortSignal): Promise<void> {
+    try {
+      const next = await readRemoteAssemblyEnvironmentFromTauri();
+      if (signal.aborted) return;
       apply(next);
       await readBackends(next.profiles);
-    }).catch((reason: unknown) => { if (mounted) error = String(reason); });
-    return () => { mounted = false; owner?.abort(); };
-  });
+    } catch (reason) {
+      if (!signal.aborted) error = String(reason);
+    }
+  }
 
   async function runConnection(selected: RemoteAssemblyProfile, install = false, area: 'saved' | 'install' = 'saved') {
     if (busy) return;

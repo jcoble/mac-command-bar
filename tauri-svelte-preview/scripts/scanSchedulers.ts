@@ -55,7 +55,10 @@ const allowedHits = new Set([
   // A diff read races the abort of its combined owner-and-timeout signal, so a read that ignores
   // the signal (every local call) still ends; settled by that abort, listener removed in finally.
   'src/lib/shell/git/gitBackendExtra.ts:new Promise:const aborted = new Promise<never>((_resolve, reject) => {',
-  'src/lib/shell/git/gitBackendExtra.ts:Promise.race:return await Promise.race([read(signal), aborted]);'
+  'src/lib/shell/git/gitBackendExtra.ts:Promise.race:return await Promise.race([read(signal), aborted]);',
+  // TSK-1424 E/H: one one-second clock for every running workflow stage's elapsed time. It runs only
+  // while the panel is visible and a stage is running; the effect cleanup clears it on hide, finish or unmount.
+  'src/lib/shell/panels/agents/WorkflowRuns.svelte:setInterval:const timer = window.setInterval(() => (now = Date.now()), 1000);'
 ]);
 
 interface Hit {

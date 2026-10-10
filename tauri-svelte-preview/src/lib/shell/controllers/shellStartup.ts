@@ -9,7 +9,8 @@ import {
 import {
 	listAgentConversationSessionsFromTauri,
 	listRemoteAgentConversationSessionsFromTauri,
-	readAssemblySettingFromTauri
+	readAssemblySettingFromTauri,
+	type AgentConversationSessionRecord
 } from '$lib/tauriSource';
 import { ownedSessionFromBackend } from '../ownedSessions';
 import { startConversationEvents, stopConversationEvents } from '../conversation/conversationService';
@@ -37,8 +38,8 @@ export async function startShell(options: ShellStartupOptions): Promise<void> {
 		if (!shellActive(generation, controller.signal)) return;
 		const [storedSessions, storedRemoteSessions, storedActiveOwnedId] = await Promise.all([
 			listAgentConversationSessionsFromTauri(),
-			listRemoteAgentConversationSessionsFromTauri(controller.signal).catch(() => []),
-			readAssemblySettingFromTauri(ACTIVE_OWNED_SESSION_SETTING_KEY).catch(() => null)
+			readRemoteSessions(controller.signal),
+			readStoredActiveOwnedId()
 		]);
 		if (!shellActive(generation, controller.signal)) return;
 		const projected = (storedSessions ?? []).map(ownedSessionFromBackend);
@@ -86,6 +87,24 @@ async function hydrateShellSettings(generation: number, stopSignal: AbortSignal)
 		applyStoredFonts();
 	} catch {
 		// Stored settings are optional; startup continues with defaults.
+	}
+}
+
+// A remote machine that cannot answer leaves the rail with local sessions only.
+async function readRemoteSessions(stopSignal: AbortSignal): Promise<AgentConversationSessionRecord[] | null> {
+	try {
+		return await listRemoteAgentConversationSessionsFromTauri(stopSignal);
+	} catch {
+		return [];
+	}
+}
+
+// Without a remembered session, startup opens the first one.
+async function readStoredActiveOwnedId(): Promise<unknown> {
+	try {
+		return await readAssemblySettingFromTauri(ACTIVE_OWNED_SESSION_SETTING_KEY);
+	} catch {
+		return null;
 	}
 }
 

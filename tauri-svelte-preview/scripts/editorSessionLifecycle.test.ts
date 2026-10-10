@@ -71,6 +71,7 @@ for (const call of [
 assert.match(startup, /onSelectInitial\(ownedId: string, stopSignal: AbortSignal\): Promise<void>/);
 // 8fee02322 opens session loads between the check and the select; a0b9ca6d0 lists remote sessions together with local ones.
 assert.match(startup, /if \(!shellActive\(generation, controller\.signal\)\) return;\s*shellPanels\.allowSessionLoads\(\);\s*await options\.onSelectInitial\(initial\.ownedId, controller\.signal\);\s*if \(!shellActive\(generation, controller\.signal\)\) return;/);
-assert.match(startup, /listRemoteAgentConversationSessionsFromTauri\(controller\.signal\)/);
+assert.match(startup, /readRemoteSessions\(controller\.signal\)/);
+assert.match(startup, /await listRemoteAgentConversationSessionsFromTauri\(stopSignal\);/);
 
 console.log('editorSessionLifecycle.test.ts passed');
