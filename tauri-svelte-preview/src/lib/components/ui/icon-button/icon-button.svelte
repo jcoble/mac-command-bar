@@ -85,10 +85,17 @@
   };
 
   const buttonClass = $derived(cn(TONE_CLASSES[tone], className));
+
+  /**
+   * The tooltip's content is mounted only while it is open. A closed tooltip
+   * still leaves an empty portal in `document.body`, and with a thousand of
+   * them WebKit took seconds to remove the list they belonged to.
+   */
+  let open = $state(false);
 </script>
 
 {#if tooltip}
-    <Tooltip.Root>
+    <Tooltip.Root bind:open>
       <Tooltip.Trigger>
         {#snippet child({ props })}
           <Button
@@ -106,7 +113,9 @@
           </Button>
         {/snippet}
       </Tooltip.Trigger>
-      <Tooltip.Content {side} sideOffset={6}>{label}</Tooltip.Content>
+      {#if open}
+        <Tooltip.Content {side} sideOffset={6}>{label}</Tooltip.Content>
+      {/if}
     </Tooltip.Root>
 {:else}
   <Button

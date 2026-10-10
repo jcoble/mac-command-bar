@@ -142,9 +142,13 @@
     else if (id === 'open-in-editor') openFileInEditor({ path: absolutePath, projectRoot: root });
     else if (id === 'reveal-in-finder') void revealPathFromTauri(absolutePath);
   }
+
+  let menuOpen = $state(false);
 </script>
 
-<ContextMenu.Root>
+<!-- The menu is mounted only while open: a closed one still leaves an empty
+     portal in document.body, and a thousand rows of those froze WebKit. -->
+<ContextMenu.Root bind:open={menuOpen}>
   <ContextMenu.Trigger>
     {#snippet child({ props })}
       <div {...props} class="min-w-0">
@@ -219,14 +223,16 @@
     {/snippet}
   </ContextMenu.Trigger>
 
-  <ContextMenu.Content class="w-[220px]" aria-label="File actions">
-    {#each actions as item (item.id)}
-      <ContextMenu.Item
-        data-testid={`source-control-file-menu-${item.id}`}
-        disabled={!item.enabled}
-        title={item.enabled ? undefined : item.disabledReason}
-        onSelect={() => run(item.id)}>{item.label}</ContextMenu.Item
-      >
-    {/each}
-  </ContextMenu.Content>
+  {#if menuOpen}
+    <ContextMenu.Content class="w-[220px]" aria-label="File actions">
+      {#each actions as item (item.id)}
+        <ContextMenu.Item
+          data-testid={`source-control-file-menu-${item.id}`}
+          disabled={!item.enabled}
+          title={item.enabled ? undefined : item.disabledReason}
+          onSelect={() => run(item.id)}>{item.label}</ContextMenu.Item
+        >
+      {/each}
+    </ContextMenu.Content>
+  {/if}
 </ContextMenu.Root>
