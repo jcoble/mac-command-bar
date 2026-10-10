@@ -300,7 +300,10 @@ function fileChange(relativePath, status = 'modified', badge = 'M') {
   });
 
   commitFiles.activate('/repo');
+  // Node does not wait on AbortSignal.timeout, so hold the process open until it fires.
+  const keepAlive = setInterval(() => {}, 1000);
   await commitFiles.selectCommitFile('abc', fileChange('src/app.ts'));
+  clearInterval(keepAlive);
 
   assert.equal(panel.diffLoading, false);
   assert.equal(panel.diffError, GIT_DIFF_TIMEOUT_MESSAGE);
@@ -481,14 +484,13 @@ function fileChange(relativePath, status = 'modified', badge = 'M') {
 {
   const state = createGitCommitFilesState();
   const panel = panelState('/repo');
-  let call = 0;
   const commitFiles = createGitCommitFilesService({
     state,
     panel,
     resolveTop: async () => '/repo',
     readDiff: async (root, sha, relativePath) => {
-      call += 1;
-      const mine = call;
+      // The superseded read may stop before it reaches git, so tell them apart by path.
+      const mine = relativePath === 'slow.ts' ? 1 : 2;
       await new Promise((resolve) => setTimeout(resolve, mine === 1 ? 20 : 0));
       return { relativePath, status: 'modified', diff: `diff ${mine}`, isBinary: false };
     },

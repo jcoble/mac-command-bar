@@ -364,15 +364,15 @@
 
   /** The folder, branch and remotes a Publish targets, captured when the more-actions
    * menu opens on a branch with no upstream. Null otherwise, which hides Publish.
-   * Raw so a late remote-list reply can check it still belongs to the same opening. */
-  let publishTarget = $state.raw<{
-    root: string;
-    branch: string;
-    remotes: string[] | null;
-    error: string;
-  } | null>(null);
+   * Raw: each update replaces the whole object. */
+  type PublishTarget = { root: string; branch: string; remotes: string[] | null; error: string };
+  let publishTarget = $state.raw<PublishTarget | null>(null);
+  /** Owns the remote-list read for one menu opening; closing it, reopening it or unmounting aborts it. */
+  let remotesRead = new AbortController();
+  $effect(() => () => remotesRead.abort());
 
   function moreMenuOpenChange(open: boolean): void {
+    remotesRead.abort();
     const branch = panel.status?.branch;
     if (!open || !branch || panel.status?.hasUpstream) {
       publishTarget = null;
@@ -380,15 +380,17 @@
     }
     const target = { root: folder, branch, remotes: null, error: '' };
     publishTarget = target;
-    service.listBranches().then(
-      (list) => {
-        if (publishTarget === target) publishTarget = { ...target, remotes: list?.remotes ?? [] };
-      },
-      (error: unknown) => {
-        if (publishTarget !== target) return;
-        publishTarget = { ...target, remotes: [], error: error instanceof Error ? error.message : String(error) };
-      }
-    );
+    remotesRead = new AbortController();
+    void readPublishRemotes(target, remotesRead.signal);
+  }
+
+  async function readPublishRemotes(target: PublishTarget, signal: AbortSignal): Promise<void> {
+    try {
+      const list = await service.listBranches(signal);
+      if (!signal.aborted) publishTarget = { ...target, remotes: list?.remotes ?? [] };
+    } catch (error) {
+      if (!signal.aborted) publishTarget = { ...target, remotes: [], error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   const publishAction = $derived(

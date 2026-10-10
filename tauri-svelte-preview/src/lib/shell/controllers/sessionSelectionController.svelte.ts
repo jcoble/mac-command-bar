@@ -1,4 +1,5 @@
 import { sessionWorkspaceRoot, parseRemoteWorkspacePath } from '../../workspacePaths.ts';
+import { projectRegistry } from '../projects/projectRegistry.svelte.ts';
 /**
  * Controller for session selection, filesystem projections, and workspace expansion.
  */
@@ -89,7 +90,15 @@ export class SessionSelectionController {
 	get durableSessionRoot(): string {
 		const session = this.controlledSession ?? rail.owned.find((s) => s.ownedId === rail.activeOwnedId);
 		if (!session) return "";
-		return canonicalPath(sessionWorkspaceRoot(session));
+		return canonicalPath(sessionWorkspaceRoot(session, projectRegistry.projects));
+	}
+
+	/** The tree was filled for another root than the session's, as when its project's folder changed. */
+	get treeRootMoved(): boolean {
+		const layers = this.sessionSelectionLayers;
+		const root = this.durableSessionRoot;
+		return layers.hasTreeProjection && layers.treeOwnedId === this.activeOwnedId
+			&& Boolean(root) && canonicalPath(layers.treeRequestedRoot) !== root;
 	}
 
 	get controlledEditorRootAvailable(): boolean {
@@ -202,7 +211,7 @@ export class SessionSelectionController {
 		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
 		if (session) {
 			this.activeRootRemote = session.executionEnvironment === "remote";
-			const root = canonicalPath(sessionWorkspaceRoot(session));
+			const root = canonicalPath(sessionWorkspaceRoot(session, projectRegistry.projects));
 			try {
 				await this.materializeSelection(session, root, owner, this.chatOwnedId);
 			} catch (error) {
@@ -294,14 +303,16 @@ export class SessionSelectionController {
 			if (!this.isCurrent(owner)) return true;
 
 			this.expansionOwnedId = null;
-			await this.editorSessions.resetForCheckoutChange(owner.signal, root);
+			// Unsaved files follow the root the session is shown at; a session with a project stays there.
+			const moved = rail.owned.find((session) => session.ownedId === ownedId);
+			await this.editorSessions.resetForCheckoutChange(owner.signal, moved ? canonicalPath(sessionWorkspaceRoot(moved, projectRegistry.projects)) : root);
 			if (!this.isCurrent(owner)) return true;
 			this.expandedPathsByRoot = {};
 			this.sessionSelectionLayers.clearTreeView();
 			const updated = rail.owned.find((session) => session.ownedId === ownedId);
 			if (!updated) return true;
 			this.activeRootRemote = updated.executionEnvironment === "remote";
-			await this.materializeSelection(updated, canonicalPath(sessionWorkspaceRoot(updated)), owner, this.chatOwnedId);
+			await this.materializeSelection(updated, canonicalPath(sessionWorkspaceRoot(updated, projectRegistry.projects)), owner, this.chatOwnedId);
 			return true;
 		} catch (error) {
 			if (this.isCurrent(owner)) {

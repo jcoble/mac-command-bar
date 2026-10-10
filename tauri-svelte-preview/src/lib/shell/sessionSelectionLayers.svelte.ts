@@ -1,6 +1,7 @@
 import { rail } from './stores/sessionRailStore.svelte';
 import { warmAgentConversationConfig } from './conversation/conversationConfig';
 import { sessionWorkspaceRoot } from '../workspacePaths.ts';
+import { projectRegistry } from './projects/projectRegistry.svelte.ts';
 /**
  * The projections rebuilt when a person selects a session in the rail.
  *
@@ -32,6 +33,8 @@ export type SessionSelectionOwner = {
 export class SessionSelectionLayers {
   treeOwnedId = $state<string | null>(null);
   treeRoot = $state('');
+  /** The root the last tree fill asked for, kept even when that folder was missing. */
+  treeRequestedRoot = $state('');
   hasTreeProjection = $state(false);
   chatOwnedId = $state<string | null>(null);
   hasChatProjection = $state(false);
@@ -56,7 +59,8 @@ export class SessionSelectionLayers {
     owner: SessionSelectionOwner
   ): Promise<void> {
     if (!this.isCurrent(owner)) return;
-    const root = sessionWorkspaceRoot(session);
+    const root = sessionWorkspaceRoot(session, projectRegistry.projects);
+    this.treeRequestedRoot = root;
 
     if (!root || (session.executionEnvironment === 'remote'
       && rail.remoteConnections[session.remoteProfileId ?? ''] !== 'connected')) {

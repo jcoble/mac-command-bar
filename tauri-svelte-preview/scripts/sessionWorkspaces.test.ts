@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
+import ts from 'typescript';
+import { parseRemoteWorkspacePath, sessionWorkspaceRoot } from '../src/lib/workspacePaths.ts';
 
 import {
   captureWorkspace,
@@ -498,4 +502,58 @@ test('a checkout change carries unsaved drafts to the same file in the new check
     { path: '/worktrees/feature/src/a.ts', draftContent: 'edited', baseRevision: 'rev-a' },
     { path: '/elsewhere/notes.md', draftContent: 'note', baseRevision: 'rev-n' }
   ]);
+});
+
+test('a checkout change moves unsaved files only when the session is shown at the new checkout', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/controllers/sessionSelectionController.svelte.ts', import.meta.url), 'utf8');
+  const parsed = ts.createSourceFile('selection.ts', source, ts.ScriptTarget.Latest, true);
+  const controller = parsed.statements.find(ts.isClassDeclaration)!;
+  const method = controller.members.find((member) => ts.isMethodDeclaration(member) && member.name.getText(parsed) === 'useSessionCheckout')!;
+  const code = stripTypeScriptTypes(method.getText(parsed).replace('async useSessionCheckout', 'async function useSessionCheckout'));
+  const projects = [{ id: 'p1', machine: 'local', rootPath: '/code/assembly' }];
+
+  async function resetRoots(projectId: string | null): Promise<string[]> {
+    const session = { ownedId: 's', agent: 'codex', origin: 'app', executionEnvironment: 'local', cwd: '/code/assembly', projectId };
+    const roots: string[] = [];
+    const useSessionCheckout = new Function(
+      'rail', 'canonicalPath', 'parseRemoteWorkspacePath', 'countInvoke', 'validateProjectRootFromTauri',
+      'flushConversationSessionDraft', 'changeStructuredConversationCheckout', 'sessionWorkspaceRoot', 'projectRegistry',
+      `${code}; return useSessionCheckout;`
+    )(
+      { owned: [session], error: null }, (path: string) => path, parseRemoteWorkspacePath, () => undefined,
+      async () => ({ exists: true, isDirectory: true }), async () => undefined,
+      async (_ownedId: string, cwd: string) => { session.cwd = cwd; return { cwd }; },
+      sessionWorkspaceRoot, { projects }
+    );
+    const owner = { signal: new AbortController().signal };
+    const selection = {
+      activeOwnedId: 's', chatOwnedId: null, beginSelection: () => owner, isCurrent: () => true,
+      editorSessions: { resetForCheckoutChange: async (_signal: AbortSignal, root: string) => { roots.push(root); } },
+      sessionSelectionLayers: { clearTreeView: () => undefined }, materializeSelection: async () => undefined
+    };
+    assert.equal(await useSessionCheckout.call(selection, '/worktrees/feature'), true);
+    return roots;
+  }
+
+  // A session with a project stays shown at its project, so its unsaved files stay where they are.
+  assert.deepEqual(await resetRoots('p1'), ['/code/assembly']);
+  // Without a project the session is shown at the new checkout, and its drafts move there.
+  assert.deepEqual(await resetRoots(null), ['/worktrees/feature']);
+});
+
+test('a tree whose folder was missing still counts as moved when its project moves', () => {
+  const source = readFileSync(new URL('../src/lib/shell/controllers/sessionSelectionController.svelte.ts', import.meta.url), 'utf8');
+  const parsed = ts.createSourceFile('selection.ts', source, ts.ScriptTarget.Latest, true);
+  const controller = parsed.statements.find(ts.isClassDeclaration)!;
+  const getter = controller.members.find((member) => ts.isGetAccessorDeclaration(member) && member.name.getText(parsed) === 'treeRootMoved')!;
+  const code = stripTypeScriptTypes(getter.getText(parsed).replace('get treeRootMoved()', 'function treeRootMoved()'));
+  const treeRootMoved = new Function('canonicalPath', `${code}; return treeRootMoved;`)((path: string) => path);
+  const selection = (requested: string, root: string) => ({
+    activeOwnedId: 's', durableSessionRoot: root, filesProjectionRoot: '',
+    sessionSelectionLayers: { hasTreeProjection: true, treeOwnedId: 's', treeRoot: '', treeRequestedRoot: requested }
+  });
+
+  // The old folder was missing, so nothing is shown; the project now points elsewhere.
+  assert.equal(treeRootMoved.call(selection('/gone', '/code/assembly')), true);
+  assert.equal(treeRootMoved.call(selection('/code/assembly', '/code/assembly')), false);
 });
