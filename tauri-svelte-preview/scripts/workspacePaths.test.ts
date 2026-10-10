@@ -27,9 +27,20 @@ test('qualifies returned file and checkout paths without rewriting content', () 
   });
 });
 test('remote sessions without a machine never fall back to local filesystem', () => {
-  assert.equal(sessionWorkspaceRoot({ cwd: '/repo', executionEnvironment: 'remote' }), '');
-  assert.equal(sessionWorkspaceRoot({ cwd: '/repo', executionEnvironment: 'remote', remoteProfileId: 'box' }), 'assembly-remote://box/repo');
-  assert.equal(sessionWorkspaceRoot({ cwd: '/repo', executionEnvironment: 'local' }), '/repo');
+  assert.equal(sessionWorkspaceRoot({ cwd: '/repo', projectId: null, executionEnvironment: 'remote' }, []), '');
+  assert.equal(sessionWorkspaceRoot({ cwd: '/repo', projectId: null, executionEnvironment: 'remote', remoteProfileId: 'box' }, []), 'assembly-remote://box/repo');
+  assert.equal(sessionWorkspaceRoot({ cwd: '/repo', projectId: null, executionEnvironment: 'local' }, []), '/repo');
+});
+test('a session is rooted at its project, not the folder it works in', () => {
+  const projects = [
+    { id: 'p1', machine: 'local', rootPath: '/code/assembly' },
+    { id: 'p2', machine: 'box', rootPath: '/srv/edi' }
+  ];
+  assert.equal(sessionWorkspaceRoot({ cwd: '/worktrees/tsk-1', projectId: 'p1', executionEnvironment: 'local' }, projects), '/code/assembly');
+  assert.equal(sessionWorkspaceRoot({ cwd: '/worktrees/tsk-1', projectId: null, executionEnvironment: 'local' }, projects), '/worktrees/tsk-1');
+  assert.equal(sessionWorkspaceRoot({ cwd: '/srv/worktrees/a', projectId: 'p2', executionEnvironment: 'remote', remoteProfileId: 'box' }, projects), 'assembly-remote://box/srv/edi');
+  // A project on another machine never roots the session.
+  assert.equal(sessionWorkspaceRoot({ cwd: '/worktrees/tsk-1', projectId: 'p2', executionEnvironment: 'local' }, projects), '/worktrees/tsk-1');
 });
 
 test('saved workspace paths round trip without retaining a client profile or rewriting drafts', () => {

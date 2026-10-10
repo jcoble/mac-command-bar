@@ -25,8 +25,14 @@ export function workspaceChangePath(root: string, path: string): string {
   if (trimmed.startsWith('/')) return trimmed;
   return root ? `${root.replace(/\/+$/, '')}/${trimmed.replace(/^\/+/, '')}` : trimmed;
 }
-export function sessionWorkspaceRoot(session: { cwd: string; projectPath?: string | null; executionEnvironment?: string; remoteProfileId?: string | null }): string {
-  const path = session.cwd.trim() || session.projectPath?.trim() || '';
+/** The folder a session's files are browsed from: its project's root on the session's machine, else its own cwd. */
+export function sessionWorkspaceRoot(
+  session: { cwd: string; projectId: string | null; executionEnvironment?: string; remoteProfileId?: string | null },
+  projects: readonly { id: string; machine: string; rootPath: string }[]
+): string {
+  const machine = session.executionEnvironment === 'remote' ? session.remoteProfileId : 'local';
+  const project = projects.find((candidate) => candidate.id === session.projectId && candidate.machine === machine);
+  const path = project?.rootPath.trim() || session.cwd.trim();
   if (session.executionEnvironment !== 'remote') return path;
   return path && session.remoteProfileId ? remoteWorkspacePath(session.remoteProfileId, path) : '';
 }

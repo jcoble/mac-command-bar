@@ -48,7 +48,7 @@ export function pullRequestSearchQuery(state: PullRequestState, scope: PullReque
   return [STATE_TERMS[state], SCOPE_TERMS[scope], ...words, 'sort:updated-desc'].filter(Boolean).join(' ');
 }
 
-type SessionForProject = Parameters<typeof sessionWorkspaceRoot>[0] & { projectId: string | null; projectGroupKey: string };
+type SessionForProject = Parameters<typeof sessionWorkspaceRoot>[0] & { projectGroupKey: string };
 type ProjectForFilter = { id: string; machine: string; rootPath: string; repoKey: string; groupKey: string };
 
 /**
@@ -58,7 +58,7 @@ type ProjectForFilter = { id: string; machine: string; rootPath: string; repoKey
  */
 export function sessionProjectFilter(session: SessionForProject | undefined, projects: ProjectForFilter[]): string {
   if (!session) return '';
-  if (session.executionEnvironment === 'remote') return sessionWorkspaceRoot(session);
+  if (session.executionEnvironment === 'remote') return sessionWorkspaceRoot(session, projects);
   const github = projects.filter((project) => project.machine === 'local' && project.repoKey.toLowerCase().startsWith('github.com/'));
   const project = github.find((candidate) => candidate.id === session.projectId) ?? github.find((candidate) => candidate.groupKey && candidate.groupKey === session.projectGroupKey);
   return project?.rootPath ?? '';

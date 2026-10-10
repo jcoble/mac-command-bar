@@ -1,4 +1,5 @@
 import { sessionWorkspaceRoot, parseRemoteWorkspacePath } from '../../workspacePaths.ts';
+import { projectRegistry } from '../projects/projectRegistry.svelte.ts';
 /**
  * Controller for session selection, filesystem projections, and workspace expansion.
  */
@@ -89,7 +90,14 @@ export class SessionSelectionController {
 	get durableSessionRoot(): string {
 		const session = this.controlledSession ?? rail.owned.find((s) => s.ownedId === rail.activeOwnedId);
 		if (!session) return "";
-		return canonicalPath(sessionWorkspaceRoot(session));
+		return canonicalPath(sessionWorkspaceRoot(session, projectRegistry.projects));
+	}
+
+	/** The open tree no longer matches the session's root, as when its project's folder changed. */
+	get treeRootMoved(): boolean {
+		const shown = this.filesProjectionRoot;
+		const root = this.durableSessionRoot;
+		return Boolean(shown) && Boolean(root) && canonicalPath(shown) !== root;
 	}
 
 	get controlledEditorRootAvailable(): boolean {
@@ -202,7 +210,7 @@ export class SessionSelectionController {
 		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
 		if (session) {
 			this.activeRootRemote = session.executionEnvironment === "remote";
-			const root = canonicalPath(sessionWorkspaceRoot(session));
+			const root = canonicalPath(sessionWorkspaceRoot(session, projectRegistry.projects));
 			try {
 				await this.materializeSelection(session, root, owner, this.chatOwnedId);
 			} catch (error) {
@@ -301,7 +309,7 @@ export class SessionSelectionController {
 			const updated = rail.owned.find((session) => session.ownedId === ownedId);
 			if (!updated) return true;
 			this.activeRootRemote = updated.executionEnvironment === "remote";
-			await this.materializeSelection(updated, canonicalPath(sessionWorkspaceRoot(updated)), owner, this.chatOwnedId);
+			await this.materializeSelection(updated, canonicalPath(sessionWorkspaceRoot(updated, projectRegistry.projects)), owner, this.chatOwnedId);
 			return true;
 		} catch (error) {
 			if (this.isCurrent(owner)) {

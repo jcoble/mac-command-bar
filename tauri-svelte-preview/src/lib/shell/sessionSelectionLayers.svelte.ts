@@ -1,6 +1,7 @@
 import { rail } from './stores/sessionRailStore.svelte';
 import { warmAgentConversationConfig } from './conversation/conversationConfig';
 import { sessionWorkspaceRoot } from '../workspacePaths.ts';
+import { projectRegistry } from './projects/projectRegistry.svelte.ts';
 /**
  * The projections rebuilt when a person selects a session in the rail.
  *
@@ -56,7 +57,7 @@ export class SessionSelectionLayers {
     owner: SessionSelectionOwner
   ): Promise<void> {
     if (!this.isCurrent(owner)) return;
-    const root = sessionWorkspaceRoot(session);
+    const root = sessionWorkspaceRoot(session, projectRegistry.projects);
 
     if (!root || (session.executionEnvironment === 'remote'
       && rail.remoteConnections[session.remoteProfileId ?? ''] !== 'connected')) {

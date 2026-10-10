@@ -190,8 +190,8 @@ test('failed remote selection releases outgoing tabs and preserves its active fi
     ...state, beginSelection: () => owner, chatOwnedId: 'hello', materializeSelection: select.bind(state),
     sessionSelectionLayers: { ...state.sessionSelectionLayers, clearTreeView: () => {}, clearChatHistory: () => {} }
   };
-  const selectOnce = new Function('rail', 'canonicalPath', 'sessionWorkspaceRoot', 'shellPanels', `${outerCode}; return selectSessionOnce;`)(
-    { owned: [remote] }, (path: string) => path, (session: typeof remote) => session.root, { sessionPicked: () => {} }
+  const selectOnce = new Function('rail', 'canonicalPath', 'sessionWorkspaceRoot', 'projectRegistry', 'shellPanels', `${outerCode}; return selectSessionOnce;`)(
+    { owned: [remote] }, (path: string) => path, (session: typeof remote) => session.root, { projects: [] }, { sessionPicked: () => {} }
   ) as (this: typeof outerState, id: string) => Promise<void>;
   await selectOnce.call(outerState, 'remote');
   assert.equal(restoreAttempts, 1, 'a required editor save/read failure must not trigger another restore attempt');
