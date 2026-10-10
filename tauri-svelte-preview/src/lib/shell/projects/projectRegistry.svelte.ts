@@ -36,14 +36,17 @@ export async function addProject(machine: string, path: string, create: boolean)
   if (!projectRegistry.projects.some((existing) => existing.id === project.id)) {
     projectRegistry.projects = [...projectRegistry.projects, project];
   }
-  if (machine === 'local') {
-    for (const record of (await listAgentConversationSessionsFromTauri()) ?? []) {
-      updateOwnedSession(record.ownedId, {
-        projectId: record.projectId,
-        projectGroupKey: record.projectGroupKey,
-        projectGroupLabel: record.projectGroupLabel
-      });
-    }
-  }
+  if (machine === 'local') await refreshRailProjects();
   return project;
+}
+
+/** Gives every rail session the project, group and label the session list now has, in one read. */
+export async function refreshRailProjects(): Promise<void> {
+  for (const record of (await listAgentConversationSessionsFromTauri()) ?? []) {
+    updateOwnedSession(record.ownedId, {
+      projectId: record.projectId,
+      projectGroupKey: record.projectGroupKey,
+      projectGroupLabel: record.projectGroupLabel
+    });
+  }
 }

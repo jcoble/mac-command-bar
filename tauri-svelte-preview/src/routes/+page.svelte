@@ -793,7 +793,7 @@
 			</div>
 		</aside>
 		{#if projectsOpen}
-			<ProjectsScreen onBack={() => (projectsOpen = false)} onOpenProject={openNewSession} />
+			<ProjectsScreen onBack={() => (projectsOpen = false)} onOpenProject={openNewSession} removeSession={(ownedId) => selection.removeSession(ownedId)} />
 		{/if}
 	</div>
 

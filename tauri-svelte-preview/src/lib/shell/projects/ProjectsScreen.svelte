@@ -30,7 +30,8 @@
   import * as Tabs from '$lib/components/ui/tabs/index.js';
   import RemoteConnections from '$lib/shell/components/RemoteConnections.svelte';
   import AddProjectDialog from '$lib/shell/projects/AddProjectDialog.svelte';
-  import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte.ts';
+  import { hydrateProjects, projectRegistry, refreshRailProjects } from '$lib/shell/projects/projectRegistry.svelte.ts';
+  import { rail, removeOwnedSession } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import {
     filterProjects,
     projectCountsByMachine,
@@ -52,9 +53,11 @@
   interface Props {
     onBack: () => void;
     onOpenProject: (projectId: string) => void;
+    /** The rail's own delete, so an open session that goes away is closed the same way. */
+    removeSession: (ownedId: string) => Promise<void>;
   }
 
-  let { onBack, onOpenProject }: Props = $props();
+  let { onBack, onOpenProject, removeSession }: Props = $props();
 
   let environment = $state<RemoteAssemblyEnvironment>({ profiles: [], readyProfileIds: [] });
   let machine = $state<string | null>(null);
@@ -118,7 +121,9 @@
 
   async function rename(): Promise<void> {
     const project = renaming;
-    if (project && await applyProjectChange(renameProjectFromTauri(project.id, newName))) renaming = null;
+    if (!project || !await applyProjectChange(renameProjectFromTauri(project.id, newName))) return;
+    renaming = null;
+    await refreshRailProjects();
   }
 
   /** The folder picker shows a refusal itself, so this one lets it through. */
@@ -131,7 +136,19 @@
   async function remove(deleteSessions: boolean): Promise<void> {
     const project = removing;
     removing = null;
-    if (project) await applyProjectChange(removeProjectFromTauri(project.id, deleteSessions));
+    if (!project) return;
+    const sessionIds = rail.owned.filter((session) => session.projectId === project.id).map((session) => session.ownedId);
+    const openId = rail.activeOwnedId;
+    if (!await applyProjectChange(removeProjectFromTauri(project.id, deleteSessions))) return;
+    if (!deleteSessions) return refreshRailProjects();
+    for (const ownedId of sessionIds) if (ownedId !== openId) removeOwnedSession(ownedId);
+    if (openId && sessionIds.includes(openId)) {
+      try {
+        await removeSession(openId);
+      } catch (error) {
+        actionError = error instanceof Error ? error.message : String(error);
+      }
+    }
   }
 </script>
 

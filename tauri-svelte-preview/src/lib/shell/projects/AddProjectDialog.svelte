@@ -60,8 +60,8 @@
 
   const machineLabel = $derived(projectMachineLabel(machine, profiles));
   const canAdd = $derived(Boolean(path.trim()) && !adding);
-  /** The path names a folder that is not there yet: Enter and the button create it. */
-  const newFolder = $derived(isNewFolderPath(path, listing));
+  /** The path names a folder that is not there yet: Enter and the button create it. Choosing a folder creates none. */
+  const newFolder = $derived(!chooseFolder && isNewFolderPath(path, listing));
 
   onMount(() => {
     if (step === 'folder') void startOnFolder();
