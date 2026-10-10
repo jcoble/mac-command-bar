@@ -600,7 +600,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remove_project_refuses_to_delete_a_remote_projects_sessions() {
+    async fn remove_project_with_deletes_accepts_a_remote_project() {
         let manager = crate::agent_conversation::manager::AgentRuntimeManager::new(
             crate::agent_conversation::providers::ProviderRegistry::default(),
         );
@@ -608,14 +608,13 @@ mod tests {
             root_path: "/home/me/repo".into(), title: "repo".into(), repo_key: String::new(), is_git: false,
         }) };
         manager.store().insert_or_get_project(&row).unwrap();
+        // The command deletes remote sessions on their machine first; a cached
+        // row the machine kept is left here without a project.
+        manager.store().file_remote_sessions("box", "{}", r#"[["[\"box\",\"s1\"]", "remote", 5]]"#).unwrap();
 
-        assert_eq!(
-            manager.remove_project("remote", true).await.unwrap_err(),
-            "Deleting sessions isn't available for remote projects yet. Remove the project and keep its sessions instead."
-        );
-        assert!(manager.store().get_project("remote").unwrap().is_some(), "nothing changed");
-        manager.remove_project("remote", false).await.unwrap();
+        manager.remove_project("remote", true).await.unwrap();
         assert_eq!(manager.store().get_project("remote").unwrap(), None);
+        assert_eq!(manager.store().get_session(r#"["box","s1"]"#).unwrap().unwrap().project_id, None);
     }
 
     #[test]

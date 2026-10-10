@@ -3,7 +3,7 @@
 use super::protocol::{
     AgentConversationConnection, AgentConversationEvent, AgentConversationEventPage,
     AgentConversationItemPage, AgentConversationPayload, AgentConversationSelectionSnapshot,
-    AgentConversationSnapshot, ApprovalState,
+    AgentConversationSessionRecord, AgentConversationSnapshot, ApprovalState,
 };
 use mcb_core::session_store::{EventCoverage, EventRow, SessionRow, SessionStore};
 use serde::{Deserialize, Serialize};
@@ -552,6 +552,22 @@ impl RemoteHistory {
                 .map_err(|error| error.to_string())?;
         }
         Ok(history_owned_id)
+    }
+
+    /// Gives every session the machine listed a row here, filed under its
+    /// project from the start, before any of its events are copied.
+    pub fn file_sessions(&self, profile: &str, sessions: &[AgentConversationSessionRecord]) -> Result<(), String> {
+        let rows: Vec<_> = sessions.iter()
+            .map(|session| (Self::key(profile, &session.owned_id), &session.project_id, session.last_activity_at_ms))
+            .collect();
+        let coverage = Coverage { remote_profile_id: profile.into(), ..Default::default() };
+        self.store
+            .file_remote_sessions(
+                profile,
+                &serde_json::to_string(&coverage).map_err(|error| error.to_string())?,
+                &serde_json::to_string(&rows).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())
     }
 
     pub fn delivery_owned_id(&self, profile: &str, source_owned_id: &str) -> Option<String> {

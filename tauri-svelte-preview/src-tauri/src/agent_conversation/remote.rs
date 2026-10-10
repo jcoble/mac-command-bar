@@ -572,6 +572,10 @@ impl RemoteConnectionManager {
                 .then_with(|| left.owned_id.cmp(&right.owned_id))
         });
         self.save_cached_sessions(next)?;
+        self.history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .file_sessions(profile_id, sessions)?;
         let mut routing = self
             .remote_sessions
             .lock()
@@ -4086,6 +4090,61 @@ mod connection_tests {
         assert_eq!(restarted.cached_sessions(), vec![session("remote-1", "workbox", 10)]);
         assert!(restarted.owns("remote-1"));
         assert_eq!(restarted.connection_state("workbox"), RemoteConnectionState::Disconnected);
+    }
+
+    #[test]
+    fn listing_files_the_remote_row_under_its_project_before_any_event() {
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}),
+            Arc::new(|_| {}),
+            shared.clone(),
+        )
+        .unwrap();
+        let mut listed = session("large-history", "workbox", 10);
+        listed.project_id = Some("p1".into());
+        manager.replace_cached_profile_sessions("workbox", &[listed]).unwrap();
+
+        let key = RemoteHistory::key("workbox", "large-history");
+        let row = shared.get_session(&key).unwrap().unwrap();
+        assert_eq!((row.project_id.as_deref(), row.last_activity_at_ms), (Some("p1"), 10));
+        assert!(manager.history.lock().unwrap().read_selection_snapshot("workbox", "large-history", 1024).unwrap().is_none(),
+            "an event-less row still opens from the server");
+
+        manager.history_event_sink("workbox")(vec![history_event(5)]).unwrap();
+        assert_eq!(shared.get_session(&key).unwrap().unwrap().project_id.as_deref(), Some("p1"), "live events keep the project");
+    }
+
+    #[tokio::test]
+    async fn removing_a_remote_project_deletes_its_sessions_on_the_machine() {
+        let directory = std::env::temp_dir().join(format!("assembly-remove-project-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let database = directory.join("sessions.db");
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+        let remote = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), Arc::new(SessionStore::open(&database).unwrap()),
+        ).unwrap();
+        manager.store().insert_or_get_project(&mcb_core::session_store::ProjectRow {
+            id: "p".into(), machine: "cache-test".into(), root_path: "/work/project".into(), title: "project".into(),
+            repo_key: String::new(), created_at_ms: 1, group_key: String::new(), pinned_at_ms: None, last_used_ms: None,
+        }).unwrap();
+        let mut listed = session("large-history", "cache-test", 10);
+        listed.project_id = Some("p".into());
+        remote.replace_cached_profile_sessions("cache-test", &[listed]).unwrap();
+        let mut requests = connect(&remote);
+        let server = tokio::spawn(async move {
+            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected delete"); };
+            assert!(matches!(command, RemoteCommand::Delete { ref owned_id } if owned_id == "large-history"));
+            reply.send(Ok(RemoteResponse::Bool(true))).unwrap();
+        });
+
+        super::super::remove_project_on(&manager, &remote, "p", true).await.unwrap();
+        server.await.unwrap();
+        assert!(manager.store().get_session(&RemoteHistory::key("cache-test", "large-history")).unwrap().is_none(), "the cached row is gone");
+        assert!(!remote.owns("large-history"));
+        assert_eq!(manager.store().get_project("p").unwrap(), None);
+        drop((manager, remote));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

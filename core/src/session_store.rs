@@ -1313,6 +1313,27 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Gives each session a remote machine listed its cached row here, in one
+    /// statement. `rows_json` is `[[owned_id, project_id, last_activity_at]]`;
+    /// a new row starts with `extra_json` and no events. A row keeps the
+    /// first project it got and the newest activity. Rows that are local or
+    /// another machine's are left alone.
+    pub fn file_remote_sessions(&self, profile_id: &str, extra_json: &str, rows_json: &str) -> Result<()> {
+        self.lock_write()?.execute(
+            "INSERT INTO sessions (owned_id, provider, cwd, state, suspended, created_at,
+                last_activity_at, extra, project_id, cached_remote_profile_id)
+             SELECT json_extract(r.value, '$[0]'), 'remote-cache', '', 'cached', 1, 0,
+                json_extract(r.value, '$[2]'), ?2, json_extract(r.value, '$[1]'), ?1
+             FROM json_each(?3) r WHERE true
+             ON CONFLICT(owned_id) DO UPDATE SET
+                project_id = COALESCE(sessions.project_id, excluded.project_id),
+                last_activity_at = MAX(sessions.last_activity_at, excluded.last_activity_at)
+             WHERE sessions.cached_remote_profile_id IS ?1",
+            params![profile_id, extra_json, rows_json],
+        ).map_err(|error| StoreError::sqlite("could not file the remote sessions", error))?;
+        Ok(())
+    }
+
     pub fn open_in_memory() -> Result<Self> {
         let connection = Connection::open_in_memory().map_err(|error| {
             StoreError::sqlite("could not open the in-memory session database", error)
@@ -2236,14 +2257,20 @@ impl SessionStore {
         Ok(changed == 1)
     }
 
-    /// The sessions filed under the project.
-    pub fn project_session_ids(&self, id: &str) -> Result<Vec<String>> {
+    /// The local sessions filed under the project, or with `remote` the
+    /// remote ones, each by its id on its machine.
+    pub fn project_session_ids(&self, id: &str, remote: bool) -> Result<Vec<String>> {
         let connection = self.lock()?;
         let mut statement = connection
-            .prepare("SELECT owned_id FROM sessions WHERE project_id = ? ORDER BY owned_id")
+            .prepare(
+                "SELECT CASE WHEN cached_remote_profile_id IS NULL THEN owned_id
+                    ELSE json_extract(owned_id, '$[1]') END
+                 FROM sessions WHERE project_id = ?1 AND (cached_remote_profile_id IS NOT NULL) = ?2
+                 ORDER BY owned_id",
+            )
             .map_err(|error| StoreError::sqlite("could not prepare the project sessions", error))?;
         let rows = statement
-            .query_map([id], |row| row.get(0))
+            .query_map(params![id, remote], |row| row.get(0))
             .map_err(|error| StoreError::sqlite("could not list the project sessions", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read the project sessions", error))
@@ -4527,6 +4554,40 @@ mod tests {
     }
 
     #[test]
+    fn remote_session_rows_take_their_project_once_and_newest_activity() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&fixture_session("local", 1)).unwrap();
+        let (new_key, cached_key) = (r#"["workbox","new"]"#, r#"["workbox","cached"]"#);
+        store.cache_remote_events("workbox", &fixture_session(cached_key, 50), &[fixture_event(cached_key, 1)]).unwrap();
+        let mut filed = fixture_session("filed", 500);
+        filed.project_id = Some("kept".into());
+        store.cache_remote_events("workbox", &filed, &[]).unwrap();
+        store.cache_remote_events("other", &fixture_session("elsewhere", 5), &[]).unwrap();
+
+        store.file_remote_sessions("workbox", r#"{"remoteProfileId":"workbox"}"#, r#"[
+            ["[\"workbox\",\"new\"]", "p1", 30], ["[\"workbox\",\"cached\"]", "p1", 40], ["filed", "p2", 90],
+            ["local", "p1", 99], ["elsewhere", "p1", 99], ["loose", null, 7]
+        ]"#).unwrap();
+
+        let row = |id: &str| store.get_session(id).unwrap().unwrap();
+        let new = row(new_key);
+        assert_eq!((new.project_id.as_deref(), new.last_activity_at_ms, new.state.as_str()), (Some("p1"), 30, "cached"));
+        assert_eq!(new.extra_json, r#"{"remoteProfileId":"workbox"}"#);
+        assert_eq!((row(cached_key).project_id.as_deref(), row(cached_key).last_activity_at_ms), (Some("p1"), 50), "newest activity wins");
+        assert_eq!(store.list_events(cached_key, -10, 10).unwrap().len(), 1, "cached events stay");
+        assert_eq!((row("filed").project_id.as_deref(), row("filed").last_activity_at_ms), (Some("kept"), 500), "a project is written once");
+        assert_eq!((row("local").project_id, row("local").last_activity_at_ms), (None, 1), "a local row is untouched");
+        assert_eq!(row("elsewhere").project_id, None, "another machine's row is untouched");
+        assert_eq!(row("loose").project_id, None);
+        assert_eq!(store.count_sessions().unwrap(), 1, "remote rows stay out of the local list");
+        let mut mine = fixture_session("mine", 1);
+        mine.project_id = Some("p1".into());
+        store.upsert_session(&mine).unwrap();
+        assert_eq!(store.project_session_ids("p1", false).unwrap(), ["mine"], "the local list leaves remote rows out");
+        assert_eq!(store.project_session_ids("p1", true).unwrap(), ["cached", "new"], "remote rows answer with their remote id");
+    }
+
+    #[test]
     fn ordinary_local_session_id_is_not_parsed_as_a_remote_child_key() {
         let store = SessionStore::open_in_memory().unwrap();
         store
@@ -4794,7 +4855,7 @@ mod tests {
             session.project_id = project_id.map(str::to_owned);
             store.upsert_session(&session).unwrap();
         }
-        assert_eq!(store.project_session_ids("p").unwrap(), ["mine"]);
+        assert_eq!(store.project_session_ids("p", false).unwrap(), ["mine"]);
 
         assert!(store.remove_project("p").unwrap());
         assert!(!store.remove_project("p").unwrap());
