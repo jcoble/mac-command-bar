@@ -1068,7 +1068,7 @@ await test('start-up registers the event stream before it opens the remembered s
     hydrateShellSettings: async () => undefined, shellActive: () => true,
     listAgentConversationSessionsFromTauri: async () => [],
     readRemoteSessions: async () => [{ ownedId: 'remembered' }],
-    readStoredActiveOwnedId: async () => 'remembered',
+    readStoredActiveOwnedId: async () => 'remembered', hydrateProjects: async () => undefined,
     ownedSessionFromBackend: (session: unknown) => session, hydrateOwned: () => undefined,
     shellPanels: { allowSessionLoads: () => undefined }, rail: { error: null },
     startConversationEventsForOwner: async () => {

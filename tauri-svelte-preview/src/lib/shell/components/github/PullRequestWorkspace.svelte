@@ -122,7 +122,7 @@
   // Only projects whose remote is on github.com can list pull requests.
   const roots = $derived(projectRegistry.projects.filter((project) => project.machine === 'local' && project.repoKey.toLowerCase().startsWith('github.com/')));
   // Remote projects come from the rail's sessions; each one is searched on its own machine.
-  const remoteRoots = $derived([...new Set(rail.owned.filter((session) => session.executionEnvironment === 'remote').map(sessionWorkspaceRoot).filter(Boolean))]);
+  const remoteRoots = $derived([...new Set(rail.owned.filter((session) => session.executionEnvironment === 'remote').map((session) => sessionWorkspaceRoot(session, projectRegistry.projects)).filter(Boolean))]);
   const projectLabel = $derived(roots.find((root) => root.rootPath === projectFilter)?.title ?? remoteRoots.find((root) => root === projectFilter)?.split('/').filter(Boolean).at(-1) ?? 'All local projects');
   const headerState = $derived(prState(detail ?? pullRequestSelection.selected));
   // Detail loads re-run only when the chosen pull request changes, not when the
@@ -141,7 +141,7 @@
   const threads = $derived.by(() => {
     if (!detail) return [];
     const { number, localRoot } = detail;
-    return rail.owned.filter((session) => session.pullRequest === `PR #${number}` && sessionWorkspaceRoot(session) === localRoot);
+    return rail.owned.filter((session) => session.pullRequest === `PR #${number}` && sessionWorkspaceRoot(session, projectRegistry.projects) === localRoot);
   });
   const activity = $derived(detail ? activityRows(detail) : []);
   const canMerge = $derived(detail?.state === 'OPEN' && !detail.isDraft && detail.mergeable === 'MERGEABLE' && !detailLoading && !posting && !merging && !mergeUncertain);

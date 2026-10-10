@@ -15,6 +15,7 @@ import {
 import { ownedSessionFromBackend } from '../ownedSessions';
 import { startConversationEvents, stopConversationEvents } from '../conversation/conversationService';
 import { shellPanels } from '../shellPanels';
+import { hydrateProjects } from '../projects/projectRegistry.svelte';
 
 export interface ShellStartupOptions {
 	onSelectInitial(ownedId: string, stopSignal: AbortSignal): Promise<void>;
@@ -36,10 +37,13 @@ export async function startShell(options: ShellStartupOptions): Promise<void> {
 
 	try {
 		if (!shellActive(generation, controller.signal)) return;
+		// Sessions are rooted at their project, so the registry is read first; it keeps
+		// its own error, and without it a session falls back to its own folder.
 		const [storedSessions, storedRemoteSessions, storedActiveOwnedId] = await Promise.all([
 			listAgentConversationSessionsFromTauri(),
 			readRemoteSessions(controller.signal),
-			readStoredActiveOwnedId()
+			readStoredActiveOwnedId(),
+			hydrateProjects()
 		]);
 		if (!shellActive(generation, controller.signal)) return;
 		const projected = (storedSessions ?? []).map(ownedSessionFromBackend);
