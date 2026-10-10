@@ -6,6 +6,7 @@ import {
   isNewFolderPath,
   projectBadge,
   projectCountsByMachine,
+  projectLastUsedLabel,
   projectMachineLabel,
   shortProjectPath,
   visibleProjects
@@ -108,6 +109,15 @@ const project = (id: string, machine: string): ProjectRecord => ({
   assert.equal(shortProjectPath('/home/me'), '~');
   assert.equal(shortProjectPath('/srv/app'), '/srv/app');
   assert.equal(shortProjectPath('/homework/app'), '/homework/app');
+}
+
+// Last used reads as the app's short age; a project never used shows nothing.
+{
+  const now = new Date('2026-10-10T12:00:00Z');
+  assert.equal(projectLastUsedLabel(null, now), '');
+  assert.equal(projectLastUsedLabel(now.getTime() - 30_000, now), 'now');
+  assert.equal(projectLastUsedLabel(now.getTime() - 2 * 3_600_000, now), '2h');
+  assert.equal(projectLastUsedLabel(now.getTime() - 3 * 86_400_000, now), '3d');
 }
 
 console.log('projects.test.ts passed');

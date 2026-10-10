@@ -4,6 +4,7 @@
  */
 
 import type { ProjectRecord } from '../../tauriSource.ts';
+import { formatAge } from '../relativeTime.ts';
 
 /**
  * Two letters for a project: the first letters of its first and last word, or
@@ -46,6 +47,11 @@ export function projectCountsByMachine(projects: readonly ProjectRecord[]): Reco
 /** A folder under a home directory, shown from `~`. */
 export function shortProjectPath(path: string): string {
   return path.replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, '~');
+}
+
+/** When the project was last used, as the short age the app prints elsewhere ("5m", "2h", "3d"); empty if never. */
+export function projectLastUsedLabel(lastUsedMs: number | null, now: Date): string {
+  return lastUsedMs === null ? '' : formatAge(new Date(lastUsedMs).toISOString(), now);
 }
 
 type DraftOwnedSession = { ownedId: string; projectId: string | null; lastActivity: string | null };

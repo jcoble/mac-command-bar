@@ -6,7 +6,8 @@
   (git's own folder, a folder inside a repository, a missing path) is shown
   under the path field, and Add checks again when pressed again. A path that
   names a new folder in the listed one is created there first (no `git init`);
-  otherwise nothing here writes to the folder.
+  otherwise nothing here writes to the folder. With `chooseFolder` it picks a
+  new folder for an existing project on the same machine instead of adding one.
 -->
 <script lang="ts">
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -35,9 +36,11 @@
     onAddRemote: () => void;
     onManageRemotes: () => void;
     onClose: () => void;
+    /** Hands the chosen folder here instead of adding a project; the dialog stays on `machine`. */
+    chooseFolder?: (path: string) => Promise<void>;
   }
 
-  let { profiles, machine: startMachine = null, onAdded, onAddRemote, onManageRemotes, onClose }: Props = $props();
+  let { profiles, machine: startMachine = null, onAdded, onAddRemote, onManageRemotes, onClose, chooseFolder }: Props = $props();
 
   const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
 
@@ -132,6 +135,11 @@
     message = '';
     const requested = path;
     try {
+      if (chooseFolder) {
+        await chooseFolder(requested.trim());
+        close();
+        return;
+      }
       const project = await addProject(machine, requested.trim(), newFolder);
       open = false;
       onAdded(project);
@@ -178,7 +186,7 @@
   bind:open
   onOpenChange={(next) => { if (!next) onClose(); }}
   shouldFilter={step === 'machine'}
-  title="Add a project"
+  title={chooseFolder ? 'Change folder' : 'Add a project'}
   description="Choose a machine, then a folder on it."
   class="top-[17%] sm:max-w-[576px]"
 >
@@ -223,7 +231,9 @@
     </Command.List>
   {:else}
     <div class="flex items-center gap-1 border-b py-1 pr-2 pl-2">
-      <Button variant="ghost" size="icon-sm" aria-label="Back to machines" onclick={() => { step = 'machine'; message = ''; }}><ArrowLeft /></Button>
+      {#if !chooseFolder}
+        <Button variant="ghost" size="icon-sm" aria-label="Back to machines" onclick={() => { step = 'machine'; message = ''; }}><ArrowLeft /></Button>
+      {/if}
       <Input
         aria-label="Folder path"
         bind:ref={pathField}
@@ -236,7 +246,7 @@
         <Button variant="ghost" size="sm" onclick={() => void openInFinder()}>Open in Finder</Button>
       {/if}
       <Button size="sm" disabled={!canAdd} onclick={() => void add()}>
-        {newFolder ? 'Create' : 'Add'} <span class="opacity-70">{isMac ? '⌘' : 'Ctrl'} Enter</span>
+        {chooseFolder ? 'Choose' : newFolder ? 'Create' : 'Add'} <span class="opacity-70">{isMac ? '⌘' : 'Ctrl'} Enter</span>
       </Button>
     </div>
     {#if message}
