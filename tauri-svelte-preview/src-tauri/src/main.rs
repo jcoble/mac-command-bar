@@ -244,6 +244,10 @@ struct SourceReferenceTarget {
     excerpt: String,
 }
 
+/// The most changed files the status sends to the panel. A folder with tens of
+/// thousands of untracked files froze the app drawing one row each.
+const MAX_GIT_STATUS_FILES: usize = 1000;
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProjectGitStatus {
@@ -251,7 +255,10 @@ pub(crate) struct ProjectGitStatus {
     ahead: usize,
     behind: usize,
     has_upstream: bool,
+    /// At most `MAX_GIT_STATUS_FILES`, in git's order (tracked before untracked).
     files: Vec<GitFileStatus>,
+    /// Every changed file git reported, including those cut from `files`.
+    total_files: usize,
     /// Lines added and removed in the working tree against HEAD (tracked files
     /// only); `None` when there is no HEAD to compare with.
     additions: Option<usize>,
@@ -4748,6 +4755,7 @@ fn parse_project_git_status(output: &str) -> Result<ProjectGitStatus, String> {
         behind: 0,
         has_upstream: false,
         files: Vec::new(),
+        total_files: 0,
         additions: None,
         deletions: None,
     };
@@ -4791,6 +4799,8 @@ fn parse_project_git_status(output: &str) -> Result<ProjectGitStatus, String> {
         });
     }
 
+    git_status.total_files = git_status.files.len();
+    git_status.files.truncate(MAX_GIT_STATUS_FILES);
     Ok(git_status)
 }
 
@@ -7182,6 +7192,20 @@ mod tests {
         assert_eq!(status.behind, 0);
         assert!(!status.has_upstream);
         assert!(status.files.is_empty());
+    }
+
+    #[test]
+    fn git_status_parser_caps_files_and_keeps_the_total() {
+        let mut output = String::from("## main\n");
+        for index in 0..MAX_GIT_STATUS_FILES + 5 {
+            output.push_str(&format!("?? new-{index}.txt\n"));
+        }
+
+        let status = parse_project_git_status(&output).unwrap();
+
+        assert_eq!(status.files.len(), MAX_GIT_STATUS_FILES);
+        assert_eq!(status.total_files, MAX_GIT_STATUS_FILES + 5);
+        assert_eq!(status.files[0].relative_path, "new-0.txt");
     }
 
     #[test]

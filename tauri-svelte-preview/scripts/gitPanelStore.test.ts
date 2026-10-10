@@ -781,6 +781,21 @@ function makeBackend(overrides = {}) {
     'untracked holds only files git does not know about'
   );
 
+  // Discard All deletes every untracked file, including ones past the list's
+  // cap, so the question counts the hidden files as untracked: it may overstate
+  // the number but never understates it.
+  assert.equal(
+    sections.discardAllUntrackedCount({ branch: 'main', ahead: 0, behind: 0, hasUpstream: true, files: [changedOnly, untracked, bothWays] }),
+    1,
+    'an uncapped list counts its untracked files'
+  );
+  assert.equal(
+    sections.discardAllUntrackedCount({ branch: 'main', ahead: 0, behind: 0, hasUpstream: true, files: [changedOnly, bothWays], totalFiles: 19000 }),
+    18998,
+    'a capped list counts every hidden file as untracked'
+  );
+  assert.equal(sections.discardAllUntrackedCount(null), 0, 'no status, nothing to delete');
+
   const empty = sections.sourceControlSections(null);
   assert.deepEqual(
     empty.map((section) => section.files.length),

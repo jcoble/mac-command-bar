@@ -94,7 +94,11 @@
     sourceControlScopeOptions,
     type SourceControlRemoteActionId
   } from './sourceControlPanelActions.ts';
-  import { sourceControlDiffstat, sourceControlSections } from './sourceControlSections.ts';
+  import {
+    discardAllUntrackedCount,
+    sourceControlDiffstat,
+    sourceControlSections
+  } from './sourceControlSections.ts';
 
   interface Props {
     /** True while this is the tab in front. */
@@ -556,7 +560,7 @@
 
   function askToDiscardAll(): void {
     if (!canDiscardAll) return;
-    const untrackedCount = files.filter(isGitFileUntracked).length;
+    const untrackedCount = discardAllUntrackedCount(panel.status);
     pendingDiscard = {
       question: describeDiscardQuestion({ scope: 'all', targets: [], untrackedCount }),
       run: () => void service.discardAll(untrackedCount > 0)
@@ -787,6 +791,13 @@
 
         {#if panel.statusError !== ''}
           <p class="text-sm text-[var(--color-bad)]">{panel.statusError}</p>
+        {/if}
+
+        {#if diffstat.filesChanged > files.length}
+          <p class="text-sm text-muted-foreground" data-testid="source-control-capped">
+            Showing {files.length.toLocaleString()} of {diffstat.filesChanged.toLocaleString()} changed files.
+            Commit, stash or ignore files to see the rest.
+          </p>
         {/if}
 
         {#each sections as section (section.id)}
