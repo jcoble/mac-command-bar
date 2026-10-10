@@ -109,13 +109,8 @@ test('flipping the global switch uses the shared async language-server controlle
   assert.match(controlsSource, /onCheckedChange=\{\(checked\) => void chooseMode\(checked\)\}/);
 });
 
-test('file tabs scroll while the complete right-side control group stays pinned', () => {
-  assert.match(panelSource, /<div[^>]*class="file-strip"[\s\S]*?<div class="editor-controls">/);
-  assert.match(
-    panelSource,
-    /\.file-strip\s*\{[\s\S]*?flex:\s*1 1 auto;[\s\S]*?min-width:\s*0;[\s\S]*?overflow-x:\s*auto;[\s\S]*?overflow-y:\s*hidden;/
-  );
-  assert.match(panelSource, /\.file-chip\s*\{[\s\S]*?flex:\s*0 0 auto;/);
+// The editor's own file strip was deleted in 48c353ae6; file tabs now live in the top tab row.
+test('the complete right-side control group stays pinned', () => {
   assert.match(
     panelSource,
     /\.editor-controls\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?min-width:\s*max-content;/

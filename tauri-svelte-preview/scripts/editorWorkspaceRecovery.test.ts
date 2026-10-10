@@ -21,6 +21,7 @@ let writeFailure: unknown;
 let readFailure: unknown;
 let root: string | null = null;
 const dependencies = {
+  rail: { owned: [], remoteConnections: {} },
   parseRemoteWorkspacePath: () => null,
   mapWorkspaceSnapshotPaths: (value: unknown) => value,
   editorState: { openFiles: [], activePath: null },
