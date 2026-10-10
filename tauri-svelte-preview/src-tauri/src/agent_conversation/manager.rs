@@ -1338,6 +1338,12 @@ impl AgentRuntimeManager {
         })
     }
 
+    /// Holds a sign-in open so a test can see the manager as busy.
+    #[cfg(test)]
+    pub(crate) fn begin_test_authentication(&self) -> super::providers::authentication::AuthenticationAttempt {
+        self.authentications.begin("test", 0).unwrap()
+    }
+
     pub fn has_pending_provider_work(&self) -> bool {
         if self.authentications.pending() { return true; }
         self.sessions
