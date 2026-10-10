@@ -2,7 +2,7 @@
  * themeRegistry.test.mjs — proves a theme is complete, and proves the built-in
  * Houston theme still says exactly what the app already renders.
  *
- * The /next shell is painted from three places that do NOT share a palette:
+ * The app shell is painted from three places that do NOT share a palette:
  * the CSS custom properties in `nextTokens.css`, Monaco's own theme object in
  * `sourcePreviewAppearance.ts`, and xterm's theme object in `xtermFactory.ts`.
  * The theme registry gathers all three into one named set so switching themes
@@ -135,7 +135,7 @@ function readDeclarations(css) {
   const stylesheet = readDeclarations(read(NEXT_TOKENS_PATH));
 
   const colorsInStylesheet = [...stylesheet.keys()].filter((name) => name.startsWith('--color-'));
-  assert.ok(colorsInStylesheet.length >= 20, 'expected the /next stylesheet to set a real palette');
+  assert.ok(colorsInStylesheet.length >= 20, 'expected the shell stylesheet to set a real palette');
 
   assert.deepEqual(
     [...PALETTE_TOKEN_NAMES].sort(),
@@ -282,7 +282,7 @@ function readDeclarations(css) {
     }
   };
   for (const directory of scanRoots) walk(directory);
-  assert.ok(files.length > 10, 'expected to find the /next component stylesheets');
+  assert.ok(files.length > 10, 'expected to find the shell component stylesheets');
 
   const literals = [];
   const references = [];
