@@ -64,7 +64,8 @@
   let working = $state.raw<SourceGitDiff[]>([]);
   let unreadable = $state.raw<string[]>([]);
   let pending = $state(0);
-  let generation = 0;
+  /** Owns the current round of reads; a new round or closing the tab aborts it. */
+  let reads = new AbortController();
   let view = $state<MultiFileDiff | null>(null);
 
   const files = $derived(singleMode ? (single ? [single] : []) : working);
@@ -89,7 +90,9 @@
    * Branch scope one read brings every tracked file; only files git does not
    * track yet are read one by one. */
   async function readAll(status: ProjectGitStatus, branch: boolean): Promise<void> {
-    const id = ++generation;
+    reads.abort();
+    reads = new AbortController();
+    const { signal } = reads;
     view?.reset();
     let paths = status.files.map((file) => file.relativePath);
     const wanted = new Set(paths);
@@ -100,7 +103,7 @@
       pending = 1;
       try {
         const answer = gitPanel.root ? await readBranchDiff(gitPanel.root) : null;
-        if (id !== generation) return;
+        if (signal.aborted) return;
         if (answer) {
           branchBase = answer.base;
           working = splitDiffByFile(answer.diff);
@@ -108,7 +111,7 @@
           branchError = 'Comparing with the default branch needs the desktop app.';
         }
       } catch (error) {
-        if (id !== generation) return;
+        if (signal.aborted) return;
         branchError = error instanceof Error ? error.message : String(error);
       }
       paths = status.files.filter((file) => file.status === 'untracked').map((file) => file.relativePath);
@@ -122,15 +125,15 @@
     const worker = async (): Promise<void> => {
       for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
         try {
-          const diff = await gitService.readWorkingDiff(path);
-          if (id !== generation) return;
+          const diff = await gitService.readWorkingDiff(path, signal);
+          if (signal.aborted) return;
           if (diff) put({ ...diff, diff: diffTextOf(diff), originalContent: null, modifiedContent: null });
           else unreadable = [...unreadable, path];
         } catch {
-          if (id !== generation) return;
+          if (signal.aborted) return;
           unreadable = [...unreadable, path];
         } finally {
-          if (id === generation) pending -= 1;
+          if (!signal.aborted) pending -= 1;
         }
       }
     };
@@ -140,16 +143,18 @@
   /** Read one file's current text, so a collapsed run of lines can open. The
    * diff already on screen stays; only the text is added to it. */
   async function loadFullText(path: string): Promise<void> {
-    const id = generation;
-    const read = await gitService.readWorkingDiff(path).catch(() => null);
-    const shown = working.find((file) => file.relativePath === path);
-    if (read && shown && id === generation) put({ ...shown, modifiedContent: read.modifiedContent });
+    const { signal } = reads;
+    try {
+      const read = await gitService.readWorkingDiff(path, signal);
+      const shown = working.find((file) => file.relativePath === path);
+      if (read && shown && !signal.aborted) put({ ...shown, modifiedContent: read.modifiedContent });
+    } catch {
+      // The collapsed lines stay collapsed; the diff on screen is still right.
+    }
   }
 
-  // Closing the tab stops the readers after the file each is on.
-  onDestroy(() => {
-    generation += 1;
-  });
+  // Closing the tab stops the readers and the reads they are waiting on.
+  onDestroy(() => reads.abort());
 
   // The working copy follows the repository status: a new status (after a
   // commit, a stage, a refresh) means the diffs are read again.

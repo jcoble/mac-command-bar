@@ -285,6 +285,22 @@ function fileChange(relativePath, status = 'modified', badge = 'M') {
   assert.equal(panel.selectedDiff, null);
 }
 
+/** A diff read that never answers until its signal aborts, as a cancelled
+ * backend call would. Node does not wait on AbortSignal.timeout, so it holds
+ * the process open meanwhile. */
+async function answerOnlyOnAbort(signal: AbortSignal): Promise<never> {
+  signal.throwIfAborted();
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    await new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  } finally {
+    clearInterval(keepAlive);
+  }
+  throw new Error('unreachable');
+}
+
 // ── a diff read that never answers ends in an error, not a spinner ───────
 {
   const panel = panelState('/repo');
@@ -294,7 +310,7 @@ function fileChange(relativePath, status = 'modified', badge = 'M') {
     panel,
     resolveTop: async () => '/repo',
     readFiles: async () => [],
-    readDiff: async () => new Promise(() => {}),
+    readDiff: async (_root, _sha, _path, signal) => answerOnlyOnAbort(signal),
     clearPanelSelection: () => {},
     diffTimeoutMs: 5
   });
@@ -316,7 +332,7 @@ function fileChange(relativePath, status = 'modified', badge = 'M') {
     panel,
     resolveTop: async () => '/repo',
     readFiles: async () => [],
-    readDiff: async () => new Promise(() => {}),
+    readDiff: async (_root, _sha, _path, signal) => answerOnlyOnAbort(signal),
     clearPanelSelection: () => {
       panel.selectedPath = '';
       panel.selectedDiff = null;
@@ -481,14 +497,13 @@ function fileChange(relativePath, status = 'modified', badge = 'M') {
 {
   const state = createGitCommitFilesState();
   const panel = panelState('/repo');
-  let call = 0;
   const commitFiles = createGitCommitFilesService({
     state,
     panel,
     resolveTop: async () => '/repo',
     readDiff: async (root, sha, relativePath) => {
-      call += 1;
-      const mine = call;
+      // The superseded read may stop before it reaches git, so tell them apart by path.
+      const mine = relativePath === 'slow.ts' ? 1 : 2;
       await new Promise((resolve) => setTimeout(resolve, mine === 1 ? 20 : 0));
       return { relativePath, status: 'modified', diff: `diff ${mine}`, isBinary: false };
     },

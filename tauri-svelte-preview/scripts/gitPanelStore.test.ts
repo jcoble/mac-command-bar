@@ -606,11 +606,27 @@ function makeBackend(overrides = {}) {
   assert.equal(state.diffError, '');
 }
 
+/** A diff read that never answers until its signal aborts, as a cancelled
+ * backend call would. Node does not wait on AbortSignal.timeout, so it holds
+ * the process open meanwhile. */
+async function answerOnlyOnAbort(signal: AbortSignal): Promise<never> {
+  signal.throwIfAborted();
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    await new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+  } finally {
+    clearInterval(keepAlive);
+  }
+  throw new Error('unreachable');
+}
+
 // ── a diff read that never answers ends in an error, not a spinner ───────
 {
   const backend = makeBackend({
-    async readDiff() {
-      return new Promise(() => {});
+    async readDiff(_root, _path, signal) {
+      return answerOnlyOnAbort(signal);
     }
   });
   const state = createGitPanelState();

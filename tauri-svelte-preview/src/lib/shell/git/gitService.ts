@@ -93,14 +93,14 @@ export interface GitBackend {
   discard(root: string, paths: string[]): Promise<GitActionResult | null>;
   /** Throw away the whole working copy. */
   discardAll(root: string, includeUntracked: boolean): Promise<GitActionResult | null>;
-  listBranches(root: string): Promise<GitBranchList | null>;
+  listBranches(root: string, signal?: AbortSignal): Promise<GitBranchList | null>;
   createBranch(root: string, name: string, checkout: boolean): Promise<GitActionResult | null>;
   switchBranch(root: string, name: string): Promise<GitActionResult | null>;
   stash(root: string, includeUntracked: boolean, message: string): Promise<GitActionResult | null>;
   popStash(root: string, index: number | null): Promise<GitActionResult | null>;
   listStashes(root: string): Promise<GitStashEntry[] | null>;
   amend(root: string, message: string): Promise<GitActionResult | null>;
-  readDiff(root: string, absolutePath: string): Promise<SourceGitDiff | null>;
+  readDiff(root: string, absolutePath: string, signal?: AbortSignal): Promise<SourceGitDiff | null>;
   readHistory(
     root: string,
     cursor?: string | null,
@@ -133,9 +133,9 @@ export function tauriGitBackend(count: (command: string) => void = countInvoke):
       count('discard_all_git_changes');
       return discardAllGitChangesFromTauri(root, includeUntracked);
     },
-    listBranches(root) {
+    listBranches(root, signal) {
       count('list_git_branches');
-      return listGitBranchesFromTauri(root);
+      return listGitBranchesFromTauri(root, signal);
     },
     createBranch(root, name, checkout) {
       count('create_git_branch');
@@ -161,9 +161,9 @@ export function tauriGitBackend(count: (command: string) => void = countInvoke):
       count('amend_git_commit');
       return amendGitCommitFromTauri(root, message);
     },
-    readDiff(root, absolutePath) {
+    readDiff(root, absolutePath, signal) {
       count('read_source_git_diff');
-      return readSourceGitDiffFromTauri(root, absolutePath);
+      return readSourceGitDiffFromTauri(root, absolutePath, signal);
     },
     readHistory(root, cursor, relativePath) {
       count('read_git_commit_history');
@@ -265,7 +265,7 @@ export interface GitService {
   selectFile(file: ProjectGitFileStatus, owner?: GitSurfaceOwner): Promise<void>;
   /** Read one working-copy file's diff without selecting it. Null outside the
    * desktop app and the dev server, or when the panel has no repository. */
-  readWorkingDiff(relativePath: string): Promise<SourceGitDiff | null>;
+  readWorkingDiff(relativePath: string, signal: AbortSignal): Promise<SourceGitDiff | null>;
   /**
    * Put back a diff a session remembered, pointing the panel at that session's
    * repository first if it is somewhere else. The Diff tab is one tab for the
@@ -292,7 +292,7 @@ export interface GitService {
   /** Throw away every change in the working copy. Same rule as above. */
   discardAll(includeUntracked: boolean): Promise<void>;
   /** The local branches, newest commit first. `null` outside the desktop app. */
-  listBranches(): Promise<GitBranchList | null>;
+  listBranches(signal?: AbortSignal): Promise<GitBranchList | null>;
   createBranch(name: string, checkout: boolean): Promise<void>;
   switchBranch(name: string): Promise<void>;
   /** Put the working copy aside. */
@@ -319,6 +319,9 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   const statusGuard = createRequestGuard();
   const historyGuard = createRequestGuard();
   const diffGuard = createRequestGuard();
+  /** Stops the selected diff's read when another file is picked, the selection
+   * is cleared, or the repository changes. */
+  let diffRead = new AbortController();
   let historySurfaceVisible = false;
   let sourceControlSyncGeneration = 0;
 
@@ -536,10 +539,13 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
 
     const id = diffGuard.next();
     state.diffLoading = true;
+    diffRead.abort();
+    diffRead = new AbortController();
 
     try {
       const diff = await withGitDiffTimeout(
-        backend.readDiff(root, absolutePathWithin(root, file.relativePath)),
+        (signal) => backend.readDiff(root, absolutePathWithin(root, file.relativePath), signal),
+        diffRead.signal,
         diffTimeoutMs
       );
       if (!stillCurrent(diffGuard, id, root) || state.diffRevision !== revision) return;
@@ -561,7 +567,10 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
   }
 
   function clearSelection(owner: GitSurfaceOwner | null = null): void {
-    if (owner === null || state.diffOwner === owner) diffGuard.invalidate();
+    if (owner === null || state.diffOwner === owner) {
+      diffGuard.invalidate();
+      diffRead.abort();
+    }
     clearSelectedGitFile(state, owner);
     publishGitDiagnostics();
   }
@@ -573,6 +582,7 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     statusGuard.invalidate();
     historyGuard.invalidate();
     diffGuard.invalidate();
+    diffRead.abort();
     resetGitPanelState(state, root);
     publishGitDiagnostics();
     void publishSourceControl();
@@ -680,11 +690,12 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     showStoredDiff,
     clearSelection,
 
-    async readWorkingDiff(relativePath: string): Promise<SourceGitDiff | null> {
+    async readWorkingDiff(relativePath: string, signal: AbortSignal): Promise<SourceGitDiff | null> {
       const root = state.root;
       if (!root) return null;
       return withGitDiffTimeout(
-        backend.readDiff(root, absolutePathWithin(root, relativePath)),
+        (read) => backend.readDiff(root, absolutePathWithin(root, relativePath), read),
+        signal,
         diffTimeoutMs
       );
     },
@@ -734,10 +745,10 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       });
     },
 
-    async listBranches(): Promise<GitBranchList | null> {
+    async listBranches(signal?: AbortSignal): Promise<GitBranchList | null> {
       const root = state.root;
       if (!root) return null;
-      const list = await backend.listBranches(root);
+      const list = await backend.listBranches(root, signal);
       if (state.root !== root) return null;
       if (list && parseRemoteWorkspacePath(root) && list.remotes === undefined) {
         throw new Error('The remote backend is older than this Assembly app. Update the backend in Settings > Connections, then retry Publish.');

@@ -19,7 +19,7 @@
   import Eye from '@lucide/svelte/icons/eye';
   import EyeOff from '@lucide/svelte/icons/eye-off';
   import Plus from '@lucide/svelte/icons/plus';
-  import type { Snippet } from 'svelte';
+  import { onDestroy, type Snippet } from 'svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
@@ -140,6 +140,9 @@
     textRequested = {};
   }
 
+  /** The pending re-align frame of the last jump; a new jump or unmounting cancels it. */
+  let jumpFrame = 0;
+
   function jumpTo(path: string): void {
     activePath = path;
     const section = sections[path];
@@ -147,8 +150,12 @@
     // Files drawn around the target after the jump can change height (a
     // sideways scrollbar appears) and push it off the top; align once more
     // after they are drawn.
-    requestAnimationFrame(() => requestAnimationFrame(() => section?.scrollIntoView({ block: 'start' })));
+    cancelAnimationFrame(jumpFrame);
+    jumpFrame = requestAnimationFrame(() => {
+      jumpFrame = requestAnimationFrame(() => section?.scrollIntoView({ block: 'start' }));
+    });
   }
+  onDestroy(() => cancelAnimationFrame(jumpFrame));
 
   /** Jump once per requested file, as soon as its section exists — not again
    * every time another file finishes loading. */

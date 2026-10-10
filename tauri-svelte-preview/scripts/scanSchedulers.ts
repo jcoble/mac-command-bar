@@ -42,7 +42,16 @@ const allowedHits = new Set([
   // One five-second shot per active turn; the effect clears it when the turn ends or the composer unmounts.
   'src/lib/shell/components/conversation/ConversationComposer.svelte:setTimeout:const timer = setTimeout(() => (turnSettled = true), 5000);',
   // One ten-second shot while a filter group is open; closing the group or unmounting clears it.
-  'src/lib/components/ui/filter-pills/filter-pills.svelte:setTimeout:timer = window.setTimeout(close, AUTO_CLOSE_MS);'
+  'src/lib/components/ui/filter-pills/filter-pills.svelte:setTimeout:timer = window.setTimeout(close, AUTO_CLOSE_MS);',
+  // A jump re-aligns its file two frames later, after its neighbours are drawn; the next
+  // jump or unmounting cancels the pending frame.
+  'src/lib/shell/components/git/MultiFileDiff.svelte:cancelAnimationFrame:cancelAnimationFrame(jumpFrame);',
+  'src/lib/shell/components/git/MultiFileDiff.svelte:requestAnimationFrame:jumpFrame = requestAnimationFrame(() => {',
+  "src/lib/shell/components/git/MultiFileDiff.svelte:requestAnimationFrame:jumpFrame = requestAnimationFrame(() => section?.scrollIntoView({ block: 'start' }));",
+  'src/lib/shell/components/git/MultiFileDiff.svelte:cancelAnimationFrame:onDestroy(() => cancelAnimationFrame(jumpFrame));',
+  // The 350 ms pull request search debounce; each keystroke, Enter and unmounting clear it.
+  'src/lib/shell/components/github/PullRequestWorkspace.svelte:setTimeout:let searchTimer: ReturnType<typeof setTimeout> | undefined;',
+  'src/lib/shell/components/github/PullRequestWorkspace.svelte:setTimeout:if (searchInput.trim() !== searchedText) searchTimer = setTimeout(() => void load(true), 350);'
 ]);
 
 interface Hit {
