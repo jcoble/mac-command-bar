@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * checkSvelteNext.ts — type-check the Svelte components the /next shell owns.
+ * checkSvelteNext.ts — type-check the Svelte components the app shell owns.
  *
  * WHY THIS WRAPPER EXISTS
  * `pnpm run check` runs `tsc --noEmit`, and TypeScript cannot read a `.svelte`
@@ -15,7 +15,7 @@
  * as reporting nothing.
  *
  * So: run `svelte-check` over everything (it has to build one program anyway),
- * then keep only the errors that land in the files the /next shell owns, listed
+ * then keep only the errors that land in the files the app shell owns, listed
  * in OWNED below. Exit 1 if any of those has an error; exit 0 otherwise.
  * Warnings are printed for the owned paths but never fail the run — accessibility
  * and unused-CSS notes are advice, not a broken build.
@@ -35,7 +35,7 @@ import path from 'node:path';
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
- * The files the /next shell owns. A path counts as owned when it starts with one
+ * The files the app shell owns. A path counts as owned when it starts with one
  * of these, compared against the project-relative path svelte-check prints.
  */
 const OWNED = [
@@ -144,7 +144,7 @@ for (const entry of ownedErrors) show(entry, 'ERROR  ');
 
 console.log('');
 console.log(
-  `Files the /next shell owns: ${ownedErrors.length} error(s), ${ownedWarnings.length} warning(s).`
+  `Files the app shell owns: ${ownedErrors.length} error(s), ${ownedWarnings.length} warning(s).`
 );
 console.log(
   `Elsewhere in the project (not checked by this gate): ${otherErrors} error(s) — the old shell's own backlog.`
@@ -203,6 +203,6 @@ if (fontFloorHits.length > 0) {
 
 if (ownedErrors.length > 0 || fontFloorHits.length > 0) {
   console.log('');
-  console.log('Checking the /next shell failed. Fix the problems listed above.');
+  console.log('Checking the app shell failed. Fix the problems listed above.');
   process.exit(1);
 }
