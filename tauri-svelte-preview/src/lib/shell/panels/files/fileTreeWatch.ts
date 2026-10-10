@@ -1,4 +1,4 @@
-import { parseRemoteWorkspacePath } from '../../../workspacePaths';
+import { parseRemoteWorkspacePath } from '../../../workspacePaths.ts';
 import { watch, type UnwatchFn, type WatchEvent } from "@tauri-apps/plugin-fs";
 
 /**

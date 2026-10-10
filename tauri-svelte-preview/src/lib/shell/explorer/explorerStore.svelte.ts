@@ -1,4 +1,4 @@
-import { parseRemoteWorkspacePath, remoteWorkspacePath } from '../../workspacePaths';
+import { parseRemoteWorkspacePath, remoteWorkspacePath } from '../../workspacePaths.ts';
 /**
  * State for the lazy /next file explorer.
  *

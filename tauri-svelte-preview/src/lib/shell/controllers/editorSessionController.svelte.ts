@@ -1,5 +1,5 @@
 import { rail } from '../stores/sessionRailStore.svelte';
-import { parseRemoteWorkspacePath, mapWorkspaceSnapshotPaths } from '../../workspacePaths';
+import { parseRemoteWorkspacePath, mapWorkspaceSnapshotPaths } from '../../workspacePaths.ts';
 /** Saves and restores only the editor portion of each session workspace. */
 import {
 	editorState,

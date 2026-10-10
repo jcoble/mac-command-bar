@@ -1,4 +1,4 @@
-import { sessionWorkspaceRoot, parseRemoteWorkspacePath } from '../../workspacePaths';
+import { sessionWorkspaceRoot, parseRemoteWorkspacePath } from '../../workspacePaths.ts';
 /**
  * Controller for session selection, filesystem projections, and workspace expansion.
  */

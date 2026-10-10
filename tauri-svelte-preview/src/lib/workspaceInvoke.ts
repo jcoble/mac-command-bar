@@ -1,5 +1,5 @@
 import { invoke as nativeInvoke, type InvokeArgs, type InvokeOptions } from '@tauri-apps/api/core';
-import { qualifyWorkspaceResult, remoteWorkspaceRequest } from './workspacePaths';
+import { qualifyWorkspaceResult, remoteWorkspaceRequest } from './workspacePaths.ts';
 
 /** Preserve the existing bridge; only machine-qualified filesystem requests use the server. */
 export async function invoke<T>(command: string, args?: InvokeArgs, options?: InvokeOptions): Promise<T> {

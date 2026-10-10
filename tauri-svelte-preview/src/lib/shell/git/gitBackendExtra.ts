@@ -142,7 +142,7 @@ export async function readGitCommitFilesFromTauri(
   sha: string
 ): Promise<GitCommitFileChange[] | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('../../workspaceInvoke');
+  const { invoke } = await import('../../workspaceInvoke.ts');
   return invoke<GitCommitFileChange[]>('read_git_commit_files', { root, sha });
 }
 
@@ -156,7 +156,7 @@ export async function readGitCommitFileDiffFromTauri(
   relativePath: string
 ): Promise<SourceGitDiff | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('../../workspaceInvoke');
+  const { invoke } = await import('../../workspaceInvoke.ts');
   return invoke<SourceGitDiff>('read_git_commit_file_diff', { root, sha, relativePath });
 }
 
@@ -252,7 +252,7 @@ export interface GitBranchDiff {
 export async function readBranchDiff(root: string): Promise<GitBranchDiff | null> {
   const fromDesktop = await askDesktop(async () => {
     if (!isTauriRuntime()) return null;
-    const { invoke } = await import('../../workspaceInvoke');
+    const { invoke } = await import('../../workspaceInvoke.ts');
     return invoke<GitBranchDiff>('read_git_branch_diff', { root });
   });
   if (fromDesktop) return fromDesktop;

@@ -740,7 +740,7 @@ export async function validateProjectRootFromTauri(
     return signal?.aborted ? null : result;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   const generation = ++projectRootValidationRequestId;
   const cancel = (): void => {
     void cancelProjectRootValidation(generation);
@@ -764,7 +764,7 @@ export async function validateProjectRootFromTauri(
 async function cancelProjectRootValidation(generation: number): Promise<void> {
   if (!isTauriRuntime()) return;
   try {
-    const { invoke } = await import('./workspaceInvoke');
+    const { invoke } = await import('./workspaceInvoke.ts');
     await invoke('cancel_project_root_validation', { generation });
   } catch {
     // The frontend owner has already abandoned this validation.
@@ -786,7 +786,7 @@ export async function listSourceFilesFromTauri(
     });
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceScanResult>('list_source_files', {
     root,
     limit,
@@ -812,7 +812,7 @@ export async function listSourceDirectoryFromTauri(
     return signal?.aborted ? null : entries;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   if (signal?.aborted) return null;
   const cancel = (): void => {
     if (scanId) void cancelSourceScanFromTauri(scanId);
@@ -847,7 +847,7 @@ export async function searchSourceTreeFromTauri(
     return signal?.aborted ? null : page;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   if (signal?.aborted) return null;
   const cancel = (): void => {
     if (scanId) void cancelSourceScanFromTauri(scanId);
@@ -866,7 +866,7 @@ export async function cancelSourceScanFromTauri(scanId: string): Promise<boolean
     return false;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<boolean>('cancel_source_scan', { scanId });
 }
 
@@ -951,7 +951,7 @@ export async function startTerminalSessionFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<TerminalSessionInfo>('start_terminal_session', { request });
 }
 
@@ -960,19 +960,19 @@ export async function listTerminalSessionsFromTauri(): Promise<TerminalSessionIn
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<TerminalSessionInfo[]>('list_terminal_sessions');
 }
 
 export async function readResourceSnapshotFromTauri(): Promise<ResourceSnapshot | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<ResourceSnapshot>('read_resource_snapshot');
 }
 
 export async function cancelResourceSnapshotFromTauri(): Promise<void> {
   if (!isTauriRuntime()) return;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke('cancel_resource_snapshot');
 }
 
@@ -982,13 +982,13 @@ export async function readResourceDiskScanFromTauri(
   maxEntries = 2000
 ): Promise<DiskScanReport | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<DiskScanReport>('read_resource_disk_scan', { roots, maxDepth, maxEntries });
 }
 
 export async function cancelResourceDiskScanFromTauri(): Promise<void> {
   if (!isTauriRuntime()) return;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke('cancel_resource_disk_scan');
 }
 
@@ -996,7 +996,7 @@ export async function stopOwnedResourceFromTauri(
   request: ResourceStopRequest
 ): Promise<ResourceCommandReceipt | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<ResourceCommandReceipt>('stop_owned_resource', { request });
 }
 
@@ -1004,7 +1004,7 @@ export async function restartLanguageServerRootFromTauri(
   root: string
 ): Promise<ResourceUnavailable | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<ResourceUnavailable>('restart_language_server_root', { request: { root } });
 }
 
@@ -1012,7 +1012,7 @@ export async function applyResourceMemoryPressureFromTauri(
   level: string
 ): Promise<ResourceUnavailable | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<ResourceUnavailable>('apply_resource_memory_pressure', { level });
 }
 
@@ -1020,7 +1020,7 @@ export async function readLanguageServerLogFromTauri(
   root: string
 ): Promise<ResourceUnavailable | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<ResourceUnavailable>('read_language_server_log', { request: { root } });
 }
 
@@ -1028,13 +1028,13 @@ export async function cleanupWorkspaceDiskEntryFromTauri(
   request: ResourceCleanupRequest
 ): Promise<ResourceCleanupReceipt | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<ResourceCleanupReceipt>('cleanup_workspace_disk_entry', { request });
 }
 
 export async function setActiveSourceRootFromTauri(root: string): Promise<string | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<string>('set_active_source_root', { request: { root } });
 }
 
@@ -1043,43 +1043,43 @@ export async function readCurrentProviderUsageFromTauri(
   instanceId: string | null
 ): Promise<ProviderUsageSnapshot | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<ProviderUsageSnapshot>('read_current_provider_usage', { provider, instanceId });
 }
 
 export async function readUsageSummaryFromTauri(query: UsageHistoryQuery = {}): Promise<UsageSummary | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<UsageSummary>('read_usage_summary', { query });
 }
 
 export async function readUsageBreakdownFromTauri(query: UsageHistoryQuery = {}): Promise<UsageBreakdownRow[] | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<UsageBreakdownRow[]>('read_usage_breakdown', { query });
 }
 
 export async function readUsageProviderSummaryFromTauri(query: UsageHistoryQuery = {}): Promise<UsageProviderSummaryRow[] | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<UsageProviderSummaryRow[]>('read_usage_provider_summary', { query });
 }
 
 export async function readUsageDailyFromTauri(query: UsageHistoryQuery = {}): Promise<UsageDailyRow[] | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<UsageDailyRow[]>('read_usage_daily', { query });
 }
 
 export async function readUsageDailyTotalsFromTauri(query: UsageHistoryQuery = {}): Promise<UsageDailyTotalsRow[] | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<UsageDailyTotalsRow[]>('read_usage_daily_totals', { query });
 }
 
 export async function refreshUsageHistoryFromTauri(): Promise<number | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<number>('refresh_usage_history');
 }
 
@@ -1106,7 +1106,7 @@ export type HelperTestResult = {
 
 export async function readHelperSettingsFromTauri(): Promise<HelperSettingsView | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<HelperSettingsView>('read_helper_settings');
 }
 
@@ -1114,20 +1114,20 @@ export async function writeHelperSettingsFromTauri(
   settings: { vendor: HelperVendor; model: string; route: HelperRoute }
 ): Promise<void> {
   if (!isTauriRuntime()) return;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke<void>('write_helper_settings', { settings });
 }
 
 /** Stores the key in the Keychain. An empty key removes the one that is there. */
 export async function setHelperKeyFromTauri(vendor: HelperVendor, key: string): Promise<void> {
   if (!isTauriRuntime()) return;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke<void>('set_helper_key', { vendor, key });
 }
 
 export async function testHelperFromTauri(): Promise<HelperTestResult | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<HelperTestResult>('test_helper');
 }
 
@@ -1145,7 +1145,7 @@ export async function runHelperJobFromTauri(
   input: string
 ): Promise<string> {
   if (!isTauriRuntime()) throw new Error('The helper only runs in the desktop app.');
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<string>('run_helper_job', { job, input });
 }
 
@@ -1157,7 +1157,7 @@ export async function readTerminalSessionScrollbackFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<string | null>('read_terminal_session_scrollback', { sessionId, maxBytes });
 }
 
@@ -1169,7 +1169,7 @@ export async function writeTerminalSessionFromTauri(
     return false;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<boolean>('write_terminal_session', { sessionId, data });
 }
 
@@ -1182,7 +1182,7 @@ export async function resizeTerminalSessionFromTauri(
     return false;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<boolean>('resize_terminal_session', { sessionId, cols, rows });
 }
 
@@ -1191,7 +1191,7 @@ export async function closeTerminalSessionFromTauri(sessionId: string): Promise<
     return false;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<boolean>('close_terminal_session', { sessionId });
 }
 
@@ -1204,7 +1204,7 @@ async function registerProjectionStream<T>(input: {
 }): Promise<ProjectionStreamRegistration | null> {
   if (!isTauriRuntime()) return null;
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   const registrationId = globalThis.crypto.randomUUID();
   let active = true;
   const owner: ProjectionAckOwner = {
@@ -1317,7 +1317,7 @@ export async function readSourceFromTauri(record: SourceRecord): Promise<SourceP
   }
 
   const generation = sourceFileReadGeneration;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   const preview = await invoke<SourcePreview | null>('read_source_file', {
     path: record.path,
     generation
@@ -1336,7 +1336,7 @@ export async function readSourceImageFromTauri(path: string): Promise<Uint8Array
   if (!isTauriRuntime()) {
     throw new Error('Image preview is available in the desktop app.');
   }
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   const buffer = await invoke<ArrayBuffer>('read_source_image', { path });
   return new Uint8Array(buffer);
 }
@@ -1347,7 +1347,7 @@ export async function cancelSourceFileReadsFromTauri(): Promise<void> {
   if (!isTauriRuntime()) return;
   sourceFileReadGeneration += 1;
   const generation = sourceFileReadGeneration;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke('cancel_source_file_reads', { generation });
 }
 
@@ -1356,7 +1356,7 @@ export async function readNativeCsharpFileFromTauri(
   path: string
 ): Promise<SourcePreview | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourcePreview>('read_native_csharp_file', { root, path });
 }
 
@@ -1364,7 +1364,7 @@ export async function ensureNativeCsharpLanguageClientFromTauri(
   root: string
 ): Promise<{ wsUrl: string; root: string } | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<{ wsUrl: string; root: string }>('ensure_native_csharp_language_client', { root });
 }
 
@@ -1389,7 +1389,7 @@ export async function readWorkspaceLanguageIntelligenceFromTauri(
   root: string
 ): Promise<WorkspaceLanguageIntelligence | null> {
   if (!isTauriRuntime() || !root.trim()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkspaceLanguageIntelligence>('read_workspace_language_intelligence', { root });
 }
 
@@ -1405,7 +1405,7 @@ export async function setWorkspaceLanguageIntelligenceFromTauri(
   language?: string | null
 ): Promise<WorkspaceLanguageIntelligence | null> {
   if (!isTauriRuntime() || !root.trim()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkspaceLanguageIntelligence>('set_workspace_language_intelligence', {
     root,
     enabled,
@@ -1415,7 +1415,7 @@ export async function setWorkspaceLanguageIntelligenceFromTauri(
 
 export async function markNativeCsharpLanguageClientReadyFromTauri(root: string): Promise<void> {
   if (!isTauriRuntime()) return;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke('mark_native_csharp_language_client_ready', { root });
 }
 
@@ -1439,7 +1439,7 @@ export async function writeSourceToTauri(
       : null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   const preview = await invoke<SourcePreview>('write_source_file', {
     path: record.path,
     content,
@@ -1478,7 +1478,7 @@ export async function moveToTrashFromTauri(path: string): Promise<boolean> {
     return false;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke('move_to_trash', { path });
   return true;
 }
@@ -1491,7 +1491,7 @@ export async function openTerminalPathFromTauri(
     return false;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke('open_terminal_path', {
     path,
     terminal: terminal.trim() || null
@@ -1508,7 +1508,7 @@ export async function openTerminalCommandFromTauri(
     return false;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke('open_terminal_command', {
     path,
     command,
@@ -1530,7 +1530,7 @@ export async function invokeBrowserCommandFromTauri<T>(
     throw new Error('Native browser commands require the Tauri runtime');
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<T>(command, input as Record<string, unknown>);
 }
 
@@ -1541,7 +1541,7 @@ export async function readProjectGitStatusFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<ProjectGitStatus>('project_git_status', { root });
 }
 
@@ -1553,7 +1553,7 @@ export async function readSourceGitDiffFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceGitDiff>('read_source_git_diff', { root, path });
 }
 
@@ -1565,7 +1565,7 @@ export async function stageGitPathsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitActionResult>('stage_git_paths', { root, paths });
 }
 
@@ -1577,7 +1577,7 @@ export async function unstageGitPathsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitActionResult>('unstage_git_paths', { root, paths });
 }
 
@@ -1589,7 +1589,7 @@ export async function commitGitRepositoryFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitActionResult>('commit_git_repository', { root, message });
 }
 
@@ -1600,7 +1600,7 @@ export async function fetchGitRepositoryFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitActionResult>('fetch_git_repository', { root });
 }
 
@@ -1611,7 +1611,7 @@ export async function pullGitRepositoryFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitActionResult>('pull_git_repository', { root });
 }
 
@@ -1622,7 +1622,7 @@ export async function pushGitRepositoryFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitActionResult>('push_git_repository', { root });
 }
 
@@ -1632,7 +1632,7 @@ export async function publishGitRepositoryFromTauri(
   remote: string
 ): Promise<GitActionResult | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitActionResult>('publish_git_repository', { root, expectedBranch, remote });
 }
 
@@ -1644,7 +1644,7 @@ export async function discardGitPathsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitActionResult>('discard_git_paths', { root, paths });
 }
 
@@ -1656,7 +1656,7 @@ export async function discardAllGitChangesFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitActionResult>('discard_all_git_changes', { root, includeUntracked });
 }
 
@@ -1665,7 +1665,7 @@ export async function listGitBranchesFromTauri(root: string): Promise<GitBranchL
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitBranchList>('list_git_branches', { root });
 }
 
@@ -1678,7 +1678,7 @@ export async function createGitBranchFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitActionResult>('create_git_branch', { root, name, checkout });
 }
 
@@ -1690,7 +1690,7 @@ export async function switchGitBranchFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitActionResult>('switch_git_branch', { root, name });
 }
 
@@ -1703,7 +1703,7 @@ export async function stashGitChangesFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitActionResult>('stash_git_changes', { root, includeUntracked, message });
 }
 
@@ -1715,7 +1715,7 @@ export async function popGitStashFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitActionResult>('pop_git_stash', { root, index });
 }
 
@@ -1724,7 +1724,7 @@ export async function listGitStashesFromTauri(root: string): Promise<GitStashEnt
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitStashEntry[]>('list_git_stashes', { root });
 }
 
@@ -1736,7 +1736,7 @@ export async function amendGitCommitFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitActionResult>('amend_git_commit', { root, message });
 }
 
@@ -1747,7 +1747,7 @@ export async function listOpenPullRequestsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<PullRequestSummary[]>('list_open_pull_requests', { root });
 }
 
@@ -1755,7 +1755,7 @@ export async function listGithubPullRequestsFromTauri(
   query: GithubPullRequestQuery
 ): Promise<GithubPullRequestPage | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GithubPullRequestPage>('list_github_pull_requests', { query });
 }
 
@@ -1764,7 +1764,7 @@ export async function readGithubPullRequestFromTauri(
   number: number
 ): Promise<GithubPullRequestDetail | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GithubPullRequestDetail>('read_github_pull_request', { root, number });
 }
 
@@ -1772,7 +1772,7 @@ export async function readGithubPullRequestFileFromTauri(
   query: GithubFileVersionQuery
 ): Promise<GithubFileVersions | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GithubFileVersions>('read_github_pull_request_file', { query });
 }
 
@@ -1780,13 +1780,13 @@ export async function submitGithubPullRequestReviewFromTauri(
   submission: GithubReviewSubmission
 ): Promise<string> {
   if (!isTauriRuntime()) throw new Error('Reviews can only be submitted from the desktop app.');
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<string>('submit_github_pull_request_review', { submission });
 }
 
 export async function commentGithubPullRequestFromTauri(comment: GithubIssueComment): Promise<string> {
   if (!isTauriRuntime()) throw new Error('Comments can only be posted from the desktop app.');
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<string>('comment_github_pull_request', { comment });
 }
 
@@ -1794,7 +1794,7 @@ export async function replyGithubPullRequestCommentFromTauri(
   reply: GithubReviewReply
 ): Promise<string> {
   if (!isTauriRuntime()) throw new Error('Review replies can only be submitted from the desktop app.');
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<string>('reply_github_pull_request_comment', { reply });
 }
 
@@ -1802,7 +1802,7 @@ export async function mergeGithubPullRequestFromTauri(
   request: GithubMergeRequest
 ): Promise<string> {
   if (!isTauriRuntime()) throw new Error('Pull requests can only be merged from the desktop app.');
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<string>('merge_github_pull_request', { request });
 }
 
@@ -1810,7 +1810,7 @@ export async function generateCommitMessageFromTauri(
   request: AgentGenerationRequest
 ): Promise<string | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<string>('generate_commit_message', { request });
 }
 
@@ -1818,7 +1818,7 @@ export async function readPullRequestContextFromTauri(
   root: string
 ): Promise<PullRequestContext | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<PullRequestContext>('read_pull_request_context', { root });
 }
 
@@ -1826,7 +1826,7 @@ export async function generatePullRequestDetailsFromTauri(
   request: AgentGenerationRequest
 ): Promise<PullRequestDetails | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<PullRequestDetails>('generate_pull_request_details', { request });
 }
 
@@ -1838,7 +1838,7 @@ export async function createPullRequestFromTauri(input: {
   draft: boolean;
 }): Promise<PullRequestCreated | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<PullRequestCreated>('create_pull_request', input);
 }
 
@@ -1847,7 +1847,7 @@ export async function readPullRequestStatusFromTauri(
   branch: string
 ): Promise<PullRequestStatus | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<PullRequestStatus>('read_pull_request_status', { root, branch });
 }
 
@@ -1860,7 +1860,7 @@ export async function readGitCommitHistoryFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitHistoryPage>('read_git_commit_history', { root, cursor, relativePath });
 }
 
@@ -1871,7 +1871,7 @@ export async function listProjectWorktreesFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<ProjectWorktree[]>('list_project_worktrees', { root });
 }
 
@@ -1883,7 +1883,7 @@ export async function removeProjectWorktreeFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<ProjectWorktreeActionResult>('remove_project_worktree', { root, path });
 }
 
@@ -1895,7 +1895,7 @@ export async function archiveProjectWorktreeFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<ProjectWorktreeArchiveResult>('archive_project_worktree', { root, path });
 }
 
@@ -1906,7 +1906,7 @@ export async function listGitRepositorySummariesFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitRepositorySummary[]>('list_git_repository_summaries', { projects });
 }
 
@@ -1915,7 +1915,7 @@ export async function listAgentSessionsFromTauri(): Promise<AgentSession[] | nul
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<AgentSession[]>('list_agent_sessions');
 }
 
@@ -1926,7 +1926,7 @@ export async function listAgentSessionsForProjectFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<AgentSession[]>('list_agent_sessions_for_project', { projectPath: path });
 }
 
@@ -1935,7 +1935,7 @@ export async function readAgentSessionDetailsFromTauri(
 ): Promise<AgentSession[] | null> {
   if (!isTauriRuntime()) return null;
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<AgentSession[]>('read_agent_session_details', { logPath });
 }
 
@@ -1962,7 +1962,7 @@ export async function listRepositoryCheckoutsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<Record<string, RepositoryCheckout[]>>('list_repository_checkouts', { roots });
 }
 
@@ -1972,7 +1972,7 @@ export async function readAgentConversationCapabilitiesFromTauri(
 ): Promise<AgentConversationCapabilities | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
   const requestId = createAgentConversationRequestId();
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   const cancel = (): void => {
     void cancelAgentConversationRequestFromTauri(requestId);
   };
@@ -2006,7 +2006,7 @@ export function createAgentConversationRequestId(): number {
 
 export async function cancelAgentConversationRequestFromTauri(requestId: number): Promise<void> {
   if (!isTauriRuntime()) return;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke('cancel_agent_conversation_request', { requestId });
 }
 
@@ -2021,7 +2021,7 @@ export async function probeAgentProviderConfigFromTauri(
 ): Promise<AgentConversationConfigState | null> {
   if (!isTauriRuntime() || signal?.aborted) return null;
   const requestId = createAgentConversationRequestId();
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   const cancel = (): void => { void invoke('cancel_agent_provider_probe', { requestId }); };
   signal?.addEventListener('abort', cancel, { once: true });
   try {
@@ -2051,7 +2051,7 @@ export async function readAgentConversationSelectionFromTauri(
   signal?.addEventListener('abort', cancel, { once: true });
   try {
     if (signal?.aborted) return null;
-    const { invoke } = await import('./workspaceInvoke');
+    const { invoke } = await import('./workspaceInvoke.ts');
     const snapshot = await invoke<AgentConversationSelectionSnapshot | null>(
       'read_agent_conversation_selection',
       { ownedId, requestId, maxBytes, minimumGeneration }
@@ -2080,7 +2080,7 @@ export async function readAgentConversationChildHistoryFromTauri(input: {
   maxBytes: number;
   signal?: AbortSignal;
 }): Promise<AgentConversationChildHistory> {
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   if (input.signal?.aborted) return Promise.resolve({} as AgentConversationChildHistory);
   return invoke<AgentConversationChildHistory>('read_agent_conversation_child_history', input);
 }
@@ -2089,13 +2089,13 @@ export async function stopAgentConversationChildHistoryFromTauri(
   parentOwnedId: string,
   requestId: number
 ): Promise<boolean> {
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<boolean>('stop_agent_conversation_child_history', { parentOwnedId, requestId });
 }
 
 export async function listAgentConversationSessionsFromTauri(): Promise<AgentConversationSessionRecord[] | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<AgentConversationSessionRecord[]>('list_agent_conversation_sessions');
 }
 
@@ -2104,7 +2104,7 @@ export async function listRemoteAgentConversationSessionsFromTauri(
 ): Promise<AgentConversationSessionRecord[] | null> {
   if (!isTauriRuntime() || signal?.aborted) return null;
   const requestId = createAgentConversationRequestId();
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   const cancel = (): void => {
     void cancelAgentConversationRequestFromTauri(requestId);
   };
@@ -2129,7 +2129,7 @@ export async function readRemoteAssemblyEnvironmentFromTauri(): Promise<RemoteAs
   if (!isTauriRuntime()) {
     return { profiles: [], readyProfileIds: [] };
   }
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<RemoteAssemblyEnvironment>('read_remote_assembly_environment');
 }
 
@@ -2137,7 +2137,7 @@ export async function readRemoteBackendStatusesFromTauri(
   profiles: RemoteAssemblyProfile[]
 ): Promise<RemoteBackendProfileStatus[]> {
   if (!isTauriRuntime() || profiles.length === 0) return [];
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<RemoteBackendProfileStatus[]>('read_remote_backend_statuses', { profiles });
 }
 
@@ -2145,12 +2145,12 @@ export async function removeRemoteAssemblyProfileFromTauri(
   profileId: string
 ): Promise<RemoteAssemblyEnvironment> {
   if (!isTauriRuntime()) throw new Error('Remote setup is available in the desktop app.');
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<RemoteAssemblyEnvironment>('remove_remote_assembly_profile', { profileId });
 }
 
 export async function disconnectRemoteAssemblyFromTauri(profileId: string): Promise<RemoteAssemblyEnvironment> {
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<RemoteAssemblyEnvironment>('disconnect_remote_assembly', { profileId });
 }
 
@@ -2233,7 +2233,7 @@ export async function uninstallRemoteAssemblyFromTauri(
   deleteData: boolean
 ): Promise<{ environment: RemoteAssemblyEnvironment; replacedProfileId: string | null }> {
   if (!isTauriRuntime()) throw new Error('Remote uninstall is available in the desktop app.');
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<{ environment: RemoteAssemblyEnvironment; replacedProfileId: string | null }>(
     'uninstall_remote_assembly',
     { profile, deleteData }
@@ -2246,7 +2246,7 @@ export async function changeAgentConversationCheckoutFromTauri(input: {
   cwd: string;
 }): Promise<AgentConversationSessionRecord | null> {
   if (!isTauriRuntime() || !input.ownedId.trim() || !input.cwd.trim()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<AgentConversationSessionRecord>('change_agent_conversation_checkout', {
     request: input
   });
@@ -2257,7 +2257,7 @@ export async function listAgentConversationEventsFromTauri(
   fromSequence = 0
 ): Promise<AgentConversationEvent[] | null> {
   if (!isTauriRuntime() || !ownedId.trim()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<AgentConversationEvent[]>('list_agent_conversation_events', { ownedId, fromSequence });
 }
 
@@ -2269,7 +2269,7 @@ export async function listAgentConversationEventsBeforeFromTauri(
   signal?: AbortSignal
 ): Promise<AgentConversationEventPage | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   try {
     const page = await invoke<AgentConversationEventPage>('list_agent_conversation_events_before', {
       ownedId,
@@ -2290,7 +2290,7 @@ export async function listAgentConversationItemsBeforeFromTauri(
   signal?: AbortSignal
 ): Promise<AgentConversationItemPage | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   try {
     const page = await invoke<AgentConversationItemPage>('list_agent_conversation_items_before', {
       ownedId, beforeSequence, maxBytes
@@ -2313,7 +2313,7 @@ export async function listAgentConversationItemsAfterFromTauri(
   signal?: AbortSignal
 ): Promise<AgentConversationItemPage | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   try {
     const page = await invoke<AgentConversationItemPage>('list_agent_conversation_items_after', {
       ownedId, afterSequence, maxBytes
@@ -2336,7 +2336,7 @@ export async function updateAgentConversationSessionMetaFromTauri(input: {
   meta: AgentConversationSessionMeta;
 }): Promise<AgentConversationSessionRecord | null> {
   if (!isTauriRuntime() || !input.ownedId.trim()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<AgentConversationSessionRecord>('update_agent_conversation_session_meta', {
     request: input
   });
@@ -2346,7 +2346,7 @@ export async function updateAgentConversationSessionMetaFromTauri(input: {
  * on disk stays. Answers whether there was anything to delete. */
 export async function deleteAgentConversationSessionFromTauri(ownedId: string): Promise<boolean> {
   if (!isTauriRuntime() || !ownedId.trim()) return false;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<boolean>('delete_agent_conversation_session', { ownedId });
 }
 
@@ -2356,7 +2356,7 @@ export async function writeAgentConversationWorkspaceFromTauri(
 ): Promise<boolean> {
   if (!isTauriRuntime()) return true;
   if (!ownedId.trim()) return false;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke<void>('write_agent_conversation_workspace', {
     ownedId,
     snapshotJson: JSON.stringify(mapWorkspaceSnapshotPaths(snapshot, null))
@@ -2368,7 +2368,7 @@ export async function readAgentConversationWorkspaceFromTauri(
   ownedId: string
 ): Promise<SessionWorkspaceSnapshot | null> {
   if (!isTauriRuntime() || !ownedId.trim()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   const snapshot = await invoke<string | null>('read_agent_conversation_workspace', { ownedId });
   if (snapshot === null) return null;
   const parsed: unknown = JSON.parse(snapshot);
@@ -2423,19 +2423,19 @@ export async function writeAgentConversationWorkspaceExpandedPathsFromTauri(
 
 export async function deleteAgentConversationWorkspaceFromTauri(ownedId: string): Promise<void> {
   if (!isTauriRuntime() || !ownedId.trim()) return;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke<void>('delete_agent_conversation_workspace', { ownedId });
 }
 
 export async function clearAgentConversationWorkspaceEditorsFromTauri(): Promise<void> {
   if (!isTauriRuntime()) return;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke<void>('clear_agent_conversation_workspace_editors');
 }
 
 export async function clearAgentConversationWorkspaceTabsFromTauri(): Promise<void> {
   if (!isTauriRuntime()) return;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke<void>('clear_agent_conversation_workspace_tabs');
 }
 
@@ -2468,7 +2468,7 @@ async function writeAssemblySettingInOrder(
     // A failed older write must not block the latest value.
   }
   try {
-    const { invoke } = await import('./workspaceInvoke');
+    const { invoke } = await import('./workspaceInvoke.ts');
     await invoke<void>('write_assembly_setting', {
       settingKey,
       valueJson: JSON.stringify(value)
@@ -2487,7 +2487,7 @@ export async function readAssemblySettingFromTauri(settingKey: string): Promise<
   } catch {
     // Reads should still proceed after a failed pending write.
   }
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   const valueJson = await invoke<string | null>('read_assembly_setting', { settingKey });
   return valueJson === null ? null : JSON.parse(valueJson) as unknown;
 }
@@ -2515,7 +2515,7 @@ export async function beginAgentConversationImportFromTauri(
   request: AgentConversationTranscriptImport
 ): Promise<string | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<string>('begin_agent_conversation_import', { ...request });
 }
 
@@ -2528,7 +2528,7 @@ export async function finishAgentConversationImportFromTauri(
   ownedId: string
 ): Promise<number | null> {
   if (!isTauriRuntime() || !ownedId.trim()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<number>('finish_agent_conversation_import', { ownedId });
 }
 
@@ -2547,7 +2547,7 @@ export async function extendAgentConversationImportFromTauri(
   signal?: AbortSignal
 ): Promise<ExtendedImport | null> {
   if (!isTauriRuntime() || !ownedId.trim() || signal?.aborted) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   if (signal?.aborted) return null;
   const result = await invoke<ExtendedImport>('extend_agent_conversation_import', { ownedId });
   return signal?.aborted ? null : result;
@@ -2564,7 +2564,7 @@ export async function listRuntimeContextsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<RuntimeContext[]>('list_runtime_contexts', { projects });
 }
 
@@ -2573,7 +2573,7 @@ export async function listPlaywrightSessionsFromTauri(): Promise<PlaywrightSessi
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<PlaywrightSessionInfo[]>('list_playwright_sessions');
 }
 
@@ -2582,7 +2582,7 @@ export async function killPlaywrightSessionsFromTauri(): Promise<PlaywrightClean
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<PlaywrightCleanupResult>('kill_playwright_sessions');
 }
 
@@ -2593,7 +2593,7 @@ export async function listOrchestrationRunsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<OrchestrationRun[]>('list_orchestration_runs', { projects });
 }
 
@@ -2604,13 +2604,13 @@ export async function recordOrchestrationEventToTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<OrchestrationRun>('record_orchestration_event', { event });
 }
 
 export async function listWorkflowRunsFromTauri(): Promise<WorkflowRunRecord[] | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkflowRunRecord[]>('list_workflow_runs');
 }
 
@@ -2620,37 +2620,37 @@ export async function createWorkflowRunFromTauri(
   idempotencyKey: string
 ): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkflowRunRecord>('create_workflow_run', { definition, input, idempotencyKey });
 }
 
 export async function startWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkflowRunRecord>('start_workflow_run', { runId, idempotencyKey });
 }
 
 export async function pauseWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkflowRunRecord>('pause_workflow_run', { runId, idempotencyKey });
 }
 
 export async function resumeWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkflowRunRecord>('resume_workflow_run', { runId, idempotencyKey });
 }
 
 export async function cancelWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkflowRunRecord>('cancel_workflow_run', { runId, idempotencyKey });
 }
 
 export async function retryWorkflowNodeFromTauri(runId: string, nodeId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkflowRunRecord>('retry_workflow_node', { runId, nodeId, idempotencyKey });
 }
 
@@ -2661,13 +2661,13 @@ export async function redirectWorkflowNodeFromTauri(
   idempotencyKey: string
 ): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkflowRunRecord>('redirect_workflow_node', { runId, nodeId, provider, idempotencyKey });
 }
 
 export async function skipWorkflowNodeFromTauri(runId: string, nodeId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkflowRunRecord>('skip_workflow_node', { runId, nodeId, idempotencyKey });
 }
 
@@ -2678,7 +2678,7 @@ export async function approveWorkflowGateFromTauri(
   idempotencyKey: string
 ): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkflowRunRecord>('approve_workflow_gate', { runId, nodeId, approval, idempotencyKey });
 }
 
@@ -2689,7 +2689,7 @@ export async function submitWorkflowResultFromTauri(
   idempotencyKey: string
 ): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkflowRunRecord>('submit_workflow_result', { runId, nodeId, result, idempotencyKey });
 }
 
@@ -2706,7 +2706,7 @@ export async function searchSourceFilesFromTauri(
     });
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceSearchMatch[]>('search_source_files', {
     records,
     query,
@@ -2727,7 +2727,7 @@ export async function findSourceDefinitionsFromTauri(
     });
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceDefinitionTarget[]>('find_source_definitions', {
     records,
     symbolName,
@@ -2742,7 +2742,7 @@ export async function findSourceDefinitionsInRootFromTauri(
 ): Promise<SourceDefinitionTarget[] | null> {
   if (!isTauriRuntime()) return null;
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceDefinitionTarget[]>('find_source_definitions_in_root', {
     root,
     symbolName,
@@ -2758,7 +2758,7 @@ export async function readSourceLspStatusFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceLspStatus>('read_source_lsp_status', {
     root,
     language
@@ -2772,7 +2772,7 @@ export async function readSourceLspReadinessFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceLspStatus[]>('list_source_lsp_statuses', { root });
 }
 
@@ -2788,7 +2788,7 @@ export async function warmSourceLspForRootFromTauri(root: string): Promise<numbe
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<number>('warm_source_lsp_for_root', { root });
 }
 
@@ -2800,7 +2800,7 @@ export async function findSourceLspDefinitionsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceDefinitionTarget[]>('find_source_lsp_definitions', {
     preview,
     request
@@ -2815,7 +2815,7 @@ export async function findSourceLspCompletionsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceCompletionItem[]>('find_source_lsp_completions', {
     preview,
     request
@@ -2830,7 +2830,7 @@ export async function findSourceLspReferencesFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceReferenceTarget[]>('find_source_lsp_references', {
     preview,
     request
@@ -2845,7 +2845,7 @@ export async function findSourceLspImplementationsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceDefinitionTarget[]>('find_source_lsp_implementations', {
     preview,
     request
@@ -2860,7 +2860,7 @@ export async function findSourceLspTypeDefinitionsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceDefinitionTarget[]>('find_source_lsp_type_definitions', {
     preview,
     request
@@ -2875,7 +2875,7 @@ export async function findSourceLspDocumentHighlightsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceDocumentHighlight[]>('find_source_lsp_document_highlights', {
     preview,
     request
@@ -2890,7 +2890,7 @@ export async function formatSourceWithLspFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceTextEdit[]>('format_source_with_lsp', {
     preview,
     request
@@ -2905,7 +2905,7 @@ export async function renameSourceWithLspFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceRenameResult>('rename_source_with_lsp', {
     preview,
     request
@@ -2920,7 +2920,7 @@ export async function findSourceLspCodeActionsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceCodeAction[]>('find_source_lsp_code_actions', {
     preview,
     request
@@ -2936,7 +2936,7 @@ export async function findSourceLspSignatureHelpFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceSignatureHelp | null>('find_source_lsp_signature_help', {
     preview,
     request
@@ -2952,7 +2952,7 @@ export async function findSourceLspInlayHintsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceInlayHint[]>('find_source_lsp_inlay_hints', {
     preview,
     request
@@ -2968,7 +2968,7 @@ export async function findSourceLspSemanticTokensFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceSemanticToken[]>('find_source_lsp_semantic_tokens', {
     preview,
     request
@@ -2984,7 +2984,7 @@ export async function findSourceLspHoverFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceLspHover | null>('find_source_lsp_hover', {
     preview,
     request
@@ -2999,7 +2999,7 @@ export async function findSourceLspSymbolsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceSymbol[]>('find_source_lsp_symbols', {
     preview,
     request
@@ -3015,7 +3015,7 @@ export async function findSourceLspWorkspaceSymbolsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceWorkspaceSymbol[]>('find_source_lsp_workspace_symbols', {
     preview,
     request
@@ -3030,7 +3030,7 @@ export async function readSourceLspDiagnosticsFromTauri(
     return null;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceDiagnostic[]>('read_source_lsp_diagnostics', {
     preview,
     request
@@ -3050,7 +3050,7 @@ export async function findSourceReferencesFromTauri(
     });
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceReferenceTarget[]>('find_source_references', {
     records,
     symbolName,
@@ -3066,7 +3066,7 @@ export async function findSourceReferencesInRootFromTauri(
 ): Promise<SourceReferenceTarget[] | null> {
   if (!isTauriRuntime() || signal?.aborted) return null;
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceReferenceTarget[]>('find_source_references_in_root', {
     root,
     symbolName,
@@ -3097,7 +3097,7 @@ export async function countSourceReferencesFromTauri(
     });
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<SourceReferenceCountResult>('count_source_references', {
     root,
     symbolNames,
@@ -3110,7 +3110,7 @@ async function runPathCommand(command: string, path: string, signal?: AbortSigna
     return false;
   }
 
-  const { invoke } = await import('./workspaceInvoke');
+  const { invoke } = await import('./workspaceInvoke.ts');
   await invoke(command, { path });
   return true;
 }
