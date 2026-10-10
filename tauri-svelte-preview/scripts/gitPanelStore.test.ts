@@ -367,6 +367,36 @@ function makeBackend(overrides = {}) {
   assert.equal(state.status.branch, 'newer', 'the late answer from the older read is dropped');
 }
 
+// ── hiding the graph mid-read still lets the session's status load (TSK-1438) ─
+// A session switch hides the graph (releaseHistorySurface) while the Changes
+// tab's status read for the new session is in flight. Status was already null,
+// so the tab sees no change and never asks again: the read must still land.
+{
+  const resolvers = [];
+  const backend = makeBackend({
+    readStatus(root) {
+      return new Promise((resolve) => resolvers.push({ root, resolve }));
+    }
+  });
+  const state = createGitPanelState();
+  const git = createGitService({ backend, state });
+  const answer = (branch) => ({ branch, ahead: 0, behind: 0, hasUpstream: true, files: [] });
+
+  git.activate('/one');
+  void git.refreshStatus();
+  git.activate('/two');
+  void git.refreshStatus();
+  git.releaseHistorySurface();
+  resolvers[0].resolve(answer('one'));
+  await settle();
+  assert.equal(state.status, null, "the old session's status never shows after the switch");
+  resolvers[1].resolve(answer('two'));
+  await settle();
+  assert.equal(state.root, '/two');
+  assert.equal(state.status?.branch, 'two', "the final session's status loads");
+  assert.equal(state.statusLoading, false);
+}
+
 // ── switching repository mid-read drops the answer for the old one ──────────
 {
   let resolveFirst = null;
