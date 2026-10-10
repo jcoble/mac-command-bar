@@ -6828,7 +6828,7 @@ async fn handle_ordered_session_event(
                 return true;
             }
             let next_state = if session.active_turn_id.is_some()
-                || !session.background_work.is_empty()
+                || session.autonomous_turn_started
             {
                 AgentRuntimeState::Working
             } else {
@@ -9404,12 +9404,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn child_elicitation_survives_parent_completion_and_answers_original_wire() {
-        let fixture = fixture_manager_with_provider(
-            "child_input_after_parent",
-            AgentConversationProvider::Claude,
-            None,
-        )
-        .await;
+        let (fixture, seen) =
+            feed_fixture("child_input_after_parent", AgentConversationProvider::Claude).await;
         fixture
             .manager
             .prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
@@ -9447,15 +9443,23 @@ mod tests {
             .await
             .expect("child elicitation response");
         wait_until(|| {
-            let sessions = fixture.manager.sessions.lock().unwrap();
-            let session = &sessions[&fixture.owned_id];
-            session.user_input_requests.is_empty()
-                && session.state == AgentRuntimeState::Working
-                && !session.background_work.is_empty()
+            seen.lock().unwrap().iter().any(|event| {
+                matches!(event.payload, AgentConversationPayload::UserInputResolved { .. })
+            })
         })
         .await;
-        let log = fs::read_to_string(fixture.root.join("child_input_after_parent.jsonl")).unwrap();
-        assert!(log.contains(r#""id":77"#));
+        {
+            let sessions = fixture.manager.sessions.lock().unwrap();
+            let session = &sessions[&fixture.owned_id];
+            assert!(session.user_input_requests.is_empty());
+            assert!(!session.background_work.is_empty(), "the sub-agent still runs");
+            // The parent turn has ended, so answering the sub-agent must not
+            // mark the session Working again (TSK-1394).
+            assert_eq!(session.state, AgentRuntimeState::Ready);
+        }
+        let log_path = fixture.root.join("child_input_after_parent.jsonl");
+        wait_until(|| fs::read_to_string(&log_path).is_ok_and(|log| log.contains(r#""id":77"#))).await;
+        let log = fs::read_to_string(&log_path).unwrap();
         assert!(log.contains(r#""action":"accept""#));
         assert!(log.contains(r#""question_0_custom":"Canary""#));
 
