@@ -462,6 +462,8 @@ console.log('threadStartFlow: a branchless project can start');
   assert.equal(draftEffortFor(codex, 'gpt-5.5', 'xhigh').effort, 'xhigh');
   assert.equal(draftEffortFor(codex, 'gpt-5.6-sol', 'ultra').effort, 'ultra');
   assert.deepEqual(draftEffortFor(codex, 'gpt-6.1-sol', 'ultra'), { efforts: [], effort: '' });
+  // A model the per-model lists leave out has no effort control: it offers none.
+  assert.deepEqual(draftEffortFor(codex, 'gpt-7-nova', 'xhigh'), { efforts: [], effort: '' });
   // Without a model default, the probe's current effort, then the first offered.
   assert.equal(draftEffortFor({ ...codex, modelDefaultEfforts: {} }, 'gpt-5.5', 'ultra').effort, 'high');
   assert.equal(draftEffortFor({ ...codex, reasoningEffort: 'max', modelDefaultEfforts: {} }, 'gpt-5.5', 'ultra').effort, 'low');

@@ -1429,6 +1429,14 @@ export async function sendStructuredMessage(
         nativeSessionId: state.nativeSessionId ?? owned.nativeSessionId
       });
     }
+    if (startConfig?.model && !state.nativeSessionId) {
+      // Stored together, so the start applies the model before the effort. Stop
+      // pressed while this is saved is still honoured below.
+      await setAgentConversationConfig({
+        ownedId, generation: validatedGeneration, model: startConfig.model,
+        ...(startConfig.reasoningEffort ? { reasoningEffort: startConfig.reasoningEffort } : {})
+      });
+    }
     if (preparation.cancelled) {
       if (!turnWasAlreadyActive) await invoke('stop_agent_conversation_turn', {
         request: { ownedId, generation: validatedGeneration }
@@ -1436,13 +1444,6 @@ export async function sendStructuredMessage(
       throw new Error('Message cancelled before sending.');
     }
     if (preparingSends.get(ownedId) === preparation) preparingSends.delete(ownedId);
-    if (startConfig?.model && !state.nativeSessionId) {
-      // Stored together, so the start applies the model before the effort.
-      await setAgentConversationConfig({
-        ownedId, generation: validatedGeneration, model: startConfig.model,
-        ...(startConfig.reasoningEffort ? { reasoningEffort: startConfig.reasoningEffort } : {})
-      });
-    }
     const requestedModel = startConfig?.model ?? null;
     const requestedApprovalPolicy = startConfig?.approvalPolicy ?? null;
     const receipt: AgentConversationSendReceipt = await invoke('send_agent_conversation_message', {

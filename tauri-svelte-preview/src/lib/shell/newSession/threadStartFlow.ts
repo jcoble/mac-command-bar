@@ -356,14 +356,16 @@ export function effortChoicesFor(
  * The efforts a draft offers for one model, and the one it opens on: the
  * wanted effort if the model has it, else the model's own default, else the
  * probe's current effort, else the first offered. A provider that sends no
- * per-model lists keeps its provider-wide list.
+ * per-model lists keeps its provider-wide list; a model those lists leave out
+ * has no effort control.
  */
 export function draftEffortFor(
   config: Pick<ThreadStartProviderConfig, 'reasoningEffort' | 'availableEfforts' | 'modelEfforts' | 'modelDefaultEfforts'>,
   model: string,
   wanted: string | null | undefined
 ): { efforts: string[]; effort: string } {
-  const efforts = config.modelEfforts?.[model] ?? config.availableEfforts;
+  const perModel = config.modelEfforts && Object.keys(config.modelEfforts).length ? config.modelEfforts : null;
+  const efforts = perModel ? perModel[model] ?? [] : config.availableEfforts;
   const effort = [wanted, config.modelDefaultEfforts?.[model], config.reasoningEffort]
     .find((choice) => choice && efforts.includes(choice)) ?? efforts[0] ?? '';
   return { efforts, effort };
