@@ -33,12 +33,14 @@
 		import {
 			FILE_TREE_OVERSCAN_ROWS,
 			FILE_TREE_ROW_HEIGHT,
+			fileHistoryTarget,
 			visibleFileTreeNodes,
 			windowFileTreeNodes,
 		} from "./fileTreeModel.ts";
 	import { watchFileTree } from "./fileTreeWatch.ts";
 	import { onWorkspaceFileChange, publishWorkspaceFileChange } from "$lib/shell/workspaceFileChangeBus.ts";
 	import { workspaceChangePath } from "$lib/workspacePaths.ts";
+	import { editorState } from "$lib/shell/editor/editorStore.svelte";
 	import { gitService } from "$lib/shell/git/gitService";
 	import { openFileInEditor, openFileTimeline } from "$lib/shell/workbenchNavigation";
 	import type { SourceTreeSearchMatch } from "$lib/sourceData";
@@ -264,9 +266,17 @@
 			),
 		);
 	const renderedRows = $derived(virtualized ? treeWindow.nodes : visibleRows);
-	const selectedFile = $derived(
-		displayedTreeData.find((node) => node.path === explorer.selectedPath && !node.isDirectory) ?? null,
-	);
+	// File History follows whichever changed last: the tree selection or the file
+	// on screen in the editor, however that file was opened. Each falls back to
+	// the other when it clears.
+	let historyPath = $state<string | null>(null);
+	$effect(() => {
+		historyPath = explorer.selectedPath ?? untrack(() => editorState.activePath);
+	});
+	$effect(() => {
+		historyPath = editorState.activePath ?? untrack(() => explorer.selectedPath);
+	});
+	const selectedFile = $derived(fileHistoryTarget(projectRootForView(), historyPath, loadedNodes));
 
 	$effect(() => {
 		const treeRoot = projectRoot.replace(/\/+$/, "");
