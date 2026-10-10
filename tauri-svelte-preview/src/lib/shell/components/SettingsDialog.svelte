@@ -323,6 +323,14 @@
       keywords: 'agents acp adapters codex claude antigravity update'
     },
     {
+      id: 'provider-cli-updates',
+      section: 'updates',
+      card: 'Provider CLIs',
+      title: 'Codex and Claude',
+      description: 'Read and update the command-line tools on This Mac.',
+      keywords: 'cli command line codex claude version update'
+    },
+    {
       id: 'helper-route',
       section: 'helper',
       card: 'Which model',
@@ -840,6 +848,8 @@
                       {@render settingRow(id, appUpdateInstallControl)}
                     {:else if id === 'provider-updates'}
                       {@render settingRow(id, providerUpdateControl, true)}
+                    {:else if id === 'provider-cli-updates'}
+                      {@render settingRow(id, providerCliUpdateControl, true)}
                     {:else if id === 'helper-route'}
                       {@render settingRow(id, helperRouteControl)}
                     {:else if id === 'helper-vendor'}
@@ -1095,11 +1105,11 @@
 {/snippet}
 
 {#snippet providerUpdateControl()}
-  <!-- Stacked like Connections: the adapter list, then the CLIs under it. -->
-  <div class="flex flex-col items-end gap-1.5">
-    <ProviderUpdateControl />
-    <ProviderCliUpdateControl />
-  </div>
+  <ProviderUpdateControl />
+{/snippet}
+
+{#snippet providerCliUpdateControl()}
+  <ProviderCliUpdateControl />
 {/snippet}
 
 {#snippet helperVendorControl()}
