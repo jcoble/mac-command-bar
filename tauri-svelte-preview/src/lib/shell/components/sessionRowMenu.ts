@@ -19,6 +19,7 @@ export type SessionRowMenuAction =
   | 'archive'
   | 'unsettle'
   | 'copy-session-id'
+  | 'copy-resume-command'
   | 'copy-worktree-path'
   | 'continue-in-new-session'
   | 'open-in-editor'
@@ -32,6 +33,8 @@ export interface SessionRowMenuItem {
   enabled: boolean;
   /** Why the item is off. Shown as its tooltip; absent when it is on. */
   disabledReason?: string;
+  /** The tooltip when the item is on, if it should say more than the label. */
+  hint?: string;
   /** A destructive item, drawn in the warning tone. */
   destructive?: boolean;
   /** A rule is drawn above this item. */
@@ -43,6 +46,8 @@ export interface SessionRowMenuInput {
   status: MyWorkStatus;
   /** The id a person would paste elsewhere, when the session has one. */
   sessionId: string | null;
+  /** The command that resumes the session in its provider's CLI, when there is one. */
+  resumeCommand: string | null;
   /** The checkout the session runs in, when it has one. */
   worktreePath: string | null;
   /** Whether the session is pinned to the top of the rail. */
@@ -81,7 +86,17 @@ export function sessionRowMenuItems(input: SessionRowMenuInput): SessionRowMenuI
       label: 'Copy session id',
       enabled: Boolean(input.sessionId),
       disabledReason: input.sessionId ? undefined : 'This session has no id recorded',
+      hint: input.sessionId ?? undefined,
       startsGroup: true
+    },
+    {
+      id: 'copy-resume-command',
+      label: 'Copy resume command',
+      enabled: Boolean(input.resumeCommand),
+      disabledReason: input.resumeCommand ? undefined : 'This session has no resume command',
+      hint: input.resumeCommand
+        ? `${input.resumeCommand}\nDo not keep the session open in the app and the CLI at the same time; both would write to it.`
+        : undefined
     },
     {
       id: 'copy-worktree-path',

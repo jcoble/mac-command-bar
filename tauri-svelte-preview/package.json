@@ -99,6 +99,7 @@
     "test:source-control-context-menu": "node --experimental-strip-types scripts/sourceControlContextMenu.test.ts",
     "test:git-history-paging": "node --experimental-strip-types scripts/gitHistoryPaging.test.mjs",
     "test:session-history-load": "node --experimental-strip-types scripts/sessionHistoryLoad.test.ts",
+    "test:resume-command": "node --experimental-strip-types scripts/resumeCommand.test.ts",
     "test:worktree-manager": "node --experimental-strip-types scripts/worktreeManager.test.mjs",
     "test:stack-store": "node --experimental-strip-types scripts/stackStore.test.mjs",
     "test:run-actions": "node --experimental-strip-types scripts/runActions.test.ts",
