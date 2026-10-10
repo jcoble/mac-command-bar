@@ -556,11 +556,32 @@ impl AgentRuntimeManager {
         self.store.list_projects().map_err(|error| error.to_string())
     }
 
-    /// Registers the project, or returns the one already registered for that folder.
-    pub fn add_project(&self, row: ProjectRow) -> Result<ProjectRow, String> {
+    /// Registers the project, or returns the one already registered for that
+    /// folder, with whether it was already there.
+    pub fn add_project(&self, row: ProjectRow) -> Result<(ProjectRow, bool), String> {
         self.store
             .insert_or_get_project(&row)
             .map_err(|error| error.to_string())
+    }
+
+    /// Takes the project off the list. With `delete_sessions` its sessions go
+    /// through `delete` first; otherwise they stay without a project. Files on
+    /// disk are never touched.
+    pub async fn remove_project(&self, id: &str, delete_sessions: bool) -> Result<(), String> {
+        if delete_sessions {
+            // A remote project's sessions live on its host, not in this store.
+            let project = self.store.get_project(id).map_err(|error| error.to_string())?;
+            if project.is_some_and(|project| project.machine != "local") {
+                return Err("Deleting sessions isn't available for remote projects yet. Remove the project and keep its sessions instead.".into());
+            }
+            for owned_id in self.store.project_session_ids(id).map_err(|error| error.to_string())? {
+                self.delete(&owned_id).await?;
+            }
+        }
+        if !self.store.remove_project(id).map_err(|error| error.to_string())? {
+            return Err("That project no longer exists.".into());
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
