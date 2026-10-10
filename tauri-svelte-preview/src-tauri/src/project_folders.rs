@@ -184,6 +184,9 @@ pub(crate) fn inspect_project_folder_sync(path: &str) -> Result<ProjectFolderIns
     if !canonical.is_dir() {
         return Err("That path is a file. Choose a folder.".into());
     }
+    if project_root_is_bare_sync(&canonical) {
+        return Err("This is a bare repository, so it has no working files. Choose one of its checkouts instead.".into());
+    }
     if git_text(&canonical, &["rev-parse", "--is-inside-git-dir"]).as_deref() == Some("true") {
         return Err("This is git's internal folder. Choose the repository folder instead.".into());
     }
@@ -286,6 +289,8 @@ pub(crate) fn new_project_row(machine: String, inspection: ProjectFolderInspecti
         created_at_ms: chrono::Utc::now().timestamp_millis(),
         // Computed by the store when the row is read back.
         group_key: String::new(),
+        pinned_at_ms: None,
+        last_used_ms: None,
     }
 }
 
@@ -383,9 +388,22 @@ mod tests {
         std::fs::create_dir_all(&repo).unwrap();
         git(&repo, &["init", "-b", "main"]);
         git(&root, &["init", "--bare", text(&bare)]);
-        for folder in [repo.join(".git"), repo.join(".git/refs"), bare] {
+        for folder in [repo.join(".git"), repo.join(".git/refs")] {
             assert_eq!(inspect_project_folder_sync(text(&folder)).unwrap_err(), GIT_INTERNAL, "{folder:?}");
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inspect_refuses_a_bare_repository_and_a_missing_folder() {
+        let root = temp_dir();
+        let bare = root.join("bare.git");
+        git(&root, &["init", "--bare", text(&bare)]);
+        assert_eq!(
+            inspect_project_folder_sync(text(&bare)).unwrap_err(),
+            "This is a bare repository, so it has no working files. Choose one of its checkouts instead."
+        );
+        assert_eq!(inspect_project_folder_sync(text(&root.join("missing"))).unwrap_err(), "That folder does not exist.");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -538,7 +556,7 @@ mod tests {
         for (id, cwd) in [("worktree", &worktree), ("subfolder", &repo.join("src")), ("elsewhere", &elsewhere)] {
             store.upsert_session(&unfiled_session(id, cwd)).unwrap();
         }
-        let project = store
+        let (project, _) = store
             .insert_or_get_project(&new_project_row("local".into(), inspect_project_folder_sync(text(&repo)).unwrap()))
             .unwrap();
 
@@ -553,6 +571,51 @@ mod tests {
         backfill_local_session_projects(&store).unwrap();
         assert_eq!(project_of("later"), None);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn remove_project_keeps_or_deletes_its_sessions() {
+        let manager = crate::agent_conversation::manager::AgentRuntimeManager::new(
+            crate::agent_conversation::providers::ProviderRegistry::default(),
+        );
+        let store = manager.store();
+        for (project, folder) in [("keep", "/work/keep"), ("drop", "/work/drop")] {
+            let row = ProjectRow { id: project.into(), ..new_project_row("local".into(), ProjectFolderInspection {
+                root_path: folder.into(), title: project.into(), repo_key: String::new(), is_git: false,
+            }) };
+            store.insert_or_get_project(&row).unwrap();
+        }
+        for (owned_id, project) in [("kept", "keep"), ("dropped", "drop")] {
+            let mut session = unfiled_session(owned_id, Path::new("/work"));
+            session.project_id = Some(project.into());
+            store.upsert_session(&session).unwrap();
+        }
+
+        manager.remove_project("keep", false).await.unwrap();
+        manager.remove_project("drop", true).await.unwrap();
+        assert_eq!(store.get_session("kept").unwrap().unwrap().project_id, None);
+        assert_eq!(store.get_session("dropped").unwrap(), None);
+        assert_eq!(manager.list_projects().unwrap(), vec![]);
+        assert_eq!(manager.remove_project("drop", false).await.unwrap_err(), "That project no longer exists.");
+    }
+
+    #[tokio::test]
+    async fn remove_project_refuses_to_delete_a_remote_projects_sessions() {
+        let manager = crate::agent_conversation::manager::AgentRuntimeManager::new(
+            crate::agent_conversation::providers::ProviderRegistry::default(),
+        );
+        let row = ProjectRow { id: "remote".into(), ..new_project_row("box".into(), ProjectFolderInspection {
+            root_path: "/home/me/repo".into(), title: "repo".into(), repo_key: String::new(), is_git: false,
+        }) };
+        manager.store().insert_or_get_project(&row).unwrap();
+
+        assert_eq!(
+            manager.remove_project("remote", true).await.unwrap_err(),
+            "Deleting sessions isn't available for remote projects yet. Remove the project and keep its sessions instead."
+        );
+        assert!(manager.store().get_project("remote").unwrap().is_some(), "nothing changed");
+        manager.remove_project("remote", false).await.unwrap();
+        assert_eq!(manager.store().get_project("remote").unwrap(), None);
     }
 
     #[test]

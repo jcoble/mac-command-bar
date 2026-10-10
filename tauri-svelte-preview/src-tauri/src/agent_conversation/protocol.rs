@@ -925,6 +925,12 @@ pub struct ProjectRecord {
     pub created_at_ms: i64,
     /// The rail group its sessions share, computed in SQL.
     pub group_key: String,
+    pub pinned_at_ms: Option<i64>,
+    /// The latest activity of its sessions on this Mac, computed in SQL.
+    pub last_used_ms: Option<i64>,
+    /// Set on the answer to `add_project` when the folder was already a project.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub already_existed: bool,
 }
 
 #[cfg(test)]
