@@ -72,6 +72,7 @@
   }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
+  let hostHeight = $state(0);
   let follow = $state(true);
   let disclosures = $state<Record<string, boolean>>({});
   let openedWindow = '';
@@ -322,8 +323,24 @@
     untrack(() => $virtualizer.measure());
   });
 
+  // A new session's first message is sent before this timeline exists, so no
+  // send anchor reaches it; anchor its row the same way, or following the reply
+  // scrolls the message off the top.
+  let firstSendWindow = '';
+  $effect(() => {
+    const currentRows = rows;
+    if (!pendingFirstMessage || firstSendWindow === renderWindowId) return;
+    const firstUser = currentRows.find((row) => row.item?.kind === 'user');
+    if (!firstUser) return;
+    firstSendWindow = renderWindowId;
+    pendingSendAnchor = { requestId: 0, conversationId, userItemId: firstUser.key };
+    follow = false;
+  });
+
   $effect(() => {
     void composerHeight;
+    // A shorter window keeps the latest line above the composer too.
+    void hostHeight;
     if (!follow || hasNewer || restoring || jumping || !host) return;
     const windowId = renderWindowId;
     void tick().then(() => {
@@ -615,7 +632,7 @@
 <div class="timeline-wrap" data-testid="conversation-timeline-wrap" style={`--composer-height:${composerHeight}px`}>
   {#if pageError}<p role="alert" class="px-2 py-2 text-sm text-muted-foreground">{pageError}</p>{/if}
   {#if loadingOlder}<p class="older-loading" data-testid="conversation-older-loading" role="status"><WorkingSpinner size={12} />Loading earlier messages</p>{/if}
-  <div class="timeline-scroll" tabindex="0" data-testid="conversation-timeline-scroll" bind:this={host} onscroll={handleScroll} onwheel={handleWheel} use:readerInput>
+  <div class="timeline-scroll" tabindex="0" data-testid="conversation-timeline-scroll" bind:this={host} bind:clientHeight={hostHeight} onscroll={handleScroll} onwheel={handleWheel} use:readerInput>
     {#if renderedItems.length === 0}
       {#if pendingFirstMessage}<PendingFirstMessage text={pendingFirstMessage} seed={conversationId} />{:else}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
     {/if}
