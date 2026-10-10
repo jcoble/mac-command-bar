@@ -52,6 +52,7 @@
     checkoutPlanFor,
     defaultThreadStartState,
     displayProvider,
+    startingCwd,
     validateThreadStart,
     type ThreadStartPickerState,
     type ThreadStartProvider,
@@ -248,13 +249,13 @@
     }
     if (sequence !== loadSequence) return;
     gitRefs = answer.status === 'ok' ? answer.value : [];
-    if (answer.status === 'unavailable') refsMessage = answer.message;
+    if (answer.status !== 'ok') refsMessage = answer.message;
     // Only the root's own branch: a detached root keeps the root, never some
-    // other worktree's checkout.
-    const first = gitRefs.find((ref) => ref.isCurrent) ?? null;
+    // other worktree's checkout. A failed listing leaves no folder: the root
+    // may be a bare repository, which has no files to work in.
     updateDraft({
-      cwd: first?.checkoutPath ?? projectPath,
-      branch: first?.name ?? '',
+      cwd: answer.status === 'failed' ? '' : startingCwd(projectPath, gitRefs),
+      branch: gitRefs.find((ref) => ref.isCurrent)?.name ?? '',
       branchesAvailable: gitRefs.length > 0
     });
   }
@@ -275,7 +276,8 @@
       executionEnvironment: remote ? 'remote' : 'local',
       remoteProfileId: remote ? project.machine : null,
       projectPath: project.rootPath,
-      cwd: project.rootPath,
+      // Set once the branches are in, so nothing runs in a bare root meanwhile.
+      cwd: '',
       branch: '',
       branchesAvailable: false,
       createNewWorktree: false

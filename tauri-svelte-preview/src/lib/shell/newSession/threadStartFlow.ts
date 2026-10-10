@@ -80,6 +80,8 @@ export type ThreadStartRequest = {
 export type ThreadStartGitRef = {
   name: string;
   checkoutPath: string | null;
+  /** The project folder is a bare repository: it has no files to work in. */
+  rootIsBare?: boolean;
 };
 
 const PROVIDER_ORDER: readonly ThreadStartProvider[] = ['codex', 'claude', 'antigravity'];
@@ -180,13 +182,28 @@ export type ThreadStartCheckoutPlan =
  * What the first send does for the picked branch. Picking runs nothing: a
  * branch already checked out (in the root or another worktree) is used where
  * it is, and any other branch is switched to in the root at the first send.
+ * A bare root has nowhere to switch, so such a branch leaves no folder.
  */
 export function checkoutPlanFor(
   rootPath: string,
   ref: ThreadStartGitRef & { isCurrent: boolean }
 ): ThreadStartCheckoutPlan {
-  if (ref.isCurrent || ref.checkoutPath) return { kind: 'none', cwd: ref.checkoutPath ?? rootPath };
+  if (ref.checkoutPath) return { kind: 'none', cwd: ref.checkoutPath };
+  if (ref.rootIsBare) return { kind: 'none', cwd: '' };
+  if (ref.isCurrent) return { kind: 'none', cwd: rootPath };
   return { kind: 'switch', root: rootPath, branch: ref.name, cwd: rootPath };
+}
+
+/** Where a draft starts once the project's branches are known: the root's own
+ * branch where it is checked out. A detached root keeps the root; a bare root
+ * never does. */
+export function startingCwd(
+  rootPath: string,
+  refs: readonly (ThreadStartGitRef & { isCurrent: boolean })[]
+): string {
+  const current = refs.find((ref) => ref.isCurrent);
+  if (current) return checkoutPlanFor(rootPath, current).cwd;
+  return refs.some((ref) => ref.rootIsBare) ? '' : rootPath;
 }
 
 /** The quiet note beside a branch in the picker. */
@@ -371,7 +388,8 @@ export function validateThreadStart(state: ThreadStartPickerState, hasAttachment
     problems.push({ field: 'project', message: 'Choose a project workspace first.' });
   }
   if (!tidy(state.cwd).startsWith('/')) {
-    problems.push({ field: 'branch', message: 'Choose an existing checkout first.' });
+    const message = tidy(state.projectPath) ? 'Wait for the branches to load, or choose a branch that has a worktree.' : 'Choose an existing checkout first.';
+    problems.push({ field: 'branch', message });
   }
   if (state.executionEnvironment === 'remote' && !tidy(state.remoteProfileId)) {
     problems.push({ field: 'project', message: 'Choose a remote machine first.' });

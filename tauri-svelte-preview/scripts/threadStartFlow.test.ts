@@ -8,6 +8,7 @@ import {
   effortChoicesFor,
   filterThreadStartGitRefs,
   groupProviderModels,
+  startingCwd,
   titleFromPrompt,
   validateThreadStart
 } from '../src/lib/shell/newSession/threadStartFlow.ts';
@@ -99,6 +100,37 @@ import { sessionTitleFromPrompt } from '../src/lib/shell/sessionStrip.ts';
     { kind: 'none', cwd: root },
     "the root's own checkout needs no git command"
   );
+}
+
+// A bare repository folder has no files of its own: a draft never starts there.
+{
+  const bare = '/Users/me/dev/mac-command-bar';
+  const worktree = '/Users/me/dev/worktrees/mac-command-bar/main';
+  const refs = [
+    { name: 'feature', isCurrent: false, checkoutPath: null, rootIsBare: true },
+    { name: 'main', isCurrent: true, checkoutPath: worktree, rootIsBare: true }
+  ];
+  assert.equal(startingCwd(bare, refs), worktree, "the bare repo's own branch starts in its worktree");
+  assert.equal(
+    startingCwd(bare, [{ ...refs[1], checkoutPath: null }]),
+    '',
+    'a bare root whose branch has no worktree leaves the draft with no folder'
+  );
+  assert.deepEqual(
+    checkoutPlanFor(bare, refs[0]),
+    { kind: 'none', cwd: '' },
+    'a branch with no worktree is never switched to in a bare root'
+  );
+  const state = { ...defaultThreadStartState({ projectId: 'p', projectPath: bare }), prompt: 'hi', cwd: '' };
+  assert.deepEqual(validateThreadStart(state), [
+    { field: 'branch', message: 'Wait for the branches to load, or choose a branch that has a worktree.' }
+  ]);
+  assert.equal(buildThreadStartRequest(state), null, 'the draft refuses to send without a folder');
+
+  const root = '/Users/me/dev/alpha';
+  assert.equal(startingCwd(root, [{ name: 'main', isCurrent: true, checkoutPath: root }]), root);
+  assert.equal(startingCwd(root, []), root, 'a folder with no branches starts in the folder');
+  assert.equal(startingCwd(root, [{ name: 'main', isCurrent: false, checkoutPath: null }]), root, 'a detached root keeps the root');
 }
 
 const providerConfigs = [
