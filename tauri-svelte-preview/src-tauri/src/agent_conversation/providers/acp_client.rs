@@ -33,6 +33,8 @@ pub enum AcpInbound {
         method: String,
         params: Value,
     },
+    /// the agent withdrew one of its own requests ($/cancel_request)
+    RequestCancelled { wire_id: Value },
     /// reader ended: sidecar exited or stdout closed
     TransportClosed { reason: String },
 }
@@ -473,6 +475,10 @@ async fn reader_loop(
                     }
                 }
                 let _ = inbound_tx.send(AcpInbound::SessionUpdate(params));
+            }
+            (false, Some("$/cancel_request")) => {
+                let wire_id = frame.pointer("/params/requestId").cloned().unwrap_or(Value::Null);
+                let _ = inbound_tx.send(AcpInbound::RequestCancelled { wire_id });
             }
             (false, Some(method)) => {
                 crate::debug_log::stderr_log!("Ignoring unsupported ACP notification: {method}");
@@ -1745,6 +1751,12 @@ while IFS= read -r line; do
               break ;;
           esac
         done
+      elif [ "$fixture" = "permission_withdrawn" ]; then
+        printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"options":[{{"optionId":"allow","name":"Allow","kind":"allow_once"}}]}}}}\n'
+        sleep 0.05
+        printf '{{"jsonrpc":"2.0","method":"$/cancel_request","params":{{"requestId":77}}}}\n'
+        sleep 3
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"turnId":"turn-1","stopReason":"end_turn"}}}}\n' "$id"
       elif [ "$fixture" = "child_permission_after_parent" ]; then
         printf '{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"new-session","update":{{"sessionUpdate":"subagent_spawned","subagentSessionId":"child-agent","name":"Reviewer"}}}}}}\n'
         printf '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{"sessionId":"child-agent","options":[{{"optionId":"allow","name":"Allow","kind":"allow_once"}},{{"optionId":"reject","name":"Reject","kind":"reject_once"}}]}}}}\n'
