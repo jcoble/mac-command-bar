@@ -51,7 +51,11 @@ const allowedHits = new Set([
   'src/lib/shell/components/git/MultiFileDiff.svelte:cancelAnimationFrame:onDestroy(() => cancelAnimationFrame(jumpFrame));',
   // The 350 ms pull request search debounce; each keystroke, Enter and unmounting clear it.
   'src/lib/shell/components/github/PullRequestWorkspace.svelte:setTimeout:let searchTimer: ReturnType<typeof setTimeout> | undefined;',
-  'src/lib/shell/components/github/PullRequestWorkspace.svelte:setTimeout:if (searchInput.trim() !== searchedText) searchTimer = setTimeout(() => void load(true), 350);'
+  'src/lib/shell/components/github/PullRequestWorkspace.svelte:setTimeout:if (searchInput.trim() !== searchedText) searchTimer = setTimeout(() => void load(true), 350);',
+  // A diff read races the abort of its combined owner-and-timeout signal, so a read that ignores
+  // the signal (every local call) still ends; settled by that abort, listener removed in finally.
+  'src/lib/shell/git/gitBackendExtra.ts:new Promise:const aborted = new Promise<never>((_resolve, reject) => {',
+  'src/lib/shell/git/gitBackendExtra.ts:Promise.race:return await Promise.race([read(signal), aborted]);'
 ]);
 
 interface Hit {

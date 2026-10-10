@@ -44,6 +44,19 @@ async function readUntilAborted(signal: AbortSignal): Promise<never> {
   assert.equal(seen?.aborted, true, 'the call saw its signal abort on timeout');
 }
 
+// ── a read that ignores its signal still ends with the timeout message ──
+{
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    await assert.rejects(
+      withGitDiffTimeout(() => new Promise(() => {}), new AbortController().signal, 5),
+      { message: GIT_DIFF_TIMEOUT_MESSAGE }
+    );
+  } finally {
+    clearInterval(keepAlive);
+  }
+}
+
 // ── the owner stopping aborts the call's signal, and is not called a timeout ──
 {
   const owner = new AbortController();

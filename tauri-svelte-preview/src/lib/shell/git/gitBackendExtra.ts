@@ -61,20 +61,31 @@ export const MISSING_COMMAND_MESSAGE =
 export const GIT_DIFF_TIMEOUT_MESSAGE =
   'Reading these changes took too long. Try refreshing Source Control.';
 
-/** A selected diff must always leave its loading state. The read gets one
- * signal that aborts when its owner stops or `timeoutMs` passes, so the backend
- * can cancel the git call; running out of time reports the timeout message. */
+/** A selected diff must always leave its loading state, even if the read ignores
+ * its signal (local calls do). The read gets one signal that aborts when its
+ * owner stops or `timeoutMs` passes, so the backend can cancel the git call, and
+ * the wait ends on that abort either way; running out of time reports the
+ * timeout message. */
 export async function withGitDiffTimeout<T>(
   read: (signal: AbortSignal) => Promise<T>,
   owner: AbortSignal,
   timeoutMs = 20_000
 ): Promise<T> {
   const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = AbortSignal.any([owner, timeout]);
+  let stop = (): void => {};
   try {
-    return await read(AbortSignal.any([owner, timeout]));
+    signal.throwIfAborted();
+    const aborted = new Promise<never>((_resolve, reject) => {
+      stop = () => reject(signal.reason);
+      signal.addEventListener('abort', stop, { once: true });
+    });
+    return await Promise.race([read(signal), aborted]);
   } catch (error) {
     if (timeout.aborted && !owner.aborted) throw new Error(GIT_DIFF_TIMEOUT_MESSAGE);
     throw error;
+  } finally {
+    signal.removeEventListener('abort', stop);
   }
 }
 

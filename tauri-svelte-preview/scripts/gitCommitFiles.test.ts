@@ -285,22 +285,6 @@ function fileChange(relativePath, status = 'modified', badge = 'M') {
   assert.equal(panel.selectedDiff, null);
 }
 
-/** A diff read that never answers until its signal aborts, as a cancelled
- * backend call would. Node does not wait on AbortSignal.timeout, so it holds
- * the process open meanwhile. */
-async function answerOnlyOnAbort(signal: AbortSignal): Promise<never> {
-  signal.throwIfAborted();
-  const keepAlive = setInterval(() => {}, 1000);
-  try {
-    await new Promise((_resolve, reject) => {
-      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-    });
-  } finally {
-    clearInterval(keepAlive);
-  }
-  throw new Error('unreachable');
-}
-
 // ── a diff read that never answers ends in an error, not a spinner ───────
 {
   const panel = panelState('/repo');
@@ -310,13 +294,16 @@ async function answerOnlyOnAbort(signal: AbortSignal): Promise<never> {
     panel,
     resolveTop: async () => '/repo',
     readFiles: async () => [],
-    readDiff: async (_root, _sha, _path, signal) => answerOnlyOnAbort(signal),
+    readDiff: async () => new Promise(() => {}),
     clearPanelSelection: () => {},
     diffTimeoutMs: 5
   });
 
   commitFiles.activate('/repo');
+  // Node does not wait on AbortSignal.timeout, so hold the process open until it fires.
+  const keepAlive = setInterval(() => {}, 1000);
   await commitFiles.selectCommitFile('abc', fileChange('src/app.ts'));
+  clearInterval(keepAlive);
 
   assert.equal(panel.diffLoading, false);
   assert.equal(panel.diffError, GIT_DIFF_TIMEOUT_MESSAGE);
@@ -332,7 +319,7 @@ async function answerOnlyOnAbort(signal: AbortSignal): Promise<never> {
     panel,
     resolveTop: async () => '/repo',
     readFiles: async () => [],
-    readDiff: async (_root, _sha, _path, signal) => answerOnlyOnAbort(signal),
+    readDiff: async () => new Promise(() => {}),
     clearPanelSelection: () => {
       panel.selectedPath = '';
       panel.selectedDiff = null;
