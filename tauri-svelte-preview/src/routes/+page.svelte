@@ -49,6 +49,7 @@
 	import { topTabs } from "$lib/shell/layout/topTabs.svelte";
 	import { parseTopTabKey } from "$lib/shell/layout/topTabsOps";
 	import BrowserPanel from "$lib/shell/panels/browser/BrowserPanel.svelte";
+	import { popupCoversPage } from "$lib/shell/panels/browser/browserPanelBounds";
 	import { parseRemoteWorkspacePath } from "$lib/workspacePaths";
 
 	import { SessionSelectionController } from "$lib/shell/controllers/sessionSelectionController.svelte";
@@ -105,7 +106,7 @@
 	/**
 	 * Any open menu, list, card or dialog. The browser page is a native view
 	 * painted above every DOM layer, so it steps aside (hidden, still live)
-	 * while one is up. Tooltips are left out on purpose.
+	 * while one is drawn over it. Tooltips are left out on purpose.
 	 */
 	const POPUP_SELECTOR =
 		'[role="dialog"], [role="alertdialog"], [role="menu"], [data-select-content], dialog[open], [data-testid="usage-live-quota"]';
@@ -259,9 +260,18 @@
 			popupOpen = false;
 			return;
 		}
-		// Popups mount and unmount as DOM nodes, wherever they are drawn.
+		// Popups mount and unmount as DOM nodes, wherever they are drawn, and a
+		// menu is moved into place by a style change on its wrapper after it
+		// mounts, so only open popups are watched for style. Only one drawn
+		// over the page hides it; one beside the page leaves it showing.
 		const report = () => {
-			popupOpen = document.querySelector(POPUP_SELECTOR) !== null;
+			const open = [...document.querySelectorAll(POPUP_SELECTOR)];
+			for (const popup of open) {
+				const moved = popup.closest("[data-bits-floating-content-wrapper]") ?? popup;
+				popups.observe(moved, { attributes: true, attributeFilter: ["style"] });
+			}
+			const page = open.length ? document.querySelector('[data-testid="browser-page-host"]')?.getBoundingClientRect() : null;
+			popupOpen = popupCoversPage(open.map((popup) => popup.getBoundingClientRect()), page ?? null);
 		};
 		const popups = new MutationObserver(report);
 		popups.observe(document.body, { childList: true, subtree: true });
