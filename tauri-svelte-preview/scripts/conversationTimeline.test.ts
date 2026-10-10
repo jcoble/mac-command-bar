@@ -21,6 +21,7 @@ import {
   type ConversationDisplayItem
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
 import type { AgentConversationEvent, AgentItem } from '../src/lib/shell/conversation/conversationTypes.ts';
+import { sendTurnRunning } from '../src/lib/shell/conversation/conversationScrollAnchor.ts';
 import { conversationItemHasVisibleContent } from '../src/lib/shell/conversation/conversationItemVisibility.ts';
 import { conversationDisplayItems, conversationMessagesFromEvents, displayItemsFromConversationEvents } from '../src/lib/shell/conversation/conversationMessages.ts';
 
@@ -989,3 +990,13 @@ assert.equal(summarizeToolRun([{ ...unknownTool, state: 'failed' }, { ...edit, s
 }
 
 console.log('conversationTimeline: TSK-1401 tool calls and folds passed');
+
+{
+  // TSK-1357: the send anchor is released when the turn ends. A new session's
+  // first message never sets the local flag, so the backend's turn must count.
+  assert.equal(sendTurnRunning(true, null), true, 'a local send runs before the backend names its turn');
+  assert.equal(sendTurnRunning(false, 'turn-1'), true, 'a first message runs on the backend turn alone');
+  assert.equal(sendTurnRunning(false, null), false, 'nothing running once both have ended');
+}
+
+console.log('conversationTimeline: TSK-1357 turn end passed');
