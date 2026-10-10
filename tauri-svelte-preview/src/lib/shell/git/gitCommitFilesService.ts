@@ -66,7 +66,8 @@ export interface GitCommitFilesServiceOptions {
   readDiff?(
     root: string,
     sha: string,
-    relativePath: string
+    relativePath: string,
+    signal: AbortSignal
   ): Promise<SourceGitDiff | null>;
   /** Let go of the working-copy diff on screen before showing a commit's one. */
   clearPanelSelection?(): void;
@@ -111,7 +112,8 @@ export function createGitCommitFilesService(
 
   /** The one in-flight look-up of the repository top, shared by every caller. */
   let topRequest: Promise<string> | null = null;
-  let diffRequest = 0;
+  /** Stops the selected file's diff read when another is picked or the view lets go. */
+  let diffRead = new AbortController();
 
   function currentRoot(): string | null {
     return state.root ?? panel.root;
@@ -196,25 +198,31 @@ export function createGitCommitFilesService(
     panel.diffError = '';
 
     if (isUnreadableGitPath(file.relativePath)) {
-      diffRequest += 1;
+      diffRead.abort();
       panel.diffLoading = false;
       panel.diffError = UNREADABLE_PATH_MESSAGE;
       return;
     }
 
-    diffRequest += 1;
-    const id = diffRequest;
+    diffRead.abort();
+    diffRead = new AbortController();
+    const { signal } = diffRead;
     panel.diffLoading = true;
     const panelRevision = panel.diffRevision;
     const stillCurrent = () =>
-      diffRequest === id &&
+      !signal.aborted &&
       state.root === root &&
       state.revision === revision &&
       panel.diffRevision === panelRevision;
 
     try {
       const diff = await withGitDiffTimeout(
-        repositoryTopFor(root).then((top) => readDiff(top, sha, file.relativePath)),
+        async (read) => {
+          const top = await repositoryTopFor(root);
+          read.throwIfAborted();
+          return readDiff(top, sha, file.relativePath, read);
+        },
+        signal,
         diffTimeoutMs
       );
       if (!stillCurrent()) return;
@@ -232,7 +240,7 @@ export function createGitCommitFilesService(
   }
 
   function clearSelection(): void {
-    diffRequest += 1;
+    diffRead.abort();
     view().selectedCommitSha = '';
     view().selectedRelativePath = '';
     clearPanelSelection();
@@ -254,14 +262,14 @@ export function createGitCommitFilesService(
     activate(root: string | null): void {
       if (root === state.root) return;
       topRequest = null;
-      diffRequest += 1;
+      diffRead.abort();
       if (view().selectedCommitSha !== '' || panel.diffLoading) clearPanelSelection();
       resetGitCommitFilesState(state, root);
     },
 
     release(): void {
       topRequest = null;
-      diffRequest += 1;
+      diffRead.abort();
       if (view().selectedCommitSha !== '' || panel.diffLoading) clearPanelSelection();
       resetGitCommitFilesState(state, null);
     },
