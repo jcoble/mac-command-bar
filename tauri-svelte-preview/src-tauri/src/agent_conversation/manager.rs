@@ -388,6 +388,9 @@ pub struct AgentRuntimeManager {
     renamed_listener: Arc<Mutex<Option<SessionRenamedListener>>>,
     activation_locks: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
     latest_snapshot_request: Arc<AtomicU64>,
+    /// Cancelled ids at or above the current snapshot read. Ids are shared
+    /// with other request kinds, so these may not be snapshot reads at all.
+    cancelled_snapshot_requests: Arc<Mutex<Vec<u64>>>,
     store: Arc<SessionStore>,
     adapter_pools: Arc<AsyncMutex<HashMap<AdapterPoolKey, AdapterPoolEntry>>>,
     probe_cancellations: tokio::sync::watch::Sender<u64>,
@@ -453,6 +456,7 @@ impl AgentRuntimeManager {
             renamed_listener: Arc::new(Mutex::new(None)),
             activation_locks: Arc::new(Mutex::new(HashMap::new())),
             latest_snapshot_request: Arc::new(AtomicU64::new(0)),
+            cancelled_snapshot_requests: Arc::new(Mutex::new(Vec::new())),
             store,
             adapter_pools: Arc::new(AsyncMutex::new(HashMap::new())),
             probe_cancellations: tokio::sync::watch::channel(0).0,
@@ -1357,6 +1361,12 @@ impl AgentRuntimeManager {
             adapter_pools: self.adapter_pools.try_lock().ok().map(|pools| pools.len()),
             ..diagnostics
         })
+    }
+
+    /// Holds a sign-in open so a test can see the manager as busy.
+    #[cfg(test)]
+    pub(crate) fn begin_test_authentication(&self) -> super::providers::authentication::AuthenticationAttempt {
+        self.authentications.begin("test", 0).unwrap()
     }
 
     pub fn has_pending_provider_work(&self) -> bool {
@@ -3255,7 +3265,13 @@ impl AgentRuntimeManager {
                 }),
             )
             .map_err(|error| error.to_string())?;
-        if self.latest_snapshot_request.load(Ordering::Acquire) != request_id {
+        if self.latest_snapshot_request.load(Ordering::Acquire) != request_id
+            || self
+                .cancelled_snapshot_requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(&request_id)
+        {
             return Ok(None);
         }
         let mut page = selected_item_page(page)?;
@@ -3378,24 +3394,30 @@ impl AgentRuntimeManager {
     /// Releases the frontend owner even when no replacement session snapshot
     /// is about to start. The request identity makes a delayed cancel harmless
     /// if a newer read has already taken ownership.
+    /// A cancel is only remembered, never raises the current read's id: that
+    /// would empty a snapshot read in flight when the cancelled id belongs to
+    /// some other kind of request, or empty the next read if it gets the next id.
     pub fn cancel_snapshot(&self, request_id: u64) {
-        if self
-            .latest_snapshot_request
-            .compare_exchange(
-                request_id,
-                request_id.saturating_add(1),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_ok()
-        {
-            self.store.cancel_recent_events_read();
-            return;
+        let mut cancelled = self
+            .cancelled_snapshot_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let latest = self.latest_snapshot_request.load(Ordering::Acquire);
+        if request_id >= latest {
+            cancelled.push(request_id);
         }
-        self.advance_snapshot_request(request_id);
+        if request_id == latest {
+            self.store.cancel_recent_events_read();
+        }
     }
 
     fn advance_snapshot_request(&self, request_id: u64) -> bool {
+        let mut cancelled = self
+            .cancelled_snapshot_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cancelled_early = cancelled.contains(&request_id);
+        cancelled.retain(|id| *id > request_id);
         let previous = self
             .latest_snapshot_request
             .fetch_max(request_id, Ordering::AcqRel);
@@ -3405,7 +3427,7 @@ impl AgentRuntimeManager {
         if previous != 0 {
             self.store.cancel_recent_events_read();
         }
-        true
+        !cancelled_early
     }
 
     pub fn list_sessions(&self) -> Result<Vec<AgentConversationSessionRecord>, String> {
@@ -11795,6 +11817,98 @@ mod tests {
         assert_eq!(selection.connection.owned_id, child_owned_id);
         assert!(selection.page.events.is_empty());
         assert!(selection.page.items.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelling_an_unrelated_newer_request_keeps_the_snapshot_read_in_flight() {
+        let root = temp_root();
+        let manager = AgentRuntimeManager::new(ProviderRegistry::default());
+        let owned_id = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "snapshot-in-flight",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap()
+            .0
+            .owned_id;
+
+        let selection = std::thread::scope(|scope| {
+            // Holding the session lock parks the read after it has taken
+            // ownership of request 10 and before it finishes.
+            let sessions = manager.sessions.lock().unwrap();
+            let read =
+                scope.spawn(|| manager.latest_selection_snapshot(&owned_id, 10, 1024));
+            while manager.latest_snapshot_request.load(Ordering::Acquire) != 10 {
+                std::thread::yield_now();
+            }
+            manager.cancel_snapshot(11);
+            drop(sessions);
+            read.join().unwrap()
+        });
+
+        assert!(selection.unwrap().is_some());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelling_a_snapshot_read_in_flight_leaves_the_next_id_free() {
+        let root = temp_root();
+        let manager = AgentRuntimeManager::new(ProviderRegistry::default());
+        let owned_id = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "snapshot-cancelled-in-flight",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap()
+            .0
+            .owned_id;
+
+        let cancelled = std::thread::scope(|scope| {
+            let sessions = manager.sessions.lock().unwrap();
+            let read =
+                scope.spawn(|| manager.latest_selection_snapshot(&owned_id, 10, 1024));
+            while manager.latest_snapshot_request.load(Ordering::Acquire) != 10 {
+                std::thread::yield_now();
+            }
+            manager.cancel_snapshot(10);
+            drop(sessions);
+            read.join().unwrap()
+        });
+
+        assert!(cancelled.unwrap().is_none());
+        assert!(manager
+            .latest_selection_snapshot(&owned_id, 11, 1024)
+            .unwrap()
+            .is_some());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancel_that_arrives_before_its_snapshot_read_still_stops_it() {
+        let root = temp_root();
+        let manager = AgentRuntimeManager::new(ProviderRegistry::default());
+        let owned_id = manager
+            .ensure_inner(request(
+                root.to_str().unwrap(),
+                "snapshot-cancelled-early",
+                AgentConversationProvider::Codex,
+            ))
+            .unwrap()
+            .0
+            .owned_id;
+
+        manager.cancel_snapshot(5);
+        assert!(manager
+            .latest_selection_snapshot(&owned_id, 5, 1024)
+            .unwrap()
+            .is_none());
+        assert!(manager
+            .latest_selection_snapshot(&owned_id, 6, 1024)
+            .unwrap()
+            .is_some());
         fs::remove_dir_all(root).unwrap();
     }
 

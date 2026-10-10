@@ -36,7 +36,8 @@
   import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { defaultDraftProjectId, projectBadge, projectMachineLabel, visibleProjects } from '$lib/shell/projects/projects.ts';
-  import { checkForProviderUpdates, installProviderUpdates, restartProviders, type ProviderUpdateState } from '$lib/shell/providerUpdateService.svelte';
+  import { checkForProviderUpdates, installProviderUpdates, type ProviderUpdateState } from '$lib/shell/providerUpdateService.svelte';
+  import RestartProvidersButton from '$lib/shell/components/RestartProvidersButton.svelte';
   import ConversationComposer from '$lib/shell/components/conversation/ConversationComposer.svelte';
   import { conversationSessions, setConversationDraft } from '$lib/shell/conversation/conversationStore.svelte';
   import { persistConversationSessionDraft, stopStructuredTurn } from '$lib/shell/conversation/conversationService';
@@ -594,12 +595,10 @@
   {#if pickerUpdates.phase === 'error'}
     <p class="draft-adapter-message">{pickerUpdates.message}</p>
   {/if}
-  {#if pickerUpdates.status?.restartRequired}
+  {#if pickerUpdates.status?.restartRequired || pickerUpdates.phase === 'reconnecting'}
     <div class="draft-adapter-action">
       <span>{pickerUpdates.message}</span>
-      <Button variant="secondary" size="sm" onclick={() => void restartProviders(pickerUpdates, draft.executionEnvironment === 'remote' ? draft.remoteProfileId ?? undefined : undefined)}>
-        Restart {draft.executionEnvironment === 'remote' ? 'remote server' : 'Assembly'}
-      </Button>
+      <RestartProvidersButton updateState={pickerUpdates} profileId={draft.executionEnvironment === 'remote' ? draft.remoteProfileId ?? undefined : undefined} />
     </div>
   {/if}
   <ConversationComposer

@@ -2812,6 +2812,7 @@ pub fn run_server_from_environment() -> Result<(), String> {
         };
         let restart_requested = state.restart_requested.clone();
         let restart_flushed = state.restart_flushed.clone();
+        let restart_manager = state.manager.clone();
         let app = Router::new()
             .route("/assembly", get(upgrade_remote_socket))
             .with_state(state);
@@ -2827,6 +2828,12 @@ pub fn run_server_from_environment() -> Result<(), String> {
                 }
             }), app).into_future() => result.map_err(|error| error.to_string()),
             _ = wait_for_provider_restart(&restart_requested, &restart_flushed) => {
+                // A restart ends running sessions: stop their adapters and
+                // record the interrupted turns before exiting. A stuck adapter
+                // must not keep the server from exiting, as on desktop quit.
+                if tokio::time::timeout(Duration::from_secs(5), restart_manager.shutdown()).await.is_err() {
+                    eprintln!("Adapter shutdown timed out after 5 seconds; restarting anyway");
+                }
                 // The service uses Restart=on-failure. The server owns the
                 // accepted restart even if its requesting socket disappears.
                 std::process::exit(75);
@@ -3189,9 +3196,6 @@ async fn execute_server_command(state: &ServerState, upload: &Arc<Mutex<Option<P
     };
     if matches!(command, RemoteCommand::RestartForProviderUpdates) {
         let _exclusive = state.maintenance.write().await;
-        if state.manager.has_pending_provider_work() {
-            return Err("Finish or stop remote conversations before restarting the remote server".into());
-        }
         if state.restarting.swap(true, Ordering::AcqRel) {
             return Err("The remote server is already restarting".into());
         }
@@ -4785,6 +4789,28 @@ pub async fn restart_remote_for_provider_updates(
 #[cfg(test)]
 mod provider_restart_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn restart_is_accepted_while_conversations_are_running() {
+        let directory = std::env::temp_dir().join(format!("assembly-busy-restart-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("sessions.db")).unwrap();
+        let _busy = manager.begin_test_authentication();
+        assert!(manager.has_pending_provider_work());
+        let state = ServerState {
+            manager, data_dir: directory.clone(), token: Arc::from("test"),
+            maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
+            restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
+            events: broadcast::channel(2).0,
+        };
+        let response = execute_server_command(&state, &Arc::new(Mutex::new(None)),
+            RemoteCommand::RestartForProviderUpdates, Arc::new(|_| {})).await;
+        assert!(matches!(response, Ok(RemoteResponse::Restarting)), "{:?}", response.err());
+        tokio::time::timeout(Duration::from_millis(100), state.restart_requested.notified())
+            .await.expect("the accepted restart must be requested");
+        drop(state);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[tokio::test]
     async fn server_does_not_restart_without_an_accepted_request() {

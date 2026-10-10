@@ -3,12 +3,12 @@
   import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
+  import RestartProvidersButton from '$lib/shell/components/RestartProvidersButton.svelte';
   import {
     checkForProviderUpdates,
     installProviderUpdates,
     providerUpdateState,
     providerVersionLine,
-    restartProviders,
     type ProviderUpdateState
   } from '$lib/shell/providerUpdateService.svelte';
 
@@ -31,11 +31,7 @@
     >
       {#if updateState.phase === 'checking'}<WorkingSpinner size={12} />Checking…{:else}Check now{/if}
     </Button>
-    {#if updateState.status?.restartRequired}
-      <Button variant="secondary" size="sm" disabled={updateState.phase === 'installing'} onclick={() => void restartProviders(updateState, profileId)}>
-        {profileId ? 'Restart remote server' : 'Restart Assembly'}
-      </Button>
-    {/if}
+    <RestartProvidersButton {updateState} {profileId} />
   </div>
   {#if updateState.status}
     {#each updateState.status.providers as provider (provider.provider)}
