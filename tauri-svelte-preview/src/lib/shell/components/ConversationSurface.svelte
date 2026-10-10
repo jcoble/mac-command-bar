@@ -448,7 +448,8 @@
   }
 
   async function stopActiveStructuredTurn(ownedId: string, generation: number): Promise<void> {
-    if (controlsDisabled || conversationSessions[ownedId]?.generation !== generation) return;
+    // A send wakes a sleeping adapter, so Stop must work before it reads connected.
+    if (remoteDisconnected || conversationSessions[ownedId]?.generation !== generation) return;
     try {
       await stopStructuredTurn(ownedId);
     } catch (_error) {
