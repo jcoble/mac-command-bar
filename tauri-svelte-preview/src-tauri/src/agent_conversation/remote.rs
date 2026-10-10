@@ -3205,9 +3205,7 @@ async fn execute_remote_command(
             let data_dir = std::env::var_os("ASSEMBLY_SERVER_DATA_DIR").map(PathBuf::from)
                 .ok_or_else(|| "Remote server data directory is unavailable".to_string())?;
             let status = if let RemoteCommand::InstallProviderUpdates { provider } = command {
-                if manager.has_pending_provider_work() {
-                    return Err("Finish or stop remote conversations before updating their adapters".into());
-                }
+                // Installs land in a new folder; running adapters keep theirs until restart.
                 super::providers::updates::install_at(&data_dir, manager.providers(), &provider, progress).await?
             } else {
                 super::providers::updates::check_at(&data_dir, manager.providers()).await?
@@ -4744,5 +4742,23 @@ mod provider_restart_tests {
         flushed.notify_one();
         tokio::time::timeout(Duration::from_millis(100), wait_for_provider_restart(&requested, &flushed))
             .await.expect("a flushed response should release restart immediately");
+    }
+
+    #[tokio::test]
+    async fn install_is_accepted_while_conversations_are_running() {
+        // Holding the install lock stops the installer before any network or disk work.
+        let _installer = super::super::providers::updates::INSTALL_LOCK.lock().await;
+        let directory = std::env::temp_dir().join(format!("assembly-busy-install-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        std::env::set_var("ASSEMBLY_SERVER_DATA_DIR", &directory);
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("sessions.db")).unwrap();
+        let _busy = manager.begin_test_authentication();
+        assert!(manager.has_pending_provider_work());
+        let response = execute_remote_command(&manager, &directory,
+            RemoteCommand::InstallProviderUpdates { provider: "codex".into() }, Arc::new(|_| {})).await;
+        let error = response.err().expect("the held install lock must stop the installer");
+        assert!(error.contains("already running"), "install must reach the installer, got: {error}");
+        drop(manager);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }
