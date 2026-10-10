@@ -490,7 +490,11 @@
   const stageHint = $derived.by(() => {
     if (!canChange) return cannotChangeReason;
     if (busy) return 'Wait for the current source-control action to finish.';
-    if (stageablePaths.length === 0) return 'Everything is already staged.';
+    if (stageablePaths.length === 0) {
+      return diffstat.filesChanged > files.length
+        ? 'Only the files listed can be staged here; commit, stash or ignore files to see the rest.'
+        : 'Everything is already staged.';
+    }
     return `Stage ${stageablePaths.length === 1 ? 'the one changed file' : `all ${stageablePaths.length} changed files`}`;
   });
 

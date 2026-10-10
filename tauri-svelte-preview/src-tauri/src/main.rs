@@ -3765,7 +3765,9 @@ fn git_repository_summary_for_path_result(
     }
 
     let status = project_git_status_sync(path.to_path_buf())?;
-    let counts = git_repository_status_counts(&status.files);
+    let mut counts = git_repository_status_counts(&status.files);
+    // Files past the status cap are untracked (git lists tracked files first).
+    counts.untracked_count += status.total_files - status.files.len();
     let (last_commit_sha, last_commit_subject, last_commit_at) = git_last_commit(path);
     let branch = status.branch.unwrap_or_else(|| "unknown".to_string());
     let task_id = branch_task_id(&branch)
