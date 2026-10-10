@@ -1,5 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { OwnedSession } from './ownedSessions.ts';
+import type { RemoteConnectionState } from './stores/sessionRailStore.svelte.ts';
 
 type ProviderDownloadProgress = {
   provider: string;
@@ -24,7 +26,7 @@ export type ProviderUpdateStatus = {
   providers: ProviderUpdateVersion[];
 };
 
-export type ProviderUpdatePhase = 'idle' | 'checking' | 'available' | 'current' | 'installing' | 'restart' | 'error';
+export type ProviderUpdatePhase = 'idle' | 'checking' | 'available' | 'current' | 'installing' | 'restart' | 'reconnecting' | 'error';
 
 export const providerUpdateState = $state({
   phase: 'idle' as ProviderUpdatePhase,
@@ -108,15 +110,51 @@ export async function restartProviders(state: ProviderUpdateState, profileId?: s
   try {
     await invoke(profileId ? 'restart_remote_for_provider_updates' : 'restart_for_provider_updates', profileId ? { profileId } : undefined);
     if (profileId) {
-      state.phase = 'idle';
+      // The control re-checks by itself once the connection comes back.
+      state.phase = 'reconnecting';
       state.status = null;
-      state.message = 'Remote server restarting. Check again after it reconnects to verify the running adapters.';
+      state.message = 'Remote server restarting. Reconnecting…';
     }
   } catch (error) {
     // A busy conversation or restart failure keeps the explicit retry action.
     state.phase = 'restart';
     state.message = String(error);
   }
+}
+
+export type RestartCountdown = { phase: 'counting' | 'cancelled' | 'finished'; remaining: number };
+
+export function startRestartCountdown(): RestartCountdown {
+  return { phase: 'counting', remaining: 10 };
+}
+
+/** One second passing, Cancel, or "Restart now". Only a counting warning changes. */
+export function stepRestartCountdown(countdown: RestartCountdown, event: 'tick' | 'cancel' | 'restart-now'): RestartCountdown {
+  if (countdown.phase !== 'counting') return countdown;
+  if (event === 'cancel') return { ...countdown, phase: 'cancelled' };
+  const remaining = event === 'tick' ? countdown.remaining - 1 : 0;
+  return remaining > 0 ? { phase: 'counting', remaining } : { phase: 'finished', remaining: 0 };
+}
+
+const BUSY_RUNTIME_STATES = new Set(['starting', 'working', 'waiting-approval', 'waiting-input', 'interrupting']);
+
+/** Titles of the sessions on this machine that a server restart would end. */
+export function sessionsEndedByRestart(owned: readonly OwnedSession[], profileId: string): string[] {
+  return owned
+    .filter((session) => session.remoteProfileId === profileId && (
+      !!session.activeTurnId
+      || (session.backgroundWork?.length ?? 0) > 0
+      || BUSY_RUNTIME_STATES.has(session.runtimeState ?? '')))
+    .map((session) => session.title);
+}
+
+export type RestartReconnect = 'waiting-for-drop' | 'waiting-for-connect' | 'recheck';
+
+/** After a restart, the connection must drop and come back before re-checking. */
+export function restartReconnectStep(step: RestartReconnect, connection: RemoteConnectionState | undefined): RestartReconnect {
+  if (step === 'waiting-for-drop') return connection === 'connected' ? step : 'waiting-for-connect';
+  if (step === 'waiting-for-connect' && connection === 'connected') return 'recheck';
+  return step;
 }
 
 // An arrow only for a real update; a newer local adapter is not a downgrade.

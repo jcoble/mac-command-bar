@@ -5,7 +5,10 @@ import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
 globalThis.$state = <T>(value: T): T => value;
 globalThis.window = {} as Window & typeof globalThis;
 Object.defineProperty(window, 'crypto', { value: globalThis.crypto });
-const { checkForProviderUpdates, installProviderUpdates, providerUpdateState, restartProviders } = await import('../src/lib/shell/providerUpdateService.svelte.ts');
+const {
+  checkForProviderUpdates, installProviderUpdates, providerUpdateState, restartProviders,
+  startRestartCountdown, stepRestartCountdown, sessionsEndedByRestart, restartReconnectStep
+} = await import('../src/lib/shell/providerUpdateService.svelte.ts');
 const status = {
   target: 'aarch64-apple-darwin', updateAvailable: true, restartRequired: false,
   providers: [{ provider: 'claude', currentVersion: '0.76.0', availableVersion: '0.81.2', updateAvailable: true }]
@@ -93,8 +96,8 @@ await installProviderUpdates('claude', remoteOwner.signal, remote, 'workbox');
 assert.equal(remote.phase, 'restart');
 assert.equal(remoteCalls.length, 2, 'remote installation waits for a separate explicit restart');
 await restartProviders(remote, 'workbox');
-assert.equal(remote.phase, 'idle');
-assert.match(remote.message, /reconnects/);
+assert.equal(remote.phase, 'reconnecting', 'a remote restart waits for the connection to come back');
+assert.equal(remote.status, null);
 assert.deepEqual(remoteCalls.map(call => call.command), [
   'check_remote_provider_updates', 'install_remote_provider_updates', 'restart_remote_for_provider_updates'
 ]);
@@ -141,5 +144,36 @@ for (const selected of ['codex', 'claude']) {
   assert.equal(remote.installingProvider, null, 'failure stops selected provider activity');
 }
 assert.deepEqual(selectedProviders, ['codex', 'claude']);
+// The restart warning counts down from ten; cancel stops it, zero or "Restart now" finishes it.
+let countdown = startRestartCountdown();
+assert.deepEqual(countdown, { phase: 'counting', remaining: 10 });
+for (let second = 0; second < 9; second += 1) countdown = stepRestartCountdown(countdown, 'tick');
+assert.deepEqual(countdown, { phase: 'counting', remaining: 1 });
+countdown = stepRestartCountdown(countdown, 'tick');
+assert.deepEqual(countdown, { phase: 'finished', remaining: 0 }, 'reaching zero restarts');
+assert.deepEqual(stepRestartCountdown(countdown, 'cancel'), countdown, 'a finished countdown cannot be cancelled');
+const cancelled = stepRestartCountdown(startRestartCountdown(), 'cancel');
+assert.equal(cancelled.phase, 'cancelled');
+assert.deepEqual(stepRestartCountdown(cancelled, 'tick'), cancelled, 'a cancelled countdown never restarts');
+assert.deepEqual(stepRestartCountdown(startRestartCountdown(), 'restart-now'), { phase: 'finished', remaining: 0 });
+// The warning names only the busy sessions on the machine being restarted.
+const row = (ownedId: string, remoteProfileId: string | null, busy: Record<string, unknown>) =>
+  ({ ownedId, remoteProfileId, title: `Session ${ownedId}`, runtimeState: 'ready', activeTurnId: null, backgroundWork: [], ...busy });
+assert.deepEqual(sessionsEndedByRestart([
+  row('turn', 'workbox', { activeTurnId: 't1' }),
+  row('agents', 'workbox', { backgroundWork: [{ id: 'sub-agent' }] }),
+  row('approval', 'workbox', { runtimeState: 'waiting-approval' }),
+  row('idle', 'workbox', {}),
+  row('suspended', 'workbox', { runtimeState: 'suspended' }),
+  row('other machine', 'sd', { activeTurnId: 't2' }),
+  row('local', null, { runtimeState: 'working' })
+] as never, 'workbox'), ['Session turn', 'Session agents', 'Session approval']);
+// After a deliberate restart the control re-checks once the connection drops and returns.
+let reconnect = restartReconnectStep('waiting-for-drop', 'connected');
+assert.equal(reconnect, 'waiting-for-drop', 'the old connection still answering is not the reconnect');
+reconnect = restartReconnectStep(reconnect, 'reconnecting');
+assert.equal(reconnect, 'waiting-for-connect');
+assert.equal(restartReconnectStep(reconnect, 'disconnected'), 'waiting-for-connect');
+assert.equal(restartReconnectStep(reconnect, 'connected'), 'recheck');
 clearMocks();
 console.log('Provider updater ownership and single-flight checks passed.');
