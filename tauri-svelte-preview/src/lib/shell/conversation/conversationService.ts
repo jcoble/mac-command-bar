@@ -1281,6 +1281,9 @@ export async function changeStructuredConversationCheckout(
 }
 
 const preparingSends = new Map<string, { cancelled: boolean }>();
+// A new turn's send request that is still out. Stop waits for its receipt:
+// stopping sooner can reach the provider before the prompt does, and is ignored.
+const sendRequests = new Map<string, Promise<unknown>>();
 
 /** Sends one message through the current writer while preserving attachment recovery. */
 export async function sendStructuredMessage(
@@ -1446,7 +1449,7 @@ export async function sendStructuredMessage(
     if (preparingSends.get(ownedId) === preparation) preparingSends.delete(ownedId);
     const requestedModel = startConfig?.model ?? null;
     const requestedApprovalPolicy = startConfig?.approvalPolicy ?? null;
-    const receipt: AgentConversationSendReceipt = await invoke('send_agent_conversation_message', {
+    const request = invoke('send_agent_conversation_message', {
       request: {
         ownedId,
         generation: validatedGeneration,
@@ -1463,7 +1466,12 @@ export async function sendStructuredMessage(
             : null
       }
     });
-    return receipt;
+    if (!turnWasAlreadyActive) sendRequests.set(ownedId, request);
+    try {
+      return await request as AgentConversationSendReceipt;
+    } finally {
+      if (sendRequests.get(ownedId) === request) sendRequests.delete(ownedId);
+    }
   } catch (error) {
     // A send that never went out puts its screenshots back in the composer, so
     // nothing is left waiting to be hung on a later message.
@@ -1480,6 +1488,14 @@ export async function sendStructuredMessage(
 
 /** Stops the active turn for the conversation's current generation. */
 export async function stopStructuredTurn(ownedId: string): Promise<void> {
+  const sendRequest = sendRequests.get(ownedId);
+  if (sendRequest) {
+    try {
+      await sendRequest;
+    } catch {
+      return; // A refused send started no turn to stop.
+    }
+  }
   const preparation = preparingSends.get(ownedId);
   const state = getConversationSession(ownedId);
   const presence = get(sessionPresenceHistory)[ownedId];

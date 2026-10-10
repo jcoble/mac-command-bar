@@ -253,7 +253,7 @@ assert.match(
 // request is still running, so screenshots recorded after it are never claimed.
 assert.match(
   serviceSource,
-  /recordSentConversationAttachments\(ownedId, \[[^\n]*attachments\.map\(attachmentDisplayMetadata\)\]\);[\s\S]*?await invoke\('send_agent_conversation_message'/,
+  /recordSentConversationAttachments\(ownedId, \[[^\n]*attachments\.map\(attachmentDisplayMetadata\)\]\);[\s\S]*?invoke\('send_agent_conversation_message'/,
   'sent screenshot metadata is recorded before the send request, not after it'
 );
 // The first send of an unstarted session saves model and effort together, so the

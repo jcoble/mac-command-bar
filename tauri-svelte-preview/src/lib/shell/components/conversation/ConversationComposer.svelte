@@ -548,7 +548,7 @@
                  disabled until there is something to send. -->
             <Button variant="ghost" size="icon-sm" class="ml-auto" disabled title="Voice input is not available yet" aria-label="Voice input, not available yet"><Mic /></Button>
             {#if sending && (!hasSendableContent || !supportsSteering)}
-              <button class="round-control send stop" data-testid="conversation-stop" type="button" aria-label="Stop generation" disabled={controlsDisabled} onclick={() => void onStop?.()}><Square size={13} fill="currentColor" /></button>
+              <button class="round-control send stop" data-testid="conversation-stop" type="button" aria-label="Stop generation" disabled={sendDisabled} onclick={() => void onStop?.()}><Square size={13} fill="currentColor" /></button>
             {:else}
               <button class="round-control send" data-testid="conversation-send" type="submit" disabled={!hasSendableContent || sendDisabled} aria-label={sending ? 'Steer current turn' : 'Send message'}><ArrowUp size={17} strokeWidth={2.2} /></button>
             {/if}
