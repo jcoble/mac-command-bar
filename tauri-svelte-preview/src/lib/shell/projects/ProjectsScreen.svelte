@@ -126,6 +126,12 @@
     await refreshRailProjects();
   }
 
+  /** A refusal belongs to the rename it answered, so it goes when the dialog does. */
+  function closeRename(): void {
+    renaming = null;
+    actionError = '';
+  }
+
   /** The folder picker shows a refusal itself, so this one lets it through. */
   async function changeFolder(path: string): Promise<void> {
     if (!moving) return;
@@ -292,7 +298,7 @@
   />
 {/if}
 
-<Dialog.Root open={renaming !== null} onOpenChange={(next) => { if (!next) renaming = null; }}>
+<Dialog.Root open={renaming !== null} onOpenChange={(next) => { if (!next) closeRename(); }}>
   <Dialog.Content class="sm:max-w-[420px]">
     <Dialog.Header>
       <Dialog.Title>Rename project</Dialog.Title>
@@ -302,7 +308,7 @@
       <Input aria-label="Project name" bind:value={newName} />
       {#if actionError}<p class="text-[13px] text-destructive">{actionError}</p>{/if}
       <Dialog.Footer>
-        <Button type="button" variant="ghost" size="sm" onclick={() => (renaming = null)}>Cancel</Button>
+        <Button type="button" variant="ghost" size="sm" onclick={closeRename}>Cancel</Button>
         <Button type="submit" size="sm">Rename</Button>
       </Dialog.Footer>
     </form>
