@@ -18,9 +18,9 @@ Enforced by `.githooks/commit-msg`: a commit that neither stages the page nor ca
 refused. One-time setup per clone: `git config core.hooksPath .githooks` (already set for this
 repository's worktrees). Paste this rule into every dispatch that may commit.
 
-## ⛔ Test chat behaviour in all six scenarios (2026-10-09, owner)
+## ⛔ Test chat behaviour in all four scenarios (2026-10-09, owner; Antigravity dropped 2026-10-10)
 
-Anything that changes the chat (history, turn folds, tool calls and their grouping, live versus stored rows, the composer) must work the same for Claude Code, Codex and Antigravity, each on a local and a remote session. Verify all six in a running app before calling it done, and report a six-row table (provider × local/remote: pass/fail + evidence). A scenario you cannot run is reported as blocked with the exact error, never skipped silently. Antigravity is now used daily, so it is a first-class provider, not an afterthought.
+Anything that changes the chat (history, turn folds, tool calls and their grouping, live versus stored rows, the composer) must work the same for Claude Code and Codex, each on a local and a remote session. Verify all four in a running app before calling it done, and report a four-row table (provider × local/remote: pass/fail + evidence). A scenario you cannot run is reported as blocked with the exact error, never skipped silently. Antigravity is no longer a required scenario (owner, 2026-10-10: likely to be removed); do not spend lane time on it.
 
 Remote scenarios run on the test machine "Workbox Test" (SSH alias `workbox-test`, see `tools/workbox-test/README.md`), added in the proof app's Settings → Connections with **Install and connect**. Lanes never connect a proof app to the owner's machines ("Agent Workbox" or any other saved machine), because their sessions land in the owner's session list.
 
