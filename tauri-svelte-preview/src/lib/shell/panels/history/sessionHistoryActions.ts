@@ -11,6 +11,7 @@
  * real or it is off with a plain-English reason. Nothing pretends.
  */
 import { normalizeProvider } from '../../ownedSessions.ts';
+import { resumeCommand } from '../../resumeCommand.ts';
 import type { AgentConversationTranscriptImport } from '../../../tauriSource.ts';
 import type { SessionLibraryRecord } from '../../sessionLibrary/sessionLibraryModel.ts';
 
@@ -61,9 +62,16 @@ const NOT_OURS = 'Only sessions started in this app can be deleted.';
 const NO_SESSION_ID = 'This session has no provider session id to read a transcript for.';
 const UNREADABLE_AGENT = 'This app cannot read transcripts written by this agent.';
 
-/** The one resume command a card offers to copy, when the scan found one. */
+/** The one resume command a card offers to copy: the same one the rail builds
+ * for Claude and Codex, which also covers sessions started in this app (they
+ * carry no scan details), and the scanner's own command for other agents. */
 export function sessionResumeCommand(record: SessionLibraryRecord): string | null {
-  return record.available?.resumeCommands?.[0] ?? null;
+  const { agent } = normalizeProvider(record.provider);
+  return (
+    resumeCommand(agent, record.nativeSessionId, record.canonicalCwd ?? '') ??
+    record.available?.resumeCommands?.[0] ??
+    null
+  );
 }
 
 /** What Copy Session ID puts on the clipboard: the provider's id when there is
