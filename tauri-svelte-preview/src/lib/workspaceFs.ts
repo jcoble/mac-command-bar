@@ -1,6 +1,6 @@
 import * as local from '@tauri-apps/plugin-fs';
-import { invoke } from './workspaceInvoke';
-import { parseRemoteWorkspacePath, remoteWorkspaceRequest } from './workspacePaths';
+import { invoke } from './workspaceInvoke.ts';
+import { parseRemoteWorkspacePath, remoteWorkspaceRequest } from './workspacePaths.ts';
 export async function exists(path: string): Promise<boolean> {
   return parseRemoteWorkspacePath(path) ? invoke('workspace_exists', { path }) : local.exists(path);
 }

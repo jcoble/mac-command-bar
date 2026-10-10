@@ -1,6 +1,6 @@
 import { rail } from './stores/sessionRailStore.svelte';
 import { warmAgentConversationConfig } from './conversation/conversationConfig';
-import { sessionWorkspaceRoot } from '../workspacePaths';
+import { sessionWorkspaceRoot } from '../workspacePaths.ts';
 /**
  * The projections rebuilt when a person selects a session in the rail.
  *

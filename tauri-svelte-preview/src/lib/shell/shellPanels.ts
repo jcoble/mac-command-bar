@@ -26,7 +26,7 @@ import { activateStacks } from "./stacks/stackService.ts";
 import { rail } from "./stores/sessionRailStore.svelte.ts";
 import { activate as activateWorktrees } from "./worktrees/worktreeManagerService.ts";
 import type { WorktreeSessionInput } from "./worktrees/worktreeManagerRows.ts";
-import { sessionWorkspaceRoot } from "../workspacePaths";
+import { sessionWorkspaceRoot } from "../workspacePaths.ts";
 import type { OwnedSession } from "./ownedSessions";
 import { activateBrowser } from "./browser/browserStore.svelte.ts";
 
