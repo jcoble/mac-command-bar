@@ -142,12 +142,25 @@
     else if (id === 'open-in-editor') openFileInEditor({ path: absolutePath, projectRoot: root });
     else if (id === 'reveal-in-finder') void revealPathFromTauri(absolutePath);
   }
+
+  let menuOpen = $state(false);
+  /** Pointer or focus is on the row: only then are its hover buttons mounted. */
+  let hot = $state(false);
 </script>
 
-<ContextMenu.Root>
+<!-- The menu is mounted only while open: a closed one still leaves an empty
+     portal in document.body, and a thousand rows of those froze WebKit. -->
+<ContextMenu.Root bind:open={menuOpen}>
   <ContextMenu.Trigger>
     {#snippet child({ props })}
-      <div {...props} class="min-w-0">
+      <div
+        {...props}
+        class="min-w-0"
+        onpointerenter={() => (hot = true)}
+        onpointerleave={(event) => (hot = event.currentTarget.contains(document.activeElement))}
+        onfocusin={() => (hot = true)}
+        onfocusout={(event) => (hot = event.currentTarget.contains(event.relatedTarget as Node | null))}
+      >
         <ListRow
           {selected}
           onclick={showChanges}
@@ -178,40 +191,43 @@
           {/if}
 
           {#snippet actions()}
-            {#if stageDirection === 'stage' && stageAction}
-              <HoverActionButton
-                label={hint(stageAction)}
-                disabled={!stageAction.enabled}
-                onclick={() => run('stage')}
-              >
-                <Plus aria-hidden="true" />
-              </HoverActionButton>
-            {:else if unstageAction}
-              <HoverActionButton
-                label={hint(unstageAction)}
-                disabled={!unstageAction.enabled}
-                onclick={() => run('unstage')}
-              >
-                <Minus aria-hidden="true" />
-              </HoverActionButton>
-            {/if}
-            {#if discardAction}
-              <HoverActionButton
-                label={hint(discardAction)}
-                disabled={!discardAction.enabled}
-                onclick={() => run('discard')}
-              >
-                <Undo2 aria-hidden="true" />
-              </HoverActionButton>
-            {/if}
-            {#if openAction}
-              <HoverActionButton
-                label={hint(openAction)}
-                disabled={!openAction.enabled}
-                onclick={() => run('open-in-editor')}
-              >
-                <FileSymlink aria-hidden="true" />
-              </HoverActionButton>
+            <!-- Built on hover or focus: a thousand rows of tooltip buttons took seconds to draw. -->
+            {#if hot}
+              {#if stageDirection === 'stage' && stageAction}
+                <HoverActionButton
+                  label={hint(stageAction)}
+                  disabled={!stageAction.enabled}
+                  onclick={() => run('stage')}
+                >
+                  <Plus aria-hidden="true" />
+                </HoverActionButton>
+              {:else if unstageAction}
+                <HoverActionButton
+                  label={hint(unstageAction)}
+                  disabled={!unstageAction.enabled}
+                  onclick={() => run('unstage')}
+                >
+                  <Minus aria-hidden="true" />
+                </HoverActionButton>
+              {/if}
+              {#if discardAction}
+                <HoverActionButton
+                  label={hint(discardAction)}
+                  disabled={!discardAction.enabled}
+                  onclick={() => run('discard')}
+                >
+                  <Undo2 aria-hidden="true" />
+                </HoverActionButton>
+              {/if}
+              {#if openAction}
+                <HoverActionButton
+                  label={hint(openAction)}
+                  disabled={!openAction.enabled}
+                  onclick={() => run('open-in-editor')}
+                >
+                  <FileSymlink aria-hidden="true" />
+                </HoverActionButton>
+              {/if}
             {/if}
           {/snippet}
         </ListRow>
@@ -219,14 +235,17 @@
     {/snippet}
   </ContextMenu.Trigger>
 
-  <ContextMenu.Content class="w-[220px]" aria-label="File actions">
-    {#each actions as item (item.id)}
-      <ContextMenu.Item
-        data-testid={`source-control-file-menu-${item.id}`}
-        disabled={!item.enabled}
-        title={item.enabled ? undefined : item.disabledReason}
-        onSelect={() => run(item.id)}>{item.label}</ContextMenu.Item
-      >
-    {/each}
-  </ContextMenu.Content>
+  {#if menuOpen}
+    <!-- No scroll lock: it restyles <body>, which took WebKit a quarter second per change. -->
+    <ContextMenu.Content class="w-[220px]" aria-label="File actions" preventScroll={false}>
+      {#each actions as item (item.id)}
+        <ContextMenu.Item
+          data-testid={`source-control-file-menu-${item.id}`}
+          disabled={!item.enabled}
+          title={item.enabled ? undefined : item.disabledReason}
+          onSelect={() => run(item.id)}>{item.label}</ContextMenu.Item
+        >
+      {/each}
+    </ContextMenu.Content>
+  {/if}
 </ContextMenu.Root>

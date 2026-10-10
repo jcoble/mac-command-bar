@@ -170,7 +170,9 @@ export type ProjectGitStatus = {
   ahead: number;
   behind: number;
   hasUpstream: boolean;
+  /** At most 1,000 files; `totalFiles` says how many git reported. */
   files: ProjectGitFileStatus[];
+  totalFiles?: number;
   /** Working-tree lines added/removed against HEAD; null without a HEAD. */
   additions?: number | null;
   deletions?: number | null;

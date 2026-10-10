@@ -242,7 +242,7 @@
       </div>
     {/if}
 
-    <div class="mt-2 space-y-2">
+    <div class="mt-2 flex flex-col gap-2">
       <label class="block">
         <span class="mb-1 block text-[11px] font-medium uppercase tracking-[0.08em] text-[var(--color-text-3)]">Title</span>
         <input

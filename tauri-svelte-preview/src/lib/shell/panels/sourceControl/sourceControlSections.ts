@@ -62,6 +62,17 @@ export function sourceControlSections(status: ProjectGitStatus | null): SourceCo
 }
 
 /**
+ * How many untracked files Discard All will delete. Past the list's cap the
+ * hidden files are counted as untracked, so this can overstate the number but
+ * never understates it.
+ */
+export function discardAllUntrackedCount(status: ProjectGitStatus | null): number {
+  const files = status?.files ?? [];
+  const tracked = files.filter((file) => !isGitFileUntracked(file)).length;
+  return (status?.totalFiles ?? files.length) - tracked;
+}
+
+/**
  * The counts beside the panel title. Line totals are not shown here; the status
  * command reports them only as whole-tree sums (`additions`/`deletions`), which
  * the Changes tab in the top row displays.
@@ -69,7 +80,7 @@ export function sourceControlSections(status: ProjectGitStatus | null): SourceCo
 export function sourceControlDiffstat(status: ProjectGitStatus | null): SourceControlDiffstat {
   const files = status?.files ?? [];
   return {
-    filesChanged: files.length,
+    filesChanged: status?.totalFiles ?? files.length,
     untracked: files.filter(isGitFileUntracked).length
   };
 }
