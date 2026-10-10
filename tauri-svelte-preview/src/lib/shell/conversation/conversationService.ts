@@ -1480,8 +1480,13 @@ export async function sendStructuredMessage(
 /** Stops the active turn for the conversation's current generation. */
 export async function stopStructuredTurn(ownedId: string): Promise<void> {
   const sendRequest = sendRequests.get(ownedId);
-  // A refused send started no turn to stop.
-  if (sendRequest && !(await sendRequest.then(() => true, () => false))) return;
+  if (sendRequest) {
+    try {
+      await sendRequest;
+    } catch {
+      return; // A refused send started no turn to stop.
+    }
+  }
   const preparation = preparingSends.get(ownedId);
   const state = getConversationSession(ownedId);
   const presence = get(sessionPresenceHistory)[ownedId];
