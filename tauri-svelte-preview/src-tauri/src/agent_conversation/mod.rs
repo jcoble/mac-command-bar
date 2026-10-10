@@ -453,14 +453,23 @@ pub async fn remove_project(
     id: String,
     delete_sessions: bool,
 ) -> Result<(), String> {
+    remove_project_on(&manager, &remote, &id, delete_sessions).await
+}
+
+async fn remove_project_on(
+    manager: &AgentRuntimeManager,
+    remote: &RemoteConnectionManager,
+    id: &str,
+    delete_sessions: bool,
+) -> Result<(), String> {
     if delete_sessions {
-        for owned_id in manager.store().project_session_ids(&id).map_err(|error| error.to_string())? {
+        for owned_id in manager.store().project_session_ids(id, true).map_err(|error| error.to_string())? {
             if remote.owns(&owned_id) {
                 remote.delete(owned_id).await?;
             }
         }
     }
-    manager.remove_project(&id, delete_sessions).await
+    manager.remove_project(id, delete_sessions).await
 }
 
 #[tauri::command]

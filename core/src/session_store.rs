@@ -2257,18 +2257,20 @@ impl SessionStore {
         Ok(changed == 1)
     }
 
-    /// The sessions filed under the project; a remote one by its id on its machine.
-    pub fn project_session_ids(&self, id: &str) -> Result<Vec<String>> {
+    /// The local sessions filed under the project, or with `remote` the
+    /// remote ones, each by its id on its machine.
+    pub fn project_session_ids(&self, id: &str, remote: bool) -> Result<Vec<String>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
                 "SELECT CASE WHEN cached_remote_profile_id IS NULL THEN owned_id
                     ELSE json_extract(owned_id, '$[1]') END
-                 FROM sessions WHERE project_id = ? ORDER BY owned_id",
+                 FROM sessions WHERE project_id = ?1 AND (cached_remote_profile_id IS NOT NULL) = ?2
+                 ORDER BY owned_id",
             )
             .map_err(|error| StoreError::sqlite("could not prepare the project sessions", error))?;
         let rows = statement
-            .query_map([id], |row| row.get(0))
+            .query_map(params![id, remote], |row| row.get(0))
             .map_err(|error| StoreError::sqlite("could not list the project sessions", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read the project sessions", error))
@@ -4578,7 +4580,11 @@ mod tests {
         assert_eq!(row("elsewhere").project_id, None, "another machine's row is untouched");
         assert_eq!(row("loose").project_id, None);
         assert_eq!(store.count_sessions().unwrap(), 1, "remote rows stay out of the local list");
-        assert_eq!(store.project_session_ids("p1").unwrap(), ["cached", "new"], "remote rows answer with their remote id");
+        let mut mine = fixture_session("mine", 1);
+        mine.project_id = Some("p1".into());
+        store.upsert_session(&mine).unwrap();
+        assert_eq!(store.project_session_ids("p1", false).unwrap(), ["mine"], "the local list leaves remote rows out");
+        assert_eq!(store.project_session_ids("p1", true).unwrap(), ["cached", "new"], "remote rows answer with their remote id");
     }
 
     #[test]
@@ -4849,7 +4855,7 @@ mod tests {
             session.project_id = project_id.map(str::to_owned);
             store.upsert_session(&session).unwrap();
         }
-        assert_eq!(store.project_session_ids("p").unwrap(), ["mine"]);
+        assert_eq!(store.project_session_ids("p", false).unwrap(), ["mine"]);
 
         assert!(store.remove_project("p").unwrap());
         assert!(!store.remove_project("p").unwrap());

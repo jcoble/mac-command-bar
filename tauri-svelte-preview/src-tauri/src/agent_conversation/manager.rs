@@ -573,9 +573,7 @@ impl AgentRuntimeManager {
     /// disk are never touched.
     pub async fn remove_project(&self, id: &str, delete_sessions: bool) -> Result<(), String> {
         if delete_sessions {
-            // A remote session left here (the remote command deletes them first)
-            // is not this manager's, so `delete` answers false for it.
-            for owned_id in self.store.project_session_ids(id).map_err(|error| error.to_string())? {
+            for owned_id in self.store.project_session_ids(id, false).map_err(|error| error.to_string())? {
                 self.delete(&owned_id).await?;
             }
         }

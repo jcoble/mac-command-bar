@@ -4115,6 +4115,38 @@ mod connection_tests {
         assert_eq!(shared.get_session(&key).unwrap().unwrap().project_id.as_deref(), Some("p1"), "live events keep the project");
     }
 
+    #[tokio::test]
+    async fn removing_a_remote_project_deletes_its_sessions_on_the_machine() {
+        let directory = std::env::temp_dir().join(format!("assembly-remove-project-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let database = directory.join("sessions.db");
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+        let remote = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), Arc::new(SessionStore::open(&database).unwrap()),
+        ).unwrap();
+        manager.store().insert_or_get_project(&mcb_core::session_store::ProjectRow {
+            id: "p".into(), machine: "cache-test".into(), root_path: "/work/project".into(), title: "project".into(),
+            repo_key: String::new(), created_at_ms: 1, group_key: String::new(), pinned_at_ms: None, last_used_ms: None,
+        }).unwrap();
+        let mut listed = session("large-history", "cache-test", 10);
+        listed.project_id = Some("p".into());
+        remote.replace_cached_profile_sessions("cache-test", &[listed]).unwrap();
+        let mut requests = connect(&remote);
+        let server = tokio::spawn(async move {
+            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected delete"); };
+            assert!(matches!(command, RemoteCommand::Delete { ref owned_id } if owned_id == "large-history"));
+            reply.send(Ok(RemoteResponse::Bool(true))).unwrap();
+        });
+
+        super::super::remove_project_on(&manager, &remote, "p", true).await.unwrap();
+        server.await.unwrap();
+        assert!(manager.store().get_session(&RemoteHistory::key("cache-test", "large-history")).unwrap().is_none(), "the cached row is gone");
+        assert!(!remote.owns("large-history"));
+        assert_eq!(manager.store().get_project("p").unwrap(), None);
+        drop((manager, remote));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn successful_profile_refresh_reconciles_only_that_machines_rows() {
         let manager = RemoteConnectionManager::from_environment(

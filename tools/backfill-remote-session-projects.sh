@@ -14,8 +14,9 @@
 set -euo pipefail
 [ $# -ge 3 ] || { sed -n 6,13p "$0"; exit 2; }
 mac_db=$1 machine=$2 host=$3 server_db=${4:-.local/share/assembly/sessions.db}
+[[ $machine =~ ^[A-Za-z0-9._:-]+$ ]] || { echo "Unexpected machine id: $machine" >&2; exit 2; }
 projects=$(sqlite3 -readonly -separator $'\t' "$mac_db" \
-  "SELECT id, root_path FROM projects WHERE machine = '${machine//\'/\'\'}' ORDER BY created_at, id" | base64 | tr -d '\n')
+  "SELECT id, root_path FROM projects WHERE machine = '$machine' ORDER BY created_at, id" | base64 | tr -d '\n')
 [ -n "$projects" ] || { echo "No projects for machine $machine in $mac_db" >&2; exit 1; }
 
 ssh "$host" bash -s -- "$(printf %q "$server_db")" "$projects" <<'REMOTE'
