@@ -36,6 +36,7 @@ import {
   sendTargetGeneration,
   shouldReviveBeforeSend
 } from './conversationActivation.ts';
+import { setAgentConversationConfig } from './conversationConfig.ts';
 import { ConversationDraftPersistence } from './conversationDraftPersistence.ts';
 import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
 import { shouldClearConversationSending } from './conversationReducer.ts';
@@ -1426,6 +1427,14 @@ export async function sendStructuredMessage(
         runtimeState: 'ready',
         lastError: null,
         nativeSessionId: state.nativeSessionId ?? owned.nativeSessionId
+      });
+    }
+    if (startConfig?.model && !state.nativeSessionId) {
+      // Stored together, so the start applies the model before the effort. Stop
+      // pressed while this is saved is still honoured below.
+      await setAgentConversationConfig({
+        ownedId, generation: validatedGeneration, model: startConfig.model,
+        ...(startConfig.reasoningEffort ? { reasoningEffort: startConfig.reasoningEffort } : {})
       });
     }
     if (preparation.cancelled) {

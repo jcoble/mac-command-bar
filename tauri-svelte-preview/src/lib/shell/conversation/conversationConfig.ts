@@ -10,6 +10,8 @@ export type AgentConversationConfigState = {
   modelLabels?: Record<string, string>;
   reasoningEffort: string | null;
   availableEfforts: string[];
+  modelEfforts?: Record<string, string[]>;
+  modelDefaultEfforts?: Record<string, string>;
   approvalPolicy: string | null;
   availableApprovalPolicies: string[];
 };

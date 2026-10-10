@@ -5,6 +5,7 @@ import {
   buildThreadStartRequest,
   checkoutPlanFor,
   defaultThreadStartState,
+  draftEffortFor,
   effortChoicesFor,
   filterThreadStartGitRefs,
   groupProviderModels,
@@ -442,3 +443,36 @@ console.log('threadStartFlow: a branchless project can start');
   assert.equal(models.find(model => model.id === 'opus')!.label, 'Opus 5.5');
   assert.equal(models.find(model => model.id === 'sonnet')!.label, 'Sonnet 5');
 }
+
+// A draft offers only the chosen model's efforts and falls back to that model's default.
+{
+  const codex = {
+    reasoningEffort: 'high',
+    availableEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+    modelEfforts: {
+      'gpt-5.5': ['low', 'medium', 'high', 'xhigh'],
+      'gpt-5.6-sol': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+      'gpt-6.1-sol': []
+    },
+    modelDefaultEfforts: { 'gpt-5.5': 'medium', 'gpt-5.6-sol': 'low' }
+  };
+  assert.deepEqual(draftEffortFor(codex, 'gpt-5.5', 'ultra'), {
+    efforts: ['low', 'medium', 'high', 'xhigh'], effort: 'medium'
+  });
+  assert.equal(draftEffortFor(codex, 'gpt-5.5', 'xhigh').effort, 'xhigh');
+  assert.equal(draftEffortFor(codex, 'gpt-5.6-sol', 'ultra').effort, 'ultra');
+  assert.deepEqual(draftEffortFor(codex, 'gpt-6.1-sol', 'ultra'), { efforts: [], effort: '' });
+  // A model the per-model lists leave out has no effort control: it offers none.
+  assert.deepEqual(draftEffortFor(codex, 'gpt-7-nova', 'xhigh'), { efforts: [], effort: '' });
+  // Without a model default, the probe's current effort, then the first offered.
+  assert.equal(draftEffortFor({ ...codex, modelDefaultEfforts: {} }, 'gpt-5.5', 'ultra').effort, 'high');
+  assert.equal(draftEffortFor({ ...codex, reasoningEffort: 'max', modelDefaultEfforts: {} }, 'gpt-5.5', 'ultra').effort, 'low');
+  // A provider with no per-model lists (Claude, or an older server) keeps the provider list.
+  const claude = { reasoningEffort: 'xhigh', availableEfforts: ['low', 'medium', 'high', 'xhigh', 'max'] };
+  assert.deepEqual(draftEffortFor(claude, 'opus', ''), {
+    efforts: ['low', 'medium', 'high', 'xhigh', 'max'], effort: 'xhigh'
+  });
+  assert.equal(draftEffortFor(claude, 'opus', 'max').effort, 'max');
+}
+
+console.log('threadStartFlow: draft efforts follow the chosen model');
