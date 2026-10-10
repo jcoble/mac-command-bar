@@ -331,18 +331,6 @@ pub(crate) struct ProjectWorktree {
     delete_eligibility: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ProjectGitRef {
-    name: String,
-    is_default: bool,
-    is_current: bool,
-    checkout_path: Option<String>,
-    last_commit_ms: Option<i64>,
-    /// The project folder is a bare repository, which has no files to work in.
-    root_is_bare: bool,
-}
-
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProjectWorktreeActionResult {
@@ -2968,75 +2956,6 @@ pub(crate) fn list_project_worktrees_sync(root: PathBuf) -> Result<Vec<ProjectWo
             })
             .collect(),
     )
-}
-
-fn classify_project_git_refs(
-    refs: Vec<(String, Option<i64>)>,
-    current: &str,
-    checkouts: &[(String, String)],
-    root_is_bare: bool,
-) -> Vec<ProjectGitRef> {
-    let has_main = refs.iter().any(|(name, _)| name == "main");
-    let default = if has_main { "main" } else { "master" };
-    refs.into_iter()
-        .take(500)
-        .map(|(name, last_commit_ms)| ProjectGitRef {
-            is_default: name == default,
-            is_current: name == current,
-            checkout_path: checkouts
-                .iter()
-                .find(|(branch, _)| branch == &name)
-                .map(|(_, path)| path.clone()),
-            name,
-            last_commit_ms,
-            root_is_bare,
-        })
-        .collect()
-}
-
-pub(crate) fn list_project_git_refs_sync(root: PathBuf) -> Result<Vec<ProjectGitRef>, String> {
-    let root_is_bare = match run_git_text(&root, &["rev-parse", "--is-bare-repository"]) {
-        Ok(text) => text.trim() == "true",
-        // A folder with no repository behind it has no branches.
-        Err(error) if error.contains("not a git repository") => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    let refs: Vec<(String, Option<i64>)> = run_git_text(
-        &root,
-        &[
-            "for-each-ref",
-            "refs/heads",
-            "--sort=-committerdate",
-            "--format=%(refname:short)%09%(committerdate:unix)",
-        ],
-    )?
-    .lines()
-    .filter_map(|line| {
-        let (name, timestamp) = line.split_once('\t').unwrap_or((line, ""));
-        let name = name.trim();
-        (!name.is_empty()).then(|| {
-            (
-                name.to_string(),
-                timestamp
-                    .trim()
-                    .parse::<i64>()
-                    .ok()
-                    .and_then(|seconds| seconds.checked_mul(1_000)),
-            )
-        })
-    })
-    .collect();
-    if root_is_bare && refs.is_empty() {
-        return Err("This project's folder is a bare repository with no branches yet.".to_string());
-    }
-    // Empty when detached, and when there is no commit yet.
-    let current = run_git_text(&root, &["symbolic-ref", "--short", "-q", "HEAD"]).unwrap_or_default();
-    // Branch and folder only: no status or log in every worktree.
-    let checkouts = parse_project_worktree_porcelain(&run_git_text(&root, &["worktree", "list", "--porcelain"])?)
-        .into_iter()
-        .map(|worktree| (worktree.branch, worktree.path))
-        .collect::<Vec<_>>();
-    Ok(classify_project_git_refs(refs, current.trim(), &checkouts, root_is_bare))
 }
 
 /// `force = false` is the everyday remove: it refuses anything that would lose work.
@@ -5697,7 +5616,6 @@ fn main() {
             git_workspace::list_open_pull_requests,
             list_project_worktrees,
             list_repository_checkouts,
-            list_project_git_refs,
             remove_project_worktree,
             archive_project_worktree,
             list_git_repository_summaries,
@@ -5784,7 +5702,7 @@ fn main() {
             agent_conversation::list_projects,
             agent_conversation::add_project,
             project_folders::list_folders,
-            project_folders::create_project_worktree,
+            project_folders::project_root_is_bare,
             agent_conversation::respond_agent_conversation_approval,
             agent_conversation::respond_agent_conversation_permission,
             agent_conversation::respond_agent_conversation_input,
@@ -5974,88 +5892,6 @@ mod tests {
         // Quit Anyway could not close the window, so nothing used the approval.
         guard.cancel();
         assert!(guard.hold());
-    }
-
-    #[test]
-    fn project_git_refs_classify_default_current_and_checkouts() {
-        let refs = vec![
-            ("feature/new-pane".to_string(), Some(3_000)),
-            ("main".to_string(), Some(2_000)),
-            ("older".to_string(), None),
-        ];
-        let checkouts = vec![
-            ("main".to_string(), "/repo".to_string()),
-            (
-                "feature/new-pane".to_string(),
-                "/worktrees/new-pane".to_string(),
-            ),
-        ];
-
-        let classified = classify_project_git_refs(refs, "main", &checkouts, false);
-
-        assert_eq!(classified.len(), 3);
-        assert_eq!(classified[0].name, "feature/new-pane");
-        assert_eq!(
-            classified[0].checkout_path.as_deref(),
-            Some("/worktrees/new-pane")
-        );
-        assert!(!classified[0].is_current);
-        assert!(!classified[0].is_default);
-        assert_eq!(classified[1].name, "main");
-        assert!(classified[1].is_current);
-        assert!(classified[1].is_default);
-        assert_eq!(classified[1].checkout_path.as_deref(), Some("/repo"));
-        assert_eq!(classified[2].checkout_path, None);
-    }
-
-    #[test]
-    fn project_git_refs_send_a_bare_root_to_its_worktrees() {
-        let root = unique_temp_root();
-        let bare = root.join("bare.git");
-        let seed = root.join("seed");
-        let worktree = root.join("main");
-        let unborn = root.join("unborn");
-        std::fs::create_dir_all(&root).unwrap();
-        run_git_for_test(&root, &["init", "--bare", "-b", "main", "bare.git"]);
-        run_git_for_test(&root, &["init", "--bare", "empty.git"]);
-        // Clones of empty bare repositories: no normal `git init` anywhere.
-        run_git_for_test(&root, &["clone", "-q", "bare.git", "seed"]);
-        run_git_for_test(&root, &["clone", "-q", "empty.git", "unborn"]);
-        run_git_for_test(&seed, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "first"]);
-        run_git_for_test(&seed, &["push", "-q", "origin", "HEAD:main"]);
-        run_git_for_test(&bare, &["branch", "idle", "main"]);
-        run_git_for_test(&bare, &["worktree", "add", worktree.to_str().unwrap(), "main"]);
-
-        let refs = list_project_git_refs_sync(bare.clone()).unwrap();
-        let main = refs.iter().find(|r| r.name == "main").unwrap();
-        assert!(main.root_is_bare && main.is_current);
-        assert_eq!(main.checkout_path.as_deref(), worktree.to_str());
-        let idle = refs.iter().find(|r| r.name == "idle").unwrap();
-        assert!(idle.root_is_bare);
-        assert_eq!(idle.checkout_path, None);
-
-        // A bare folder with no branch has no worktree to offer, so it is an error, never the folder.
-        assert!(list_project_git_refs_sync(root.join("empty.git")).is_err());
-        // A repository with no commit yet simply has no branches.
-        assert_eq!(list_project_git_refs_sync(unborn).unwrap(), Vec::new());
-        // Nor does a folder with no repository behind it.
-        assert_eq!(list_project_git_refs_sync(root.clone()).unwrap(), Vec::new());
-        let seed_refs = list_project_git_refs_sync(seed.clone()).unwrap();
-        assert!(!seed_refs[0].root_is_bare && seed_refs[0].is_current);
-        assert_eq!(seed_refs[0].checkout_path.as_deref(), seed.to_str());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn project_git_refs_use_master_only_when_main_is_absent_and_cap_results() {
-        let mut refs = vec![("master".to_string(), Some(1_000))];
-        refs.extend((0..505).map(|index| (format!("branch-{index}"), None)));
-
-        let classified = classify_project_git_refs(refs, "master", &[], false);
-
-        assert_eq!(classified.len(), 500);
-        assert!(classified[0].is_default);
-        assert!(classified[0].is_current);
     }
 
     #[test]

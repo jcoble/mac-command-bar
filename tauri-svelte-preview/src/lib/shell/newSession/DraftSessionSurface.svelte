@@ -4,15 +4,14 @@
   Not a form and not a dialog: an empty session, in the Session tab, with the
   ordinary composer and the caret already in it. The heading names the project
   ("What should we build in …?") and is the project menu; the agent picker sits
-  in the composer footer beside model, effort and approval; the machine and
-  branch sit in the row under the composer.
+  in the composer footer beside model, effort and approval; the machine sits in
+  the row under the composer.
 
-  No Assembly conversation is created here, and opening, switching or closing a
-  draft only reads: the project list, folder listings and branch lists. Picking
-  a branch only changes the draft; a branch with no checkout is switched to in
-  the project root at the first send, before the session is created. In New
-  worktree mode the branch is the base, and the worktree is added at the first
-  send too; a discarded draft adds nothing. A
+  A project's session runs in the project's root folder; there is no branch or
+  worktree to pick. A root that is a bare repository has no files to work on,
+  so the draft says so and will not send. No Assembly conversation is created
+  here, and opening, switching or closing a draft only reads: the project list,
+  folder listings and that one folder check. A
   temporary ACP session reads the selected provider's controls; its process
   stops after the read. The surface hands one `ThreadStartPickerState` to
   `onSend` on the first message.
@@ -23,8 +22,6 @@
   import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import Cloud from '@lucide/svelte/icons/cloud';
-  import Folder from '@lucide/svelte/icons/folder';
-  import FolderGit2 from '@lucide/svelte/icons/folder-git-2';
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
   import MessageCircle from '@lucide/svelte/icons/message-circle';
   import Monitor from '@lucide/svelte/icons/monitor';
@@ -36,7 +33,6 @@
   import PendingFirstMessage from '$lib/shell/components/conversation/PendingFirstMessage.svelte';
   import RemoteConnections from '$lib/shell/components/RemoteConnections.svelte';
   import AddProjectDialog from '$lib/shell/projects/AddProjectDialog.svelte';
-  import BranchPicker from '$lib/shell/newSession/BranchPicker.svelte';
   import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { defaultDraftProjectId, projectBadge, projectMachineLabel, visibleProjects } from '$lib/shell/projects/projects.ts';
@@ -50,23 +46,17 @@
     AgentConversationConfigState
   } from '$lib/shell/conversation/conversationConfig.ts';
   import {
+    BARE_ROOT_MESSAGE,
     buildThreadStartRequest,
-    checkoutPlanFor,
     defaultThreadStartState,
     displayProvider,
-    startingCwd,
+    projectCwd,
     validateThreadStart,
     type ThreadStartPickerState,
     type ThreadStartProvider,
     type ThreadStartRequest
   } from '$lib/shell/newSession/threadStartFlow.ts';
-  import {
-    createWorktree,
-    listGitRefs,
-    switchBranch,
-    type BackendAnswer,
-    type ProjectGitRef
-  } from '$lib/shell/newSession/newSessionBackend.ts';
+  import { projectRootIsBare } from '$lib/shell/newSession/newSessionBackend.ts';
   import { rememberAgentConfigChoice, rememberedAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
   import {
     listFoldersFromTauri,
@@ -99,8 +89,7 @@
     { ...defaultThreadStartState({ projectPath: '' }), model: '', effort: '', access: '' }
   );
   let composer = $state<{ focus(): void } | null>(null);
-  let gitRefs = $state<ProjectGitRef[]>([]);
-  let refsMessage = $state<string | null>(null);
+  let folderMessage = $state<string | null>(null);
   let submitting = $state(false);
   let stagedImages = $state<Array<{ file: File; attachment: ConversationAttachment }>>([]);
   let attachmentError = $state('');
@@ -139,7 +128,6 @@
   ].join('\u0000'));
   const currentCatalog = $derived(catalogKey === selectedCatalogKey ? catalogConfig : null);
   const problems = $derived(validateThreadStart(draft, stagedImages.length > 0));
-  const selectedRef = $derived(gitRefs.find((ref) => ref.name === draft.branch) ?? null);
   const selectedRemoteProfile = $derived(
     remoteAssembly.profiles.find((profile) => profile.id === draft.remoteProfileId) ?? null
   );
@@ -237,60 +225,43 @@
     untrack(() => void send());
   });
 
-  /** Reads the branches of a project on its own machine. Only reads: a folder
-   * with no repository simply has no branches. */
-  async function loadRefs(machine: string, projectPath: string): Promise<void> {
+  /** Asks the project's own machine whether its folder is a bare repository.
+   * Only reads. The draft has no folder until the answer is in. */
+  async function checkRoot(machine: string, projectPath: string): Promise<void> {
     const sequence = ++loadSequence;
     if (stopSignal.aborted) return;
-    refsMessage = null;
-    let answer: BackendAnswer<ProjectGitRef[]>;
-    try {
-      answer = await listGitRefs(machine, projectPath);
-      if (stopSignal.aborted) return;
-    } catch (error) {
-      if (!stopSignal.aborted && sequence === loadSequence) {
-        gitRefs = [];
-        refsMessage = describeError(error);
-      }
+    folderMessage = null;
+    const answer = await projectRootIsBare(machine, projectPath);
+    if (stopSignal.aborted || sequence !== loadSequence) return;
+    if (answer.status !== 'ok') {
+      folderMessage = answer.message;
       return;
     }
-    if (sequence !== loadSequence) return;
-    gitRefs = answer.status === 'ok' ? answer.value : [];
-    if (answer.status !== 'ok') refsMessage = answer.message;
-    // Only the root's own branch: a detached root keeps the root, never some
-    // other worktree's checkout. A failed listing leaves no folder: the root
-    // may be a bare repository, which has no files to work in.
-    updateDraft({
-      cwd: answer.status === 'failed' ? '' : startingCwd(projectPath, gitRefs),
-      branch: gitRefs.find((ref) => ref.isCurrent)?.name ?? '',
-      branchesAvailable: gitRefs.length > 0
-    });
+    if (answer.value) folderMessage = BARE_ROOT_MESSAGE;
+    updateDraft({ rootIsBare: answer.value, cwd: projectCwd(projectPath, answer.value) });
   }
 
-  function clearRefs(): void {
+  function clearFolderCheck(): void {
     loadSequence += 1;
-    gitRefs = [];
-    refsMessage = null;
+    folderMessage = null;
   }
 
   /** The machine comes from the project. */
   function selectProject(project: ProjectRecord): void {
     const remote = project.machine !== 'local';
     const machineChanged = project.machine !== draftMachine;
-    clearRefs();
+    clearFolderCheck();
     updateDraft({
       projectId: project.id,
       executionEnvironment: remote ? 'remote' : 'local',
       remoteProfileId: remote ? project.machine : null,
       projectPath: project.rootPath,
-      // Set once the branches are in, so nothing runs in a bare root meanwhile.
+      // Set once the folder check answers, so nothing runs in a bare root meanwhile.
       cwd: '',
-      branch: '',
-      branchesAvailable: false,
-      createNewWorktree: false
+      rootIsBare: false
     });
     if (machineChanged) checkSelectedMachine();
-    void loadRefs(project.machine, project.rootPath);
+    void checkRoot(project.machine, project.rootPath);
   }
 
   /** A plain conversation on `machine`, started in that machine's home folder. */
@@ -301,16 +272,14 @@
       const cwd = remote ? (await listFoldersFromTauri(machine, '~')).path : await homeDir();
       if (stopSignal.aborted || sequence !== loadSequence) return;
       const machineChanged = machine !== draftMachine;
-      clearRefs();
+      clearFolderCheck();
       updateDraft({
         projectId: null,
         executionEnvironment: remote ? 'remote' : 'local',
         remoteProfileId: remote ? machine : null,
         projectPath: '',
         cwd,
-        branch: '',
-        branchesAvailable: false,
-        createNewWorktree: false
+        rootIsBare: false
       });
       if (machineChanged) checkSelectedMachine();
     } catch (error) {
@@ -380,11 +349,6 @@
     if (!pickerUpdates.status && pickerUpdates.phase !== 'checking') checkSelectedMachine();
   }
 
-  /** Only the draft changes; a switch, if one is needed, waits for the first send. */
-  function chooseRef(ref: ProjectGitRef): void {
-    updateDraft({ cwd: checkoutPlanFor(draft.projectPath, ref).cwd, branch: ref.name });
-  }
-
   function changeConfig(field: AgentConversationConfigField, value: string): void {
     if (field === 'model') updateDraft({ model: value });
     else if (field === 'reasoningEffort') updateDraft({ effort: value });
@@ -415,27 +379,6 @@
     submitting = true;
     submitError = '';
     try {
-      // A new worktree, or a switch for a branch with no checkout, happens now,
-      // at the first send. If git refuses, its message stays on the draft and
-      // nothing starts.
-      const plan = selectedRef ? checkoutPlanFor(draft.projectPath, selectedRef) : null;
-      if (draft.createNewWorktree) {
-        const created = await createWorktree(draftMachine, draft.projectPath, draft.branch);
-        if (stopSignal.aborted) return;
-        if (created.status !== 'ok') {
-          submitError = created.message;
-          return;
-        }
-        request.cwd = created.value.path;
-        request.branch = created.value.branch;
-      } else if (plan?.kind === 'switch') {
-        const switched = await switchBranch(draftMachine, plan.root, plan.branch);
-        if (stopSignal.aborted) return;
-        if (switched.status !== 'ok') {
-          submitError = switched.message;
-          return;
-        }
-      }
       await onSend(request, stagedImages.map((item) => item.file));
     } catch (error) {
       if (!stopSignal.aborted) submitError = describeError(error);
@@ -584,34 +527,6 @@
       </DropdownMenu.Content>
     </DropdownMenu.Root>
   {/if}
-
-  {#if selectedProject && gitRefs.length > 0}
-    <DropdownMenu.Root>
-      <DropdownMenu.Trigger>
-        {#snippet child({ props })}
-          <Button {...props} data-testid="draft-session-workspace" variant="ghost" size="xs" class="draft-control">
-            {#if draft.createNewWorktree}<FolderGit2 aria-hidden="true" class="size-3.5" />{:else}<Folder aria-hidden="true" class="size-3.5" />{/if}
-            {draft.createNewWorktree ? 'New worktree' : 'Current checkout'}
-            <ChevronDown aria-hidden="true" class="size-3 opacity-70" />
-          </Button>
-        {/snippet}
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Content class="draft-machine-menu" side="bottom" align="start" sideOffset={8} avoidCollisions collisionPadding={12}>
-        <DropdownMenu.Label>Workspace</DropdownMenu.Label>
-        <DropdownMenu.Item data-testid="draft-session-current-checkout" onSelect={() => updateDraft({ createNewWorktree: false })}>
-          <Folder aria-hidden="true" class="size-4" />
-          <span class="draft-machine-name">Current checkout</span>
-          {#if !draft.createNewWorktree}<Check aria-hidden="true" class="draft-machine-selected size-4" />{/if}
-        </DropdownMenu.Item>
-        <DropdownMenu.Item data-testid="draft-session-new-worktree" onSelect={() => updateDraft({ createNewWorktree: true })}>
-          <FolderGit2 aria-hidden="true" class="size-4" />
-          <span class="draft-machine-name">New worktree</span>
-          {#if draft.createNewWorktree}<Check aria-hidden="true" class="draft-machine-selected size-4" />{/if}
-        </DropdownMenu.Item>
-      </DropdownMenu.Content>
-    </DropdownMenu.Root>
-    <BranchPicker refs={gitRefs} rootPath={draft.projectPath} branch={draft.branch} onPick={chooseRef} focusAfterPick={() => composer?.focus()} />
-  {/if}
 {/snippet}
 
 <section class="draft-surface" class:centred={!submitting && !remoteSetupOpen} data-testid="draft-session-surface" aria-label="New session">
@@ -640,16 +555,16 @@
         {#if selectedProject}What should we build in {@render projectMenu()}?{:else}What should we build? {@render projectMenu()}{/if}
       </h2>
     {/if}
-    {#if refsMessage}
-      <p class="draft-warning" data-testid="draft-session-refs-note">
+    {#if folderMessage}
+      <p class="draft-warning" data-testid="draft-session-folder-note">
         <span>
-          {refsMessage}
+          {folderMessage}
         </span>
         <button
           class="draft-warning-dismiss"
           type="button"
           aria-label="Dismiss"
-          onclick={() => (refsMessage = null)}
+          onclick={() => (folderMessage = null)}
         >
           <X aria-hidden="true" class="size-3" />
         </button>
@@ -878,7 +793,6 @@
   }
 
   :global(.draft-control:hover) { color: var(--color-text); }
-  :global(.draft-branch) { max-width: 220px; min-width: 0; margin-left: auto; }
 
   :global(.draft-machine-menu) {
     width: 280px;

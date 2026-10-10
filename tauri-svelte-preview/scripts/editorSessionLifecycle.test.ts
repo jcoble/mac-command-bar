@@ -55,7 +55,7 @@ assert.match(panel, /await warmSourceLspForRootFromTauri\(projectRoot\);\s*if \(
 // hydrate() into a Promise.all, and made onSend the last await of its try (the catch checks the signal).
 // The guard before a call may now be any earlier abort check with no await in between.
 for (const call of [
-  'listGitRefs(machine, projectPath)',
+  'projectRootIsBare(machine, projectPath)',
   'onSend(request, stagedImages.map((item) => item.file))',
   'Promise.all([hydrateProjects(), hydrateRemoteAssembly(owner)])',
   'readRemoteAssemblyEnvironmentFromTauri()'
