@@ -58,7 +58,7 @@ function shape(groups: MyWorkGroup[]): unknown[] {
 }
 
 // Recent activity uses the transcript stamp first, then lifecycle stamps, and
-// keeps incoming order when no reliable clock exists. Name sorting is case-insensitive.
+// breaks ties by session id when no reliable clock exists. Name sorting is case-insensitive.
 {
   const rows = [
     session('missing-a', { title: 'Zulu' }),
@@ -74,6 +74,18 @@ function shape(groups: MyWorkGroup[]): unknown[] {
     prepareMyWorkSessions(rows, { sortBy: 'name' }).map((row) => row.ownedId),
     ['newer', 'older', 'missing-b', 'missing-a']
   );
+}
+
+// TSK-1360: two remote sessions that tie on activity keep their rail order
+// across a restart, although the list arrives in a different order after it.
+{
+  const first = session('b-remote', { executionEnvironment: 'remote', title: 'Same' });
+  const second = session('a-remote', { executionEnvironment: 'remote', title: 'Same' });
+  for (const options of [DEFAULT_MY_WORK_VIEW_OPTIONS, { sortBy: 'name' as const }, { sortBy: 'manual' as const }]) {
+    const beforeRestart = prepareMyWorkSessions([first, second], options).map((row) => row.ownedId);
+    const afterRestart = prepareMyWorkSessions([second, first], options).map((row) => row.ownedId);
+    assert.deepEqual(afterRestart, beforeRestart, `${options.sortBy} order survives a restart`);
+  }
 }
 
 // Project sections are keyed by the group key, so two same-named projects stay

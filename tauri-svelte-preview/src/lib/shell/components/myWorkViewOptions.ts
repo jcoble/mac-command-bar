@@ -136,33 +136,32 @@ export function prepareMyWorkSessions(
   options: Pick<MyWorkViewOptions, 'sortBy'> & Partial<Pick<MyWorkViewOptions, 'sortDirection'>>,
   manualOrder: readonly string[] = []
 ): OwnedSession[] {
-  const indexed = sessions.map((session, index) => ({ session, index }));
   const direction = options.sortDirection ?? NATURAL_SORT_DIRECTION[options.sortBy];
   const flip = direction === 'asc' ? 1 : -1;
+  // Equal rows fall back to the session id, which a restart does not change;
+  // the order the list arrives in does.
+  const byId = (left: OwnedSession, right: OwnedSession) =>
+    left.ownedId < right.ownedId ? -1 : left.ownedId > right.ownedId ? 1 : 0;
 
   if (options.sortBy === 'manual') {
     // A session with no saved place yet (-1) sits on top, newest first.
     const place = new Map(manualOrder.map((ownedId, index) => [ownedId, index]));
     const rank = (session: OwnedSession) => place.get(session.ownedId) ?? -1;
-    indexed.sort((left, right) =>
-      rank(left.session) - rank(right.session)
-      || activityRank(right.session) - activityRank(left.session)
-      || left.index - right.index);
-    return indexed.map(({ session }) => session);
+    return [...sessions].sort((left, right) =>
+      rank(left) - rank(right)
+      || activityRank(right) - activityRank(left)
+      || byId(left, right));
   }
 
-  indexed.sort((left, right) => {
+  return [...sessions].sort((left, right) => {
     // Compared one way round and turned over afterwards, so both directions
-    // order equal rows the same: by where they already were.
+    // order equal rows the same.
     const ascending =
       options.sortBy === 'name'
-        ? left.session.title.localeCompare(right.session.title, undefined, {
-            sensitivity: 'base'
-          })
-        : activityRank(left.session) - activityRank(right.session);
-    return ascending * flip || left.index - right.index;
+        ? left.title.localeCompare(right.title, undefined, { sensitivity: 'base' })
+        : activityRank(left) - activityRank(right);
+    return ascending * flip || byId(left, right);
   });
-  return indexed.map(({ session }) => session);
 }
 
 function groupSessions(sessions: OwnedSession[], by: 'status' | 'project'): MyWorkGroup[] {
