@@ -173,6 +173,15 @@
     const footer = Math.max(composerHeight, 120) + 60;
     const paddingEnd = anchoredSendItemId ? Math.max(viewportHeight, footer) : footer;
     untrack(() => {
+      const keys = new Set(currentRows.map((row) => row.key));
+      // An older page can rename the row at the top (a turn's heading takes its
+      // id from the first item loaded), and the virtualizer then drops its own
+      // place-keeping. Pin the first visible row that survives the insert.
+      const top = $virtualizer.scrollOffset ?? 0;
+      const kept = pageRequest?.older && $virtualizer.options.count
+        && currentRows[0]?.key !== $virtualizer.options.getItemKey(0)
+        ? $virtualizer.getVirtualItems().find((row) => row.end > top && keys.has(String(row.key)))
+        : undefined;
       $virtualizer.setOptions({
         count: currentRows.length, getScrollElement: () => element,
         getItemKey: (index) => currentRows[index].key,
@@ -181,7 +190,7 @@
         followOnAppend: following ? 'smooth' : false,
         scrollEndThreshold: following ? 80 : -1
       });
-      const keys = new Set(currentRows.map((row) => row.key));
+      if (kept) positionRow(String(kept.key), kept.start - top);
       for (const key of $virtualizer.itemSizeCache.keys()) {
         if (!keys.has(String(key))) $virtualizer.itemSizeCache.delete(key);
       }
