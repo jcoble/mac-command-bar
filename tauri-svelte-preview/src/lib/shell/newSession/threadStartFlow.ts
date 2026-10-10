@@ -388,7 +388,7 @@ export function validateThreadStart(state: ThreadStartPickerState, hasAttachment
     problems.push({ field: 'project', message: 'Choose a project workspace first.' });
   }
   if (!tidy(state.cwd).startsWith('/')) {
-    const message = tidy(state.projectPath) ? 'Choose a branch that has a worktree first.' : 'Choose an existing checkout first.';
+    const message = tidy(state.projectPath) ? 'Wait for the branches to load, or choose a branch that has a worktree.' : 'Choose an existing checkout first.';
     problems.push({ field: 'branch', message });
   }
   if (state.executionEnvironment === 'remote' && !tidy(state.remoteProfileId)) {

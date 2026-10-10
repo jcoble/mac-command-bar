@@ -123,7 +123,7 @@ import { sessionTitleFromPrompt } from '../src/lib/shell/sessionStrip.ts';
   );
   const state = { ...defaultThreadStartState({ projectId: 'p', projectPath: bare }), prompt: 'hi', cwd: '' };
   assert.deepEqual(validateThreadStart(state), [
-    { field: 'branch', message: 'Choose a branch that has a worktree first.' }
+    { field: 'branch', message: 'Wait for the branches to load, or choose a branch that has a worktree.' }
   ]);
   assert.equal(buildThreadStartRequest(state), null, 'the draft refuses to send without a folder');
 
