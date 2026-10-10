@@ -294,7 +294,7 @@ export class SessionSelectionController {
 			if (!this.isCurrent(owner)) return true;
 
 			this.expansionOwnedId = null;
-			await this.editorSessions.resetForCheckoutChange(owner.signal);
+			await this.editorSessions.resetForCheckoutChange(owner.signal, root);
 			if (!this.isCurrent(owner)) return true;
 			this.expandedPathsByRoot = {};
 			this.sessionSelectionLayers.clearTreeView();

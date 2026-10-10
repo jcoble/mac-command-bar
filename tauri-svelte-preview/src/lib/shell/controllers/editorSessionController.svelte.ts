@@ -9,6 +9,7 @@ import {
 } from '../editor/editorStore.svelte';
 import {
 	captureWorkspace,
+	draftsForCheckout,
 	planWorkspaceRestore,
 	type SessionWorkspaceSnapshot,
 } from '../sessionWorkspaces';
@@ -147,13 +148,13 @@ export class EditorSessionController {
 		if (stopSignal.aborted) return;
 	}
 
-	/** Persist an empty editor for this session before another selection can restore it. */
-	async clearActiveEditors(): Promise<boolean> {
+	/** Persist an empty editor (or only `keptFiles`) for this session before another selection can restore it. */
+	async clearActiveEditors(keptFiles: Parameters<typeof captureWorkspace>[0]['openFiles'] = []): Promise<boolean> {
 		const ownedId = this.activeOwnedId;
 		if (!ownedId) return false;
 		const previous = this.activeSnapshot ?? await readAgentConversationWorkspaceFromTauri(ownedId);
 		const fallback = captureWorkspace({
-			openFiles: [],
+			openFiles: keptFiles,
 			activePath: null,
 			selectedPath: previous?.selectedPath ?? null,
 			scrollTop: previous?.scrollTop ?? 0,
@@ -161,10 +162,11 @@ export class EditorSessionController {
 		});
 		const next: SessionWorkspaceSnapshot = {
 			...(previous ?? fallback),
-			openPaths: [],
+			openPaths: fallback.openPaths,
 			activePath: null,
 		};
-		delete next.fileStates;
+		if (fallback.fileStates) next.fileStates = fallback.fileStates;
+		else delete next.fileStates;
 		await writeAgentConversationWorkspaceFromTauri(ownedId, next);
 		if (this.activeOwnedId === ownedId) this.activeSnapshot = next;
 		return true;
@@ -177,10 +179,13 @@ export class EditorSessionController {
 		this.activeSnapshot = null;
 	}
 
-	/** Drops file-backed editor state after the session moves to another checkout. */
-	async resetForCheckoutChange(stopSignal: AbortSignal): Promise<void> {
+	/** Drops file-backed editor state after the session moves to another checkout,
+	 *  except unsaved drafts, which move to the same files in the new checkout. */
+	async resetForCheckoutChange(stopSignal: AbortSignal, checkoutRoot: string): Promise<void> {
 		if (stopSignal.aborted) return;
-		await this.clearActiveEditors();
+		await this.clearActiveEditors(
+			draftsForCheckout(editorState.openFiles, editorState.projectRoot, checkoutRoot)
+		);
 		if (stopSignal.aborted) return;
 		this.releaseActiveEditorResources();
 		this.activeOwnedId = null;

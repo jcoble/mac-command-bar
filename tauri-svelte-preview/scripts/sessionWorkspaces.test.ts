@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   captureWorkspace,
   diffPathFor,
+  draftsForCheckout,
   normalizeWorkspaceSnapshot,
   OPEN_PATHS_CAP,
   planWorkspaceRestore
@@ -480,4 +481,21 @@ test('conversation_reading_location_retains_only_small_view_fields', () => {
     parent: view, child: { followLatest: true, expandedTurns: {} }
   });
   assert.doesNotMatch(JSON.stringify(restored?.conversation?.viewByHistoryId), /must not be retained/);
+});
+
+test('a checkout change carries unsaved drafts to the same file in the new checkout', () => {
+  const kept = draftsForCheckout([
+    { path: '/repo/src/a.ts', dirty: true, draftContent: 'edited', baseRevision: 'rev-a' },
+    { path: '/repo/src/clean.ts', dirty: false, draftContent: 'saved', baseRevision: 'rev-c' },
+    { path: '/elsewhere/notes.md', dirty: true, draftContent: 'note', baseRevision: 'rev-n' }
+  ], '/repo', '/worktrees/feature');
+  const snapshot = captureWorkspace({
+    openFiles: kept, activePath: null, selectedPath: null, scrollTop: 0, rightTab: 'files'
+  });
+  const plan = planWorkspaceRestore(normalizeWorkspaceSnapshot(JSON.parse(JSON.stringify(snapshot))));
+
+  assert.deepEqual(plan.openFiles, [
+    { path: '/worktrees/feature/src/a.ts', draftContent: 'edited', baseRevision: 'rev-a' },
+    { path: '/elsewhere/notes.md', draftContent: 'note', baseRevision: 'rev-n' }
+  ]);
 });

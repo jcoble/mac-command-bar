@@ -86,7 +86,7 @@ assert.match(
   /async useSessionCheckout\(requestedRoot: string\): Promise<boolean>[\s\S]*?validateProjectRootFromTauri\(root, owner\.signal\)[\s\S]*?changeStructuredConversationCheckout\(ownedId, root\)/,
   'checkout promotion is owned by the cancellable session-selection controller'
 );
-assert.match(editorSessions, /async resetForCheckoutChange\(stopSignal: AbortSignal\)/);
+assert.match(editorSessions, /async resetForCheckoutChange\(stopSignal: AbortSignal, checkoutRoot: string\)/);
 assert.match(fileTreeWatch, /signal\.addEventListener\("abort", stop, \{ once: true \}\)/);
 assert.match(fileTreeWatch, /unwatch\?\.\(\)/);
 assert.match(fileTreeWatch, /\{ recursive: false, delayMs: 350 \}/);
