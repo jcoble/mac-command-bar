@@ -53,6 +53,31 @@ Remote scenarios run on the test machine "Workbox Test" (SSH alias `workbox-test
   DESIGN.md (`tauri-svelte-preview/src/lib/components/ui/DESIGN.md`) is
   binding for /next UI.
 
+## ⛔ Async lifecycle: every timer and async call has an owner that stops it (2026-10-10, owner)
+
+`pnpm --dir tauri-svelte-preview test:async-lifecycle` (`tauri-svelte-preview/scripts/scanSchedulers.ts`)
+enforces this. It fails on any of these in `tauri-svelte-preview/src` unless the exact line is on its
+allow-list: `setTimeout`, `setInterval`, `requestAnimationFrame`, `requestIdleCallback`,
+`queueMicrotask`, Svelte `tick`, `.then`/`.catch`/`.finally`, `new Promise`, `Promise.race`,
+`Promise.withResolvers`, an anonymous `async () =>` run on the spot, and a function that returns a
+`Promise` without being `async`. Never add a hit; TSK-1424 is rewriting the ones on main.
+
+- **Promise chains become `async`/`await` with an `AbortSignal`.** Write a named `async` function that
+  takes `signal: AbortSignal` from its owner, `await`s each step, and checks `signal.aborted` after
+  every `await` before touching state. Errors go in `try`/`catch`, not `.catch`. Fire-and-forget is
+  `void doThing(signal)`, where `doThing` catches its own errors.
+- **Timers stop when they should, and on destroy.** The owner clears every timer in its teardown (the
+  `$effect` cleanup, `onDestroy`, or the controller's `dispose()`) and as soon as the thing it waits
+  for has happened. A stopped owner leaves no timer, listener, or closure holding its memory. Prefer
+  events to polling.
+- **The backend can abort too.** A Tauri command that does real work (git, files, SSH, network, a
+  long stream) takes a request id, and its frontend wrapper takes the signal and sends the cancel
+  command when it aborts. Follow `listRemoteAgentConversationSessionsFromTauri` in `tauriSource.ts`
+  with `cancel_agent_conversation_request`. A cheap settings or SQLite call may just drop its result.
+- **Exceptions need a really good reason and proof.** Rewrite first. If a hit must stay, add its exact
+  line to `allowedHits` in `scanSchedulers.ts` with a comment naming who stops it and when, and show
+  in the PR that it stops on destroy.
+
 ## Mechanics
 
 - Frontend gates: `npx tsc --noEmit` + `pnpm run check:svelte` must end
