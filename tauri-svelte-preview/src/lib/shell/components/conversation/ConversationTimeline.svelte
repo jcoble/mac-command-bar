@@ -495,6 +495,9 @@
     userDirection = null;
     saveView();
     if (direction) requestPage(direction === 'older');
+    // Wheel events fire before the scroll they cause, so a gesture that coasts
+    // onto the end of the loaded rows asks for nothing; ask once it lands there.
+    else requestPage(false);
   }
   function handleWheel(event: WheelEvent): void {
     if (event.target instanceof Element && event.target.closest('[data-tool-scroll]')) return;
