@@ -289,6 +289,23 @@ export function captureWorkspace(input: {
   return snapshot;
 }
 
+/** The unsaved drafts a session keeps when it moves to another checkout. Each
+ * draft inside the old checkout moves to the same file in the new one; its base
+ * revision comes along, so a file that differs there opens flagged as changed. */
+export function draftsForCheckout<T extends { path: string; dirty?: boolean; draftContent?: string | null }>(
+  files: readonly T[],
+  fromRoot: string | null,
+  toRoot: string
+): T[] {
+  const from = fromRoot?.replace(/\/+$/, '');
+  const to = toRoot.replace(/\/+$/, '');
+  return files
+    .filter((file) => file.dirty === true && typeof file.draftContent === 'string')
+    .map((file) => from && file.path.startsWith(`${from}/`)
+      ? { ...file, path: `${to}${file.path.slice(from.length)}` }
+      : file);
+}
+
 function stringsOf(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
