@@ -53,7 +53,11 @@ const allowedHits = new Set([
   // TSK-1424 G: refresh after the panel renders visible; flushSync throws inside an effect. The effect's
   // controller aborts on hide or unmount and the refresh checks it after the tick.
   'src/lib/shell/panels/files/FilesPanel.svelte:tick:import { onDestroy, tick, untrack } from "svelte";',
-  'src/lib/shell/panels/files/FilesPanel.svelte:tick:await tick();'
+  'src/lib/shell/panels/files/FilesPanel.svelte:tick:await tick();',
+  // TSK-1424 G: these return the shared cached promise so the preview's {#await} keeps one identity and an
+  // image or formula never blinks back to pending; the reads behind them are named async functions.
+  'src/lib/SourceMarkdownPreview.svelte:loadKatex:function loadKatex(): Promise<KatexComponent> {',
+  'src/lib/SourceMarkdownPreview.svelte:localImageUrl:function localImageUrl(file: string): Promise<string> {'
 ]);
 
 interface Hit {

@@ -49,9 +49,10 @@
   /** Math is rare, so KaTeX and its stylesheet load the first time a file has some. */
   type KatexComponent = Component<{ text: string; displayMode?: boolean }>;
   let katexRenderer: Promise<KatexComponent> | null = null;
-  async function loadKatex(): Promise<KatexComponent> {
+  /** Not async: `{#await}` gets the one cached promise, so a re-render never shows it pending again. */
+  function loadKatex(): Promise<KatexComponent> {
     katexRenderer ??= importKatex();
-    return await katexRenderer;
+    return katexRenderer;
   }
 
   async function importKatex(): Promise<KatexComponent> {
@@ -114,13 +115,14 @@
 
   /** Local images, read once per path while this view is open. */
   const localImages = new Map<string, Promise<string>>();
-  async function localImageUrl(file: string): Promise<string> {
+  /** Not async: `{#await}` gets the one cached promise, so a re-render never shows it pending again. */
+  function localImageUrl(file: string): Promise<string> {
     let url = localImages.get(file);
     if (!url) {
       url = readLocalImage(file);
       localImages.set(file, url);
     }
-    return await url;
+    return url;
   }
 
   async function readLocalImage(file: string): Promise<string> {
