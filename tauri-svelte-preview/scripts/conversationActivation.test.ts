@@ -82,10 +82,6 @@ const selectionLayers = readFileSync(
   new URL('../src/lib/shell/sessionSelectionLayers.svelte.ts', import.meta.url),
   'utf8'
 );
-const shellFrame = readFileSync(
-  new URL('../src/lib/shell/components/ShellFrame.svelte', import.meta.url),
-  'utf8'
-);
 const tauriSource = readFileSync(new URL('../src/lib/tauriSource.ts', import.meta.url), 'utf8');
 const remoteConversation = readFileSync(
   new URL('../src-tauri/src/agent_conversation/remote.rs', import.meta.url),
@@ -121,11 +117,18 @@ assert.doesNotMatch(
   /conversation-surface-shell[\s\S]{0,180}opacity:\s*0/,
   'inactive conversation surfaces do not add an opacity compositor layer'
 );
-for (const id of ['session', 'editor', 'diff', 'git-history']) {
+// 48c353ae6 replaced the center Dockview with one tab pane: the diff mounts
+// only while it is in front, and History and Pull requests only while their tab exists.
+assert.match(
+  page,
+  /\{#if topTabs\.activeKind === "diff"\}[\s\S]*?<GitDiffView[\s\S]*?\{\/if\}/,
+  'the diff surface only mounts while its tab is in front'
+);
+for (const [kind, component] of [['git-history', 'GitHistoryView'], ['pull-requests', 'PullRequestWorkspace']]) {
   assert.match(
-    shellFrame,
-    new RegExp(`id: '${id}'[\\s\\S]*?renderer: 'onlyWhenVisible'`),
-    `${id} center panel only keeps a renderer while it is visible`
+    page,
+    new RegExp(`\\{#if topTabs\\.row\\.includes\\("${kind}"\\)\\}[\\s\\S]*?<${component}[\\s\\S]*?\\{/if\\}`),
+    `${kind} only mounts while its tab exists`
   );
 }
 assert.match(
@@ -158,19 +161,21 @@ assert.doesNotMatch(
   /setActiveOwned\(ownedId\);[\s\S]{0,160}clearChatHistory\(\);[\s\S]{0,160}const session = rail\.owned\.find/,
   'rail selection does not clear the rendered chat before the candidate load settles'
 );
+// dda06a519 replaced the load/cancel/release helpers with the selected chat
+// client (select, ready, dispose) and store eviction of inactive sessions.
 assert.match(
   selectionLayers,
-  /await loadConversationForRead\(session\.ownedId, true, owner\.signal\);\s*if \(!this\.isCurrent\(owner\)\) \{\s*if \(this\.requestedChatOwnedId !== session\.ownedId\) releaseConversationForRead\(session\.ownedId\);\s*return;/,
+  /await selectedConversationChatReady\(session\.ownedId\);\s*if \(!this\.isCurrent\(owner\)\) \{\s*if \(this\.requestedChatOwnedId !== session\.ownedId\) disposeSelectedConversationChat\(session\.ownedId\);\s*return;/,
   'a stale candidate load releases only the stale candidate'
 );
 assert.match(
   selectionLayers,
-  /if \(departingOwnedId && departingOwnedId !== session\.ownedId\) \{[\s\S]*?cancelConversationReadWork\(departingOwnedId\);[\s\S]*?await loadConversationForRead\(session\.ownedId, true, owner\.signal\);/,
+  /if \(departingOwnedId && departingOwnedId !== session\.ownedId\) \{\s*disposeSelectedConversationChat\(departingOwnedId\);\s*\}[\s\S]*?await selectedConversationChatReady\(session\.ownedId\);/,
   'departing async work is cancelled before the next conversation snapshot is awaited'
 );
 assert.match(
   selectionLayers,
-  /this\.chatOwnedId = session\.ownedId;[\s\S]*?releaseConversationForRead\(departingOwnedId\);/,
+  /this\.chatOwnedId = session\.ownedId;[\s\S]*?evictInactiveConversationSessions\(session\.ownedId\);/,
   'departing data is evicted only after the hidden surface has swapped to the new conversation'
 );
 assert.doesNotMatch(page, /Open conversation|Conversation paused/, 'conversation activation has no manual workaround gate');

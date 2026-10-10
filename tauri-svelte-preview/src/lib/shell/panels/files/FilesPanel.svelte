@@ -325,7 +325,10 @@
 			}
 			if (shouldActivate && !controller.signal.aborted) {
 				activateExplorer(nextRoot, false, controller.signal);
-			} else if (rootChanged || !nextRoot) {
+			} else if (rootChanged) {
+				// Only a real change clears the tree. Showing or hiding the panel must
+				// not wipe the "checkout deleted" state the shell sets for a session
+				// whose folder is gone, which left it saying "No session selected".
 				activateExplorer(null);
 			}
 			if (visible && discoveryRoots.length > 0) {

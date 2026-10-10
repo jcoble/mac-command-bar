@@ -50,7 +50,7 @@
       role="menuitem"
       disabled={!item.enabled}
       class:destructive={item.destructive}
-      title={item.enabled ? item.label : item.disabledReason ?? item.label}
+      title={item.enabled ? item.hint ?? item.label : item.disabledReason ?? item.label}
       onclick={() => { if (item.enabled) onSelect(item.id); }}
     >{item.label}</button>
   {/each}

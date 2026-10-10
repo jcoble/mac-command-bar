@@ -24,6 +24,7 @@
 	import SessionRowContextMenu from "./SessionRowContextMenu.svelte";
 	import { sessionRowJump, type SessionRowSurface } from "./sessionRowJump.ts";
 	import { sessionRowMenuItems, type SessionRowMenuAction } from "./sessionRowMenu.ts";
+	import { resumeCommand } from "../resumeCommand.ts";
 	import WorktreeAgentRow from "./WorktreeAgentRow.svelte";
 
 	interface Props {
@@ -80,6 +81,7 @@
 			? sessionRowMenuItems({
 					status: deriveOwnedLibraryState(contextMenu.session),
 					sessionId: contextMenu.session.nativeSessionId || contextMenu.session.ownedId,
+					resumeCommand: resumeCommand(contextMenu.session.agent, contextMenu.session.nativeSessionId, contextMenu.session.cwd),
 					worktreePath: contextMenu.session.cwd || null,
 					pinned: Boolean(contextMenu.session.pinnedAt),
 				})
@@ -195,6 +197,8 @@
 		else if (action === "unsettle") onUnsettle?.(session.ownedId);
 		else if (action === "pin" || action === "unpin") onPin?.(session.ownedId, action === "pin");
 		else if (action === "copy-session-id") copyText(session.nativeSessionId || session.ownedId);
+		else if (action === "copy-resume-command")
+			copyText(resumeCommand(session.agent, session.nativeSessionId, session.cwd));
 		else if (action === "copy-worktree-path") copyText(session.cwd || null);
 		else if (action === "open-in-editor") void jumpTo(session, "editor");
 		else if (action === "open-source-control") void jumpTo(session, "source-control");

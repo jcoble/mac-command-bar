@@ -96,7 +96,11 @@ assert.match(startNewSession, /createFreshSession\(\{[\s\S]*?cwd: request\.cwd,[
 assert.match(startNewSession, /projectGroupKey: project\?\.groupKey \?\? 'none'/);
 assert.match(startNewSession, /branch: request\.branch/);
 assert.match(startNewSession, /await selectSession\(owned\.ownedId\)/);
-assert.doesNotMatch(startNewSession, /ensureStructuredConversation|setAgentConversationConfig\(/);
+assert.doesNotMatch(startNewSession, /setAgentConversationConfig\(/);
+// Since 11984b792 a first message with screenshots opens the conversation so the
+// images can be saved into it; a text-only start still leaves that to sendStructuredMessage.
+assert.match(startNewSession, /if \(images\.length\) \{\s*const connection = await ensureStructuredConversation\(/);
+assert.equal(startNewSession.match(/ensureStructuredConversation/g)?.length, 1);
 assert.match(startNewSession, /await sendStructuredMessage\(owned\.ownedId, request\.prompt, \{/);
 assert.match(startNewSession, /model: request\.model/);
 assert.match(startNewSession, /approvalPolicy: request\.approvalPolicy/);

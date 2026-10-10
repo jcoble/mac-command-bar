@@ -87,7 +87,7 @@ test('only the open file\'s own controls stay in the file-tab title row', () => 
   assert.ok(titleRow.length > 0, 'the editor title row must still exist');
   assert.match(
     titleRow,
-    /aria-label="Markdown view"/,
+    /aria-label=\{activeFileIsHtml \? 'HTML view' : 'Markdown view'\}/,
     'the Source/Preview toggle is about the open file, so it stays with the tabs'
   );
   assert.ok(

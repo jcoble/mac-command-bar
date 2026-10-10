@@ -31,7 +31,7 @@
   import { sessionRowJump } from '$lib/shell/components/sessionRowJump';
   import { formatAge, exactLocalTime } from '$lib/shell/relativeTime';
   import { pullRequestSelection } from './pullRequestSelection.svelte';
-  import { pullRequestSearchQuery, type PullRequestScope, type PullRequestState } from './pullRequestSearch';
+  import { pullRequestSearchQuery, sessionProjectFilter, type PullRequestScope, type PullRequestState } from './pullRequestSearch';
   import ConversationMessage from '$lib/shell/components/conversation/ConversationMessage.svelte';
   import MultiFileDiff from '$lib/shell/components/git/MultiFileDiff.svelte';
   import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
@@ -69,6 +69,8 @@
   let stateFilter = $state<PullRequestState>('all');
   let scope = $state<PullRequestScope>('everyone');
   let projectFilter = $state('');
+  /** The session the project filter last followed; a new active session picks its project again. */
+  let followedSession: string | null | undefined;
   let searchInput = $state('');
   /** The text the current list was searched with, so typing the same text again does not reload. */
   let searchedText = '';
@@ -255,6 +257,11 @@
     error = null;
     try {
       await hydrateProjects();
+      if (current !== generation) return;
+      if (followedSession !== rail.activeOwnedId) {
+        followedSession = rail.activeOwnedId;
+        projectFilter = sessionProjectFilter(rail.owned.find((session) => session.ownedId === followedSession), projectRegistry.projects);
+      }
       if (reset) searchedText = searchInput.trim();
       const result = await listGithubPullRequestsFromTauri({
         roots: parseRemoteWorkspacePath(projectFilter) ? [projectFilter] : roots.map((root) => root.rootPath),
@@ -270,7 +277,10 @@
       totalCount = result.totalCount;
       loaded = true;
     } catch (reason) {
-      if (current === generation) error = reason instanceof Error ? reason.message : String(reason);
+      if (current !== generation) return;
+      error = reason instanceof Error ? reason.message : String(reason);
+      // Rows from an earlier search would read as this one's results.
+      if (reset) { items = []; cursor = null; }
     } finally {
       if (current === generation) loading = false;
     }
@@ -545,7 +555,9 @@
   }
 
   $effect(() => {
-    if (showing && !loaded && !loading && !error) void load(true);
+    // Showing the tab, or a different active session, picks the list (and its project) again.
+    const active = rail.activeOwnedId;
+    if (showing && untrack(() => (!loaded && !loading && !error) || active !== followedSession)) untrack(() => void load(true));
   });
   $effect(() => () => clearTimeout(searchTimer));
   $effect(() => {
