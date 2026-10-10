@@ -42,6 +42,8 @@
   import { defaultDraftProjectId, projectBadge, projectMachineLabel, visibleProjects } from '$lib/shell/projects/projects.ts';
   import { checkForProviderUpdates, installProviderUpdates, restartProviders, type ProviderUpdateState } from '$lib/shell/providerUpdateService.svelte';
   import ConversationComposer from '$lib/shell/components/conversation/ConversationComposer.svelte';
+  import { conversationSessions, setConversationDraft } from '$lib/shell/conversation/conversationStore.svelte';
+  import { persistConversationSessionDraft, stopStructuredTurn } from '$lib/shell/conversation/conversationService';
   import type { ConversationAttachment } from '$lib/shell/conversation/conversationTypes.ts';
   import type {
     AgentConversationConfigField,
@@ -80,9 +82,14 @@
     stopSignal: AbortSignal;
     onSend: (request: ThreadStartRequest, images: File[]) => void | Promise<void>;
     onClose: () => void;
+    /** The session the first send is starting, until the view switches to it. */
+    startingOwnedId?: string | null;
   }
 
-  let { stopSignal, onSend, onClose }: Props = $props();
+  let { stopSignal, onSend, onClose, startingOwnedId = null }: Props = $props();
+  /* While the first send starts its session, this composer is that session's:
+     what is typed lands in its draft, so it is still there after the switch. */
+  const starting = $derived(startingOwnedId ? conversationSessions[startingOwnedId] ?? null : null);
 
   const PROVIDERS: readonly ThreadStartProvider[] = ['codex', 'claude', 'antigravity'];
 
@@ -673,18 +680,24 @@
   <ConversationComposer
     bind:this={composer}
     provider={draft.provider}
-    draft={draft.prompt}
+    draft={starting ? starting.draft : draft.prompt}
     attachments={stagedImages.map((item) => item.attachment)}
     {attachmentError}
     sending={submitting}
+    supportsSteering={starting?.capabilities?.session.steering === true}
     {configState}
     pendingConfig={{}}
     commands={[]}
     sendError={submitError}
     footerControls={providerMenu}
     {subBar}
-    onDraftChange={(value) => updateDraft({ prompt: value })}
+    onDraftChange={(value) => {
+      if (!starting) return updateDraft({ prompt: value });
+      setConversationDraft(starting.ownedId, value);
+      persistConversationSessionDraft(starting.ownedId, value);
+    }}
     onSend={send}
+    onStop={() => { if (starting) void stopStructuredTurn(starting.ownedId).catch(() => {}); }}
     onPaste={(event) => {
       const files = [...(event.clipboardData?.files ?? [])];
       if (!files.length) files.push(...[...(event.clipboardData?.items ?? [])]

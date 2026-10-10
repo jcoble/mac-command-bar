@@ -78,6 +78,13 @@
 
 	let sessionsColumn = $state<SessionsColumn | null>(null);
 	let editorPanel = $state<EditorPanel | null>(null);
+	let conversationSurface = $state<ConversationSurface | null>(null);
+	// The draft closes the moment its first message is accepted; the typing
+	// carries on in the new session's composer unless focus went elsewhere.
+	$effect(() => {
+		if (selection.newSession.draftOpen || !selection.newSession.pendingFirstMessage) return;
+		if (document.activeElement === document.body) untrack(() => conversationSurface?.focusComposer());
+	});
 	let overlays = $state<ShellOverlays | null>(null);
 	let openUtility = $state<UtilityId | null>(null);
 	let sessionsRailWidth = $state(326);
@@ -563,6 +570,7 @@
 				inert={selection.chatOwnedId !== selection.activeOwnedId}
 			>
 				<ConversationSurface
+					bind:this={conversationSurface}
 					owned={selection.railOwned}
 					activeOwnedId={selection.chatOwnedId}
 					pendingFirstMessage={selection.newSession.pendingFirstMessage?.ownedId === selection.chatOwnedId
@@ -602,6 +610,7 @@
 		{#if selection.newSession.draftOpen}
 			<DraftSessionSurface
 				stopSignal={selection.newSession.stopSignal}
+				startingOwnedId={selection.newSession.pendingFirstMessage?.ownedId ?? null}
 				onSend={startNewSession}
 				onClose={() => selection.newSession.close()}
 			/>

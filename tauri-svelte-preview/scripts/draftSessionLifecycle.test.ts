@@ -165,4 +165,17 @@ assert.match(
 );
 assert.match(page, /\(ownedId\) => selection\.removeSession\(ownedId\),?\s*\);/, 'the page discards through the ordinary remove');
 
+// TSK-1415: while the first send starts its session, the draft's composer works
+// like that session's own: Send (steer) when the provider can steer, a Stop that
+// stops, and text typed meanwhile kept in the session's draft for the switch.
+assert.match(page, /startingOwnedId=\{selection\.newSession\.pendingFirstMessage\?\.ownedId \?\? null\}/);
+assert.match(surface, /draft=\{starting \? starting\.draft : draft\.prompt\}/);
+assert.match(surface, /supportsSteering=\{starting\?\.capabilities\?\.session\.steering === true\}/);
+assert.match(surface, /setConversationDraft\(starting\.ownedId, value\);\s*persistConversationSessionDraft\(starting\.ownedId, value\);/);
+assert.match(surface, /onStop=\{\(\) => \{ if \(starting\) void stopStructuredTurn\(starting\.ownedId\)/);
+// When the draft closes on the accepted first message, typing carries on in the
+// new session's composer.
+assert.match(page, /if \(selection\.newSession\.draftOpen \|\| !selection\.newSession\.pendingFirstMessage\) return;\s*if \(document\.activeElement === document\.body\) untrack\(\(\) => conversationSurface\?\.focusComposer\(\)\);/);
+assert.match(page, /<ConversationSurface\s+bind:this=\{conversationSurface\}/);
+
 console.log('draftSessionLifecycle.test.ts passed');
