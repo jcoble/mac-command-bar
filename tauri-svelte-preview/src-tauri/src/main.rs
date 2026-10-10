@@ -5881,11 +5881,16 @@ fn main() {
             let _ = app_handle.emit(EXIT_REQUESTED_EVENT, serde_json::json!({ "kind": "quit" }));
         }
         tauri::RunEvent::Exit => {
-            tauri::async_runtime::block_on(
+            if tauri::async_runtime::block_on(tokio::time::timeout(
+                Duration::from_secs(5),
                 app_handle
                     .state::<agent_conversation::manager::AgentRuntimeManager>()
                     .shutdown(),
-            );
+            ))
+            .is_err()
+            {
+                crate::debug_log::stderr_log!("Adapter shutdown timed out after 5 seconds");
+            }
             app_handle.state::<browser::BrowserRegistry>().shutdown();
             app_handle
                 .state::<agent_conversation::remote::RemoteConnectionManager>()
