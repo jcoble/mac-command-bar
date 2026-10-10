@@ -61,22 +61,31 @@ export const MISSING_COMMAND_MESSAGE =
 export const GIT_DIFF_TIMEOUT_MESSAGE =
   'Reading these changes took too long. Try refreshing Source Control.';
 
-/** A selected diff must always leave its loading state, even if an IPC read
- * never settles. The timer exists only while that user-triggered read is live. */
+/** A selected diff must always leave its loading state, even if the read ignores
+ * its signal (local calls do). The read gets one signal that aborts when its
+ * owner stops or `timeoutMs` passes, so the backend can cancel the git call, and
+ * the wait ends on that abort either way; running out of time reports the
+ * timeout message. */
 export async function withGitDiffTimeout<T>(
-  read: Promise<T>,
+  read: (signal: AbortSignal) => Promise<T>,
+  owner: AbortSignal,
   timeoutMs = 20_000
 ): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = AbortSignal.any([owner, timeout]);
+  let stop = (): void => {};
   try {
-    return await Promise.race([
-      read,
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new Error(GIT_DIFF_TIMEOUT_MESSAGE)), timeoutMs);
-      })
-    ]);
+    signal.throwIfAborted();
+    const aborted = new Promise<never>((_resolve, reject) => {
+      stop = () => reject(signal.reason);
+      signal.addEventListener('abort', stop, { once: true });
+    });
+    return await Promise.race([read(signal), aborted]);
+  } catch (error) {
+    if (timeout.aborted && !owner.aborted) throw new Error(GIT_DIFF_TIMEOUT_MESSAGE);
+    throw error;
   } finally {
-    if (timeout !== undefined) clearTimeout(timeout);
+    signal.removeEventListener('abort', stop);
   }
 }
 
@@ -232,10 +241,11 @@ async function askDesktop<T>(run: () => Promise<T | null>): Promise<T | null> {
 export async function readCommitFileDiff(
   root: string,
   sha: string,
-  relativePath: string
+  relativePath: string,
+  signal?: AbortSignal
 ): Promise<SourceGitDiff | null> {
   const fromDesktop = await askDesktop(() =>
-    readGitCommitFileDiffFromTauri(root, sha, relativePath)
+    readGitCommitFileDiffFromTauri(root, sha, relativePath, signal)
   );
   if (fromDesktop) return fromDesktop;
   return postGitBridge<SourceGitDiff>('commit-file-diff', { root, sha, relativePath });

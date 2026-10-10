@@ -617,7 +617,10 @@ function makeBackend(overrides = {}) {
   const git = createGitService({ backend, state, diffTimeoutMs: 5 });
   git.activate('/repo');
 
+  // Node does not wait on AbortSignal.timeout, so hold the process open until it fires.
+  const keepAlive = setInterval(() => {}, 1000);
   await git.selectFile(file('src/stuck.ts', '', 'modified', 'M'));
+  clearInterval(keepAlive);
 
   assert.equal(state.diffLoading, false, 'a stalled diff read ends its spinner');
   assert.equal(state.diffError, GIT_DIFF_TIMEOUT_MESSAGE);
