@@ -3781,6 +3781,52 @@ impl AgentRuntimeManager {
         });
     }
 
+    /// Stop local adapter transports and persist interrupted work before app exit.
+    /// Runtime locks can be held by prompts, so shutdown uses transports directly.
+    pub async fn shutdown(&self) {
+        let mut transports: Vec<_> = self
+            .adapter_pools
+            .lock()
+            .await
+            .values()
+            .map(|pool| Arc::clone(&pool.transport))
+            .collect();
+        {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for transport in sessions.values().filter_map(|session| session.transport.as_ref()) {
+                if !transports.iter().any(|current| Arc::ptr_eq(current, transport)) {
+                    transports.push(Arc::clone(transport));
+                }
+            }
+        }
+        // Capture ownership before stop takes the process handles out of transports.
+        let processes: Vec<_> = transports.iter().filter_map(|transport| transport.process_id())
+            .map(|pid| (pid, super::reaper::detached_descendant_identities(pid))).collect();
+        futures_util::future::join_all(transports.iter().map(|transport| transport.stop())).await;
+        let deadline = tokio::time::Instant::now() + super::providers::process::STOP_GRACE;
+        while processes.iter().any(|(pid, _)| unsafe { libc::kill(-(*pid as i32), 0) } == 0)
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Exit can abandon the normal detached watchdog; finish its cleanup here.
+        for (pid, detached) in processes {
+            super::reaper::signal_process_identities(&detached, libc::SIGKILL);
+            let group = -(pid as i32);
+            if unsafe { libc::kill(group, 0) } == 0 {
+                let _ = unsafe { libc::kill(group, libc::SIGKILL) };
+            }
+        }
+        for transport in transports {
+            // Do not leave terminal journal writes to tasks the exiting runtime
+            // may abandon. The existing disconnect handler preserves native IDs.
+            settle_closed_transport(self, &transport, "Assembly exited").await;
+        }
+    }
+
     pub async fn suspend_if_quiescent(
         &self,
         owned_id: &str,
@@ -13028,6 +13074,55 @@ mod tests {
             .close(&fixture.owned_id, fixture.generation)
             .await
             .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_lets_a_stopping_adapter_finish_its_write() {
+        let root = temp_root();
+        let marker = root.join("finished-write");
+        let mut manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
+            &root.join("shutdown-write.jsonl"), "default");
+        manifest.args[1] = format!(
+            "sh -c 'trap \"sleep 0.2; : > {}\" TERM; sleep 30 & wait' &\n{}",
+            marker.display(), manifest.args[1]
+        );
+        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)]).unwrap();
+        let manager = AgentRuntimeManager::new(providers);
+        let owned_id = "owned-shutdown-write";
+        let connection = manager.ensure_inner(request(root.to_str().unwrap(), owned_id,
+            AgentConversationProvider::Codex)).unwrap().0;
+        manager.activate(owned_id, connection.generation).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        manager.shutdown().await;
+        assert!(marker.is_file(), "shutdown killed the adapter before its final write");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shutdown_persists_terminal_turn_and_keeps_native_session() {
+        let fixture = fixture_manager_with_acp_session("permission_midturn").await;
+        let before = fixture.manager.store().get_session(&fixture.owned_id).unwrap().unwrap();
+        fixture.manager.prompt(&fixture.owned_id, fixture.generation, test_prompt("hello"))
+            .await.unwrap();
+        let transport = fixture.manager.sessions.lock().unwrap()
+            .get(&fixture.owned_id).unwrap().transport.clone().unwrap();
+        let pid = transport.process_id().unwrap() as i32;
+        fixture.manager.shutdown().await;
+        let saved = fixture.manager.store().get_session(&fixture.owned_id).unwrap().unwrap();
+        assert_eq!(saved.native_session_id, before.native_session_id);
+        assert!(saved.native_session_id.is_some());
+        assert_ne!(saved.state, "closed");
+        assert!(fixture.manager.sessions.lock().unwrap()
+            .get(&fixture.owned_id).unwrap().active_turn_id.is_none());
+        let snapshot = fixture.manager.snapshot(&fixture.owned_id).unwrap().unwrap();
+        assert!(snapshot.events.iter().any(|event| matches!(event.payload,
+            AgentConversationPayload::Turn { state: super::super::protocol::TurnState::Failed, .. }
+                | AgentConversationPayload::Turn { state: super::super::protocol::TurnState::Completed, .. }
+        )));
+        assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "adapter survived shutdown");
+        assert!(fixture.manager.adapter_pools.lock().await.is_empty());
         fs::remove_dir_all(fixture.root).unwrap();
     }
 

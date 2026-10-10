@@ -21,7 +21,7 @@ const STDERR_LINE_CAP: usize = 200;
 /// after it has answered it, and is gone within a second once told to go.
 /// Killing the group the moment the answer arrived lost that write on every
 /// turn, and a session whose transcript was never written cannot be resumed.
-const STOP_GRACE: Duration = Duration::from_secs(3);
+pub(crate) const STOP_GRACE: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SidecarEnvironment {
@@ -320,6 +320,28 @@ mod tests {
             content_hash: "0000000000000000000000000000000000000000000000000000000000000000".into(),
             trusted_source: ProviderSource::Bundled,
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stopping_an_exited_group_returns_without_grace_delay() {
+        let manifest = fixture_manifest("exited-fixture", "exit 0".into());
+        let process = SidecarProcess::spawn(
+            &manifest, &std::env::temp_dir(), "owned-exited",
+        ).unwrap();
+        let (_read, _write, mut handle) = process.split();
+        // Observe exit without reaping, so stop still exercises its wait path.
+        loop {
+            let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { libc::waitid(libc::P_PID, handle.process_id().unwrap(),
+                &mut status, libc::WEXITED | libc::WNOWAIT | libc::WNOHANG) }, 0);
+            if unsafe { status.si_pid() } != 0 { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let started = Instant::now();
+        handle.stop().await;
+        let elapsed = started.elapsed();
+        println!("already-exited stop: {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(1), "stop waited for grace");
     }
 
     // The Claude CLI writes a turn to its transcript only after it has answered
