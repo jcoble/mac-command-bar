@@ -2812,8 +2812,11 @@ pub fn run_server_from_environment() -> Result<(), String> {
             }), app).into_future() => result.map_err(|error| error.to_string()),
             _ = wait_for_provider_restart(&restart_requested, &restart_flushed) => {
                 // A restart ends running sessions: stop their adapters and
-                // record the interrupted turns before exiting.
-                restart_manager.shutdown().await;
+                // record the interrupted turns before exiting. A stuck adapter
+                // must not keep the server from exiting, as on desktop quit.
+                if tokio::time::timeout(Duration::from_secs(5), restart_manager.shutdown()).await.is_err() {
+                    eprintln!("Adapter shutdown timed out after 5 seconds; restarting anyway");
+                }
                 // The service uses Restart=on-failure. The server owns the
                 // accepted restart even if its requesting socket disappears.
                 std::process::exit(75);
