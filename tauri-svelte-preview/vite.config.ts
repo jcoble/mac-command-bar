@@ -2,7 +2,7 @@ import { sveltekit } from "@sveltejs/kit/vite";
 import tailwindcss from "@tailwindcss/vite";
 import { realpathSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, type DevEnvironment, type Plugin } from "vite";
 
 import { gitBridgePlugin } from "./src/lib/server/gitBridge";
 import {
@@ -44,6 +44,31 @@ function freshDevModulesPlugin(): Plugin {
         }
         next();
       });
+    },
+  };
+}
+
+/**
+ * A component's `<style>` comes from its compiled output. If the style is
+ * requested before the dev server has compiled the component (a cold start),
+ * vite-plugin-svelte has nothing to return, Vite reads the raw `.svelte` file
+ * instead, and Tailwind fails on it ("Invalid declaration: `RightTabId`").
+ * Compile the component first; vite-plugin-svelte then serves its CSS.
+ */
+function svelteStyleAfterComponentPlugin(): Plugin {
+  return {
+    name: "mac-command-bar-svelte-style-after-component",
+    apply: "serve",
+    enforce: "pre",
+    load: {
+      filter: { id: /[?&]svelte&type=style&lang\.css$/ },
+      async handler(id) {
+        const filename = id.slice(0, id.indexOf("?"));
+        if (!this.getModuleInfo(filename)?.meta.svelte?.css) {
+          await (this.environment as DevEnvironment).transformRequest(filename);
+        }
+        return null;
+      },
     },
   };
 }
@@ -319,6 +344,7 @@ export default defineConfig({
   // desktop app. It cannot change a repository — see `src/lib/server/gitBridge.ts`.
   plugins: [
     freshDevModulesPlugin(),
+    svelteStyleAfterComponentPlugin(),
     relationalSelectorPurgePlugin(),
     gitBridgePlugin(),
     localSourceBridgePlugin(),
