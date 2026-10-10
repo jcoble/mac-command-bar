@@ -153,11 +153,12 @@ export async function readGitCommitFilesFromTauri(
 export async function readGitCommitFileDiffFromTauri(
   root: string,
   sha: string,
-  relativePath: string
+  relativePath: string,
+  signal?: AbortSignal
 ): Promise<SourceGitDiff | null> {
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('../../workspaceInvoke.ts');
-  return invoke<SourceGitDiff>('read_git_commit_file_diff', { root, sha, relativePath });
+  return invoke<SourceGitDiff>('read_git_commit_file_diff', { root, sha, relativePath }, undefined, signal);
 }
 
 // ── the dev server's read-only bridge ───────────────────────────────────────

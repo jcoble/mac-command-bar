@@ -271,6 +271,8 @@ pub struct RemoteConnectionManager {
     /// for page reads waiting on one of them.
     history_copies: Arc<Mutex<HashSet<String>>>,
     history_copied: Arc<tokio::sync::Notify>,
+    /// Announces each cancelled frontend request id to page reads waiting on the Mac.
+    cancelled_requests: broadcast::Sender<u64>,
     attempts: Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
     /// The attempt token of each profile whose connection attempt is running
     /// before any client exists. Removing the profile drops its token, which
@@ -473,6 +475,7 @@ impl RemoteConnectionManager {
             connection_lock: Arc::new(tokio::sync::Mutex::new(())),
             history_copies: Arc::new(Mutex::new(HashSet::new())),
             history_copied: Arc::new(tokio::sync::Notify::new()),
+            cancelled_requests: broadcast::channel(64).0,
             attempts: Arc::new(Mutex::new(HashMap::new())),
             connecting: Arc::new(Mutex::new(HashMap::new())),
             next_attempt_token: Arc::new(AtomicU64::new(1)),
@@ -1085,8 +1088,11 @@ impl RemoteConnectionManager {
         profile_id: &str,
         operation: String,
         args: serde_json::Value,
+        request_id: Option<u64>,
     ) -> Result<serde_json::Value, String> {
-        match self.request_for_profile(profile_id, RemoteCommand::Workspace { operation, args }).await? {
+        // A frontend id is the wire id, so cancelling it aborts the server task.
+        let id = request_id.unwrap_or_else(|| self.next_request_id.fetch_add(1, Ordering::Relaxed));
+        match self.request_with_id(profile_id, id, RemoteCommand::Workspace { operation, args }, None).await? {
             RemoteResponse::Workspace(value) => Ok(value),
             _ => Err("The remote backend returned an incompatible workspace response".into()),
         }
@@ -1336,9 +1342,11 @@ impl RemoteConnectionManager {
         cursor: i64,
         max_bytes: u32,
         before: bool,
+        request_id: u64,
     ) -> Result<AgentConversationItemPage, String> {
         let profile = self.profile_for_owned_id(&owned_id)?;
         let copy_key = RemoteHistory::key(&profile, &owned_id);
+        let mut cancellations = self.cancelled_requests.subscribe();
         let mut restarted = false;
         loop {
             let copied = self.history_copied.notified();
@@ -1365,7 +1373,10 @@ impl RemoteConnectionManager {
                 self.copy_history(profile.clone(), owned_id.clone());
                 continue;
             }
-            copied.await;
+            tokio::select! {
+                _ = copied => {}
+                _ = wait_for_cancel(&mut cancellations, request_id) => return Err(PAGE_CANCELLED.into()),
+            }
         }
     }
 
@@ -1376,8 +1387,10 @@ impl RemoteConnectionManager {
         cursor: i64,
         max_bytes: u32,
         before: bool,
+        request_id: u64,
     ) -> Result<AgentConversationItemPage, String> {
         let copy_key = RemoteHistory::key(&profile, &source_owned_id);
+        let mut cancellations = self.cancelled_requests.subscribe();
         let mut restarted = false;
         loop {
             let copied = self.history_copied.notified();
@@ -1410,7 +1423,10 @@ impl RemoteConnectionManager {
                 self.copy_history(profile.clone(), source_owned_id.clone());
                 continue;
             }
-            copied.await;
+            tokio::select! {
+                _ = copied => {}
+                _ = wait_for_cancel(&mut cancellations, request_id) => return Err(PAGE_CANCELLED.into()),
+            }
         }
     }
 
@@ -1523,6 +1539,7 @@ impl RemoteConnectionManager {
         for sender in senders {
             let _ = sender.try_send(ClientRequest::Cancel { id: request_id });
         }
+        let _ = self.cancelled_requests.send(request_id);
     }
 
     pub async fn events_before(&self, owned_id: String, before_sequence: i64, max_bytes: u32)
@@ -3457,6 +3474,20 @@ async fn execute_remote_command(
     }
 }
 
+const PAGE_CANCELLED: &str = "The conversation page request was cancelled";
+
+/// Resolves once `request_id` is cancelled. A missed (lagged) id is not retried:
+/// the read then waits for its history copy, as it did before cancellation existed.
+async fn wait_for_cancel(cancellations: &mut broadcast::Receiver<u64>, request_id: u64) {
+    loop {
+        match cancellations.recv().await {
+            Ok(id) if id == request_id => return,
+            Err(broadcast::error::RecvError::Closed) => std::future::pending::<()>().await,
+            _ => {}
+        }
+    }
+}
+
 pub(super) fn validate_ssh_target(target: &str) -> Result<(), String> {
     if target.is_empty() || target.starts_with('-')
         || !target.bytes().all(|value| value.is_ascii_alphanumeric() || b"._@-".contains(&value)) {
@@ -3674,6 +3705,41 @@ mod connection_tests {
             task: None, ready: Arc::new(AtomicBool::new(true)),
         });
         requests
+    }
+
+    #[tokio::test]
+    async fn workspace_call_sent_with_a_request_id_is_cancelled_by_that_id() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+        let mut requests = connect(&manager);
+        let caller = manager.clone();
+        let call = tokio::spawn(async move {
+            caller.workspace_operation("cache-test", "read_source_git_diff".into(), serde_json::json!({}), Some(77)).await
+        });
+        let ClientRequest::Execute { id, reply, .. } = requests.recv().await.unwrap() else { panic!("expected the workspace request"); };
+        assert_eq!(id, 77, "the frontend's request id must be the wire id the server keys its task on");
+        manager.cancel_request(77).await;
+        let ClientRequest::Cancel { id } = requests.recv().await.unwrap() else { panic!("expected the cancel"); };
+        assert_eq!(id, 77);
+        drop(reply);
+        assert!(call.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn item_page_waiting_on_the_history_copy_stops_when_its_request_is_cancelled() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+        manager.remember("large-history", "cache-test");
+        // A copy is running but has not reached this page, so the read waits.
+        manager.history_copies.lock().unwrap().insert(RemoteHistory::key("cache-test", "large-history"));
+        let reader = manager.clone();
+        let page = tokio::spawn(async move { reader.item_page("large-history".into(), 5, 1024, true, 90).await });
+        for _ in 0..3 { tokio::task::yield_now().await; }
+        manager.cancel_request(89).await;
+        for _ in 0..3 { tokio::task::yield_now().await; }
+        assert!(!page.is_finished(), "another request's cancel must not stop this read");
+        manager.cancel_request(90).await;
+        let result = tokio::time::timeout(Duration::from_secs(5), page).await
+            .expect("a cancelled page read must stop waiting").unwrap();
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -4662,8 +4728,9 @@ pub async fn remote_workspace(
     profile_id: String,
     operation: String,
     args: serde_json::Value,
+    request_id: Option<u64>,
 ) -> Result<serde_json::Value, String> {
-    remote.workspace_operation(&profile_id, operation, args).await
+    remote.workspace_operation(&profile_id, operation, args, request_id).await
 }
 
 #[tauri::command]

@@ -894,7 +894,7 @@
       countInvoke('read_source_file');
       if (stopSignal.aborted) return;
       const imageMimeType = rasterImageMimeType(record.fileName);
-      const imageBytes = imageMimeType ? await readSourceImageFromTauri(record.path) : null;
+      const imageBytes = imageMimeType ? await readSourceImageFromTauri(record.path, stopSignal) : null;
       const preview = imageMimeType
         ? {
             ...record,
