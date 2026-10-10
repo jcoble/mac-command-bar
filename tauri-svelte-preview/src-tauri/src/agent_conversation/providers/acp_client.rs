@@ -102,6 +102,30 @@ impl AcpTransport {
 
     /// JSON-RPC request: allocate id, register oneshot, write, await.
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, AgentRuntimeError> {
+        let (id, receiver) = self.write_request(method, params).await?;
+        self.response(id, receiver).await
+    }
+
+    /// Writes the request now and returns the wait for its response, so any
+    /// frame written after this returns reaches the agent after this request.
+    pub async fn send_request(
+        self: &Arc<Self>,
+        method: &str,
+        params: Value,
+    ) -> Result<
+        impl std::future::Future<Output = Result<Value, AgentRuntimeError>> + Send + 'static,
+        AgentRuntimeError,
+    > {
+        let (id, receiver) = self.write_request(method, params).await?;
+        let transport = Arc::clone(self);
+        Ok(async move { transport.response(id, receiver).await })
+    }
+
+    async fn write_request(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<(u64, oneshot::Receiver<Result<Value, AgentRuntimeError>>), AgentRuntimeError> {
         let id = self
             .next_id
             .fetch_add(1, Ordering::Relaxed)
@@ -130,6 +154,20 @@ impl AcpTransport {
             guard.armed = false;
             return Err(error);
         }
+        guard.armed = false;
+        Ok((id, receiver))
+    }
+
+    async fn response(
+        &self,
+        id: u64,
+        receiver: oneshot::Receiver<Result<Value, AgentRuntimeError>>,
+    ) -> Result<Value, AgentRuntimeError> {
+        let mut guard = PendingRequestGuard {
+            transport: self,
+            id,
+            armed: true,
+        };
         let result = receiver
             .await
             .map_err(|_| transport_error("transport closed before response".to_string()))?;

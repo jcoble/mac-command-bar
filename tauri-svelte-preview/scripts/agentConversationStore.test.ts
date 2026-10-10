@@ -1153,7 +1153,7 @@ await test('sendStructuredMessage resolves the terminal from the owned session, 
     'cleanupConversationAttachmentPreview',
     'setConversationAttachments',
     'recordSentConversationAttachments',
-    `const preparingSends = new Map();\nconst sendRequests = new Map();\n${serviceJavaScript}\nreturn sendStructuredMessage;`
+    `const preparingSends = new Map();\n${serviceJavaScript}\nreturn sendStructuredMessage;`
   )(
     () => state,
     () => undefined,
@@ -1214,7 +1214,7 @@ await test('two quick sends with screenshots each keep their own thumbnails', as
     invoke: () => new Promise(() => {}),
     setConversationAttachments: store.setConversationAttachments
   };
-  const send = Function(...Object.keys(dependencies), `const preparingSends = new Map();\nconst sendRequests = new Map();\n${code}\nreturn sendStructuredMessage;`)(...Object.values(dependencies)) as (id: string, text: string) => Promise<unknown>;
+  const send = Function(...Object.keys(dependencies), `const preparingSends = new Map();\n${code}\nreturn sendStructuredMessage;`)(...Object.values(dependencies)) as (id: string, text: string) => Promise<unknown>;
   store.setConversationAttachments(ownedId, [shot('big')]);
   void send(ownedId, 'First');
   store.setConversationAttachments(ownedId, [shot('small')]);
@@ -1256,7 +1256,7 @@ await test('Send empties the composer before the request, and a failed send puts
     invoke: () => new Promise((resolve, reject) => { settle = { resolve, reject }; }),
     setConversationAttachments: (_id: string, list: Array<{ id: string; previewUrl: string }>) => { state.attachments = list; }
   };
-  const send = Function(...Object.keys(dependencies), `const preparingSends = new Map();\nconst sendRequests = new Map();\n${code}\nreturn sendStructuredMessage;`)(...Object.values(dependencies)) as (id: string, text: string) => Promise<unknown>;
+  const send = Function(...Object.keys(dependencies), `const preparingSends = new Map();\n${code}\nreturn sendStructuredMessage;`)(...Object.values(dependencies)) as (id: string, text: string) => Promise<unknown>;
 
   const failing = send(ownedId, 'Look at this');
   assert.deepEqual(state.attachments, [], 'the composer is empty before the request goes out');
@@ -1302,7 +1302,7 @@ await test('an admitted send returns the native receipt', async () => {
       invoke: async () => { sends++; return receipt; },
       setConversationAttachments: () => undefined
     };
-    const send = Function(...Object.keys(dependencies), `const preparingSends = new Map();\nconst sendRequests = new Map();\n${code}\nreturn sendStructuredMessage;`)(...Object.values(dependencies)) as (id: string, text: string) => Promise<unknown>;
+    const send = Function(...Object.keys(dependencies), `const preparingSends = new Map();\n${code}\nreturn sendStructuredMessage;`)(...Object.values(dependencies)) as (id: string, text: string) => Promise<unknown>;
     assert.deepEqual(await send(ownedId, 'Continue'), receipt);
     assert.equal(sends, 1);
     assert.equal(state.sending, true, 'receipt admission keeps the turn active');
@@ -1549,68 +1549,6 @@ await test('an observed active turn routes Stop to the backend', async () => {
   await api.stopStructuredTurn(ownedId);
   assert.deepEqual(calls, ['send_agent_conversation_message', 'stop_agent_conversation_turn']);
   assert.equal(api.preparingSends.size, 0);
-});
-
-await test('Stop pressed while the send request is out stops the turn once the receipt arrives', async () => {
-  const ownedId = 'stop-during-send';
-  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
-  const block = source.slice(source.indexOf('const preparingSends ='), source.indexOf('/** Answers one summary-only approval'));
-  const code = stripTypeScriptTypes(block.replaceAll('export async function', 'async function'), { mode: 'strip' });
-  const state = {
-    sending: false, generation: 1, activeTurnId: undefined,
-    attachments: [], capabilities: null, connectionState: 'connected',
-    agentConfig: { availableApprovalPolicies: [] }
-  };
-  const calls: string[] = [];
-  let settleSend!: (ok: boolean) => void;
-  const dependencies = {
-    getConversationSession: () => state,
-    setConversationSending: (_id: string, sending: boolean) => { state.sending = sending; },
-    get,
-    sessionPresenceHistory,
-    rail: { owned: [{ ownedId, agent: 'codex', state: 'live', origin: 'app', nativeSessionId: 'native-stop' }] },
-    shouldReviveBeforeSend: () => false,
-    sendSupportsImages: () => false,
-    buildConversationPrompt: (text: string) => ({ text, content: [] }),
-    sendTargetGeneration: () => 1,
-    updateOwnedSession: () => undefined,
-    recordSentConversationAttachments: () => undefined,
-    attachmentDisplayMetadata: () => undefined,
-    invoke: (command: string) => {
-      calls.push(command);
-      if (command !== 'send_agent_conversation_message') return Promise.resolve();
-      return new Promise((resolve, reject) => {
-        settleSend = (ok) => ok ? resolve({ ownedId, turnId: 'turn-1' }) : reject(new Error('refused'));
-      });
-    },
-    setConversationAttachments: () => undefined
-  };
-  const api = Function(...Object.keys(dependencies), `${code}\nreturn { sendStructuredMessage, stopStructuredTurn, preparingSends };`)(...Object.values(dependencies)) as {
-    sendStructuredMessage: (id: string, text: string) => Promise<unknown>;
-    stopStructuredTurn: (id: string) => Promise<void>;
-  };
-  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-  const sent = api.sendStructuredMessage(ownedId, 'Start something long');
-  await flush();
-  assert.deepEqual(calls, ['send_agent_conversation_message']);
-  const stopped = api.stopStructuredTurn(ownedId);
-  await flush();
-  assert.deepEqual(calls, ['send_agent_conversation_message'], 'no stop before the turn is admitted');
-  settleSend(true);
-  await sent;
-  await stopped;
-  assert.deepEqual(calls, ['send_agent_conversation_message', 'stop_agent_conversation_turn']);
-
-  calls.length = 0;
-  state.sending = false;
-  const refused = assert.rejects(api.sendStructuredMessage(ownedId, 'Refused'), /refused/);
-  await flush();
-  const stopAfterRefusal = api.stopStructuredTurn(ownedId);
-  settleSend(false);
-  await refused;
-  await stopAfterRefusal;
-  assert.deepEqual(calls, ['send_agent_conversation_message'], 'a refused send started no turn to stop');
 });
 
 await test('an inactive terminal event clears send state before finished rail presence', async () => {
