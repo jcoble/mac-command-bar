@@ -1031,7 +1031,7 @@ impl AgentRuntimeManager {
             );
             let result = async {
                 adapter.initialize(InitializeAgentInput { provider }).await?;
-                let started = adapter.new_session(NewAgentSession { cwd }).await?;
+                let started = adapter.new_session(NewAgentSession { cwd, mcp_servers: vec![] }).await?;
                 let mut config = started.config;
                 // A model's default effort is only reported while it is the
                 // session's model, so each other model is selected once here.
@@ -1894,6 +1894,7 @@ impl AgentRuntimeManager {
                     never_had_a_turn || !provider_holds_session(provider, native_session_id)
                 })
         };
+        let mcp_servers = vec![super::messaging::endpoint()?.issue(owned_id).server()];
         let shared_key = AdapterPoolKey::Shared(provider);
         let mut pools = self.adapter_pools.lock().await;
         let (capabilities, started_result, runtime, transport, inbound, pool_key, started_fresh) =
@@ -1905,20 +1906,20 @@ impl AgentRuntimeManager {
                     let attempted = match native_session_id.as_deref() {
                         Some(native_session_id) => match native_session_mode {
                             AgentNativeSessionMode::Resume => {
-                                runtime.resume_session_multi(&cwd, native_session_id).await
+                                runtime.resume_session_multi(&cwd, native_session_id, mcp_servers.clone()).await
                             }
                             AgentNativeSessionMode::Load => {
-                                runtime.load_session_multi(&cwd, native_session_id).await
+                                runtime.load_session_multi(&cwd, native_session_id, mcp_servers.clone()).await
                             }
                         },
-                        None => runtime.new_session_multi(&cwd).await,
+                        None => runtime.new_session_multi(&cwd, mcp_servers.clone()).await,
                     };
                     if attempted.is_err() && can_start_fresh() {
                         crate::debug_log::stderr_log!(
                             "{owned_id}: stored native session holds nothing to resume; starting fresh"
                         );
                         started_fresh = true;
-                        runtime.new_session_multi(&cwd).await
+                        runtime.new_session_multi(&cwd, mcp_servers.clone()).await
                     } else {
                         attempted
                     }
@@ -1953,6 +1954,7 @@ impl AgentRuntimeManager {
                         let input = LoadAgentSession {
                             cwd: cwd.clone(),
                             native_session_id: native_session_id.clone(),
+                            mcp_servers: mcp_servers.clone(),
                         };
                         match native_session_mode {
                             AgentNativeSessionMode::Resume => adapter.resume_session(input).await,
@@ -1961,7 +1963,7 @@ impl AgentRuntimeManager {
                     }
                     None => {
                         adapter
-                            .new_session(NewAgentSession { cwd: cwd.clone() })
+                            .new_session(NewAgentSession { cwd: cwd.clone(), mcp_servers: mcp_servers.clone() })
                             .await
                     }
                 };
@@ -1971,7 +1973,7 @@ impl AgentRuntimeManager {
                     );
                     (
                         adapter
-                            .new_session(NewAgentSession { cwd: cwd.clone() })
+                            .new_session(NewAgentSession { cwd: cwd.clone(), mcp_servers: mcp_servers.clone() })
                             .await,
                         true,
                     )
@@ -4268,6 +4270,7 @@ impl AgentRuntimeManager {
         self.store
             .delete_session(&owned_id)
             .map_err(|error| error.to_string())?;
+        super::messaging::endpoint()?.revoke(&owned_id);
         Ok(true)
     }
 
