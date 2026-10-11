@@ -332,6 +332,20 @@ pub(crate) fn append_workflow_event_value(
         .map_err(|error| format!("Could not serialize workflow event: {error}"))
 }
 
+pub(crate) fn read_workflow_run_values(
+    store: &SessionStore,
+) -> Result<Vec<serde_json::Value>, String> {
+    store
+        .list_latest_workflow_events()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|row| {
+            serde_json::from_str(&row.payload_json)
+                .map_err(|error| format!("Could not serialize workflow event: {error}"))
+        })
+        .collect()
+}
+
 pub(crate) fn read_workflow_event_values(
     store: &SessionStore,
 ) -> Result<Vec<serde_json::Value>, String> {

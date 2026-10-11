@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
+use std::path::{Component, Path};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -12,13 +13,76 @@ use crate::agent_conversation::protocol::{
     EnsureAgentConversationRequest, TurnState,
 };
 use crate::agent_conversation::providers::AgentPrompt;
-use crate::orchestration::{append_workflow_event_value, read_workflow_event_values};
+use crate::orchestration::{append_workflow_event_value, read_workflow_run_values};
 use mcb_core::session_store::SessionStore;
 
 pub(crate) const WORKFLOW_DEFINITION_VERSION: u16 = 1;
 
 fn default_definition_version() -> u16 {
     WORKFLOW_DEFINITION_VERSION
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct TaskSnapshot {
+    pub key: String,
+    pub title: String,
+    pub body: String,
+}
+
+fn invalid_yaml(error: impl std::fmt::Display) -> WorkflowError {
+    WorkflowError::InvalidDefinition(error.to_string())
+}
+
+// YamlLoader overwrites duplicate keys, so check them before constructing the snapshot.
+fn reject_duplicate_yaml_keys(contents: &str) -> Result<(), WorkflowError> {
+    use yaml_rust::parser::{Event, Parser};
+    let mut parser = Parser::new(contents.chars());
+    let mut stack: Vec<(Option<HashSet<String>>, bool)> = Vec::new();
+    loop {
+        match parser.next().map_err(invalid_yaml)?.0 {
+            Event::StreamEnd => break,
+            Event::MappingStart(_) => { stack.push((Some(HashSet::new()), true)); continue; }
+            Event::SequenceStart(_) => { stack.push((None, false)); continue; }
+            Event::MappingEnd | Event::SequenceEnd => { stack.pop(); }
+            Event::Scalar(key, ..) => {
+                if let Some((Some(keys), true)) = stack.last_mut() {
+                    if !keys.insert(key) { return Err(invalid_yaml("Duplicate YAML key / step id")); }
+                }
+            }
+            Event::Alias(_) => {}
+            _ => continue,
+        }
+        if let Some((Some(_), is_key)) = stack.last_mut() { *is_key = !*is_key; }
+    }
+    Ok(())
+}
+
+fn yaml_value(yaml: &yaml_rust::Yaml) -> Result<Value, WorkflowError> {
+    use yaml_rust::Yaml;
+    Ok(match yaml {
+        Yaml::Null => Value::Null,
+        Yaml::Boolean(value) => json!(value),
+        Yaml::Integer(value) => json!(value),
+        Yaml::Real(value) => serde_json::from_str(value).map_err(invalid_yaml)?,
+        Yaml::String(value) => json!(value),
+        Yaml::Array(values) => Value::Array(values.iter().map(yaml_value).collect::<Result<_, _>>()?),
+        Yaml::Hash(values) => Value::Object(values.iter().map(|(key, value)| {
+            let key = key.as_str().ok_or_else(|| invalid_yaml("YAML keys must be strings"))?;
+            Ok((key.to_string(), yaml_value(value)?))
+        }).collect::<Result<_, WorkflowError>>()?),
+        _ => return Err(invalid_yaml("Unsupported YAML value")),
+    })
+}
+
+fn contained_file(root: &Path, relative: &Path) -> Result<std::path::PathBuf, WorkflowError> {
+    if relative.as_os_str().is_empty() || relative.components().any(|part| !matches!(part, Component::Normal(_))) {
+        return Err(invalid_yaml("File paths must be relative and cannot contain ../"));
+    }
+    let path = root.join(relative).canonicalize().map_err(invalid_yaml)?;
+    if !path.starts_with(root) {
+        return Err(invalid_yaml("File path escapes its directory"));
+    }
+    Ok(path)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -32,6 +96,8 @@ pub(crate) struct WorkflowDefinitionV1 {
     pub description: String,
     #[serde(default)]
     pub trigger: Value,
+    #[serde(default)]
+    pub limits: Value,
     #[serde(default)]
     pub inputs: Vec<Value>,
     #[serde(default)]
@@ -78,6 +144,8 @@ pub(crate) struct WorkflowNodeDefinition {
     pub id: String,
     pub title: String,
     pub role_id: String,
+    #[serde(default)]
+    pub step: Value,
     #[serde(default)]
     pub depends_on: Vec<String>,
     #[serde(default)]
@@ -1227,6 +1295,77 @@ impl WorkflowEngine {
         }
     }
 
+    pub fn create_run_from_file(
+        &self,
+        repo_root: &Path,
+        relative_yaml: &Path,
+        task: TaskSnapshot,
+        mut input: Value,
+        idempotency_key: String,
+    ) -> Result<WorkflowRunRecord, WorkflowError> {
+        if relative_yaml.parent() != Some(Path::new(".assembly/workflows"))
+            || relative_yaml.extension().and_then(|value| value.to_str()) != Some("yml") {
+            return Err(invalid_yaml("Workflow must be .assembly/workflows/*.yml"));
+        }
+        let root = repo_root.canonicalize().map_err(invalid_yaml)?;
+        let path = contained_file(&root, relative_yaml)?;
+        let contents = std::fs::read_to_string(&path).map_err(invalid_yaml)?;
+        reject_duplicate_yaml_keys(&contents)?;
+        let documents = yaml_rust::YamlLoader::load_from_str(&contents).map_err(invalid_yaml)?;
+        if documents.len() != 1 { return Err(invalid_yaml("Expected one YAML workflow")); }
+        let yaml = yaml_value(&documents[0])?;
+        let name = yaml["name"].as_str().ok_or_else(|| invalid_yaml("Workflow name is required"))?;
+        let steps = yaml["steps"].as_object().ok_or_else(|| invalid_yaml("Workflow steps are required"))?;
+        let mut roles = Vec::new();
+        let mut nodes = Vec::new();
+        let timeout = yaml["limits"]["step_timeout_minutes"].as_u64().unwrap_or(60)
+            .checked_mul(60).ok_or_else(|| invalid_yaml("Step timeout is too large"))?;
+        for (id, original) in steps {
+            if id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
+                return Err(invalid_yaml("Invalid step id"));
+            }
+            let kinds = ["agent", "run", "review", "gate"];
+            if kinds.iter().filter(|kind| original.get(**kind).is_some()).count() != 1 {
+                return Err(invalid_yaml("Each step requires exactly one kind"));
+            }
+            let mut step = original.clone();
+            for field in ["of", "on_fail"] {
+                let target = if field == "of" { step["review"].get(field) } else { step.get(field) };
+                if let Some(target) = target {
+                    if !target.as_str().is_some_and(|id| steps.contains_key(id)) {
+                        return Err(invalid_yaml("Unknown step target"));
+                    }
+                }
+            }
+            let review = step.get("review").is_some();
+            let agent = if review { &step["review"]["agent"] } else { &step["agent"] };
+            let provider = agent["provider"].as_str().unwrap_or_default().to_string();
+            let model = agent.get("model").cloned().unwrap_or(Value::Null);
+            if step.get("agent").is_some() || review {
+                let prompt = if review { &mut step["review"]["prompt"] } else { &mut step["prompt"] };
+                let relative = prompt.as_str().ok_or_else(|| invalid_yaml("Agent prompt file is required"))?;
+                let prompt_path = contained_file(path.parent().unwrap(), Path::new(relative))?;
+                *prompt = json!(std::fs::read_to_string(prompt_path).map_err(invalid_yaml)?);
+            }
+            roles.push(json!({"id":id,"name":id,"providerPolicy":{"provider":provider},
+                "modelPolicy":{"value":model},"promptTemplateId":if review { step["review"]["prompt"].as_str().unwrap_or_default() } else { step["prompt"].as_str().unwrap_or_default() },
+                "outputContract":if review {"ReviewReceipt"} else {"ImplementationReceipt"}}));
+            nodes.push(json!({"id":id,"title":id,"roleId":id,"dependsOn":step.get("needs").cloned().unwrap_or(json!([])),
+                "condition":step["if"],"timeoutSeconds":timeout,"step":step}));
+        }
+        let inputs = yaml.get("inputs").and_then(Value::as_object).map(|values| values.iter()
+            .map(|(name, value)| json!({"name":name,"definition":value})).collect::<Vec<_>>()).unwrap_or_default();
+        let max_sessions = yaml["limits"]["max_sessions"].as_u64().unwrap_or(3);
+        let definition = serde_json::from_value(json!({"id":format!("{}:{}", root.display(), relative_yaml.display()),"name":name,
+            "inputs":inputs,"limits":yaml["limits"],"roles":roles,"nodes":nodes,
+            "concurrency":{"global":max_sessions,"workflow":max_sessions},
+            "budgets":{"maximumActiveAgents":max_sessions}})).map_err(invalid_yaml)?;
+        let values = input.as_object_mut().ok_or_else(|| invalid_yaml("Workflow input must be an object"))?;
+        values.insert("task".into(), serde_json::to_value(task).map_err(invalid_yaml)?);
+        values.insert("cwd".into(), json!(root));
+        self.create_run(definition, input, idempotency_key)
+    }
+
     pub fn create_run(
         &self,
         definition: WorkflowDefinitionV1,
@@ -2220,9 +2359,8 @@ impl WorkflowEngine {
     }
 
     pub fn list_runs(&self) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
-        let mut runs = WorkflowReducer::reduce(
-            read_workflow_event_values(&self.store).map_err(WorkflowError::Ledger)?,
-        )?;
+        let mut runs = read_workflow_run_values(&self.store).map_err(WorkflowError::Ledger)?
+            .into_iter().map(run_from_event).collect::<Result<Vec<_>, _>>()?;
         let owned_ids = runs.iter().flat_map(|run| run.nodes.iter())
             .map(|node| node.owned_id.clone()).collect::<Vec<_>>();
         let usage = self.store.latest_usage_events(&owned_ids)
@@ -2259,10 +2397,11 @@ impl WorkflowEngine {
     }
 
     fn require_run(&self, run_id: &str) -> Result<WorkflowRunRecord, WorkflowError> {
-        self.list_runs()?
-            .into_iter()
-            .find(|run| run.id == run_id)
-            .ok_or_else(|| WorkflowError::NotFound(run_id.into()))
+        self.store.latest_workflow_orchestration_event(run_id)
+            .map_err(|error| WorkflowError::Ledger(error.to_string()))?
+            .map(|row| serde_json::from_str(&row.payload_json)
+                .map_err(|error| WorkflowError::Ledger(error.to_string())).and_then(run_from_event))
+            .transpose()?.ok_or_else(|| WorkflowError::NotFound(run_id.into()))
     }
 
     fn rebuild_active_leases(&self, runs: &[WorkflowRunRecord]) -> Result<(), WorkflowError> {
@@ -2318,11 +2457,8 @@ impl WorkflowEngine {
         if key.trim().is_empty() {
             return Ok(None);
         }
-        let events = read_workflow_event_values(&self.store).map_err(WorkflowError::Ledger)?;
-        let duplicate = events.iter().any(|event| {
-            event.get("runId").and_then(Value::as_str) == Some(run_id)
-                && event.get("idempotencyKey").and_then(Value::as_str) == Some(key)
-        });
+        let duplicate = self.store.find_orchestration_event_by_idempotency_key(run_id, key)
+            .map_err(|error| WorkflowError::Ledger(error.to_string()))?.is_some();
         if duplicate {
             Ok(Some(self.require_run(run_id)?))
         } else {
@@ -2338,20 +2474,11 @@ impl WorkflowEngine {
         if key.trim().is_empty() {
             return Ok(None);
         }
-        let events = read_workflow_event_values(&self.store).map_err(WorkflowError::Ledger)?;
-        Ok(events.into_iter().find_map(|event| {
-            if event.get("workflowId").and_then(Value::as_str) == Some(workflow_id)
-                && event.get("idempotencyKey").and_then(Value::as_str) == Some(key)
-            {
-                event
-                    .get("workflowPayload")
-                    .and_then(|payload| payload.get("run"))
-                    .cloned()
-                    .and_then(|value| serde_json::from_value(value).ok())
-            } else {
-                None
-            }
-        }))
+        self.store.find_workflow_event_by_idempotency_key(workflow_id, key)
+            .map_err(|error| WorkflowError::Ledger(error.to_string()))?
+            .map(|row| serde_json::from_str(&row.payload_json)
+                .map_err(|error| WorkflowError::Ledger(error.to_string())).and_then(run_from_event))
+            .transpose()
     }
     fn append(
         &self,
@@ -2791,6 +2918,14 @@ fn derive_phase(run: &WorkflowRunRecord) -> WorkflowLoopPhase {
     }
 }
 
+fn run_from_event(event: Value) -> Result<WorkflowRunRecord, WorkflowError> {
+    let mut run: WorkflowRunRecord = serde_json::from_value(event["workflowPayload"]["run"].clone())
+        .map_err(|error| WorkflowError::Ledger(error.to_string()))?;
+    run.last_sequence = event["sequence"].as_u64().unwrap_or_default();
+    run.phase = derive_phase(&run);
+    Ok(run)
+}
+
 fn canonical_json(value: &Value) -> String {
     match value {
         Value::Object(map) => {
@@ -2894,6 +3029,7 @@ mod tests {
             id: id.into(),
             title: id.into(),
             role_id: role_id.into(),
+            step: Value::Null,
             depends_on: dependencies.iter().map(|value| (*value).into()).collect(),
             condition: None,
             fan_out: None,
@@ -2909,6 +3045,7 @@ mod tests {
             name: "wf".into(),
             description: String::new(),
             trigger: Value::Null,
+            limits: Value::Null,
             inputs: vec![],
             roles: vec![
                 role("implementer", WorkflowOutputContract::ImplementationReceipt),
@@ -2923,6 +3060,77 @@ mod tests {
             },
             completion: WorkflowCompletionPolicy::default(),
         }
+    }
+
+    fn yaml_fixture(label: &str) -> (std::path::PathBuf, WorkflowEngine) {
+        let root = std::path::PathBuf::from("/var/tmp").join(format!("task7-{label}-{}", std::process::id()));
+        std::fs::create_dir_all(root.join(".assembly/workflows/prompts")).unwrap();
+        std::fs::write(root.join(".assembly/workflows/prompts/build.md"), "Build ${{ task.body }}").unwrap();
+        std::fs::write(root.join(".assembly/workflows/demo.yml"), "name: Demo\ninputs: { flag: { default: false } }\nlimits: { max_sessions: 2, max_rounds: 5, step_timeout_minutes: 60 }\nsteps:\n  build:\n    agent: { provider: codex, model: test-model }\n    prompt: prompts/build.md\n  checks:\n    needs: [build]\n    run: [cargo test]\n    repeat: true\n    on_fail: build\n").unwrap();
+        let engine = WorkflowEngine::new(Arc::new(FakeRuntime::default()),
+            Arc::new(InMemoryWorktreeLeasePort::default()), Arc::new(FakeClock(AtomicU64::new(1))),
+            Arc::new(FakeIds(AtomicU64::new(1))), Arc::new(SessionStore::open_in_memory().unwrap()));
+        (root, engine)
+    }
+
+    #[test]
+    fn yaml_definition_is_snapshot_and_rejects_escape() {
+        let (root, engine) = yaml_fixture("snapshot");
+        let path = std::path::Path::new(".assembly/workflows/demo.yml");
+        let task = TaskSnapshot { key: "TSK-1416".into(), title: "Title".into(), body: "Body".into() };
+        let run = engine.create_run_from_file(&root, path, task.clone(), json!({"flag":true}), "create".into()).unwrap();
+        std::fs::write(root.join(path), "name: Changed").unwrap();
+        std::fs::write(root.join(".assembly/workflows/prompts/build.md"), "Changed prompt").unwrap();
+        let saved = engine.require_run(&run.id).unwrap();
+        assert_eq!(saved.definition, run.definition);
+        assert_eq!(saved.definition.name, "Demo");
+        assert_eq!(saved.definition.limits["max_rounds"], 5);
+        assert_eq!(saved.definition.inputs[0]["definition"]["default"], false);
+        assert_eq!(saved.definition.nodes[0].step["prompt"], "Build ${{ task.body }}");
+        assert_eq!(saved.definition.nodes[1].step["run"], json!(["cargo test"]));
+        assert_eq!(saved.definition.nodes[1].depends_on, vec!["build"]);
+        assert_eq!(saved.input_snapshot["flag"], true);
+        assert!(engine.create_run_from_file(&root, std::path::Path::new("../escape.yml"), task.clone(), json!({}), "escape".into()).is_err());
+        std::fs::write(root.join(".assembly/escape.md"), "Existing file").unwrap();
+        std::fs::write(root.join(path), "name: Escape\nsteps:\n  build:\n    agent: { provider: codex }\n    prompt: ../escape.md\n").unwrap();
+        assert!(engine.create_run_from_file(&root, path, task.clone(), json!({}), "prompt-escape".into()).is_err());
+        std::fs::write(root.join(path), "name: Duplicate\nsteps:\n  build: { run: [first] }\n  build: { run: [second] }\n").unwrap();
+        assert!(engine.create_run_from_file(&root, path, task, json!({}), "duplicate".into()).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn task_snapshot_contains_body() {
+        let (root, engine) = yaml_fixture("task");
+        let task = TaskSnapshot { key: "TSK-1416".into(), title: "Exact title".into(), body: "Exact body\nSecond line".into() };
+        let run = engine.create_run_from_file(&root, std::path::Path::new(".assembly/workflows/demo.yml"), task.clone(), json!({}), "create".into()).unwrap();
+        assert_eq!(run.input_snapshot["task"], serde_json::to_value(task).unwrap());
+        assert_eq!(engine.require_run(&run.id).unwrap().input_snapshot, run.input_snapshot);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workflow_queries_select_latest_run_in_sql() {
+        let root = std::path::PathBuf::from("/var/tmp").join(format!("task7-sql-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("sessions.db");
+        let store = SessionStore::open(&db).unwrap();
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        for (sql, index) in [
+            ("SELECT payload_json FROM orchestration_events WHERE run_id = ? AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%' ORDER BY sequence DESC LIMIT 1", "orchestration_events_run_sequence_idx"),
+            ("SELECT payload_json FROM orchestration_events WHERE run_id = ? AND idempotency_key = ?", "orchestration_events_idempotency_idx"),
+            ("SELECT payload_json FROM orchestration_events WHERE workflow_id = ? AND idempotency_key = ?", "orchestration_events_workflow_idempotency_idx"),
+        ] {
+            let mut query = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let values = vec!["run"; query.parameter_count()];
+            let plan = query.query_map(rusqlite::params_from_iter(values), |row| row.get::<_, String>(3))
+                .unwrap().collect::<Result<Vec<_>, _>>().unwrap().join("\n");
+            assert!(plan.contains(index), "{plan}");
+            assert!(!plan.contains("TEMP B-TREE"), "{plan}");
+        }
+        drop(conn);
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3601,7 +3809,7 @@ mod tests {
             tauri::async_runtime::block_on(engine.start(&created.id, "start-1")).unwrap();
         assert_eq!(started, repeated);
         assert_eq!(runtime.dispatched.lock().unwrap().len(), 1);
-        let events = read_workflow_event_values(&store).unwrap();
+        let events = crate::orchestration::read_workflow_event_values(&store).unwrap();
         let sequences: Vec<_> = events
             .iter()
             .filter_map(|event| event.get("sequence").and_then(Value::as_u64))

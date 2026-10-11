@@ -2835,6 +2835,7 @@ dependencies = [
  "tokio-tungstenite",
  "trash",
  "uuid",
+ "yaml-rust",
 ]
 
 [[package]]

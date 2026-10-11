@@ -650,6 +650,10 @@ CREATE INDEX IF NOT EXISTS orchestration_events_run_idx
     ON orchestration_events(run_id);
 CREATE INDEX IF NOT EXISTS orchestration_events_workflow_idx
     ON orchestration_events(workflow_id, kind);
+CREATE INDEX IF NOT EXISTS orchestration_events_run_sequence_idx
+    ON orchestration_events(run_id, sequence DESC);
+CREATE INDEX IF NOT EXISTS orchestration_events_workflow_idempotency_idx
+    ON orchestration_events(workflow_id, idempotency_key);
 CREATE UNIQUE INDEX IF NOT EXISTS orchestration_events_idempotency_idx
     ON orchestration_events(run_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;";
@@ -2505,6 +2509,44 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not list workflow events", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read workflow events", error))
+    }
+
+    pub fn list_latest_workflow_events(&self) -> Result<Vec<OrchestrationEventRow>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT e.id, e.run_id, e.kind, e.timestamp, e.sequence, e.workflow_id, e.idempotency_key, e.payload_json
+             FROM orchestration_events e
+             WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%'
+               AND e.rowid = (SELECT rowid FROM orchestration_events
+                   WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                   ORDER BY sequence DESC LIMIT 1)
+             ORDER BY e.run_id"
+        ).map_err(|error| StoreError::sqlite("could not prepare latest workflow runs", error))?;
+        let rows = statement.query_map([], orchestration_event_from_row)
+            .map_err(|error| StoreError::sqlite("could not query latest workflow runs", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read latest workflow runs", error))
+    }
+
+    pub fn latest_workflow_orchestration_event(&self, run_id: &str) -> Result<Option<OrchestrationEventRow>> {
+        let connection = self.lock()?;
+        connection.query_row(
+            "SELECT id, run_id, kind, timestamp, sequence, workflow_id, idempotency_key, payload_json
+             FROM orchestration_events
+             WHERE run_id = ? AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+             ORDER BY sequence DESC LIMIT 1",
+            [run_id], orchestration_event_from_row,
+        ).optional().map_err(|error| StoreError::sqlite("could not read latest workflow run", error))
+    }
+
+    pub fn find_workflow_event_by_idempotency_key(&self, workflow_id: &str, key: &str) -> Result<Option<OrchestrationEventRow>> {
+        let connection = self.lock()?;
+        connection.query_row(
+            "SELECT id, run_id, kind, timestamp, sequence, workflow_id, idempotency_key, payload_json
+             FROM orchestration_events WHERE workflow_id = ? AND idempotency_key = ?
+             ORDER BY rowid ASC LIMIT 1",
+            params![workflow_id, key], orchestration_event_from_row,
+        ).optional().map_err(|error| StoreError::sqlite("could not read idempotent workflow run", error))
     }
 
     pub fn find_orchestration_event_by_idempotency_key(

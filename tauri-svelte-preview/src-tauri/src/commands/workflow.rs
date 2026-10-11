@@ -1,6 +1,6 @@
 use tauri::Emitter;
 
-use crate::workflow::{WorkflowDefinitionV1, WorkflowEngine, WorkflowRunRecord};
+use crate::workflow::{TaskSnapshot, WorkflowDefinitionV1, WorkflowEngine, WorkflowRunRecord};
 
 #[tauri::command]
 pub(crate) async fn list_workflow_runs(
@@ -17,13 +17,21 @@ pub(crate) fn emit_workflow_run_updated(app: &tauri::AppHandle, run: &WorkflowRu
 pub(crate) async fn create_workflow_run(
     app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
-    definition: WorkflowDefinitionV1,
+    definition: Option<WorkflowDefinitionV1>,
+    repo_root: Option<String>,
+    workflow_path: Option<String>,
+    task: Option<TaskSnapshot>,
     input: serde_json::Value,
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
-    let run = engine
-        .create_run(definition, input, idempotency_key)
-        .map_err(|error| error.to_string())?;
+    let run = if let Some(path) = workflow_path {
+        engine.create_run_from_file(
+            std::path::Path::new(repo_root.as_deref().ok_or("Repository root is required")?),
+            std::path::Path::new(&path), task.ok_or("Task snapshot is required")?, input, idempotency_key,
+        )
+    } else {
+        engine.create_run(definition.ok_or("Workflow definition is required")?, input, idempotency_key)
+    }.map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);
     Ok(run)
 }
