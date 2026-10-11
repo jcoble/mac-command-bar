@@ -11,7 +11,7 @@
 </head>
 <body><main>
 <h1>Choose a YAML file, inspect its runs, then let one orchestrator supervise delivery.</h1>
-<p>This plan adds the desktop views first, then the home-machine orchestrator and the repository dev pipeline. The owner reviews a complete desktop mockup before any UI code. Automatic merge remains blocked until the owner confirms the precise standing authorization and proof rule.</p>
+<p>This plan adds the desktop views first, then the home-machine orchestrator and the repository dev pipeline. The owner reviews a complete desktop mockup before any UI code. D6 already authorizes the guarded engine merge rule; proof publication reuses the owner’s evidence tool.</p>
 <p><a href="2026-10-11-tsk-1416-workflows-slices-3-4.md">Read the full task-by-task implementation plan</a> · <a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></p>
 <div class="card"><strong>This is the plan reading companion.</strong> It is not the visual approval mockup. Task 14 creates that separate HTML artifact and records owner approval before implementation. This docs lane changes no product code and runs no builds.</div>
 <h2>Slice 3: desktop views</h2>
@@ -37,11 +37,11 @@
 <tr><td>25 · Pipeline files</td><td>Versioned dev-pipeline.yml and seven prompt files follow C1's format reference.</td><td>280–420 + architecture</td></tr>
 <tr><td>26 · Real-task proof</td><td>One scoped real task reaches an observed merged PR; separate I'll merge handoff proof.</td><td>0–30; real task has its own scope</td></tr>
 </tbody></table></div>
-<h2>Three owner decisions</h2>
+<h2>Three questions resolved by the spec and existing tools</h2>
 <ol>
-<li><strong>Home machine.</strong> Recommended: Workbox default; require explicit configuration when unavailable, without silently creating a local replacement. Test only against Workbox Test.</li>
-<li><strong>Standing merge authorization.</strong> Recommended: explicitly ratify D6's narrow engine-only exception for approved pipeline runs with I'll merge off. Other agents, controllers and slice PRs still require specific owner merge requests.</li>
-<li><strong>Proof attachment.</strong> Recommended: GitHub release assets on a dedicated workflow-proof-&lt;run-id&gt;-&lt;proof-attempt&gt; tag, with stable URLs and digests in the ledger, PR and task. Final review runs after proof publication/PR and concerns the exact current head. No local-path-only attachment or screenshot binaries on main.</li>
+<li><strong>Home machine — settled.</strong> D10 requires one orchestrator; §4.5 specifies a Settings home with Workbox default. D7 fixes run placement. Test only against Workbox Test.</li>
+<li><strong>Standing merge authorization — settled.</strong> D6 explicitly grants the workflow rule standing authorization for that run with I'll merge off. Other agents, controllers and slice PRs still require specific owner merge requests.</li>
+<li><strong>Proof attachment — reuse.</strong> D6 requires attached proof and final review. Register selected media in ~/Workbox/screenshots/ with <code>evidence add ... --key</code>, then <code>evidence publish TSK-&lt;id&gt;</code>. Record returned Drive folder/file links and current attempt/commit. Nonvisual command receipts go directly in PR/task. Final review opens proof at the current PR head; refresh the PR body with its verdict before merge or handoff. No new proof-release system.</li>
 </ol>
 <h2>What must be ready first</h2>
 <p>Tasks 6 and 13 prove messaging and the engine. Task 7's loader commit <code>7817ca1bb</code> is on the engine branch, not this plan's fresh main base <code>248eb8280</code>. Integrate and re-find symbols before implementation. C1 separately supplies D14, <code>docs/workflows/format.md</code> and the authoring-tools plan; this plan does not rewrite them.</p>
