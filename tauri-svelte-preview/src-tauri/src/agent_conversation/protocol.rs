@@ -579,6 +579,8 @@ pub enum AgentConversationPayload {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConversationEvent {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_state: Option<AgentRuntimeState>,
     pub owned_id: String,
     pub provider: AgentConversationProvider,
     pub generation: u64,

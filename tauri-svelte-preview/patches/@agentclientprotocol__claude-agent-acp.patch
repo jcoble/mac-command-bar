@@ -126,8 +126,8 @@ index 28ead902971a5baf6ec5b52065df5fde56fdcf9b..b3e7a40169ed5342ff9c7bd9d1ad5947
                                  session.lastSessionState = message.state;
 +                                // A client with `backgroundSubagents` sees work after the
 +                                // prompt response, so it gets each change of the root state:
-+                                // `idle` is the one signal that the session has nothing left.
-+                                if (this.endsTurnsWithLiveSubagents() && message.state !== previousState) {
++                                // `idle` ends this root cycle, independently of background membership.
++                                if (this.endsTurnsWithLiveSubagents() && !session.cancelled && message.state !== previousState) {
 +                                    await sendUpdate({
 +                                        sessionId: params.sessionId,
 +                                        update: {
@@ -139,6 +139,23 @@ index 28ead902971a5baf6ec5b52065df5fde56fdcf9b..b3e7a40169ed5342ff9c7bd9d1ad5947
                                  if (message.state === "running" &&
                                      previousState !== "running" &&
                                      session.owedTrailingIdles > 0) {
+@@ -4128,6 +4192,16 @@ export class ClaudeAcpAgent {
+                                 break;
+                             case "background_tasks_changed":
++                                session.backgroundTasks = message.tasks;
++                                if (this.endsTurnsWithLiveSubagents() && !session.cancelled) {
++                                    await sendUpdate({
++                                        sessionId: params.sessionId,
++                                        update: {
++                                            sessionUpdate: "session_info_update",
++                                            _meta: withAirMeta(undefined, "backgroundTaskCount", message.tasks.length),
++                                        },
++                                    });
++                                }
+                                 await asyncTasks.backgroundTasksChanged(message.tasks);
+                                 // A level signal: the full live background-task set on every
+                                 // membership change, with REPLACE semantics. Used only to
+                                 // reconcile `liveBackgroundTasks` — dropping (or, for
 @@ -4350,15 +4396,20 @@ export class ClaudeAcpAgent {
                              if (matchingModelUsage &&
                                  typeof matchingModelUsage.usage.contextWindow === "number" &&
@@ -207,6 +224,19 @@ index 28ead902971a5baf6ec5b52065df5fde56fdcf9b..b3e7a40169ed5342ff9c7bd9d1ad5947
                              //
                              // is_error/auth already settled via failActive (activeTurn is null
                              // then, so both branches no-op); cancellation is left to the
+@@ -5355,7 +5436,11 @@ export class ClaudeAcpAgent {
+         }
+     }
+     async cancel(params) {
+-        await this.cancelTurns(params, { awaitInterrupt: true });
++        const session = this.sessions[params.sessionId];
++        await Promise.all([
++            this.cancelTurns(params, { awaitInterrupt: true }),
++            ...(session?.backgroundTasks ?? []).map((task) => session.query.stopTask(task.task_id)),
++        ]);
+     }
+     /** Cancel the session's turns and interrupt the SDK query. With
+      *  `awaitInterrupt: false` the interrupt is sent, but its reply is not
 @@ -6438,6 +6508,11 @@ export class ClaudeAcpAgent {
                  defaultToNo,
                  availableModes: this.sessionModes.availableModeIds(session.modes),

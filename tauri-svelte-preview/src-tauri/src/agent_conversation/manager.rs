@@ -3100,15 +3100,18 @@ impl AgentRuntimeManager {
                     Some(turn_id),
                     bounded_cancel,
                 )
+            } else if !session.background_work.is_empty() {
+                (session.native_session_id.clone().ok_or_else(||
+                    "Structured provider session has not started".to_string())?, None, false)
             } else {
                 (String::new(), None, false)
             }
         };
-        let Some(turn_id) = turn_id else {
+        if native_session_id.is_empty() {
             drop(lifecycle);
             self.suspend_if_quiescent(owned_id, generation).await?;
             return Ok(());
-        };
+        }
         transport
             .notify(
                 "session/cancel",
@@ -3116,6 +3119,40 @@ impl AgentRuntimeManager {
             )
             .await
             .map_err(|error| error.to_string())?;
+        let claude = {
+            let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = current_session_mut(&mut sessions, owned_id, generation)?;
+            if session.provider == AgentConversationProvider::Claude || turn_id.is_none() {
+                for (request_id, pending) in session.permission_requests.drain().collect::<Vec<_>>() {
+                    record_payload_for_session_and_dispatch(session, &self.emitter,
+                        AgentConversationPayload::Approval { request_id,
+                            state: ApprovalState::Expired, summary: pending.summary })?;
+                }
+                for (request_id, _) in session.user_input_requests.drain().collect::<Vec<_>>() {
+                    record_payload_for_session_and_dispatch(session, &self.emitter,
+                        AgentConversationPayload::UserInputResolved { request_id, cancelled: true })?;
+                }
+                disconnect_claude_children(session, &self.emitter);
+                session.background_work.clear();
+                session.live_tool_calls.clear();
+                finish_autonomous_turn(session, &self.emitter,
+                    super::protocol::TurnState::Interrupted, AgentRuntimeState::Ready);
+                publish_background_work_state(session, &self.emitter)?;
+            }
+            session.provider == AgentConversationProvider::Claude
+        };
+        if claude || turn_id.is_none() {
+            drop(lifecycle);
+            if let Some(turn_id) = turn_id {
+                handle_ordered_session_event(OrderedSessionEvent::PromptResult {
+                    turn_id, result: Ok(serde_json::json!({ "stopReason": "cancelled" })),
+                }, self, &Arc::downgrade(&transport), owned_id, generation).await;
+            } else {
+                self.suspend_if_quiescent(owned_id, generation).await?;
+            }
+            return Ok(());
+        }
+        let turn_id = turn_id.expect("active cancellation turn");
         if bounded_cancel {
             let manager = self.clone();
             let owned_id = owned_id.to_string();
@@ -5059,7 +5096,12 @@ fn record_payload_for_session(
     session: &mut ManagedAgentSession,
     payload: AgentConversationPayload,
 ) -> Result<AgentConversationEvent, String> {
-    record_payload_for_session_with_lifecycle(session, payload, None, None)
+    let lifecycle = (matches!(payload, AgentConversationPayload::ChildUpdate { .. }
+        | AgentConversationPayload::Tool { .. }) && session.active_turn_id.is_none()
+        && !session.autonomous_turn_started
+        && matches!(session.state, AgentRuntimeState::Ready | AgentRuntimeState::Working))
+        .then(|| lifecycle_update_for_state(session, AgentRuntimeState::Ready, session.connection.state));
+    record_payload_for_session_with_lifecycle(session, payload, lifecycle, None)
 }
 
 /// Whether the provider still holds anything for this session to resume.
@@ -5136,6 +5178,7 @@ fn record_payload_for_session_with_lifecycle(
         canonical.turn_id = Some(turn_id);
     }
     let frontend_event = AgentConversationEvent {
+        runtime_state: Some(candidate.state),
         owned_id: session.owned_id.clone(),
         provider: session.provider,
         generation: session.generation,
@@ -5442,12 +5485,29 @@ fn lifecycle_update_for_state(
     connection_state: ConversationConnectionState,
 ) -> SessionLifecycleUpdate {
     SessionLifecycleUpdate {
-        state,
+        state: if state == AgentRuntimeState::Ready && !session.background_work.is_empty() {
+            AgentRuntimeState::Working
+        } else { state },
         connection_state,
         owner: session.owner,
         writer_owner: session.writer_lease.owner,
         native_session_mode: None,
     }
+}
+
+fn publish_background_work_state(session: &mut ManagedAgentSession,
+    emitter: &Arc<Mutex<Option<ConversationEmitter>>>) -> Result<(), String> {
+    let state = if session.active_turn_id.is_none() && !session.autonomous_turn_started
+        && session.permission_requests.is_empty() && session.user_input_requests.is_empty()
+        && matches!(session.state, AgentRuntimeState::Ready | AgentRuntimeState::Working
+            | AgentRuntimeState::WaitingInput | AgentRuntimeState::WaitingApproval) {
+        AgentRuntimeState::Ready
+    } else { session.state };
+    let lifecycle = lifecycle_update_for_state(session, state, session.connection.state);
+    record_payload_for_session_and_dispatch_with_lifecycle(session, emitter,
+        AgentConversationPayload::Connection { state: session.connection.state,
+            native_session_id: session.native_session_id.clone() }, lifecycle)?;
+    Ok(())
 }
 
 fn dispatch_event(
@@ -5646,6 +5706,8 @@ async fn pump_inbound(
                     else {
                         return;
                     };
+                    if session.suspending || (session.provider == AgentConversationProvider::Claude
+                        && session.state == AgentRuntimeState::Interrupting) { break 'update false; }
                     let child_content = is_known_claude_child_inbound(session, &params);
                     if child_content
                         || matches!(
@@ -5680,16 +5742,37 @@ async fn pump_inbound(
                     {
                         break 'update false;
                     }
+                    if session.provider == AgentConversationProvider::Claude {
+                        if let Some(count) = params
+                            .pointer("/update/_meta/jetbrains/air/backgroundTaskCount")
+                            .and_then(Value::as_u64)
+                        {
+                            if count > 0 {
+                                insert_background_work(&mut session.background_work,
+                                    CLAUDE_BACKGROUND_TASKS.to_string(), BackgroundWorkKind::Command,
+                                    String::new());
+                            } else if session.background_work.remove(CLAUDE_BACKGROUND_TASKS).is_some() {
+                                expect_claude_wake(session);
+                            }
+                            if let Err(error) = publish_background_work_state(session, &emitter) {
+                                crate::debug_log::stderr_log!("Could not publish background work: {error}");
+                            }
+                            break 'update session_is_quiescent(session);
+                        }
+                    }
                     if let Some(state) = claude_session_state(session, &params) {
                         session.claude_reports_state = true;
                         if state == "idle" {
+                            session.background_work.remove(CLAUDE_SESSION_RUNNING);
                             finish_autonomous_turn(
                                 session,
                                 &emitter,
                                 super::protocol::TurnState::Completed,
                                 AgentRuntimeState::Ready,
                             );
-                            session.background_work.remove(CLAUDE_SESSION_RUNNING);
+                            if let Err(error) = publish_background_work_state(session, &emitter) {
+                                crate::debug_log::stderr_log!("Could not publish idle background work: {error}");
+                            }
                         } else {
                             if state == "running"
                                 && session.active_turn_id.is_none()
@@ -6977,6 +7060,7 @@ async fn handle_ordered_session_event(
                     return true;
                 }
                 abort_cancel_deadline(session);
+                if cancelled && session.provider == AgentConversationProvider::Claude { session.background_work.clear(); }
                 let pending_permissions =
                     drain_root_permissions(&mut session.permission_requests);
                 for (request_id, pending) in &pending_permissions {
@@ -8154,6 +8238,7 @@ fn session_is_checkout_quiescent(session: &ManagedAgentSession) -> bool {
 
 /// Background work held while Claude Code reports it is running.
 const CLAUDE_SESSION_RUNNING: &str = "claude-session:running";
+const CLAUDE_BACKGROUND_TASKS: &str = "claude-session:background-tasks";
 
 fn insert_background_work(
     background_work: &mut HashMap<String, BackgroundWorkEntry>,
@@ -8218,7 +8303,7 @@ fn expect_claude_wake(session: &mut ManagedAgentSession) {
 
 /// The Claude Code state the Claude adapter forwards once the client declared
 /// `backgroundSubagents`: `running` or `requires_action` while Claude works,
-/// `idle` once nothing is left — background sub-agents included.
+/// `idle` when the current cycle ends; background commands and monitors can remain.
 fn claude_session_state<'a>(session: &ManagedAgentSession, params: &'a Value) -> Option<&'a str> {
     if session.provider != AgentConversationProvider::Claude
         || session_update_kind(params) != Some("session_info_update")
@@ -8367,6 +8452,7 @@ mod tests {
         payload: AgentConversationPayload,
     ) -> AgentConversationEvent {
         AgentConversationEvent {
+            runtime_state: None,
             owned_id: owned_id.into(),
             provider: AgentConversationProvider::Codex,
             generation,
@@ -9544,9 +9630,8 @@ mod tests {
             let session = &sessions[&fixture.owned_id];
             assert!(session.user_input_requests.is_empty());
             assert!(!session.background_work.is_empty(), "the sub-agent still runs");
-            // The parent turn has ended, so answering the sub-agent must not
-            // mark the session Working again (TSK-1394).
-            assert_eq!(session.state, AgentRuntimeState::Ready);
+            // The child keeps Working and Stop available after the parent ends.
+            assert_eq!(session.state, AgentRuntimeState::Working);
         }
         let log_path = fixture.root.join("child_input_after_parent.jsonl");
         wait_until(|| fs::read_to_string(&log_path).is_ok_and(|log| log.contains(r#""id":77"#))).await;
@@ -9877,7 +9962,7 @@ mod tests {
         );
         wait_until(|| completed_turns(&seen) == 1).await;
         assert_eq!(fixture.manager.sessions.lock().unwrap()[&fixture.owned_id].state,
-            AgentRuntimeState::Ready);
+            AgentRuntimeState::Working);
         let turns = delta_turns(&seen, "late summary");
         assert_eq!(turns.len(), 1);
         let autonomous = turns[0].clone().expect("the summary has a journal turn");
@@ -9961,7 +10046,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn stop_ignores_but_send_completes_autonomous_turn() {
+    async fn send_completes_autonomous_turn() {
         let (fixture, seen) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
         feed(
             &fixture,
@@ -9969,15 +10054,6 @@ mod tests {
         );
         wait_until(|| delta_turns(&seen, "summary").len() == 1).await;
         let autonomous = delta_turns(&seen, "summary")[0].clone().unwrap();
-        fixture
-            .manager
-            .cancel_turn(&fixture.owned_id, fixture.generation)
-            .await
-            .expect("Stop with no prompt turn");
-        assert!(!suspended(&fixture));
-        assert_eq!(autonomous_turn(&fixture), Some(autonomous.clone()));
-        let log = fs::read_to_string(fixture.root.join("suspend_claude_feed.jsonl")).unwrap();
-        assert!(!log.contains(r#""method":"session/cancel""#));
         fixture
             .manager
             .prompt(&fixture.owned_id, fixture.generation, test_prompt("next"))
@@ -10102,22 +10178,41 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn cancel_without_turn_then_idle_clears_group_and_suspends() {
+    async fn stop_clears_background_work_without_idle_and_allows_suspension() {
         let (fixture, _) = feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
-        feed(
-            &fixture,
-            &[claude_state("running"), reply_chunk("m-auto", "summary", true)],
-        );
-        wait_until(|| autonomous_turn(&fixture).is_some()).await;
+        feed(&fixture, &[claude_state("running"), child_spawned("child-agent"), claude_state("idle"),
+            json!({"jsonrpc": "2.0", "id": 77, "method": "session/request_user_input",
+                "params": {"sessionId": "child-agent", "title": "Choose", "fields": []}})]);
+        wait_until(|| { let sessions = fixture.manager.sessions.lock().unwrap();
+            sessions[&fixture.owned_id].active_turn_id.is_none()
+                && !sessions[&fixture.owned_id].user_input_requests.is_empty() }).await;
+        fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
+            .capabilities.session.resume = false;
         fixture
             .manager
             .cancel_turn(&fixture.owned_id, fixture.generation)
             .await
             .expect("Stop with no prompt turn");
-        assert!(!suspended(&fixture));
-        assert!(autonomous_turn(&fixture).is_some());
-        feed(&fixture, &[claude_state("idle")]);
-        wait_until(|| suspended(&fixture)).await;
+        {
+            let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            assert_eq!(session.state, AgentRuntimeState::Ready);
+            assert!(session.background_work.is_empty());
+            assert!(session_is_quiescent(session));
+            session.active_turn_id = Some("stopping-foreground".into());
+            session.state = AgentRuntimeState::Interrupting;
+        }
+        feed(&fixture, &[root_update(json!({"sessionUpdate": "session_info_update",
+            "_meta": {"jetbrains": {"air": {"backgroundTaskCount": 2}}}}))]);
+        settle().await;
+        { let mut sessions = fixture.manager.sessions.lock().unwrap();
+            let session = sessions.get_mut(&fixture.owned_id).unwrap();
+            assert!(session.background_work.is_empty());
+            session.state = AgentRuntimeState::Ready; session.capabilities.session.resume = true; }
+        fixture.manager.cancel_turn(&fixture.owned_id, fixture.generation).await.unwrap();
+        assert!(suspended(&fixture));
+        let log = fs::read_to_string(fixture.root.join("suspend_claude_feed.jsonl")).unwrap();
+        assert!(log.contains(r#""method":"session/cancel""#));
         finish(fixture).await;
     }
 
@@ -10222,9 +10317,36 @@ mod tests {
         wait_until(|| holds_work(&fixture, "background-task:shell-1")).await;
         settle().await;
         assert!(!suspended(&fixture), "the shell still runs");
+        assert_eq!(fixture.manager.sessions.lock().unwrap()[&fixture.owned_id].state,
+            AgentRuntimeState::Working);
         feed(&fixture, &[async_task("new-session", "shell-1", Some("completed"))]);
         settle().await;
         assert!(!suspended(&fixture), "Claude Code still owes the report of the shell");
+        feed(&fixture, &[claude_state("running"), claude_state("idle")]);
+        wait_until(|| suspended(&fixture)).await;
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_session_with_running_monitor_is_not_suspended() {
+        let (fixture, _) =
+            feed_fixture("suspend_claude_feed", AgentConversationProvider::Claude).await;
+        let background_count = |count| root_update(json!({
+            "sessionUpdate": "session_info_update",
+            "_meta": {"jetbrains": {"air": {"backgroundTaskCount": count}}}
+        }));
+        feed(&fixture, &[
+            claude_state("running"), background_count(1), claude_state("idle"),
+        ]);
+        settle().await;
+        assert!(!suspended(&fixture), "the Monitor still runs after foreground idle");
+        assert_eq!(fixture.manager.sessions.lock().unwrap()[&fixture.owned_id].state,
+            AgentRuntimeState::Working);
+        assert!(!fixture.manager.suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await.unwrap());
+        feed(&fixture, &[background_count(0)]);
+        settle().await;
+        assert!(!suspended(&fixture), "the Monitor completion still owes a wake");
         feed(&fixture, &[claude_state("running"), claude_state("idle")]);
         wait_until(|| suspended(&fixture)).await;
         finish(fixture).await;
