@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 const root = new URL('..', import.meta.url).pathname;
 const srcRoot = join(root, 'src');
-const includedExtensions = ['.ts', '.svelte'];
+const includedExtensions = ['.ts', '.svelte', '.css'];
 const excludedFileSuffixes = ['.test.ts', '.test.svelte', '.server.ts'];
 const excludedPathSegments = new Set([
   '__generated__',
@@ -19,6 +20,8 @@ const promiseChainPattern = /\.(then|catch|finally)\s*\(/g;
 const promiseWrapperPattern = /\b(new\s+Promise|Promise\.(?:race|withResolvers))\s*(?:<[^>]+>)?\s*\(/g;
 const anonymousAsyncIifePattern =
   /\b(void|[A-Za-z_$][\w$]*(?:\s*\?\?=|\s*=))\s*\(\s*async\s*\(\s*\)\s*=>/g;
+const cssHasPattern = /:has\s*\(/gi;
+const tailwindHasPattern = /\b(?:(?:group|peer)-)?has-(?:\[[^\]\r\n]+\]|[A-Za-z][\w-]*)(?:\/[\w-]+)?:/g;
 
 const allowedHits = new Set([
   'src/lib/shell/components/UtilityStrip.svelte:setInterval:const refreshInterval = window.setInterval(() => {',
@@ -110,7 +113,9 @@ interface Hit {
     | 'promise-chain'
     | 'promise-wrapper'
     | 'anonymous-async-iife'
-    | 'non-async-promise-implementation';
+    | 'non-async-promise-implementation'
+    | 'css-has-selector'
+    | 'tailwind-has-variant';
   term: string;
   text: string;
 }
@@ -139,9 +144,16 @@ function files(dir: string): string[] {
 function scanFile(path: string): Hit[] {
   const rel = relative(root, path);
   const source = readFileSync(path, 'utf8');
+  return scanSource(rel, source);
+}
+
+export function scanSource(rel: string, source: string): Hit[] {
+  const cssHits = scanCssText(rel, source);
+  if (rel.endsWith('.css')) return cssHits;
   return [
     ...scanText(rel, source, 0),
-    ...scanConcretePromiseImplementations(rel, source)
+    ...scanConcretePromiseImplementations(rel, source),
+    ...cssHits
   ];
 }
 
@@ -167,6 +179,23 @@ function scanText(rel: string, source: string, lineOffset: number): Hit[] {
     anonymousAsyncIifePattern.lastIndex = 0;
     while ((match = anonymousAsyncIifePattern.exec(text)) !== null) {
       hits.push({ file: rel, line: lineOffset + index + 1, category: 'anonymous-async-iife', term: match[1].replace(/\s+/, ' '), text: text.trim() });
+    }
+  }
+  return hits;
+}
+
+function scanCssText(rel: string, source: string): Hit[] {
+  const withoutComments = source.replace(/<!--[\s\S]*?-->|\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\r\n]/g, ' '));
+  const lines = withoutComments.split(/\r?\n/);
+  const hits: Hit[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const text = lines[index];
+    for (const [pattern, category, term] of [
+      [cssHasPattern, 'css-has-selector', ':has()'],
+      [tailwindHasPattern, 'tailwind-has-variant', 'has-*']
+    ] as const) {
+      pattern.lastIndex = 0;
+      if (pattern.test(text)) hits.push({ file: rel, line: index + 1, category, term, text: text.trim() });
     }
   }
   return hits;
@@ -236,27 +265,31 @@ function scanConcretePromiseImplementations(rel: string, source: string): Hit[] 
   return hits;
 }
 
-const sourceFiles = files(srcRoot).sort();
-const hits = sourceFiles.flatMap(scanFile).filter((hit) =>
-  !allowedHits.has(`${hit.file}:${hit.term}:${hit.text}`)
-);
-const schedulerHits = hits.filter((hit) => hit.category === 'scheduler');
-const promiseChainHits = hits.filter((hit) => hit.category === 'promise-chain');
-const promiseWrapperHits = hits.filter((hit) => hit.category === 'promise-wrapper');
-const anonymousAsyncIifeHits = hits.filter((hit) => hit.category === 'anonymous-async-iife');
-const nonAsyncPromiseImplementationHits = hits.filter((hit) => hit.category === 'non-async-promise-implementation');
+function run(): void {
+  const sourceFiles = files(srcRoot).sort();
+  const hits = sourceFiles.flatMap(scanFile).filter((hit) =>
+    hit.category.startsWith('css-')
+    || hit.category === 'tailwind-has-variant'
+    || !allowedHits.has(`${hit.file}:${hit.term}:${hit.text}`)
+  );
+  const count = (category: Hit['category']): number => hits.filter((hit) => hit.category === category).length;
 
-console.log(`production source files scanned: ${sourceFiles.length}`);
-console.log(`scope: src/**/*.ts, src/**/*.svelte`);
-console.log(`excluded: ${excludedFileSuffixes.join(', ')}; path segments ${[...excludedPathSegments].join(', ')}`);
-console.log(`scheduler hits: ${schedulerHits.length}`);
-console.log(`promise chain hits: ${promiseChainHits.length}`);
-console.log(`promise wrapper hits: ${promiseWrapperHits.length}`);
-console.log(`anonymous async IIFE hits: ${anonymousAsyncIifeHits.length}`);
-console.log(`non-async Promise implementation hits: ${nonAsyncPromiseImplementationHits.length}`);
-console.log(`total prohibited async/scheduler hits: ${hits.length}`);
-for (const hit of hits) {
-  console.log(`${hit.file}:${hit.line}: ${hit.category}:${hit.term}: ${hit.text}`);
+  console.log(`production source files scanned: ${sourceFiles.length}`);
+  console.log(`scope: src/**/*.ts, src/**/*.svelte, src/**/*.css`);
+  console.log(`excluded: ${excludedFileSuffixes.join(', ')}; path segments ${[...excludedPathSegments].join(', ')}`);
+  console.log(`scheduler hits: ${count('scheduler')}`);
+  console.log(`promise chain hits: ${count('promise-chain')}`);
+  console.log(`promise wrapper hits: ${count('promise-wrapper')}`);
+  console.log(`anonymous async IIFE hits: ${count('anonymous-async-iife')}`);
+  console.log(`non-async Promise implementation hits: ${count('non-async-promise-implementation')}`);
+  console.log(`CSS :has() hits: ${count('css-has-selector')}`);
+  console.log(`Tailwind has variant hits: ${count('tailwind-has-variant')}`);
+  console.log(`total prohibited hits: ${hits.length}`);
+  for (const hit of hits) {
+    console.log(`${hit.file}:${hit.line}: ${hit.category}:${hit.term}: ${hit.text}`);
+  }
+
+  if (hits.length > 0) process.exitCode = 1;
 }
 
-if (hits.length > 0) process.exitCode = 1;
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) run();

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TSK-1453: Require lifecycle and CSS checks on pull requests</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:1050px;margin:36px auto;padding:0 24px;color:#202936;background:#f6f8fb}h1{line-height:1.2}table{border-collapse:collapse;width:100%;background:white}td,th{border:1px solid #bbc5d2;padding:12px;text-align:left;vertical-align:top}code{overflow-wrap:anywhere}aside{padding:16px;background:#fff0d4;margin:24px 0}a{color:#174e98}</style></head><body>
+<h1>TSK-1453: Require lifecycle and CSS checks on pull requests</h1>
+<p>Run the existing lifecycle rule automatically on every pull request to main. Extend its source scan to catch the banned CSS selectors and run existing cancellation tests in the same job.</p>
+<p><a href="https://app.notion.com/p/3f6394b0689d818aa5abf6690d7f3f72">Task and delivery record</a>. Base: <code>859a080658771f9dda241b864d570a759f15f4eb</code>. MacBook worktree: <code>/Users/blackcolours/dev/work/worktrees/mac-command-bar/tsk-1453-lifecycle-checks</code>.</p>
+<table><tr><th>File</th><th>Smallest change</th></tr>
+<tr><td><code>.github/workflows/lifecycle-checks.yml</code> (new)</td><td>One Ubuntu job, pull_request to main, no path filters, contents:read, fixed pnpm 10.28.2 and Node 22. Run scanner, detector tests, existing workspace-invoke cancellation and git-diff timeout tests. No native build or UI tests.</td></tr>
+<tr><td><code>tauri-svelte-preview/scripts/scanSchedulers.ts</code>: 8, 16–21, 154–182, 239–263</td><td>Include CSS files. Detect <code>:has()</code> and Tailwind has variants in source without exceptions. Keep the existing async allow-list unchanged. Expose only the existing detector functions needed by fixtures; no new scanner framework.</td></tr>
+<tr><td><code>tauri-svelte-preview/scripts/scanSchedulers.test.ts</code> (new)</td><td>Small fixtures prove detection of prohibited timers, promise chains, wrappers, anonymous async IIFEs, concrete non-async Promise bodies, CSS has selectors and Tailwind variants. Positive fixtures allow async/await, normal selectors and interface Promise declarations.</td></tr>
+<tr><td><code>docs/plans/tsk-1453-lifecycle-checks.html</code></td><td>This plan and final verification receipts; architecture is unchanged.</td></tr></table>
+<p>Expected diff: 150–200 lines including this page. No new dependency, product file, abstraction, option, fallback, broad rewrite, or changed exception. Stop and propose if another file or roughly twice the diff is needed.</p>
+<h2>Acceptance</h2>
+<ol><li>The same job runs on every PR to main, including documentation-only changes, so a required check cannot hang due to path filtering.</li>
+<li>The unchanged production source passes. Existing async exceptions remain byte-for-byte unchanged.</li>
+<li>Negative and positive fixture tests pass. CSS files get only the CSS check, not TypeScript parsing or scheduler text checks.</li>
+<li>Existing cancellation tests pass: aborted remote requests send the matching backend cancel id, settled calls release listeners, and owner/timeout abort reaches a diff read.</li>
+<li>Peer plan review before edits and one combined code/spec review after verification. No merge authorized.</li></ol>
+<h2>Verification commands</h2>
+<pre>pnpm --dir tauri-svelte-preview test:async-lifecycle
+pnpm --dir tauri-svelte-preview exec node --experimental-strip-types scripts/scanSchedulers.test.ts
+pnpm --dir tauri-svelte-preview test:workspace-invoke
+pnpm --dir tauri-svelte-preview test:git-diff-timeout
+git diff --check</pre>
+<aside>The scanner checks coding patterns; it cannot prove every timer, observer or asynchronous request has a working owner. Those paths still need targeted behavior tests and independent review. Main currently has no effective branch rules. Required-check activation is an owner decision after this PR is reviewable; this task does not change repository policy. Local git cancellation remains the existing limitation.</aside>
+<h2>Verification on October 11, 2026</h2>
+<table><tr><th>Check</th><th>Result</th></tr>
+<tr><td>Production scanner</td><td>Pass: 568 TypeScript, Svelte and CSS files; zero prohibited hits. Async exceptions unchanged.</td></tr>
+<tr><td>Detector fixtures</td><td>4/4 pass, including prohibited async syntax, CSS, bracket/shorthand/named Tailwind variants, and permitted syntax.</td></tr>
+<tr><td>Workspace cancellation</td><td>4/4 pass: matching remote cancel id, abort listener release, no already-aborted request, documented existing local behavior.</td></tr>
+<tr><td>Diff timeout cancellation</td><td>Pass: owner/timeout abort propagation and successful result.</td></tr>
+<tr><td>Combined code/spec review</td><td>Codex SOL medium peer: PASS after correcting the reproduced Tailwind shorthand miss. No product changes or changed exception.</td></tr></table>
+<p>The named Tailwind forms are documented in <a href="https://tailwindcss.com/docs/hover-focus-and-other-states#has">Tailwind's official state-variant documentation</a>. GitHub job execution is checked in the PR; local success alone does not activate required branch checks.</p>
+</body></html>
