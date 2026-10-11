@@ -12,7 +12,7 @@
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { buttonVariants } from '$lib/components/ui/button/index.js';
-  import { Chip, type ChipTone } from '$lib/components/ui/chip/index.js';
+  import { Chip } from '$lib/components/ui/chip/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { FilterPills } from '$lib/components/ui/filter-pills/index.js';
@@ -26,6 +26,9 @@
     readNotionTaskSettings,
     refreshNotionTasks,
     saveNotionTaskSettings,
+    splitTaskTitle,
+    taskPriorityTone,
+    taskStatusTone,
     type NotionTaskRow,
     type NotionTaskSettings
   } from '$lib/shell/notionTasks.ts';
@@ -38,44 +41,6 @@
   const PAGE_SIZE = 25;
   const TASK_ROW_HEIGHT = 64;
   const TASK_ROW_OVERSCAN = 5;
-
-  function taskStatusTone(status: string): ChipTone {
-    switch (status.trim().toLowerCase()) {
-      case 'done':
-      case 'complete':
-      case 'completed':
-        return 'good';
-      case 'doing':
-      case 'in progress':
-      case 'working':
-        return 'live';
-      case 'blocked':
-        return 'bad';
-      case 'todo':
-      case 'to do':
-      case 'not started':
-        return 'attention';
-      default:
-        return 'neutral';
-    }
-  }
-
-  function taskPriorityTone(priority: string): ChipTone {
-    switch (priority.trim().toLowerCase()) {
-      case 'high':
-        return 'bad';
-      case 'medium':
-        return 'attention';
-      default:
-        return 'neutral';
-    }
-  }
-
-  /** A title that starts with its task key, like "[TSK-12] Fix login", shows the key apart. */
-  function splitTaskTitle(title: string): { key: string; text: string } {
-    const match = /^\[([A-Z]+-\d+)\]\s*/.exec(title);
-    return match ? { key: match[1], text: title.slice(match[0].length) } : { key: '', text: title };
-  }
 
   interface Props {
     /** The active session's folder; the list follows the Notion project it maps to. */
