@@ -4,8 +4,8 @@
   Opened from the home button, over the whole frame; the shell under it stays
   as it was, so Back returns to it. Choosing a machine narrows the list to that
   machine and makes it the one New project and Add folder start on. Clicking a
-  project opens a new session there. In a narrow window the two panes become
-  tabs. Each project's ⋯ menu renames it, changes its folder on the same
+  project selects it; its ▶ button opens a new session there. In a narrow
+  window the two panes become tabs. Each project's ⋯ menu renames it, changes its folder on the same
   machine, pins it to the top, or removes it (its files always stay). Each
   machine's ⋯ menu connects or disconnects it, makes a new project or adds a folder on it, or opens Manage.
 -->
@@ -16,6 +16,7 @@
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
   import Laptop from '@lucide/svelte/icons/laptop';
   import Pin from '@lucide/svelte/icons/pin';
+  import Play from '@lucide/svelte/icons/play';
   import Plus from '@lucide/svelte/icons/plus';
   import X from '@lucide/svelte/icons/x';
   import { onMount } from 'svelte';
@@ -66,6 +67,7 @@
 
   let environment = $state<RemoteAssemblyEnvironment>({ profiles: [], readyProfileIds: [] });
   let machine = $state<string | null>(null);
+  let selectedProjectId = $state<string | null>(null);
   let query = $state('');
   let addProjectOpen = $state(false);
   let newProjectOpen = $state(false);
@@ -217,14 +219,20 @@
         <p class="px-2 py-4 text-[13px] text-muted-foreground">No projects match.</p>
       {:else}
         {#each rows as project (project.id)}
-          <ListRow data-testid="projects-row" actionsLabel="Project actions" onclick={() => onOpenProject(project.id)}>
+          <ListRow
+            data-testid="projects-row"
+            actionsLabel="Project actions"
+            selected={selectedProjectId === project.id}
+            onclick={() => (selectedProjectId = project.id)}
+          >
             {#if project.pinnedAtMs !== null}<Pin class="size-3.5 shrink-0 text-muted-foreground" aria-label="Pinned" />{/if}
             <span class="truncate font-medium">{project.title}</span>
             <Chip>{projectMachineLabel(project.machine, environment.profiles)}</Chip>
             <span class="ml-auto truncate text-sm text-muted-foreground" title={project.rootPath}>{shortProjectPath(project.rootPath)}</span>
-            <!-- The right margin keeps the ⋯ button clear of the label. -->
-            <span class="mr-8 w-8 shrink-0 text-right text-sm text-muted-foreground">{projectLastUsedLabel(project.lastUsedMs, now)}</span>
+            <!-- The right margin keeps the ▶ and ⋯ buttons clear of the label. -->
+            <span class="mr-16 w-8 shrink-0 text-right text-sm text-muted-foreground">{projectLastUsedLabel(project.lastUsedMs, now)}</span>
             {#snippet actions()}
+              <Button variant="ghost" size="icon-sm" aria-label={`New session in ${project.title}`} onclick={() => onOpenProject(project.id)}><Play /></Button>
               <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
                   {#snippet child({ props })}
