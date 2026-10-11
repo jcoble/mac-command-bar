@@ -58,7 +58,19 @@ const allowedHits = new Set([
   'src/lib/shell/git/gitBackendExtra.ts:Promise.race:return await Promise.race([read(signal), aborted]);',
   // TSK-1424 E/H: one one-second clock for every running workflow stage's elapsed time. It runs only
   // while the panel is visible and a stage is running; the effect cleanup clears it on hide, finish or unmount.
-  'src/lib/shell/panels/agents/WorkflowRuns.svelte:setInterval:const timer = window.setInterval(() => (now = Date.now()), 1000);'
+  'src/lib/shell/panels/agents/WorkflowRuns.svelte:setInterval:const timer = window.setInterval(() => (now = Date.now()), 1000);',
+  // TSK-1424 G: the tools column's one-frame WebKit invalidation (hide, change the grid next frame, reveal
+  // a frame later). The pending frame id is kept; a newer transition and dispose() cancel it.
+  'src/lib/shell/layout/frame.ts:requestAnimationFrame:toolsFrame = requestAnimationFrame(() => {',
+  'src/lib/shell/layout/frame.ts:cancelAnimationFrame:cancelAnimationFrame(toolsFrame);',
+  // TSK-1424 G: refresh after the panel renders visible; flushSync throws inside an effect. The effect's
+  // controller aborts on hide or unmount and the refresh checks it after the tick.
+  'src/lib/shell/panels/files/FilesPanel.svelte:tick:import { onDestroy, tick, untrack } from "svelte";',
+  'src/lib/shell/panels/files/FilesPanel.svelte:tick:await tick();',
+  // TSK-1424 G: these return the shared cached promise so the preview's {#await} keeps one identity and an
+  // image or formula never blinks back to pending; the reads behind them are named async functions.
+  'src/lib/SourceMarkdownPreview.svelte:loadKatex:function loadKatex(): Promise<KatexComponent> {',
+  'src/lib/SourceMarkdownPreview.svelte:localImageUrl:function localImageUrl(file: string): Promise<string> {'
 ]);
 
 interface Hit {
