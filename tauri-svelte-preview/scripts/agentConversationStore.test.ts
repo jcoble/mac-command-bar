@@ -787,9 +787,9 @@ test('saved anchor admission keeps current authority and ignores a stale Jump fa
     source.indexOf('function emitEvent(')
   );
   const jumpBlock = source.slice(
-    source.indexOf('export function jumpSelectedConversationToLatest('),
+    source.indexOf('export async function jumpSelectedConversationToLatest('),
     source.indexOf('export async function pageSelectedConversation(')
-  ).replace('export function', 'function');
+  ).replace('export async function', 'async function');
   const makeHarness = (
     selection: Record<string, any>,
     readPage: () => Promise<any>,
@@ -1892,7 +1892,7 @@ await test('a session the backend has not started yet still reports its empty ch
 
 await test('a sent message draws below the history it was sent after', () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
-  const block = source.slice(source.indexOf('export function sendSelectedConversationMessage('), source.indexOf('export async function refreshSelectedConversationChat('))
+  const block = source.slice(source.indexOf('export async function sendSelectedConversationMessage('), source.indexOf('export async function refreshSelectedConversationChat('))
     .replace('export ', '');
   const processor = new StreamProcessor();
   processor.setMessages(conversationMessagesFromEvents([{
@@ -1920,7 +1920,7 @@ await test('a sent message draws below the history it was sent after', () => {
 
 await test('a sent message draws its screenshots in the same step as its text', () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
-  const block = source.slice(source.indexOf('export function sendSelectedConversationMessage('), source.indexOf('export async function refreshSelectedConversationChat('))
+  const block = source.slice(source.indexOf('export async function sendSelectedConversationMessage('), source.indexOf('export async function refreshSelectedConversationChat('))
     .replace('export ', '');
   const processor = new StreamProcessor();
   const active = {
@@ -2003,4 +2003,92 @@ await test('displayed child state is isolated and eviction preserves parent cont
     store.evictConversationSession(parent.ownedId);
     URL.revokeObjectURL = originalRevoke;
   }
+});
+
+await test('leaving a session ends every wait on its stream and readiness and writes nothing after', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const between = (start: string, end: string) => source.slice(source.indexOf(start), source.indexOf(end));
+  const block = [
+    between('function isCurrent(', 'function messageBytes('),
+    between('function enqueueFactory(', 'async function restorePageAttachments('),
+    between('function rejectPendingAdmission(', 'export function selectConversationChat('),
+    between('export function selectConversationChat(', 'export async function pageSelectedConversation(')
+  ].join('\n').replaceAll('export ', '');
+  let aborted = false;
+  const writesAfterLeave: string[] = [];
+  const write = (name: string) => () => { if (aborted) writesAfterLeave.push(name); };
+  const stopped: number[] = [];
+  let subscriptions = 0;
+  let connection: any;
+  const session = { provider: 'claude', generation: 1, selectedHasAfter: true, selectedChildHistoryOwnedId: null };
+  const dependencies = {
+    conversationChunksFromEvent: () => [],
+    recordLiveMessages: write('live messages'),
+    EventType,
+    PAGE_BYTES: 1024,
+    getConversationSession: () => session,
+    ensureConversationSession: () => session,
+    evictConversationSession: () => undefined,
+    restoreSelectedConversationAttachments: () => undefined,
+    subscribeSelectedConversation: async () => {
+      const id = ++subscriptions;
+      return () => { stopped.push(id); };
+    },
+    admitInitialSnapshot: write('snapshot'),
+    emitEvent: write('event'),
+    pushMessagesSnapshot: write('messages snapshot'),
+    optimisticUserId: () => null,
+    sendStructuredMessage: async () => { writesAfterLeave.push('native send'); return null; },
+    setConversationSendError: write('send error'),
+    failChildConversationTranscript: write('child error'),
+    conversationMessagesAfterCustom: (messages: unknown) => messages,
+    attachmentDisplayMetadata: (attachment: unknown) => attachment,
+    createChat: (options: { connection: any }) => {
+      connection = options.connection;
+      return {
+        messages: [],
+        dispose: () => undefined,
+        // As TanStack does, a send hands the message to the connection and waits for it.
+        async sendMessage() {
+          await connection.send([{ role: 'user', parts: [{ type: 'text', content: 'Hello' }] }], undefined, undefined, { runId: 'run-1' });
+        }
+      };
+    }
+  };
+  const api = Function(...Object.keys(dependencies), `${stripTypeScriptTypes(block, { mode: 'strip' })}
+    let active = null;
+    let childActive = null;
+    return { selectConversationChat, sendSelectedConversationMessage, refreshSelectedConversationChat, selectedConversationChatReady };
+  `)(...Object.values(dependencies));
+  const settles = (promise: Promise<unknown>) => Promise.race([
+    promise.then((value) => ({ value }), (error) => ({ error })),
+    new Promise((resolve) => setTimeout(() => resolve('still waiting'), 200))
+  ]);
+  const pending = (promise: Promise<unknown>) => Promise.race([
+    promise.then(() => false, () => false),
+    new Promise((resolve) => setImmediate(() => setImmediate(() => resolve(true))))
+  ]);
+
+  const owner = new AbortController();
+  api.selectConversationChat('leave-me', 'leave-me', owner.signal);
+  const stream = connection.subscribe()[Symbol.asyncIterator]();
+  assert.equal((await stream.next()).value.name, 'assembly:snapshot-ready', 'the stream is open');
+  const admission = api.sendSelectedConversationMessage('leave-me', 'Hello');
+  const refresh = api.refreshSelectedConversationChat('leave-me');
+  const ready = api.selectedConversationChatReady('leave-me');
+  // Drain what the opens queued; the last read then waits for more.
+  let next = stream.next();
+  while (!(await pending(next))) next = stream.next();
+  assert.equal(await pending(admission), true, 'the send waits for the reloaded chat to be ready');
+  assert.equal(await pending(ready), true);
+
+  aborted = true;
+  owner.abort();
+  assert.deepEqual(await settles(next), { value: { value: undefined, done: true } }, 'the stream ends instead of waiting');
+  for (const waiting of [admission, refresh, ready]) {
+    const settled = await settles(waiting) as { error?: DOMException };
+    assert.equal(settled.error?.name, 'AbortError', 'every readiness wait ends when the session is left');
+  }
+  assert.ok(stopped.includes(subscriptions), 'the native watch is stopped');
+  assert.deepEqual(writesAfterLeave, [], 'nothing is sent or written after leaving');
 });

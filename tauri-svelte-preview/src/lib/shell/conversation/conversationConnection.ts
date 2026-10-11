@@ -274,7 +274,16 @@ function resetReady(selection: ActiveConversation): void {
     selection.resolveReady = resolve;
     selection.rejectReady = reject;
   });
-  void selection.ready.catch(() => {});
+  void ignoreLeftSelection(selection.ready);
+}
+
+/** Leaving a selection rejects its readiness; nobody may be waiting for it then. */
+async function ignoreLeftSelection(ready: Promise<void>): Promise<void> {
+  try {
+    await ready;
+  } catch {
+    // Whoever awaits the readiness sees the rejection themselves.
+  }
 }
 
 function bindSelectionSignal(selection: ActiveConversation, signal?: AbortSignal): void {
@@ -460,14 +469,26 @@ function admitInitialSnapshot(
   }
   if (selection.anchorAdmission) return;
   const revision = ++selection.anchorRevision;
-  const admission = (async () => {
+  selection.anchorAdmission = admitAnchorPage(selection, snapshot, anchor!.firstSequence, revision, push);
+}
+
+/** Reads the saved window's page; leaving the selection or a newer Jump drops the result. */
+async function admitAnchorPage(
+  selection: ActiveConversation,
+  snapshot: AgentConversationSelectionSnapshot,
+  firstSequence: number,
+  revision: number,
+  push: (item: QueueItem) => void
+): Promise<void> {
+  const signal = selection.controller.signal;
+  try {
     const page = await readNewerSelectedConversationItems(
       selection.historyOwnedId,
-      anchor!.firstSequence - 1,
+      firstSequence - 1,
       PAGE_BYTES,
-      selection.controller.signal
+      signal
     );
-    if (selection.controller.signal.aborted
+    if (signal.aborted
       || !isCurrent(selection)
       || revision !== selection.anchorRevision) return;
     const authority = selection.anchorSnapshot ?? snapshot;
@@ -479,17 +500,15 @@ function admitInitialSnapshot(
       return;
     }
     snapshotChunks(selection, page ? { ...authority, page } : authority, push, false);
-  })();
-  selection.anchorAdmission = admission;
-  void admission.catch((error) => {
+  } catch (error) {
     if (!isCurrent(selection)
-      || selection.controller.signal.aborted
+      || signal.aborted
       || revision !== selection.anchorRevision) return;
     selection.anchorAdmission = null;
     selection.anchorSnapshot = null;
     selection.rejectReady?.(error);
     push({ error });
-  });
+  }
 }
 
 function emitEvent(
@@ -568,35 +587,44 @@ function createConnection(selection: ActiveConversation): SubscribeConnectionAda
       const queue = enqueueFactory(joined.signal, selection);
       return (async function* () {
         let dispose = (): void => {};
-        let opening = Promise.resolve();
-        const open = (): Promise<void> => {
-          opening = opening.then(async () => {
-            dispose();
-            dispose = () => {};
-            let found = false;
-            const next = await subscribeSelectedConversation({
-              workspaceOwnedId: selection.workspaceOwnedId,
-              ownedId: selection.historyOwnedId,
-              maxBytes: PAGE_BYTES,
-              signal: joined.signal,
-              onSnapshot: (snapshot) => {
-                found = true;
-                admitInitialSnapshot(selection, snapshot, queue.push);
-              },
-              onEvent: (event) => emitEvent(selection, event, queue.push),
-              onError: (error) => queue.push({ error })
-            });
-            if (joined.signal.aborted) next();
-            else {
-              dispose = next;
-              // A new session has no backend row until its first send starts it, so
-              // there is no snapshot. Its empty chat is ready now; the started
-              // session's first event reloads the real snapshot.
-              if (!found) queue.push({ type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: selection.historyOwnedId } as StreamChunk);
-            }
+        let opening: Promise<void> = Promise.resolve();
+        // Opens run one at a time; each replaces the watch the previous one opened.
+        async function open(): Promise<void> {
+          const run = openAfter(opening);
+          opening = run;
+          await run;
+        }
+        async function openAfter(previous: Promise<void>): Promise<void> {
+          try {
+            await previous;
+          } catch {
+            // The earlier caller already saw its error.
+          }
+          if (joined.signal.aborted) return;
+          dispose();
+          dispose = () => {};
+          let found = false;
+          const next = await subscribeSelectedConversation({
+            workspaceOwnedId: selection.workspaceOwnedId,
+            ownedId: selection.historyOwnedId,
+            maxBytes: PAGE_BYTES,
+            signal: joined.signal,
+            onSnapshot: (snapshot) => {
+              found = true;
+              admitInitialSnapshot(selection, snapshot, queue.push);
+            },
+            onEvent: (event) => emitEvent(selection, event, queue.push),
+            onError: (error) => queue.push({ error })
           });
-          return opening;
-        };
+          if (joined.signal.aborted) next();
+          else {
+            dispose = next;
+            // A new session has no backend row until its first send starts it, so
+            // there is no snapshot. Its empty chat is ready now; the started
+            // session's first event reloads the real snapshot.
+            if (!found) queue.push({ type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: selection.historyOwnedId } as StreamChunk);
+          }
+        }
         selection.push = queue.push;
         selection.resubscribe = open;
         try {
@@ -690,13 +718,6 @@ export function selectConversationChat(
   } else {
     disposeSelectedConversationChat();
   }
-  let resolveReady: (() => void) | undefined;
-  let rejectReady: ((error: unknown) => void) | undefined;
-  const ready = new Promise<void>((resolve, reject) => {
-    resolveReady = resolve;
-    rejectReady = reject;
-  });
-  void ready.catch(() => {});
   const selection = {
     workspaceOwnedId,
     historyOwnedId,
@@ -708,11 +729,9 @@ export function selectConversationChat(
     contentAdmitted: false,
     anchorRevision: 0,
     anchorAdmission: null,
-    anchorSnapshot: null,
-    ready,
-    resolveReady,
-    rejectReady
+    anchorSnapshot: null
   } as ActiveConversation;
+  resetReady(selection);
   const connection = createConnection(selection);
   selection.chat = createChat({
     connection,
@@ -796,7 +815,7 @@ export async function selectedConversationChatReady(
   await selection.ready;
 }
 
-export function sendSelectedConversationMessage(
+export async function sendSelectedConversationMessage(
   workspaceOwnedId: string,
   text: string,
   id?: string,
@@ -804,10 +823,10 @@ export function sendSelectedConversationMessage(
 ): Promise<AgentConversationSendReceipt> {
   const selection = active;
   if (!selection || selection.workspaceOwnedId !== workspaceOwnedId) {
-    return Promise.reject(new Error('The conversation is not ready to send.'));
+    throw new Error('The conversation is not ready to send.');
   }
   if (selection.pendingAdmission) {
-    return Promise.reject(new Error('A message is already being admitted.'));
+    throw new Error('A message is already being admitted.');
   }
   let resolve!: (receipt: AgentConversationSendReceipt) => void;
   let reject!: (error: unknown) => void;
@@ -821,7 +840,7 @@ export function sendSelectedConversationMessage(
   // the message drew above the whole history, and the send anchor scrolled there.
   // The id lets the surface scroll to this copy at once; its screenshots draw
   // with it rather than when the backend's copy claims them.
-  void selection.chat.sendMessage({
+  void sendChatMessage(selection, admission, {
     id,
     content: [{ type: 'text', content: text }],
     metadata: {
@@ -829,14 +848,25 @@ export function sendSelectedConversationMessage(
       startedAtMs: Date.now(),
       ...(attachments.length ? { attachments: attachments.map(attachmentDisplayMetadata) } : {})
     }
-  })
-    .catch((error) => rejectPendingAdmission(selection, error))
-    .finally(() => {
-      if (selection.pendingAdmission === admission) {
-        rejectPendingAdmission(selection, new Error('The message was not admitted.'));
-      }
-    });
-  return promise;
+  });
+  return await promise;
+}
+
+/** Runs the chat's send; a send that fails or ends without a receipt rejects its admission. */
+async function sendChatMessage(
+  selection: ActiveConversation,
+  admission: PendingAdmission,
+  message: Parameters<CreateChatReturn['sendMessage']>[0]
+): Promise<void> {
+  try {
+    await selection.chat.sendMessage(message);
+  } catch (error) {
+    rejectPendingAdmission(selection, error);
+  } finally {
+    if (selection.pendingAdmission === admission) {
+      rejectPendingAdmission(selection, new Error('The message was not admitted.'));
+    }
+  }
 }
 
 export async function refreshSelectedConversationChat(workspaceOwnedId: string, historyOwnedId = workspaceOwnedId): Promise<void> {
@@ -847,7 +877,7 @@ export async function refreshSelectedConversationChat(workspaceOwnedId: string, 
   await selection.ready;
 }
 
-export function jumpSelectedConversationToLatest(workspaceOwnedId: string, historyOwnedId = workspaceOwnedId): Promise<void> {
+export async function jumpSelectedConversationToLatest(workspaceOwnedId: string, historyOwnedId = workspaceOwnedId): Promise<void> {
   const selection = historyOwnedId === workspaceOwnedId ? active : childActive;
   if (selection?.workspaceOwnedId === workspaceOwnedId && selection.historyOwnedId === historyOwnedId) {
     selection.anchorRevision += 1;
@@ -855,7 +885,7 @@ export function jumpSelectedConversationToLatest(workspaceOwnedId: string, histo
     selection.anchorSnapshot = null;
     selection.contentAdmitted = true;
   }
-  return refreshSelectedConversationChat(workspaceOwnedId, historyOwnedId);
+  await refreshSelectedConversationChat(workspaceOwnedId, historyOwnedId);
 }
 
 export async function pageSelectedConversation(direction: Direction, historyOwnedId?: string): Promise<void> {
