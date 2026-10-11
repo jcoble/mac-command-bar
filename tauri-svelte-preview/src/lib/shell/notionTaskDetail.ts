@@ -1,14 +1,42 @@
-import { isNativeTauriRuntime } from '$lib/tauriSource.ts';
+import { createAgentConversationRequestId, isNativeTauriRuntime } from '$lib/tauriSource.ts';
 
-export interface NotionTaskDetailBlock {
+export interface NotionTaskProperty {
+  name: string;
+  kind: 'status' | 'select' | 'multi_select' | 'date' | 'relation' | 'people' | 'text'
+    | 'url' | 'checkbox' | 'number' | 'unique_id' | 'created_time' | 'last_edited_time'
+    | 'files' | 'other';
+  values: string[];
+  links: (string | null)[];
+}
+
+export interface NotionBlock {
+  id: string;
   kind: string;
-  text: string;
+  markdown: string;
   checked: boolean | null;
-  url: string | null;
+  icon: string | null;
+  children: NotionBlock[];
+}
+
+export interface NotionTaskComment {
+  author: string;
+  created: string;
+  text: string;
 }
 
 export interface NotionTaskDetail {
-  blocks: NotionTaskDetailBlock[];
+  properties: NotionTaskProperty[];
+  body: NotionBlock[];
+  comments: NotionTaskComment[];
+}
+
+async function cancelNotionTaskDetail(requestId: number): Promise<void> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('cancel_notion_task_detail', { requestId });
+  } catch {
+    // The released viewer has no state to update if cancellation fails.
+  }
 }
 
 export async function readNotionTaskDetail(
@@ -17,10 +45,18 @@ export async function readNotionTaskDetail(
 ): Promise<NotionTaskDetail> {
   if (signal.aborted) throw signal.reason ?? new DOMException('Task closed', 'AbortError');
   if (!isNativeTauriRuntime()) throw new Error('Notion Tasks is available in the desktop app.');
+  const requestId = createAgentConversationRequestId();
   const { invoke } = await import('@tauri-apps/api/core');
-  const detail = await invoke<NotionTaskDetail>('read_notion_task_detail', { sourceTaskId });
   if (signal.aborted) throw signal.reason ?? new DOMException('Task closed', 'AbortError');
-  return detail;
+  const cancel = (): void => { void cancelNotionTaskDetail(requestId); };
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    const detail = await invoke<NotionTaskDetail>('read_notion_task_detail', { sourceTaskId, requestId });
+    if (signal.aborted) throw signal.reason ?? new DOMException('Task closed', 'AbortError');
+    return detail;
+  } finally {
+    signal.removeEventListener('abort', cancel);
+  }
 }
 
 export async function updateNotionTaskStatus(
