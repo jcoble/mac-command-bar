@@ -49,6 +49,7 @@ The engine runs the checks itself.
 | D11 | Phone app: **Flutter, Android first**, starting as a shell of the Rental Command app, talking to Assembly through an API like Rental Command does, reusing its messaging system. Three parts: main chat with the orchestrator; runs (see, pause, resume); permissions and decisions. |
 | D12 | Workers ride subscription-authenticated CLIs as today. **No API keys, no API costs** (carried from the 2026-08-20 design). |
 | D13 | Only the owner approves. A message from an agent never counts as approval; chat text the orchestrator relays is turned into a confirm button the owner taps. |
+| D14 | Authoring is conversational: the owner describes the workflow; any Assembly agent uses `workflow_format()` and `check_workflow(path)` to write and check the YAML and prompt files, then shows the owner for review and commit. The YAML in git is the only definition source and can be hand-edited. The picker lists only `.assembly/workflows/*.yml` from the selected project on the run machine; the tab shows name, path and steps read-only, with "Open file". The template creator is removed. Another reviewer means another `review` step with the same `of:`, never a `reviewers` list; findings from either reviewer redo that step. |
 
 ## 3. Overall picture
 
@@ -109,6 +110,8 @@ remote session routing (`agent_conversation/mod.rs:110-170`). Change only what t
 | Tool | Who gets it | What it does |
 |---|---|---|
 | `list_sessions()` | every session | The directory above |
+| `workflow_format()` | every session of every provider | Return `docs/workflows/format.md` as markdown, compiled into the backend with `include_str!` so it works in any project |
+| `check_workflow(path)` | every session of every provider | Parse and validate with the Task 7 loader inside the caller's project root; reject `../`; create no run and write no ledger. Return `ok` and one line per step, or exact errors |
 | `send_message(to, text)` | every session | Queue a message; returns its id and status |
 | `report_review(verdict, findings[])` | review steps | Structured verdict the engine counts (§6.2) |
 | `start_run(workflow, tasks[], machine?, i_merge?)` | orchestrator | Start one run per task; each task is `{key, title, body}` (§5.3) |
@@ -238,7 +241,8 @@ Today's templates live in app storage (`agents.workflow-templates`,
 `WorkflowRuns.svelte:91-109,370-408`) and the built-in task template is TypeScript
 (`taskWorkflowTemplate.ts`). The YAML file replaces them as the definition source. The built-in
 template is rewritten as `dev-pipeline.yml`; app-stored templates are not migrated (none are in
-use by the owner).
+use by the owner), and the Agents tab's template creator is removed when Task 12 switches to
+the YAML-only picker (§2 D14).
 
 ## 6. Run engine
 
