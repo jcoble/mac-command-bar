@@ -15,9 +15,18 @@ Pass a project-relative path to `check_workflow(path)`.
 Use one YAML document, unique mapping keys, and step IDs containing only ASCII
 letters, digits, `_` or `-`. Include at least one step. Dependencies must exist,
 must not refer to the step itself, and must not form a cycle.
+Unknown top-level and step-level keys are rejected: the error names the key and,
+for a step-level key, the step ID. The only allowed keys at these two levels
+are those in the tables below. Agent and review steps require a string provider;
+reviews require `of`. Both `review.of` and `on_fail`, when present, must name a
+direct or transitive dependency of the current step. `run` must be a non-empty
+list whose entries are strings.
 
 This reference uses the Task 7 loader at commit `7817ca1bb` for field names and
-loader defaults. That loader snapshots YAML and prompt contents; execution of
+loader defaults, plus Task A's strict validation amendment (2026-10-11).
+The rules above are enforced by one shared loader for `check_workflow` and
+`create_run_from_file` after Task A; they are not all enforced at `7817ca1bb`.
+The loader snapshots YAML and prompt contents; execution of
 step kinds/templates is added by Tasks 9–10, restart rules by Task 11, and merge
 rules by slice 4. A successful format check does not run commands or prove that a
 provider/model is installed. The two authoring tools are added by the authoring
@@ -33,7 +42,7 @@ plan; until then, do not claim that you called them.
 | `steps` | mapping from step IDs to step objects | Required; no default | Builds the dependency graph and saves each step. YAML order does not set execution order. |
 
 Do not write internal `version`, `roles`, `nodes`, `edges` or `concurrency` fields.
-The loader constructs these. Extra fields are not a supported extension mechanism.
+The loader constructs these. Unknown keys at this level fail validation.
 
 | Input definition field | Type | Required / default | Meaning |
 |---|---|---|---|
@@ -65,27 +74,28 @@ Each step has exactly one of `agent`, `run`, `review`, `gate`.
 | `needs` | list of step ID strings | Optional; `[]` | Waits for every dependency to pass or be skipped. |
 | `agent` | mapping | Required for an agent step | Starts a worker with the provider/model below. |
 | `prompt` | relative file path string | Required for an agent step; no default | Reads and snapshots the prompt text; fills template values at execution. |
-| `run` | list of shell command strings | Required for a command step; no default | Runs every command separately from the run worktree root; all must exit 0. Saves exit codes/output. |
+| `run` | non-empty list of shell command strings | Required for a command step; no default | Runs every command separately from the run worktree root; all must exit 0. Saves exit codes/output. |
 | `review` | mapping | Required for a review step | Starts a fresh reviewer; requires exactly one valid `report_review` tool call. |
 | `gate` | YAML value (opaque to Task 7) | Required for a gate step; no default | Pauses for an owner answer. Task 7 preserves this value; its nested format is not yet defined, so do not invent gate fields. |
-| `on_fail` | step ID string | Optional; no redo target | A failed command step sends that step back to redo with its output. |
+| `on_fail` | step ID string | Optional; no redo target | Must name a direct/transitive dependency; a failed command step sends it back to redo with output. |
 | `expect_files` | list of file pattern strings | Optional; no expected files | Checks agent output files; missing files fail the step. |
 | `if` | template condition string | Optional; no condition | False skips the step without dispatching it. |
 | `repeat` | boolean | Optional; not marked safe | Only `true` makes a command step safe to rerun after restart. Omit for side effects such as PR creation and merge. |
 
 | Agent/review mapping field | Type | Required / default | What the engine does |
 |---|---|---|---|
-| `agent.provider` | string | Required for usable dispatch; loader uses empty string if absent | Selects the provider; use `codex` or `claude`. |
+| `agent.provider` | string | Required; missing/non-string provider is rejected | Selects the provider; use `codex` or `claude`. |
 | `agent.model` | string | Optional; no selection (`null` internally) | Selects an advertised provider model when given; omission keeps provider selection. |
-| `review.of` | step ID string | Required for a useful review; loader checks only when present | Findings redo this step. It should be an upstream dependency, directly or transitively. |
+| `review.of` | step ID string | Required; missing `of` is rejected | Findings redo this step. It must be a direct or transitive dependency. |
 | `review.agent` | mapping with `provider`, optional `model` | Required for usable dispatch; no default | Selects the reviewer provider/model. |
 | `review.prompt` | relative file path string | Required; no default | Reads the review prompt beside the YAML and snapshots its contents. |
 
 In a review, put `agent` and `prompt` inside `review`, not at step level.
 `report_review` carries PASS with zero findings, or findings that the engine
-counts. A final reply saying “looks good” is not a verdict. Task 7 checks kind
-presence, prompt files and existing `of`/`on_fail` targets, but does not validate
-command lists, gate contents, file patterns, conditions or repeat flags yet.
+counts. A final reply saying “looks good” is not a verdict. The shared loader enforces the validation rules above and prompt containment.
+It does not validate gate contents, file patterns, conditions or repeat flags,
+or nested unknown keys. No schema framework or installed-provider/model check
+is part of format validation.
 
 ## Template values
 
@@ -120,6 +130,11 @@ merge only after checks pass, final review passes and proof is attached, then
 send a summary. With `i_merge: true`, stop with the PR open. Use the condition
 below and keep merge non-repeatable so restart uncertainty pauses for the owner.
 These are slice-4 execution rules, not guarantees supplied by the Task 7 parser.
+The PR step must attach reachable proof before the final review; merge must use
+the slice-4 guarded command that checks the current PR head and D6 facts. The
+short commands below illustrate the graph and require that runtime guard; raw
+`gh pr merge` alone does not enforce it. Refresh the engine-written PR body with
+the final verdict before merge or the “I'll merge” handoff.
 An authoring request or agent message alone does not authorize a merge.
 
 ## Example 1: worker then checks
@@ -144,7 +159,7 @@ with the project's real checks.
 
 ## Example 2: dev pipeline
 
-Write `.assembly/workflows/dev-pipeline.yml` (spec §5.1):
+Write `.assembly/workflows/dev-pipeline.yml` (spec §5.1, with D6 final review):
 Model strings reproduce the spec; select installed models before running it.
 
 ```yaml
@@ -181,8 +196,11 @@ steps:
     run:
       - git push -u origin HEAD
       - gh pr create --fill --body-file "${{ run.pr_body }}"
-  merge:
+  final-review:
     needs: [pr]
+    review: { of: build, agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/final-review.md }
+  merge:
+    needs: [final-review]
     if: "${{ !inputs.i_merge }}"
     run: ["ALLOW_MERGE=1 gh pr merge --merge"]
 ```
@@ -197,11 +215,12 @@ adapt their content to the project and its rules before using the workflow:
 | `spec-review.md` | Review ${{ steps.spec.summary }} against ${{ task.body }}. Call report_review exactly once with PASS and no findings, or actionable findings. |
 | `build.md` | Implement the reviewed spec for ${{ task.body }}. Fix ${{ redo.findings }} and ${{ redo.output }} on redo. Commit only your changes on the run branch. |
 | `code-review.md` | Review the build diff against ${{ task.body }} and the reviewed spec. Call report_review exactly once with PASS and no findings, or actionable findings. |
-| `proof.md` | Verify the completed change in the running app. Save direct proof in ${{ run.proof_dir }} and summarize what it shows. |
+| `proof.md` | Verify the completed change in the running app. Save direct proof in ${{ run.proof_dir }}, register and publish media with the existing evidence tool, and summarize what it shows. For nonvisual work, attach readable command receipts to the PR. |
+| `final-review.md` | Inspect the current PR diff, checks and attached proof against ${{ task.body }}. Call report_review exactly once with PASS and no findings, or actionable findings. |
 
 ## Example 3: dev pipeline with two code reviewers
 
-Write `.assembly/workflows/dev-pipeline-two-reviewers.yml`; use all six prompt
+Write `.assembly/workflows/dev-pipeline-two-reviewers.yml`; use all seven prompt
 files above plus `prompts/code-review-2.md` containing: “Independently review the
 build diff against ${{ task.body }}. Call report_review exactly once with PASS
 and zero findings, or actionable findings.” Both reviewers must pass before proof.
@@ -243,8 +262,11 @@ steps:
     run:
       - git push -u origin HEAD
       - gh pr create --fill --body-file "${{ run.pr_body }}"
-  merge:
+  final-review:
     needs: [pr]
+    review: { of: build, agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/final-review.md }
+  merge:
+    needs: [final-review]
     if: "${{ !inputs.i_merge }}"
     run: ["ALLOW_MERGE=1 gh pr merge --merge"]
 ```

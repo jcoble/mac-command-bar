@@ -111,7 +111,7 @@ remote session routing (`agent_conversation/mod.rs:110-170`). Change only what t
 |---|---|---|
 | `list_sessions()` | every session | The directory above |
 | `workflow_format()` | every session of every provider | Return `docs/workflows/format.md` as markdown, compiled into the backend with `include_str!` so it works in any project |
-| `check_workflow(path)` | every session of every provider | Parse and validate with the Task 7 loader inside the caller's project root; reject `../`; create no run and write no ledger. Return `ok` and one line per step, or exact errors |
+| `check_workflow(path)` | every session of every provider | Parse and validate with the shared strict loader (§5.1, authoring Task A) inside the caller's project root; reject `../`; create no run and write no ledger. Return `ok` and one line per step, or exact errors |
 | `send_message(to, text)` | every session | Queue a message; returns its id and status |
 | `report_review(verdict, findings[])` | review steps | Structured verdict the engine counts (§6.2) |
 | `start_run(workflow, tasks[], machine?, i_merge?)` | orchestrator | Start one run per task; each task is `{key, title, body}` (§5.3) |
@@ -152,6 +152,18 @@ answers with `send_message`.
 ## 5. Workflow files
 
 ### 5.1 Format
+
+Authoring Task A strengthens the Task 7 loader in one shared validation path used
+by `check_workflow` and `create_run_from_file`: reject unknown top-level keys
+(other than `name`, `inputs`, `limits`, `steps`) and unknown step-level keys
+(other than `needs`, `agent`, `prompt`, `run`, `review`, `gate`, `on_fail`,
+`expect_files`, `if`, `repeat`), naming the bad key and step ID where applicable.
+Agent and review steps require a string `agent.provider`; reviews require `of`.
+`review.of` and `on_fail` must name a direct or transitive dependency of the
+current step. `run` must be a non-empty list of strings. Keep the existing
+ID/dependency/prompt/path checks. No schema/type framework or installed
+provider/model validation is added. These stricter checks are not yet present
+at Task 7 commit `7817ca1bb`.
 
 ```yaml
 # .assembly/workflows/dev-pipeline.yml
@@ -197,12 +209,20 @@ steps:
     run:
       - git push -u origin HEAD
       - gh pr create --fill --body-file "${{ run.pr_body }}"
-  merge:
+  final-review:
     needs: [pr]
+    review: { of: build, agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/final-review.md }
+  merge:
+    needs: [final-review]
     if: "${{ !inputs.i_merge }}"
     run:
       - ALLOW_MERGE=1 gh pr merge --merge
 ```
+
+The PR step attaches reachable proof. The final reviewer checks the current PR
+head, checks and attached proof; the engine refreshes `run.pr_body` with its
+verdict before merge or the “I'll merge” handoff. Slice 4 guards the illustrative
+merge command with the D6 facts and current PR head.
 
 ### 5.2 Step kinds
 

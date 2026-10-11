@@ -40,14 +40,16 @@ Task 7 anchors below are from `7817ca1bb`; re-find symbols after integration.
 symbols from Task 2's lane, not guessed main line numbers. Task 3 may move them.
 No changes to the original slices 1–2 plan are required by this addendum.
 
-### Task A: Expose the format and validate a file without creating a run
+### Task A: Expose the format and share strict file validation with run creation
 
 **Files:** Modify `tauri-svelte-preview/src-tauri/src/agent_conversation/messaging.rs`
 (`MessagingEndpoint::handle`, `caller`, `post` tools/list branch); modify
 `tauri-svelte-preview/src-tauri/src/workflow.rs` (`contained_file`:77,
 `WorkflowEngine::create_run_from_file`:1298, `WorkflowPolicy::validate_definition`:948,
 `tests::yaml_fixture`:3065). Read `docs/workflows/format.md`; compile it into the
-endpoint. Update `main-architecture-explained.html`. Keep tests in these Rust files.
+endpoint. Inspect `tauri-svelte-preview/tools/assembly-mcp.ts` tools/list relay and
+self-test; add the two declarations only if the integrated client owns that list.
+Update `main-architecture-explained.html`. Keep loader/endpoint tests in these Rust files.
 Use Task 3's caller-project lookup; do not add a second session lookup mechanism.
 
 **Interfaces:** MCP `workflow_format()` takes no arguments and returns one text
@@ -58,21 +60,33 @@ project root from the credential-bound caller on that owning backend, never from
 tool arguments, process cwd or another session. Missing project is an error.
 Extract the existing parsing/snapshot construction into
 `WorkflowEngine::validate_file(repo_root: &Path, relative_yaml: &Path) -> Result<WorkflowDefinitionV1, WorkflowError>`.
-It performs the loader checks and `WorkflowPolicy::validate_definition`, returning
+It performs the existing loader checks plus the controller's strict checks below
+and `WorkflowPolicy::validate_definition`, returning
 the definition with prompts read. `create_run_from_file` calls this entry, inserts
 task/cwd into input, then calls `create_run`; validation stops before that call.
 Return text `ok` followed by one deterministic line per step: ID, kind, needs,
 and `of`/`on_fail` when present; on failure return the loader's exact error with
 MCP `isError: true`. Do not aggregate or replace the loader's first error.
 
-- [ ] **Red tests:** `workflow_authoring_format_is_embedded_for_every_session` invokes through two ordinary credential-bound sessions with different providers/projects, checks tools/list advertises both tools and returned text equals the file. `workflow_authoring_check_is_read_only` checks a valid agent→checks file and exact step summary; asserts ledger row count unchanged and no runtime dispatch/worktree allocation. `workflow_authoring_check_uses_callers_project` places valid same-named YAML in two project roots and checks each caller gets its own summary; missing project, caller-supplied root/identity, absolute path, `../`, wrong directory/extension and escaping YAML/prompt symlink fail. `workflow_authoring_check_preserves_loader_errors` covers duplicate key, bad step ID, unknown/cyclic `needs`, unknown `of`/`on_fail` and missing/escaping prompt; compare against the shared entry's exact errors. Include a valid two-reviewer file with the same `of` and transitive needs, not a reviewers list.
+**Strict checks (controller decision, 2026-10-11):** Allow only top-level
+`name`, `inputs`, `limits`, `steps` and step-level `needs`, `agent`, `prompt`,
+`run`, `review`, `gate`, `on_fail`, `expect_files`, `if`, `repeat`. Reject an
+unknown key with its name and the step ID for step-level errors. Require a string
+`agent.provider` for agent steps and `review.agent.provider` for review steps;
+require `review.of`. Each `of`/`on_fail` target must exist in the current step's
+direct/transitive `needs` ancestry. Require `run` to be a non-empty list of strings.
+Both check and start call this same validation; no MCP-only strengthening. No
+nested unknown-key validation, type system, JSON Schema or installed model/provider
+check. These additions deliberately supersede receipt item 4's old restriction.
+
+- [ ] **Red tests:** `workflow_authoring_format_is_embedded_for_every_session` invokes through two ordinary credential-bound sessions with different providers/projects, checks tools/list advertises both tools and returned text equals the file. `workflow_authoring_check_is_read_only` checks a valid agent→checks file and exact step summary; asserts ledger row count unchanged and no runtime dispatch/worktree allocation. `workflow_authoring_check_uses_callers_project` places valid same-named YAML in two project roots and checks each caller gets its own summary; missing project, caller-supplied root/identity, absolute path, `../`, wrong directory/extension and escaping YAML/prompt symlink fail. `workflow_authoring_check_preserves_loader_errors` covers duplicate key, bad step ID, unknown/cyclic `needs`, unknown `of`/`on_fail` and missing/escaping prompt; compare against the shared entry's exact errors. `workflow_authoring_strict_validation_is_shared` invokes both check and start against unknown top-level/step-level keys (assert key and step ID), missing/non-string providers for both agent and review, missing review.of, nonexistent/self/downstream/unrelated of/on_fail, and empty/scalar/mixed-type run values. Assert rejection before any ledger/run/worktree side effect. Valid direct and transitive targets and a non-empty string command list pass both paths. Include a valid two-reviewer file with the same `of` and transitive needs, not a reviewers list.
 - [ ] **Verify failure:** `cd tauri-svelte-preview/src-tauri && CARGO_BUILD_JOBS=3 MSBUILDDISABLENODEREUSE=1 ~/.cargo/bin/cargo test workflow_authoring` must run the new tests (not zero tests) and fail because tools/validate-only entry do not exist. Record exact assertion/error before edits.
-- [ ] **Minimum edit:** Add two tool declarations/dispatch branches using existing caller identity/project access. Extract the current loader up to definition construction and call its policy validator. Retain existing file containment and `.assembly/workflows/*.yml` checks, including rejecting `../` before canonicalization. Return success text or existing errors. No run ID, task snapshot requirement, command execution, ledger append, worker, timer or worktree. No new field validation framework or runtime behavior in this task.
-- [ ] **Green:** Rerun the red command; every named test reports `ok`. Run `cd tauri-svelte-preview/src-tauri && CARGO_BUILD_JOBS=3 MSBUILDDISABLENODEREUSE=1 ~/.cargo/bin/cargo test yaml_definition_is_snapshot_and_rejects_escape` and `CARGO_BUILD_JOBS=3 MSBUILDDISABLENODEREUSE=1 ~/.cargo/bin/cargo test task_snapshot_contains_body`. Run slices 1–2 gates: `cd tauri-svelte-preview && npx tsc --noEmit && pnpm run check:svelte` (owned shell: `0 error(s)`), `pnpm --dir tauri-svelte-preview test:async-lifecycle`, and `cd core && MSBUILDDISABLENODEREUSE=1 ~/.cargo/bin/cargo test`. Record one combined code/spec review and resolve findings before handing off.
+- [ ] **Minimum edit:** Add two tool declarations/dispatch branches using existing caller identity/project access. Extract the current loader up to definition construction, add only the strict checks above and call its policy validator. Use the existing dependency graph to check ancestry; no separate validator or schema. Retain existing file containment and `.assembly/workflows/*.yml` checks, including rejecting `../` before canonicalization. Return success text or existing errors. No run ID, task snapshot requirement, command execution, ledger append, worker, timer or worktree. No new field validation framework or runtime behavior in this task.
+- [ ] **Green:** Rerun the red command; every named test reports `ok`. Run `cd tauri-svelte-preview/src-tauri && CARGO_BUILD_JOBS=3 MSBUILDDISABLENODEREUSE=1 ~/.cargo/bin/cargo test yaml_definition_is_snapshot_and_rejects_escape` and `CARGO_BUILD_JOBS=3 MSBUILDDISABLENODEREUSE=1 ~/.cargo/bin/cargo test task_snapshot_contains_body`. Run slices 1–2 gates: `cd tauri-svelte-preview && npx tsc --noEmit && pnpm run check:svelte` (owned shell: `0 error(s)`), `pnpm --dir tauri-svelte-preview test:async-lifecycle`, and `cd core && MSBUILDDISABLENODEREUSE=1 ~/.cargo/bin/cargo test`. Run `cd tauri-svelte-preview && node --experimental-strip-types tools/assembly-mcp.ts --self-test` with both authoring tools advertised through the real stdio path. Record one combined code/spec review and resolve findings before handing off.
 
 **Done means:** Any ordinary session can read the same compiled reference and
 validate only its own project's workflow with the same parser used to start runs.
-No persisted or runtime side effects occur. **Expected diff:** around 100–160
+No persisted or runtime side effects occur. **Expected diff:** around 180–260
 implementation/test lines, plus the required architecture receipts.
 **Serial overlap:** Task 3 endpoint/caller access; Tasks 7–11 loader/engine.
 
