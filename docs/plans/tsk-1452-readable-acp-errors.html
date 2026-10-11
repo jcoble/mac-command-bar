@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TSK-1452 — Explain ACP adapter startup failures above the composer</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:960px;margin:36px auto;padding:0 24px;background:#fff;color:#23252b}h1{font-size:28px;line-height:1.2}h2{font-size:20px;margin-top:28px}.notice{border:1px solid #9d4658;border-radius:12px;padding:16px;background:#282a36;color:#e8e8ef}.notice p{margin:6px 0 0;color:#bec0d0}code{font-size:13px;background:#eee;padding:2px 4px}li{margin:6px 0}.scope{border-left:4px solid #47688b;padding-left:16px}</style></head><body>
+<h1>TSK-1452: Explain ACP adapter startup failures above the composer</h1>
+<p class="scope">Use the existing error formatter and notice. Show a short explanation and the actual adapter repair route for the reproduced Claude launcher failure. Preserve the full original diagnostic detail.</p>
+<h2>Before and after text mockup</h2>
+<p>This illustrates the existing banner's text only; its structure and styling are unchanged. The owner's screenshot is in the chat attachment, with no local image file available.</p>
+<div class="notice"><strong>Message not sent</strong><p>transport: ACP sidecar exited: …/node_modules/.bin/claude-agent-acp:2 | basedir=$(dirname …) | SyntaxError: missing ) after argument list | at wrapSafe … | at Module._compile … | Node.js v26.0.0</p></div>
+<p>Proposed summary:</p>
+<div class="notice"><strong>Message not sent</strong><p>Claude's provider adapter couldn't start. Open Settings → Updates, check Provider adapters, then install or update Claude.</p></div>
+<h2>Confirmed path and scope</h2>
+<ul>
+<li>The failure came from a proof app launch missing the normal adapter environment. Relaunching correctly made Claude local pass. This fix does not change provider discovery or repair that launcher.</li>
+<li><code>errorPresentation.ts:34–130</code> already maps summaries and preserves raw detail. Add one match requiring the reproduced ACP exit, Claude pnpm-shim path and SyntaxError together, before generic exited handling.</li>
+<li><code>ConversationComposer.svelte:1–28,259–266</code> currently inserts the raw send error into the existing Message not sent notice. Import the formatter and display its summary. Keep the raw error and dismissal behavior.</li>
+<li>The repair route is real: <code>SettingsDialog.svelte:320–325,871–874,1133–1135</code> names Updates and Provider adapters; <code>ProviderUpdateControl.svelte:23–47</code> exposes Check now and Install/Update.</li>
+</ul>
+<h2>Exact files and budget</h2>
+<ol>
+<li><code>tauri-svelte-preview/src/lib/shell/errorPresentation.ts</code>: the single reproduced mapping.</li>
+<li><code>tauri-svelte-preview/src/lib/shell/components/conversation/ConversationComposer.svelte</code>: summary wiring only.</li>
+<li><code>tauri-svelte-preview/scripts/errorPresentation.test.ts</code>: raw fixture, summary and detail assertions.</li>
+<li>This plan and its text mockup. Architecture unchanged: no command, event, state or lifecycle boundary changes.</li>
+</ol>
+<p>Expected 25–40 product/test lines. Stop near 80 lines or another product file. No new UI, disclosure, styling, error category for an unobserved failure, abstraction, setting, fallback, launcher repair, or UI structure/style test.</p>
+<h2>Acceptance and proof</h2>
+<ul>
+<li>The reproduced failure shows the short supported recovery message above the composer, without a path, shim source, stack or Node version. The complete original detail remains unchanged.</li>
+<li>All existing formatter mappings continue passing. Run <code>node --experimental-strip-types tauri-svelte-preview/scripts/errorPresentation.test.ts</code>, TypeScript/Svelte and async-lifecycle checks.</li>
+<li>Prove the reproduced error in the running isolated app. Reopen the preserved Claude/Codex local and Workbox Test chat fixtures and verify composer behavior in all four cases; these read-only checks need no additional provider sends.</li>
+<li>At most four screenshots for the PR. No new browser/app runtime until the independent terminal/font warmed memory runs finish; their source remains frozen.</li>
+</ul>
+</body></html>
