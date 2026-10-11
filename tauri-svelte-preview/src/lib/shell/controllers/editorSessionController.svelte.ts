@@ -141,10 +141,12 @@ export class EditorSessionController {
 		const checkpoint = this.checkpointActiveWorkspace(stopSignal);
 		this.stop.abort();
 		this.releaseActiveEditorResources();
-		this.activeOwnedId = null;
-		this.activeSnapshot = null;
-		await checkpoint;
-		if (stopSignal.aborted) return;
+		// The checkpoint writes only while this session is still owned, so ownership ends after it.
+		try {
+			await checkpoint;
+		} finally {
+			this.releaseOwnership();
+		}
 	}
 
 	/** Persist an empty editor (or only `keptFiles`) for this session before another selection can restore it. */
