@@ -7,7 +7,7 @@
   project opens a new session there. In a narrow window the two panes become
   tabs. Each project's ⋯ menu renames it, changes its folder on the same
   machine, pins it to the top, or removes it (its files always stay). Each
-  machine's ⋯ menu connects or disconnects it, adds a folder on it, or opens Manage.
+  machine's ⋯ menu connects or disconnects it, makes a new project or adds a folder on it, or opens Manage.
 -->
 <script lang="ts">
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -31,6 +31,7 @@
   import * as Tabs from '$lib/components/ui/tabs/index.js';
   import RemoteConnections from '$lib/shell/components/RemoteConnections.svelte';
   import AddProjectDialog from '$lib/shell/projects/AddProjectDialog.svelte';
+  import NewProjectDialog from '$lib/shell/projects/NewProjectDialog.svelte';
   import { hydrateProjects, projectRegistry, refreshRailProjects } from '$lib/shell/projects/projectRegistry.svelte.ts';
   import { ownedSessionFromBackend } from '$lib/shell/ownedSessions';
   import { hydrateOwned, rail, removeOwnedSession } from '$lib/shell/stores/sessionRailStore.svelte.ts';
@@ -67,6 +68,7 @@
   let machine = $state<string | null>(null);
   let query = $state('');
   let addProjectOpen = $state(false);
+  let newProjectOpen = $state(false);
   let machinesOpen = $state(false);
   let width = $state(0);
   let machinesError = $state('');
@@ -197,7 +199,7 @@
           <button type="button" class="chip-clear" aria-label="Show every machine" onclick={() => (machine = null)}><X /></button>
         </Chip>
       {/if}
-      <Button class="ml-auto" size="sm" onclick={() => (addProjectOpen = true)}><Plus />New project</Button>
+      <Button class="ml-auto" size="sm" onclick={() => (newProjectOpen = true)}><Plus />New project</Button>
       <Button variant="ghost" size="sm" onclick={() => (addProjectOpen = true)}><FolderPlus />Add folder</Button>
     </div>
     {#if actionError || projectRegistry.error || machinesError}
@@ -207,7 +209,7 @@
       {#if projects.length === 0}
         <EmptyState title="No projects yet." body="A project is a folder Assembly works in.">
           {#snippet actions()}
-            <Button size="sm" onclick={() => (addProjectOpen = true)}>New project</Button>
+            <Button size="sm" onclick={() => (newProjectOpen = true)}>New project</Button>
             <Button variant="ghost" size="sm" onclick={() => (addProjectOpen = true)}>Add existing folder</Button>
           {/snippet}
         </EmptyState>
@@ -275,6 +277,7 @@
                     {entry.connected ? 'Disconnect' : 'Connect'}
                   </DropdownMenu.Item>
                 {/if}
+                <DropdownMenu.Item onSelect={() => { machine = entry.id; newProjectOpen = true; }}>New project here…</DropdownMenu.Item>
                 <DropdownMenu.Item onSelect={() => { machine = entry.id; addProjectOpen = true; }}>Add folder here…</DropdownMenu.Item>
                 {#if entry.id !== 'local'}
                   <DropdownMenu.Item onSelect={() => (machinesOpen = true)}>Manage…</DropdownMenu.Item>
@@ -331,6 +334,10 @@
     onManageRemotes={() => (machinesOpen = true)}
     onClose={() => (addProjectOpen = false)}
   />
+{/if}
+
+{#if newProjectOpen}
+  <NewProjectDialog profiles={environment.profiles} {machine} onCreated={() => (newProjectOpen = false)} onClose={() => (newProjectOpen = false)} />
 {/if}
 
 {#if moving}

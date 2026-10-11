@@ -3507,7 +3507,8 @@ pub(super) fn validate_ssh_target(target: &str) -> Result<(), String> {
 /// so the wait here must outlast that; every other workspace operation stays quick.
 fn workspace_wait_seconds(operation: &str) -> u64 {
     match operation {
-        "fetch_git_repository" | "pull_git_repository" | "push_git_repository" | "publish_git_repository" => 125,
+        "fetch_git_repository" | "pull_git_repository" | "push_git_repository" | "publish_git_repository"
+        | "workspace_git_clone" => 125,
         _ => 15,
     }
 }
@@ -3518,7 +3519,7 @@ mod connection_tests {
 
     #[test]
     fn workspace_network_ops_wait_past_the_remote_git_limit() {
-        for operation in ["fetch_git_repository", "pull_git_repository", "push_git_repository", "publish_git_repository"] {
+        for operation in ["fetch_git_repository", "pull_git_repository", "push_git_repository", "publish_git_repository", "workspace_git_clone"] {
             assert!(workspace_wait_seconds(operation) > 120, "{operation}");
         }
         assert_eq!(workspace_wait_seconds("project_git_status"), 15);
