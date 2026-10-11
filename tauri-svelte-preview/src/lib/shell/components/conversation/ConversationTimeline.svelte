@@ -388,7 +388,14 @@
     await tick();
     if (signal.aborted || windowId !== renderWindowId || !restoring) return;
     if (follow) scrollToEnd();
-    else if (savedAnchor && !restoreAnchor(savedAnchor)) return;
+    else if (savedAnchor && !restoreAnchor(savedAnchor)) {
+      // Rows appear only once the saved place's page is admitted, so an anchor
+      // missing from them never arrives. Open at the latest instead of staying
+      // stuck in restore, which would also block paging and saving the view.
+      savedAnchor = undefined;
+      follow = true;
+      scrollToEnd();
+    }
     // Restore after the admitted content has mounted.
     await tick();
     if (signal.aborted || windowId !== renderWindowId || !restoring) return;
