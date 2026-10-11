@@ -18,6 +18,10 @@ const draft = readFileSync(
   new URL('../src/lib/shell/newSession/DraftSessionSurface.svelte', import.meta.url),
   'utf8'
 );
+const overlays = readFileSync(
+  new URL('../src/lib/shell/components/ShellOverlays.svelte', import.meta.url),
+  'utf8'
+);
 const startup = readFileSync(
   new URL('../src/lib/shell/controllers/shellStartup.ts', import.meta.url),
   'utf8'
@@ -51,6 +55,11 @@ assert.match(editor, /restoreEditorFiles\(plan\.openFiles, plan\.activePath\)/);
 assert.match(editor, /await writeAgentConversationWorkspaceFromTauri\(ownedId, snapshot\);\s*if \(stopSignal\.aborted\) return;/);
 assert.doesNotMatch(editor, /\.then\(|\.catch\(|\.finally\(/);
 assert.doesNotMatch(page, /\{#key\s+selection\.activeOwnedId/);
+// TSK-1440: closing the window or quitting destroys the webview without tearing down the route,
+// so the exit path runs the route's disposal (and the editor's final save) before letting the exit go.
+assert.match(page, /<ShellOverlays[\s\S]*?onBeforeExit=\{disposeRoute\}/);
+assert.match(overlays, /async function exitApp\(kind: AppExitKind\): Promise<void> \{\s*try \{\s*await onBeforeExit\(\);[\s\S]*?\}\s*await continueAppExit\(kind\);\s*\}/);
+assert.doesNotMatch(overlays, /void continueAppExit\(/);
 
 assert.match(panel, /let sessionStopController = new AbortController\(\);/);
 assert.match(panel, /export function releaseSessionResources[\s\S]*?sessionStopController\.abort\(\);[\s\S]*?sessionStopController = new AbortController\(\);/);

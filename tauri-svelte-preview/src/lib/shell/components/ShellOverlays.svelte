@@ -43,8 +43,10 @@
 		/** One of the two bottom-strip surfaces opened or closed. The strip draws
 		 * its own button as on or off from this. */
 		onUtilityStateChange?: (id: UtilityId, open: boolean) => void;
+		/** Runs before a close or quit goes ahead: the window goes away without tearing the page down. */
+		onBeforeExit: () => Promise<void>;
 	}
-	let { onResetLayout, message, onProblemsLocationChange, onRemoteConnected, onShowBottomDock, onUtilityStateChange }: Props = $props();
+	let { onResetLayout, message, onProblemsLocationChange, onRemoteConnected, onShowBottomDock, onUtilityStateChange, onBeforeExit }: Props = $props();
 
 	let settingsHost: { open: (section?: string) => void; close: () => void; isOpen: () => boolean } | null = null;
 	let resourcePopoverHost: HTMLDivElement | null = null;
@@ -88,13 +90,22 @@
 	function exitRequested(kind: AppExitKind): void {
 		const sessions = localBackgroundWorkSessions(rail.owned);
 		if (sessions.length === 0) {
-			void continueAppExit(kind);
+			void exitApp(kind);
 			return;
 		}
 		exitRequest = {
 			kind,
 			lines: sessions.map((session) => `${sessionLabel(session)} — ${backgroundWorkSummary(session.backgroundWork ?? [])}`),
 		};
+	}
+
+	async function exitApp(kind: AppExitKind): Promise<void> {
+		try {
+			await onBeforeExit();
+		} catch (error) {
+			console.warn("Could not save the workspace before exit", error);
+		}
+		await continueAppExit(kind);
 	}
 
 	onMount(() => {
@@ -208,7 +219,7 @@
 				onclick={() => {
 					const kind = exitRequest?.kind;
 					exitRequest = null;
-					if (kind) void continueAppExit(kind);
+					if (kind) void exitApp(kind);
 				}}>Quit Anyway</AlertDialog.Action
 			>
 		</AlertDialog.Footer>

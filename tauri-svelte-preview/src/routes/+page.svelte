@@ -829,6 +829,7 @@
 		bind:this={overlays}
 		onRemoteConnected={(profileId) => void refreshRemoteConnection(profileId)}
 		onResetLayout={() => workbench.resetLayout()}
+		onBeforeExit={disposeRoute}
 		message={null}
 		onProblemsLocationChange={(location) => workbench.applyProblemsLocation(location)}
 		onShowBottomDock={() => workbench.showBottomDock()}

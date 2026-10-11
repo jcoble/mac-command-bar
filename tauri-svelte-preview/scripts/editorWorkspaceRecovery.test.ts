@@ -17,6 +17,7 @@ interface Controller {
   rememberWorkspaceState(patch: object): Record<string, unknown> | null;
   persistWorkspaceState(id: string): Promise<void>;
   setPanel(panel: object | null): void;
+  dispose(): Promise<void>;
 }
 const reads: string[] = [];
 const writes: string[] = [];
@@ -139,4 +140,14 @@ releaseRead();
 assert.equal(await toBeta, null);
 await switching.restoreEditorWorkspaceForSession('gamma', '/gamma', true, signal);
 assert.equal(saved.get('alpha'), alphaSaved, "the aborted switch leaves alpha's saved files and unsaved text unchanged");
-console.log('editorWorkspaceRecovery: deleted outgoing session, repeat switching, save/read failures, cancellation, changes during a save and aborted switches passed');
+
+// TSK-1440: closing the app (dispose) saves the open files and unsaved text
+// changed since the last periodic save.
+const closing = new ControllerClass();
+await closing.restoreEditorWorkspaceForSession('closing', '/closing', true, signal);
+editorState.openFiles = [{ path: '/closing/a.md', content: 'unsaved on close' }];
+writes.length = 0;
+await closing.dispose();
+assert.deepEqual(writes, ['closing'], 'the final save writes the closing session');
+assert.deepEqual((saved.get('closing') as { fileStates?: unknown }).fileStates, [{ path: '/closing/a.md', content: 'unsaved on close' }]);
+console.log('editorWorkspaceRecovery: deleted outgoing session, repeat switching, save/read failures, cancellation, changes during a save, aborted switches and the save on close passed');
