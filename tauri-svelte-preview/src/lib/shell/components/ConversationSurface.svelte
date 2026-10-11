@@ -104,12 +104,20 @@
     const profileId = active?.executionEnvironment === 'remote' ? active.remoteProfileId : null;
     remoteMachine = null;
     if (!profileId) return;
-    let cancelled = false;
-    void readRemoteAssemblyEnvironmentFromTauri().then((environment) => {
-      if (!cancelled) remoteMachine = environment.profiles.find((profile) => profile.id === profileId) ?? null;
-    }).catch(() => { if (!cancelled) remoteMachine = null; });
-    return () => { cancelled = true; };
+    const controller = new AbortController();
+    void loadRemoteMachine(profileId, controller.signal);
+    return () => controller.abort();
   });
+
+  async function loadRemoteMachine(profileId: string, signal: AbortSignal): Promise<void> {
+    try {
+      const environment = await readRemoteAssemblyEnvironmentFromTauri();
+      if (signal.aborted) return;
+      remoteMachine = environment.profiles.find((profile) => profile.id === profileId) ?? null;
+    } catch {
+      if (!signal.aborted) remoteMachine = null;
+    }
+  }
   const conversation = $derived(activeOwnedId ? conversationSessions[activeOwnedId] ?? null : null);
   const presence = $derived(activeOwnedId ? $sessionPresenceHistory[activeOwnedId] : null);
   const activeTurnId = $derived(presence ? presence.activeTurnId : (conversation?.activeTurnId ?? active?.activeTurnId ?? null));
@@ -495,7 +503,7 @@
     // a round trip (to the workbox for a remote session) and the message draws
     // when it is sent. Best effort, like the flush below: a delivered message is
     // not reported unsent because its saved draft lingered.
-    void clearConversationSessionDraft(ownedId).catch(() => {});
+    void clearSavedDraft(ownedId);
     try {
       const receipt = steering
         ? await sendStructuredMessage(ownedId, text)
@@ -530,6 +538,14 @@
     }
   }
 
+  async function clearSavedDraft(ownedId: string): Promise<void> {
+    try {
+      await clearConversationSessionDraft(ownedId);
+    } catch {
+      // Best effort: a lingering saved draft is not a failed send.
+    }
+  }
+
   /** Cmd+V checks files first; text paste is untouched when there are no files. */
   async function paste(event: ClipboardEvent): Promise<void> {
     if (!active || !conversation) return;
@@ -549,10 +565,7 @@
     if (!ownedId) return;
     pendingImageCounts[ownedId] = (pendingImageCounts[ownedId] ?? 0) + files.filter((file) => file.type.startsWith('image/')).length;
     const previous = pendingAttachmentUploads.get(ownedId);
-    const upload = (async () => {
-      await previous;
-      if (active?.ownedId === ownedId) await saveImages(files, rejectedMessage);
-    })();
+    const upload = saveImagesAfter(previous, ownedId, files, rejectedMessage);
     pendingAttachmentUploads.set(ownedId, upload);
     try {
       await upload;
@@ -560,6 +573,18 @@
       pendingImageCounts[ownedId] = Math.max(0, (pendingImageCounts[ownedId] ?? 0) - files.filter((file) => file.type.startsWith('image/')).length);
       if (pendingAttachmentUploads.get(ownedId) === upload) pendingAttachmentUploads.delete(ownedId);
     }
+  }
+
+  // Uploads for one session run in order; one that finds its session no longer
+  // active stops before saving, as saveImages does after each await.
+  async function saveImagesAfter(
+    previous: Promise<void> | undefined,
+    ownedId: string,
+    files: File[],
+    rejectedMessage: string
+  ): Promise<void> {
+    await previous;
+    if (active?.ownedId === ownedId) await saveImages(files, rejectedMessage);
   }
 
   async function saveImages(files: File[], rejectedMessage: string): Promise<void> {
