@@ -360,19 +360,32 @@ async fn inspect_folder_on(
     serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
+/// How a folder made by `add_project` starts: `"git"` or `{ "clone": "<url or path>" }`.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectStart {
+    Git,
+    Clone(String),
+}
+
 #[tauri::command]
 /// Inspects the folder on the machine that owns it, then registers it. Adding
 /// the same folder again returns the project already registered, marked
 /// `alreadyExisted`. With `create`
-/// it first makes the folder (one level, no `git init`) on that machine, after
-/// checking the folder it goes in so a refusal leaves nothing behind.
+/// it first makes the folder (one level) on that machine, after
+/// checking the folder it goes in so a refusal leaves nothing behind. `start`
+/// then runs `git init` in it, or has `git clone` make it instead.
 pub async fn add_project(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     machine: String,
     path: String,
     create: bool,
+    start: Option<ProjectStart>,
 ) -> Result<protocol::ProjectRecord, String> {
+    if start.is_some() && !create {
+        return Err("Only a new folder can start with git or a copy of a repository.".into());
+    }
     if create {
         let parent = std::path::Path::new(&path)
             .parent()
@@ -380,15 +393,35 @@ pub async fn add_project(
             .ok_or_else(|| "Folder path must be absolute".to_string())?;
         let parent = inspect_folder_on(&remote, &machine, parent.to_string_lossy().into_owned()).await?;
         crate::project_folders::refuse_repository_parent(&parent)?;
-        let made = if machine == "local" {
-            std::fs::create_dir(&path).map_err(|error| error.to_string())
+        let local = machine == "local";
+        let folder = std::path::PathBuf::from(&path);
+        if let Some(ProjectStart::Clone(source)) = start {
+            if local {
+                tauri::async_runtime::spawn_blocking(move || crate::project_folders::git_clone(&source, &folder))
+                    .await
+                    .map_err(|error| error.to_string())??;
+            } else {
+                let args = serde_json::json!({ "url": source, "path": path });
+                remote.workspace_operation(&machine, "workspace_git_clone".into(), args, None).await?;
+            }
         } else {
-            remote
-                .workspace_operation(&machine, "workspace_mkdir".into(), serde_json::json!({ "path": path }), None)
-                .await
-                .map(|_| ())
-        };
-        made.map_err(|error| format!("The folder could not be created: {error}"))?;
+            let made = if local {
+                std::fs::create_dir(&path).map_err(|error| error.to_string())
+            } else {
+                remote
+                    .workspace_operation(&machine, "workspace_mkdir".into(), serde_json::json!({ "path": path }), None)
+                    .await
+                    .map(|_| ())
+            };
+            made.map_err(|error| format!("The folder could not be created: {error}"))?;
+            if start.is_some() && local {
+                tauri::async_runtime::spawn_blocking(move || crate::project_folders::git_init(&folder))
+                    .await
+                    .map_err(|error| error.to_string())??;
+            } else if start.is_some() {
+                remote.workspace_operation(&machine, "workspace_git_init".into(), serde_json::json!({ "path": path }), None).await?;
+            }
+        }
     }
     let inspection = inspect_folder_on(&remote, &machine, path).await?;
     let row = crate::project_folders::new_project_row(machine, inspection);

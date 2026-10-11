@@ -221,6 +221,22 @@ pub(crate) fn refuse_repository_parent(parent: &ProjectFolderInspection) -> Resu
     Ok(())
 }
 
+/// Makes the new project folder `path` a repository.
+pub(crate) fn git_init(path: &Path) -> Result<(), String> {
+    crate::run_git_text(path, &["init"])
+        .map(drop)
+        .map_err(|error| format!("Git could not set up the folder: {error}"))
+}
+
+/// Makes the new project folder `path` a clone of `source`, a URL or a path.
+/// Git refuses a `path` that exists and is not empty.
+pub(crate) fn git_clone(source: &str, path: &Path) -> Result<(), String> {
+    let parent = path.parent().unwrap_or(path);
+    crate::run_git_text(parent, &["clone", "--", source, &path.to_string_lossy()])
+        .map(drop)
+        .map_err(|error| format!("The repository could not be copied: {error}"))
+}
+
 /// `host/owner/repo` for https, ssh and `user@host:path` remote URLs; `''` otherwise.
 pub(crate) fn normalize_repo_key(url: &str) -> String {
     let url = url.trim();
@@ -648,6 +664,46 @@ mod tests {
 
         import_saved_project_roots(&manager).unwrap();
         assert_eq!(manager.list_projects().unwrap(), projects);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_init_makes_the_new_folder_a_repository() {
+        let root = temp_dir();
+        let folder = root.join("new");
+        std::fs::create_dir(&folder).unwrap();
+        git_init(&folder).unwrap();
+        assert!(inspect_project_folder_sync(text(&folder)).unwrap().is_git);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_clone_copies_a_local_bare_repository() {
+        let root = temp_dir();
+        let repo = repo_with_main(&root);
+        std::fs::write(repo.join("README.md"), "hello\n").unwrap();
+        git(&repo, &["add", "README.md"]);
+        git(&repo, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "readme"]);
+        let bare = root.join("bare.git");
+        git(&root, &["clone", "-q", "--bare", text(&repo), text(&bare)]);
+        let copy = root.join("copy");
+        git_clone(text(&bare), &copy).unwrap();
+        assert!(inspect_project_folder_sync(text(&copy)).unwrap().is_git);
+        assert_eq!(std::fs::read_to_string(copy.join("README.md")).unwrap(), "hello\n");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_clone_refuses_a_non_empty_destination() {
+        let root = temp_dir();
+        let repo = repo_with_main(&root);
+        let copy = root.join("copy");
+        std::fs::create_dir(&copy).unwrap();
+        std::fs::write(copy.join("notes.txt"), "mine\n").unwrap();
+        let error = git_clone(text(&repo), &copy).unwrap_err();
+        assert!(error.starts_with("The repository could not be copied: "), "{error}");
+        assert!(error.contains("already exists and is not an empty directory"), "{error}");
+        assert_eq!(std::fs::read_to_string(copy.join("notes.txt")).unwrap(), "mine\n");
         std::fs::remove_dir_all(root).unwrap();
     }
 }
