@@ -43,18 +43,22 @@
     thumbnailLoaded = false;
   });
 
-  function discardOriginal(transferId: string): void {
+  async function discardOriginal(transferId: string): Promise<void> {
     if (!remoteOwnedId || !attachmentId || !mimeType) return;
-    void invoke('discard_agent_conversation_original', {
-      ownedId: remoteOwnedId, attachmentId, mimeType, transferId
-    }).catch(() => {});
+    try {
+      await invoke('discard_agent_conversation_original', {
+        ownedId: remoteOwnedId, attachmentId, mimeType, transferId
+      });
+    } catch {
+      // Best effort: a failed discard leaves nothing for the lightbox to show.
+    }
   }
 
   function releaseFullObjectUrl(): void {
     loadGeneration += 1;
     activeRead?.abort();
     activeRead = null;
-    if (originalTransfer) discardOriginal(originalTransfer);
+    if (originalTransfer) void discardOriginal(originalTransfer);
     originalTransfer = '';
     if (fullObjectUrl.startsWith('blob:')) revokeTrackedObjectUrl(fullObjectUrl);
     fullObjectUrl = '';
@@ -87,7 +91,7 @@
           byteLength: originalByteLength, mimeType, transferId
         });
         if (controller.signal.aborted || generation !== loadGeneration) {
-          discardOriginal(transferId);
+          void discardOriginal(transferId);
           return;
         }
         fullObjectUrl = convertFileSrc(path);

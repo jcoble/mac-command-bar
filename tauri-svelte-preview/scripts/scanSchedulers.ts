@@ -70,7 +70,14 @@ const allowedHits = new Set([
   // TSK-1424 G: these return the shared cached promise so the preview's {#await} keeps one identity and an
   // image or formula never blinks back to pending; the reads behind them are named async functions.
   'src/lib/SourceMarkdownPreview.svelte:loadKatex:function loadKatex(): Promise<KatexComponent> {',
-  'src/lib/SourceMarkdownPreview.svelte:localImageUrl:function localImageUrl(file: string): Promise<string> {'
+  'src/lib/SourceMarkdownPreview.svelte:localImageUrl:function localImageUrl(file: string): Promise<string> {',
+  // TSK-1424 C: the turn's one-second elapsed clock. It runs only while the turn runs and the label and
+  // window are visible; the effect cleanup clears it when the turn ends, it scrolls out of view or unmounts.
+  'src/lib/shell/components/conversation/ConversationTurnElapsed.svelte:setInterval:const timer = setInterval(() => { now = Date.now(); }, 1000);',
+  // TSK-1424 C: the 300 ms wait before a local image send reads its bytes. Its timer is cleared and its
+  // abort listener removed when it ends; Stop aborts the send's signal, which ends it at once.
+  'src/lib/shell/conversation/conversationService.ts:new Promise:await new Promise<void>((resolve) => {',
+  'src/lib/shell/conversation/conversationService.ts:setTimeout:const timer = setTimeout(finish, 300);'
 ]);
 
 interface Hit {

@@ -190,20 +190,40 @@ export async function readChildConversationHistory(input: {
   stopChildConversationHistory(input.ownedId);
   const requestId = createAgentConversationRequestId();
   let readToken: ChildHistoryRead;
-  let settle!: () => void;
-  const settled = new Promise<void>((resolve) => { settle = resolve; });
   const stop = (): void => {
     readToken.active = false;
     input.signal?.removeEventListener('abort', abortFromOwner);
     void stopAgentConversationChildHistoryFromTauri(input.ownedId, requestId);
-    void settled.then(() => {
-      if (childHistoryReads.get(input.ownedId) === readToken) childHistoryReads.delete(input.ownedId);
-    });
+    void forgetChildHistoryRead(input.ownedId, readToken);
   };
   const abortFromOwner = (): void => stop();
-  readToken = { requestId, childSessionId: input.childId, active: true, settled, stop };
+  readToken = { requestId, childSessionId: input.childId, active: true, settled: Promise.resolve(), stop };
   input.signal?.addEventListener('abort', abortFromOwner, { once: true });
   childHistoryReads.set(input.ownedId, readToken);
+  const read = readChildHistoryPage(input, readToken, previous);
+  readToken.settled = waitForChildHistoryRead(read);
+  return await read;
+}
+
+/** Waits for one read without its error; the read's caller already gets it. */
+async function waitForChildHistoryRead(read: Promise<unknown>): Promise<void> {
+  try {
+    await read;
+  } catch {
+    // The caller of readChildConversationHistory handles the failure.
+  }
+}
+
+async function forgetChildHistoryRead(ownedId: string, readToken: ChildHistoryRead): Promise<void> {
+  await readToken.settled;
+  if (childHistoryReads.get(ownedId) === readToken) childHistoryReads.delete(ownedId);
+}
+
+async function readChildHistoryPage(
+  input: { ownedId: string; childId: string; childSessionId: string; signal?: AbortSignal },
+  readToken: ChildHistoryRead,
+  previous: ChildHistoryRead | undefined
+): Promise<AgentConversationChildHistory | null> {
   try {
     await previous?.settled;
     if (!readToken.active || input.signal?.aborted
@@ -211,13 +231,13 @@ export async function readChildConversationHistory(input: {
     const result = await readAgentConversationChildHistoryFromTauri({
       parentOwnedId: input.ownedId,
       childSessionId: input.childSessionId,
-      requestId,
+      requestId: readToken.requestId,
       maxBytes: CHILD_HISTORY_PAGE_BYTES
     });
     const current = getConversationSession(input.ownedId);
     if (!readToken.active || input.signal?.aborted || childHistoryReads.get(input.ownedId) !== readToken
       || current?.selectedChildId !== input.childId) {
-      stop();
+      readToken.stop();
       return null;
     }
     applyChildConversationHistoryStatus(
@@ -229,7 +249,7 @@ export async function readChildConversationHistory(input: {
   } catch (error) {
     const ownsRead = childHistoryReads.get(input.ownedId) === readToken;
     if (ownsRead) {
-      stop();
+      readToken.stop();
     }
     const current = getConversationSession(input.ownedId);
     if (ownsRead && !input.signal?.aborted && current?.selectedChildId === readToken.childSessionId) {
@@ -240,8 +260,6 @@ export async function readChildConversationHistory(input: {
       );
     }
     throw error;
-  } finally {
-    settle();
   }
 }
 
@@ -291,13 +309,12 @@ export async function saveConversationClipboardImage(
   file: File,
   onSavedChange?: (attachment: SavedAttachment, retained: boolean) => Promise<void>
 ): Promise<ConversationAttachment> {
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-  const bytes = dataUrl.slice(dataUrl.indexOf(',') + 1);
+  const data = new Uint8Array(await file.arrayBuffer());
+  let binary = '';
+  for (let index = 0; index < data.length; index += 0x8000) {
+    binary += String.fromCharCode(...data.subarray(index, index + 0x8000));
+  }
+  const bytes = btoa(binary);
   const saved = await invoke<SavedAttachment>('save_agent_conversation_attachment', {
     ownedId,
     mimeType: file.type,
@@ -710,13 +727,19 @@ function deliverSelectedConversationEvent(
 function requestSelectedConversationReload(read: SelectedConversationRead): void {
   read.reloadRequested = true;
   if (read.reading) return;
-  void reloadSelectedConversation(read).catch((error) => {
+  void reloadOrReportSelectedConversation(read);
+}
+
+async function reloadOrReportSelectedConversation(read: SelectedConversationRead): Promise<void> {
+  try {
+    await reloadSelectedConversation(read);
+  } catch (error) {
     if (isCurrentConversationRead(read) && !read.abortController.signal.aborted) {
       read.events.length = 0;
       read.bytes = 0;
       read.onError(error);
     }
-  });
+  }
 }
 
 function bufferSelectedConversationEvent(
@@ -850,24 +873,24 @@ export async function subscribeSelectedConversation(input: {
   }
 }
 
-export function readOlderSelectedConversationItems(
+export async function readOlderSelectedConversationItems(
   ownedId: string,
   beforeSequence: number,
   maxBytes: number,
   signal?: AbortSignal
 ): Promise<AgentConversationItemPage | null> {
-  return listAgentConversationItemsBeforeFromTauri(
+  return await listAgentConversationItemsBeforeFromTauri(
     ownedId, beforeSequence, maxBytes, signal
   );
 }
 
-export function readNewerSelectedConversationItems(
+export async function readNewerSelectedConversationItems(
   ownedId: string,
   afterSequence: number,
   maxBytes: number,
   signal?: AbortSignal
 ): Promise<AgentConversationItemPage | null> {
-  return listAgentConversationItemsAfterFromTauri(
+  return await listAgentConversationItemsAfterFromTauri(
     ownedId, afterSequence, maxBytes, signal
   );
 }
@@ -926,7 +949,7 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
       setRemoteConnection(payload.profileId, payload.state);
       if (payload.state === 'connected') {
         void refreshRemoteSessionActivity(streamGeneration);
-        void reacquireSelectedChildHistory(payload.profileId, streamGeneration).catch(() => {});
+        void reacquireSelectedChildHistory(payload.profileId, streamGeneration);
       }
     });
     stopRemoteConnections = trackTauriListener(stopRemoteConnectionEvents);
@@ -1031,12 +1054,18 @@ async function reacquireSelectedChildHistory(
   const childId = current?.selectedChildId;
   const child = current?.children.find((candidate) => candidate.childId === childId);
   if (!childId || !child?.transcriptAvailable) return;
-  const history = await readChildConversationHistory({
-    ownedId: read.workspaceOwnedId,
-    childId,
-    childSessionId: child.transcriptId ?? childId,
-    signal: read.abortController.signal
-  });
+  let history: AgentConversationChildHistory | null;
+  try {
+    history = await readChildConversationHistory({
+      ownedId: read.workspaceOwnedId,
+      childId,
+      childSessionId: child.transcriptId ?? childId,
+      signal: read.abortController.signal
+    });
+  } catch {
+    // The child history read reports its own failure on the transcript.
+    return;
+  }
   if (!history || !isCurrentConversationRead(read) || read.abortController.signal.aborted
     || getConversationSession(read.workspaceOwnedId)?.selectedChildId !== childId
     || history.historyOwnedId !== read.ownedId) return;
@@ -1280,7 +1309,21 @@ export async function changeStructuredConversationCheckout(
   return record;
 }
 
-const preparingSends = new Map<string, { cancelled: boolean }>();
+const preparingSends = new Map<string, AbortController>();
+
+/** Waits out the send's scroll glide; Stop ends the wait at once. */
+async function waitForSendGlide(signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, 300);
+    signal.addEventListener('abort', finish, { once: true });
+    if (signal.aborted) finish();
+  });
+}
 
 /** Sends one message through the current writer while preserving attachment recovery. */
 export async function sendStructuredMessage(
@@ -1299,7 +1342,7 @@ export async function sendStructuredMessage(
   const turnWasAlreadyActive = state.sending || Boolean(
     presence ? presence.activeTurnId : (state.activeTurnId ?? rail.owned.find((session) => session.ownedId === ownedId)?.activeTurnId)
   );
-  const preparation = { cancelled: false };
+  const preparation = new AbortController();
   preparingSends.set(ownedId, preparation);
   setConversationSending(ownedId, true);
   // The composer empties the moment Send is pressed. The screenshots are held
@@ -1407,7 +1450,13 @@ export async function sendStructuredMessage(
       // Image bytes cross the IPC as a JSON number array, which holds the main
       // thread (~80 ms per 600 KB measured). Wait out the send's scroll glide
       // (~250 ms in WebKit) so the message lands smoothly before that work.
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await waitForSendGlide(preparation.signal);
+      if (preparation.signal.aborted) {
+        if (!turnWasAlreadyActive) await invoke('stop_agent_conversation_turn', {
+          request: { ownedId, generation: state.generation }
+        });
+        throw new Error('Message cancelled before sending.');
+      }
     }
     const hydratedAttachments = supportsImages && !remoteSend
       ? await Promise.all(attachments.map((attachment) => hydrateAttachmentBytes(attachment as AttachmentWithBytes)))
@@ -1437,7 +1486,7 @@ export async function sendStructuredMessage(
         ...(startConfig.reasoningEffort ? { reasoningEffort: startConfig.reasoningEffort } : {})
       });
     }
-    if (preparation.cancelled) {
+    if (preparation.signal.aborted) {
       if (!turnWasAlreadyActive) await invoke('stop_agent_conversation_turn', {
         request: { ownedId, generation: validatedGeneration }
       });
@@ -1485,7 +1534,7 @@ export async function stopStructuredTurn(ownedId: string): Promise<void> {
   const presence = get(sessionPresenceHistory)[ownedId];
   const activeTurn = presence ? presence.activeTurnId : (state?.activeTurnId ?? rail.owned.find((session) => session.ownedId === ownedId)?.activeTurnId);
   if (preparation) {
-    preparation.cancelled = true;
+    preparation.abort();
     if (!activeTurn) return;
   }
   if (!state || state.generation < 1) return;

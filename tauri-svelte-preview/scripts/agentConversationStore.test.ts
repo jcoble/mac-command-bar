@@ -1509,6 +1509,52 @@ await test('Stop during revival prevents dispatch and releases the prepared runt
   assert.equal(api.preparingSends.size, 0, 'no retained send bookkeeping');
 });
 
+await test('Stop during the image send wait skips hydration and writes no session state', async () => {
+  const ownedId = 'glide-stop';
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('const preparingSends ='), source.indexOf('/** Answers one summary-only approval'));
+  const code = stripTypeScriptTypes(block.replaceAll('export async function', 'async function'), { mode: 'strip' });
+  const state = {
+    sending: false, generation: 1, activeTurnId: undefined,
+    attachments: [{ id: 'image-a', name: 'a.png', mimeType: 'image/png', path: '/tmp/a.png' }],
+    capabilities: null, connectionState: 'connected', agentConfig: { availableApprovalPolicies: [] }
+  };
+  const calls: string[] = [];
+  const writes: string[] = [];
+  let hydrated = 0;
+  const dependencies = {
+    getConversationSession: () => state,
+    setConversationSending: (_id: string, sending: boolean) => { state.sending = sending; },
+    get,
+    sessionPresenceHistory,
+    rail: { owned: [{ ownedId, agent: 'claude', state: 'live', origin: 'app', executionEnvironment: 'local', nativeSessionId: 'native-glide' }] },
+    shouldReviveBeforeSend: () => false,
+    sendSupportsImages: () => true,
+    hydrateAttachmentBytes: async (attachment: object) => { hydrated += 1; return { ...attachment, bytes: [1] }; },
+    buildConversationPrompt: (text: string) => ({ text, content: [] }),
+    sendTargetGeneration: () => 1,
+    updateOwnedSession: () => { writes.push('owned session'); },
+    recordSentConversationAttachments: () => undefined,
+    attachmentDisplayMetadata: () => undefined,
+    invoke: async (command: string) => { calls.push(command); },
+    setConversationAttachments: () => undefined
+  };
+  const api = Function(...Object.keys(dependencies), `${code}\nreturn { sendStructuredMessage, stopStructuredTurn, preparingSends };`)(...Object.values(dependencies)) as {
+    sendStructuredMessage: (id: string, text: string) => Promise<void>;
+    stopStructuredTurn: (id: string) => Promise<void>;
+    preparingSends: Map<string, unknown>;
+  };
+  const sending = api.sendStructuredMessage(ownedId, 'Look at this');
+  const cancelled = assert.rejects(sending, /^Error: Message cancelled before sending\.$/);
+  await api.stopStructuredTurn(ownedId);
+  await cancelled;
+  assert.equal(hydrated, 0, 'the image bytes are not read after Stop');
+  assert.deepEqual(writes, [], 'no session state is written after Stop');
+  assert.deepEqual(calls, ['stop_agent_conversation_turn']);
+  assert.equal(state.sending, false);
+  assert.equal(api.preparingSends.size, 0);
+});
+
 await test('an observed active turn routes Stop to the backend', async () => {
   const ownedId = 'observed-steering';
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
