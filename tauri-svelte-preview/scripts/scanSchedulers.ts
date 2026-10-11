@@ -77,7 +77,16 @@ const allowedHits = new Set([
   // TSK-1424 C: the 300 ms wait before a local image send reads its bytes. Its timer is cleared and its
   // abort listener removed when it ends; Stop aborts the send's signal, which ends it at once.
   'src/lib/shell/conversation/conversationService.ts:new Promise:await new Promise<void>((resolve) => {',
-  'src/lib/shell/conversation/conversationService.ts:setTimeout:const timer = setTimeout(finish, 300);'
+  'src/lib/shell/conversation/conversationService.ts:setTimeout:const timer = setTimeout(finish, 300);',
+  // TSK-1424 B: the chat stream's wait for the next native event. Leaving the session aborts the
+  // stream's signal, whose listener wakes the wait; the stream's finally removes that listener.
+  'src/lib/shell/conversation/conversationConnection.ts:new Promise:await new Promise<void>((resolve) => { wake = resolve; });',
+  // TSK-1424 B: the chat's readiness gate, resolved when its snapshot is consumed. Leaving the
+  // session (disposeConversationChat) and a failed stream reject it.
+  'src/lib/shell/conversation/conversationConnection.ts:new Promise:selection.ready = new Promise<void>((resolve, reject) => {',
+  // TSK-1424 B: a send's admission, resolved by the backend receipt mid-turn. The send's failure, or
+  // its end without a receipt, rejects it; leaving the session does not cancel a send already made.
+  'src/lib/shell/conversation/conversationConnection.ts:new Promise:const promise = new Promise<AgentConversationSendReceipt>((accept, decline) => {'
 ]);
 
 interface Hit {

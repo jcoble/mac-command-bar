@@ -96,8 +96,8 @@ assert.equal(legacy.topTabs, undefined);
 {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
   const current = source.slice(source.indexOf('function isCurrent('), source.indexOf('function messageBytes('));
-  const bind = source.slice(source.indexOf('function bindSelectionSignal('), source.indexOf('async function restorePageAttachments('));
-  const selection = source.slice(source.indexOf('export function selectConversationChat('), source.indexOf('export function sendSelectedConversationMessage(')).replaceAll('export ', '');
+  const bind = source.slice(source.indexOf('function resetReady('), source.indexOf('async function restorePageAttachments('));
+  const selection = source.slice(source.indexOf('export function selectConversationChat('), source.indexOf('export async function sendSelectedConversationMessage(')).replaceAll('export ', '');
   const states = new Map<string, { provider: string; generation: number; selectedChildHistoryOwnedId: string | null }>();
   const clearedAttachments: string[] = [];
   const disposed: string[] = [];
