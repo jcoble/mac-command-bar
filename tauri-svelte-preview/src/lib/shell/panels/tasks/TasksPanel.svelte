@@ -605,11 +605,12 @@
       <NotionTaskViewer
         task={selectedTask}
         {statuses}
+        {priorities}
         onBack={() => (selectedTask = null)}
         onOpenExternal={(url) => void openNotionUrl(url)}
         onFileLink={openFileLink}
-        onStatusUpdated={async (status) => {
-          selectedTask = selectedTask ? { ...selectedTask, status } : null;
+        onTaskUpdated={async (changes) => {
+          selectedTask = selectedTask ? { ...selectedTask, ...changes } : null;
           await reloadCached();
         }}
       />

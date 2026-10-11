@@ -3,6 +3,7 @@ use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
 use futures_util::future::{AbortHandle, Abortable};
 
 use mcb_core::session_store::{NotionTaskProjection, NotionTaskProjectionPage};
@@ -477,6 +478,135 @@ pub async fn update_notion_task_status(
     }
     response_payload(response).await?;
     refresh_notion_tasks(manager).await
+}
+
+/// Edit the task's title or priority, then refresh the list so it shows the change.
+#[tauri::command]
+pub async fn update_notion_task_property(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    source_task_id: String,
+    property: String,
+    value: String,
+) -> Result<NotionTaskRefreshReceipt, String> {
+    validate_task_id(&source_task_id)?;
+    let payload = property_update_payload(&property, value.trim())?;
+    let token = notion_token().await?;
+    notion_write(
+        reqwest::Client::new().patch(format!("https://api.notion.com/v1/pages/{source_task_id}")),
+        &token,
+        &payload,
+    )
+    .await?;
+    refresh_notion_tasks(manager).await
+}
+
+/// Replace one block's text (written as Markdown) or tick a to-do.
+#[tauri::command]
+pub async fn update_notion_block(
+    block_id: String,
+    kind: String,
+    markdown: Option<String>,
+    checked: Option<bool>,
+) -> Result<(), String> {
+    validate_task_id(&block_id)?;
+    let payload = block_update_payload(&kind, markdown.as_deref(), checked)?;
+    let token = notion_token().await?;
+    notion_write(
+        reqwest::Client::new().patch(format!("https://api.notion.com/v1/blocks/{block_id}")),
+        &token,
+        &payload,
+    )
+    .await
+}
+
+/// Add a paragraph (written as Markdown) to the end of the task page.
+#[tauri::command]
+pub async fn append_notion_task_text(source_task_id: String, markdown: String) -> Result<(), String> {
+    validate_task_id(&source_task_id)?;
+    let block = json!({ "type": "paragraph", "paragraph": { "rich_text": markdown_rich_text(&markdown) } });
+    let token = notion_token().await?;
+    append_block(&reqwest::Client::new(), &token, &source_task_id, block).await
+}
+
+/// Upload an image (a pasted screenshot or a picked file) and add it to the end of the task page.
+#[tauri::command]
+pub async fn append_notion_task_image(
+    source_task_id: String,
+    file_name: String,
+    content_type: String,
+    data_base64: String,
+) -> Result<(), String> {
+    validate_task_id(&source_task_id)?;
+    if !matches!(content_type.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp") {
+        return Err("Only PNG, JPEG, GIF and WebP images can be added".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64)
+        .map_err(|_| "The image could not be read".to_string())?;
+    if bytes.len() > 20 * 1024 * 1024 {
+        return Err("Images over 20 MB cannot be added".to_string());
+    }
+    let file_name = upload_file_name(&file_name);
+    let token = notion_token().await?;
+    let client = reqwest::Client::new();
+    let response = notion_request(client.post("https://api.notion.com/v1/file_uploads"), &token)
+        .json(&json!({ "filename": file_name, "content_type": content_type }))
+        .send()
+        .await
+        .map_err(|error| format!("Notion could not start the upload: {error}"))?;
+    let upload = response_payload(response).await?;
+    let upload_id = upload["id"].as_str().ok_or("Notion did not return an upload id")?;
+    let boundary = format!("assembly-{}", now_ms());
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: {content_type}\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(&bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let response = client
+        .post(format!("https://api.notion.com/v1/file_uploads/{upload_id}/send"))
+        .bearer_auth(&token)
+        .header("Notion-Version", NOTION_VERSION)
+        .header(reqwest::header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+        .body(body)
+        .send()
+        .await
+        .map_err(|error| format!("Notion could not receive the image: {error}"))?;
+    response_payload(response).await?;
+    let block = json!({ "type": "image", "image": { "type": "file_upload", "file_upload": { "id": upload_id } } });
+    append_block(&client, &token, &source_task_id, block).await
+}
+
+async fn notion_token() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(read_keychain_token)
+        .await
+        .map_err(|error| format!("Notion Keychain task failed: {error}"))??
+        .ok_or_else(|| "Connect Notion first".to_string())
+}
+
+/// Send a change to Notion. A 403 means the connection may read but not edit.
+async fn notion_write(builder: reqwest::RequestBuilder, token: &str, payload: &Value) -> Result<(), String> {
+    let response = notion_request(builder, token)
+        .json(payload)
+        .send()
+        .await
+        .map_err(|error| format!("Notion could not save this change: {error}"))?;
+    if response.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err(
+            "Assembly's Notion connection needs the Update content capability. Enable it in Notion Developer tools, then reconnect Notion in Assembly."
+                .to_string(),
+        );
+    }
+    response_payload(response).await.map(|_| ())
+}
+
+async fn append_block(client: &reqwest::Client, token: &str, page_id: &str, block: Value) -> Result<(), String> {
+    notion_write(
+        client.patch(format!("https://api.notion.com/v1/blocks/{page_id}/children")),
+        token,
+        &json!({ "children": [block] }),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1223,6 +1353,112 @@ fn status_update_payload(status: &str) -> Value {
     json!({ "properties": { "Status": { "select": { "name": status } } } })
 }
 
+fn property_update_payload(property: &str, value: &str) -> Result<Value, String> {
+    if value.is_empty() || value.chars().count() > 2000 {
+        return Err("Enter a value for this property".to_string());
+    }
+    match property {
+        // Notion gives every database's title property the id "title", whatever it is named.
+        "title" => {
+            let mut runs = Vec::new();
+            push_rich_text(&mut runs, value, [false; 4], None);
+            Ok(json!({ "properties": { "title": { "title": runs } } }))
+        }
+        "Priority" => Ok(json!({ "properties": { "Priority": { "select": { "name": value } } } })),
+        _ => Err("This property cannot be edited here".to_string()),
+    }
+}
+
+/// Block types whose text the task page can edit.
+const EDITABLE_TEXT_BLOCKS: [&str; 10] = [
+    "paragraph",
+    "heading_1",
+    "heading_2",
+    "heading_3",
+    "bulleted_list_item",
+    "numbered_list_item",
+    "to_do",
+    "quote",
+    "callout",
+    "toggle",
+];
+
+fn block_update_payload(kind: &str, markdown: Option<&str>, checked: Option<bool>) -> Result<Value, String> {
+    match (markdown, checked) {
+        (Some(markdown), None) if EDITABLE_TEXT_BLOCKS.contains(&kind) => {
+            Ok(json!({ kind: { "rich_text": markdown_rich_text(markdown) } }))
+        }
+        (None, Some(checked)) if kind == "to_do" => Ok(json!({ "to_do": { "checked": checked } })),
+        _ => Err("This block cannot be edited here".to_string()),
+    }
+}
+
+/// Markdown written on the task page back into Notion rich text: bold, italic,
+/// strikethrough, inline code and links. Mentions come back as plain links or text.
+fn markdown_rich_text(markdown: &str) -> Vec<Value> {
+    let arena = comrak::Arena::new();
+    let mut options = comrak::Options::default();
+    options.extension.strikethrough = true;
+    let root = comrak::parse_document(&arena, markdown, &options);
+    let mut runs = Vec::new();
+    for (index, block) in root.children().enumerate() {
+        if index > 0 {
+            push_rich_text(&mut runs, "\n", [false; 4], None);
+        }
+        collect_rich_text(block, [false; 4], None, &mut runs);
+    }
+    runs
+}
+
+/// `style` is bold, italic, strikethrough, code.
+fn collect_rich_text<'a>(
+    node: &'a comrak::nodes::AstNode<'a>,
+    mut style: [bool; 4],
+    mut link: Option<String>,
+    runs: &mut Vec<Value>,
+) {
+    use comrak::nodes::NodeValue;
+    match &node.data.borrow().value {
+        NodeValue::Text(text) => return push_rich_text(runs, text, style, link.as_deref()),
+        NodeValue::Code(code) => {
+            style[3] = true;
+            return push_rich_text(runs, &code.literal, style, link.as_deref());
+        }
+        NodeValue::SoftBreak | NodeValue::LineBreak => return push_rich_text(runs, "\n", style, None),
+        NodeValue::Strong => style[0] = true,
+        NodeValue::Emph => style[1] = true,
+        NodeValue::Strikethrough => style[2] = true,
+        NodeValue::Link(target) => link = Some(target.url.replace(' ', "%20")),
+        _ => {}
+    }
+    for child in node.children() {
+        collect_rich_text(child, style, link.clone(), runs);
+    }
+}
+
+/// Notion caps one rich-text run at 2000 characters, so longer text is split.
+fn push_rich_text(runs: &mut Vec<Value>, text: &str, style: [bool; 4], link: Option<&str>) {
+    let characters = text.chars().collect::<Vec<_>>();
+    for chunk in characters.chunks(2000) {
+        let content = chunk.iter().collect::<String>();
+        runs.push(json!({
+            "type": "text",
+            "text": { "content": content, "link": link.map(|url| json!({ "url": url })) },
+            "annotations": { "bold": style[0], "italic": style[1], "strikethrough": style[2], "code": style[3] }
+        }));
+    }
+}
+
+/// A file name Notion will accept: letters, digits, dot, dash and underscore.
+fn upload_file_name(name: &str) -> String {
+    let clean = name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_'))
+        .take(100)
+        .collect::<String>();
+    if clean.trim_matches('.').is_empty() { "screenshot.png".to_string() } else { clean }
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1232,6 +1468,73 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn markdown_rich_text_round_trips_the_task_page_formatting() {
+        let runs = super::markdown_rich_text(
+            "Plain **bold** *italic* ~~gone~~ `code` [link](<https://example.com/a b>) \\*star\\*",
+        );
+        let pieces = runs
+            .iter()
+            .map(|run| {
+                let flags = ["bold", "italic", "strikethrough", "code"]
+                    .iter()
+                    .filter(|flag| run["annotations"][**flag] == true)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join("+");
+                (run["text"]["content"].as_str().unwrap().to_string(), flags, run["text"]["link"]["url"].as_str().map(str::to_string))
+            })
+            .collect::<Vec<_>>();
+        assert!(pieces.contains(&("bold".into(), "bold".into(), None)));
+        assert!(pieces.contains(&("italic".into(), "italic".into(), None)));
+        assert!(pieces.contains(&("gone".into(), "strikethrough".into(), None)));
+        assert!(pieces.contains(&("code".into(), "code".into(), None)));
+        assert!(pieces.contains(&("link".into(), String::new(), Some("https://example.com/a%20b".into()))));
+        let text = pieces.iter().map(|piece| piece.0.as_str()).collect::<String>();
+        assert!(text.ends_with(" *star*"), "{text}");
+    }
+
+    #[test]
+    fn markdown_rich_text_splits_long_runs_and_keeps_paragraph_breaks() {
+        let runs = super::markdown_rich_text(&format!("{}\n\nSecond", "a".repeat(2500)));
+        let contents = runs.iter().map(|run| run["text"]["content"].as_str().unwrap().chars().count()).collect::<Vec<_>>();
+        assert_eq!(contents, vec![2000, 500, 1, 6]);
+    }
+
+    #[test]
+    fn property_update_payload_edits_title_and_priority_only() {
+        assert_eq!(
+            super::property_update_payload("title", "New title").unwrap()["properties"]["title"]["title"][0]["text"]["content"],
+            "New title"
+        );
+        assert_eq!(
+            super::property_update_payload("Priority", "High").unwrap(),
+            serde_json::json!({ "properties": { "Priority": { "select": { "name": "High" } } } })
+        );
+        assert!(super::property_update_payload("Status", "Done").is_err());
+        assert!(super::property_update_payload("title", "").is_err());
+    }
+
+    #[test]
+    fn block_update_payload_edits_text_blocks_and_to_do_checks() {
+        assert_eq!(
+            super::block_update_payload("heading_2", Some("Plan"), None).unwrap()["heading_2"]["rich_text"][0]["text"]["content"],
+            "Plan"
+        );
+        assert_eq!(
+            super::block_update_payload("to_do", None, Some(true)).unwrap(),
+            serde_json::json!({ "to_do": { "checked": true } })
+        );
+        assert!(super::block_update_payload("code", Some("x"), None).is_err());
+        assert!(super::block_update_payload("paragraph", None, Some(true)).is_err());
+    }
+
+    #[test]
+    fn upload_file_name_keeps_safe_characters_only() {
+        assert_eq!(super::upload_file_name("Screen Shot 2026-10-11 at 1.png"), "ScreenShot2026-10-11at1.png");
+        assert_eq!(super::upload_file_name("\"/../"), "screenshot.png");
+    }
+
     use super::*;
 
     #[test]
