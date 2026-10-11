@@ -5797,6 +5797,7 @@ fn main() {
             notion_tasks::save_notion_task_settings,
             notion_tasks::clear_notion_task_settings,
             notion_tasks::list_notion_tasks,
+            notion_tasks::read_cached_notion_task,
             notion_tasks::read_notion_task_detail,
             notion_tasks::cancel_notion_task_detail,
             notion_tasks::update_notion_task_status,

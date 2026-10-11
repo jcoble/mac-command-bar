@@ -10,6 +10,7 @@ import {
   openFileInEditor,
   openUrlInBrowser,
   parseGithubPullRequestUrl,
+  parseNotionPageId,
   registerBrowserUrlNavigation,
   registerWorkbenchNavigation,
   sendToSession,
@@ -176,6 +177,22 @@ const releaseBrowser = registerBrowserUrlNavigation((request) => {
 });
 assert.deepEqual(trace, ['center:browser', 'url:https://notion.test/setup']);
 releaseBrowser();
+
+// ── A Notion link is read as its page id, dashed the way the Notion API writes it ──
+
+const notionId = '3f4394b0-689d-81b1-9819-c696dad2fd48';
+assert.equal(parseNotionPageId('https://app.notion.com/p/3f4394b0689d81b19819c696dad2fd48'), notionId);
+assert.equal(parseNotionPageId('https://www.notion.so/team/TSK-1400-Tasks-tab-3f4394b0689d81b19819c696dad2fd48?pvs=4'), notionId);
+assert.equal(parseNotionPageId('https://notion.so/3f4394b0-689d-81b1-9819-c696dad2fd48'), notionId);
+assert.equal(parseNotionPageId('https://acme.notion.site/Fix-deadbeef-3f4394b0689d81b19819c696dad2fd48'), notionId);
+for (const url of [
+  'https://notion.so.evil.test/3f4394b0689d81b19819c696dad2fd48',
+  'https://www.notion.so/team/Just-a-title',
+  'https://www.notion.so/x3f4394b0689d81b19819c696dad2fd48',
+  'notion://www.notion.so/3f4394b0689d81b19819c696dad2fd48'
+]) {
+  assert.equal(parseNotionPageId(url), null, url);
+}
 
 // ── A GitHub pull request link opens the Pull requests tab, not the browser ──
 

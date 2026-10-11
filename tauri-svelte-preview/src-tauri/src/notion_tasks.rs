@@ -388,6 +388,23 @@ pub async fn list_notion_tasks(
     .map_err(|error| format!("Notion cache task failed: {error}"))?
 }
 
+/// A cached task by its Notion page id, or none when the cache does not hold it.
+#[tauri::command]
+pub async fn read_cached_notion_task(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    source_task_id: String,
+) -> Result<Option<NotionTaskRow>, String> {
+    let store = manager.store_handle();
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .notion_task_projection_by_id(&source_task_id)
+            .map(|task| task.map(NotionTaskRow::from))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Notion cache task failed: {error}"))?
+}
+
 #[tauri::command]
 pub async fn read_notion_task_detail(
     source_task_id: String,

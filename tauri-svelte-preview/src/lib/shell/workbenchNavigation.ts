@@ -16,6 +16,7 @@
  */
 import type { ConversationAttachment } from './conversation/conversationTypes.ts';
 import { requestOpenFile, type OpenFileRequest } from './openFileBus.ts';
+import type { NotionTaskRow } from './notionTasks.ts';
 
 /** The chat and the five kinds of tab the top tab row can bring forward. */
 export type CenterTabId = 'session' | 'editor' | 'browser' | 'diff' | 'git-history' | 'pull-requests';
@@ -105,6 +106,8 @@ export interface WorkbenchNavigationHandlers {
 
 let handlers: Partial<WorkbenchNavigationHandlers> = {};
 let pendingOpenUrl: OpenUrlRequest | null = null;
+let notionTaskOpener: ((task: NotionTaskRow) => void) | null = null;
+let pendingNotionTask: NotionTaskRow | null = null;
 
 /** The page registers the real handlers once, on mount. Registering again
  * merges: a caller may hand over one field without clearing the rest. */
@@ -115,6 +118,7 @@ export function registerWorkbenchNavigation(next: Partial<WorkbenchNavigationHan
 export function clearWorkbenchNavigation(): void {
   handlers = {};
   pendingOpenUrl = null;
+  pendingNotionTask = null;
 }
 
 /** BrowserPanel listens for URLs only while a browser tab is showing. Keep
@@ -129,6 +133,18 @@ export function registerBrowserUrlNavigation(
   if (pending) void openUrl(pending);
   return () => {
     if (handlers.openUrl === openUrl) delete handlers.openUrl;
+  };
+}
+
+/** TasksPanel opens a linked task while it is mounted; until then the task
+ * waits, the same way a URL waits for the browser panel. */
+export function registerNotionTaskNavigation(open: (task: NotionTaskRow) => void): () => void {
+  notionTaskOpener = open;
+  const pending = pendingNotionTask;
+  pendingNotionTask = null;
+  if (pending) open(pending);
+  return () => {
+    if (notionTaskOpener === open) notionTaskOpener = null;
   };
 }
 
@@ -175,10 +191,49 @@ export function parseGithubPullRequestUrl(url: string): PullRequestLink | null {
   return match && number > 0 ? { repository: `${match[1]}/${match[2]}`, number } : null;
 }
 
+/** The page id in a Notion link (`notion.so`, `app.notion.com`, `*.notion.site`),
+ * dashed the way the Notion API writes it; anything else is null. */
+export function parseNotionPageId(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (!/^https?:$/.test(parsed.protocol)) return null;
+  if (!/^((www\.)?notion\.so|app\.notion\.com|[\w-]+\.notion\.site)$/i.test(parsed.hostname)) return null;
+  const segment = parsed.pathname.split('/').pop() ?? '';
+  const match = /(?:^|-)([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(segment);
+  if (!match) return null;
+  const hex = match[1].replaceAll('-', '').toLowerCase();
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** In the desktop app, a Notion page that is a cached task opens on the Tasks
+ * tab and any other Notion page opens in the Notion app. False elsewhere. */
+async function openNotionPage(url: string, pageId: string): Promise<boolean> {
+  const { isNativeTauriRuntime } = await import('../tauriSource.ts');
+  if (!isNativeTauriRuntime()) return false;
+  const { readCachedNotionTask } = await import('./notionTasks.ts');
+  const task = await readCachedNotionTask(pageId);
+  if (task) {
+    if (notionTaskOpener) notionTaskOpener(task);
+    else pendingNotionTask = task;
+    showRightTab('tasks');
+    return true;
+  }
+  const { openUrl } = await import('@tauri-apps/plugin-opener');
+  await openUrl(url);
+  return true;
+}
+
 /** Point the browser at a URL. A browser tab is put on screen first: the
  * browser only loads while it is the tab in front. A GitHub pull request link
- * opens that pull request in the Pull requests tab instead. */
+ * opens that pull request in the Pull requests tab instead, and a Notion link
+ * opens its task (or the Notion app). */
 export async function openUrlInBrowser(request: OpenUrlRequest): Promise<void> {
+  const notionPageId = parseNotionPageId(request.url);
+  if (notionPageId && (await openNotionPage(request.url, notionPageId))) return;
   const pullRequest = handlers.openPullRequest ? parseGithubPullRequestUrl(request.url) : null;
   if (pullRequest) {
     handlers.openPullRequest?.(pullRequest);

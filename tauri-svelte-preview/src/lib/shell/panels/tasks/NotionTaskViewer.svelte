@@ -26,12 +26,14 @@
     taskStatusTone,
     type NotionTaskRow
   } from '$lib/shell/notionTasks.ts';
+  import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
 
-  let { task, statuses, onBack, onOpenExternal, onStatusUpdated }: {
+  let { task, statuses, onBack, onOpenExternal, onFileLink, onStatusUpdated }: {
     task: NotionTaskRow;
     statuses: string[];
     onBack(): void;
     onOpenExternal(url: string): void;
+    onFileLink(path: string): void;
     onStatusUpdated(status: string): Promise<void>;
   } = $props();
 
@@ -106,7 +108,7 @@
 </script>
 
 {#snippet markdown(text: string)}
-  <ConversationMessage {text} role="assistant" showImages />
+  <ConversationMessage {text} role="assistant" showImages {onFileLink} />
 {/snippet}
 
 {#snippet blockList(blocks: NotionBlock[])}
@@ -189,7 +191,7 @@
       {#each property.values as value, index}
         {@const link = property.links[index]}
         {#if link}
-          <button type="button" class="p-0 text-left text-(--color-accent) underline underline-offset-2" onclick={() => onOpenExternal(link)}>{value}</button>
+          <button type="button" class="p-0 text-left text-(--color-accent) underline underline-offset-2" onclick={() => void openUrlInBrowser({ url: link })}>{value}</button>
         {:else}
           <span>{value}{index < property.values.length - 1 ? ',' : ''}</span>
         {/if}

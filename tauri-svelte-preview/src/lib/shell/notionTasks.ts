@@ -74,6 +74,11 @@ export async function listNotionTasks(
   });
 }
 
+/** The cached task a Notion page id belongs to, or null when the cache does not hold it. */
+export async function readCachedNotionTask(sourceTaskId: string): Promise<NotionTaskRow | null> {
+  return await invokeDesktop('read_cached_notion_task', { sourceTaskId });
+}
+
 export async function refreshNotionTasks(): Promise<NotionTaskRefreshReceipt> {
   return await invokeDesktop('refresh_notion_tasks');
 }

@@ -33,6 +33,9 @@
     type NotionTaskSettings
   } from '$lib/shell/notionTasks.ts';
   import { connectNotion } from '$lib/shell/notionOAuth.ts';
+  import { requestOpenConversationFile } from '$lib/shell/openFileBus.ts';
+  import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
+  import { registerNotionTaskNavigation } from '$lib/shell/workbenchNavigation.ts';
   import { matchNotionProject } from '$lib/shell/notionProjectMatch.ts';
   import type { SessionTasksWorkspace } from '$lib/shell/sessionWorkspaces.ts';
   import { cn } from '$lib/utils.js';
@@ -307,7 +310,14 @@
   onMount(() => {
     const owner = ++generation;
     void initialize(owner);
+    return registerNotionTaskNavigation((linked) => (selectedTask = linked));
   });
+
+  /** A file link on the task page opens in the editor against this session's folder. */
+  function openFileLink(reference: string): void {
+    const active = rail.owned.find((session) => session.ownedId === ownedId);
+    error = active ? requestOpenConversationFile(active, reference) ?? '' : 'That file link could not be opened.';
+  }
   $effect(() => {
     const next = sessionProject;
     untrack(() => {
@@ -597,6 +607,7 @@
         {statuses}
         onBack={() => (selectedTask = null)}
         onOpenExternal={(url) => void openNotionUrl(url)}
+        onFileLink={openFileLink}
         onStatusUpdated={async (status) => {
           selectedTask = selectedTask ? { ...selectedTask, status } : null;
           await reloadCached();
