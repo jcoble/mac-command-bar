@@ -32,6 +32,8 @@ export class EditorSessionController {
 	private activeOwnedId: string | null = null;
 	private activeSnapshot: SessionWorkspaceSnapshot | null = null;
 	private checkpointQueue: Promise<void> = Promise.resolve();
+	/** Aborted by dispose(); stops queued saves that would otherwise outlive the controller. */
+	private readonly stop = new AbortController();
 
 	setPanel(panel: EditorPanelLifecycle | null): void {
 		this.panel = panel;
@@ -54,11 +56,8 @@ export class EditorSessionController {
 			return this.activeSnapshot;
 		}
 
-		this.checkpointQueue = this.checkpointQueue
-			.catch(() => undefined)
-			.then(() => this.checkpointActiveWorkspace(stopSignal));
 		try {
-			await this.checkpointQueue;
+			await this.enqueue(() => this.checkpointActiveWorkspace(stopSignal));
 		} catch (error) {
 			const message = error instanceof Error ? error.message
 				: typeof error === 'object' && error !== null && 'message' in error
@@ -119,28 +118,27 @@ export class EditorSessionController {
 		return this.activeSnapshot;
 	}
 
-	persistWorkspaceState(ownedId: string, attachmentIds?: readonly string[]): Promise<void> {
-		this.checkpointQueue = this.checkpointQueue
-			.catch(() => undefined)
-			.then(async () => {
-				if (this.activeOwnedId === ownedId) {
-					await this.checkpointActiveWorkspace(new AbortController().signal, attachmentIds);
-					if (this.activeOwnedId === ownedId || !attachmentIds) return;
-				}
-				if (!attachmentIds) return;
-				const latest = await readAgentConversationWorkspaceFromTauri(ownedId);
-				if (!latest?.conversation) throw new Error('Conversation workspace is no longer available');
-				await writeAgentConversationWorkspaceFromTauri(ownedId, {
-					...latest,
-					conversation: { ...latest.conversation, attachmentIds: [...attachmentIds] },
-				});
+	async persistWorkspaceState(ownedId: string, attachmentIds?: readonly string[]): Promise<void> {
+		const stopSignal = this.stop.signal;
+		await this.enqueue(async () => {
+			if (this.activeOwnedId === ownedId) {
+				await this.checkpointActiveWorkspace(stopSignal, attachmentIds);
+				if (this.activeOwnedId === ownedId || !attachmentIds) return;
+			}
+			if (!attachmentIds) return;
+			const latest = await readAgentConversationWorkspaceFromTauri(ownedId);
+			if (!latest?.conversation) throw new Error('Conversation workspace is no longer available');
+			await writeAgentConversationWorkspaceFromTauri(ownedId, {
+				...latest,
+				conversation: { ...latest.conversation, attachmentIds: [...attachmentIds] },
 			});
-		return this.checkpointQueue;
+		});
 	}
 
 	async dispose(): Promise<void> {
 		const stopSignal = new AbortController().signal;
 		const checkpoint = this.checkpointActiveWorkspace(stopSignal);
+		this.stop.abort();
 		this.releaseActiveEditorResources();
 		this.activeOwnedId = null;
 		this.activeSnapshot = null;
@@ -243,6 +241,22 @@ export class EditorSessionController {
 		if (stopSignal.aborted) return;
 		// Keep any workspace change made while the write was pending.
 		if (this.activeSnapshot === before) this.activeSnapshot = snapshot;
+	}
+
+	/** Saves run one at a time, in call order; a failed save does not stop the next. */
+	private async enqueue(work: () => Promise<void>): Promise<void> {
+		const run = this.runAfter(this.checkpointQueue, work);
+		this.checkpointQueue = run;
+		await run;
+	}
+
+	private async runAfter(previous: Promise<void>, work: () => Promise<void>): Promise<void> {
+		try {
+			await previous;
+		} catch {
+			// The earlier caller already saw its error.
+		}
+		await work();
 	}
 
 	private releaseActiveEditorResources(): void {

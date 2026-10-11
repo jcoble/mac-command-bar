@@ -128,7 +128,7 @@ export class SessionSelectionController {
 		this.expandedPathsByRoot = {};
 		this.controlledSelectionOwnedId = ownedId;
 		setActiveOwned(ownedId);
-		void writeAssemblySettingFromTauri(ACTIVE_OWNED_SESSION_SETTING_KEY, ownedId).catch(() => undefined);
+		void this.saveActiveSession(ownedId);
 		this.pendingSelectionOwnedId = ownedId;
 		const requestedSession = rail.owned.find((candidate) => candidate.ownedId === ownedId);
 		this.activeRootRemote = requestedSession?.executionEnvironment === "remote";
@@ -254,7 +254,7 @@ export class SessionSelectionController {
 	persistWorkspaceState(ownedId: string, patch: Partial<SessionWorkspaceSnapshot>): void {
 		if (this.activeOwnedId !== ownedId) return;
 		this.rememberWorkspaceState(patch);
-		void this.editorSessions.persistWorkspaceState(ownedId).catch(() => undefined);
+		void this.ignoreWorkspaceWriteFailure(this.editorSessions.persistWorkspaceState(ownedId));
 	}
 
 	async persistConversationAttachmentIds(ownedId: string, ids: readonly string[]): Promise<void> {
@@ -418,7 +418,7 @@ export class SessionSelectionController {
 		owner: SessionSelectionOwner,
 	): Promise<void> {
 		try {
-			await this.workspaceWriteQueue?.catch(() => undefined);
+			await this.ignoreWorkspaceWriteFailure(this.workspaceWriteQueue);
 			if (!this.isCurrent(owner)) return;
 			countInvoke("read_agent_conversation_workspace_expanded_paths");
 			const paths = await readAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, root, owner.signal);
@@ -445,7 +445,15 @@ export class SessionSelectionController {
 		await writeAgentConversationWorkspaceExpandedPathsFromTauri(ownedId, projectRoot, paths);
 	}
 
-	private async ignoreWorkspaceWriteFailure(write: Promise<void>): Promise<void> {
+	private async saveActiveSession(ownedId: string): Promise<void> {
+		try {
+			await writeAssemblySettingFromTauri(ACTIVE_OWNED_SESSION_SETTING_KEY, ownedId);
+		} catch {
+			// Best-effort: the selection itself has already changed in memory.
+		}
+	}
+
+	private async ignoreWorkspaceWriteFailure(write: Promise<void> | null): Promise<void> {
 		try {
 			await write;
 		} catch {

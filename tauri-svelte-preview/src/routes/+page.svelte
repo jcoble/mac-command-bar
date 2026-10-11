@@ -131,15 +131,20 @@
 	 * the write starts. A failed write puts back only the fields still showing
 	 * its own value, so it never undoes a newer change.
 	 */
-	function saveSessionChange(
+	async function saveSessionChange(
 		ownedId: string,
 		patch: Partial<Pick<OwnedSession, "completedAt" | "settledAt" | "pinnedAt" | "title">>,
 	): Promise<void> {
 		const before = selection.railOwned.find((session) => session.ownedId === ownedId);
-		if (!before) return Promise.resolve();
+		if (!before) return;
 		const keys = Object.keys(patch) as (keyof typeof patch)[];
 		updateOwnedSession(ownedId, patch);
-		const write = (sessionSaves.get(ownedId) ?? Promise.resolve()).then(async () => {
+		const writeAfter = async (previous: Promise<void> | undefined): Promise<void> => {
+			try {
+				await previous;
+			} catch {
+				// The earlier caller already saw its error.
+			}
 			const current = selection.railOwned.find((session) => session.ownedId === ownedId);
 			if (!current) return;
 			try {
@@ -155,12 +160,14 @@
 				updateOwnedSession(ownedId, Object.fromEntries(stillOurs.map((key) => [key, before[key]])));
 				console.error("Could not save the session change", error);
 			}
-		});
+		};
+		const write = writeAfter(sessionSaves.get(ownedId));
 		sessionSaves.set(ownedId, write);
-		void write.finally(() => {
+		try {
+			await write;
+		} finally {
 			if (sessionSaves.get(ownedId) === write) sessionSaves.delete(ownedId);
-		});
-		return write;
+		}
 	}
 
 	if (import.meta.hot) {
@@ -352,10 +359,9 @@
 		};
 	});
 
-	function disposeRoute(): Promise<void> {
-		if (routeDisposal) return routeDisposal;
-		routeDisposal = disposeRouteOnce();
-		return routeDisposal;
+	async function disposeRoute(): Promise<void> {
+		routeDisposal ??= disposeRouteOnce();
+		await routeDisposal;
 	}
 
 	async function disposeRouteOnce(): Promise<void> {
