@@ -29,12 +29,21 @@ assert.match(page, /\$effect\(\(\) => \{\s*selection\.setEditorPanel\(editorPane
 assert.doesNotMatch(page, /onMount\(\(\) => \{\s*selection\.setEditorPanel\(editorPanel\)/);
 // 19112edf3: disposeRoute now runs disposeRouteOnce once and shares its promise.
 assert.match(page, /async function disposeRouteOnce\(\): Promise<void>[\s\S]*?await selectionDisposal/);
+// TSK-1424 D: disposeRoute is async and still awaits the one shared disposal.
+assert.match(page, /async function disposeRoute\(\): Promise<void> \{\s*routeDisposal \?\?= disposeRouteOnce\(\);\s*await routeDisposal;\s*\}/);
 assert.match(selection, /async dispose\(\): Promise<void>[\s\S]*?await editorDisposal/);
 assert.doesNotMatch(selection, /void this\.editorSessions\.dispose\(\)/);
 assert.match(selection, /await this\.editorSessions\.restoreEditorWorkspaceForSession\([\s\S]*?owner\.signal/);
 assert.match(editor, /async restoreEditorWorkspaceForSession\([\s\S]*?stopSignal: AbortSignal/);
 // d00de3f79 queued the checkpoint and 2d5702688 wrapped it in try; 725896a73 and 1c889045f wrapped the read for remote sessions.
-assert.match(editor, /this\.checkpointActiveWorkspace\(stopSignal\)\);\s*try \{\s*await this\.checkpointQueue;[\s\S]*?\}\s*if \(stopSignal\.aborted\) return null;\s*this\.releaseActiveEditorResources\(\);/);
+// TSK-1424 D: the queue is enqueue/runAfter. Each save waits for the earlier one (ignoring its error) before it
+// runs, and a switch releases the outgoing editor only after its own checkpoint has finished.
+assert.match(editor, /try \{\s*await this\.enqueue\(\(\) => this\.checkpointActiveWorkspace\(stopSignal\)\);\s*\} catch \(error\) \{[\s\S]*?\}\s*if \(stopSignal\.aborted\) return null;\s*this\.releaseActiveEditorResources\(\);/);
+assert.match(editor, /private async enqueue\(work: \(\) => Promise<void>\): Promise<void> \{\s*const run = this\.runAfter\(this\.checkpointQueue, work\);\s*this\.checkpointQueue = run;\s*await run;\s*\}/);
+assert.match(editor, /private async runAfter\(previous: Promise<void>, work: \(\) => Promise<void>\): Promise<void> \{\s*try \{\s*await previous;\s*\} catch \{[^}]*\}\s*await work\(\);\s*\}/);
+// Queued saves use the controller's own signal, which dispose() aborts after starting its final checkpoint.
+assert.match(editor, /async persistWorkspaceState\([^)]*\): Promise<void> \{\s*const stopSignal = this\.stop\.signal;\s*await this\.enqueue\(async \(\) => \{[\s\S]*?this\.checkpointActiveWorkspace\(stopSignal, attachmentIds\)/);
+assert.match(editor, /const checkpoint = this\.checkpointActiveWorkspace\(stopSignal\);\s*this\.stop\.abort\(\);/);
 assert.match(editor, /this\.releaseActiveEditorResources\(\);\s*if \(stopSignal\.aborted\) return null;[\s\S]*?await readAgentConversationWorkspaceFromTauri\(ownedId\);\s*\} catch \(error\) \{\s*if \(stopSignal\.aborted\) return null;[\s\S]*?const snapshot = [^;]+;\s*if \(stopSignal\.aborted\) return null;/);
 assert.match(editor, /planWorkspaceRestore\(snapshot\)/);
 assert.match(editor, /restoreEditorFiles\(plan\.openFiles, plan\.activePath\)/);
