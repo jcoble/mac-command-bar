@@ -44,7 +44,8 @@ assert.match(editor, /private async runAfter\(previous: Promise<void>, work: \(\
 // Queued saves use the controller's own signal, which dispose() aborts after starting its final checkpoint.
 assert.match(editor, /async persistWorkspaceState\([^)]*\): Promise<void> \{\s*const stopSignal = this\.stop\.signal;\s*await this\.enqueue\(async \(\) => \{[\s\S]*?this\.checkpointActiveWorkspace\(stopSignal, attachmentIds\)/);
 assert.match(editor, /const checkpoint = this\.checkpointActiveWorkspace\(stopSignal\);\s*this\.stop\.abort\(\);/);
-assert.match(editor, /this\.releaseActiveEditorResources\(\);\s*if \(stopSignal\.aborted\) return null;[\s\S]*?await readAgentConversationWorkspaceFromTauri\(ownedId\);\s*\} catch \(error\) \{\s*if \(stopSignal\.aborted\) return null;[\s\S]*?const snapshot = [^;]+;\s*if \(stopSignal\.aborted\) return null;/);
+// TSK-1441: ownership is released with the editor, before any later abort or error can return.
+assert.match(editor, /this\.releaseActiveEditorResources\(\);\s*(?:\/\/[^\n]*\s*)*this\.releaseOwnership\(\);\s*if \(stopSignal\.aborted\) return null;[\s\S]*?await readAgentConversationWorkspaceFromTauri\(ownedId\);\s*\} catch \(error\) \{\s*if \(stopSignal\.aborted\) return null;[\s\S]*?const snapshot = [^;]+;\s*if \(stopSignal\.aborted\) return null;/);
 assert.match(editor, /planWorkspaceRestore\(snapshot\)/);
 assert.match(editor, /restoreEditorFiles\(plan\.openFiles, plan\.activePath\)/);
 assert.match(editor, /await writeAgentConversationWorkspaceFromTauri\(ownedId, snapshot\);\s*if \(stopSignal\.aborted\) return;/);

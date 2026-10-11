@@ -68,6 +68,9 @@ export class EditorSessionController {
 		}
 		if (stopSignal.aborted) return null;
 		this.releaseActiveEditorResources();
+		// The outgoing files are gone now; an abort or error below must not leave
+		// this session owned, or the next switch would save its empty editor.
+		this.releaseOwnership();
 
 		if (stopSignal.aborted) return null;
 		const session = rail.owned.find((candidate) => candidate.ownedId === ownedId);
@@ -82,8 +85,6 @@ export class EditorSessionController {
 			const message = error instanceof Error ? error.message
 				: typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error);
 			if (rootAvailable || !remote || message !== `Remote machine ${remote.profileId} is not connected`) throw error;
-			this.activeOwnedId = null;
-			this.activeSnapshot = null;
 			return null;
 		}
 		const snapshot = remote ? mapWorkspaceSnapshotPaths(stored, remote.profileId) as SessionWorkspaceSnapshot | null : stored;

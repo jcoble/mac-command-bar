@@ -16,6 +16,7 @@ interface Controller {
   restoreEditorWorkspaceForSession(id: string, root: string, available: boolean, signal: AbortSignal): Promise<unknown>;
   rememberWorkspaceState(patch: object): Record<string, unknown> | null;
   persistWorkspaceState(id: string): Promise<void>;
+  setPanel(panel: object | null): void;
 }
 const reads: string[] = [];
 const writes: string[] = [];
@@ -23,26 +24,35 @@ let writeFailure: unknown;
 let readFailure: unknown;
 let root: string | null = null;
 let writeGate: Promise<void> | null = null;
+let readGate: Promise<void> | null = null;
 let lastWrite: unknown;
+const saved = new Map<string, unknown>();
+const editorState: { openFiles: { path: string; content: string }[]; activePath: string | null } = { openFiles: [], activePath: null };
 const dependencies = {
   rail: { owned: [], remoteConnections: {} },
   parseRemoteWorkspacePath: () => null,
   mapWorkspaceSnapshotPaths: (value: unknown) => value,
-  editorState: { openFiles: [], activePath: null },
+  editorState,
   resetEditorState: () => undefined,
   restoreEditorFiles: () => undefined,
   setEditorProjectRoot: (value: string | null) => { root = value; },
-  captureWorkspace: () => ({ openPaths: [], activePath: null }),
+  captureWorkspace: ({ openFiles }: { openFiles: { path: string; content: string }[] }) => ({
+    openPaths: openFiles.map((file) => file.path),
+    activePath: null,
+    ...(openFiles.length ? { fileStates: openFiles.map((file) => ({ path: file.path, content: file.content })) } : {}),
+  }),
   planWorkspaceRestore: () => ({ openFiles: [], activePath: null }),
   captureConversationWorkspace: () => null,
   readAgentConversationWorkspaceFromTauri: async (id: string) => {
     reads.push(id);
+    if (readGate && id === 'beta') await readGate;
     if (readFailure && id === 'other') throw readFailure;
     return { openPaths: [], activePath: null, owner: id };
   },
   writeAgentConversationWorkspaceFromTauri: async (id: string, snapshot: unknown) => {
     writes.push(id);
     lastWrite = snapshot;
+    saved.set(id, snapshot);
     if (writeGate) await writeGate;
     if (writeFailure) throw writeFailure;
   },
@@ -102,4 +112,31 @@ await firstSave;
 await secondSave;
 assert.deepEqual(racing.rememberWorkspaceState({})?.browser, { url: 'https://newer.example' }, 'newer state stays in memory');
 assert.deepEqual((lastWrite as { browser?: unknown }).browser, { url: 'https://newer.example' }, 'the next save writes the newer state');
-console.log('editorWorkspaceRecovery: deleted outgoing session, repeat switching, save/read failures, cancellation and changes during a save passed');
+
+// TSK-1441: a switch aborted after the outgoing editor was released (while the
+// incoming read is in flight) must not let the next switch save that empty
+// editor over the outgoing session's open files and unsaved text.
+const switching = new ControllerClass();
+switching.setPanel({
+  captureViewStates: () => ({}),
+  workspaceOwnedPaths: () => editorState.openFiles.map((file) => file.path),
+  restoreViewStates: () => undefined,
+  releaseSessionResources: () => { editorState.openFiles = []; },
+  refreshOpenFiles: () => undefined,
+});
+await switching.restoreEditorWorkspaceForSession('alpha', '/alpha', true, signal);
+editorState.openFiles = [{ path: '/alpha/notes.md', content: 'unsaved alpha text' }];
+let releaseRead!: () => void;
+readGate = new Promise((resolve) => { releaseRead = resolve; });
+const abortedSwitch = new AbortController();
+const toBeta = switching.restoreEditorWorkspaceForSession('beta', '/beta', true, abortedSwitch.signal);
+while (!reads.includes('beta')) await new Promise((resolve) => setTimeout(resolve, 0));
+const alphaSaved = saved.get('alpha');
+assert.deepEqual((alphaSaved as { fileStates?: unknown }).fileStates, [{ path: '/alpha/notes.md', content: 'unsaved alpha text' }]);
+abortedSwitch.abort();
+readGate = null;
+releaseRead();
+assert.equal(await toBeta, null);
+await switching.restoreEditorWorkspaceForSession('gamma', '/gamma', true, signal);
+assert.equal(saved.get('alpha'), alphaSaved, "the aborted switch leaves alpha's saved files and unsaved text unchanged");
+console.log('editorWorkspaceRecovery: deleted outgoing session, repeat switching, save/read failures, cancellation, changes during a save and aborted switches passed');
