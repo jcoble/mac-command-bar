@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { tick, untrack, setContext } from 'svelte';
-  import { createVirtualizer } from '@tanstack/svelte-virtual';
+  import { flushSync, onDestroy, tick, untrack, setContext } from 'svelte';
+  import { createVirtualizer, type VirtualItem } from '@tanstack/svelte-virtual';
   import ArrowDown from '@lucide/svelte/icons/arrow-down';
   import Bot from '@lucide/svelte/icons/bot';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -165,6 +165,10 @@
   const virtualRows = $derived($virtualizer.getVirtualItems());
   const totalSize = $derived($virtualizer.getTotalSize());
   const viewportHeight = $derived($virtualizer.scrollRect?.height ?? 0);
+  // Work deferred to after the next render stops when the timeline unmounts. An effect
+  // re-run must not cancel it: the send anchor's effect re-runs as it clears its request.
+  const stop = new AbortController();
+  onDestroy(() => stop.abort());
 
   $effect.pre(() => {
     const currentRows = rows;
@@ -195,15 +199,19 @@
       });
       // Put it back once the taller page is in the DOM, in one write as the
       // virtualizer's own restore does, so the reader can keep scrolling.
-      if (kept) void tick().then(() => {
-        const row = $virtualizer.measurementsCache.find((item) => item.key === kept.key);
-        if (row) $virtualizer.scrollToOffset(row.start + top - kept.start);
-      });
+      if (kept) void restoreKeptRow(stop.signal, renderWindowId, kept, top);
       for (const key of $virtualizer.itemSizeCache.keys()) {
         if (!keys.has(String(key))) $virtualizer.itemSizeCache.delete(key);
       }
     });
   });
+
+  async function restoreKeptRow(signal: AbortSignal, windowId: string, kept: VirtualItem, top: number): Promise<void> {
+    await tick();
+    if (signal.aborted || windowId !== renderWindowId) return;
+    const row = $virtualizer.measurementsCache.find((item) => item.key === kept.key);
+    if (row) $virtualizer.scrollToOffset(row.start + top - kept.start);
+  }
 
   function atEnd(): boolean { return $virtualizer.isAtEnd(80); }
   function scrollToEnd(): void { $virtualizer.scrollToEnd(); }
@@ -358,11 +366,13 @@
     // A shorter window keeps the latest line above the composer too.
     void hostHeight;
     if (!follow || hasNewer || restoring || jumping || !host) return;
-    const windowId = renderWindowId;
-    void tick().then(() => {
-      if (windowId === renderWindowId && follow && !hasNewer && !restoring && !jumping) scrollToEnd();
-    });
+    void followAfterRender(stop.signal, renderWindowId);
   });
+  async function followAfterRender(signal: AbortSignal, windowId: string): Promise<void> {
+    await tick();
+    if (signal.aborted || windowId !== renderWindowId) return;
+    if (follow && !hasNewer && !restoring && !jumping) scrollToEnd();
+  }
 
   function restoreAnchor(anchor: NonNullable<ConversationViewState['anchor']>): boolean {
     const index = anchorRowIndex(rows, anchor.itemId);
@@ -372,21 +382,21 @@
 
   $effect(() => {
     if (!restoring || !host || rows.length === 0) return;
-    const windowId = renderWindowId;
-    void tick().then(() => {
-      if (windowId !== renderWindowId || !restoring) return;
-      if (follow) scrollToEnd();
-      else if (savedAnchor && !restoreAnchor(savedAnchor)) return;
-      // Restore after the admitted content has mounted.
-      void tick().then(() => {
-        if (windowId !== renderWindowId || !restoring) return;
-        if (follow) scrollToEnd();
-        else if (savedAnchor) restoreAnchor(savedAnchor);
-        restoring = false;
-        saveView();
-      });
-    });
+    void restoreView(stop.signal, renderWindowId);
   });
+  async function restoreView(signal: AbortSignal, windowId: string): Promise<void> {
+    await tick();
+    if (signal.aborted || windowId !== renderWindowId || !restoring) return;
+    if (follow) scrollToEnd();
+    else if (savedAnchor && !restoreAnchor(savedAnchor)) return;
+    // Restore after the admitted content has mounted.
+    await tick();
+    if (signal.aborted || windowId !== renderWindowId || !restoring) return;
+    if (follow) scrollToEnd();
+    else if (savedAnchor) restoreAnchor(savedAnchor);
+    restoring = false;
+    saveView();
+  }
 
   function toggleRun(run: NonNullable<Row['run']>): void {
     const key = run.itemId;
@@ -395,12 +405,11 @@
     follow = false;
     disclosures = { ...disclosures, [`${key}:open`]: !runOpen(run) };
     const windowId = renderWindowId;
-    void tick().then(() => {
-      if (windowId !== renderWindowId) return;
-      const index = rows.findIndex((row) => row.key === key);
-      if (index >= 0 && offsetPx !== null) positionRow(rows[index].key, offsetPx);
-      saveView();
-    });
+    flushSync();
+    if (windowId !== renderWindowId) return;
+    const index = rows.findIndex((row) => row.key === key);
+    if (index >= 0 && offsetPx !== null) positionRow(rows[index].key, offsetPx);
+    saveView();
   }
 
   function toggleTurn(group: ConversationTurnGroup): void {
@@ -410,11 +419,10 @@
     follow = false;
     disclosures = { ...disclosures, [`turn:${group.turnId}:open`]: disclosures[`turn:${group.turnId}:open`] !== true };
     const windowId = renderWindowId;
-    void tick().then(() => {
-      if (windowId !== renderWindowId) return;
-      if (offsetPx !== null) positionRow(key, offsetPx);
-      saveView();
-    });
+    flushSync();
+    if (windowId !== renderWindowId) return;
+    if (offsetPx !== null) positionRow(key, offsetPx);
+    saveView();
   }
   /** A command link: open its folded run if need be, then bring its row to the top. */
   function showToolItem(itemId: string): void {
@@ -426,17 +434,17 @@
       const group = groups.find((candidate) => candidate.items.some((item) => item.itemId === itemId));
       if (!group || disclosures[`turn:${group.turnId}:open`] === true) return;
       disclosures = { ...disclosures, [`turn:${group.turnId}:open`]: true };
-      void tick().then(() => { if (findRow()) showToolItem(itemId); });
+      flushSync();
+      if (findRow()) showToolItem(itemId);
       return;
     }
     follow = false;
     if (row.run && !runOpen(row.run)) disclosures = { ...disclosures, [`${row.run.itemId}:open`]: true };
     const windowId = renderWindowId;
-    void tick().then(() => {
-      if (windowId !== renderWindowId) return;
-      const topInset = host ? Number.parseFloat(getComputedStyle(host).getPropertyValue('--center-head-height')) || 0 : 0;
-      if (positionRow(row.key, topInset + USER_SEND_ANCHOR_OFFSET_PX)) saveView();
-    });
+    flushSync();
+    if (windowId !== renderWindowId) return;
+    const topInset = host ? Number.parseFloat(getComputedStyle(host).getPropertyValue('--center-head-height')) || 0 : 0;
+    if (positionRow(row.key, topInset + USER_SEND_ANCHOR_OFFSET_PX)) saveView();
   }
   function openBackgroundWork(work: BackgroundWorkItem): void {
     const target = backgroundWorkTarget(work);
@@ -513,11 +521,14 @@
     const landed = request.windowId === renderWindowId && (request.older ? oldestSequence < request.edge : newestSequence > request.edge);
     pageRequest = null;
     // Folded work can add no visible height: keep reading until a visible page arrives.
-    if (landed) void tick().then(() => {
-      if (request.windowId === renderWindowId && host && continueHistoryPaging(true,
-        request.older ? host.scrollTop <= 80 : atEnd(), request.height, host.scrollHeight)) requestPage(request.older);
-    });
+    if (landed) void continuePaging(stop.signal, request);
   });
+  async function continuePaging(signal: AbortSignal, request: NonNullable<typeof pageRequest>): Promise<void> {
+    await tick();
+    if (signal.aborted || request.windowId !== renderWindowId) return;
+    if (host && continueHistoryPaging(true,
+      request.older ? host.scrollTop <= 80 : atEnd(), request.height, host.scrollHeight)) requestPage(request.older);
+  }
 
   function handleScroll(): void {
     if (!host || restoring || jumping) return;
@@ -605,7 +616,7 @@
       if (windowId !== renderWindowId) return;
       follow = true;
       savedAnchor = undefined;
-      await tick();
+      flushSync();
       if (windowId !== renderWindowId) return;
       scrollToEnd();
     } finally {
@@ -626,16 +637,17 @@
     if (!rows.some((row) => row.key === itemId)) return;
     pendingSendAnchor = null;
     anchoredSendItemId = itemId;
-    const windowId = renderWindowId;
-    void tick().then(() => {
-      if (windowId !== renderWindowId || anchoredSendItemId !== itemId) return;
-      const index = rows.findIndex((row) => row.key === itemId);
-      if (index < 0) return;
-      const topInset = host ? Number.parseFloat(getComputedStyle(host).getPropertyValue('--center-head-height')) || 0 : 0;
-      positionRow(itemId, topInset + USER_SEND_ANCHOR_OFFSET_PX, 'smooth');
-      saveView();
-    });
+    void anchorSentRow(stop.signal, renderWindowId, itemId);
   });
+  async function anchorSentRow(signal: AbortSignal, windowId: string, itemId: string): Promise<void> {
+    await tick();
+    if (signal.aborted || windowId !== renderWindowId || anchoredSendItemId !== itemId) return;
+    const index = rows.findIndex((row) => row.key === itemId);
+    if (index < 0) return;
+    const topInset = host ? Number.parseFloat(getComputedStyle(host).getPropertyValue('--center-head-height')) || 0 : 0;
+    positionRow(itemId, topInset + USER_SEND_ANCHOR_OFFSET_PX, 'smooth');
+    saveView();
+  }
 
   // When the turn ends, give back the screen of room the send anchor held under
   // the reply, then follow again if nothing is left below: a short reply
@@ -649,13 +661,14 @@
     turnWasRunning = running;
     if (!ended || !untrack(() => anchoredSendItemId)) return;
     anchoredSendItemId = null;
-    const windowId = renderWindowId;
-    void tick().then(() => {
-      if (windowId !== renderWindowId || restoring || jumping || hasNewer || !atEnd()) return;
-      follow = true;
-      saveView();
-    });
+    void followAfterTurn(stop.signal, renderWindowId);
   });
+  async function followAfterTurn(signal: AbortSignal, windowId: string): Promise<void> {
+    await tick();
+    if (signal.aborted || windowId !== renderWindowId || restoring || jumping || hasNewer || !atEnd()) return;
+    follow = true;
+    saveView();
+  }
 
   $effect(() => {
     void timelineRevision;

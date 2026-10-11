@@ -86,7 +86,20 @@ const allowedHits = new Set([
   'src/lib/shell/conversation/conversationConnection.ts:new Promise:selection.ready = new Promise<void>((resolve, reject) => {',
   // TSK-1424 B: a send's admission, resolved by the backend receipt mid-turn. The send's failure, or
   // its end without a receipt, rejects it; leaving the session does not cancel a send already made.
-  'src/lib/shell/conversation/conversationConnection.ts:new Promise:const promise = new Promise<AgentConversationSendReceipt>((accept, decline) => {'
+  'src/lib/shell/conversation/conversationConnection.ts:new Promise:const promise = new Promise<AgentConversationSendReceipt>((accept, decline) => {',
+  // TSK-1424 A: scroll work that must wait for the next render inside an effect, where flushSync throws.
+  // Each waiting function takes the timeline's signal, which unmounting aborts, and checks it and the
+  // render window after the tick. Click handlers use flushSync instead.
+  "src/lib/shell/components/conversation/ConversationTimeline.svelte:tick:import { flushSync, onDestroy, tick, untrack, setContext } from 'svelte';",
+  'src/lib/shell/components/conversation/ConversationTimeline.svelte:tick:await tick();',
+  // TSK-1424 A: the background line's one-second clock. It runs only while the line is on screen and the
+  // window is visible; going off screen, hiding the window or the action's destroy on unmount clears it.
+  'src/lib/shell/components/conversation/ConversationTimeline.svelte:setInterval:let timer: ReturnType<typeof setInterval> | null = null;',
+  'src/lib/shell/components/conversation/ConversationTimeline.svelte:setInterval:timer = setInterval(() => { backgroundNow = Date.now(); }, 1000);',
+  // TSK-1424 A: a running tool group's first scroll to its newest row waits for the first render inside an
+  // effect; unmounting aborts the group's signal, which the wait checks after the tick.
+  "src/lib/shell/components/conversation/ConversationToolGroup.svelte:tick:import { getContext, onDestroy, setContext, tick, untrack } from 'svelte';",
+  'src/lib/shell/components/conversation/ConversationToolGroup.svelte:tick:await tick();'
 ]);
 
 interface Hit {
