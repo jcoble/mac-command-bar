@@ -6,7 +6,8 @@
   machine and makes it the one New project and Add folder start on. Clicking a
   project opens a new session there. In a narrow window the two panes become
   tabs. Each project's ⋯ menu renames it, changes its folder on the same
-  machine, pins it to the top, or removes it (its files always stay).
+  machine, pins it to the top, or removes it (its files always stay). Each
+  machine's ⋯ menu connects or disconnects it, adds a folder on it, or opens Manage.
 -->
 <script lang="ts">
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -31,7 +32,8 @@
   import RemoteConnections from '$lib/shell/components/RemoteConnections.svelte';
   import AddProjectDialog from '$lib/shell/projects/AddProjectDialog.svelte';
   import { hydrateProjects, projectRegistry, refreshRailProjects } from '$lib/shell/projects/projectRegistry.svelte.ts';
-  import { rail, removeOwnedSession } from '$lib/shell/stores/sessionRailStore.svelte.ts';
+  import { ownedSessionFromBackend } from '$lib/shell/ownedSessions';
+  import { hydrateOwned, rail, removeOwnedSession } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import {
     filterProjects,
     projectCountsByMachine,
@@ -41,6 +43,8 @@
     visibleProjects
   } from '$lib/shell/projects/projects.ts';
   import {
+    connectRemoteAssemblyFromTauri,
+    disconnectRemoteAssemblyFromTauri,
     readRemoteAssemblyEnvironmentFromTauri,
     removeProjectFromTauri,
     renameProjectFromTauri,
@@ -74,6 +78,8 @@
   let removing = $state<ProjectRecord | null>(null);
   /** Last used is read against the time the screen opened; it is open briefly. */
   const now = new Date();
+  /** Ends a read or a connect still running when the screen closes. */
+  const stop = new AbortController();
 
   const projects = $derived(visibleProjects(projectRegistry.projects, environment.profiles.map((profile) => profile.id)));
   const rows = $derived(filterProjects(projects, machine, query));
@@ -90,7 +96,6 @@
   const narrow = $derived(width > 0 && width < 960);
 
   onMount(() => {
-    const stop = new AbortController();
     searchField?.focus();
     void hydrateProjects();
     void readMachines(stop.signal);
@@ -103,6 +108,27 @@
       if (!signal.aborted) environment = next;
     } catch (error) {
       if (!signal.aborted) machinesError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  /** Connects or disconnects a saved machine; a connect brings its sessions into the rail. */
+  async function toggleConnection(id: string, connected: boolean): Promise<void> {
+    const profile = environment.profiles.find((saved) => saved.id === id);
+    if (!profile) return;
+    machinesError = '';
+    try {
+      if (connected) {
+        environment = await disconnectRemoteAssemblyFromTauri(id);
+        return;
+      }
+      const result = await connectRemoteAssemblyFromTauri(profile, stop.signal, () => {});
+      if (stop.signal.aborted) return;
+      const replaced = new Set([result.profile.id, result.replacedProfileId]);
+      hydrateOwned([...rail.owned.filter((session) => !replaced.has(session.remoteProfileId ?? '')),
+        ...result.sessions.map(ownedSessionFromBackend)]);
+      await readMachines(stop.signal);
+    } catch (error) {
+      if (!stop.signal.aborted) machinesError = error instanceof Error ? error.message : String(error);
     }
   }
 
@@ -228,13 +254,34 @@
       {#each machines as entry (entry.id)}
         <ListRow
           data-testid="projects-machine"
+          actionsLabel="Machine actions"
           selected={machine === entry.id}
           onclick={() => (machine = machine === entry.id ? null : entry.id)}
         >
           <span class="dot" class:connected={entry.connected} aria-label={entry.connected ? 'Connected' : 'Disconnected'}></span>
           {#if entry.id === 'local'}<Laptop class="size-4 shrink-0" />{:else}<Cloud class="size-4 shrink-0" />{/if}
           <span class="truncate">{entry.name}</span>
-          <Chip tone="count" class="ml-auto">{counts[entry.id] ?? 0}</Chip>
+          <Chip tone="count" class="ml-auto mr-8">{counts[entry.id] ?? 0}</Chip>
+          {#snippet actions()}
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger>
+                {#snippet child({ props })}
+                  <Button {...props} variant="ghost" size="icon-sm" aria-label={`Actions for ${entry.name}`}><Ellipsis /></Button>
+                {/snippet}
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Content class="w-44" align="end">
+                {#if entry.id !== 'local'}
+                  <DropdownMenu.Item onSelect={() => void toggleConnection(entry.id, entry.connected)}>
+                    {entry.connected ? 'Disconnect' : 'Connect'}
+                  </DropdownMenu.Item>
+                {/if}
+                <DropdownMenu.Item onSelect={() => { machine = entry.id; addProjectOpen = true; }}>Add folder here…</DropdownMenu.Item>
+                {#if entry.id !== 'local'}
+                  <DropdownMenu.Item onSelect={() => (machinesOpen = true)}>Manage…</DropdownMenu.Item>
+                {/if}
+              </DropdownMenu.Content>
+            </DropdownMenu.Root>
+          {/snippet}
         </ListRow>
       {/each}
     </div>
