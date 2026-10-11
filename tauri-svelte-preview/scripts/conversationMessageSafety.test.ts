@@ -15,6 +15,7 @@ assert.equal(blocks[2].kind, 'code');
 assert.equal(blocks[2].complete, false, 'partial fences remain code, not executable HTML');
 assert.equal(sanitizeConversationHref('javascript:alert(1)'), null);
 assert.equal(sanitizeConversationHref('https://example.test'), 'https://example.test');
+assert.equal(sanitizeConversationHref('assembly://session/owned-1'), 'assembly://session/owned-1');
 assert.equal(parseSafeMarkdown('Visit https://example.test/docs')[0].parts[1].kind, 'link');
 assert.match(sanitizeConversationMarkdown('<script>alert(1)</script>'), /&lt;script&gt;/);
 assert.doesNotMatch(sanitizeConversationMarkdown('<script>alert(1)</script>'), /<script>/);

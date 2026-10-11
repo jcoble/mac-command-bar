@@ -1,6 +1,10 @@
 use std::collections::{BTreeSet, HashMap};
 use std::process::{Command, Stdio};
+use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use base64::Engine;
+use futures_util::future::{AbortHandle, Abortable};
 
 use mcb_core::session_store::{NotionTaskProjection, NotionTaskProjectionPage};
 use serde::{Deserialize, Serialize};
@@ -15,7 +19,8 @@ const SECURITY_ITEM_NOT_FOUND: i32 = 44;
 const NOTION_VERSION: &str = "2026-03-11";
 const NOTION_PAGE_SIZE: usize = 100;
 const MAX_NOTION_TASKS: usize = 500;
-const MAX_NOTION_DETAIL_BLOCKS: usize = 200;
+static DETAIL_REQUESTS: LazyLock<Mutex<HashMap<u64, AbortHandle>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,17 +68,38 @@ pub struct NotionTaskPage {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NotionTaskDetailBlock {
+pub struct NotionTaskProperty {
+    name: String,
     kind: String,
-    text: String,
+    values: Vec<String>,
+    links: Vec<Option<String>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotionBlock {
+    id: String,
+    kind: String,
+    markdown: String,
     checked: Option<bool>,
-    url: Option<String>,
+    icon: Option<String>,
+    children: Vec<NotionBlock>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotionTaskComment {
+    author: String,
+    created: String,
+    text: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotionTaskDetail {
-    blocks: Vec<NotionTaskDetailBlock>,
+    properties: Vec<NotionTaskProperty>,
+    body: Vec<NotionBlock>,
+    comments: Vec<NotionTaskComment>,
 }
 
 struct PendingNotionTask {
@@ -363,14 +389,61 @@ pub async fn list_notion_tasks(
     .map_err(|error| format!("Notion cache task failed: {error}"))?
 }
 
+/// A cached task by its Notion page id, or none when the cache does not hold it.
 #[tauri::command]
-pub async fn read_notion_task_detail(source_task_id: String) -> Result<NotionTaskDetail, String> {
+pub async fn read_cached_notion_task(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    source_task_id: String,
+) -> Result<Option<NotionTaskRow>, String> {
+    let store = manager.store_handle();
+    tauri::async_runtime::spawn_blocking(move || {
+        store
+            .notion_task_projection_by_id(&source_task_id)
+            .map(|task| task.map(NotionTaskRow::from))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("Notion cache task failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn read_notion_task_detail(
+    source_task_id: String,
+    request_id: u64,
+) -> Result<NotionTaskDetail, String> {
     validate_task_id(&source_task_id)?;
-    let token = tauri::async_runtime::spawn_blocking(read_keychain_token)
-        .await
-        .map_err(|error| format!("Notion Keychain task failed: {error}"))??
-        .ok_or_else(|| "Connect Notion first".to_string())?;
-    read_task_blocks(&reqwest::Client::new(), &token, &source_task_id).await
+    let (handle, registration) = AbortHandle::new_pair();
+    DETAIL_REQUESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(request_id, handle);
+    let result = Abortable::new(
+        async {
+            let token = tauri::async_runtime::spawn_blocking(read_keychain_token)
+                .await
+                .map_err(|error| format!("Notion Keychain task failed: {error}"))??
+                .ok_or_else(|| "Connect Notion first".to_string())?;
+            read_task_detail(&reqwest::Client::new(), &token, &source_task_id).await
+        },
+        registration,
+    )
+    .await;
+    DETAIL_REQUESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&request_id);
+    result.map_err(|_| "Notion task request was cancelled".to_string())?
+}
+
+#[tauri::command]
+pub fn cancel_notion_task_detail(request_id: u64) {
+    if let Some(handle) = DETAIL_REQUESTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&request_id)
+    {
+        handle.abort();
+    }
 }
 
 #[tauri::command]
@@ -405,6 +478,135 @@ pub async fn update_notion_task_status(
     }
     response_payload(response).await?;
     refresh_notion_tasks(manager).await
+}
+
+/// Edit the task's title or priority, then refresh the list so it shows the change.
+#[tauri::command]
+pub async fn update_notion_task_property(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    source_task_id: String,
+    property: String,
+    value: String,
+) -> Result<NotionTaskRefreshReceipt, String> {
+    validate_task_id(&source_task_id)?;
+    let payload = property_update_payload(&property, value.trim())?;
+    let token = notion_token().await?;
+    notion_write(
+        reqwest::Client::new().patch(format!("https://api.notion.com/v1/pages/{source_task_id}")),
+        &token,
+        &payload,
+    )
+    .await?;
+    refresh_notion_tasks(manager).await
+}
+
+/// Replace one block's text (written as Markdown) or tick a to-do.
+#[tauri::command]
+pub async fn update_notion_block(
+    block_id: String,
+    kind: String,
+    markdown: Option<String>,
+    checked: Option<bool>,
+) -> Result<(), String> {
+    validate_task_id(&block_id)?;
+    let payload = block_update_payload(&kind, markdown.as_deref(), checked)?;
+    let token = notion_token().await?;
+    notion_write(
+        reqwest::Client::new().patch(format!("https://api.notion.com/v1/blocks/{block_id}")),
+        &token,
+        &payload,
+    )
+    .await
+}
+
+/// Add a paragraph (written as Markdown) to the end of the task page.
+#[tauri::command]
+pub async fn append_notion_task_text(source_task_id: String, markdown: String) -> Result<(), String> {
+    validate_task_id(&source_task_id)?;
+    let block = json!({ "type": "paragraph", "paragraph": { "rich_text": markdown_rich_text(&markdown) } });
+    let token = notion_token().await?;
+    append_block(&reqwest::Client::new(), &token, &source_task_id, block).await
+}
+
+/// Upload an image (a pasted screenshot or a picked file) and add it to the end of the task page.
+#[tauri::command]
+pub async fn append_notion_task_image(
+    source_task_id: String,
+    file_name: String,
+    content_type: String,
+    data_base64: String,
+) -> Result<(), String> {
+    validate_task_id(&source_task_id)?;
+    if !matches!(content_type.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp") {
+        return Err("Only PNG, JPEG, GIF and WebP images can be added".to_string());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64)
+        .map_err(|_| "The image could not be read".to_string())?;
+    if bytes.len() > 20 * 1024 * 1024 {
+        return Err("Images over 20 MB cannot be added".to_string());
+    }
+    let file_name = upload_file_name(&file_name);
+    let token = notion_token().await?;
+    let client = reqwest::Client::new();
+    let response = notion_request(client.post("https://api.notion.com/v1/file_uploads"), &token)
+        .json(&json!({ "filename": file_name, "content_type": content_type }))
+        .send()
+        .await
+        .map_err(|error| format!("Notion could not start the upload: {error}"))?;
+    let upload = response_payload(response).await?;
+    let upload_id = upload["id"].as_str().ok_or("Notion did not return an upload id")?;
+    let boundary = format!("assembly-{}", now_ms());
+    let mut body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: {content_type}\r\n\r\n"
+    )
+    .into_bytes();
+    body.extend_from_slice(&bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    let response = client
+        .post(format!("https://api.notion.com/v1/file_uploads/{upload_id}/send"))
+        .bearer_auth(&token)
+        .header("Notion-Version", NOTION_VERSION)
+        .header(reqwest::header::CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+        .body(body)
+        .send()
+        .await
+        .map_err(|error| format!("Notion could not receive the image: {error}"))?;
+    response_payload(response).await?;
+    let block = json!({ "type": "image", "image": { "type": "file_upload", "file_upload": { "id": upload_id } } });
+    append_block(&client, &token, &source_task_id, block).await
+}
+
+async fn notion_token() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(read_keychain_token)
+        .await
+        .map_err(|error| format!("Notion Keychain task failed: {error}"))??
+        .ok_or_else(|| "Connect Notion first".to_string())
+}
+
+/// Send a change to Notion. A 403 means the connection may read but not edit.
+async fn notion_write(builder: reqwest::RequestBuilder, token: &str, payload: &Value) -> Result<(), String> {
+    let response = notion_request(builder, token)
+        .json(payload)
+        .send()
+        .await
+        .map_err(|error| format!("Notion could not save this change: {error}"))?;
+    if response.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err(
+            "Assembly's Notion connection needs the Update content capability. Enable it in Notion Developer tools, then reconnect Notion in Assembly."
+                .to_string(),
+        );
+    }
+    response_payload(response).await.map(|_| ())
+}
+
+async fn append_block(client: &reqwest::Client, token: &str, page_id: &str, block: Value) -> Result<(), String> {
+    notion_write(
+        client.patch(format!("https://api.notion.com/v1/blocks/{page_id}/children")),
+        token,
+        &json!({ "children": [block] }),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -497,98 +699,370 @@ async fn query_task_pages(
     Ok(tasks)
 }
 
-async fn read_task_blocks(
-    client: &reqwest::Client,
-    token: &str,
-    source_task_id: &str,
-) -> Result<NotionTaskDetail, String> {
-    let mut blocks = Vec::new();
-    let mut cursor: Option<String> = None;
-    while blocks.len() < MAX_NOTION_DETAIL_BLOCKS {
-        let mut request = notion_request(
-            client.get(format!(
-                "https://api.notion.com/v1/blocks/{source_task_id}/children"
-            )),
+async fn detail_get(client: &reqwest::Client, token: &str, path: &str) -> Result<Value, String> {
+    response_payload(
+        notion_request(
+            client.get(format!("https://api.notion.com/v1/{path}")),
             token,
         )
-        .query(&[("page_size", NOTION_PAGE_SIZE.to_string())]);
-        if let Some(value) = &cursor {
-            request = request.query(&[("start_cursor", value)]);
+        .send()
+        .await
+        .map_err(|error| format!("Notion could not read this task: {error}"))?,
+    )
+    .await
+}
+
+async fn read_task_detail(
+    client: &reqwest::Client,
+    token: &str,
+    id: &str,
+) -> Result<NotionTaskDetail, String> {
+    let page = detail_get(client, token, &format!("pages/{id}")).await?;
+    let mut related = HashMap::new();
+    if let Some(properties) = page["properties"].as_object() {
+        for property in properties.values() {
+            for relation in property["relation"].as_array().into_iter().flatten() {
+                let id = relation["id"].as_str().unwrap_or_default();
+                if !related.contains_key(id) {
+                    let page = detail_get(client, token, &format!("pages/{id}")).await?;
+                    related.insert(
+                        id.to_string(),
+                        (
+                            page_title(&page).unwrap_or_else(|| "Notion page".into()),
+                            page["url"]
+                                .as_str()
+                                .map(str::to_string)
+                                .unwrap_or_else(|| notion_page_url(id)),
+                        ),
+                    );
+                }
+            }
         }
-        let payload = response_payload(
-            request
-                .send()
-                .await
-                .map_err(|error| format!("Notion could not read this task: {error}"))?,
-        )
-        .await?;
-        let results = payload
-            .get("results")
-            .and_then(Value::as_array)
-            .ok_or_else(|| "Notion returned no task content".to_string())?;
-        blocks.extend(
-            results
-                .iter()
-                .take(MAX_NOTION_DETAIL_BLOCKS - blocks.len())
-                .filter_map(detail_block),
+    }
+    let properties = task_properties(&page, &related);
+    let blocks = read_child_blocks(client, token, id, 0).await?;
+    let body = blocks.iter().map(notion_block).collect();
+    let comments = read_comments(client, token, id).await?;
+    Ok(NotionTaskDetail {
+        properties,
+        body,
+        comments,
+    })
+}
+
+async fn read_child_blocks(
+    client: &reqwest::Client,
+    token: &str,
+    id: &str,
+    depth: usize,
+) -> Result<Vec<Value>, String> {
+    let mut blocks = Vec::new();
+    let mut cursor = None;
+    loop {
+        let path = paged_path(
+            &format!("blocks/{id}/children?page_size={NOTION_PAGE_SIZE}"),
+            cursor.as_deref(),
         );
-        if payload.get("has_more").and_then(Value::as_bool) != Some(true) {
-            break;
+        let payload = detail_get(client, token, &path).await?;
+        for mut block in response_results(&payload)?.iter().cloned() {
+            if depth < 3 && block["has_children"].as_bool() == Some(true) {
+                let id = block["id"].as_str().unwrap_or_default();
+                let children = Box::pin(read_child_blocks(client, token, id, depth + 1)).await?;
+                block["children"] = Value::Array(children);
+            }
+            blocks.push(block);
         }
-        cursor = payload
-            .get("next_cursor")
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        cursor = next_cursor(&payload).map(str::to_string);
         if cursor.is_none() {
             break;
         }
     }
-    Ok(NotionTaskDetail { blocks })
+    Ok(blocks)
 }
 
-fn detail_block(block: &Value) -> Option<NotionTaskDetailBlock> {
-    let kind = block.get("type")?.as_str()?;
-    if kind == "divider" {
-        return Some(NotionTaskDetailBlock {
-            kind: kind.to_string(),
-            text: String::new(),
-            checked: None,
-            url: None,
-        });
+fn response_results(payload: &Value) -> Result<&[Value], String> {
+    payload
+        .get("results")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .ok_or_else(|| "Notion returned invalid results: expected an array".to_string())
+}
+
+fn paged_path(path: &str, cursor: Option<&str>) -> String {
+    match cursor {
+        Some(cursor) => format!("{path}&start_cursor={cursor}"),
+        None => path.to_string(),
     }
-    let value = block.get(kind)?;
-    if kind == "image" {
-        let image_type = value.get("type")?.as_str()?;
-        let url = value
-            .get(image_type)?
-            .get("url")?
-            .as_str()?
-            .trim()
-            .to_string();
-        if !url.starts_with("https://") {
-            return None;
+}
+
+fn next_cursor(payload: &Value) -> Option<&str> {
+    (payload["has_more"].as_bool() == Some(true))
+        .then(|| payload["next_cursor"].as_str())
+        .flatten()
+}
+
+fn notion_page_url(id: &str) -> String {
+    format!("https://www.notion.so/{}", id.replace('-', ""))
+}
+
+fn task_properties(
+    page: &Value,
+    related: &HashMap<String, (String, String)>,
+) -> Vec<NotionTaskProperty> {
+    let mut rows = Vec::new();
+    for (name, property) in page["properties"].as_object().into_iter().flatten() {
+        let raw_kind = property["type"].as_str().unwrap_or("other");
+        if raw_kind == "title" {
+            continue;
         }
-        return Some(NotionTaskDetailBlock {
-            kind: kind.to_string(),
-            text: value
-                .get("caption")
-                .and_then(rich_text)
-                .unwrap_or_default(),
-            checked: None,
-            url: Some(url),
+        let value = &property[raw_kind];
+        let mut values = Vec::new();
+        let mut links = Vec::new();
+        let kind = match raw_kind {
+            "status" | "select" => {
+                if let Some(name) = value["name"].as_str() {
+                    values.push(name.into());
+                }
+                raw_kind
+            }
+            "multi_select" | "people" | "files" => {
+                for item in value.as_array().into_iter().flatten() {
+                    values.push(item["name"].as_str().unwrap_or("Notion user").into());
+                    links.push(if raw_kind == "files" {
+                        item[item["type"].as_str().unwrap_or("external")]["url"]
+                            .as_str()
+                            .map(str::to_string)
+                    } else {
+                        None
+                    });
+                }
+                raw_kind
+            }
+            "date" => {
+                if let Some(start) = value["start"].as_str() {
+                    values.push(start.into());
+                    if let Some(end) = value["end"].as_str() {
+                        values.push(end.into());
+                    }
+                }
+                raw_kind
+            }
+            "relation" => {
+                for item in value.as_array().into_iter().flatten() {
+                    let id = item["id"].as_str().unwrap_or_default();
+                    let (title, url) = related
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_else(|| ("Notion page".into(), notion_page_url(id)));
+                    values.push(title);
+                    links.push(Some(url));
+                }
+                raw_kind
+            }
+            "rich_text" => {
+                if let Some(text) = rich_text(value) {
+                    values.push(text);
+                }
+                "text"
+            }
+            "url" | "created_time" | "last_edited_time" => {
+                if let Some(text) = value.as_str() {
+                    values.push(text.into());
+                    if raw_kind == "url" {
+                        links.push(Some(text.into()));
+                    }
+                }
+                raw_kind
+            }
+            "checkbox" | "number" => {
+                if !value.is_null() {
+                    values.push(value.to_string());
+                }
+                raw_kind
+            }
+            "unique_id" => {
+                if let Some(number) = value["number"].as_i64() {
+                    let prefix = value["prefix"].as_str().unwrap_or_default();
+                    values.push(if prefix.is_empty() {
+                        number.to_string()
+                    } else {
+                        format!("{prefix}-{number}")
+                    });
+                }
+                raw_kind
+            }
+            _ => {
+                if !value.is_null() {
+                    values.push(value.to_string());
+                }
+                "other"
+            }
+        };
+        links.resize(values.len(), None);
+        rows.push(NotionTaskProperty {
+            name: name.clone(),
+            kind: kind.into(),
+            values,
+            links,
         });
     }
-    let text = rich_text(value.get("rich_text")?).unwrap_or_default();
-    if text.is_empty() && kind != "to_do" {
-        return None;
+    rows.sort_by_key(|row| {
+        (
+            matches!(row.kind.as_str(), "created_time" | "last_edited_time"),
+            row.name.clone(),
+        )
+    });
+    rows
+}
+
+fn code_language(language: &str) -> &str {
+    match language {
+        "c#" => "csharp",
+        "f#" => "plaintext",
+        "c++" => "cpp",
+        "java/c/c++/c#" => "cpp",
+        "objective-c" | "plain text" => "plaintext",
+        "shell" => "sh",
+        "visual basic" => "plaintext",
+        other => other,
     }
-    Some(NotionTaskDetailBlock {
+}
+
+fn notion_block(block: &Value) -> NotionBlock {
+    let kind = block["type"].as_str().unwrap_or_default();
+    let value = &block[kind];
+    let children = block["children"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let markdown = match kind {
+        "divider" => String::new(),
+        "code" => {
+            let code = rich_text(&value["rich_text"]).unwrap_or_default();
+            let fence = "`"
+                .repeat((code.split(|ch| ch != '`').map(str::len).max().unwrap_or(0) + 1).max(3));
+            format!(
+                "{fence}{}\n{code}\n{fence}",
+                code_language(value["language"].as_str().unwrap_or_default())
+            )
+        }
+        "image" => {
+            let url = value[value["type"].as_str().unwrap_or_default()]["url"]
+                .as_str()
+                .unwrap_or_default();
+            if !url.starts_with("https://") {
+                String::new()
+            } else {
+                format!(
+                    "![{}](<{}>)",
+                    rich_text(&value["caption"])
+                        .unwrap_or_default()
+                        .replace(']', "\\]"),
+                    url.replace('\\', "\\\\")
+                        .replace('<', "\\<")
+                        .replace('>', "\\>")
+                )
+            }
+        }
+        "table" => {
+            let mut rows = Vec::new();
+            for (index, row) in children.iter().enumerate() {
+                let cells = row["table_row"]["cells"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|cell| {
+                        let text = rich_text_markdown(cell).replace('\n', " ");
+                        let mut cell = String::new();
+                        let mut escaped = false;
+                        for ch in text.chars() {
+                            if ch == '|' && !escaped {
+                                cell.push('\\');
+                            }
+                            cell.push(ch);
+                            escaped = ch == '\\' && !escaped;
+                        }
+                        cell
+                    })
+                    .collect::<Vec<_>>();
+                rows.push(format!("| {} |", cells.join(" | ")));
+                if index == 0 {
+                    rows.push(format!("| {} |", vec!["---"; cells.len()].join(" | ")));
+                }
+            }
+            rows.join("\n")
+        }
+        _ => rich_text_markdown(&value["rich_text"]),
+    };
+    NotionBlock {
+        id: block["id"].as_str().unwrap_or_default().to_string(),
         kind: kind.to_string(),
-        text,
-        checked: (kind == "to_do")
-            .then(|| value.get("checked").and_then(Value::as_bool).unwrap_or(false)),
-        url: None,
-    })
+        markdown,
+        checked: (kind == "to_do").then(|| value["checked"].as_bool().unwrap_or(false)),
+        icon: if kind == "callout" {
+            value["icon"]["emoji"].as_str().map(str::to_string)
+        } else {
+            None
+        },
+        children: children.iter().map(notion_block).collect(),
+    }
+}
+
+fn forbidden_comments(status: reqwest::StatusCode) -> Option<Vec<NotionTaskComment>> {
+    (status == reqwest::StatusCode::FORBIDDEN).then(Vec::new)
+}
+
+fn comment_author(user: Option<&Value>) -> String {
+    user.and_then(|user| user["name"].as_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Notion user")
+        .into()
+}
+
+async fn read_comments(
+    client: &reqwest::Client,
+    token: &str,
+    id: &str,
+) -> Result<Vec<NotionTaskComment>, String> {
+    let mut comments = Vec::new();
+    let mut users = HashMap::new();
+    let mut cursor = None;
+    loop {
+        let path = paged_path(
+            &format!("comments?block_id={id}&page_size={NOTION_PAGE_SIZE}"),
+            cursor.as_deref(),
+        );
+        let response = notion_request(
+            client.get(format!("https://api.notion.com/v1/{path}")),
+            token,
+        )
+        .send()
+        .await
+        .map_err(|error| format!("Notion could not read comments: {error}"))?;
+        if let Some(empty) = forbidden_comments(response.status()) {
+            return Ok(empty);
+        }
+        let payload = response_payload(response).await?;
+        for comment in response_results(&payload)? {
+            let user_id = comment["created_by"]["id"].as_str().unwrap_or_default();
+            if !users.contains_key(user_id) {
+                let user = detail_get(client, token, &format!("users/{user_id}"))
+                    .await
+                    .ok();
+                users.insert(user_id.to_string(), comment_author(user.as_ref()));
+            }
+            comments.push(NotionTaskComment {
+                author: users[user_id].clone(),
+                created: comment["created_time"].as_str().unwrap_or_default().into(),
+                text: rich_text_markdown(&comment["rich_text"]),
+            });
+        }
+        cursor = next_cursor(&payload).map(str::to_string);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    Ok(comments)
 }
 
 async fn load_project_names(
@@ -718,6 +1192,121 @@ fn rich_text(value: &Value) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+fn rich_text_markdown(value: &Value) -> String {
+    let mut runs: Vec<(String, &Value, Option<String>)> = Vec::new();
+    for part in value.as_array().into_iter().flatten() {
+        let mut text = part["plain_text"]
+            .as_str()
+            .or_else(|| part["text"]["content"].as_str())
+            .unwrap_or_default()
+            .to_string();
+        let mention = &part["mention"];
+        let mut href = part["href"]
+            .as_str()
+            .or_else(|| part["text"]["link"]["url"].as_str())
+            .map(str::to_string);
+        match mention["type"].as_str() {
+            Some("page") => {
+                href = mention["page"]["id"].as_str().map(notion_page_url);
+                if text.is_empty() {
+                    text = "Notion page".into();
+                }
+            }
+            Some("user") => {
+                text = format!(
+                    "@{}",
+                    mention["user"]["name"]
+                        .as_str()
+                        .unwrap_or(text.trim_start_matches('@'))
+                );
+            }
+            Some("date") if text.is_empty() => {
+                text = mention["date"]["start"].as_str().unwrap_or_default().into();
+                if let Some(end) = mention["date"]["end"].as_str() {
+                    text.push_str(&format!(" → {end}"));
+                }
+            }
+            _ => {}
+        }
+        let annotations = &part["annotations"];
+        if let Some((previous, previous_annotations, previous_href)) = runs.last_mut() {
+            if ["bold", "italic", "strikethrough", "code"]
+                .iter()
+                .all(|flag| {
+                    (previous_annotations[*flag].as_bool() == Some(true))
+                        == (annotations[*flag].as_bool() == Some(true))
+                })
+                && *previous_href == href
+            {
+                previous.push_str(&text);
+                continue;
+            }
+        }
+        runs.push((text, annotations, href));
+    }
+    runs.into_iter()
+        .map(|(mut text, annotations, href)| {
+            if annotations["code"].as_bool() == Some(true) {
+                let fence =
+                    "`".repeat(text.split(|ch| ch != '`').map(str::len).max().unwrap_or(0) + 1);
+                text = format!("{fence} {text} {fence}");
+            } else {
+                text = text
+                    .replace('\\', "\\\\")
+                    .replace('*', "\\*")
+                    .replace('_', "\\_")
+                    .replace('[', "\\[")
+                    .replace(']', "\\]")
+                    .replace('`', "\\`")
+                    .replace('~', "\\~")
+                    .replace('|', "\\|")
+                    .replace('<', "\\<");
+                text = text
+                    .split('\n')
+                    .map(|line| {
+                        let content = line.trim_start_matches([' ', '\t']);
+                        let padding = line.len() - content.len();
+                        let digits = content.bytes().take_while(u8::is_ascii_digit).count();
+                        let marker = if content.starts_with(['#', '>', '-', '+', '=']) {
+                            Some(padding)
+                        } else if digits > 0 && content[digits..].starts_with(['.', ')']) {
+                            Some(padding + digits)
+                        } else {
+                            None
+                        };
+                        match marker {
+                            Some(offset) => format!("{}\\{}", &line[..offset], &line[offset..]),
+                            None => line.to_string(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+            }
+            for (annotation, marker) in [("bold", "**"), ("italic", "*"), ("strikethrough", "~~")] {
+                if annotations[annotation].as_bool() == Some(true) {
+                    let content = text.trim();
+                    if !content.is_empty() {
+                        text = format!(
+                            "{}{marker}{content}{marker}{}",
+                            &text[..text.len() - text.trim_start().len()],
+                            &text[text.trim_end().len()..]
+                        );
+                    }
+                }
+            }
+            if let Some(url) = href {
+                text = format!(
+                    "[{text}](<{}>)",
+                    url.replace('\\', "\\\\")
+                        .replace('<', "\\<")
+                        .replace('>', "\\>")
+                );
+            }
+            text
+        })
+        .collect()
+}
+
 fn property_choice(properties: &Value, name: &str) -> Option<String> {
     let property = properties.get(name)?;
     property
@@ -764,6 +1353,112 @@ fn status_update_payload(status: &str) -> Value {
     json!({ "properties": { "Status": { "select": { "name": status } } } })
 }
 
+fn property_update_payload(property: &str, value: &str) -> Result<Value, String> {
+    if value.is_empty() || value.chars().count() > 2000 {
+        return Err("Enter a value for this property".to_string());
+    }
+    match property {
+        // Notion gives every database's title property the id "title", whatever it is named.
+        "title" => {
+            let mut runs = Vec::new();
+            push_rich_text(&mut runs, value, [false; 4], None);
+            Ok(json!({ "properties": { "title": { "title": runs } } }))
+        }
+        "Priority" => Ok(json!({ "properties": { "Priority": { "select": { "name": value } } } })),
+        _ => Err("This property cannot be edited here".to_string()),
+    }
+}
+
+/// Block types whose text the task page can edit.
+const EDITABLE_TEXT_BLOCKS: [&str; 10] = [
+    "paragraph",
+    "heading_1",
+    "heading_2",
+    "heading_3",
+    "bulleted_list_item",
+    "numbered_list_item",
+    "to_do",
+    "quote",
+    "callout",
+    "toggle",
+];
+
+fn block_update_payload(kind: &str, markdown: Option<&str>, checked: Option<bool>) -> Result<Value, String> {
+    match (markdown, checked) {
+        (Some(markdown), None) if EDITABLE_TEXT_BLOCKS.contains(&kind) => {
+            Ok(json!({ kind: { "rich_text": markdown_rich_text(markdown) } }))
+        }
+        (None, Some(checked)) if kind == "to_do" => Ok(json!({ "to_do": { "checked": checked } })),
+        _ => Err("This block cannot be edited here".to_string()),
+    }
+}
+
+/// Markdown written on the task page back into Notion rich text: bold, italic,
+/// strikethrough, inline code and links. Mentions come back as plain links or text.
+fn markdown_rich_text(markdown: &str) -> Vec<Value> {
+    let arena = comrak::Arena::new();
+    let mut options = comrak::Options::default();
+    options.extension.strikethrough = true;
+    let root = comrak::parse_document(&arena, markdown, &options);
+    let mut runs = Vec::new();
+    for (index, block) in root.children().enumerate() {
+        if index > 0 {
+            push_rich_text(&mut runs, "\n", [false; 4], None);
+        }
+        collect_rich_text(block, [false; 4], None, &mut runs);
+    }
+    runs
+}
+
+/// `style` is bold, italic, strikethrough, code.
+fn collect_rich_text<'a>(
+    node: &'a comrak::nodes::AstNode<'a>,
+    mut style: [bool; 4],
+    mut link: Option<String>,
+    runs: &mut Vec<Value>,
+) {
+    use comrak::nodes::NodeValue;
+    match &node.data.borrow().value {
+        NodeValue::Text(text) => return push_rich_text(runs, text, style, link.as_deref()),
+        NodeValue::Code(code) => {
+            style[3] = true;
+            return push_rich_text(runs, &code.literal, style, link.as_deref());
+        }
+        NodeValue::SoftBreak | NodeValue::LineBreak => return push_rich_text(runs, "\n", style, None),
+        NodeValue::Strong => style[0] = true,
+        NodeValue::Emph => style[1] = true,
+        NodeValue::Strikethrough => style[2] = true,
+        NodeValue::Link(target) => link = Some(target.url.replace(' ', "%20")),
+        _ => {}
+    }
+    for child in node.children() {
+        collect_rich_text(child, style, link.clone(), runs);
+    }
+}
+
+/// Notion caps one rich-text run at 2000 characters, so longer text is split.
+fn push_rich_text(runs: &mut Vec<Value>, text: &str, style: [bool; 4], link: Option<&str>) {
+    let characters = text.chars().collect::<Vec<_>>();
+    for chunk in characters.chunks(2000) {
+        let content = chunk.iter().collect::<String>();
+        runs.push(json!({
+            "type": "text",
+            "text": { "content": content, "link": link.map(|url| json!({ "url": url })) },
+            "annotations": { "bold": style[0], "italic": style[1], "strikethrough": style[2], "code": style[3] }
+        }));
+    }
+}
+
+/// A file name Notion will accept: letters, digits, dot, dash and underscore.
+fn upload_file_name(name: &str) -> String {
+    let clean = name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_'))
+        .take(100)
+        .collect::<String>();
+    if clean.trim_matches('.').is_empty() { "screenshot.png".to_string() } else { clean }
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -773,6 +1468,73 @@ fn now_ms() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn markdown_rich_text_round_trips_the_task_page_formatting() {
+        let runs = super::markdown_rich_text(
+            "Plain **bold** *italic* ~~gone~~ `code` [link](<https://example.com/a b>) \\*star\\*",
+        );
+        let pieces = runs
+            .iter()
+            .map(|run| {
+                let flags = ["bold", "italic", "strikethrough", "code"]
+                    .iter()
+                    .filter(|flag| run["annotations"][**flag] == true)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join("+");
+                (run["text"]["content"].as_str().unwrap().to_string(), flags, run["text"]["link"]["url"].as_str().map(str::to_string))
+            })
+            .collect::<Vec<_>>();
+        assert!(pieces.contains(&("bold".into(), "bold".into(), None)));
+        assert!(pieces.contains(&("italic".into(), "italic".into(), None)));
+        assert!(pieces.contains(&("gone".into(), "strikethrough".into(), None)));
+        assert!(pieces.contains(&("code".into(), "code".into(), None)));
+        assert!(pieces.contains(&("link".into(), String::new(), Some("https://example.com/a%20b".into()))));
+        let text = pieces.iter().map(|piece| piece.0.as_str()).collect::<String>();
+        assert!(text.ends_with(" *star*"), "{text}");
+    }
+
+    #[test]
+    fn markdown_rich_text_splits_long_runs_and_keeps_paragraph_breaks() {
+        let runs = super::markdown_rich_text(&format!("{}\n\nSecond", "a".repeat(2500)));
+        let contents = runs.iter().map(|run| run["text"]["content"].as_str().unwrap().chars().count()).collect::<Vec<_>>();
+        assert_eq!(contents, vec![2000, 500, 1, 6]);
+    }
+
+    #[test]
+    fn property_update_payload_edits_title_and_priority_only() {
+        assert_eq!(
+            super::property_update_payload("title", "New title").unwrap()["properties"]["title"]["title"][0]["text"]["content"],
+            "New title"
+        );
+        assert_eq!(
+            super::property_update_payload("Priority", "High").unwrap(),
+            serde_json::json!({ "properties": { "Priority": { "select": { "name": "High" } } } })
+        );
+        assert!(super::property_update_payload("Status", "Done").is_err());
+        assert!(super::property_update_payload("title", "").is_err());
+    }
+
+    #[test]
+    fn block_update_payload_edits_text_blocks_and_to_do_checks() {
+        assert_eq!(
+            super::block_update_payload("heading_2", Some("Plan"), None).unwrap()["heading_2"]["rich_text"][0]["text"]["content"],
+            "Plan"
+        );
+        assert_eq!(
+            super::block_update_payload("to_do", None, Some(true)).unwrap(),
+            serde_json::json!({ "to_do": { "checked": true } })
+        );
+        assert!(super::block_update_payload("code", Some("x"), None).is_err());
+        assert!(super::block_update_payload("paragraph", None, Some(true)).is_err());
+    }
+
+    #[test]
+    fn upload_file_name_keeps_safe_characters_only() {
+        assert_eq!(super::upload_file_name("Screen Shot 2026-10-11 at 1.png"), "ScreenShot2026-10-11at1.png");
+        assert_eq!(super::upload_file_name("\"/../"), "screenshot.png");
+    }
+
     use super::*;
 
     #[test]
@@ -857,70 +1619,307 @@ mod tests {
                 "Status": { "select": { "name": "Doing" } }
             }
         });
-        let task = finish_task_projection(
-            pending_task_projection(&page, 42).unwrap(),
-            &HashMap::new(),
-        );
+        let task =
+            finish_task_projection(pending_task_projection(&page, 42).unwrap(), &HashMap::new());
 
         assert!(task.project.is_empty());
     }
 
     #[test]
-    fn task_detail_projects_text_and_checkbox_state() {
-        let paragraph = detail_block(&json!({
-            "type": "paragraph",
-            "paragraph": {
-                "rich_text": [
-                    { "plain_text": "First " },
-                    { "plain_text": "note" }
-                ]
-            }
-        }))
-        .unwrap();
-        let checkbox = detail_block(&json!({
-            "type": "to_do",
-            "to_do": {
-                "rich_text": [{ "plain_text": "Verify it" }],
-                "checked": true
-            }
-        }))
-        .unwrap();
-
-        assert_eq!(paragraph.kind, "paragraph");
-        assert_eq!(paragraph.text, "First note");
-        assert_eq!(paragraph.checked, None);
-        assert_eq!(paragraph.url, None);
-        assert_eq!(checkbox.text, "Verify it");
-        assert_eq!(checkbox.checked, Some(true));
+    fn detail_rich_text_keeps_annotations_and_mentions() {
+        let value = json!([
+            { "plain_text": "Bold", "annotations": { "bold": true } },
+            { "plain_text": "code", "annotations": { "code": true } },
+            { "plain_text": "Link", "href": "https://example.com" },
+            { "plain_text": "Page", "mention": { "type": "page", "page": { "id": "ab-cd" } } }
+        ]);
+        assert_eq!(
+            rich_text_markdown(&value),
+            "**Bold**` code `[Link](<https://example.com>)[Page](<https://www.notion.so/abcd>)"
+        );
+        assert_eq!(rich_text(&value).as_deref(), Some("BoldcodeLinkPage"));
     }
 
     #[test]
-    fn task_detail_projects_https_images_and_captions() {
-        let image = detail_block(&json!({
-            "type": "image",
-            "image": {
-                "type": "file",
-                "file": { "url": "https://files.notion.example/screenshot.png" },
-                "caption": [{ "plain_text": "Expected result" }]
-            }
-        }))
-        .unwrap();
+    fn detail_literal_markdown_syntax_stays_text() {
+        let text = "`code` ~~strike~~\n# heading\n- item\n+ item\n1. item\n2) item\n> quote\n---\n===\n| cell |";
+        assert_eq!(rich_text_markdown(&json!([{ "plain_text": text }])),
+            "\\`code\\` \\~\\~strike\\~\\~\n\\# heading\n\\- item\n\\+ item\n1\\. item\n2\\) item\n\\> quote\n\\---\n\\===\n\\| cell \\|");
+    }
 
-        assert_eq!(image.kind, "image");
-        assert_eq!(image.text, "Expected result");
-        assert_eq!(image.checked, None);
+    #[test]
+    fn detail_adjacent_matching_annotations_use_continuous_delimiters() {
+        for (annotation, expected) in [
+            ("bold", "**onetwo**"),
+            ("italic", "*onetwo*"),
+            ("strikethrough", "~~onetwo~~"),
+            ("code", "` onetwo `"),
+        ] {
+            let spans = json!([
+                { "plain_text": "one", "annotations": { annotation: true, "color": "red" } },
+                { "plain_text": "two", "annotations": { annotation: true, "color": "blue" } }
+            ]);
+            assert_eq!(rich_text_markdown(&spans), expected);
+        }
+    }
+
+    #[test]
+    fn detail_link_and_image_destinations_preserve_sensitive_characters() {
+        let url = "https://example.com/a b)c<d>.png";
+        let destination = "<https://example.com/a b)c\\<d\\>.png>";
         assert_eq!(
-            image.url.as_deref(),
-            Some("https://files.notion.example/screenshot.png")
+            rich_text_markdown(&json!([{ "plain_text": "Link", "href": url }])),
+            format!("[Link]({destination})")
         );
-        assert!(detail_block(&json!({
-            "type": "image",
-            "image": {
-                "type": "external",
-                "external": { "url": "file:///tmp/private.png" }
-            }
-        }))
-        .is_none());
+        let image = json!({ "id": "image", "type": "image", "image": {
+            "type": "external", "external": { "url": url }, "caption": [{ "plain_text": "Caption" }]
+        } });
+        assert_eq!(
+            notion_block(&image).markdown,
+            format!("![Caption]({destination})")
+        );
+    }
+
+    #[test]
+    fn detail_table_cell_newlines_use_plain_spaces() {
+        let table = json!({ "type": "table", "children": [
+            { "type": "table_row", "table_row": { "cells": [[{ "plain_text": "First\nSecond | Third" }]] } }
+        ] });
+        assert_eq!(
+            notion_block(&table).markdown,
+            "| First Second \\| Third |\n| --- |"
+        );
+    }
+
+    #[test]
+    fn detail_body_and_comment_results_must_be_arrays() {
+        for payload in [
+            json!({}),
+            json!({ "results": null }),
+            json!({ "results": {} }),
+            json!({ "results": "invalid" }),
+        ] {
+            assert_eq!(
+                response_results(&payload).unwrap_err(),
+                "Notion returned invalid results: expected an array"
+            );
+        }
+        assert!(response_results(&json!({ "results": [] }))
+            .unwrap()
+            .is_empty());
+    }
+
+    fn text_block(kind: &str, text: &str) -> Value {
+        json!({ "id": format!("{kind}-{text}"), "type": kind, kind: { "rich_text": [{ "plain_text": text }] } })
+    }
+
+    #[test]
+    fn detail_paragraph_keeps_id_kind_and_own_markdown() {
+        let mut paragraph = text_block("paragraph", "Text");
+        paragraph["paragraph"]["rich_text"][0]["annotations"] = json!({ "bold": true });
+        assert_eq!(
+            serde_json::to_value(notion_block(&paragraph)).unwrap(),
+            json!({
+                "id": "paragraph-Text", "kind": "paragraph", "markdown": "**Text**",
+                "checked": null, "icon": null, "children": []
+            })
+        );
+    }
+
+    #[test]
+    fn detail_heading_1_has_no_marker() {
+        assert_eq!(
+            notion_block(&text_block("heading_1", "Title")).markdown,
+            "Title"
+        );
+    }
+
+    #[test]
+    fn detail_heading_2_has_no_marker() {
+        assert_eq!(
+            notion_block(&text_block("heading_2", "Title")).markdown,
+            "Title"
+        );
+    }
+
+    #[test]
+    fn detail_heading_3_has_no_marker() {
+        assert_eq!(
+            notion_block(&text_block("heading_3", "Title")).markdown,
+            "Title"
+        );
+    }
+
+    #[test]
+    fn detail_bulleted_list_item_has_no_marker() {
+        assert_eq!(
+            notion_block(&text_block("bulleted_list_item", "Item")).markdown,
+            "Item"
+        );
+    }
+
+    #[test]
+    fn detail_numbered_list_item_has_no_marker() {
+        assert_eq!(
+            notion_block(&text_block("numbered_list_item", "Item")).markdown,
+            "Item"
+        );
+    }
+
+    #[test]
+    fn detail_to_do_keeps_check_state_without_marker() {
+        let mut block = text_block("to_do", "Verify");
+        assert_eq!(notion_block(&block).checked, Some(false));
+        block["to_do"]["checked"] = json!(true);
+        let todo = notion_block(&block);
+        assert_eq!(todo.checked, Some(true));
+        assert_eq!(todo.markdown, "Verify");
+    }
+
+    #[test]
+    fn detail_quote_has_no_marker() {
+        assert_eq!(
+            notion_block(&text_block("quote", "First\nSecond")).markdown,
+            "First\nSecond"
+        );
+    }
+
+    #[test]
+    fn detail_divider_has_empty_markdown() {
+        let divider = notion_block(&text_block("divider", ""));
+        assert_eq!(divider.kind, "divider");
+        assert!(divider.markdown.is_empty());
+    }
+
+    #[test]
+    fn detail_code_keeps_fence_and_maps_language() {
+        let mut code = text_block("code", "int x;");
+        code["code"]["language"] = json!("c#");
+        assert_eq!(notion_block(&code).markdown, "```csharp\nint x;\n```");
+        assert_eq!(code_language("c++"), "cpp");
+    }
+
+    #[test]
+    fn detail_image_keeps_caption_and_url() {
+        let image = json!({ "id": "image-id", "type": "image", "image": {
+            "type": "file", "file": { "url": "https://files.example/image.png" },
+            "caption": [{ "plain_text": "Caption" }]
+        } });
+        let block = notion_block(&image);
+        assert_eq!(block.id, "image-id");
+        assert_eq!(
+            block.markdown,
+            "![Caption](<https://files.example/image.png>)"
+        );
+    }
+
+    #[test]
+    fn detail_table_keeps_markdown_and_row_ids() {
+        let table = json!({ "id": "table-id", "type": "table", "table": {}, "children": [
+            { "id": "row-1", "type": "table_row", "table_row": { "cells": [[{ "plain_text": "Name" }], [{ "plain_text": "Value" }]] } },
+            { "id": "row-2", "type": "table_row", "table_row": { "cells": [[{ "plain_text": "A" }], [{ "plain_text": "B" }]] } }
+        ] });
+        let block = notion_block(&table);
+        assert_eq!(block.markdown, "| Name | Value |\n| --- | --- |\n| A | B |");
+        assert_eq!(
+            block
+                .children
+                .iter()
+                .map(|child| child.id.as_str())
+                .collect::<Vec<_>>(),
+            ["row-1", "row-2"]
+        );
+    }
+
+    #[test]
+    fn detail_toggle_keeps_own_text_and_child() {
+        let mut toggle = text_block("toggle", "Summary");
+        toggle["children"] = json!([text_block("paragraph", "Inside")]);
+        let block = notion_block(&toggle);
+        assert_eq!(block.markdown, "Summary");
+        assert_eq!(block.children.len(), 1);
+        assert_eq!(block.children[0].markdown, "Inside");
+    }
+
+    #[test]
+    fn detail_callout_keeps_own_text_icon_and_child() {
+        let mut callout = text_block("callout", "First");
+        assert_eq!(notion_block(&callout).icon, None);
+        callout["callout"]["icon"] = json!({ "emoji": "!" });
+        callout["children"] = json!([text_block("paragraph", "Second")]);
+        let block = notion_block(&callout);
+        assert_eq!(block.icon.as_deref(), Some("!"));
+        assert_eq!(block.markdown, "First");
+        assert_eq!(block.children.len(), 1);
+        assert_eq!(block.children[0].markdown, "Second");
+    }
+
+    #[test]
+    fn detail_nested_children_and_adjacent_blocks_stay_separate() {
+        let mut list = text_block("bulleted_list_item", "Parent");
+        let mut child = text_block("numbered_list_item", "Child");
+        child["children"] = json!([text_block("paragraph", "Grandchild")]);
+        list["children"] = json!([child]);
+        let blocks = [list, text_block("paragraph", "After")]
+            .iter()
+            .map(notion_block)
+            .collect::<Vec<_>>();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].id, "bulleted_list_item-Parent");
+        assert_eq!(blocks[0].markdown, "Parent");
+        assert_eq!(blocks[0].children[0].id, "numbered_list_item-Child");
+        assert_eq!(blocks[0].children[0].children[0].id, "paragraph-Grandchild");
+        assert_eq!(blocks[1].markdown, "After");
+    }
+
+    #[test]
+    fn detail_other_blocks_keep_raw_kind() {
+        let block = notion_block(&text_block("unsupported", "Text"));
+        assert_eq!(block.kind, "unsupported");
+        assert_eq!(block.markdown, "Text");
+    }
+
+    #[test]
+    fn detail_properties_format_status_date_relation_and_unique_id() {
+        let page = json!({ "properties": {
+            "Title": { "type": "title", "title": [] },
+            "Status": { "type": "status", "status": { "name": "Doing" } },
+            "Due": { "type": "date", "date": { "start": "2026-10-11", "end": "2026-10-12" } },
+            "Project": { "type": "relation", "relation": [{ "id": "project" }] },
+            "ID": { "type": "unique_id", "unique_id": { "prefix": "TSK", "number": 1400 } },
+            "Created": { "type": "created_time", "created_time": "2026-10-11T00:00:00Z" }
+        } });
+        let rows = task_properties(
+            &page,
+            &HashMap::from([(
+                "project".into(),
+                ("Assembly".into(), "https://www.notion.so/project".into()),
+            )]),
+        );
+        assert_eq!(
+            rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
+            ["Due", "ID", "Project", "Status", "Created"]
+        );
+        assert_eq!(rows[0].values, ["2026-10-11", "2026-10-12"]);
+        assert_eq!(rows[1].values, ["TSK-1400"]);
+        assert_eq!(rows[2].values, ["Assembly"]);
+        assert_eq!(
+            rows[2].links,
+            [Some("https://www.notion.so/project".into())]
+        );
+        assert_eq!(rows[3].kind, "status");
+        assert_eq!(rows[3].values, ["Doing"]);
+    }
+
+    #[test]
+    fn comments_access_denied_is_optional_and_failed_user_is_named() {
+        assert!(forbidden_comments(reqwest::StatusCode::FORBIDDEN)
+            .unwrap()
+            .is_empty());
+        assert!(forbidden_comments(reqwest::StatusCode::OK).is_none());
+        assert_eq!(comment_author(None), "Notion user");
+        assert_eq!(comment_author(Some(&json!({}))), "Notion user");
+        assert_eq!(comment_author(Some(&json!({ "name": "Sam" }))), "Sam");
     }
 
     #[test]

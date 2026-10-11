@@ -196,6 +196,7 @@
 		else if (action === "archive") onSettle?.(session.ownedId);
 		else if (action === "unsettle") onUnsettle?.(session.ownedId);
 		else if (action === "pin" || action === "unpin") onPin?.(session.ownedId, action === "pin");
+		else if (action === "copy-deeplink") copyText(`assembly://session/${encodeURIComponent(session.ownedId)}`);
 		else if (action === "copy-session-id") copyText(session.nativeSessionId || session.ownedId);
 		else if (action === "copy-resume-command")
 			copyText(resumeCommand(session.agent, session.nativeSessionId, session.cwd));
