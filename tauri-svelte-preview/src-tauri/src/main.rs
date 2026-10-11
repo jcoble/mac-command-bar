@@ -5317,6 +5317,18 @@ fn continue_app_exit(
     result
 }
 
+// Runs on the event-loop thread, which is outside any tokio runtime, so the
+// timeout must be created inside `block_on`.
+fn shutdown_agent_runtimes_on_exit(manager: &agent_conversation::manager::AgentRuntimeManager) {
+    if tauri::async_runtime::block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), manager.shutdown()).await
+    })
+    .is_err()
+    {
+        crate::debug_log::stderr_log!("Adapter shutdown timed out after 5 seconds");
+    }
+}
+
 fn main() {
     install_panic_hook();
     if std::env::args().any(|argument| argument == "--assembly-server") {
@@ -5830,16 +5842,9 @@ fn main() {
             let _ = app_handle.emit(EXIT_REQUESTED_EVENT, serde_json::json!({ "kind": "quit" }));
         }
         tauri::RunEvent::Exit => {
-            if tauri::async_runtime::block_on(tokio::time::timeout(
-                Duration::from_secs(5),
-                app_handle
-                    .state::<agent_conversation::manager::AgentRuntimeManager>()
-                    .shutdown(),
-            ))
-            .is_err()
-            {
-                crate::debug_log::stderr_log!("Adapter shutdown timed out after 5 seconds");
-            }
+            shutdown_agent_runtimes_on_exit(
+                &app_handle.state::<agent_conversation::manager::AgentRuntimeManager>(),
+            );
             app_handle.state::<browser::BrowserRegistry>().shutdown();
             app_handle
                 .state::<agent_conversation::remote::RemoteConnectionManager>()
@@ -5858,6 +5863,14 @@ mod tests {
         unstage_git_paths_sync,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn exit_shutdown_runs_outside_a_runtime() {
+        let manager = agent_conversation::manager::AgentRuntimeManager::new(
+            agent_conversation::providers::ProviderRegistry::default(),
+        );
+        shutdown_agent_runtimes_on_exit(&manager);
+    }
 
     #[test]
     fn exit_request_guard_requires_confirmation_once() {
