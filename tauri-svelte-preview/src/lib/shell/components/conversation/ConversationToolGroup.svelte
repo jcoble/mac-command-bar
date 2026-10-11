@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getContext, setContext, tick, untrack } from 'svelte';
+  import { getContext, onDestroy, setContext, tick, untrack } from 'svelte';
   import { createVirtualizer } from '@tanstack/svelte-virtual';
   import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import { nextToolGroupPinned, type ConversationDisplayItem, type ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
@@ -40,11 +40,18 @@
       followOnAppend: follow, scrollEndThreshold: follow ? Infinity : -1
     }));
   });
+  // Unmounting stops the first scroll if it is still waiting for the render.
+  const stop = new AbortController();
+  onDestroy(() => stop.abort());
   $effect(() => {
     if (!host || initialized) return;
     initialized = true;
-    if (active) void tick().then(() => $virtualizer.scrollToEnd());
+    if (active) void showNewestRow(stop.signal);
   });
+  async function showNewestRow(signal: AbortSignal): Promise<void> {
+    await tick();
+    if (!signal.aborted) $virtualizer.scrollToEnd();
+  }
   // A call opened inside this bounded list moves to its top, so its diff or output shows.
   const disclosure = getContext<ConversationDisclosureContext>(conversationDisclosureContext);
   setContext<ConversationDisclosureContext>(conversationDisclosureContext, {
