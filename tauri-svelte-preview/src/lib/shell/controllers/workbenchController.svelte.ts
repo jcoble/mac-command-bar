@@ -163,6 +163,9 @@ export class WorkbenchController {
 		// A center-tab round trip keeps the diff ready to return to. A session
 		// switch is the ownership boundary where that selection must be released.
 		gitService.clearSelection();
+		// Let go of the outgoing repository too; whichever git surface is on
+		// screen points it at the incoming session's repository as it remounts.
+		gitService.activate(null);
 		gitCommitFilesService.release();
 		this.adoptRightTab(DEFAULT_RIGHT_TAB);
 		topTabs.reset();
