@@ -750,11 +750,14 @@ pub(crate) trait WorktreeLeasePort: Send + Sync {
 }
 
 #[derive(Default)]
-pub(crate) struct InMemoryWorktreeLeasePort {
+pub(crate) struct WorktreeLeaseAuthority {
     leases: Mutex<HashMap<String, WorktreeLeaseRequest>>,
 }
 
-impl WorktreeLeasePort for InMemoryWorktreeLeasePort {
+#[cfg(test)]
+type InMemoryWorktreeLeasePort = WorktreeLeaseAuthority;
+
+impl WorktreeLeasePort for WorktreeLeaseAuthority {
     fn acquire(
         &self,
         request: WorktreeLeaseRequest,
@@ -1186,6 +1189,7 @@ pub(crate) struct WorkflowEngine {
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdGenerator>,
     store: Arc<SessionStore>,
+    dispatch_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl WorkflowEngine {
@@ -1202,13 +1206,14 @@ impl WorkflowEngine {
             clock,
             ids,
             store,
+            dispatch_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
     pub fn managed(runtime: AgentRuntimeManager, store: Arc<SessionStore>) -> Self {
         Self::new(
             Arc::new(runtime),
-            Arc::new(InMemoryWorktreeLeasePort::default()),
+            Arc::new(WorktreeLeaseAuthority::default()),
             Arc::new(SystemClock),
             Arc::new(UuidGenerator),
             store,
@@ -2041,7 +2046,7 @@ impl WorkflowEngine {
                 approved: None,
                 structured_input: None,
             });
-            run.state = WorkflowRunState::WaitingApproval;
+            if run.state != WorkflowRunState::Paused { run.state = WorkflowRunState::WaitingApproval; }
         } else {
             run.nodes[index].state = WorkflowNodeState::Completed;
             run.nodes[index].finished_at_ms = Some(self.clock.now_ms());
@@ -2060,10 +2065,25 @@ impl WorkflowEngine {
     }
 
     pub async fn dispatch_ready(&self, run_id: &str) -> Result<WorkflowRunRecord, WorkflowError> {
+        let _dispatch = self.dispatch_lock.lock().await;
         loop {
             let mut run = self.require_run(run_id)?;
             if run.state != WorkflowRunState::Running {
                 return Ok(run);
+            }
+            // YAML runs allocate once; templates continue using their selected workspace.
+            if run.definition.nodes.iter().any(|node| !node.step.is_null()) && run.input_snapshot.get("worktree").is_none() {
+                let task: TaskSnapshot = serde_json::from_value(run.input_snapshot["task"].clone()).map_err(invalid_yaml)?;
+                let number = task.key.strip_prefix("TSK-").filter(|value| !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit()))
+                    .ok_or_else(|| invalid_yaml("Task key must be TSK-<number>"))?;
+                let slug = task.title.to_ascii_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect::<String>();
+                let branch = format!("tsk-{number}-{}-{}", slug.trim_matches('-'), &stable_hash(&run.id)[8..]);
+                let root = run.input_snapshot["cwd"].as_str().ok_or_else(|| invalid_yaml("Project root is required"))?;
+                let path = crate::project_folders::create_project_worktree_sync(Path::new(root), &branch).map_err(WorkflowError::Runtime)?;
+                run.input_snapshot["worktree"] = json!({"path":path,"branch":branch,"status":"","removed":false});
+                run.input_snapshot["cwd"] = json!(path);
+                run.worktrees_allocated = 1;
+                self.append(&mut run, "workflow.worktree.allocated", "worktree", None)?;
             }
             if let Err(error) = enforce_budgets(&run, self.clock.now_ms()) {
                 if let WorkflowError::BudgetExhausted(failure) = &error {
@@ -2119,28 +2139,6 @@ impl WorkflowEngine {
                 self.append(&mut run, "workflow.scheduler.settled", &settled_key, None)?;
                 return Ok(run);
             };
-            let all_runs = self.list_runs()?;
-            self.rebuild_active_leases(&all_runs)?;
-            let global_active = all_runs
-                .iter()
-                .flat_map(|candidate| &candidate.nodes)
-                .filter(|node| {
-                    matches!(
-                        node.state,
-                        WorkflowNodeState::Starting | WorkflowNodeState::Running
-                    )
-                })
-                .count();
-            let workflow_active = run
-                .nodes
-                .iter()
-                .filter(|node| {
-                    matches!(
-                        node.state,
-                        WorkflowNodeState::Starting | WorkflowNodeState::Running
-                    )
-                })
-                .count();
             let index = run
                 .nodes
                 .iter()
@@ -2161,16 +2159,9 @@ impl WorkflowEngine {
                 .expect("validated node")
                 .clone();
             let provider = WorkflowPolicy::provider_for(&role)?;
-            let provider_active = all_runs
-                .iter()
-                .flat_map(|candidate| &candidate.nodes)
-                .filter(|node| {
-                    matches!(
-                        node.state,
-                        WorkflowNodeState::Starting | WorkflowNodeState::Running
-                    ) && node.provider == provider
-                })
-                .count();
+            self.rebuild_active_leases(&self.list_runs()?)?;
+            let (global_active, workflow_active, provider_active, shared_limit) = self.store
+                .workflow_active_agent_counts(run_id, &provider).map_err(|error| WorkflowError::Ledger(error.to_string()))?;
             let provider_limit = run
                 .definition
                 .concurrency
@@ -2182,7 +2173,7 @@ impl WorkflowEngine {
                 .definition
                 .concurrency
                 .global
-                .min(run.definition.budgets.maximum_active_agents);
+                .min(run.definition.budgets.maximum_active_agents).min(shared_limit);
             if global_active >= global_limit
                 || workflow_active >= run.definition.concurrency.workflow
                 || provider_active >= provider_limit
@@ -2487,6 +2478,15 @@ impl WorkflowEngine {
         idempotency_key: &str,
         node_id: Option<&str>,
     ) -> Result<(), WorkflowError> {
+        if matches!(run.state, WorkflowRunState::Completed | WorkflowRunState::Cancelled | WorkflowRunState::Failed)
+            && run.input_snapshot.get("worktree").is_some() {
+            let merged = run.nodes.iter().find(|node| node.state == WorkflowNodeState::Completed
+                && node.output_contract == WorkflowOutputContract::PullRequestMergeReceipt)
+                .and_then(|node| node.structured_output.as_ref()).and_then(|receipt| receipt["url"].as_str())
+                .is_some_and(|url| std::process::Command::new("gh").args(["pr", "view", url, "--json", "state", "--jq", ".state"])
+                    .output().is_ok_and(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "MERGED"));
+            retain_run_worktree(run, merged)?;
+        }
         run.updated_at_ms = self.clock.now_ms();
         run.phase = derive_phase(run);
         let node = node_id.and_then(|id| run.nodes.iter().find(|node| node.node_id == id));
@@ -2514,6 +2514,28 @@ impl WorkflowEngine {
             .unwrap_or(run.last_sequence);
         Ok(())
     }
+}
+
+fn retain_run_worktree(run: &mut WorkflowRunRecord, pr_merged: bool) -> Result<(), WorkflowError> {
+    let worktree = &mut run.input_snapshot["worktree"];
+    if worktree["removed"] == true { return Ok(()); }
+    let path = worktree["path"].as_str().ok_or_else(|| invalid_yaml("Missing run worktree path"))?.to_owned();
+    let output = std::process::Command::new("git").arg("-C").arg(&path).args(["status", "--short"]).output().map_err(invalid_yaml)?;
+    if !output.status.success() { return Err(invalid_yaml(String::from_utf8_lossy(&output.stderr))); }
+    let status = String::from_utf8_lossy(&output.stdout).into_owned();
+    worktree["status"] = json!(status);
+    if pr_merged && status.is_empty() {
+        let common = std::process::Command::new("git").arg("-C").arg(&path)
+            .args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().map_err(invalid_yaml)?;
+        if !common.status.success() { return Err(invalid_yaml(String::from_utf8_lossy(&common.stderr))); }
+        let common = String::from_utf8_lossy(&common.stdout).trim().to_owned();
+        for args in [vec!["worktree", "remove", &path], vec!["worktree", "prune"]] {
+            let output = std::process::Command::new("git").arg("--git-dir").arg(&common).args(args).output().map_err(invalid_yaml)?;
+            if !output.status.success() { return Err(invalid_yaml(String::from_utf8_lossy(&output.stderr))); }
+        }
+        worktree["removed"] = json!(true);
+    }
+    Ok(())
 }
 
 fn decode_agent_receipt(text: &str) -> Result<Value, WorkflowError> {
@@ -2805,6 +2827,10 @@ fn refresh_ready_and_phase(run: &mut WorkflowRunRecord) {
             };
         }
     }
+    if run.state == WorkflowRunState::Paused {
+        run.phase = derive_phase(run);
+        return;
+    }
     if run.nodes.iter().all(|node| {
         matches!(
             node.state,
@@ -2973,6 +2999,7 @@ mod tests {
     #[derive(Default)]
     struct FakeRuntime {
         dispatched: Mutex<Vec<AgentDispatchRequest>>,
+        cancelled: AtomicU64,
     }
     impl AgentRuntimePort for FakeRuntime {
         fn dispatch<'a>(
@@ -2987,7 +3014,7 @@ mod tests {
             })
         }
         fn cancel<'a>(&'a self, _owned_id: &'a str) -> PortFuture<'a, ()> {
-            Box::pin(async { Ok(()) })
+            Box::pin(async { self.cancelled.fetch_add(1, Ordering::SeqCst); Ok(()) })
         }
     }
     struct FakeClock(AtomicU64);
@@ -3059,6 +3086,107 @@ mod tests {
                 ..Default::default()
             },
             completion: WorkflowCompletionPolicy::default(),
+        }
+    }
+
+    struct RunRepo(std::path::PathBuf);
+    impl RunRepo {
+        fn git(&self, args: &[&str]) {
+            let output = std::process::Command::new("git").args(args).current_dir(&self.0).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        }
+        fn new() -> Self {
+            let root = std::path::PathBuf::from("/var/tmp").join(format!("tsk-1416-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let repo = Self(root.clone());
+            repo.git(&["init", "--bare", "--initial-branch=main", "origin.git"]);
+            repo.git(&["clone", "origin.git", "repo"]);
+            let checkout = Self(root.join("repo"));
+            checkout.git(&["-c", "user.name=Test", "-c", "user.email=test@test", "commit", "--allow-empty", "-m", "main"]);
+            checkout.git(&["push", "origin", "main"]);
+            std::mem::forget(repo);
+            checkout
+        }
+    }
+    impl Drop for RunRepo {
+        fn drop(&mut self) { std::fs::remove_dir_all(self.0.parent().unwrap()).unwrap(); }
+    }
+    fn limit_run(engine: &WorkflowEngine, root: &Path, key: &str, limit: usize) -> WorkflowRunRecord {
+        let mut workflow = definition();
+        workflow.id = key.into();
+        workflow.nodes = vec![node("a", "implementer", &[])];
+        workflow.concurrency.global = limit;
+        workflow.budgets.maximum_active_agents = limit;
+        engine.create_run(workflow, json!({"cwd": root}), key.into()).unwrap()
+    }
+    fn run_engine(runtime: Arc<FakeRuntime>) -> WorkflowEngine {
+        WorkflowEngine::new(runtime, Arc::new(InMemoryWorktreeLeasePort::default()),
+            Arc::new(FakeClock(AtomicU64::new(1))), Arc::new(FakeIds(AtomicU64::new(1))),
+            Arc::new(SessionStore::open_in_memory().unwrap()))
+    }
+    #[test]
+    fn run_worktree_is_reused_on_redo_and_preserved_when_dirty() {
+        let repo = RunRepo::new();
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = run_engine(runtime.clone());
+        std::fs::create_dir_all(repo.0.join(".assembly/workflows")).unwrap();
+        std::fs::write(repo.0.join(".assembly/workflows/demo.yml"), "name: Demo\nsteps:\n  build:\n    agent: { provider: codex }\n    prompt: build.md\n").unwrap();
+        std::fs::write(repo.0.join(".assembly/workflows/build.md"), "Build").unwrap();
+        let run = engine.create_run_from_file(&repo.0, Path::new(".assembly/workflows/demo.yml"),
+            TaskSnapshot { key: "TSK-1416".into(), title: "Engine".into(), body: "Body".into() }, json!({}), "new".into()).unwrap();
+        let mut run = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+        let cwd = runtime.dispatched.lock().unwrap()[0].cwd.clone();
+        assert_ne!(Path::new(&cwd), repo.0);
+        assert!(run.input_snapshot["worktree"]["branch"].as_str().unwrap().starts_with("tsk-1416-"));
+        std::fs::write(Path::new(&cwd).join("dirty.txt"), "keep me").unwrap();
+        run.nodes[0].state = WorkflowNodeState::Ready;
+        run.nodes[0].attempt += 1;
+        engine.append(&mut run, "workflow.test.redo", "redo", None).unwrap();
+        tauri::async_runtime::block_on(engine.dispatch_ready(&run.id)).unwrap();
+        assert_eq!(runtime.dispatched.lock().unwrap()[1].cwd, cwd);
+        retain_run_worktree(&mut run, true).unwrap();
+        assert_eq!(run.input_snapshot["worktree"]["status"], "?? dirty.txt\n");
+        assert!(Path::new(&cwd).join("dirty.txt").exists());
+        std::fs::remove_file(Path::new(&cwd).join("dirty.txt")).unwrap();
+        retain_run_worktree(&mut run, false).unwrap();
+        assert!(Path::new(&cwd).exists());
+        retain_run_worktree(&mut run, true).unwrap();
+        assert!(!Path::new(&cwd).exists());
+    }
+    #[test]
+    fn shared_session_limit_blocks_second_run() {
+        let repo = RunRepo::new();
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = run_engine(runtime.clone());
+        let first = limit_run(&engine, &repo.0, "first", 1);
+        let second = limit_run(&engine, &repo.0, "second", 3);
+        tauri::async_runtime::block_on(async {
+            tokio::try_join!(engine.start(&first.id, "start1"), engine.start(&second.id, "start2")).unwrap();
+        });
+        assert_eq!(runtime.dispatched.lock().unwrap().len(), 1);
+    }
+    #[test]
+    fn pause_does_not_cancel_active_turn() {
+        for gated in [false, true] {
+            let repo = RunRepo::new();
+            let runtime = Arc::new(FakeRuntime::default());
+            let engine = run_engine(runtime.clone());
+            let mut run = limit_run(&engine, &repo.0, "paused", 1);
+            if gated {
+                run.definition.nodes[0].approval_gate = Some(WorkflowApprovalGate { id: "approve".into(), prompt: "Approve".into() });
+                engine.append(&mut run, "workflow.test.gated", "gate", None).unwrap();
+            }
+            let active = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+            let paused = engine.pause(&run.id, "pause").unwrap();
+            assert_eq!(paused.nodes[0].state, WorkflowNodeState::Running);
+            assert_eq!(runtime.cancelled.load(Ordering::SeqCst), 0);
+            let finished = tauri::async_runtime::block_on(engine.submit_result(&run.id, "a",
+                json!({"changedFiles":[],"summary":"done","tests":[],"knownRisks":[],"commit":null,"branch":null,"worktree":null,"artifacts":[]}), "finish")).unwrap();
+            assert_eq!(finished.nodes[0].owned_id, active.nodes[0].owned_id);
+            assert_eq!(finished.nodes[0].state, if gated { WorkflowNodeState::WaitingApproval } else { WorkflowNodeState::Completed });
+            assert_eq!(finished.state, WorkflowRunState::Paused);
+            let resumed = tauri::async_runtime::block_on(engine.resume(&run.id, "resume")).unwrap();
+            assert_eq!(resumed.state, if gated { WorkflowRunState::WaitingApproval } else { WorkflowRunState::Completed });
         }
     }
 

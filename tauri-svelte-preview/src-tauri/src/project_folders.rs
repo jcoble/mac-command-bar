@@ -295,6 +295,25 @@ pub(crate) async fn project_root_is_bare(root: String) -> Result<bool, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Workflow runs share the project's worktree root, never the session folder.
+pub(crate) fn create_project_worktree_sync(root: &Path, branch: &str) -> Result<String, String> {
+    let common = git_text(root, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .ok_or("Project is not a git repository")?;
+    let common = Path::new(&common);
+    let repo = if common.file_name().is_some_and(|name| name == ".git") {
+        common.parent().ok_or("Repository folder is unavailable")?
+    } else { common };
+    let path = repo.parent().ok_or("Project worktree root is unavailable")?
+        .join("worktrees").join(repo.file_name().ok_or("Repository name is unavailable")?).join(branch);
+    for args in [vec!["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+        vec!["worktree", "add", "-b", branch, path.to_str().ok_or("Invalid worktree path")?, "origin/main"]] {
+        std::fs::create_dir_all(path.parent().unwrap()).map_err(|error| error.to_string())?;
+        let output = Command::new("git").arg("-C").arg(root).args(args).output().map_err(|error| error.to_string())?;
+        if !output.status.success() { return Err(String::from_utf8_lossy(&output.stderr).trim_end().into()); }
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
 pub(crate) fn new_project_row(machine: String, inspection: ProjectFolderInspection) -> ProjectRow {
     ProjectRow {
         id: uuid::Uuid::new_v4().to_string(),

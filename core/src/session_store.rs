@@ -2528,6 +2528,34 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read latest workflow runs", error))
     }
 
+    /// Counts only agent steps from the latest snapshot of each run, including paused turns.
+    pub fn workflow_active_agent_counts(&self, run_id: &str, provider: &str) -> Result<(usize, usize, usize, usize)> {
+        let connection = self.lock()?;
+        connection.query_row(
+            "WITH latest AS (
+                SELECT json_extract(e.payload_json, '$.workflowPayload.run') AS run
+                FROM orchestration_events e
+                WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%'
+                  AND e.rowid = (SELECT rowid FROM orchestration_events
+                    WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                    ORDER BY sequence DESC LIMIT 1)
+             ), active AS (
+                SELECT json_extract(run, '$.id') AS run_id, json_extract(n.value, '$.provider') AS provider
+                FROM latest, json_each(run, '$.nodes') n
+                JOIN json_each(run, '$.definition.nodes') d
+                  ON json_extract(d.value, '$.id') = json_extract(n.value, '$.nodeId')
+                WHERE json_extract(n.value, '$.state') IN ('starting', 'running')
+                  AND (json_type(d.value, '$.step') IS NULL OR json_type(d.value, '$.step') = 'null'
+                    OR json_type(d.value, '$.step.agent') IS NOT NULL OR json_type(d.value, '$.step.review') IS NOT NULL)
+             ) SELECT COUNT(*), COALESCE(SUM(run_id = ?1), 0), COALESCE(SUM(provider = ?2), 0),
+                COALESCE((SELECT MIN(MIN(json_extract(run, '$.definition.concurrency.global'),
+                    json_extract(run, '$.definition.budgets.maximumActiveAgents'))) FROM latest
+                    WHERE json_extract(run, '$.state') IN ('running', 'paused', 'waiting-approval', 'waiting-input')), 2147483647)
+             FROM active",
+            params![run_id, provider], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).map_err(|error| StoreError::sqlite("could not count active workflow agents", error))
+    }
+
     pub fn latest_workflow_orchestration_event(&self, run_id: &str) -> Result<Option<OrchestrationEventRow>> {
         let connection = self.lock()?;
         connection.query_row(
@@ -4260,6 +4288,29 @@ mod tests {
         EvidenceRunDiskUsage, NotionTaskProjection, ProjectRow, RepresentedTurnFacts, SessionRow,
         SessionStore,
     };
+
+    #[test]
+    fn workflow_active_agent_counts_uses_latest_snapshots_and_paused_turns() {
+        let store = SessionStore::open_in_memory().unwrap();
+        for (id, sequence, state, provider, step) in [
+            ("one", 1, "running", "codex", serde_json::json!({"agent":{}})),
+            ("one", 2, "completed", "codex", serde_json::json!({"agent":{}})),
+            ("two", 1, "starting", "claude", serde_json::json!({"review":{}})),
+            ("shell", 1, "running", "codex", serde_json::json!({"run":["test"]})),
+        ] {
+            let payload = serde_json::json!({"workflowPayload":{"run":{"id":id,"state":"paused",
+                "definition":{"concurrency":{"global":1},"budgets":{"maximumActiveAgents":2},
+                    "nodes":[{"id":"step","step":step}]},
+                "nodes":[{"nodeId":"step","state":state,"provider":provider}]}}});
+            store.append_orchestration_event(&super::OrchestrationEventRow {
+                id: format!("{id}-{sequence}"), run_id: id.into(), kind: "workflow.test".into(),
+                timestamp: "1".into(), sequence: Some(sequence), workflow_id: Some("workflow".into()),
+                idempotency_key: None, payload_json: payload.to_string(),
+            }).unwrap();
+        }
+        assert_eq!(store.workflow_active_agent_counts("two", "claude").unwrap(), (1, 1, 1, 1));
+        assert_eq!(store.workflow_active_agent_counts("one", "codex").unwrap(), (1, 0, 0, 1));
+    }
 
     fn fixture_session(owned_id: &str, activity_ms: i64) -> SessionRow {
         SessionRow {
