@@ -236,7 +236,7 @@
         <span><strong>{frontend.loadedTreeNodes}</strong> tree nodes</span>
         <span><strong>{frontend.loadedGitHistoryRows}</strong> Git rows</span>
         <span><strong>{frontend.activeDiffs}</strong> active diffs</span>
-        <span><strong>{frontend.xtermViews}</strong> xterm views</span>
+        <span><strong>{frontend.terminalViews}</strong> terminal views</span>
         <span><strong>{frontend.codeMirrorEditorViews}</strong> mounted EditorViews</span>
         <span><strong>{frontend.codeMirrorEditorStates}</strong> retained EditorStates</span>
         <span><strong>{frontend.codeMirrorDocBytes}</strong> editor bytes</span>

@@ -78,7 +78,7 @@ Agent chat apps such as the Codex app and T3 Code are good at conversation but l
 
 ### Terminals, run actions, and resources
 
-- Integrated terminals use xterm.js on a native PTY from the Rust backend.
+- The workspace terminal uses Ghostty Web on a native PTY from the Rust backend.
 - **Run** stores per-project commands with keyboard shortcuts, shows running processes and their output, and can open a preview URL once a server is up.
 - **Resources** shows running processes with their CPU and memory, grouped by owner, and lets you stop them after a confirmation. It also shows disk use by folder and leftover Playwright browsers.
 - **Usage** shows provider quota windows, token history, and estimated cost, built from the providers' local logs.
@@ -250,4 +250,4 @@ Assembly is licensed under the [Apache License 2.0](LICENSE). Contributions are 
 
 ## Acknowledgements
 
-Parts of the conversation interface adapt presentation patterns from [T3 Code](https://github.com/pingdotgg/t3code) (MIT). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Assembly is built on [Tauri](https://tauri.app), [Svelte](https://svelte.dev), [CodeMirror](https://codemirror.net), [xterm.js](https://xtermjs.org), and the [Agent Client Protocol](https://agentclientprotocol.com).
+Parts of the conversation interface adapt presentation patterns from [T3 Code](https://github.com/pingdotgg/t3code) (MIT). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Assembly is built on [Tauri](https://tauri.app), [Svelte](https://svelte.dev), [CodeMirror](https://codemirror.net), [Ghostty Web](https://github.com/coder/ghostty-web), and the [Agent Client Protocol](https://agentclientprotocol.com).

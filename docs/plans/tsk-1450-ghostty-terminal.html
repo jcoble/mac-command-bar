@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TSK-1450 Ghostty Web terminal plan</title>
+<style>
+body{font:15px/1.5 system-ui,sans-serif;max-width:1040px;margin:40px auto;padding:0 24px;color:#202124;background:#fff}h1,h2{line-height:1.2}h1{font-size:28px}h2{font-size:19px;margin-top:28px}code{background:#f1f3f4;padding:2px 5px;border-radius:4px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #dadce0;padding:8px;text-align:left;vertical-align:top}th{background:#f7f8f8}.ok{border-left:4px solid #188038;padding-left:12px}.scope{border-left:4px solid #1a73e8;padding-left:12px}li{margin:5px 0}
+</style>
+</head>
+<body>
+<h1>TSK-1450: Replace xterm with Ghostty Web</h1>
+<p class="ok"><strong>Decision:</strong> patch <code>ghostty-web@0.4.0</code> narrowly, replace the existing workspace-terminal renderer through its current factory seam, and remove xterm. The existing PTY backend remains the only backend.</p>
+<p class="scope"><strong>Boundary:</strong> one session-owned utility PTY rooted at its workspace folder. Remove the bottom terminal and expose Ghostty as an addable right-pane tab alongside Worktrees. Do not restore terminal-based chat or retain a per-session renderer, add a fallback, add a second PTY path, or reinterpret protocol references that correctly describe xterm escape conventions.</p>
+<p class="ok"><strong>Final owner choice:</strong> leaving the terminal fully disposes Ghostty but keeps its native PTY and shell running so variables, jobs, and command state resume. SQLite remains the authority for durable Assembly UI state; the live OS process is runtime state owned by Rust. No component, WASM object, or terminal display buffer is retained in WebKit.</p>
+
+<h2>Published-package patch</h2>
+<ul>
+<li>Replace the recursive idle <code>requestAnimationFrame</code> loop with a single-flight <code>requestRender()</code>. A frame is queued only by actual terminal activity and clears its handle after drawing.</li>
+<li>Replace the renderer's perpetual cursor interval with a finite activity sequence when <code>cursorBlink</code> is enabled: show immediately, hide once at about 350 ms, show and settle by about 700 ms. Input, focus, and output restart that sequence. Blur and disposal clear both owned timers; blur leaves the cursor visible.</li>
+<li>Add terminal visibility state used by the existing <code>TerminalView.setVisible()</code> contract. <code>setVisible(false)</code> cancels pending render and cursor work while writes continue updating WASM; <code>setVisible(true)</code> requests one catch-up frame. The application unmounts and disposes the right-panel terminal when it is left; it does not retain a hidden component.</li>
+<li>Wire selection changes to <code>requestRender()</code>; retain the finite smooth-scroll and scrollbar-fade frames because each ends.</li>
+<li>Allow theme changes after <code>open()</code> by calling <code>CanvasRenderer.setTheme()</code> and requesting a frame. This is app-correct because every shipped terminal theme currently uses the same palette; the patch does not guess or rewrite resolved WASM cell colours.</li>
+<li>Add typed <code>lineHeight</code> support to terminal and renderer options and font metrics. Make fit remeasure loaded fonts before computing dimensions.</li>
+<li>Store and remove the <code>beforeinput</code> handler and SelectionManager's document <code>mousedown</code> handler, cancel pending render/cursor work and FitAddon's resize-guard timer, and retain the existing <code>wasmTerm.free()</code> disposal. The document-listener leak was reproduced as 12 unmatched listeners, then fixed and re-proved at zero; immediate fit/dispose leaves no guard timer.</li>
+</ul>
+
+<h2>Render triggers</h2>
+<table>
+<tr><th>Event</th><th>Required render</th></tr>
+<tr><td>Initial open</td><td>Draw once immediately after renderer creation.</td></tr>
+<tr><td>PTY write/output</td><td>Write to WASM, restart the finite cursor sequence, and queue one coalesced frame.</td></tr>
+<tr><td>Resize</td><td>Resize WASM and renderer, then queue one frame. Fit uses this path when rows or columns change.</td></tr>
+<tr><td>Fit/font ready</td><td>Remeasure font metrics; fit resizes when needed and requests one frame even when the grid dimensions stay unchanged.</td></tr>
+<tr><td>Keyboard/input</td><td>Restart the finite cursor sequence and queue one frame; echoed text still arrives through PTY output.</td></tr>
+<tr><td>Selection/scroll</td><td>Selection changes queue one frame; scroll animation remains finite and event-driven.</td></tr>
+<tr><td>Focus</td><td>Show cursor, restart its finite sequence, and queue one frame.</td></tr>
+<tr><td>Blur</td><td>Clear cursor timers, leave it visible, and queue one final frame.</td></tr>
+<tr><td>Hidden/shown</td><td>Hidden state cancels and suppresses render/cursor scheduling while WASM continues receiving output. Shown state fits and draws one catch-up frame.</td></tr>
+<tr><td>Theme</td><td>Update renderer theme and queue one frame.</td></tr>
+<tr><td>Font family/size/line height</td><td>Update metrics, fit, and queue one frame.</td></tr>
+</table>
+
+<h2>Application cutover</h2>
+<ul>
+<li>Add <code>ghostty-web@0.4.0</code> and <code>patches/ghostty-web@0.4.0.patch</code>; remove all <code>@xterm/*</code> packages and lock entries.</li>
+<li>Rename <code>xtermFactory.ts</code> to <code>ghosttyFactory.ts</code> and keep the existing <code>TerminalView</code> seam. Map current font family, font size, line height, cursor blink, scrollback, and theme settings directly. Live font setting changes call the mounted view's existing fit path so its resize hook updates the PTY geometry. Listen for <code>document.fonts.loadingdone</code>, call fit, and remove the listener on disposal.</li>
+<li>The renderer lane updates <code>SettingsDialog.svelte</code>, deletes the unreferenced <code>terminalController.svelte.ts</code> and <code>TerminalSurface.svelte</code>, and supplies the renamed factory. A separate placement lane owns <code>WorkspaceTerminal.svelte</code> and panel wiring: it removes the bottom-dock entry, adds the same workspace terminal as a right-pane tab alongside Worktrees, and disposes it whenever that tab is left.</li>
+<li>Rename generic diagnostics from xterm views to terminal views. Rename <code>themeRegistry.test.mjs</code> to TypeScript and update its package script. Adjust <code>railBackendCutover.test.ts</code> only for the renamed factory and new finite-render contract.</li>
+<li>Update section 14 and the section 01 changelog in <code>main-architecture-explained.html</code>. Update README dependency wording only where it describes the active renderer.</li>
+</ul>
+
+<h2>Release and reattach</h2>
+<ul>
+<li>Start the workspace PTY with the selected Assembly <code>ownedId</code>. Reopening first lists the existing Rust registry, reuses the one matching user PTY, and reads only the final four MiB of its bounded 16-MiB scrollback ring through the existing terminal APIs.</li>
+<li>On leave, abort pending view work, unsubscribe output, disconnect resize observation, and dispose Ghostty. Do not call the PTY close command. The Rust registry, PTY, shell, and bounded scrollback are the only live survivors.</li>
+<li>On return, create a new Ghostty view, replay the bounded tail, bind new output, fit, and focus. Reopening the Terminal right-panel tab is the exact action that handles an exited tombstone: replay its final bounded output into the new view, close the tombstone, and automatically start a fresh shell in that same view; do not add a restart control.</li>
+<li>Make the existing Rust <code>start_terminal_session</code> path atomically return the live <code>UserPty</code> already registered for that <code>ownedId</code>, so overlapping mount/start operations cannot create a duplicate. Local Assembly-session deletion first closes matching <code>UserPty</code> entries only, then deletes the durable row; a kill failure leaves the row reachable for retry. Remote deletion does not touch the Mac registry. App shutdown closes the registry. Reuse the existing kill-and-remove implementation; do not add another command, terminal backend, or persistence table.</li>
+<li>Reuse the existing <code>TerminalOutputOrdering</code> generation and sequence to make reattachment lossless. The terminal handle retains that ordering; the reader appends bytes and assigns their sequence while holding the same scrollback lock. The existing scrollback command changes in place to return <code>{ data, generation, sequence }</code> from that lock, where <code>sequence</code> is the last sequence assigned to bytes in the snapshot and is <code>-1</code> when no chunk has been assigned; it is never the next counter value. This adds no second API or fallback.</li>
+<li>Preserve the existing stream envelope's generation and sequence through <code>tauriSource.ts</code> and <code>terminalService.ts</code>, cutting every current subscriber over in the same wave. The existing shared subscription gains an owned asynchronous readiness result for its current native-listener registration; it adds no second listener or generic stream engine. On mount, <code>WorkspaceTerminal.svelte</code> subscribes, queues early matching envelopes, and awaits that native-listener readiness before start or snapshot. Its abort cleanup removes the callback even while registration is pending, and the existing setup owner unregisters a native listener that finishes after the last subscriber left. It then writes the bounded snapshot and drops only envelopes from that same generation at or below the snapshot watermark; later sequences, every envelope after an empty <code>-1</code> snapshot, and a fresh shell's new generation are delivered. This prevents a registration gap, replay gap, and duplicate output without a retained cache or generic replay abstraction.</li>
+<li>Exact lifecycle files: <code>components/WorkspaceTerminal.svelte</code> reattaches and disposes only the view; <code>components/RightPanel.svelte</code> passes the selected Assembly <code>ownedId</code>; <code>src-tauri/src/terminal.rs</code> owns atomic same-owner <code>UserPty</code> reuse, ordered snapshot, close-by-owner, registry shutdown and focused tests; <code>src-tauri/src/commands/terminal.rs</code> returns the snapshot DTO; <code>src/lib/tauriSource.ts</code>, <code>src/lib/shell/terminalService.ts</code>, and <code>src/lib/shell/stacks/runOutputService.ts</code> preserve envelope metadata; <code>scripts/nextTerminalService.test.ts</code> and <code>scripts/terminalViewLifecycle.test.ts</code> cover the changed logic seams; <code>src-tauri/src/agent_conversation/mod.rs</code> closes matching user PTYs before successful local session deletion so a close failure leaves the durable row reachable; <code>src-tauri/src/main.rs</code> closes the registry on app exit. No UI structure tests.</li>
+</ul>
+
+<h2>Related font settings task</h2>
+<p>Installed app, editor, composer, and terminal font choices are specified once in <a href="./tsk-1451-font-settings.html">TSK-1451: Add shared font choices and fix live composer font settings</a>. This task keeps only Ghostty's renderer, fit, and lifecycle work; TSK-1451 owns installed-font discovery, family-name persistence, and the live composer typography fix.</p>
+
+<h2>Measured acceptance</h2>
+<ul>
+<li>The addable right-pane workspace terminal opens, accepts input, streams output, resizes/fits, selects/copies, scrolls, updates live font/theme settings, and disposes cleanly. The former bottom-dock terminal entry is absent.</li>
+<li>Proof runs against an isolated copy of the owner's current database, leaving the owner's database unchanged. Open a terminal for each of ten real local Assembly sessions. Leaving each tab unsubscribes listeners/observers and frees Ghostty/WASM so frontend terminal diagnostics return to zero, while its Rust PTY and shell remain. Returning shows the same shell variables, jobs, working directory and running command after replaying at most four MiB from the existing bounded ring.</li>
+<li>An exited PTY keeps its bounded final output until reopened or closed. Deleting an Assembly session removes only its owned PTY and shell; quitting the app removes the remainder. Rapid leave/return cannot create duplicate PTYs for one <code>ownedId</code>.</li>
+<li>At rest after the finite cursor sequence, no Ghostty render RAF or cursor timer remains; cursor is visible within one second after activity. Idle app/WebContent CPU is sampled for about 10 seconds and remains near zero.</li>
+<li>Native proof performs at least 12 terminal mount/unmount switches across the fixed ten sessions. A proof-only instrument around the public WASM terminal <code>free()</code> records one free per created terminal and is restored immediately; shipped product code contains no diagnostic hook.</li>
+<li><code>/usr/bin/footprint</code> captures complete process-group physical footprint with zero, two, and ten retained PTY/shell pairs, then after the warm switch cycle with the same fixed ten. Growth from zero to ten is expected because each live shell and its bounded history consumes memory; acceptance requires the ten-session footprint to plateau across repeated switching while frontend terminal diagnostics return to zero on every leave. Deletion reduces the retained count, and app quit returns it to zero.</li>
+<li>Targeted TypeScript/static tests pass, including package-patch markers, factory cutover, scheduler ownership, theme registry, and rail/backend cutover. No structural, layout, colour, or styling regression test is added.</li>
+</ul>
+
+<h2>Expected patch size</h2>
+<p>The renderer cutover remains about 250–450 source and package-patch lines, excluding lockfile and documentation churn. PTY reattach, owner cleanup, and the ordered snapshot contract add about 120–180 source and focused-test lines across the named existing implementation and test files. If any part needs roughly twice its estimate, a native Ghostty build, a WASM palette rewrite, a compatibility adapter, a persistence table, or another subsystem, stop and return a revised proposal.</p>
+</body>
+</html>

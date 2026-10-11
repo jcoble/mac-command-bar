@@ -10,8 +10,7 @@
  *             has no word for).
  *   monaco    the code editor's own theme object. Monaco does not read CSS
  *             custom properties; it wants a theme registered by name.
- *   terminal  xterm's theme object. Same story — its own palette, set on the
- *             terminal instance.
+ *   terminal  Ghostty's authoritative palette, applied to the terminal instance.
  *
  * Assembly is the default: its colors are copied value for value out of
  * `nextTokens.css` and `themeChrome.css`, which paint the first frame before
@@ -20,7 +19,7 @@
  * The additional CodeMirror catalog entries keep the Assembly shell palette
  * and swap only the visible editor's syntax extension.
  *
- * The copying is the risk. `scripts/themeRegistry.test.mjs` reads the original
+ * The copying is the risk. `scripts/themeRegistry.test.ts` reads the original
  * files and fails if the default theme stops agreeing with them, so the
  * shipped palette cannot drift apart quietly.
  *
@@ -52,7 +51,7 @@ export type MonacoThemeDefinition = {
 };
 
 /**
- * xterm's theme, written out by hand rather than imported from `@xterm/xterm`
+ * Ghostty's theme, written out by hand rather than imported from `ghostty-web`
  * so this file stays free of dependencies and can be read by a plain Node test.
  * The slots are the ones the terminal factory already sets.
  */
@@ -157,7 +156,8 @@ export const TOKEN_NAMES: string[] = [...PALETTE_TOKEN_NAMES, ...CHROME_TOKEN_NA
 // ── The terminal palette ────────────────────────────────────────────────────
 
 /**
- * The terminal's colors, copied from `src/lib/shell/xtermFactory.ts`.
+ * The terminal's authoritative palette. `ghosttyFactory.ts` applies the active
+ * theme from this registry instead of keeping a second copy.
  *
  * EVERY theme uses these, on purpose. The terminal in this app has been painted
  * in Dracula's colors since long before themes existed, in the old shell and

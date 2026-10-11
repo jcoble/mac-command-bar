@@ -10,6 +10,7 @@
   import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
   import type { ConversationAttachment, AgentUserInputAction, AgentConfigValue, AgentPermissionRequest, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { settings } from '$lib/settingsStore.svelte';
   import type { AgentConversationConfigField, AgentConversationConfigState } from '$lib/shell/conversation/conversationConfig.ts';
   import type { ConversationCommand } from '$lib/shell/conversation/conversationCommandCatalog.ts';
   import { contextMeterPopover, draftAfterSlashCommand, moveSlashMenuIndex, ringDash, slashCommandQuery, slashMenuState, snapshotConversationCommands, type ContextMeterState } from '$lib/shell/conversation/composerSlashCommands.ts';
@@ -251,6 +252,8 @@
   $effect(() => {
     void inputDraft;
     void relaxed;
+    void settings.appearance.uiFontId;
+    void settings.appearance.appFontSize;
     resizePrompt();
   });
   const bannerItems = $derived.by((): ComposerBannerItem[] => {
@@ -449,6 +452,7 @@
             data-testid="conversation-composer-input"
             aria-label="Message"
             rows="1"
+            style:font-size={`${settings.appearance.appFontSize}px`}
             spellcheck="false"
             autocapitalize="off"
             placeholder={pendingApproval ? 'Resolve the approval above to continue' : pendingInputs.length ? 'Complete the requested input above' : `Message ${provider}`}
@@ -615,7 +619,7 @@
      happened. This is the floor; the text still grows past it to 190px. */
   .composer-box.relaxed textarea { min-height: 63px; }
   .prompt-row { display: flex; }
-  textarea { width: 100%; max-height: 190px; padding: 2px 0; resize: none; border: 0; outline: 0; background: transparent; color: var(--color-text); caret-color: var(--color-accent); font: 14px/1.5 inherit; }
+  textarea { width: 100%; max-height: 190px; padding: 2px 0; resize: none; border: 0; outline: 0; background: transparent; color: var(--color-text); caret-color: var(--color-accent); font-family: var(--font-ui); line-height: 1.5; }
   /* The prompt line is an invitation, not a label. At the tertiary text colour
      it sat at the same weight as the settings beside it and the box read as
      three competing pieces of writing; quieter, the capsule reads as one thing

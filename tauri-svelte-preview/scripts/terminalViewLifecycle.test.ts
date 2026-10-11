@@ -6,7 +6,7 @@ import {
   type TerminalBackend,
   type TerminalViewHooks
 } from '../src/lib/shell/terminalService.ts';
-import type { TerminalOutputPayload } from '../src/lib/tauriSource.ts';
+import type { TerminalOutputEnvelope } from '../src/lib/tauriSource.ts';
 
 const writes: string[] = [];
 const closed: string[] = [];
@@ -14,7 +14,7 @@ const exits: string[] = [];
 let disposedViews = 0;
 let liveViews = 0;
 let maxLiveViews = 0;
-let listener: ((payload: TerminalOutputPayload) => void) | null = null;
+let listener: ((envelope: TerminalOutputEnvelope) => void) | null = null;
 
 const backend: TerminalBackend = {
   start: async () => null,
@@ -24,7 +24,7 @@ const backend: TerminalBackend = {
     closed.push(sessionId);
     return true;
   },
-  readScrollback: async () => 'saved output',
+  readScrollback: async () => ({ data: 'saved output', generation: 1, sequence: 0 }),
   list: async () => [],
   listen: async (handler) => {
     listener = handler;
@@ -87,10 +87,17 @@ assert.deepEqual(closed, [], 'releasing a frontend view must not close its PTY')
 
 listener?.({
   sessionId: 'pty-a',
-  data: 'background output',
-  terminated: true,
-  exitCode: 0,
-  signal: null
+  generation: 1,
+  sequence: 1,
+  byteLength: 17,
+  kind: 'terminal-output',
+  chunk: {
+    sessionId: 'pty-a',
+    data: 'background output',
+    terminated: true,
+    exitCode: 0,
+    signal: null
+  }
 });
 assert.deepEqual(writes, ['saved output'], 'inactive output stays out of WebKit');
 assert.deepEqual(exits, ['owned-a'], 'the lightweight PTY mapping still routes exits');

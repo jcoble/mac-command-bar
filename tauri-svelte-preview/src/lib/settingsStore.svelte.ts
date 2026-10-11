@@ -19,7 +19,7 @@ import {
 	readAssemblySettingFromTauri,
 	writeAssemblySettingFromTauri
 } from './tauriSource';
-import { DEFAULT_MONO_FONT_ID, MONO_FONTS } from './shell/themes/fontRegistry';
+import { DEFAULT_MONO_FONT_ID } from './shell/themes/fontRegistry';
 import { DEFAULT_THEME_ID, isThemeId } from './shell/themes/themeRegistry';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -149,7 +149,7 @@ export function defaultSettings(): Settings {
 			fontLigatures: false
 		},
 		terminal: {
-			fontFamily: 'Google Sans Mono',
+			fontFamily: 'JetBrains Mono',
 			fontSize: 15,
 			lineHeight: 1.2,
 			theme: 'dracula',
@@ -223,8 +223,11 @@ function mergeWithDefaults(raw: unknown): Settings {
 	if (!isThemeId(base.appearance.themeId)) {
 		base.appearance.themeId = DEFAULT_THEME_ID;
 	}
-	if (!MONO_FONTS.some((font) => font.id === base.editor.fontFamily)) {
+	if (typeof base.editor.fontFamily !== 'string' || !base.editor.fontFamily.trim()) {
 		base.editor.fontFamily = DEFAULT_MONO_FONT_ID;
+	}
+	if (typeof base.terminal.fontFamily !== 'string' || !base.terminal.fontFamily.trim()) {
+		base.terminal.fontFamily = 'JetBrains Mono';
 	}
 
 	return base;

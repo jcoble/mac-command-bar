@@ -22,11 +22,12 @@ import { remoteWorkspacePath } from '../workspacePaths.ts';
 /** The chat and the five kinds of tab the top tab row can bring forward. */
 export type CenterTabId = 'session' | 'editor' | 'browser' | 'diff' | 'git-history' | 'pull-requests';
 
-/** The eight panels the right drawer's icon strip switches between. */
+/** The panels the right drawer's icon strip switches between. */
 export type RightTabId =
   | 'files'
   | 'source-control'
   | 'worktrees'
+  | 'terminal'
   | 'run'
   | 'context'
   | 'agents'
@@ -46,6 +47,7 @@ export const RIGHT_TAB_IDS: readonly RightTabId[] = [
   'files',
   'source-control',
   'worktrees',
+  'terminal',
   'run',
   'context',
   'agents',

@@ -39,10 +39,10 @@ import {
 const SESSIONS_COLLAPSED_KEY = 'shell.sessions.collapsed';
 
 /** Drawer tabs that live behind its ⋯ menu; one at a time gets a tab of its own. */
-export type RightExtraTabId = 'worktrees' | 'run' | 'context' | 'history';
+export type RightExtraTabId = 'worktrees' | 'terminal' | 'run' | 'context' | 'history';
 
 function isRightExtraTab(id: RightTabId): id is RightExtraTabId {
-	return id === 'worktrees' || id === 'run' || id === 'context' || id === 'history';
+	return id === 'worktrees' || id === 'terminal' || id === 'run' || id === 'context' || id === 'history';
 }
 
 export interface FrameControls {
