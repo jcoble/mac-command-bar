@@ -1190,6 +1190,15 @@ pub(crate) struct WorkflowEngine {
     ids: Arc<dyn IdGenerator>,
     store: Arc<SessionStore>,
     dispatch_lock: Arc<tokio::sync::Mutex<()>>,
+    deadlines: Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
+}
+
+impl Drop for WorkflowEngine {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.deadlines) == 1 {
+            for handle in self.deadlines.lock().unwrap().values() { handle.abort(); }
+        }
+    }
 }
 
 impl WorkflowEngine {
@@ -1207,6 +1216,7 @@ impl WorkflowEngine {
             ids,
             store,
             dispatch_lock: Arc::new(tokio::sync::Mutex::new(())),
+            deadlines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -1221,8 +1231,8 @@ impl WorkflowEngine {
     }
 
     /// Advance the one workflow node owned by a completed provider turn. The
-    /// provider's structured receipt is the only handoff payload; transcript
-    /// history remains owned by the provider session.
+    /// YAML agents hand off final text and checked files; template stages use typed
+    /// receipts. Transcript history remains owned by the provider session.
     pub async fn accept_agent_event(
         &self,
         event: &AgentConversationEvent,
@@ -1247,6 +1257,12 @@ impl WorkflowEngine {
             return Ok(None);
         };
         let idempotency_key = format!("agent-turn:{}:{turn_id}", event.owned_id);
+        let run = self.require_run(&run_id)?;
+        let index = run.nodes.iter().position(|node| node.node_id == node_id).unwrap();
+        if !run.definition.nodes.iter().find(|node| node.id == node_id).unwrap().step.is_null()
+            && enforce_node_timeout(&run, index, self.clock.now_ms()).is_err() {
+            return self.timeout_step(&run_id, &node_id).await.map(Some);
+        }
         if *state != TurnState::Completed {
             return self
                 .fail_agent_node(
@@ -1273,6 +1289,27 @@ impl WorkflowEngine {
                 )
                 .map(Some);
         };
+        let run = self.require_run(&run_id)?;
+        if !run.definition.nodes.iter().find(|node| node.id == node_id).unwrap().step.is_null() {
+            let definition = run.definition.nodes.iter().find(|node| node.id == node_id).unwrap();
+            if definition.step.get("agent").is_some() {
+                let mut files = Vec::new();
+                for pattern in definition.step["expect_files"].as_array().into_iter().flatten() {
+                    let pattern = render_step_template(pattern.as_str().ok_or_else(|| invalid_yaml("Expected file must be a string"))?, &run)?;
+                    let output = crate::bounded_process::output(std::process::Command::new("bash")
+                        .args(["-c", r#"compgen -G "$1""#, "--", &pattern]).current_dir(run.input_snapshot["cwd"].as_str().unwrap()),
+                        "Expected files", crate::bounded_process::LOCAL_COMMAND_TIMEOUT).map_err(|error| WorkflowError::Runtime(error.to_string()))?;
+                    let matches: Vec<_> = String::from_utf8_lossy(&output.stdout).lines().filter(|file|
+                        Path::new(run.input_snapshot["cwd"].as_str().unwrap()).join(file).is_file()).map(str::to_string).collect();
+                    if matches.is_empty() {
+                        return self.fail_agent_node(&run_id, &node_id, "expect-files", &format!("Missing expected file: {pattern}"), &idempotency_key).map(Some);
+                    }
+                    files.extend(matches);
+                }
+                self.finish_step(&run_id, &node_id, json!({"summary":text,"files":files}), true, &idempotency_key)?;
+                return self.dispatch_ready(&run_id).await.map(Some);
+            }
+        }
         let receipt = decode_agent_receipt(&text).and_then(|value| {
             let run = self.require_run(&run_id)?;
             let node = run
@@ -1366,6 +1403,10 @@ impl WorkflowEngine {
             "concurrency":{"global":max_sessions,"workflow":max_sessions},
             "budgets":{"maximumActiveAgents":max_sessions}})).map_err(invalid_yaml)?;
         let values = input.as_object_mut().ok_or_else(|| invalid_yaml("Workflow input must be an object"))?;
+        let mut inputs = yaml["inputs"].as_object().into_iter().flatten().filter_map(|(name, value)|
+            value.get("default").cloned().map(|value| (name.clone(), value))).collect::<serde_json::Map<_, _>>();
+        if let Some(supplied) = values.get("inputs").and_then(Value::as_object) { inputs.extend(supplied.clone()); }
+        values.insert("inputs".into(), Value::Object(inputs));
         values.insert("task".into(), serde_json::to_value(task).map_err(invalid_yaml)?);
         values.insert("cwd".into(), json!(root));
         self.create_run(definition, input, idempotency_key)
@@ -1748,8 +1789,12 @@ impl WorkflowEngine {
         run_id: &str,
         node_id: &str,
         approval: Value,
+        origin: &str,
         idempotency_key: &str,
     ) -> Result<WorkflowRunRecord, WorkflowError> {
+        if origin != "owner" {
+            return Err(WorkflowError::PolicyDenied("Only an owner command can decide a gate".into()));
+        }
         if let Some(existing) = self.idempotent_run(run_id, idempotency_key)? {
             return Ok(existing);
         }
@@ -1874,6 +1919,9 @@ impl WorkflowEngine {
             return Err(WorkflowError::InvalidTransition(
                 "Only a running node accepts a result".into(),
             ));
+        }
+        if run.definition.nodes.iter().find(|node| node.id == node_id).is_some_and(|node| node.step.get("agent").is_some() || node.step.get("run").is_some() || node.step.get("gate").is_some()) {
+            return Err(WorkflowError::PolicyDenied("Step results are recorded by the engine".into()));
         }
         enforce_node_timeout(&run, index, self.clock.now_ms())?;
         WorkflowPolicy::validate_output(run.nodes[index].output_contract, &result)?;
@@ -2085,6 +2133,12 @@ impl WorkflowEngine {
                 run.worktrees_allocated = 1;
                 self.append(&mut run, "workflow.worktree.allocated", "worktree", None)?;
             }
+            if run.definition.nodes.iter().any(|node| !node.step.is_null()) && run.input_snapshot["run"].is_null() {
+                let proof = std::env::temp_dir().join("assembly-workflow-proof").join(uuid::Uuid::new_v4().to_string());
+                std::fs::create_dir_all(&proof).map_err(|error| WorkflowError::Runtime(error.to_string()))?;
+                run.input_snapshot["run"] = json!({"proof_dir":proof,"pr_body":proof.join("pr-body.md")});
+                self.append(&mut run, "workflow.proof.allocated", "proof", None)?;
+            }
             if let Err(error) = enforce_budgets(&run, self.clock.now_ms()) {
                 if let WorkflowError::BudgetExhausted(failure) = &error {
                     run.state = WorkflowRunState::Failed;
@@ -2103,29 +2157,8 @@ impl WorkflowEngine {
                     && enforce_node_timeout(&run, index, self.clock.now_ms()).is_err())
                 .then_some(index)
             }) {
-                let failure = budget_failure("node-timeout", "Workflow node timeout exhausted");
-                run.nodes[index].state = WorkflowNodeState::Failed;
-                run.nodes[index].failure = Some(failure.clone());
-                run.nodes[index].finished_at_ms = Some(self.clock.now_ms());
-                if let Some(lease_id) = run.nodes[index].lease_id.take() {
-                    self.leases.release(&lease_id)?;
-                }
                 let node_id = run.nodes[index].node_id.clone();
-                if run.definition.completion.cancel_descendants_on_failure {
-                    cancel_descendants(&mut run, &node_id);
-                }
-                refresh_ready_and_phase(&mut run);
-                let timeout_key = format!(
-                    "timeout:{}:{}",
-                    run.nodes[index].id, run.nodes[index].attempt
-                );
-                self.append(
-                    &mut run,
-                    "workflow.node.timed-out",
-                    &timeout_key,
-                    Some(&node_id),
-                )?;
-                return Err(WorkflowError::BudgetExhausted(failure));
+                return self.timeout_step(run_id, &node_id).await;
             }
             refresh_ready_and_phase(&mut run);
             let Some(node_id) = run
@@ -2158,6 +2191,31 @@ impl WorkflowEngine {
                 .find(|definition| definition.id == node_id)
                 .expect("validated node")
                 .clone();
+            if !node_definition.step.is_null() {
+                if let Some(condition) = &node_definition.condition {
+                    let value = if let Some(text) = condition.as_str() { render_step_template(text, &run)? } else { condition.to_string() };
+                    if value != "true" && value != "false" { return Err(invalid_yaml("if must resolve to a boolean")); }
+                    if value == "false" {
+                        run.nodes[index].state = WorkflowNodeState::Skipped;
+                        run.nodes[index].finished_at_ms = Some(self.clock.now_ms());
+                        let key = format!("skip:{}:{}", run.nodes[index].id, run.nodes[index].attempt);
+                        self.append(&mut run, "workflow.node.skipped", &key, Some(&node_id))?;
+                        continue;
+                    }
+                }
+                if node_definition.step.get("gate").is_some() {
+                    run.nodes[index].state = WorkflowNodeState::WaitingApproval;
+                    run.nodes[index].gate = Some(WorkflowGateRecord { id:node_id.clone(), node_run_id:run.nodes[index].id.clone(), approved:None, structured_input:None });
+                    run.state = WorkflowRunState::WaitingApproval;
+                    let key = format!("gate:{}:{}", run.nodes[index].id, run.nodes[index].attempt);
+                    self.append(&mut run, "workflow.gate.waiting", &key, Some(&node_id))?;
+                    return Ok(run);
+                }
+                if node_definition.step.get("run").is_some() {
+                    self.execute_commands(&mut run, index, &node_definition).await?;
+                    continue;
+                }
+            }
             let provider = WorkflowPolicy::provider_for(&role)?;
             self.rebuild_active_leases(&self.list_runs()?)?;
             let (global_active, workflow_active, provider_active, shared_limit) = self.store
@@ -2283,6 +2341,8 @@ impl WorkflowEngine {
                 }
             })
             .to_string();
+            let prompt = if node_definition.step.is_null() { prompt } else { render_step_template(&role.prompt_template_id, &run)? };
+            if !node_definition.step.is_null() { self.arm_deadline(&run, index); }
             let dispatch = self
                 .runtime
                 .dispatch(AgentDispatchRequest {
@@ -2304,6 +2364,12 @@ impl WorkflowEngine {
                 .iter()
                 .position(|node| node.node_id == node_id)
                 .unwrap();
+            if run.nodes[index].state != WorkflowNodeState::Starting {
+                if run.nodes[index].failure.as_ref().is_some_and(|failure| failure.budget.as_deref() == Some("node-timeout")) {
+                    self.runtime.cancel(&run.nodes[index].owned_id).await?;
+                }
+                return Ok(run);
+            }
             match dispatch {
                 Ok(receipt) => {
                     run.nodes[index].provider_instance_id = Some(receipt.provider_instance_id);
@@ -2347,6 +2413,101 @@ impl WorkflowEngine {
                 }
             }
         }
+    }
+
+    fn finish_step(&self, run_id: &str, node_id: &str, output: Value, passed: bool, key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
+        let mut run = self.require_run(run_id)?;
+        let node = run.nodes.iter_mut().find(|node| node.node_id == node_id).unwrap();
+        if node.state != WorkflowNodeState::Running { return Ok(run); }
+        node.structured_output = Some(output);
+        node.state = if passed { WorkflowNodeState::Completed } else { WorkflowNodeState::Failed };
+        node.finished_at_ms = Some(self.clock.now_ms());
+        if let Some(lease) = node.lease_id.take() { self.leases.release(&lease)?; }
+        if !passed { node.failure = Some(WorkflowFailure { code:"commands-failed".into(), message:"One or more commands failed".into(), budget:None }); }
+        refresh_ready_and_phase(&mut run);
+        let kind = if run.definition.nodes.iter().find(|node| node.id == node_id).unwrap().step.get("run").is_some() { "workflow.node.commands-finished" } else { "workflow.node.agent-finished" };
+        self.append(&mut run, kind, key, Some(node_id))?;
+        Ok(run)
+    }
+
+    async fn timeout_step(&self, run_id: &str, node_id: &str) -> Result<WorkflowRunRecord, WorkflowError> {
+        let mut run = self.require_run(run_id)?;
+        let node = run.nodes.iter_mut().find(|node| node.node_id == node_id).unwrap();
+        if !matches!(node.state, WorkflowNodeState::Starting | WorkflowNodeState::Running) { return Ok(run); }
+        let owned_id = node.owned_id.clone();
+        node.state = WorkflowNodeState::WaitingInput;
+        node.failure = Some(budget_failure("node-timeout", "Step timed out; waiting for owner"));
+        node.finished_at_ms = Some(self.clock.now_ms());
+        if let Some(lease) = node.lease_id.take() { self.leases.release(&lease)?; }
+        let key = format!("timeout:{}:{}", node.id, node.attempt);
+        run.state = WorkflowRunState::WaitingInput;
+        self.append(&mut run, "workflow.node.timed-out", &key, Some(node_id))?;
+        self.runtime.cancel(&owned_id).await?;
+        Ok(run)
+    }
+
+    fn arm_deadline(&self, run: &WorkflowRunRecord, index: usize) {
+        let node = &run.nodes[index];
+        let seconds = run.definition.nodes.iter().find(|definition| definition.id == node.node_id).unwrap().timeout_seconds;
+        let remaining = seconds.saturating_mul(1000).saturating_sub(self.clock.now_ms().saturating_sub(node.started_at_ms.unwrap()));
+        let (runtime, leases, clock, ids, store, dispatch_lock) = (self.runtime.clone(), self.leases.clone(), self.clock.clone(), self.ids.clone(), self.store.clone(), self.dispatch_lock.clone());
+        let deadlines = Arc::downgrade(&self.deadlines);
+        let (run_id, node_id, attempt_id) = (run.id.clone(), node.node_id.clone(), node.id.clone());
+        let task = tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(remaining)).await;
+            if let Some(deadlines) = deadlines.upgrade() {
+                deadlines.lock().unwrap().remove(&attempt_id);
+                let engine = Self { runtime, leases, clock, ids, store, dispatch_lock, deadlines };
+                let _ = engine.timeout_step(&run_id, &node_id).await;
+            }
+        });
+        self.deadlines.lock().unwrap().insert(node.id.clone(), task.inner().abort_handle());
+    }
+
+    async fn execute_commands(&self, run: &mut WorkflowRunRecord, index: usize, definition: &WorkflowNodeDefinition) -> Result<(), WorkflowError> {
+        let node_id = &definition.id;
+        let proof = Path::new(run.input_snapshot["run"]["proof_dir"].as_str().unwrap()).to_path_buf();
+        let task_key = run.input_snapshot["task"]["key"].as_str().unwrap_or_default();
+        let body = format!("Task: [{task_key}](https://www.notion.so/search?query={task_key})\n\n{}\n\n{}",
+            run.nodes.iter().filter_map(|node| node.structured_output.as_ref().map(|output| format!("{}: {}", node.node_id, output))).collect::<Vec<_>>().join("\n"),
+            run.nodes.iter().flat_map(|node| &node.artifacts).filter_map(|artifact| artifact.path.clone()).collect::<Vec<_>>().join("\n"));
+        std::fs::write(proof.join("pr-body.md"), body).map_err(|error| WorkflowError::Runtime(error.to_string()))?;
+        run.nodes[index].state = WorkflowNodeState::Running;
+        run.nodes[index].started_at_ms = Some(self.clock.now_ms());
+        self.append(run, "workflow.node.running", &format!("running:{}", run.nodes[index].id), Some(node_id))?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(definition.timeout_seconds);
+        let mut results = Vec::new();
+        for (number, command) in definition.step["run"].as_array().ok_or_else(|| invalid_yaml("run must list commands"))?.iter().enumerate() {
+            let command = render_step_template(command.as_str().ok_or_else(|| invalid_yaml("Command must be a string"))?, run)?;
+            let cwd = run.input_snapshot["cwd"].as_str().unwrap().to_string();
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let evidence = proof.join(format!("{}-{}-{}.txt", node_id, run.nodes[index].attempt, number + 1));
+            std::fs::write(&evidence, []).map_err(|error| WorkflowError::Runtime(error.to_string()))?;
+            let (script, log_path) = (command.clone(), evidence.clone());
+            let output = tauri::async_runtime::spawn_blocking(move || crate::bounded_process::output(
+                std::process::Command::new("sh").args(["-c", r#"exec >"$1" 2>&1; eval "$2""#, "--", &log_path.to_string_lossy(), &script]).current_dir(cwd), "Workflow command", remaining)).await
+                .map_err(|error| WorkflowError::Runtime(error.to_string()))?;
+            let (exit_code, error, timed_out) = match output {
+                Ok(output) => (output.status.code(), None, false),
+                Err(error) => (None, Some(error.to_string()), error.kind() == std::io::ErrorKind::TimedOut),
+            };
+            let bytes = std::fs::read(&evidence).map_err(|error| WorkflowError::Runtime(error.to_string()))?;
+            let text = String::from_utf8_lossy(&bytes);
+            let bounded = text.lines().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+            results.push(json!({"command":command,"exitCode":exit_code,"error":error,"output":bounded.chars().take(32_768).collect::<String>(),"evidencePath":evidence}));
+            *run = self.require_run(&run.id)?;
+            run.nodes[index].structured_output = Some(json!({"commands":results}));
+            let artifact_id = format!("{}:{}", run.nodes[index].id, number);
+            run.nodes[index].artifacts.push(WorkflowArtifactRef { id:artifact_id, kind:"command-output".into(), path:Some(evidence.to_string_lossy().into()), url:None, digest:None });
+            self.append(run, "workflow.node.command-recorded", &format!("command:{}:{}", run.nodes[index].id, number), Some(node_id))?;
+            if run.nodes[index].state != WorkflowNodeState::Running { return Ok(()); }
+            if timed_out { *run = self.timeout_step(&run.id, node_id).await?; return Ok(()); }
+        }
+        let count = results.iter().filter(|result| result["exitCode"] != 0).count();
+        let summary = results.iter().filter_map(|result| result["output"].as_str()).collect::<Vec<_>>().join("\n");
+        let summary = summary.lines().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+        *run = self.finish_step(&run.id, node_id, json!({"commands":results,"findingCount":count,"summary":summary,"files":[]}), count == 0, &format!("result:{}", run.nodes[index].id))?;
+        Ok(())
     }
 
     pub fn list_runs(&self) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
@@ -2487,6 +2648,11 @@ impl WorkflowEngine {
                     .output().is_ok_and(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "MERGED"));
             retain_run_worktree(run, merged)?;
         }
+        for node in &run.nodes {
+            if !matches!(node.state, WorkflowNodeState::Starting | WorkflowNodeState::Running) {
+                if let Some(handle) = self.deadlines.lock().unwrap().remove(&node.id) { handle.abort(); }
+            }
+        }
         run.updated_at_ms = self.clock.now_ms();
         run.phase = derive_phase(run);
         let node = node_id.and_then(|id| run.nodes.iter().find(|node| node.node_id == id));
@@ -2504,7 +2670,7 @@ impl WorkflowEngine {
             "gateId": node.and_then(|value| value.gate.as_ref().map(|gate| gate.id.clone())),
             "leaseId": node.and_then(|value| value.lease_id.clone()),
             "providerInstanceId": node.and_then(|value| value.provider_instance_id.clone()),
-            "idempotencyKey": idempotency_key, "provenance": "workflow-agent", "workflowPayload": { "run": run }
+            "idempotencyKey": idempotency_key, "provenance": "workflow-engine", "workflowPayload": { "stepResult":node.and_then(|node| node.structured_output.as_ref()), "run": run }
         });
         let stored =
             append_workflow_event_value(&self.store, event).map_err(WorkflowError::Ledger)?;
@@ -2514,6 +2680,30 @@ impl WorkflowEngine {
             .unwrap_or(run.last_sequence);
         Ok(())
     }
+}
+
+fn render_step_template(template: &str, run: &WorkflowRunRecord) -> Result<String, WorkflowError> {
+    let mut output = String::new();
+    let mut rest = template;
+    while let Some(start) = rest.find("${{") {
+        output.push_str(&rest[..start]);
+        let end = rest[start + 3..].find("}}").ok_or_else(|| invalid_yaml("Unclosed template value"))? + start + 3;
+        let expression = rest[start + 3..end].trim();
+        let (negate, key) = expression.strip_prefix('!').map_or((false, expression), |key| (true, key.trim()));
+        let parts: Vec<_> = key.split('.').collect();
+        let value = if parts.first() == Some(&"steps") && parts.len() == 3 {
+            run.nodes.iter().find(|node| node.node_id == parts[1]).and_then(|node| node.structured_output.as_ref()).and_then(|output| output.get(parts[2])).cloned()
+        } else {
+            let mut value = &run.input_snapshot;
+            for part in parts { value = &value[part]; }
+            (!value.is_null()).then(|| value.clone())
+        }.ok_or_else(|| invalid_yaml(format!("Unknown template value: {key}")))?;
+        let value = if negate { json!(!value.as_bool().ok_or_else(|| invalid_yaml("Negation requires boolean"))?) } else { value };
+        output.push_str(&value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string()));
+        rest = &rest[end + 2..];
+    }
+    output.push_str(rest);
+    Ok(output)
 }
 
 fn retain_run_worktree(run: &mut WorkflowRunRecord, pr_merged: bool) -> Result<(), WorkflowError> {
@@ -3000,6 +3190,7 @@ mod tests {
     struct FakeRuntime {
         dispatched: Mutex<Vec<AgentDispatchRequest>>,
         cancelled: AtomicU64,
+        dispatch_delay_ms: AtomicU64,
     }
     impl AgentRuntimePort for FakeRuntime {
         fn dispatch<'a>(
@@ -3007,6 +3198,8 @@ mod tests {
             request: AgentDispatchRequest,
         ) -> PortFuture<'a, AgentDispatchReceipt> {
             Box::pin(async move {
+                let delay = self.dispatch_delay_ms.load(Ordering::SeqCst);
+                if delay > 0 { tokio::time::sleep(std::time::Duration::from_millis(delay)).await; }
                 self.dispatched.lock().unwrap().push(request);
                 Ok(AgentDispatchReceipt {
                     provider_instance_id: "fake-1".into(),
@@ -3123,6 +3316,160 @@ mod tests {
         WorkflowEngine::new(runtime, Arc::new(InMemoryWorktreeLeasePort::default()),
             Arc::new(FakeClock(AtomicU64::new(1))), Arc::new(FakeIds(AtomicU64::new(1))),
             Arc::new(SessionStore::open_in_memory().unwrap()))
+    }
+    fn step_run(engine: &WorkflowEngine, root: &Path, step: Value) -> WorkflowRunRecord {
+        let mut workflow = definition();
+        workflow.nodes[1].step = step.clone();
+        workflow.nodes[1].condition = step.get("if").cloned();
+        let proof = root.parent().unwrap().join("proof");
+        std::fs::create_dir_all(&proof).unwrap();
+        engine.create_run(workflow, json!({"cwd":root,"worktree":{"path":root,"branch":"main"},
+            "run":{"proof_dir":proof,"pr_body":proof.join("pr-body.md")},
+            "task":{"key":"TSK-1416","title":"Task title","body":"Task body"},
+            "inputs":{"flag":false}}), "create".into()).unwrap()
+    }
+    fn complete_step(engine: &WorkflowEngine, run: &WorkflowRunRecord, text: &str) -> WorkflowRunRecord {
+        let first = &run.nodes[0];
+        engine.store.upsert_session(&SessionRow { owned_id:first.owned_id.clone(), native_session_id:None,
+            provider:"codex".into(), model:None, effort:None, cwd:"/repo".into(), worktree:None,
+            branch:None, title:None, title_source:None, project:None, project_id:None, state:"ready".into(),
+            suspended:false, created_at_ms:1, last_activity_at_ms:1, extra_json:"{}".into() }).unwrap();
+        let event = AgentConversationEvent { owned_id:first.owned_id.clone(), provider:AgentConversationProvider::Codex,
+            generation:1, sequence:1, timestamp_ms:1, turn_id:Some("turn".into()),
+            payload:AgentConversationPayload::AssistantMessage { item_id:"reply".into(), text:text.into(), completed:true, blocks:None } };
+        engine.store.append_event(&EventRow { owned_id:first.owned_id.clone(), seq:1, turn_id:Some("turn".into()),
+            kind:"item.completed".into(), payload_json:serde_json::to_string(&event).unwrap(), created_at_ms:1 }).unwrap();
+        let terminal = AgentConversationEvent { payload:AgentConversationPayload::Turn { turn_id:"turn".into(), state:TurnState::Completed }, ..event };
+        tauri::async_runtime::block_on(engine.accept_agent_event(&terminal)).unwrap().unwrap()
+    }
+    #[test]
+    fn run_step_records_each_command_and_fails_if_any_fail() {
+        let repo = RunRepo::new();
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = run_engine(runtime.clone());
+        let run = step_run(&engine, &repo.0, json!({"run":["printf first; exit 7", "pwd; exit 0"]}));
+        let finished = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+        let output = finished.nodes[0].structured_output.as_ref().unwrap();
+        assert_eq!(output["commands"].as_array().unwrap().len(), 2);
+        assert_eq!(output["commands"][0]["exitCode"], 7);
+        assert_eq!(output["commands"][1]["exitCode"], 0);
+        assert!(output["commands"][1]["output"].as_str().unwrap().contains(repo.0.to_str().unwrap()));
+        assert_eq!(output["findingCount"], 1);
+        assert_eq!(finished.nodes[0].state, WorkflowNodeState::Failed);
+        assert!(runtime.dispatched.lock().unwrap().is_empty());
+        let events = crate::orchestration::read_workflow_event_values(&engine.store).unwrap();
+        let event = events.iter().find(|event| event["kind"] == "workflow.node.commands-finished").unwrap();
+        assert_eq!(event["workflowPayload"]["run"]["nodes"][0]["structuredOutput"], *output);
+        println!("SAMPLE_LEDGER_EVENT={event}");
+        for command in output["commands"].as_array().unwrap() {
+            assert!(Path::new(command["evidencePath"].as_str().unwrap()).is_file());
+        }
+        std::fs::remove_dir_all(finished.input_snapshot["run"]["proof_dir"].as_str().unwrap()).unwrap();
+    }
+    #[test]
+    fn agent_missing_expected_file_fails() {
+        let repo = RunRepo::new();
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = run_engine(runtime.clone());
+        let run = step_run(&engine, &repo.0, json!({"agent":{"provider":"codex"},"expect_files":["missing.txt"]}));
+        let started = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+        let finished = complete_step(&engine, &started, "I completed the task.");
+        assert_eq!(finished.nodes[0].failure.as_ref().unwrap().code, "expect-files");
+        assert_eq!(runtime.dispatched.lock().unwrap().len(), 1);
+    }
+    #[test]
+    fn gate_rejects_agent_origin() {
+        let repo = RunRepo::new();
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = run_engine(runtime.clone());
+        let run = step_run(&engine, &repo.0, json!({"gate":{"prompt":"Continue?","options":["yes","no"]}}));
+        let started = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+        assert_eq!(started.state, WorkflowRunState::WaitingApproval);
+        assert!(runtime.dispatched.lock().unwrap().is_empty());
+        assert!(tauri::async_runtime::block_on(engine.approve_gate(&run.id, "a", json!({"approved":true,"origin":"owner"}), "agent", "agent")).is_err());
+        assert_eq!(engine.require_run(&run.id).unwrap().nodes[0].state, WorkflowNodeState::WaitingApproval);
+        let decided = tauri::async_runtime::block_on(engine.approve_gate(&run.id, "a", json!({"approved":true,"answer":"yes"}), "owner", "owner")).unwrap();
+        assert_eq!(decided.nodes[0].gate.as_ref().unwrap().structured_input.as_ref().unwrap()["answer"], "yes");
+        assert_eq!(runtime.dispatched.lock().unwrap().len(), 1);
+    }
+    #[test]
+    fn false_if_skips_step_without_dispatch() {
+        let repo = RunRepo::new();
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = run_engine(runtime.clone());
+        let run = step_run(&engine, &repo.0, json!({"agent":{"provider":"codex"},"if":"${{ inputs.flag }}"}));
+        let started = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+        assert_eq!(started.nodes[0].state, WorkflowNodeState::Skipped);
+        let dispatches = runtime.dispatched.lock().unwrap();
+        assert_eq!(dispatches.len(), 1);
+        assert_eq!(dispatches[0].role_id, "reviewer");
+    }
+    #[test]
+    fn step_timeout_pauses_for_owner() {
+        let repo = RunRepo::new();
+        let runtime = Arc::new(FakeRuntime::default());
+        let mut engine = run_engine(runtime.clone());
+        let clock = Arc::new(FakeClock(AtomicU64::new(1)));
+        engine.clock = clock.clone();
+        let run = step_run(&engine, &repo.0, json!({"agent":{"provider":"codex"}}));
+        tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+        clock.0.store(60_002, Ordering::SeqCst);
+        let paused = tauri::async_runtime::block_on(engine.dispatch_ready(&run.id)).unwrap();
+        assert_eq!(paused.state, WorkflowRunState::WaitingInput);
+        assert_eq!(paused.nodes[0].failure.as_ref().unwrap().budget.as_deref(), Some("node-timeout"));
+        tauri::async_runtime::block_on(engine.dispatch_ready(&run.id)).unwrap();
+        let events = crate::orchestration::read_workflow_event_values(&engine.store).unwrap();
+        assert_eq!(events.iter().filter(|event| event["kind"] == "workflow.node.timed-out").count(), 1);
+        assert_eq!(runtime.cancelled.load(Ordering::SeqCst), 1);
+        assert_eq!(runtime.dispatched.lock().unwrap().len(), 1);
+    }
+    #[test]
+    fn agent_templates_and_expected_glob_are_engine_owned() {
+        let repo = RunRepo::new();
+        std::fs::write(repo.0.join("proof.txt"), "proof").unwrap();
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = run_engine(runtime.clone());
+        let mut run = step_run(&engine, &repo.0, json!({"agent":{"provider":"codex"},"expect_files":["*.txt"]}));
+        run.definition.roles[0].prompt_template_id = "${{ task.key }}|${{ task.title }}|${{ task.body }}|${{ inputs.flag }}|${{ redo.findings }}|${{ redo.output }}".into();
+        run.input_snapshot["redo"] = json!({"findings":["fix"],"output":"failed"});
+        engine.append(&mut run, "workflow.test.template", "template", None).unwrap();
+        let started = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+        assert_eq!(runtime.dispatched.lock().unwrap()[0].prompt, "TSK-1416|Task title|Task body|false|[\"fix\"]|failed");
+        assert!(tauri::async_runtime::block_on(engine.submit_result(&run.id, "a", json!({"summary":"spoof"}), "spoof")).is_err());
+        let finished = complete_step(&engine, &started, "Final reply.");
+        assert_eq!(finished.nodes[0].structured_output.as_ref().unwrap()["summary"], "Final reply.");
+        assert_eq!(finished.nodes[0].structured_output.as_ref().unwrap()["files"], json!(["proof.txt"]));
+        assert_eq!(render_step_template("${{ steps.a.summary }}|${{ steps.a.files }}|${{ !inputs.flag }}", &finished).unwrap(), "Final reply.|[\"proof.txt\"]|true");
+        assert!(engine.deadlines.lock().unwrap().get(&finished.nodes[0].id).is_none());
+    }
+    #[test]
+    fn workflow_deadline_wakes_without_polling_and_shell_timeout_stops() {
+        for (shell, delay) in [(false, 0), (false, 1500), (true, 0)] {
+            let repo = RunRepo::new();
+            let runtime = Arc::new(FakeRuntime::default());
+            let mut engine = run_engine(runtime.clone());
+            engine.clock = Arc::new(SystemClock);
+            runtime.dispatch_delay_ms.store(delay, Ordering::SeqCst);
+            let mut run = step_run(&engine, &repo.0, if shell { json!({"run":["printf diagnostic; sleep 10", "touch should-not-run"]}) } else { json!({"agent":{"provider":"codex"}}) });
+            run.definition.nodes[1].timeout_seconds = 1;
+            engine.append(&mut run, "workflow.test.timeout", "deadline", None).unwrap();
+            let paused = tauri::async_runtime::block_on(async {
+                engine.start(&run.id, "start").await.unwrap();
+                if !shell { tokio::time::sleep(std::time::Duration::from_millis(1100)).await; }
+                engine.require_run(&run.id).unwrap()
+            });
+            assert_eq!(paused.state, WorkflowRunState::WaitingInput);
+            assert_eq!(paused.nodes[0].state, WorkflowNodeState::WaitingInput);
+            assert_eq!(runtime.dispatched.lock().unwrap().len(), if shell { 0 } else { 1 });
+            assert!(!repo.0.join("should-not-run").exists());
+            assert_eq!(runtime.cancelled.load(Ordering::SeqCst), if delay > 0 { 2 } else { 1 });
+            if shell {
+                let output = paused.nodes[0].structured_output.as_ref().unwrap();
+                assert_eq!(output["commands"][0]["output"], "diagnostic");
+                assert_eq!(std::fs::read_to_string(output["commands"][0]["evidencePath"].as_str().unwrap()).unwrap(), "diagnostic");
+            }
+            assert!(engine.deadlines.lock().unwrap().is_empty());
+        }
     }
     #[test]
     fn run_worktree_is_reused_on_redo_and_preserved_when_dirty() {
@@ -3468,7 +3815,7 @@ mod tests {
         )).unwrap();
         assert_eq!(waiting.state, WorkflowRunState::WaitingApproval);
         let approved = tauri::async_runtime::block_on(engine.approve_gate(
-            &created.id, "spec-review", json!({"approved":true}), "approve-spec"
+            &created.id, "spec-review", json!({"approved":true}), "owner", "approve-spec"
         )).unwrap();
         assert_eq!(approved.nodes.iter().find(|node| node.node_id == "plan").unwrap().state, WorkflowNodeState::Running);
         let plan_prompt: Value = serde_json::from_str(&runtime.dispatched.lock().unwrap().last().unwrap().prompt).unwrap();
@@ -3526,7 +3873,7 @@ mod tests {
         let waiting = submit("plan-review", review(false), "overall-review");
         assert_eq!(waiting.state, WorkflowRunState::WaitingApproval);
         let approved = tauri::async_runtime::block_on(engine.approve_gate(
-            &created.id, "plan-review", json!({"approved":true}), "approve",
+            &created.id, "plan-review", json!({"approved":true}), "owner", "approve",
         )).unwrap();
         assert_eq!(approved.nodes.iter().find(|node| node.node_id == "step-01-plan").unwrap().state, WorkflowNodeState::Running);
         submit("step-01-plan", step_plan.clone(), "step-plan-1");
@@ -3797,7 +4144,7 @@ mod tests {
         assert_eq!(waiting.nodes[0].state, WorkflowNodeState::WaitingApproval);
         assert_eq!(leases.leases.lock().unwrap().len(), 1);
         let approved = tauri::async_runtime::block_on(engine.approve_gate(
-            &created.id, "a", json!({"approved":true}), "approve",
+            &created.id, "a", json!({"approved":true}), "owner", "approve",
         )).unwrap();
         assert_eq!(approved.state, WorkflowRunState::Completed);
         assert!(approved.nodes[0].lease_id.is_none());

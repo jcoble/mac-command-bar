@@ -153,7 +153,7 @@ pub(crate) async fn approve_workflow_gate(
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
     let run = engine
-        .approve_gate(&run_id, &node_id, approval, &idempotency_key)
+        .approve_gate(&run_id, &node_id, approval, "owner", &idempotency_key)
         .await
         .map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);
