@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TSK-1416 — desktop and orchestrator plan</title>
+<style>
+:root{color-scheme:dark;--bg:#141517;--card:#202329;--text:#e2e4e7;--quiet:#adb3bd;--accent:#9bdac6}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,sans-serif}main{max-width:1140px;margin:auto;padding:40px 28px}h1{font-size:28px;line-height:1.3}h2{font-size:21px;margin-top:32px}p{max-width:90ch}a{color:var(--accent)}.card{background:var(--card);padding:20px 24px;border-radius:16px;margin:16px 0}.muted{color:var(--quiet)}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:12px;vertical-align:top;border-bottom:1px solid #363b43}th{color:var(--accent)}code{font-size:13px}ol{padding-left:24px}li{margin:12px 0}.scroll{overflow:auto}strong{font-weight:650}
+</style>
+</head>
+<body><main>
+<h1>Choose a YAML file, inspect its runs, then let one orchestrator supervise delivery.</h1>
+<p>This plan adds the desktop views first, then the home-machine orchestrator and the repository dev pipeline. The owner reviews a complete desktop mockup before any UI code. Automatic merge remains blocked until the owner confirms the precise standing authorization and proof rule.</p>
+<p><a href="2026-10-11-tsk-1416-workflows-slices-3-4.md">Read the full task-by-task implementation plan</a> · <a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></p>
+<div class="card"><strong>This is the plan reading companion.</strong> It is not the visual approval mockup. Task 14 creates that separate HTML artifact and records owner approval before implementation. This docs lane changes no product code and runs no builds.</div>
+<h2>Slice 3: desktop views</h2>
+<div class="scroll"><table>
+<thead><tr><th>Task</th><th>Reviewable outcome</th><th>Expected changed lines</th></tr></thead>
+<tbody>
+<tr><td>14 · Mockup</td><td>New run, YAML list, run list/timeline, inbox, rail and pinned orchestrator; owner approval first. Visible UI: Opus lane.</td><td>250–400 HTML</td></tr>
+<tr><td>15 · YAML catalog</td><td>Only selected-machine repository .yml files; name, path, steps and Open file. No app templates. Visible UI: Opus lane.</td><td>220–320 + architecture</td></tr>
+<tr><td>16 · New run</td><td>Full Notion bodies for one or many tasks; one run per task, selected machine and default-off I'll merge. Visible UI: Opus lane.</td><td>280–420 + architecture</td></tr>
+<tr><td>17 · Run inspection</td><td>Machine-qualified runs, all numbered attempts, real command outputs, messages, review verdicts, decisions and proof. Visible UI: Opus lane.</td><td>400–600 + architecture</td></tr>
+<tr><td>18 · Run inbox</td><td>Durable pause items and owner buttons; stale or agent answers cannot approve. Visible UI: Opus lane.</td><td>260–400 + architecture</td></tr>
+<tr><td>19 · Rail</td><td>Workers grouped under their run, ordinary chat selection, designated orchestrator at top. Visible UI: Opus lane.</td><td>160–250 + architecture</td></tr>
+<tr><td>20 · Proof</td><td>Real local/remote runs and all four provider × machine chat cases; idle-resource and selection-latency receipts.</td><td>0–30; external proof</td></tr>
+</tbody></table></div>
+<h2>Slice 4: orchestrator and dev pipeline</h2>
+<div class="scroll"><table>
+<thead><tr><th>Task</th><th>Reviewable outcome</th><th>Expected changed lines</th></tr></thead>
+<tbody>
+<tr><td>21 · Home session</td><td>Explicit home machine, default Workbox; one resumable ordinary orchestrator session. Settings UI: Opus lane.</td><td>220–330 + architecture</td></tr>
+<tr><td>22 · MCP controls</td><td>Seven orchestrator-only tools with backend token/designation checks; connected desktop relay for other machines.</td><td>240–360 + architecture</td></tr>
+<tr><td>23 · Permissions</td><td>Chat and inbox answer the same permission request once; agent text never approves. Visible UI: Opus lane.</td><td>230–350 + architecture</td></tr>
+<tr><td>24 · Proof and merge</td><td>Published proof, final structured review and checks tied to exact PR head; I'll merge prevents merge.</td><td>300–450 + architecture</td></tr>
+<tr><td>25 · Pipeline files</td><td>Versioned dev-pipeline.yml and seven prompt files follow C1's format reference.</td><td>280–420 + architecture</td></tr>
+<tr><td>26 · Real-task proof</td><td>One scoped real task reaches an observed merged PR; separate I'll merge handoff proof.</td><td>0–30; real task has its own scope</td></tr>
+</tbody></table></div>
+<h2>Three owner decisions</h2>
+<ol>
+<li><strong>Home machine.</strong> Recommended: Workbox default; require explicit configuration when unavailable, without silently creating a local replacement. Test only against Workbox Test.</li>
+<li><strong>Standing merge authorization.</strong> Recommended: explicitly ratify D6's narrow engine-only exception for approved pipeline runs with I'll merge off. Other agents, controllers and slice PRs still require specific owner merge requests.</li>
+<li><strong>Proof attachment.</strong> Recommended: GitHub release assets on a dedicated workflow-proof-&lt;run-id&gt;-&lt;proof-attempt&gt; tag, with stable URLs and digests in the ledger, PR and task. Final review runs after proof publication/PR and concerns the exact current head. No local-path-only attachment or screenshot binaries on main.</li>
+</ol>
+<h2>What must be ready first</h2>
+<p>Tasks 6 and 13 prove messaging and the engine. Task 7's loader commit <code>7817ca1bb</code> is on the engine branch, not this plan's fresh main base <code>248eb8280</code>. Integrate and re-find symbols before implementation. C1 separately supplies D14, <code>docs/workflows/format.md</code> and the authoring-tools plan; this plan does not rewrite them.</p>
+<div class="card"><strong>One source and one authority for each job.</strong><p>YAML files define workflows; the owning backend's ledger records runs. The engine runs checks and applies rules. One home session supervises. Only owner buttons answer decisions. SQL selects bounded data; the desktop does not become a second engine.</p></div>
+<p class="muted">No visual editor, phone API, fan-out, backend-to-backend networking, compatibility template path or speculative framework. No UI structure tests or CSS relational selectors. Future implementation checks in the Markdown are requirements, not results claimed by this docs lane.</p>
+</main></body></html>
