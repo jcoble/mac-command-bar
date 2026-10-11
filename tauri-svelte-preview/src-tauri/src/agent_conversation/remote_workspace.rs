@@ -53,6 +53,11 @@ pub(super) async fn execute(operation: String, args: Value) -> Result<Value, Str
         "fetch_git_repository" => return json(git::fetch_git_repository(arg(&args, "root")?).await?),
         "pull_git_repository" => return json(git::pull_git_repository(arg(&args, "root")?).await?),
         "push_git_repository" => return json(git::push_git_repository(arg(&args, "root")?).await?),
+        // `url`, not `source`: a URL is not an absolute path. Out of the 14-second tier below.
+        "workspace_git_clone" => {
+            let (url, folder): (String, PathBuf) = (arg(&args, "url")?, path(&args, "path")?);
+            return json(tokio::task::spawn_blocking(move || crate::project_folders::git_clone(&url, &folder)).await.map_err(|e| e.to_string())??);
+        }
         "publish_git_repository" => return json(git::publish_git_repository(arg(&args, "root")?, arg(&args, "expectedBranch")?, arg(&args, "remote")?).await?),
         "read_git_commit_history" => return json(git::read_git_commit_history(arg(&args, "root")?, arg(&args, "cursor")?, arg(&args, "relativePath")?).await?),
         "read_git_commit_files" => return json(git::read_git_commit_files(arg(&args, "root")?, arg(&args, "sha")?).await?),
@@ -86,6 +91,7 @@ pub(super) async fn execute(operation: String, args: Value) -> Result<Value, Str
             "write_source_file" => json(crate::write_source_file_sync(path(&args, "path")?, arg(&args, "content")?, arg(&args, "expectedRevision")?)?),
             "workspace_exists" => json(path(&args, "path")?.try_exists().map_err(|e| e.to_string())?),
             "workspace_mkdir" => { std::fs::create_dir(path(&args, "path")?).map_err(|e| e.to_string())?; json(()) },
+            "workspace_git_init" => json(crate::project_folders::git_init(&path(&args, "path")?)?),
             "workspace_rename" => { std::fs::rename(path(&args, "source")?, path(&args, "target")?).map_err(|e| e.to_string())?; json(()) },
             "workspace_copy_file" => { std::fs::copy(path(&args, "source")?, path(&args, "target")?).map_err(|e| e.to_string())?; json(()) },
             "workspace_write_text" => { std::fs::write(path(&args, "path")?, arg::<String>(&args, "content")?).map_err(|e| e.to_string())?; json(()) },
@@ -155,6 +161,19 @@ mod tests {
             assert!(status.to_string().contains("hello.txt"));
         };
         run.await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn remote_workspace_git_init_and_clone() {
+        let root = std::env::temp_dir().join(format!("assembly-new-project-{}", uuid::Uuid::new_v4()));
+        let made = root.join("made");
+        let copy = root.join("copy");
+        std::fs::create_dir_all(&made).unwrap();
+        execute("workspace_git_init".into(), serde_json::json!({"path": made})).await.unwrap();
+        execute("workspace_git_clone".into(), serde_json::json!({"url": made, "path": copy})).await.unwrap();
+        for folder in [&made, &copy] {
+            assert!(crate::project_folders::inspect_project_folder_sync(&folder.to_string_lossy()).unwrap().is_git, "{folder:?}");
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test]

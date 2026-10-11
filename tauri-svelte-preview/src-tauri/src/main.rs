@@ -2873,7 +2873,7 @@ fn run_git_text(root: &Path, args: &[&str]) -> Result<String, String> {
     let root_arg = root.display().to_string();
     let timeout = if args
         .first()
-        .is_some_and(|arg| matches!(*arg, "fetch" | "pull" | "push"))
+        .is_some_and(|arg| matches!(*arg, "fetch" | "pull" | "push" | "clone"))
     {
         bounded_process::NETWORK_COMMAND_TIMEOUT
     } else {

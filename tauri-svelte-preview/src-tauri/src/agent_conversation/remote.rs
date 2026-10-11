@@ -1123,6 +1123,8 @@ impl RemoteConnectionManager {
         let timeout_seconds = match &command {
             RemoteCommand::CheckProviderUpdates => 75,
             RemoteCommand::InstallProviderUpdates { .. } => 25 * 60,
+            // A clone may use all of git's 120-second network bound.
+            RemoteCommand::Workspace { operation, .. } if operation == "workspace_git_clone" => 125,
             _ => 15,
         };
         let (reply, answer) = oneshot::channel();

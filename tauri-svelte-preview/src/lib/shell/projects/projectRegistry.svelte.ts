@@ -8,7 +8,8 @@ import {
   addProjectFromTauri,
   listAgentConversationSessionsFromTauri,
   listProjectsFromTauri,
-  type ProjectRecord
+  type ProjectRecord,
+  type ProjectStart
 } from '../../tauriSource.ts';
 import { updateOwnedSession } from '../stores/sessionRailStore.svelte.ts';
 
@@ -31,8 +32,8 @@ export async function hydrateProjects(): Promise<void> {
  * Inspects and registers a folder, made first when `create` is set; adding the same folder again returns the same project.
  * A local add also files older local sessions under it in SQL, so the rail takes their new groups.
  */
-export async function addProject(machine: string, path: string, create: boolean): Promise<ProjectRecord> {
-  const project = await addProjectFromTauri(machine, path, create);
+export async function addProject(machine: string, path: string, create: boolean, start?: ProjectStart): Promise<ProjectRecord> {
+  const project = await addProjectFromTauri(machine, path, create, start);
   if (!projectRegistry.projects.some((existing) => existing.id === project.id)) {
     projectRegistry.projects = [...projectRegistry.projects, project];
   }
