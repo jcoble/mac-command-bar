@@ -48,6 +48,12 @@ assert.equal(
   items.findIndex((item) => item.id === 'copy-resume-command'),
   items.findIndex((item) => item.id === 'copy-session-id') + 1
 );
+// Copy deeplink leads the copy group and is always on: every session has an Assembly id.
+const copyDeeplink = items.find((item) => item.id === 'copy-deeplink');
+assert.equal(copyDeeplink?.label, 'Copy deeplink');
+assert.equal(copyDeeplink?.enabled, true);
+assert.equal(copyDeeplink?.startsGroup, true);
+assert.equal(items.findIndex((item) => item.id === 'copy-session-id'), items.indexOf(copyDeeplink!) + 1);
 const noResume = sessionRowMenuItems({
   status: 'working',
   sessionId: null,

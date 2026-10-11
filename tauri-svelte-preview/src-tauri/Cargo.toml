@@ -51,6 +51,7 @@ tokio-tungstenite = "0.29"
 # Trash through this crate instead.
 trash = "5"
 uuid = { version = "1", features = ["v4"] }
+tauri-plugin-deep-link = "2"
 
 # Already in the tree through tauri/wry; declared here so the browser view can
 # ask the NSWindow for its content inset, which Tauri's window APIs do not

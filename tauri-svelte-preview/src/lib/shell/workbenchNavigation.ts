@@ -17,6 +17,7 @@
 import type { ConversationAttachment } from './conversation/conversationTypes.ts';
 import { requestOpenFile, type OpenFileRequest } from './openFileBus.ts';
 import type { NotionTaskRow } from './notionTasks.ts';
+import { remoteWorkspacePath } from '../workspacePaths.ts';
 
 /** The chat and the five kinds of tab the top tab row can bring forward. */
 export type CenterTabId = 'session' | 'editor' | 'browser' | 'diff' | 'git-history' | 'pull-requests';
@@ -102,6 +103,7 @@ export interface WorkbenchNavigationHandlers {
   focusComposer(handoff: ComposerHandoff): void | Promise<void>;
   sendToSession(request: SendToSessionRequest): Promise<void>;
   startSession(request: StartSessionRequest): Promise<string | null>;
+  selectSession(ownedId: string): Promise<void>;
 }
 
 let handlers: Partial<WorkbenchNavigationHandlers> = {};
@@ -227,11 +229,71 @@ async function openNotionPage(url: string, pageId: string): Promise<boolean> {
   return true;
 }
 
+export type AssemblyLink =
+  | { kind: 'session'; ownedId: string }
+  | { kind: 'task'; pageId: string }
+  | { kind: 'open'; url: string }
+  | { kind: 'file'; path: string };
+
+/** Read an `assembly://` link: `session/<ownedId>`, `task/<notionPageId>`,
+ * `open?url=<http(s) url>` or `file?path=<absolute path>[&profile=<machine>]`.
+ * Anything else is null. */
+export function parseAssemblyLink(url: string): AssemblyLink | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'assembly:') return null;
+  const value = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
+  if (parsed.hostname === 'session') {
+    return value && !value.includes('/') ? { kind: 'session', ownedId: value } : null;
+  }
+  if (parsed.hostname === 'task') {
+    const pageId = parseNotionPageId(`https://app.notion.com/p/${value}`);
+    return pageId ? { kind: 'task', pageId } : null;
+  }
+  if (parsed.hostname === 'open') {
+    const target = parsed.searchParams.get('url') ?? '';
+    return /^https?:\/\//i.test(target) ? { kind: 'open', url: target } : null;
+  }
+  if (parsed.hostname === 'file') {
+    const path = parsed.searchParams.get('path') ?? '';
+    const profile = parsed.searchParams.get('profile');
+    if (!path.startsWith('/')) return null;
+    return { kind: 'file', path: profile ? remoteWorkspacePath(profile, path) : path };
+  }
+  return null;
+}
+
+/** Carry out an `assembly://` link. A link this app does not understand does nothing. */
+export async function openAssemblyLink(url: string): Promise<void> {
+  const link = parseAssemblyLink(url);
+  if (link?.kind === 'session') await handlers.selectSession?.(link.ownedId);
+  else if (link?.kind === 'task') await openUrlInBrowser({ url: `https://app.notion.com/p/${link.pageId.replaceAll('-', '')}` });
+  else if (link?.kind === 'open') await openUrlInBrowser({ url: link.url });
+  else if (link?.kind === 'file') openFileInEditor({ path: link.path });
+}
+
+/** A link handed over by another app: an `assembly://` link, or a file opened from Finder. */
+export async function openIncomingLink(url: string): Promise<void> {
+  if (/^file:/i.test(url)) {
+    openFileInEditor({ path: decodeURIComponent(new URL(url).pathname) });
+    return;
+  }
+  await openAssemblyLink(url);
+}
+
 /** Point the browser at a URL. A browser tab is put on screen first: the
  * browser only loads while it is the tab in front. A GitHub pull request link
  * opens that pull request in the Pull requests tab instead, and a Notion link
  * opens its task (or the Notion app). */
 export async function openUrlInBrowser(request: OpenUrlRequest): Promise<void> {
+  if (/^assembly:/i.test(request.url)) {
+    await openAssemblyLink(request.url);
+    return;
+  }
   const notionPageId = parseNotionPageId(request.url);
   if (notionPageId && (await openNotionPage(request.url, notionPageId))) return;
   const pullRequest = handlers.openPullRequest ? parseGithubPullRequestUrl(request.url) : null;

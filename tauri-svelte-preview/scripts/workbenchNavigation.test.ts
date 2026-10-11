@@ -10,6 +10,7 @@ import {
   openFileInEditor,
   openUrlInBrowser,
   parseGithubPullRequestUrl,
+  parseAssemblyLink,
   parseNotionPageId,
   registerBrowserUrlNavigation,
   registerWorkbenchNavigation,
@@ -192,6 +193,31 @@ for (const url of [
   'notion://www.notion.so/3f4394b0689d81b19819c696dad2fd48'
 ]) {
   assert.equal(parseNotionPageId(url), null, url);
+}
+
+// ── An assembly:// link names a session, task, web page or file; anything else is null ──
+
+assert.deepEqual(parseAssemblyLink('assembly://session/owned-123'), { kind: 'session', ownedId: 'owned-123' });
+assert.deepEqual(parseAssemblyLink('assembly://task/3f4394b0689d81b19819c696dad2fd48'), { kind: 'task', pageId: notionId });
+assert.deepEqual(
+  parseAssemblyLink(`assembly://open?url=${encodeURIComponent('https://github.com/o/r/pull/3')}`),
+  { kind: 'open', url: 'https://github.com/o/r/pull/3' }
+);
+assert.deepEqual(parseAssemblyLink('assembly://file?path=%2Fwork%2Fa%20b.cs'), { kind: 'file', path: '/work/a b.cs' });
+assert.deepEqual(
+  parseAssemblyLink('assembly://file?path=%2Fwork%2Fa.cs&profile=box'),
+  { kind: 'file', path: 'assembly-remote://box/work/a.cs' }
+);
+for (const url of [
+  'assembly://session/',
+  'assembly://session/a/b',
+  'assembly://task/not-a-page',
+  'assembly://open?url=javascript%3Aalert(1)',
+  'assembly://file?path=relative.cs',
+  'assembly://settings',
+  'https://session/owned-123'
+]) {
+  assert.equal(parseAssemblyLink(url), null, url);
 }
 
 // ── A GitHub pull request link opens the Pull requests tab, not the browser ──
