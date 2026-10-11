@@ -71,6 +71,8 @@ pub struct Envelope {
     pub group_id: String,
     pub from_agent: String,
     pub to_agent: String,
+    pub sender_name: String,
+    pub run_id: Option<String>,
     pub kind: MessageKind,
     pub body: String,
     pub receipt: Receipt,
@@ -78,7 +80,60 @@ pub struct Envelope {
     pub updated_at_ms: i64,
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectoryEntry {
+    pub name: String,
+    pub owned_id: String,
+    pub provider: String,
+    pub project: Option<String>,
+    pub state: String,
+    pub run_id: Option<String>,
+    pub step_id: Option<String>,
+}
+
 impl SessionStore {
+    pub fn list_directory(&self) -> Result<Vec<DirectoryEntry>> {
+        let connection = self.lock()?;
+        let mut statement = db("could not prepare session directory", connection.prepare(
+            "SELECT name,owned_id,provider,project,state,run_id,step_id FROM session_directory ORDER BY name,owned_id"))?;
+        let rows = db("could not query session directory", statement.query_map([], |row| Ok(DirectoryEntry {
+            name: row.get(0)?, owned_id: row.get(1)?, provider: row.get(2)?, project: row.get(3)?,
+            state: row.get(4)?, run_id: row.get(5)?, step_id: row.get(6)?,
+        })))?;
+        db("could not read session directory", rows.collect())
+    }
+
+    pub fn resolve_session_name(&self, name: &str) -> Result<String> {
+        let connection = self.lock()?;
+        let (count, owned_id): (i64, Option<String>) = db("could not resolve session name", connection.query_row(
+            "SELECT COUNT(*),MIN(owned_id) FROM session_directory WHERE name=?", [name],
+            |row| Ok((row.get(0)?, row.get(1)?))))?;
+        match (count, owned_id) {
+            (1, Some(id)) => Ok(id),
+            (0, _) => Err(StoreError::message("Unknown session name")),
+            _ => Err(StoreError::message("Ambiguous session name")),
+        }
+    }
+
+    pub fn open_group_for(&self, owned_id: &str) -> Result<Option<(String, Option<String>)>> {
+        use rusqlite::OptionalExtension;
+        let connection = self.lock()?;
+        db("could not find session run group", connection.query_row(
+            "SELECT g.id,g.orchestrator_owned_id FROM workflow_groups g
+             WHERE g.closed_at_ms IS NULL AND EXISTS(SELECT 1 FROM workflow_messages m
+                 WHERE m.group_id=g.id AND m.kind='system' AND m.body='member:' || ?)
+             ORDER BY g.created_at_ms,g.id LIMIT 1", [owned_id],
+            |row| Ok((row.get(0)?, row.get(1)?))).optional())
+    }
+
+    pub fn decision_pending_for(&self, owned_id: &str) -> Result<bool> {
+        let connection = self.lock()?;
+        db("could not inspect pending decisions", connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_messages WHERE to_owned_id=?
+                AND receipt='queued' AND kind='decision_request')", [owned_id], |row| row.get(0)))
+    }
+
     pub fn create_group(
         &self,
         name: &str,
@@ -106,14 +161,15 @@ impl SessionStore {
                 "could not add the workflow member",
                 transaction.execute(
                     "INSERT INTO workflow_messages
-                     (id, group_id, from_agent, to_agent, kind, body, receipt,
+                     (id, group_id, from_owned_id, to_owned_id, sender_name, kind, body, receipt,
                       created_at_ms, updated_at_ms)
-                     VALUES (?, ?, ?, ?, 'system', ?, 'delivered', ?, ?)",
+                     VALUES (?, ?, ?, ?, ?, 'system', ?, 'delivered', ?, ?)",
                     params![
                         new_id(&transaction)?,
                         group_id,
                         orchestrator.unwrap_or("system"),
                         member,
+                        orchestrator.unwrap_or("system"),
                         format!("member:{member}"),
                         created_at_ms,
                         created_at_ms,
@@ -139,18 +195,24 @@ impl SessionStore {
         let connection = self.lock_write()?;
         let id = new_id(&connection)?;
         let created_at_ms = now_ms()?;
+        let (sender_name, run_id): (String, Option<String>) = db("could not name message sender", connection.query_row(
+            "SELECT COALESCE((SELECT name FROM session_directory WHERE owned_id=?),?),
+                    (SELECT run_id FROM session_directory WHERE owned_id=?)",
+            params![from, from, from], |row| Ok((row.get(0)?, row.get(1)?))))?;
         db(
             "could not append the workflow message",
             connection.execute(
                 "INSERT INTO workflow_messages
-                 (id, group_id, from_agent, to_agent, kind, body, receipt,
+                 (id, group_id, from_owned_id, to_owned_id, sender_name, run_id, kind, body, receipt,
                   created_at_ms, updated_at_ms)
-                 VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+                 VALUES (?, NULLIF(?,''), ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
                 params![
                     id,
                     group_id,
                     from,
                     to,
+                    sender_name,
+                    run_id,
                     kind.as_str(),
                     body,
                     created_at_ms,
@@ -163,6 +225,8 @@ impl SessionStore {
             group_id: group_id.to_owned(),
             from_agent: from.to_owned(),
             to_agent: to.to_owned(),
+            sender_name,
+            run_id,
             kind,
             body: body.to_owned(),
             receipt: Receipt::Queued,
@@ -199,24 +263,22 @@ impl SessionStore {
         }))
     }
 
-    pub fn pending_for(&self, group_id: &str, to: &str) -> Result<Vec<Envelope>> {
+    pub fn pending_for(&self, to: &str) -> Result<Option<Envelope>> {
+        use rusqlite::OptionalExtension;
         let connection = self.lock()?;
-        query_envelopes(
-            &connection,
-            "SELECT id, group_id, from_agent, to_agent, kind, body, receipt,
-                    created_at_ms, updated_at_ms FROM workflow_messages
-             WHERE group_id = ? AND to_agent = ? AND receipt = 'queued'
-             ORDER BY created_at_ms ASC, rowid ASC",
-            params![group_id, to],
-        )
+        db("could not read target queue", connection.query_row(
+            "SELECT id, COALESCE(group_id,''), from_owned_id, to_owned_id, kind, body, receipt,
+                    created_at_ms, updated_at_ms, sender_name, run_id FROM workflow_messages
+             WHERE to_owned_id = ? AND receipt = 'queued' ORDER BY created_at_ms,id LIMIT 1",
+            [to], envelope_from_row).optional())
     }
 
     pub fn events_for(&self, group_id: &str, since_ms: Option<i64>) -> Result<Vec<Envelope>> {
         let connection = self.lock()?;
         query_envelopes(
             &connection,
-            "SELECT id, group_id, from_agent, to_agent, kind, body, receipt,
-                    created_at_ms, updated_at_ms FROM workflow_messages
+            "SELECT id, COALESCE(group_id,''), from_owned_id, to_owned_id, kind, body, receipt,
+                    created_at_ms, updated_at_ms, sender_name, run_id FROM workflow_messages
              WHERE group_id = ? AND (? IS NULL OR created_at_ms > ?)
              ORDER BY created_at_ms ASC, rowid ASC",
             params![group_id, since_ms, since_ms],
@@ -306,6 +368,8 @@ fn envelope_from_row(row: &Row<'_>) -> rusqlite::Result<Envelope> {
         group_id: row.get(1)?,
         from_agent: row.get(2)?,
         to_agent: row.get(3)?,
+        sender_name: row.get(9)?,
+        run_id: row.get(10)?,
         kind: MessageKind::parse(&kind).ok_or(rusqlite::Error::InvalidQuery)?,
         body: row.get(5)?,
         receipt: Receipt::parse(&receipt).ok_or(rusqlite::Error::InvalidQuery)?,
@@ -329,6 +393,40 @@ mod tests {
         store
             .append_message(group, "orchestrator", to, MessageKind::Message, body)
             .expect("append message")
+    }
+
+    #[test]
+    fn broker_delivers_to_session_outside_any_group() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.lock_write().unwrap().execute("INSERT INTO sessions
+            (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra)
+            VALUES ('target','codex','/work','ready',0,1,1,'{}')", []).unwrap();
+        let message = store.append_message("", "sender", "target", MessageKind::Message, "hello").unwrap();
+        assert_eq!(store.pending_for("target").unwrap(), Some(message.clone()));
+        store.set_receipt(&message.id, Receipt::Delivered).unwrap();
+        assert!(store.pending_for("target").unwrap().is_none());
+        store.lock_write().unwrap().execute_batch(r#"INSERT INTO sessions
+            (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra)
+            VALUES ('worker','claude','/work','waiting-input',0,1,1,'{}');
+            INSERT INTO orchestration_events (id,run_id,kind,timestamp,sequence,payload_json)
+            VALUES ('e','run-1','workflow.node.started','1',1,
+            '{"ownedId":"worker","nodeId":"build","workflowPayload":{"run":{"inputSnapshot":{"task":{"key":"tsk-1416"}}}}}');"#).unwrap();
+        assert_eq!(store.resolve_session_name("tsk-1416/build").unwrap(), "worker");
+        let message = store.append_message("", "worker", "target", MessageKind::Message, "reply to me").unwrap();
+        assert_eq!(message.sender_name, "tsk-1416/build");
+        assert_eq!(message.run_id.as_deref(), Some("run-1"));
+    }
+
+    #[test]
+    fn broker_queue_queries_use_target_index() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let connection = store.lock().unwrap();
+        let mut statement = connection.prepare("EXPLAIN QUERY PLAN SELECT id FROM workflow_messages
+            WHERE to_owned_id=? AND receipt='queued' ORDER BY created_at_ms,id LIMIT 1").unwrap();
+        let details = statement.query_map(["target"], |row| row.get::<_, String>(3)).unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>().unwrap().join("\n");
+        assert!(details.contains("idx_workflow_messages_target"), "{details}");
+        assert!(!details.contains("TEMP B-TREE"), "{details}");
     }
 
     #[test]
@@ -387,8 +485,8 @@ mod tests {
             .set_receipt(&delivered.id, Receipt::Expired)
             .expect("expire message");
         assert_eq!(
-            store.pending_for(&group, "worker-a").expect("list pending"),
-            vec![first]
+            store.pending_for("worker-a").expect("list pending"),
+            Some(first)
         );
     }
 }

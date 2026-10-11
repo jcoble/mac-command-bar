@@ -1,6 +1,7 @@
 use agent_client_protocol::schema::v1 as acp;
 use axum::{extract::State, http::{HeaderMap, StatusCode}, response::{IntoResponse, Response}, routing::post, Json, Router};
 use serde_json::{json, Value};
+use mcb_core::{broker::MessageKind, session_store::SessionStore};
 use std::{collections::HashMap, sync::{Arc, Mutex, OnceLock, Weak}};
 
 pub struct SessionCredential { pub url: String, pub token: String }
@@ -13,7 +14,7 @@ impl SessionCredential {
 
 pub struct MessagingEndpoint {
     url: String,
-    callers: Mutex<HashMap<String, String>>,
+    callers: Mutex<HashMap<String, (String, Weak<SessionStore>)>>,
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
@@ -40,28 +41,46 @@ impl MessagingEndpoint {
 
     pub fn issue(&self, owned_id: &str) -> SessionCredential {
         let mut callers = self.callers.lock().unwrap();
-        let token = callers.iter().find(|(_, id)| id.as_str() == owned_id).map(|(token, _)| token.clone())
+        let token = callers.iter().find(|(_, (id, _))| id.as_str() == owned_id).map(|(token, _)| token.clone())
             .unwrap_or_else(|| {
                 let token = uuid::Uuid::new_v4().to_string();
-                callers.insert(token.clone(), owned_id.to_string());
+                callers.insert(token.clone(), (owned_id.to_string(), Weak::new()));
                 token
             });
         SessionCredential { url: self.url.clone(), token }
     }
 
-    pub fn revoke(&self, owned_id: &str) {
-        self.callers.lock().unwrap().retain(|_, id| id != owned_id);
+    pub fn bind_store(&self, token: &str, store: &Arc<SessionStore>) {
+        if let Some((_, bound)) = self.callers.lock().unwrap().get_mut(token) {
+            *bound = Arc::downgrade(store);
+        }
     }
 
-    fn caller(&self, token: &str) -> Result<String, String> {
+    pub fn revoke(&self, owned_id: &str) {
+        self.callers.lock().unwrap().retain(|_, (id, _)| id != owned_id);
+    }
+
+    fn caller(&self, token: &str) -> Result<(String, Weak<SessionStore>), String> {
         self.callers.lock().unwrap().get(token).cloned().ok_or_else(|| "Unauthorized".into())
     }
 
     pub fn handle(&self, token: &str, tool_call: Value) -> Result<Value, String> {
-        let owned_id = self.caller(token)?;
+        let (owned_id, store) = self.caller(token)?;
+        let store = store.upgrade().ok_or("Session store unavailable")?;
         match tool_call["name"].as_str() {
-            Some(name @ ("list_sessions" | "send_message")) =>
-                Err(format!("{name} not implemented yet for session {owned_id}")),
+            Some("list_sessions") => {
+                let entries = store.list_directory().map_err(|error| error.to_string())?;
+                Ok(json!({"content":[{"type":"text","text":serde_json::to_string(&entries).map_err(|e| e.to_string())?}]}))
+            }
+            Some("send_message") => {
+                let args = &tool_call["arguments"];
+                let to = args["to"].as_str().ok_or("to must be a session name")?;
+                let text = args["text"].as_str().ok_or("text must be a string")?;
+                let target = store.resolve_session_name(to).map_err(|error| error.to_string())?;
+                let message = store.append_message("", &owned_id, &target, MessageKind::Message, text)
+                    .map_err(|error| error.to_string())?;
+                Ok(json!({"content":[{"type":"text","text":json!({"id":message.id,"status":"queued"}).to_string()}]}))
+            }
             _ => Err("Tool not allowed".into()),
         }
     }
@@ -99,23 +118,71 @@ impl Drop for MessagingEndpoint {
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+    fn store() -> Arc<SessionStore> {
+        use mcb_core::session_store::SessionRow;
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
+        for (id, title) in [("owned-a","a"),("owned-b","b"),("caller","Caller"),
+            ("o1","orchestrator"),("o2","orchestrator"),("d1","Duplicate"),("d2","Duplicate")] {
+            store.upsert_session(&SessionRow {
+                owned_id:id.into(), native_session_id:None, provider:"codex".into(), model:None,
+                effort:None, cwd:"/work".into(), worktree:None, branch:None, title:Some(title.into()),
+                title_source:None, project:None, project_id:None, state:"ready".into(), suspended:false,
+                created_at_ms:1, last_activity_at_ms:1, extra_json:"{}".into(),
+            }).unwrap();
+        }
+        store
+    }
     async fn call(c: &SessionCredential, token: Option<&str>, method: &str, params: Value) -> reqwest::Response {
         let request = reqwest::Client::new().post(&c.url).json(&json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}));
         let request = if let Some(token) = token { request.bearer_auth(token) } else { request };
         request.send().await.unwrap()
     }
     #[tokio::test]
+    async fn directory_rejects_ambiguous_or_missing_name() {
+        let endpoint = MessagingEndpoint::start().unwrap();
+        let store = store();
+        let caller = endpoint.issue("caller");
+        endpoint.bind_store(&caller.token, &store);
+        let error = endpoint.handle(&caller.token, json!({"name":"send_message",
+            "arguments":{"to":"missing","text":"hello"}})).unwrap_err();
+        assert!(error.contains("Unknown session name"), "{error}");
+        let error = endpoint.handle(&caller.token, json!({"name":"send_message",
+            "arguments":{"to":"orchestrator","text":"hello"}})).unwrap_err();
+        assert!(error.contains("Ambiguous session name"), "{error}");
+        let listing = endpoint.handle(&caller.token, json!({"name":"list_sessions"})).unwrap();
+        let entries: Value = serde_json::from_str(listing["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(entries.as_array().unwrap().len(), 7);
+        let entries = store.list_directory().unwrap();
+        assert!(entries.iter().any(|entry| entry.name == "Duplicate [d1]"));
+        assert_eq!(store.resolve_session_name("Duplicate [d2]").unwrap(), "d2");
+        let result = endpoint.handle(&caller.token, json!({"name":"send_message",
+            "arguments":{"to":"b","text":"hello"}})).unwrap();
+        let receipt: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        let message = store.pending_for("owned-b").unwrap().unwrap();
+        assert_eq!(receipt["id"], message.id);
+        assert_eq!(receipt["status"], "queued");
+        assert_eq!(message.sender_name, "Caller");
+        assert_eq!(store.resolve_session_name(&message.sender_name).unwrap(), "caller");
+    }
+
+    #[tokio::test]
     async fn messaging_token_cannot_impersonate_another_session() {
         let endpoint = MessagingEndpoint::start().unwrap();
+        let store = store();
         let a = endpoint.issue("owned-a");
         let b = endpoint.issue("owned-b");
+        endpoint.bind_store(&a.token, &store);
+        endpoint.bind_store(&b.token, &store);
         for token in [None, Some("wrong")] {
             assert_eq!(call(&a, token, "tools/call", json!({"name":"send_message","arguments":{"token":b.token}})).await.status(), 401);
         }
         let result: Value = call(&a, Some(&a.token), "tools/call",
             json!({"name":"send_message","arguments":{"from":"owned-b","token":b.token,"to":"b","text":"hello"}}))
             .await.json().await.unwrap();
-        assert_eq!(result["result"]["content"][0]["text"], "send_message not implemented yet for session owned-a");
+        assert_ne!(result["result"]["isError"], true);
+        let message = store.pending_for("owned-b").unwrap().unwrap();
+        assert_eq!(message.from_agent, "owned-a");
+        assert_eq!(message.sender_name, "a");
         endpoint.revoke("owned-a");
         assert_eq!(call(&a, Some(&a.token), "tools/list", json!({})).await.status(), 401);
         assert_eq!(call(&b, Some(&b.token), "tools/list", json!({})).await.status(), 200);

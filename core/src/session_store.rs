@@ -12,7 +12,7 @@ use serde::Serialize;
 
 mod evidence;
 
-const SCHEMA_VERSION: i64 = 20;
+const SCHEMA_VERSION: i64 = 21;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 static SESSION_STORE_ACTIVE_READS: AtomicUsize = AtomicUsize::new(0);
@@ -624,9 +624,11 @@ const BROKER_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS workflow_groups (
 );
 CREATE TABLE IF NOT EXISTS workflow_messages (
     id TEXT PRIMARY KEY,
-    group_id TEXT NOT NULL REFERENCES workflow_groups(id),
-    from_agent TEXT NOT NULL,
-    to_agent TEXT NOT NULL,
+    group_id TEXT REFERENCES workflow_groups(id),
+    from_owned_id TEXT NOT NULL,
+    to_owned_id TEXT NOT NULL,
+    sender_name TEXT NOT NULL,
+    run_id TEXT,
     kind TEXT NOT NULL,
     body TEXT NOT NULL,
     receipt TEXT NOT NULL,
@@ -634,7 +636,31 @@ CREATE TABLE IF NOT EXISTS workflow_messages (
     updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_messages_group
-    ON workflow_messages(group_id, created_at_ms);";
+    ON workflow_messages(group_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_workflow_messages_target
+    ON workflow_messages(to_owned_id, receipt, created_at_ms, id);
+CREATE VIEW IF NOT EXISTS session_directory AS
+WITH membership AS (
+    SELECT json_extract(payload_json,'$.ownedId') AS owned_id, run_id,
+           json_extract(payload_json,'$.nodeId') AS step_id,
+           json_extract(payload_json,'$.workflowPayload.run.inputSnapshot.task.key') AS task_key,
+           ROW_NUMBER() OVER (PARTITION BY json_extract(payload_json,'$.ownedId')
+                              ORDER BY sequence DESC, timestamp DESC, id DESC) AS latest
+    FROM orchestration_events WHERE json_extract(payload_json,'$.ownedId') IS NOT NULL
+), names AS (
+    SELECT s.owned_id, s.provider, s.project,
+           CASE WHEN s.state IN ('starting','working','interrupting') THEN 'running'
+                WHEN s.state IN ('waiting-approval','waiting-input') THEN 'waiting'
+                WHEN s.state IN ('closed','failed') THEN 'stopped' ELSE 'idle' END AS state,
+           m.run_id, m.step_id,
+           COALESCE(m.task_key || '/' || m.step_id, NULLIF(s.title,''), 'Untitled') AS base_name,
+           m.task_key IS NOT NULL OR s.title='orchestrator' AS reserved
+    FROM sessions s LEFT JOIN membership m ON m.owned_id=s.owned_id AND m.latest=1
+    WHERE s.cached_remote_profile_id IS NULL AND s.parent_owned_id IS NULL
+)
+SELECT CASE WHEN COALESCE(reserved,0)=0 AND COUNT(*) OVER (PARTITION BY base_name)>1
+            THEN base_name || ' [' || owned_id || ']' ELSE base_name END AS name,
+       owned_id, provider, project, state, run_id, step_id FROM names;";
 
 const ORCHESTRATION_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS orchestration_events (
     id TEXT PRIMARY KEY,
@@ -1839,7 +1865,7 @@ impl SessionStore {
                 transaction.commit()
                     .map_err(|error| StoreError::sqlite("could not finish the project upgrade", error))?;
             }
-            SCHEMA_VERSION => {}
+            20 | SCHEMA_VERSION => {}
             _ => {
                 return Err(StoreError::message(
                     "the session database schema version is not supported",
@@ -1856,6 +1882,7 @@ impl SessionStore {
         add_remote_history_column(&connection)?;
         add_child_session_schema(&connection)?;
         add_project_schema(&connection)?;
+        upgrade_broker_queue(&mut connection)?;
 
         let interrupt_handle = connection.get_interrupt_handle();
         SESSION_STORE_OPEN_HANDLES.fetch_add(1, Ordering::Relaxed);
@@ -4003,6 +4030,38 @@ fn add_child_session_schema(connection: &Connection) -> Result<()> {
         .map_err(|error| StoreError::sqlite("could not index child session ownership", error))
 }
 
+fn upgrade_broker_queue(connection: &mut Connection) -> Result<()> {
+    let old: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('workflow_messages') WHERE name='to_agent')",
+        [], |row| row.get(0),
+    ).map_err(|error| StoreError::sqlite("could not inspect broker schema", error))?;
+    if old {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| StoreError::sqlite("could not begin broker upgrade", error))?;
+        transaction.execute_batch("ALTER TABLE workflow_messages RENAME TO workflow_messages_upgrade;
+            DROP INDEX IF EXISTS idx_workflow_messages_group;")
+            .map_err(|error| StoreError::sqlite("could not rename broker queue", error))?;
+        transaction.execute_batch(BROKER_SCHEMA)
+            .map_err(|error| StoreError::sqlite("could not create owned-ID queue", error))?;
+        transaction.execute_batch("INSERT INTO workflow_messages
+            (id,group_id,from_owned_id,to_owned_id,sender_name,run_id,kind,body,receipt,created_at_ms,updated_at_ms)
+            SELECT m.id,m.group_id,m.from_agent,m.to_agent,COALESCE(d.name,m.from_agent),d.run_id,
+                   m.kind,m.body,m.receipt,m.created_at_ms,m.updated_at_ms
+            FROM workflow_messages_upgrade m LEFT JOIN session_directory d ON d.owned_id=m.from_agent;
+            DROP TABLE workflow_messages_upgrade;")
+            .map_err(|error| StoreError::sqlite("could not migrate broker rows", error))?;
+        transaction.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|error| StoreError::sqlite("could not record broker upgrade", error))?;
+        transaction.commit().map_err(|error| StoreError::sqlite("could not finish broker upgrade", error))?;
+    } else {
+        connection.execute_batch(BROKER_SCHEMA)
+            .map_err(|error| StoreError::sqlite("could not create broker directory", error))?;
+        connection.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|error| StoreError::sqlite("could not record broker schema", error))?;
+    }
+    Ok(())
+}
+
 /// Adds the column that records where a session's name came from, unless the
 /// database already has it. Older schemas upgrade directly to the current one.
 fn add_title_source_column(connection: &Connection) -> Result<()> {
@@ -4697,6 +4756,7 @@ mod tests {
         let connection = Connection::open(&path).unwrap();
         connection.execute_batch(
             "DROP INDEX sessions_parent_owned_idx;
+             DROP VIEW session_directory;
              ALTER TABLE sessions DROP COLUMN parent_owned_id;
              DROP INDEX events_replay_page_idx;
              CREATE INDEX events_replay_page_idx ON events(owned_id,seq) WHERE item_id IS NOT NULL;
@@ -4764,7 +4824,7 @@ mod tests {
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'project_id')",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, super::SCHEMA_VERSION);
         assert_eq!(project_columns, ["id", "machine", "root_path", "title", "repo_key", "created_at", "pinned_at"]);
         assert!(column_exists);
     }
@@ -4999,7 +5059,8 @@ mod tests {
         store.set_draft("local", "existing").unwrap();
         drop(store);
         let connection = Connection::open(&path).unwrap();
-        connection.execute_batch("DROP INDEX sessions_cached_remote_idx;
+        connection.execute_batch("DROP VIEW session_directory;
+            DROP INDEX sessions_cached_remote_idx;
             ALTER TABLE sessions DROP COLUMN cached_remote_profile_id;
             PRAGMA user_version = 13;").unwrap();
         drop(connection);
@@ -6444,6 +6505,34 @@ mod tests {
             )
             .expect("read the session columns");
         assert_eq!(columns, 1);
+    }
+
+    #[test]
+    fn owned_queue_migration_preserves_existing_database() {
+        let dir = TempDir::new_in("/var/tmp").unwrap();
+        let path = dir.path().join("sessions.db");
+        let store = SessionStore::open(&path).unwrap();
+        store.upsert_session(&fixture_session("sender", 1)).unwrap();
+        store.lock_write().unwrap().execute_batch("DROP VIEW session_directory;
+            DROP TABLE workflow_messages;
+            CREATE TABLE workflow_messages (id TEXT PRIMARY KEY,group_id TEXT NOT NULL REFERENCES workflow_groups(id),
+                from_agent TEXT NOT NULL,to_agent TEXT NOT NULL,kind TEXT NOT NULL,body TEXT NOT NULL,
+                receipt TEXT NOT NULL,created_at_ms INTEGER NOT NULL,updated_at_ms INTEGER NOT NULL);
+            CREATE INDEX idx_workflow_messages_group ON workflow_messages(group_id,created_at_ms);
+            INSERT INTO workflow_groups VALUES ('g','Run',NULL,1,NULL);
+            INSERT INTO workflow_messages VALUES ('old','g','sender','target','message','hello','queued',1,1);
+            PRAGMA user_version=20;").unwrap();
+        drop(store);
+        let store = SessionStore::open(&path).unwrap();
+        let old = store.pending_for("target").unwrap().unwrap();
+        assert_eq!((old.id.as_str(),old.body.as_str(),old.sender_name.as_str()), ("old","hello","Session sender"));
+        assert_eq!(old.group_id, "g");
+        store.append_message("", "sender", "target", crate::broker::MessageKind::Message, "outside group").unwrap();
+        store.set_receipt("old", crate::broker::Receipt::Delivered).unwrap();
+        assert_eq!(store.pending_for("target").unwrap().unwrap().body, "outside group");
+        let remaining: i64 = store.lock().unwrap().query_row("SELECT COUNT(*) FROM sqlite_master
+            WHERE name='workflow_messages_upgrade'", [], |row| row.get(0)).unwrap();
+        assert_eq!(remaining, 0);
     }
 
     #[test]
