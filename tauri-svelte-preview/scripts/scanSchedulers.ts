@@ -1,11 +1,14 @@
 #!/usr/bin/env node
+import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
 const root = new URL('..', import.meta.url).pathname;
+const repoRoot = join(root, '..');
 const srcRoot = join(root, 'src');
+const srcPrefix = relative(repoRoot, srcRoot).split(sep).join('/');
 const includedExtensions = ['.ts', '.svelte', '.css'];
 const excludedFileSuffixes = ['.test.ts', '.test.svelte', '.server.ts'];
 const excludedPathSegments = new Set([
@@ -147,6 +150,25 @@ function scanFile(path: string): Hit[] {
   return scanSource(rel, source);
 }
 
+function scanStagedFiles(): { count: number; hits: Hit[] } {
+  const paths = execFileSync(
+    'git',
+    ['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z', '--', srcPrefix],
+    { cwd: repoRoot, encoding: 'utf8' }
+  ).split('\0').filter(Boolean).filter((path) => {
+    const rel = path.slice(`${srcPrefix}/`.length);
+    return isSourceFile(path) && isProductionPath(rel);
+  }).sort();
+  return {
+    count: paths.length,
+    hits: paths.flatMap((path) => {
+      const rel = relative(root, join(repoRoot, path));
+      const source = execFileSync('git', ['show', `:${path}`], { cwd: repoRoot, encoding: 'utf8' });
+      return scanSource(rel, source);
+    })
+  };
+}
+
 export function scanSource(rel: string, source: string): Hit[] {
   const cssHits = scanCssText(rel, source);
   if (rel.endsWith('.css')) return cssHits;
@@ -266,15 +288,18 @@ function scanConcretePromiseImplementations(rel: string, source: string): Hit[] 
 }
 
 function run(): void {
-  const sourceFiles = files(srcRoot).sort();
-  const hits = sourceFiles.flatMap(scanFile).filter((hit) =>
+  const staged = process.argv.includes('--staged');
+  const sourceFiles = staged ? [] : files(srcRoot).sort();
+  const scan = staged ? scanStagedFiles() : { count: sourceFiles.length, hits: sourceFiles.flatMap(scanFile) };
+  const hits = scan.hits.filter((hit) =>
     hit.category.startsWith('css-')
     || hit.category === 'tailwind-has-variant'
     || !allowedHits.has(`${hit.file}:${hit.term}:${hit.text}`)
   );
   const count = (category: Hit['category']): number => hits.filter((hit) => hit.category === category).length;
 
-  console.log(`production source files scanned: ${sourceFiles.length}`);
+  console.log(`production source files scanned: ${scan.count}`);
+  console.log(`mode: ${staged ? 'staged index' : 'working tree'}`);
   console.log(`scope: src/**/*.ts, src/**/*.svelte, src/**/*.css`);
   console.log(`excluded: ${excludedFileSuffixes.join(', ')}; path segments ${[...excludedPathSegments].join(', ')}`);
   console.log(`scheduler hits: ${count('scheduler')}`);

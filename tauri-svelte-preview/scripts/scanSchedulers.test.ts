@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { chmod, copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { scanSource } from './scanSchedulers.ts';
 
@@ -58,4 +62,44 @@ test('CSS files receive only CSS checks', () => {
   const ordinaryCss = '.timer::before { content: "setTimeout(() => task.then(done))"; }';
   assert.deepEqual(scanSource('src/fixture.css', ordinaryCss), []);
   assert.equal(scanSource('src/fixture.css', '.region:has(.selected) {}')[0]?.category, 'css-has-selector');
+});
+
+test('the executable hook scans the staged source instead of the working copy', async () => {
+  const repo = await mkdtemp(join(tmpdir(), 'assembly-lifecycle-hook-'));
+  const sourceRoot = join(repo, 'tauri-svelte-preview');
+  const hook = join(repo, '.githooks', 'pre-commit');
+  const probe = join(sourceRoot, 'src', 'probe.ts');
+  const commitBody = 'Task: TSK-1453 https://app.notion.com/p/3f6394b0689d818aa5abf6690d7f3f72\n\nArchitecture: unchanged\n\nCommitted-by: Codex';
+  const git = (...args: string[]) => spawnSync('git', args, { cwd: repo, encoding: 'utf8' });
+  try {
+    await mkdir(join(sourceRoot, 'scripts'), { recursive: true });
+    await mkdir(join(sourceRoot, 'src'), { recursive: true });
+    await mkdir(join(repo, '.githooks'), { recursive: true });
+    await copyFile(new URL('scanSchedulers.ts', import.meta.url), join(sourceRoot, 'scripts', 'scanSchedulers.ts'));
+    await copyFile(new URL('../../.githooks/pre-commit', import.meta.url), hook);
+    await chmod(hook, 0o755);
+    await writeFile(join(sourceRoot, 'package.json'), '{"type":"module"}\n');
+    await symlink(join(new URL('..', import.meta.url).pathname, 'node_modules'), join(sourceRoot, 'node_modules'));
+    assert.equal(git('init', '-q').status, 0);
+    assert.equal(git('config', 'user.name', 'Codex').status, 0);
+    assert.equal(git('config', 'user.email', 'codex@example.invalid').status, 0);
+    assert.equal(git('config', 'core.hooksPath', '.githooks').status, 0);
+
+    await writeFile(probe, 'setTimeout(work, 1);\n');
+    assert.equal(git('add', 'tauri-svelte-preview/src/probe.ts').status, 0);
+    await writeFile(probe, 'export const clean = true;\n');
+    const rejected = git('commit', '-m', 'Reject bad staged source', '-m', commitBody);
+    assert.notEqual(rejected.status, 0);
+    assert.match(`${rejected.stdout}${rejected.stderr}`, /src\/probe\.ts:1: scheduler:setTimeout/);
+
+    assert.equal(git('add', 'tauri-svelte-preview/src/probe.ts').status, 0);
+    await writeFile(probe, 'setTimeout(work, 1);\n');
+    assert.equal(git('commit', '-m', 'Accept clean staged source', '-m', commitBody).status, 0);
+
+    assert.equal(git('restore', 'tauri-svelte-preview/src/probe.ts').status, 0);
+    assert.equal(git('rm', 'tauri-svelte-preview/src/probe.ts').status, 0);
+    assert.equal(git('commit', '-m', 'Accept staged deletion', '-m', commitBody).status, 0);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
 });

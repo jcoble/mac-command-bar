@@ -3,7 +3,7 @@
 <title>TSK-1453: Require lifecycle and CSS checks on pull requests</title>
 <style>body{font:16px/1.5 system-ui,sans-serif;max-width:1050px;margin:36px auto;padding:0 24px;color:#202936;background:#f6f8fb}h1{line-height:1.2}table{border-collapse:collapse;width:100%;background:white}td,th{border:1px solid #bbc5d2;padding:12px;text-align:left;vertical-align:top}code{overflow-wrap:anywhere}aside{padding:16px;background:#fff0d4;margin:24px 0}a{color:#174e98}</style></head><body>
 <h1>TSK-1453: Require lifecycle and CSS checks on pull requests</h1>
-<p>Run the existing lifecycle rule automatically on every pull request to main. Extend its source scan to catch the banned CSS selectors and run existing cancellation tests in the same job.</p>
+<p>Reject prohibited lifecycle and CSS patterns before a local commit succeeds, and run the full check automatically on every pull request to main. Run existing cancellation tests in the same PR job.</p>
 <p><a href="https://app.notion.com/p/3f6394b0689d818aa5abf6690d7f3f72">Task and delivery record</a>. Base: <code>859a080658771f9dda241b864d570a759f15f4eb</code>. MacBook worktree: <code>/Users/blackcolours/dev/work/worktrees/mac-command-bar/tsk-1453-lifecycle-checks</code>.</p>
 <table><tr><th>File</th><th>Smallest change</th></tr>
 <tr><td><code>.github/workflows/lifecycle-checks.yml</code> (new)</td><td>One Ubuntu job, pull_request to main, no path filters, contents:read, fixed pnpm 10.28.2 and Node 22. Run scanner, detector tests, existing workspace-invoke cancellation and git-diff timeout tests. No native build or UI tests.</td></tr>
@@ -27,9 +27,20 @@ git diff --check</pre>
 <h2>Verification on October 11, 2026</h2>
 <table><tr><th>Check</th><th>Result</th></tr>
 <tr><td>Production scanner</td><td>Pass: 568 TypeScript, Svelte and CSS files; zero prohibited hits. Async exceptions unchanged.</td></tr>
-<tr><td>Detector fixtures</td><td>4/4 pass, including prohibited async syntax, CSS, bracket/shorthand/named Tailwind variants, and permitted syntax.</td></tr>
+<tr><td>Detector and hook fixtures</td><td>5/5 pass, including prohibited async syntax, CSS, bracket/shorthand/named Tailwind variants, permitted syntax, and real indexed commit checks.</td></tr>
 <tr><td>Workspace cancellation</td><td>4/4 pass: matching remote cancel id, abort listener release, no already-aborted request, documented existing local behavior.</td></tr>
 <tr><td>Diff timeout cancellation</td><td>Pass: owner/timeout abort propagation and successful result.</td></tr>
 <tr><td>Combined code/spec review</td><td>Codex SOL medium peer: PASS after correcting the reproduced Tailwind shorthand miss. No product changes or changed exception.</td></tr></table>
 <p>The named Tailwind forms are documented in <a href="https://tailwindcss.com/docs/hover-focus-and-other-states#has">Tailwind's official state-variant documentation</a>. GitHub job execution is checked in the PR; local success alone does not activate required branch checks.</p>
+<h2>Pre-commit refinement — October 11, 2026</h2>
+<p>The owner wants feedback while the agent is still working. Add a local pre-commit hook that rejects prohibited patterns before a commit succeeds; keep the existing PR check as the backstop.</p>
+<table><tr><th>File</th><th>Incremental change</th></tr>
+<tr><td><code>.githooks/pre-commit</code> (new, executable)</td><td>Run the existing lifecycle scanner against Git's index. No dependency installation, polling, build, or separate checker.</td></tr>
+<tr><td><code>tauri-svelte-preview/scripts/scanSchedulers.ts</code></td><td>Add the explicitly required <code>--staged</code> mode: read changed production source from Git's index, reusing existing detection, exclusions and unchanged exceptions. CI continues to scan all production files.</td></tr>
+<tr><td><code>tauri-svelte-preview/scripts/scanSchedulers.test.ts</code></td><td>Use an isolated temporary repository to prove an actual commit is blocked when staged source is prohibited even if the working copy is fixed. Prove clean staged source commits despite prohibited unstaged source; cover a staged deletion. Clean up the temporary repository.</td></tr>
+<tr><td><code>docs/plans/tsk-1453-lifecycle-checks.html</code></td><td>This scope and receipts. Architecture unchanged.</td></tr></table>
+<p>Expected incremental diff: 100–150 lines. No product changes, new dependencies, allow-list changes, watcher or harness-specific mechanism. Peer plan review before editing implementation; combined review after verification. Test the executable hook, rerun the existing workflow commands, and check the diff. The current checkout uses an absolute hooks path into main; the PR hook is not active there until installed. No merge or global Git configuration change is authorized.</p>
+<aside>A pre-commit hook runs on every branch using the configured hooks directory, independently of whether feature PRs merge. It checks coding patterns, not every possible memory leak. Git's explicit hook bypass remains possible; CI and independent review remain necessary.</aside>
+<h2>Pre-commit verification</h2>
+<p>MacBook: executable hook mode 755; normal scanner 568 files/zero hits in 0.83 seconds; empty-index hook passes in 0.60 seconds. Five detector/hook tests pass, independently rerun by the parent. Actual commit tests reject bad staged source with a fixed working copy, accept clean staged source with prohibited unstaged edits, and accept a staged deletion. Temporary repositories are removed. Async allow-list byte-for-byte unchanged; existing cancellation tests and diff check pass.</p>
 </body></html>
