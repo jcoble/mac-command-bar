@@ -5709,6 +5709,7 @@ fn main() {
             agent_conversation::remote::cancel_remote_connection,
             agent_conversation::remote::disconnect_remote_assembly,
             agent_conversation::remote::remote_workspace,
+            agent_conversation::remote::remote_workflow,
             agent_conversation::remote::check_remote_provider_updates,
             agent_conversation::remote::install_remote_provider_updates,
             agent_conversation::remote::restart_remote_for_provider_updates,

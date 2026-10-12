@@ -165,6 +165,8 @@ enum RemoteCommand {
     RespondPermission(RespondAgentConversationPermissionRequest),
     RespondInput(RespondAgentConversationInputRequest),
     Stop(StopAgentConversationTurnRequest),
+    /// One `workflow::execute_operation` on this machine's workflow engine.
+    Workflow { operation: String, args: serde_json::Value },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -190,6 +192,7 @@ enum RemoteResponse {
     Bool(bool),
     ImportProgress { added: usize, reached_start: bool },
     SendReceipt(AgentConversationSendReceipt),
+    Workflow(serde_json::Value),
     Empty,
 }
 
@@ -221,6 +224,53 @@ struct ServerState {
     restart_requested: Arc<tokio::sync::Notify>,
     restart_flushed: Arc<tokio::sync::Notify>,
     events: broadcast::Sender<AgentConversationEvent>,
+    /// Runs started on this machine, kept in its own `sessions.db`.
+    workflow: crate::workflow::WorkflowEngine,
+}
+
+/// The server's state over `manager`: its events go to the sockets, and a
+/// finished turn also advances the workflow run that owns the session. Runs
+/// interrupted by the last shutdown are recovered before any request is served.
+fn server_state(manager: AgentRuntimeManager, data_dir: PathBuf, token: Arc<str>) -> Result<ServerState, String> {
+    let (events, _) = broadcast::channel(256);
+    let workflow = crate::workflow::WorkflowEngine::managed(manager.clone(), manager.store_handle());
+    let event_sender = events.clone();
+    let workflow_events = workflow.clone();
+    let runtime = tokio::runtime::Handle::current();
+    manager.set_emitter(Arc::new(move |event| {
+        if matches!(&event.payload, super::protocol::AgentConversationPayload::Turn {
+            state: super::protocol::TurnState::Completed | super::protocol::TurnState::Interrupted
+                | super::protocol::TurnState::Failed, ..
+        }) {
+            let workflow_events = workflow_events.clone();
+            let event = event.clone();
+            runtime.spawn(async move {
+                if let Err(error) = workflow_events.accept_agent_event(&event).await {
+                    eprintln!("Could not advance workflow from agent event: {error}");
+                }
+            });
+        }
+        let _ = event_sender.send(event);
+    }));
+    for run_id in workflow.recover_after_restart().map_err(|error| error.to_string())? {
+        let workflow = workflow.clone();
+        tokio::spawn(async move {
+            if let Err(error) = workflow.dispatch_ready(&run_id).await {
+                eprintln!("workflow run {run_id} could not restart: {error}");
+            }
+        });
+    }
+    Ok(ServerState {
+        manager,
+        data_dir,
+        token,
+        maintenance: Arc::new(tokio::sync::RwLock::new(())),
+        restarting: Arc::new(AtomicBool::new(false)),
+        restart_requested: Arc::new(tokio::sync::Notify::new()),
+        restart_flushed: Arc::new(tokio::sync::Notify::new()),
+        events,
+        workflow,
+    })
 }
 
 #[derive(Debug)]
@@ -1086,6 +1136,14 @@ impl RemoteConnectionManager {
         self.request_with_id(profile_id, id, command, None).await
     }
 
+    /// Runs one workflow operation on the remote machine's own engine.
+    pub async fn workflow_operation(&self, profile_id: &str, operation: String, args: serde_json::Value) -> Result<serde_json::Value, String> {
+        match self.request_for_profile(profile_id, RemoteCommand::Workflow { operation, args }).await? {
+            RemoteResponse::Workflow(value) => Ok(value),
+            _ => Err("The remote backend does not run workflows; update its backend first".into()),
+        }
+    }
+
     /// Runs one file or Git operation on the remote machine that owns the workspace.
     pub async fn workspace_operation(
         &self,
@@ -1124,6 +1182,8 @@ impl RemoteConnectionManager {
             RemoteCommand::CheckProviderUpdates => 75,
             RemoteCommand::InstallProviderUpdates { .. } => 25 * 60,
             RemoteCommand::Workspace { operation, .. } => workspace_wait_seconds(operation),
+            // Starting a run creates its worktree and starts the first agent.
+            RemoteCommand::Workflow { .. } => 125,
             _ => 15,
         };
         let (reply, answer) = oneshot::channel();
@@ -2800,21 +2860,7 @@ pub fn run_server_from_environment() -> Result<(), String> {
             ProviderRegistry::bundled_from_environment_at(Some(&data_dir))?,
             &data_dir.join("sessions.db"),
         )?;
-        let (events, _) = broadcast::channel(256);
-        let event_sender = events.clone();
-        manager.set_emitter(Arc::new(move |event| {
-            let _ = event_sender.send(event);
-        }));
-        let state = ServerState {
-            manager,
-            data_dir: data_dir.clone(),
-            token: Arc::from(token),
-            maintenance: Arc::new(tokio::sync::RwLock::new(())),
-            restarting: Arc::new(AtomicBool::new(false)),
-            restart_requested: Arc::new(tokio::sync::Notify::new()),
-            restart_flushed: Arc::new(tokio::sync::Notify::new()),
-            events,
-        };
+        let state = server_state(manager, data_dir.clone(), Arc::from(token))?;
         let restart_requested = state.restart_requested.clone();
         let restart_flushed = state.restart_flushed.clone();
         let restart_manager = state.manager.clone();
@@ -3211,6 +3257,9 @@ async fn execute_server_command(state: &ServerState, upload: &Arc<Mutex<Option<P
     if state.restarting.load(Ordering::Acquire) {
         return Err("The remote server is restarting; reconnect before continuing".into());
     }
+    if let RemoteCommand::Workflow { operation, args } = command {
+        return crate::workflow::execute_operation(&state.workflow, &operation, args).await.map(RemoteResponse::Workflow);
+    }
     execute_remote_command(&state.manager, &vault, command, progress).await
 }
 
@@ -3222,6 +3271,7 @@ async fn execute_remote_command(
 ) -> Result<RemoteResponse, String> {
     match command {
         RemoteCommand::RestartForProviderUpdates => Err("Remote restart requires exclusive request ownership".into()),
+        RemoteCommand::Workflow { .. } => Err("Workflow requests need the server's workflow engine".into()),
         RemoteCommand::Workspace { operation, args } => super::remote_workspace::execute(operation, args).await.map(RemoteResponse::Workspace),
         RemoteCommand::ProbeProviderConfig { provider, cwd } => manager
             .probe_provider_config(provider, &cwd)
@@ -4626,6 +4676,7 @@ mod connection_tests {
         }
         let (events, _) = broadcast::channel(2);
         let state = ServerState {
+            workflow: crate::workflow::WorkflowEngine::managed(manager.clone(), manager.store_handle()),
             manager, data_dir: directory.clone(), token: Arc::from("test"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events,
@@ -4696,6 +4747,7 @@ mod connection_tests {
         }).unwrap();
         let (events, _) = broadcast::channel(2);
         let state = ServerState {
+            workflow: crate::workflow::WorkflowEngine::managed(manager.clone(), manager.store_handle()),
             manager: manager.clone(), data_dir: directory.clone(), token: Arc::from("test-token"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events: events.clone(),
@@ -4814,6 +4866,16 @@ pub async fn remote_workspace(
 }
 
 #[tauri::command]
+pub async fn remote_workflow(
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    profile_id: String,
+    operation: String,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    remote.workflow_operation(&profile_id, operation, args).await
+}
+
+#[tauri::command]
 pub async fn check_remote_provider_updates(
     remote: tauri::State<'_, RemoteConnectionManager>,
     profile_id: String,
@@ -4867,6 +4929,74 @@ mod provider_restart_tests {
     use super::*;
 
     #[tokio::test]
+    async fn remote_start_run_uses_remote_store_and_worker() {
+        use serde_json::json;
+        let root = std::env::temp_dir().join(format!("assembly-remote-workflow-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let output = std::process::Command::new("git").args(args).current_dir(dir).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        };
+        git(&root, &["init", "--bare", "--initial-branch=main", "origin.git"]);
+        git(&root, &["clone", "origin.git", "repo"]);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(repo.join(".assembly/workflows/prompts")).unwrap();
+        std::fs::write(repo.join(".assembly/workflows/prompts/build.md"), "Build it").unwrap();
+        std::fs::write(repo.join(".assembly/workflows/demo.yml"), "name: Demo\nsteps:\n  build: { agent: { provider: codex }, prompt: prompts/build.md }\n  checks: { needs: [build], run: [\"true\"] }\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["-c", "user.name=Test", "-c", "user.email=test@test", "commit", "-m", "demo"]);
+        git(&repo, &["push", "origin", "main"]);
+        let data_dir = root.join("server");
+        std::fs::create_dir(&data_dir).unwrap();
+        let log = root.join("acp.jsonl");
+        let open = || {
+            let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&log, "multiplex");
+            let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)]).unwrap();
+            let manager = AgentRuntimeManager::open(providers, &data_dir.join("sessions.db")).unwrap();
+            server_state(manager, data_dir.clone(), Arc::from("test")).unwrap()
+        };
+        async fn call(state: &ServerState, operation: &str, args: serde_json::Value) -> serde_json::Value {
+            let command = RemoteCommand::Workflow { operation: operation.into(), args };
+            match execute_server_command(state, &Arc::new(Mutex::new(None)), command, Arc::new(|_| {})).await {
+                Ok(RemoteResponse::Workflow(value)) => value,
+                other => panic!("{operation}: {other:?}"),
+            }
+        }
+        let state = open();
+        assert_eq!(call(&state, "listFiles", json!({"repoRoot": repo})).await, json!([".assembly/workflows/demo.yml"]));
+        let run = call(&state, "create", json!({"repoRoot": repo, "workflowPath": ".assembly/workflows/demo.yml",
+            "task": {"key": "TSK-9003", "title": "Remote demo", "body": "Prove remote runs"}, "idempotencyKey": "create"})).await;
+        let run_id = run["id"].as_str().unwrap().to_string();
+        call(&state, "start", json!({"runId": run_id, "idempotencyKey": "start"})).await;
+        // The worker's finished turn reaches the engine through the server's emitter.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let run = loop {
+            let run = call(&state, "get", json!({"runId": run_id})).await;
+            if run["state"] == "completed" { break run; }
+            assert!(std::time::Instant::now() < deadline, "run did not finish: {run}");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        let worker = run["nodes"].as_array().unwrap().iter().find(|node| node["nodeId"] == "build").unwrap();
+        let worker_id = worker["ownedId"].as_str().unwrap();
+        assert!(state.manager.store().get_session(worker_id).unwrap().is_some(), "the worker lives in the remote store");
+        state.manager.shutdown().await;
+        drop(state);
+
+        // A restarted server reads the same run from its own store and prompts nobody again.
+        let state = open();
+        let runs = call(&state, "list", json!({})).await;
+        assert_eq!(runs.as_array().unwrap().len(), 1);
+        assert_eq!(runs[0]["id"], run_id);
+        assert_eq!(runs[0]["state"], "completed");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let prompts = std::fs::read_to_string(&log).unwrap().matches("\"method\":\"session/prompt\"").count();
+        assert_eq!(prompts, 1);
+        state.manager.shutdown().await;
+        drop(state);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn restart_is_accepted_while_conversations_are_running() {
         let directory = std::env::temp_dir().join(format!("assembly-busy-restart-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
@@ -4874,6 +5004,7 @@ mod provider_restart_tests {
         let _busy = manager.begin_test_authentication();
         assert!(manager.has_pending_provider_work());
         let state = ServerState {
+            workflow: crate::workflow::WorkflowEngine::managed(manager.clone(), manager.store_handle()),
             manager, data_dir: directory.clone(), token: Arc::from("test"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),

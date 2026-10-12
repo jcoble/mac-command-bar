@@ -51,9 +51,11 @@
   interface Props {
     visible: boolean;
     root: string;
+    /** The remote profile whose engine runs this project's workflows; null for this Mac. */
+    machine: string | null;
   }
 
-  let { visible, root }: Props = $props();
+  let { visible, root, machine }: Props = $props();
   let composing = $state(false);
   let taskKey = $state('');
   let taskTitle = $state('');
@@ -125,13 +127,15 @@
     if (!visible) return;
     const controller = new AbortController();
     const generation = ++loadGeneration;
+    const owner = machine;
     const stop = untrack(() => subscribeWorkflowSnapshots((snapshot) => {
-      if (controller.signal.aborted || generation !== loadGeneration) return;
+      // These are this Mac's runs; a remote machine's runs are read from it.
+      if (controller.signal.aborted || generation !== loadGeneration || owner) return;
       if (Array.isArray(snapshot)) applyWorkflowSnapshots(snapshot);
       else upsertWorkflowSnapshot(snapshot);
     }));
     void refresh(controller.signal, generation);
-    void loadWorkflowFiles(root, controller.signal);
+    void loadWorkflowFiles(root, owner, controller.signal);
     return () => {
       controller.abort();
       actionController?.abort();
@@ -142,10 +146,10 @@
     };
   });
 
-  async function loadWorkflowFiles(repoRoot: string, signal: AbortSignal): Promise<void> {
+  async function loadWorkflowFiles(repoRoot: string, owner: string | null, signal: AbortSignal): Promise<void> {
     if (!repoRoot) return;
     try {
-      const files = await listWorkflowFiles(repoRoot);
+      const files = await listWorkflowFiles(repoRoot, owner);
       if (signal.aborted || !files) return;
       workflowFiles = files;
       if (!files.includes(workflowPath)) workflowPath = files[0] ?? '';
@@ -236,7 +240,7 @@
   async function refresh(signal: AbortSignal, generation = loadGeneration): Promise<void> {
     beginWorkflowLoad();
     try {
-      const snapshots = await listWorkflowRuns();
+      const snapshots = await listWorkflowRuns(machine);
       if (signal.aborted || generation !== loadGeneration) return;
       applyWorkflowSnapshots(snapshots);
       if (!workflowState.selectedWorkflowRunId && snapshots?.length) {
@@ -285,9 +289,9 @@
         task,
         input: {},
         idempotencyKey: key('create')
-      });
+      }, machine);
       if (!created) return null;
-      const started = await startWorkflowRun({ runId: created.id, idempotencyKey: key('start') });
+      const started = await startWorkflowRun({ runId: created.id, idempotencyKey: key('start') }, machine);
       return started ?? created;
     });
     if (!workflowState.error) {
@@ -435,14 +439,14 @@
 
             <div class="mt-3 flex flex-wrap gap-2 border-t border-border pt-3">
               {#if selected.state === 'draft' || selected.state === 'queued'}
-                <Button size="sm" disabled={busy !== null} onclick={() => void control('Start', () => startWorkflowRun({ runId: selected.id, idempotencyKey: key('start') }))}><Play />Start</Button>
+                <Button size="sm" disabled={busy !== null} onclick={() => void control('Start', () => startWorkflowRun({ runId: selected.id, idempotencyKey: key('start') }, machine))}><Play />Start</Button>
               {:else if selected.state === 'paused'}
-                <Button size="sm" disabled={busy !== null} onclick={() => void control('Resume', () => resumeWorkflowRun({ runId: selected.id, idempotencyKey: key('resume') }))}><Play />Resume</Button>
+                <Button size="sm" disabled={busy !== null} onclick={() => void control('Resume', () => resumeWorkflowRun({ runId: selected.id, idempotencyKey: key('resume') }, machine))}><Play />Resume</Button>
               {:else if selected.state === 'running'}
-                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void control('Pause', () => pauseWorkflowRun({ runId: selected.id, idempotencyKey: key('pause') }))}><Pause />Pause after stage</Button>
+                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void control('Pause', () => pauseWorkflowRun({ runId: selected.id, idempotencyKey: key('pause') }, machine))}><Pause />Pause after stage</Button>
               {/if}
               {#if waitingNode}
-                <Button size="sm" disabled={busy !== null} onclick={() => void control('Approve', () => approveWorkflowGate({ runId: selected.id, nodeId: waitingNode.nodeId, approval: { approved: true }, idempotencyKey: key('approve') }))}><Check />Approve handoff</Button>
+                <Button size="sm" disabled={busy !== null} onclick={() => void control('Approve', () => approveWorkflowGate({ runId: selected.id, nodeId: waitingNode.nodeId, approval: { approved: true }, idempotencyKey: key('approve') }, machine))}><Check />Approve handoff</Button>
                 {#if nextNode}
                   <label class="flex h-8 items-center gap-2 rounded-lg border border-input bg-background px-2 text-xs text-muted-foreground">
                     Next
@@ -460,14 +464,14 @@
                 {/if}
               {/if}
               {#if pausedNode}
-                <Button size="sm" disabled={busy !== null} onclick={() => void control('Another round', () => answerWorkflowPause({ runId: selected.id, nodeId: pausedNode.nodeId, decision: 'another-round', reply: null, idempotencyKey: key('answer') }))}><RotateCcw />Run another round</Button>
-                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void control('Accept', () => answerWorkflowPause({ runId: selected.id, nodeId: pausedNode.nodeId, decision: 'accept', reply: null, idempotencyKey: key('answer') }))}><Check />Accept as is</Button>
+                <Button size="sm" disabled={busy !== null} onclick={() => void control('Another round', () => answerWorkflowPause({ runId: selected.id, nodeId: pausedNode.nodeId, decision: 'another-round', reply: null, idempotencyKey: key('answer') }, machine))}><RotateCcw />Run another round</Button>
+                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void control('Accept', () => answerWorkflowPause({ runId: selected.id, nodeId: pausedNode.nodeId, decision: 'accept', reply: null, idempotencyKey: key('answer') }, machine))}><Check />Accept as is</Button>
               {/if}
               {#if failedNode}
-                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void control('Retry', () => retryWorkflowNode({ runId: selected.id, nodeId: failedNode.nodeId, idempotencyKey: key('retry') }))}><RotateCcw />Retry stage</Button>
+                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void control('Retry', () => retryWorkflowNode({ runId: selected.id, nodeId: failedNode.nodeId, idempotencyKey: key('retry') }, machine))}><RotateCcw />Retry stage</Button>
               {/if}
               {#if !['completed', 'cancelled', 'failed'].includes(selected.state)}
-                <Button size="sm" variant="destructive" disabled={busy !== null} onclick={() => void control('Stop', () => cancelWorkflowRun({ runId: selected.id, idempotencyKey: key('cancel') }))}><CircleStop />Stop</Button>
+                <Button size="sm" variant="destructive" disabled={busy !== null} onclick={() => void control('Stop', () => cancelWorkflowRun({ runId: selected.id, idempotencyKey: key('cancel') }, machine))}><CircleStop />Stop</Button>
               {/if}
             </div>
           </section>

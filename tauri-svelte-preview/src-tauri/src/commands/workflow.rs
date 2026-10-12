@@ -41,15 +41,7 @@ pub(crate) async fn get_workflow_run(
 /// The repository's workflow files, as paths relative to `repo_root`.
 #[tauri::command]
 pub(crate) async fn list_workflow_files(repo_root: String) -> Result<Vec<String>, String> {
-    let directory = std::path::Path::new(&repo_root).join(".assembly/workflows");
-    let Ok(entries) = std::fs::read_dir(&directory) else { return Ok(Vec::new()) };
-    let mut files: Vec<String> = entries
-        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
-        .filter(|name| name.ends_with(".yml"))
-        .map(|name| format!(".assembly/workflows/{name}"))
-        .collect();
-    files.sort();
-    Ok(files)
+    Ok(crate::workflow::workflow_files(std::path::Path::new(&repo_root)))
 }
 
 #[tauri::command]

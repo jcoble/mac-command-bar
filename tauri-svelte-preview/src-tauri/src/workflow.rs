@@ -3531,6 +3531,48 @@ fn stable_hash(value: &str) -> String {
     format!("fnv1a64:{hash:016x}")
 }
 
+/// The repository's workflow files, as paths relative to `repo_root`.
+pub(crate) fn workflow_files(repo_root: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(repo_root.join(".assembly/workflows")) else { return Vec::new() };
+    let mut files: Vec<String> = entries
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".yml"))
+        .map(|name| format!(".assembly/workflows/{name}"))
+        .collect();
+    files.sort();
+    files
+}
+
+/// Runs one workflow command by name on this machine's engine. The remote
+/// server answers the desktop's workflow requests with it; only the owner's
+/// authenticated connection reaches it, so answers are recorded as the owner's.
+pub(crate) async fn execute_operation(engine: &WorkflowEngine, operation: &str, args: Value) -> Result<Value, String> {
+    let text = |key: &str| args[key].as_str().map(str::to_string).ok_or_else(|| format!("{key} is required"));
+    let run = match operation {
+        "listFiles" => return Ok(json!(workflow_files(Path::new(&text("repoRoot")?)))),
+        "list" => return serde_json::to_value(engine.list_runs().map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string()),
+        "get" => engine.get_run(&text("runId")?),
+        "create" => {
+            let task = serde_json::from_value(args["task"].clone()).map_err(|error| error.to_string())?;
+            let input = if args["input"].is_null() { json!({}) } else { args["input"].clone() };
+            engine.create_run_from_file(Path::new(&text("repoRoot")?), Path::new(&text("workflowPath")?),
+                task, input, text("idempotencyKey")?)
+        }
+        "start" => engine.start(&text("runId")?, &text("idempotencyKey")?).await,
+        "pause" => engine.pause(&text("runId")?, &text("idempotencyKey")?),
+        "resume" => engine.resume(&text("runId")?, &text("idempotencyKey")?).await,
+        "cancel" => engine.cancel(&text("runId")?, &text("idempotencyKey")?).await,
+        "retry" => engine.retry_node(&text("runId")?, &text("nodeId")?, &text("idempotencyKey")?).await,
+        "approveGate" => engine.approve_gate(&text("runId")?, &text("nodeId")?, args["approval"].clone(),
+            "owner", &text("idempotencyKey")?).await,
+        "answer" => engine.answer_pause(&text("runId")?, &text("nodeId")?, &text("decision")?,
+            args["reply"].as_str().map(str::to_string), "owner", &text("idempotencyKey")?).await,
+        other => return Err(format!("Unknown workflow operation {other}")),
+    };
+    serde_json::to_value(run.map_err(|error| error.to_string())?).map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

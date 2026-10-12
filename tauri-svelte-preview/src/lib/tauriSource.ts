@@ -2658,6 +2658,17 @@ export async function createWorkflowRunFromTauri(
   return invoke<WorkflowRunRecord>('create_workflow_run', { repoRoot, workflowPath, task, input, idempotencyKey });
 }
 
+/** One workflow operation on a remote machine's own engine (`remote_workflow`). */
+export async function remoteWorkflowFromTauri<T>(
+  profileId: string,
+  operation: string,
+  args: object
+): Promise<T | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  return invoke<T>('remote_workflow', { profileId, operation, args });
+}
+
 export async function listWorkflowFilesFromTauri(repoRoot: string): Promise<string[] | null> {
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
