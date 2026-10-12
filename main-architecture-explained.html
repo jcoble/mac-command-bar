@@ -1131,7 +1131,7 @@
 
         <div class="callout current">
           <p><strong>The Workflow Engine reuses this same runtime and store.</strong> Startup gives it a clone of the ACP manager and the manager’s existing <code>Arc&lt;SessionStore&gt;</code>. Workflows are orchestration above the ACP manager, not a second hidden way of talking to agents or a second database connection.</p>
-          <span class="source"><code>src-tauri/src/main.rs:5891-5903</code></span>
+          <span class="source"><code>src-tauri/src/main.rs:5892-5904</code></span>
         </div>
       </section>
 
@@ -1219,7 +1219,7 @@
 
         <div class="callout current">
           <p><strong>Resource-saving starts at launch:</strong> a hundred suspended rows in SQLite do not mean a hundred adapter processes, transcripts, or Ghostty canvas/WASM trees in WebKit. Opening the utility-terminal tab creates its view and replays a bounded tail; the first operation that needs a provider calls <code>activate</code>.</p>
-          <span class="source"><code>main.rs:5870-5903</code> · <code>manager.rs:272-322,2725-2830</code> · <code>routes/next/+page.svelte:1395-1551</code></span>
+          <span class="source"><code>main.rs:5871-5904</code> · <code>manager.rs:272-322,2725-2830</code> · <code>routes/next/+page.svelte:1395-1551</code></span>
         </div>
       </section>
 
@@ -1352,7 +1352,7 @@
         </div>
         <span class="source"><code>agent_conversation/manager.rs:5715-5822</code> (child async-task fall-through, private task count and root autonomous lifecycle) · <code>manager.rs:5862-5869</code> (parent background-task event dispatch) · <code>manager.rs:5450-5512</code> (finished reply and terminal autonomous lifecycle) · <code>manager.rs:2388,3070-3187,4188,6191</code> (prompt, close and adapter-loss termination) · <code>manager.rs:8240-8241,8293-8327</code> (private markers, wake, state reader and quiescence check) · <code>providers/acp_client.rs:569</code> (<code>backgroundSubagents</code>)</span>
 
-        <span class="source"><code>main.rs:5883-5893</code> (final exit drain) · <code>agent_conversation/manager.rs:3786-3830</code> (transport drain) · <code>providers/process.rs:233-264</code> (normal stop watchdog)</span>
+        <span class="source"><code>main.rs:5884-5894</code> (final exit drain) · <code>agent_conversation/manager.rs:3786-3830</code> (transport drain) · <code>providers/process.rs:233-264</code> (normal stop watchdog)</span>
 
         <h3>Suspension is allowed only when all of these are true</h3>
         <div class="four-up">
@@ -1493,7 +1493,7 @@
           <span class="source"><code>core/src/session_store.rs:98,2671,2681,2691</code></span>
         </div>
 
-        <p>Explicit remote disconnect preserves the local SQLite copy while advancing the profile epoch so late writes from the stopped connection are rejected. Saved snapshots and pages can be read without a connection. Removing the machine profile still purges its saved history; it is distinct from disconnect. <span class="source"><code>agent_conversation/remote.rs:932</code> · <code>agent_conversation/remote_history.rs:284</code></span></p>
+        <p>Explicit remote disconnect preserves the local SQLite copy while advancing the profile epoch so late writes from the stopped connection are rejected. Saved snapshots and pages can be read without a connection. Removing the machine profile still purges its saved history; it is distinct from disconnect. <span class="source"><code>agent_conversation/remote.rs:995</code> · <code>agent_conversation/remote_history.rs:284</code></span></p>
 
         <h3>How image attachments are made durable</h3>
         <ol class="clean">
@@ -1505,7 +1505,7 @@
           <li>The user-message event stores attachment IDs, so restart replay can reconnect timeline items to indexed files.</li>
           <li>Chat loads thumbnails; the lightbox and structured send load original bytes only on request.</li>
         </ol>
-        <span class="source"><code>attachments.rs:48-165,227-360</code> · <code>mod.rs:820-972</code> · <code>remote.rs:1550-1590,2448-2500,2680-2725</code> · <code>conversationService.ts</code> · <code>AttachmentLightbox.svelte:40-145</code></span>
+        <span class="source"><code>attachments.rs:48-165,227-360</code> · <code>mod.rs:820-972</code> · <code>remote.rs:1672-1712,2571-2624,2804-2852</code> · <code>conversationService.ts</code> · <code>AttachmentLightbox.svelte:40-145</code></span>
       </section>
 
       <section id="formats">
@@ -1785,11 +1785,11 @@
         <p>Closing or leaving the terminal tab unsubscribes output, disconnects resize observation, and disposes the Ghostty view. No hidden component, JavaScript terminal buffer, canvas, listener, timer, or per-terminal WASM allocation survives. The Rust registry retains exactly one <code>portable-pty</code> shell and a bounded 16-MiB scrollback ring under the Assembly <code>owned_id</code>. Returning finds that registry entry, creates a fresh Ghostty view, and asks Rust for only the final four MiB needed by the 8,000-line view before live output continues. The same shell therefore resumes with its variables, jobs, working directory and running command intact.</p>
         <p>Reattachment subscribes to output and awaits the existing shared native-listener registration before starting or reading that tail; abort removes its callback even if that registration is still pending. The registry assigns each appended data chunk its existing terminal generation and sequence while holding the scrollback lock, and the snapshot returns its data with the last sequence assigned to included data from that same lock, or <code>-1</code> before any data chunk. A termination frame consumes a stream sequence but does not advance this data watermark, so a queued exit cannot be discarded as already replayed. The frontend queues early envelopes, writes the snapshot once, drops only same-generation envelopes at or below its watermark, then streams later sequences and any fresh shell generation. The existing stream and scrollback command carry this metadata; there is no second replay channel or retained frontend cache.</p>
         <p>An exited PTY remains as a bounded tombstone so its final output can be rebuilt. Reopening the Terminal right-panel tab replays that final tail into the new view, retires the tombstone, and automatically starts a fresh shell in the same view. The Rust start path atomically reuses a live <code>UserPty</code> for the same owner, so overlapping mounts cannot create two. Local Assembly-session deletion closes only matching user PTYs through the existing kill-and-remove path before deleting the durable row, so a kill failure leaves the row reachable for retry; remote deletion does not touch the Mac registry, and the remote server closes its own matching shells the same way before its delete. App shutdown closes the registry. The Run panel remains separate: it requests only 64 KiB and bounds its retained plain-text tail by both 200 lines and 64 KiB.</p>
-        <span class="source"><code>tauri-svelte-preview/src-tauri/src/terminal.rs:78-330,395-465,492-585</code> · <code>tauri-svelte-preview/src-tauri/src/commands/terminal.rs:1-33</code> · <code>tauri-svelte-preview/src/lib/shell/terminalService.ts:45-116,311-322</code> · <code>tauri-svelte-preview/src/lib/shell/components/WorkspaceTerminal.svelte:120-239</code></span>
+        <span class="source"><code>tauri-svelte-preview/src-tauri/src/terminal.rs:78-339,404-474,501-594</code> · <code>tauri-svelte-preview/src-tauri/src/commands/terminal.rs:1-89</code> · <code>tauri-svelte-preview/src/lib/shell/terminalService.ts:45-116,337-348</code> · <code>tauri-svelte-preview/src/lib/shell/components/WorkspaceTerminal.svelte:122-241</code></span>
 
         <h3>A remote session's shell runs on its machine</h3>
-        <p>A remote session's folder reaches <code>start_terminal_session</code> as <code>assembly-remote://&lt;profile&gt;/&lt;path&gt;</code>. The Tauri command strips that prefix and sends the native path as a <code>TerminalStart</code> request over the session's existing authenticated WebSocket (remote protocol 16). The remote server keeps its own <code>TerminalRegistry</code> with the same reuse-by-owner and exited-shell rules, and its terminal stream publishes to a broadcast that every connected socket forwards as a <code>TerminalOutput</code> frame with its generation and sequence. The Mac prefixes the machine's terminal id as <code>assembly-remote-terminal://&lt;profile&gt;/&lt;id&gt;</code> and feeds those frames into the ordinary terminal Channel, so the tab, its replay watermark and its scrollback read work unchanged; write, resize, scrollback and close route by that prefix. The tab keeps one write in flight and sends keys typed meanwhile as the next write (<code>createTerminalInput</code>), because the server runs each request as its own task and two writes in flight could swap. A socket that falls behind the broadcast loses those chunks, and reopening the tab replays the bounded tail. A session folder that no longer exists returns "This session's folder no longer exists: &lt;path&gt;", locally or remotely, and no shell starts.</p>
-        <span class="source"><code>tauri-svelte-preview/src-tauri/src/commands/terminal.rs:1-88</code> · <code>tauri-svelte-preview/src-tauri/src/agent_conversation/remote.rs</code> (<code>RemoteTerminals</code>, <code>start_terminal</code>, <code>terminal_sink</code>, <code>execute_server_command</code>) · <code>tauri-svelte-preview/src-tauri/src/projection_streams.rs</code> (<code>with_terminal_tap</code>)</span>
+        <p>A remote session's folder reaches <code>start_terminal_session</code> as <code>assembly-remote://&lt;profile&gt;/&lt;path&gt;</code>. The Tauri command strips that prefix and sends the native path as a <code>TerminalStart</code> request over the session's existing authenticated WebSocket (remote protocol 16). The remote server keeps its own <code>TerminalRegistry</code> with the same reuse-by-owner and exited-shell rules, and its terminal stream publishes to a broadcast that every connected socket forwards as a <code>TerminalOutput</code> frame with its generation and sequence. The Mac prefixes the machine's terminal id as <code>assembly-remote-terminal://&lt;profile&gt;/&lt;id&gt;</code> and feeds those frames into the ordinary terminal Channel, so the tab, its replay watermark and its scrollback read work unchanged; write, resize, scrollback and close route by that prefix. The start carries a frontend request id, so leaving the tab while it is pending sends the existing cancel frame and the server aborts the start before it runs. The tab keeps one write in flight and sends keys typed meanwhile as the next write (<code>createTerminalInput</code>), because the server runs each request as its own task and two writes in flight could swap. A socket that falls behind the broadcast loses those chunks, and reopening the tab replays the bounded tail. A session folder that no longer exists returns "This session's folder no longer exists: &lt;path&gt;", locally or remotely, and no shell starts.</p>
+        <span class="source"><code>tauri-svelte-preview/src-tauri/src/commands/terminal.rs:1-89</code> · <code>tauri-svelte-preview/src-tauri/src/agent_conversation/remote.rs</code> (<code>RemoteTerminals</code>, <code>start_terminal</code>, <code>terminal_sink</code>, <code>execute_server_command</code>) · <code>tauri-svelte-preview/src-tauri/src/projection_streams.rs</code> (<code>with_terminal_tap</code>)</span>
       </section>
 
       <section id="accounting">
@@ -2058,7 +2058,7 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
         <p class="intro">Start with the manager and session store, then move outward to the adapter client and Svelte projection. The launcher scripts explain which executable actually runs on this machine.</p>
 
         <div class="source-map">
-          <div class="source-row"><strong>App composition</strong><code>tauri-svelte-preview/src-tauri/src/main.rs:5870-5903,6032-6064</code></div>
+          <div class="source-row"><strong>App composition</strong><code>tauri-svelte-preview/src-tauri/src/main.rs:5871-5904,6033-6065</code></div>
           <div class="source-row"><strong>Tauri commands</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/mod.rs:93-152</code></div>
           <div class="source-row"><strong>Runtime manager</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/manager.rs</code></div>
           <div class="source-row"><strong>ACP transport</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/providers/acp_client.rs</code></div>
@@ -2078,7 +2078,7 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
           <div class="source-row"><strong>Changes tab</strong><code>tauri-svelte-preview/src/lib/shell/components/GitDiffView.svelte</code> · <code>components/git/MultiFileDiff.svelte</code> · <code>src/lib/shell/git/diffRows.ts</code></div>
           <div class="source-row"><strong>Lazy syntax grammars</strong><code>tauri-svelte-preview/src/lib/shell/editor/codeMirrorLanguage.ts:20-156</code></div>
           <div class="source-row"><strong>Lazy virtual Files tree</strong><code>tauri-svelte-preview/src-tauri/src/main.rs:687-703,2128-2174</code> · <code>src/lib/shell/explorer/explorerService.ts:52-132</code> · <code>explorerStore.svelte.ts:58-169</code> · <code>panels/files/FilesPanel.svelte:72-91,167-214,489-549</code></div>
-          <div class="source-row"><strong>Terminal view lifecycle</strong><code>tauri-svelte-preview/src/lib/shell/terminalService.ts:45-116,311-322</code> · <code>tauri-svelte-preview/src/lib/shell/components/WorkspaceTerminal.svelte:120-239</code> · <code>tauri-svelte-preview/src/lib/shell/ghosttyFactory.ts:47-129</code></div>
+          <div class="source-row"><strong>Terminal view lifecycle</strong><code>tauri-svelte-preview/src/lib/shell/terminalService.ts:45-116,337-348</code> · <code>tauri-svelte-preview/src/lib/shell/components/WorkspaceTerminal.svelte:122-241</code> · <code>tauri-svelte-preview/src/lib/shell/ghosttyFactory.ts:47-129</code></div>
           <div class="source-row"><strong>Reducer and types</strong><code>tauri-svelte-preview/src/lib/shell/conversation/conversationReducer.ts</code> · <code>conversationTypes.ts</code></div>
           <div class="source-row"><strong>Timeline rendering</strong><code>tauri-svelte-preview/src/lib/shell/components/conversation/TimelineItem.svelte</code></div>
           <div class="source-row"><strong>Markdown safety</strong><code>tauri-svelte-preview/src/lib/shell/conversation/conversationMessageSafety.ts</code> · <code>ConversationMessage.svelte</code></div>

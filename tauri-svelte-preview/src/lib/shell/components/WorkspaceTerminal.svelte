@@ -189,7 +189,7 @@
         ownedId,
         cols: measured.cols,
         rows: measured.rows
-      });
+      }, signal);
       if (signal.aborted) return;
       if (!session) {
         status = 'error';
