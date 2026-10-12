@@ -384,6 +384,9 @@ pub struct AgentRuntimeManager {
     emitter: Arc<Mutex<Option<ConversationEmitter>>>,
     broker_emitter: Arc<Mutex<Option<BrokerEmitter>>>,
     broker_statuses: Arc<Mutex<HashMap<String, AgentWorkStatus>>>,
+    /// Sessions a queued message is being sent to, so a turn ending and a new
+    /// message arriving cannot send the same message twice.
+    delivering: Arc<Mutex<HashSet<String>>>,
     namer: Arc<Mutex<Option<SessionNamer>>>,
     renamed_listener: Arc<Mutex<Option<SessionRenamedListener>>>,
     activation_locks: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
@@ -452,6 +455,7 @@ impl AgentRuntimeManager {
             emitter: Arc::new(Mutex::new(None)),
             broker_emitter: Arc::new(Mutex::new(None)),
             broker_statuses: Arc::new(Mutex::new(HashMap::new())),
+            delivering: Arc::new(Mutex::new(HashSet::new())),
             namer: Arc::new(Mutex::new(None)),
             renamed_listener: Arc::new(Mutex::new(None)),
             activation_locks: Arc::new(Mutex::new(HashMap::new())),
@@ -1203,7 +1207,56 @@ impl AgentRuntimeManager {
         Ok(())
     }
 
+    /// Sends a newly queued message at once when its target is between turns.
+    /// A busy target receives it when its turn ends.
+    /// Boxed because activation hands this to the messaging endpoint, and the
+    /// send below activates again.
+    fn deliver_if_idle<'a>(&'a self, owned_id: &'a str)
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+        let generation = match self.hydrate_overlay_from_store(owned_id) {
+            Ok(true) => {
+                let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                sessions.get(owned_id).filter(|session| {
+                    session.active_turn_id.is_none()
+                        && session.permission_requests.is_empty()
+                        && session.user_input_requests.is_empty()
+                        && session.state != AgentRuntimeState::Closed
+                }).map(|session| session.generation)
+            }
+            Ok(false) => None,
+            Err(error) => {
+                crate::debug_log::stderr_log!("Could not load message target {owned_id}: {error}");
+                None
+            }
+        };
+        let Some(generation) = generation else { return };
+        if let Err(error) = self
+            .drain_broker_message_at(owned_id, generation, store_timestamp(timestamp_millis()))
+            .await
+        {
+            crate::debug_log::stderr_log!("Could not deliver broker message: {error}");
+        }
+        })
+    }
+
     async fn drain_broker_message_at(
+        &self,
+        owned_id: &str,
+        generation: u64,
+        now_ms: i64,
+    ) -> Result<bool, String> {
+        if !self.delivering.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(owned_id.to_string())
+        {
+            return Ok(false);
+        }
+        let delivered = self.drain_next_message(owned_id, generation, now_ms).await;
+        self.delivering.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(owned_id);
+        delivered
+    }
+
+    async fn drain_next_message(
         &self,
         owned_id: &str,
         generation: u64,
@@ -1881,7 +1934,11 @@ impl AgentRuntimeManager {
         };
         let endpoint = super::messaging::endpoint()?;
         let credential = endpoint.issue(owned_id);
-        endpoint.bind_store(&credential.token, &self.store);
+        let manager = self.clone();
+        endpoint.bind_store(&credential.token, &self.store, Some(Arc::new(move |target| {
+            let manager = manager.clone();
+            tauri::async_runtime::spawn(async move { manager.deliver_if_idle(&target).await });
+        })));
         let mcp_servers = vec![credential.server()];
         let shared_key = AdapterPoolKey::Shared(provider);
         let mut pools = self.adapter_pools.lock().await;
@@ -12305,51 +12362,77 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn queued_message_delivers_when_session_goes_quiescent() {
-        let fixture = fixture_manager_with_acp_session("queued_message_delivery").await;
-        let group_id = fixture
-            .manager
-            .store
-            .create_group(
-                "workflow",
-                Some("orchestrator"),
-                &[],
-            )
-            .expect("create workflow group");
+        let fixture = fixture_manager_with_acp_session("queued_message_feed").await;
         let message = fixture
             .manager
             .store
             .append_message(
-                &group_id,
+                "",
                 "worker-a",
                 &fixture.owned_id,
                 mcb_core::broker::MessageKind::Message,
                 "Review the patch",
             )
-            .expect("queue workflow message");
+            .expect("queue message");
+        let prompts = || {
+            fs::read_to_string(fixture.root.join("queued_message_feed.jsonl"))
+                .unwrap()
+                .matches(r#""method":"session/prompt""#)
+                .count()
+        };
+        let receipt = || {
+            fixture.manager.store.pending_for(&fixture.owned_id).unwrap().map(|pending| pending.id)
+        };
 
         fixture
             .manager
-            .prompt(
-                &fixture.owned_id,
-                fixture.generation,
-                test_prompt("finish current turn"),
-            )
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("finish current turn"))
             .await
             .expect("prompt starts");
-        wait_until(|| {
-            fixture
-                .manager
-                .store
-                .events_for(&group_id, None)
-                .expect("read workflow events")
-                .iter()
-                .any(|event| {
-                    event.id == message.id && event.receipt == mcb_core::broker::Receipt::Delivered
-                })
-        })
-        .await;
+        let end_first_turn = prompt_result(&fixture).await;
+        fixture.manager.deliver_if_idle(&fixture.owned_id).await;
+        assert_eq!(receipt(), Some(message.id.clone()), "a busy session keeps the message queued");
+        assert_eq!(prompts(), 1);
 
+        feed(&fixture, &[end_first_turn]);
+        wait_until(|| prompts() == 2).await;
+        wait_until(|| receipt().is_none()).await;
+        assert_eq!(fixture.manager.store.message_status(&message.id, "worker-a").unwrap(), "delivered");
         let expected = "[message from worker-a]\nReview the patch";
+        let snapshot = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .expect("read snapshot")
+            .expect("session exists");
+        assert_eq!(snapshot.events.iter().filter(|event| matches!(
+            &event.payload,
+            AgentConversationPayload::UserMessage { text, .. } if text == expected
+        )).count(), 1);
+
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn idle_session_receives_a_message_without_waiting_for_a_turn() {
+        let fixture = fixture_manager_with_acp_session("idle_message_delivery").await;
+        let message = fixture
+            .manager
+            .store
+            .append_message(
+                "",
+                "worker-a",
+                &fixture.owned_id,
+                mcb_core::broker::MessageKind::Message,
+                "Are you free?",
+            )
+            .expect("queue message");
+        fixture.manager.deliver_if_idle(&fixture.owned_id).await;
+        assert_eq!(fixture.manager.store.message_status(&message.id, "worker-a").unwrap(), "delivered");
         let snapshot = fixture
             .manager
             .snapshot(&fixture.owned_id)
@@ -12357,9 +12440,8 @@ mod tests {
             .expect("session exists");
         assert!(snapshot.events.iter().any(|event| matches!(
             &event.payload,
-            AgentConversationPayload::UserMessage { text, .. } if text == expected
+            AgentConversationPayload::UserMessage { text, .. } if text == "[message from worker-a]\nAre you free?"
         )));
-
         fixture
             .manager
             .close(&fixture.owned_id, fixture.generation)

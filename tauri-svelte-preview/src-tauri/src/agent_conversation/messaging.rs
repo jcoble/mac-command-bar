@@ -12,9 +12,13 @@ impl SessionCredential {
     }
 }
 
+/// Starts delivery to a session that was just sent a message.
+pub type Wake = Arc<dyn Fn(String) + Send + Sync>;
+type Caller = (String, Weak<SessionStore>, Option<Wake>);
+
 pub struct MessagingEndpoint {
     url: String,
-    callers: Mutex<HashMap<String, (String, Weak<SessionStore>)>>,
+    callers: Mutex<HashMap<String, Caller>>,
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
@@ -41,31 +45,32 @@ impl MessagingEndpoint {
 
     pub fn issue(&self, owned_id: &str) -> SessionCredential {
         let mut callers = self.callers.lock().unwrap();
-        let token = callers.iter().find(|(_, (id, _))| id.as_str() == owned_id).map(|(token, _)| token.clone())
+        let token = callers.iter().find(|(_, (id, _, _))| id.as_str() == owned_id).map(|(token, _)| token.clone())
             .unwrap_or_else(|| {
                 let token = uuid::Uuid::new_v4().to_string();
-                callers.insert(token.clone(), (owned_id.to_string(), Weak::new()));
+                callers.insert(token.clone(), (owned_id.to_string(), Weak::new(), None));
                 token
             });
         SessionCredential { url: self.url.clone(), token }
     }
 
-    pub fn bind_store(&self, token: &str, store: &Arc<SessionStore>) {
-        if let Some((_, bound)) = self.callers.lock().unwrap().get_mut(token) {
+    pub fn bind_store(&self, token: &str, store: &Arc<SessionStore>, wake: Option<Wake>) {
+        if let Some((_, bound, bound_wake)) = self.callers.lock().unwrap().get_mut(token) {
             *bound = Arc::downgrade(store);
+            *bound_wake = wake;
         }
     }
 
     pub fn revoke(&self, owned_id: &str) {
-        self.callers.lock().unwrap().retain(|_, (id, _)| id != owned_id);
+        self.callers.lock().unwrap().retain(|_, (id, _, _)| id != owned_id);
     }
 
-    fn caller(&self, token: &str) -> Result<(String, Weak<SessionStore>), String> {
+    fn caller(&self, token: &str) -> Result<Caller, String> {
         self.callers.lock().unwrap().get(token).cloned().ok_or_else(|| "Unauthorized".into())
     }
 
     pub fn handle(&self, token: &str, tool_call: Value) -> Result<Value, String> {
-        let (owned_id, store) = self.caller(token)?;
+        let (owned_id, store, wake) = self.caller(token)?;
         let store = store.upgrade().ok_or("Session store unavailable")?;
         match tool_call["name"].as_str() {
             Some("list_sessions") => {
@@ -79,7 +84,13 @@ impl MessagingEndpoint {
                 let target = store.resolve_session_name(to).map_err(|error| error.to_string())?;
                 let message = store.append_message("", &owned_id, &target, MessageKind::Message, text)
                     .map_err(|error| error.to_string())?;
+                if let Some(wake) = wake { wake(target); }
                 Ok(json!({"content":[{"type":"text","text":json!({"id":message.id,"status":"queued"}).to_string()}]}))
+            }
+            Some("message_status") => {
+                let id = tool_call["arguments"]["id"].as_str().ok_or("id must be a message id")?;
+                let status = store.message_status(id, &owned_id).map_err(|error| error.to_string())?;
+                Ok(json!({"content":[{"type":"text","text":json!({"id":id,"status":status}).to_string()}]}))
             }
             _ => Err("Tool not allowed".into()),
         }
@@ -98,7 +109,9 @@ impl MessagingEndpoint {
                 {"name":"list_sessions","description":"List Assembly sessions on this backend.",
                  "inputSchema":{"type":"object","properties":{}}},
                 {"name":"send_message","description":"Send a message to a named Assembly session.",
-                 "inputSchema":{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}}
+                 "inputSchema":{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}},
+                {"name":"message_status","description":"Read whether a message you sent is queued, delivered or failed.",
+                 "inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}
             ]}),
             Some("tools/call") => match endpoint.handle(token, request["params"].clone()) {
                 Ok(value) => value,
@@ -142,7 +155,7 @@ mod tests {
         let endpoint = MessagingEndpoint::start().unwrap();
         let store = store();
         let caller = endpoint.issue("caller");
-        endpoint.bind_store(&caller.token, &store);
+        endpoint.bind_store(&caller.token, &store, None);
         let error = endpoint.handle(&caller.token, json!({"name":"send_message",
             "arguments":{"to":"missing","text":"hello"}})).unwrap_err();
         assert!(error.contains("Unknown session name"), "{error}");
@@ -171,8 +184,8 @@ mod tests {
         let store = store();
         let a = endpoint.issue("owned-a");
         let b = endpoint.issue("owned-b");
-        endpoint.bind_store(&a.token, &store);
-        endpoint.bind_store(&b.token, &store);
+        endpoint.bind_store(&a.token, &store, None);
+        endpoint.bind_store(&b.token, &store, None);
         for token in [None, Some("wrong")] {
             assert_eq!(call(&a, token, "tools/call", json!({"name":"send_message","arguments":{"token":b.token}})).await.status(), 401);
         }
@@ -187,6 +200,61 @@ mod tests {
         assert_eq!(call(&a, Some(&a.token), "tools/list", json!({})).await.status(), 401);
         assert_eq!(call(&b, Some(&b.token), "tools/list", json!({})).await.status(), 200);
     }
+    fn receipt(endpoint: &MessagingEndpoint, token: &str, tool: Value) -> Result<Value, String> {
+        let result = endpoint.handle(token, tool)?;
+        Ok(serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn mcp_message_status_tracks_local_receipt() {
+        use mcb_core::broker::Receipt;
+        let endpoint = MessagingEndpoint::start().unwrap();
+        let store = store();
+        let a = endpoint.issue("owned-a");
+        let b = endpoint.issue("owned-b");
+        endpoint.bind_store(&a.token, &store, None);
+        endpoint.bind_store(&b.token, &store, None);
+        let send = json!({"name":"send_message","arguments":{"to":"b","text":"hello"}});
+        let status = |id: &Value| json!({"name":"message_status","arguments":{"id":id}});
+        for (outcome, label) in [(Receipt::Delivered, "delivered"), (Receipt::Failed, "failed")] {
+            let sent = receipt(&endpoint, &a.token, send.clone()).unwrap();
+            assert_eq!(receipt(&endpoint, &a.token, status(&sent["id"])).unwrap(),
+                json!({"id":sent["id"],"status":"queued"}));
+            store.set_receipt(sent["id"].as_str().unwrap(), outcome).unwrap();
+            assert_eq!(receipt(&endpoint, &a.token, status(&sent["id"])).unwrap(),
+                json!({"id":sent["id"],"status":label}));
+            let error = receipt(&endpoint, &b.token, status(&sent["id"])).unwrap_err();
+            assert!(error.contains("Unknown message"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn mcp_send_uses_token_caller_and_rejects_approval() {
+        let endpoint = MessagingEndpoint::start().unwrap();
+        let store = store();
+        let a = endpoint.issue("owned-a");
+        endpoint.bind_store(&a.token, &store, None);
+        receipt(&endpoint, &a.token, json!({"name":"send_message",
+            "arguments":{"from":"o1","to":"b","text":"hello"}})).unwrap();
+        assert_eq!(store.pending_for("owned-b").unwrap().unwrap().from_agent, "owned-a");
+        for tool in ["approve_gate", "answer_decision", "answer_pause"] {
+            let error = endpoint.handle(&a.token, json!({"name":tool,"arguments":{}})).unwrap_err();
+            assert_eq!(error, "Tool not allowed");
+        }
+    }
+
+    #[tokio::test]
+    async fn send_message_wakes_the_target_once() {
+        let endpoint = MessagingEndpoint::start().unwrap();
+        let store = store();
+        let a = endpoint.issue("owned-a");
+        let woken = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&woken);
+        endpoint.bind_store(&a.token, &store, Some(Arc::new(move |target| sink.lock().unwrap().push(target))));
+        receipt(&endpoint, &a.token, json!({"name":"send_message","arguments":{"to":"b","text":"hello"}})).unwrap();
+        assert_eq!(*woken.lock().unwrap(), vec!["owned-b".to_string()]);
+    }
+
     #[tokio::test]
     async fn messaging_endpoint_answers_mcp_initialize_and_tools_list() {
         let endpoint = MessagingEndpoint::start().unwrap();
@@ -195,9 +263,10 @@ mod tests {
         assert_eq!(init["result"]["protocolVersion"], "2024-11-05");
         assert_eq!(init["result"]["capabilities"], json!({"tools":{}}));
         let list: Value = call(&c, Some(&c.token), "tools/list", json!({})).await.json().await.unwrap();
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 2);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 3);
         assert_eq!(list["result"]["tools"][0]["name"], "list_sessions");
         assert_eq!(list["result"]["tools"][1]["name"], "send_message");
+        assert_eq!(list["result"]["tools"][2]["name"], "message_status");
         assert_eq!(call(&c, Some(&c.token), "notifications/initialized", json!({})).await.status(), 202);
     }
 }

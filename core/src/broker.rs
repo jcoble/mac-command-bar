@@ -262,6 +262,17 @@ impl SessionStore {
         }))
     }
 
+    /// The receipt of a message the caller sent. Another sender's message reads
+    /// as unknown.
+    pub fn message_status(&self, id: &str, from: &str) -> Result<String> {
+        use rusqlite::OptionalExtension;
+        let connection = self.lock()?;
+        db("could not read the message receipt", connection.query_row(
+            "SELECT receipt FROM workflow_messages WHERE id = ? AND from_owned_id = ?",
+            [id, from], |row| row.get(0)).optional())?
+            .ok_or_else(|| StoreError::message("Unknown message"))
+    }
+
     pub fn pending_for(&self, to: &str) -> Result<Option<Envelope>> {
         use rusqlite::OptionalExtension;
         let connection = self.lock()?;
