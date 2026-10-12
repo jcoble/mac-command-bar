@@ -1334,7 +1334,7 @@ impl WorkflowEngine {
                     _ => None,
                 };
                 let Some(report) = report else {
-                    let message = format!("The reviewer must call report_review once; it called it {} times", reports.len());
+                    let message = format!("The reviewer must call report_review once; it called it {} time(s)", reports.len());
                     return self.wait_for_owner(&run_id, &node_id, "review-report", &message, None, &idempotency_key).map(Some);
                 };
                 let findings = report["findings"].as_array().cloned().unwrap_or_default();
@@ -1342,7 +1342,7 @@ impl WorkflowEngine {
                 if report["verdict"] == "pass" && findings.is_empty() {
                     self.finish_step(&run_id, &node_id, output, true, &idempotency_key)?;
                 } else {
-                    self.finish_with_findings(&run_id, &node_id, target, output, findings.len().max(1), &idempotency_key)?;
+                    self.finish_with_findings(&run_id, &node_id, target, output, findings.len().max(1), &idempotency_key).await?;
                 }
                 return self.dispatch_ready(&run_id).await.map(Some);
             }
@@ -2543,7 +2543,7 @@ impl WorkflowEngine {
     /// Records a review or check that found `count` problems. The first round,
     /// and each later round with fewer problems than the one before, sends
     /// `target` back with every step after it; otherwise the owner decides.
-    fn finish_with_findings(&self, run_id: &str, node_id: &str, target: &str, output: Value, count: usize, key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
+    async fn finish_with_findings(&self, run_id: &str, node_id: &str, target: &str, output: Value, count: usize, key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
         let run = self.require_run(run_id)?;
         if !run.nodes.iter().any(|node| node.node_id == node_id && node.state == WorkflowNodeState::Running) { return Ok(run); }
         let rounds = run.input_snapshot["rounds"][node_id].as_array().cloned().unwrap_or_default();
@@ -2567,8 +2567,16 @@ impl WorkflowEngine {
         snapshot.insert("rounds".into(), all_rounds);
         snapshot.insert("redo".into(), json!({"findings":output["findings"].as_array().cloned().unwrap_or_default(),"output":output["summary"]}));
         let run_id_owned = run.id.clone();
+        let agents: BTreeSet<_> = run.definition.nodes.iter().filter(|node| node.step.get("run").is_none()).map(|node| node.id.clone()).collect();
+        let mut live_turns = Vec::new();
         for node in run.nodes.iter_mut().filter(|node| redo_ids.contains(&node.node_id) && !matches!(node.state,
             WorkflowNodeState::Blocked | WorkflowNodeState::Ready | WorkflowNodeState::Queued | WorkflowNodeState::Skipped)) {
+            if let Some(handle) = self.deadlines.lock().unwrap().remove(&node.id) { handle.abort(); }
+            // A parallel step still working on the old round is stopped; the reporting step is already done.
+            if node.node_id != node_id && agents.contains(&node.node_id)
+                && matches!(node.state, WorkflowNodeState::Starting | WorkflowNodeState::Running) {
+                live_turns.push(node.owned_id.clone());
+            }
             if let Some(lease) = node.lease_id.take() { self.leases.release(&lease)?; }
             node.attempt += 1;
             node.id = format!("{}:{}:{}", run_id_owned, node.node_id, node.attempt);
@@ -2583,8 +2591,13 @@ impl WorkflowEngine {
             node.structured_output = None;
             node.artifacts.clear();
         }
+        if run.state == WorkflowRunState::WaitingInput && !run.nodes.iter().any(|node|
+            matches!(node.state, WorkflowNodeState::WaitingInput | WorkflowNodeState::WaitingApproval)) {
+            run.state = WorkflowRunState::Running;
+        }
         refresh_ready_and_phase(&mut run);
         self.append(&mut run, "workflow.node.redo", key, Some(node_id))?;
+        for owned_id in live_turns { self.runtime.cancel(&owned_id).await?; }
         Ok(run)
     }
 
@@ -2713,7 +2726,7 @@ impl WorkflowEngine {
         let _dispatch = self.dispatch_lock.lock().await;
         let output = json!({"commands":results,"findingCount":count,"summary":summary,"files":[]});
         match definition.step["on_fail"].as_str() {
-            Some(target) if count > 0 => self.finish_with_findings(run_id, node_id, target, output, count, &format!("result:{attempt_id}"))?,
+            Some(target) if count > 0 => self.finish_with_findings(run_id, node_id, target, output, count, &format!("result:{attempt_id}")).await?,
             _ => self.finish_step(run_id, node_id, output, count == 0, &format!("result:{attempt_id}"))?,
         };
         Ok(())
@@ -3754,6 +3767,40 @@ mod tests {
     }
 
     #[test]
+    fn redo_stops_a_parallel_reviewer_and_its_timer() {
+        let repo = RunRepo::new();
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = run_engine(runtime.clone());
+        let steps = format!("{LOOP_REVIEW}  second:\n    needs: [build]\n    review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/p.md }}\n");
+        let run = loop_run(&engine, &repo.0, &steps);
+        let both = end_turn(&engine, &run.id, "build", &[]);
+        let old_second = step_of(&both, "second").clone();
+        assert_eq!(old_second.state, WorkflowNodeState::Running);
+        assert!(engine.deadlines.lock().unwrap().contains_key(&old_second.id));
+        let run = end_turn(&engine, &run.id, "review", &[findings(1)]);
+        assert_eq!(runtime.cancelled.load(Ordering::SeqCst), 1);
+        assert!(!engine.deadlines.lock().unwrap().contains_key(&old_second.id));
+        assert_eq!((step_of(&run, "second").attempt, step_of(&run, "second").state), (2, WorkflowNodeState::Blocked));
+        assert_eq!(step_of(&run, "build").state, WorkflowNodeState::Running);
+        assert_eq!(run.state, WorkflowRunState::Running);
+    }
+
+    #[test]
+    fn redo_resumes_a_run_paused_by_the_other_reviewer() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let steps = format!("{LOOP_REVIEW}  second:\n    needs: [build]\n    review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/p.md }}\n");
+        let run = loop_run(&engine, &repo.0, &steps);
+        end_turn(&engine, &run.id, "build", &[]);
+        let paused = end_turn(&engine, &run.id, "second", &[]);
+        assert_eq!(paused.state, WorkflowRunState::WaitingInput);
+        let run = end_turn(&engine, &run.id, "review", &[findings(1)]);
+        assert_eq!(step_of(&run, "second").state, WorkflowNodeState::Blocked);
+        assert_eq!(step_of(&run, "build").state, WorkflowNodeState::Running);
+        assert_eq!(run.state, WorkflowRunState::Running);
+    }
+
+    #[test]
     fn run_step_records_each_command_and_fails_if_any_fail() {
         let repo = RunRepo::new();
         let runtime = Arc::new(FakeRuntime::default());
@@ -4533,7 +4580,8 @@ mod tests {
     fn settle(engine: &WorkflowEngine, run_id: &str) -> WorkflowRunRecord {
         for _ in 0..1000 {
             let run = engine.require_run(run_id).unwrap();
-            let busy = run.nodes.iter().any(|node| node.state == WorkflowNodeState::Running
+            // A finished run step schedules the next steps just after it records its result.
+            let busy = run.nodes.iter().any(|node| node.state == WorkflowNodeState::Ready || node.state == WorkflowNodeState::Running
                 && run.definition.nodes.iter().any(|definition| definition.id == node.node_id && definition.step.get("run").is_some()));
             if !busy { return run; }
             std::thread::sleep(std::time::Duration::from_millis(20));
