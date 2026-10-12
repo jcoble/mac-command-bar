@@ -3782,6 +3782,7 @@ mod tests {
             ("name: S\nsteps:\n  build: { agent: { model: x }, prompt: prompts/build.md }\n".to_string(), "Step `build` needs a string agent.provider"),
             ("name: S\nsteps:\n  build: { agent: { provider: 3 }, prompt: prompts/build.md }\n".to_string(), "Step `build` needs a string agent.provider"),
             (reviewer("of: build, agent: { model: x }, "), "Review step `review` needs a string review.agent.provider"),
+            (reviewer("of: build, agent: { provider: [codex] }, "), "Review step `review` needs a string review.agent.provider"),
             (reviewer("agent: { provider: codex }, "), "Review step `review` needs review.of"),
             (format!("{head}  review: {{ review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/build.md }} }}\n"), "Step `review`: of must name a step it needs"),
             (format!("{head}  checks: {{ needs: [build], run: [ls], on_fail: checks }}\n"), "Step `checks`: on_fail must name a step it needs"),

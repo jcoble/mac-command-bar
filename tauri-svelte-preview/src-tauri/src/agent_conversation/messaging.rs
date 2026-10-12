@@ -144,7 +144,7 @@ impl MessagingEndpoint {
                 match crate::workflow::WorkflowEngine::validate_file(std::path::Path::new(&project), std::path::Path::new(path)) {
                     Ok(definition) => Ok(text(workflow_summary(&definition))),
                     Err(crate::workflow::WorkflowError::InvalidDefinition(message)) => Err(message),
-                    Err(error) => Err(error.to_string()),
+                    Err(error) => Err(format!("{error:?}")),
                 }
             }
             _ => Err("Tool not allowed".into()),
@@ -377,7 +377,11 @@ mod tests {
         endpoint.bind_store(&a.token, &store, None);
         let summary = tool_text(&endpoint, &a.token, check(".assembly/workflows/flow.yml")).await.unwrap();
         assert_eq!(summary, "ok\nbuild agent\nchecks run needs=build on_fail=build\nreview review needs=checks of=build");
-        assert!(store.pending_for("owned-a").unwrap().is_none());
+        // A failed check reaches the agent as an MCP tool error.
+        std::fs::write(root.join(".assembly/workflows/flow.yml"), "name: Flow\nsteps:\n  build: { run: [] }\n").unwrap();
+        let result: Value = call(&a, Some(&a.token), "tools/call", check(".assembly/workflows/flow.yml")).await.json().await.unwrap();
+        assert_eq!(result["result"]["isError"], true);
+        assert_eq!(result["result"]["content"][0]["text"], "Step `build`: run must be a non-empty list of commands");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -406,6 +410,8 @@ mod tests {
         std::os::unix::fs::symlink(second.join(".assembly/workflows/prompts/build.md"), first.join(".assembly/workflows/prompts/linked.md")).unwrap();
         std::fs::write(first.join(".assembly/workflows/flow.yml"), "name: Flow\nsteps:\n  build: { agent: { provider: codex }, prompt: prompts/linked.md }\n").unwrap();
         assert_eq!(tool_text(&endpoint, &a.token, check(path)).await.unwrap_err(), "File path escapes its directory");
+        std::os::unix::fs::symlink(second.join(path), first.join(".assembly/workflows/linked.yml")).unwrap();
+        assert_eq!(tool_text(&endpoint, &a.token, check(".assembly/workflows/linked.yml")).await.unwrap_err(), "File path escapes its directory");
         std::fs::remove_dir_all(first).unwrap();
         std::fs::remove_dir_all(second).unwrap();
     }

@@ -44,8 +44,8 @@ The loader constructs these. Unknown keys at this level fail validation.
 | `required` | boolean | Optional; no loader default | Declares that the caller must supply the input. |
 | `default` | YAML value | Optional; no default | Declares the value to use when the caller omits it. |
 
-Task 7 saves input definitions without checking `required` or filling `default`.
-Supply needed values explicitly until the start caller applies them. `task` is a
+`default` is filled into the run's input when the caller omits that input;
+`required` is saved but not enforced yet. `task` is a
 special input: start supplies `{key, title, body}` as a snapshot and the loader
 inserts it into run input, replacing a supplied `task` value. The backend needs
 no Notion token. `i_merge` is a boolean; use `false` unless the owner selects
@@ -55,9 +55,9 @@ no Notion token. `i_merge` is a boolean; use `false` unless the owner selects
 |---|---|---|---|
 | `max_sessions` | nonnegative integer | Optional; 3 | Maximum active agents shared across runs on the owning backend. Use a positive value. |
 | `step_timeout_minutes` | nonnegative integer | Optional; 60 | Per-step timeout, converted to seconds; excessive values are rejected. Use a positive value. |
-| `max_rounds` | integer | Optional; write 5 explicitly | Review/check loop ceiling. Task 7 saves it without applying a default; the loop contract caps rounds at 5. |
+| `max_rounds` | positive integer | Optional; 5 | Most redo rounds one review or check may cause before the run pauses for the owner. |
 
-Task 7 also falls back to 3/60 for wrongly typed values; write proper integers.
+Wrongly typed limits fall back to their defaults; write proper integers.
 
 ## Step fields and the four kinds
 
@@ -70,7 +70,7 @@ Each step has exactly one of `agent`, `run`, `review`, `gate`.
 | `prompt` | relative file path string | Required for an agent step; no default | Reads and snapshots the prompt text; fills template values at execution. |
 | `run` | non-empty list of shell command strings | Required for a command step; no default | Runs every command separately from the run worktree root; all must exit 0. Saves exit codes/output. |
 | `review` | mapping | Required for a review step | Starts a fresh reviewer; requires exactly one valid `report_review` tool call. |
-| `gate` | YAML value (opaque to Task 7) | Required for a gate step; no default | Pauses for an owner answer. Task 7 preserves this value; its nested format is not yet defined, so do not invent gate fields. |
+| `gate` | YAML value | Required for a gate step; no default | Pauses for an owner answer. The value is kept as written; its nested format is not defined yet, so do not invent gate fields. |
 | `on_fail` | step ID string | Optional; no redo target | Must name a direct/transitive dependency; a failed command step sends it back to redo with output. |
 | `expect_files` | list of file pattern strings | Optional; no expected files | Checks agent output files; missing files fail the step. |
 | `if` | template condition string | Optional; no condition | False skips the step without dispatching it. |
@@ -81,7 +81,7 @@ Each step has exactly one of `agent`, `run`, `review`, `gate`.
 | `agent.provider` | string | Required; missing/non-string provider is rejected | Selects the provider; use `codex` or `claude`. |
 | `agent.model` | string | Optional; no selection (`null` internally) | Selects an advertised provider model when given; omission keeps provider selection. |
 | `review.of` | step ID string | Required; missing `of` is rejected | Findings redo this step. It must be a direct or transitive dependency. |
-| `review.agent` | mapping with `provider`, optional `model` | Required for usable dispatch; no default | Selects the reviewer provider/model. |
+| `review.agent` | mapping with `provider`, optional `model` | Required; `provider` must be a string | Selects the reviewer provider/model. |
 | `review.prompt` | relative file path string | Required; no default | Reads the review prompt beside the YAML and snapshots its contents. |
 
 In a review, put `agent` and `prompt` inside `review`, not at step level.
@@ -123,11 +123,10 @@ The workflow's merge rule is the owner's standing authorization for that run:
 merge only after checks pass, final review passes and proof is attached, then
 send a summary. With `i_merge: true`, stop with the PR open. Use the condition
 below and keep merge non-repeatable so restart uncertainty pauses for the owner.
-These are slice-4 execution rules, not guarantees supplied by the Task 7 parser.
-The PR step must attach reachable proof before the final review; merge must use
-the slice-4 guarded command that checks the current PR head and D6 facts. The
-short commands below illustrate the graph and require that runtime guard; raw
-`gh pr merge` alone does not enforce it. Refresh the engine-written PR body with
+Assembly does not enforce these rules yet; the workflow's steps must follow them.
+The PR step must attach reachable proof before the final review. The merge step
+should check that the PR head is the one that was reviewed and that checks pass;
+raw `gh pr merge` alone does not check either. Refresh the engine-written PR body with
 the final verdict before merge or the “I'll merge” handoff.
 An authoring request or agent message alone does not authorize a merge.
 
@@ -153,7 +152,7 @@ with the project's real checks.
 
 ## Example 2: dev pipeline
 
-Write `.assembly/workflows/dev-pipeline.yml` (spec §5.1, with D6 final review):
+Write `.assembly/workflows/dev-pipeline.yml` (with a final review before merge):
 Model strings reproduce the spec; select installed models before running it.
 
 ```yaml
@@ -272,4 +271,4 @@ steps:
 3. Use a separate review step per reviewer, with the same `of` for shared work.
 4. Write the YAML and every referenced prompt inside `.assembly/workflows/`.
 5. Keep side-effect commands non-repeatable; state any runtime feature still pending.
-6. call `check_workflow(path)` and fix every error before showing the owner
+6. Call `check_workflow(path)` and fix every error before showing the owner
