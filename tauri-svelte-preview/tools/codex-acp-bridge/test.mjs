@@ -515,6 +515,29 @@ tests.push([
 ]);
 
 tests.push([
+  "session_new_and_resume_forward_mcp_server",
+  async () => {
+    const mock = createConfigMock();
+    const peer = new AcpPeer("normal", "allow", mock.executable);
+    const mcpServers = [{ name: "assembly", command: "python3", args: ["dummy.py"], env: [{ name: "TOKEN", value: "test-only" }] }];
+    const expected = { mcp_servers: { assembly: { command: "python3", args: ["dummy.py"], env: { TOKEN: "test-only" } } } };
+    try {
+      await peer.initialize();
+      const session = await peer.request("session/new", { cwd: directory, mcpServers });
+      await peer.request("session/load", { sessionId: session.sessionId, cwd: directory, mcpServers });
+      await peer.request("session/resume", { sessionId: session.sessionId, cwd: directory, mcpServers });
+      const frames = mock.frames().filter((frame) => ["thread/start", "thread/resume"].includes(frame.method));
+      assert.equal(frames.length, 3);
+      for (const frame of frames) assert.deepEqual(frame.params.config, expected);
+      await peer.close(session.sessionId);
+    } finally {
+      if (peer.child.exitCode === null && peer.child.signalCode === null) peer.child.kill("SIGTERM");
+      mock.cleanup();
+    }
+  },
+]);
+
+tests.push([
   "session/load and session/resume replay completed turns before their results with stable ids",
   async () => {
     const mock = createReplayMock();

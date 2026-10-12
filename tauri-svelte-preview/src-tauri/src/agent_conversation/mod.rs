@@ -6,6 +6,7 @@ pub mod capabilities;
 pub mod handoff;
 mod legacy_import;
 pub mod manager;
+pub mod messaging;
 pub mod prompt_content;
 pub mod protocol;
 pub mod providers;

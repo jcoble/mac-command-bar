@@ -5331,6 +5331,10 @@ fn shutdown_agent_runtimes_on_exit(manager: &agent_conversation::manager::AgentR
 
 fn main() {
     install_panic_hook();
+    if let Err(error) = agent_conversation::messaging::endpoint() {
+        crate::debug_log::stderr_log!("Assembly messaging endpoint failed: {error}");
+        std::process::exit(1);
+    }
     if std::env::args().any(|argument| argument == "--assembly-server") {
         if let Err(error) = agent_conversation::remote::run_server_from_environment() {
             crate::debug_log::stderr_log!("Assembly remote server failed: {error}");

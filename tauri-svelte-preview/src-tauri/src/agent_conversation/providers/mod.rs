@@ -36,12 +36,14 @@ pub struct InitializeAgentInput {
 #[derive(Clone, Debug)]
 pub struct NewAgentSession {
     pub cwd: PathBuf,
+    pub mcp_servers: Vec<agent_client_protocol::schema::v1::McpServer>,
 }
 
 #[derive(Clone, Debug)]
 pub struct LoadAgentSession {
     pub cwd: PathBuf,
     pub native_session_id: String,
+    pub mcp_servers: Vec<agent_client_protocol::schema::v1::McpServer>,
 }
 
 pub type ResumeAgentSession = LoadAgentSession;

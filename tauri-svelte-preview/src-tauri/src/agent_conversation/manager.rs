@@ -1031,7 +1031,7 @@ impl AgentRuntimeManager {
             );
             let result = async {
                 adapter.initialize(InitializeAgentInput { provider }).await?;
-                let started = adapter.new_session(NewAgentSession { cwd }).await?;
+                let started = adapter.new_session(NewAgentSession { cwd, mcp_servers: vec![] }).await?;
                 let mut config = started.config;
                 // A model's default effort is only reported while it is the
                 // session's model, so each other model is selected once here.
@@ -1153,21 +1153,17 @@ impl AgentRuntimeManager {
                 session.state == AgentRuntimeState::Closed,
             )
         };
-        let Some((group_id, _, orchestrator, _)) = self
+        let Some((group_id, orchestrator)) = self
             .store
-            .list_open_groups()
+            .open_group_for(owned_id)
             .map_err(|error| error.to_string())?
-            .into_iter()
-            .find(|(_, _, _, members)| members.iter().any(|member| member == owned_id))
         else {
             return Ok(());
         };
         let decision_pending = self
             .store
-            .pending_for(&group_id, owned_id)
-            .map_err(|error| error.to_string())?
-            .iter()
-            .any(|envelope| envelope.kind == mcb_core::broker::MessageKind::DecisionRequest);
+            .decision_pending_for(owned_id)
+            .map_err(|error| error.to_string())?;
         let status = status_for(
             turn_active,
             awaiting_permission_or_input,
@@ -1213,35 +1209,24 @@ impl AgentRuntimeManager {
         generation: u64,
         now_ms: i64,
     ) -> Result<bool, String> {
-        let Some((group_id, _, _, _)) = self
-            .store
-            .list_open_groups()
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .find(|(_, _, _, members)| members.iter().any(|member| member == owned_id))
-        else {
-            return Ok(false);
-        };
         let Some(message) = self
             .store
-            .pending_for(&group_id, owned_id)
+            .pending_for(owned_id)
             .map_err(|error| error.to_string())?
-            .into_iter()
-            .next()
         else {
             return Ok(false);
         };
         if now_ms.saturating_sub(message.created_at_ms) > BROKER_MESSAGE_TTL_MS {
             self.store
-                .set_receipt(&message.id, mcb_core::broker::Receipt::Expired)
+                .set_receipt(&message.id, mcb_core::broker::Receipt::Failed)
                 .map_err(|error| error.to_string())?;
             return Ok(false);
         }
 
         let prompt = AgentPrompt {
             text: format!(
-                "[workflow message from {}]\n{}",
-                message.from_agent, message.body
+                "[message from {}]\n{}",
+                message.sender_name, message.body
             ),
             images: Vec::new(),
             attachment_ids: Vec::new(),
@@ -1894,6 +1879,10 @@ impl AgentRuntimeManager {
                     never_had_a_turn || !provider_holds_session(provider, native_session_id)
                 })
         };
+        let endpoint = super::messaging::endpoint()?;
+        let credential = endpoint.issue(owned_id);
+        endpoint.bind_store(&credential.token, &self.store);
+        let mcp_servers = vec![credential.server()];
         let shared_key = AdapterPoolKey::Shared(provider);
         let mut pools = self.adapter_pools.lock().await;
         let (capabilities, started_result, runtime, transport, inbound, pool_key, started_fresh) =
@@ -1905,20 +1894,20 @@ impl AgentRuntimeManager {
                     let attempted = match native_session_id.as_deref() {
                         Some(native_session_id) => match native_session_mode {
                             AgentNativeSessionMode::Resume => {
-                                runtime.resume_session_multi(&cwd, native_session_id).await
+                                runtime.resume_session_multi(&cwd, native_session_id, mcp_servers.clone()).await
                             }
                             AgentNativeSessionMode::Load => {
-                                runtime.load_session_multi(&cwd, native_session_id).await
+                                runtime.load_session_multi(&cwd, native_session_id, mcp_servers.clone()).await
                             }
                         },
-                        None => runtime.new_session_multi(&cwd).await,
+                        None => runtime.new_session_multi(&cwd, mcp_servers.clone()).await,
                     };
                     if attempted.is_err() && can_start_fresh() {
                         crate::debug_log::stderr_log!(
                             "{owned_id}: stored native session holds nothing to resume; starting fresh"
                         );
                         started_fresh = true;
-                        runtime.new_session_multi(&cwd).await
+                        runtime.new_session_multi(&cwd, mcp_servers.clone()).await
                     } else {
                         attempted
                     }
@@ -1953,6 +1942,7 @@ impl AgentRuntimeManager {
                         let input = LoadAgentSession {
                             cwd: cwd.clone(),
                             native_session_id: native_session_id.clone(),
+                            mcp_servers: mcp_servers.clone(),
                         };
                         match native_session_mode {
                             AgentNativeSessionMode::Resume => adapter.resume_session(input).await,
@@ -1961,7 +1951,7 @@ impl AgentRuntimeManager {
                     }
                     None => {
                         adapter
-                            .new_session(NewAgentSession { cwd: cwd.clone() })
+                            .new_session(NewAgentSession { cwd: cwd.clone(), mcp_servers: mcp_servers.clone() })
                             .await
                     }
                 };
@@ -1971,7 +1961,7 @@ impl AgentRuntimeManager {
                     );
                     (
                         adapter
-                            .new_session(NewAgentSession { cwd: cwd.clone() })
+                            .new_session(NewAgentSession { cwd: cwd.clone(), mcp_servers: mcp_servers.clone() })
                             .await,
                         true,
                     )
@@ -4268,6 +4258,7 @@ impl AgentRuntimeManager {
         self.store
             .delete_session(&owned_id)
             .map_err(|error| error.to_string())?;
+        super::messaging::endpoint()?.revoke(&owned_id);
         Ok(true)
     }
 
@@ -12321,7 +12312,7 @@ mod tests {
             .create_group(
                 "workflow",
                 Some("orchestrator"),
-                &[fixture.owned_id.clone()],
+                &[],
             )
             .expect("create workflow group");
         let message = fixture
@@ -12358,7 +12349,7 @@ mod tests {
         })
         .await;
 
-        let expected = "[workflow message from worker-a]\nReview the patch";
+        let expected = "[message from worker-a]\nReview the patch";
         let snapshot = fixture
             .manager
             .snapshot(&fixture.owned_id)
@@ -12378,7 +12369,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn stale_message_expires_instead_of_delivering() {
+    async fn stale_message_fails_instead_of_delivering() {
         let fixture = fixture_manager_with_acp_session("stale_message_expiry").await;
         let group_id = fixture
             .manager
@@ -12419,7 +12410,7 @@ mod tests {
             .into_iter()
             .find(|event| event.id == message.id)
             .expect("queued message remains stored");
-        assert_eq!(stored.receipt, mcb_core::broker::Receipt::Expired);
+        assert_eq!(stored.receipt, mcb_core::broker::Receipt::Failed);
         let log = fs::read_to_string(fixture.root.join("stale_message_expiry.jsonl"))
             .expect("read fixture log");
         assert!(!log.contains("Too old to deliver"));

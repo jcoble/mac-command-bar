@@ -78,9 +78,10 @@ impl AcpRuntimeAdapter {
     pub async fn new_session_multi(
         &mut self,
         cwd: &std::path::Path,
+        mcp_servers: Vec<agent_client_protocol::schema::v1::McpServer>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         let client = self.client_mut()?;
-        let native_session_id = client.new_session_multi(cwd).await?;
+        let native_session_id = client.new_session_multi(cwd, mcp_servers).await?;
         Ok(StartedAgentSession {
             config: client.config_on(&native_session_id)?,
             commands: client.commands_on(&native_session_id)?,
@@ -92,9 +93,10 @@ impl AcpRuntimeAdapter {
         &mut self,
         cwd: &std::path::Path,
         native_session_id: &str,
+        mcp_servers: Vec<agent_client_protocol::schema::v1::McpServer>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         let client = self.client_mut()?;
-        let native_session_id = client.resume_session_multi(cwd, native_session_id).await?;
+        let native_session_id = client.resume_session_multi(cwd, native_session_id, mcp_servers).await?;
         Ok(StartedAgentSession {
             config: client.config_on(&native_session_id)?,
             commands: client.commands_on(&native_session_id)?,
@@ -106,9 +108,10 @@ impl AcpRuntimeAdapter {
         &mut self,
         cwd: &std::path::Path,
         native_session_id: &str,
+        mcp_servers: Vec<agent_client_protocol::schema::v1::McpServer>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         let client = self.client_mut()?;
-        let native_session_id = client.load_session_multi(cwd, native_session_id).await?;
+        let native_session_id = client.load_session_multi(cwd, native_session_id, mcp_servers).await?;
         Ok(StartedAgentSession {
             config: client.config_on(&native_session_id)?,
             commands: client.commands_on(&native_session_id)?,
@@ -176,14 +179,14 @@ impl AgentRuntimeAdapter for AcpRuntimeAdapter {
         &mut self,
         input: NewAgentSession,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
-        self.client_mut()?.new_session(&input.cwd).await
+        self.client_mut()?.new_session(&input.cwd, input.mcp_servers).await
     }
     async fn load_session(
         &mut self,
         input: LoadAgentSession,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         self.client_mut()?
-            .load_session(&input.cwd, &input.native_session_id)
+            .load_session(&input.cwd, &input.native_session_id, input.mcp_servers)
             .await
     }
     async fn resume_session(
@@ -191,7 +194,7 @@ impl AgentRuntimeAdapter for AcpRuntimeAdapter {
         input: ResumeAgentSession,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         self.client_mut()?
-            .resume_session(&input.cwd, &input.native_session_id)
+            .resume_session(&input.cwd, &input.native_session_id, input.mcp_servers)
             .await
     }
     async fn detach_session(&mut self) -> Result<(), AgentRuntimeError> {
@@ -278,27 +281,30 @@ impl StructuredRuntimeHandle {
     pub async fn new_session_multi(
         &mut self,
         cwd: &std::path::Path,
+        mcp_servers: Vec<agent_client_protocol::schema::v1::McpServer>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         match self {
-            Self::Acp(adapter) => adapter.new_session_multi(cwd).await,
+            Self::Acp(adapter) => adapter.new_session_multi(cwd, mcp_servers).await,
         }
     }
     pub async fn resume_session_multi(
         &mut self,
         cwd: &std::path::Path,
         native_session_id: &str,
+        mcp_servers: Vec<agent_client_protocol::schema::v1::McpServer>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         match self {
-            Self::Acp(adapter) => adapter.resume_session_multi(cwd, native_session_id).await,
+            Self::Acp(adapter) => adapter.resume_session_multi(cwd, native_session_id, mcp_servers).await,
         }
     }
     pub async fn load_session_multi(
         &mut self,
         cwd: &std::path::Path,
         native_session_id: &str,
+        mcp_servers: Vec<agent_client_protocol::schema::v1::McpServer>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         match self {
-            Self::Acp(adapter) => adapter.load_session_multi(cwd, native_session_id).await,
+            Self::Acp(adapter) => adapter.load_session_multi(cwd, native_session_id, mcp_servers).await,
         }
     }
     pub async fn close_native_session(
