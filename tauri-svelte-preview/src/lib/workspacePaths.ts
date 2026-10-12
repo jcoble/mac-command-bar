@@ -37,6 +37,12 @@ export function sessionWorkspaceRoot(
   return path && session.remoteProfileId ? remoteWorkspacePath(session.remoteProfileId, path) : '';
 }
 
+/** The shell line that opens a login shell in `path` on a saved machine; the terminal runs it on the Mac. */
+export function remoteTerminalCommand(sshTarget: string, path: string): string {
+  const quote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
+  return `ssh -t -- ${quote(sshTarget)} ${quote(`cd ${quote(path)}; exec "$SHELL" -l`)}`;
+}
+
 const pathKeys = new Set(['root', 'path', 'directory', 'source', 'target', 'roots', 'paths', 'projectRoot', 'projectPath', 'worktreePath', 'checkoutPath', 'gitRoot', 'localRoot', 'projectFilter']);
 /** Hosted PR commands wrap their root in one request object. */
 const nestedRequestCommands = new Set(['list_github_pull_requests', 'read_github_pull_request_file', 'submit_github_pull_request_review', 'reply_github_pull_request_comment', 'comment_github_pull_request', 'merge_github_pull_request']);

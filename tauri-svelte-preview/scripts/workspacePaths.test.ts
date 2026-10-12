@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mapWorkspaceSnapshotPaths, parseRemoteWorkspacePath, qualifyWorkspaceResult, remoteWorkspacePath, remoteWorkspaceRequest, sessionWorkspaceRoot, workspaceChangePath } from '../src/lib/workspacePaths.ts';
+import { mapWorkspaceSnapshotPaths, parseRemoteWorkspacePath, qualifyWorkspaceResult, remoteWorkspacePath, remoteWorkspaceRequest, sessionWorkspaceRoot, workspaceChangePath, remoteTerminalCommand } from '../src/lib/workspacePaths.ts';
 
 test('a workspace keeps its machine even when another session is selected', () => {
   const first = remoteWorkspacePath('workbox', '/home/me/project/a.ts');
@@ -74,4 +74,26 @@ test('hosted PR results keep their machine for follow-up reads and writes', () =
   assert.deepEqual(qualifyWorkspaceResult({ items: [{ localRoot: '/home/me/repo', url: 'https://github.com/o/r/pull/1' }] }, 'workbox'), {
     items: [{ localRoot: 'assembly-remote://workbox/home/me/repo', url: 'https://github.com/o/r/pull/1' }]
   });
+});
+test('a remote terminal opens a login shell in the session folder over ssh', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { mkdtempSync, mkdirSync, writeFileSync, chmodSync, realpathSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'remote-terminal-')));
+  const folder = join(dir, "it's a repo");
+  mkdirSync(folder);
+  // A stand-in ssh records its arguments, then runs the remote command the way sshd would.
+  writeFileSync(join(dir, 'ssh'), '#!/bin/sh\nprintf "%s\\n" "$@" > "$ARGS_FILE"\nshift 3\nexec sh -c "$1"\n');
+  chmodSync(join(dir, 'ssh'), 0o755);
+  writeFileSync(join(dir, 'login-shell'), '#!/bin/sh\npwd\n');
+  chmodSync(join(dir, 'login-shell'), 0o755);
+  const command = remoteTerminalCommand('workbox-test', folder);
+  const out = execFileSync('sh', ['-c', command], {
+    env: { PATH: `${dir}:/usr/bin:/bin`, ARGS_FILE: join(dir, 'args'), SHELL: join(dir, 'login-shell') },
+    encoding: 'utf8'
+  });
+  const { readFileSync } = await import('node:fs');
+  assert.deepEqual(readFileSync(join(dir, 'args'), 'utf8').split('\n').slice(0, 3), ['-t', '--', 'workbox-test']);
+  assert.equal(out.trim(), folder);
 });

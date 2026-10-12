@@ -6,6 +6,7 @@
   import {
     closeTerminalSessionFromTauri,
     listTerminalSessionsFromTauri,
+    readRemoteAssemblyEnvironmentFromTauri,
     readTerminalSessionScrollbackFromTauri,
     resizeTerminalSessionFromTauri,
     startTerminalSessionFromTauri,
@@ -20,6 +21,7 @@
     type TerminalOutputSubscription
   } from '$lib/shell/terminalService';
   import { loadGhosttyModules, makeTerminalView } from '$lib/shell/ghosttyFactory';
+  import { parseRemoteWorkspacePath, remoteTerminalCommand } from '$lib/workspacePaths';
 
   interface Props {
     root: string;
@@ -182,8 +184,20 @@
         replaying = true;
       }
 
+      // A remote session's folder is on its saved machine, so the shell runs there over ssh.
+      const remote = parseRemoteWorkspacePath(root);
+      let command: string | undefined;
+      if (remote) {
+        const environment = await readRemoteAssemblyEnvironmentFromTauri();
+        if (signal.aborted) return;
+        const machine = environment.profiles.find((profile) => profile.id === remote.profileId);
+        if (!machine) throw new Error("This session's machine is no longer saved.");
+        command = remoteTerminalCommand(machine.sshTarget, remote.path);
+      }
+
       const session = await startTerminalSessionFromTauri({
-        cwd: root,
+        cwd: remote ? '' : root,
+        command,
         ownedId,
         cols: measured.cols,
         rows: measured.rows
