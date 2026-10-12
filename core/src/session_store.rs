@@ -640,26 +640,33 @@ CREATE INDEX IF NOT EXISTS idx_workflow_messages_group
 CREATE INDEX IF NOT EXISTS idx_workflow_messages_target
     ON workflow_messages(to_owned_id, receipt, created_at_ms, id);
 CREATE VIEW IF NOT EXISTS session_directory AS
-WITH membership AS (
-    SELECT json_extract(payload_json,'$.ownedId') AS owned_id, run_id,
-           json_extract(payload_json,'$.nodeId') AS step_id,
-           json_extract(payload_json,'$.workflowPayload.run.inputSnapshot.task.key') AS task_key,
-           ROW_NUMBER() OVER (PARTITION BY json_extract(payload_json,'$.ownedId')
-                              ORDER BY sequence DESC, timestamp DESC, id DESC) AS latest
-    FROM orchestration_events WHERE json_extract(payload_json,'$.ownedId') IS NOT NULL
-), names AS (
-    SELECT s.owned_id, s.provider, s.project,
+WITH names AS (
+    SELECT s.owned_id, s.provider, s.project, s.created_at,
            CASE WHEN s.state IN ('starting','working','interrupting') THEN 'running'
                 WHEN s.state IN ('waiting-approval','waiting-input') THEN 'waiting'
                 WHEN s.state IN ('closed','failed') THEN 'stopped' ELSE 'idle' END AS state,
-           m.run_id, m.step_id,
-           COALESCE(m.task_key || '/' || m.step_id, NULLIF(s.title,''), 'Untitled') AS base_name,
-           m.task_key IS NOT NULL OR s.title='orchestrator' AS reserved
-    FROM sessions s LEFT JOIN membership m ON m.owned_id=s.owned_id AND m.latest=1
+           e.run_id, json_extract(e.payload_json,'$.nodeId') AS step_id, e.sequence AS member_sequence,
+           COALESCE(json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.task.key') || '/'
+                        || json_extract(e.payload_json,'$.nodeId'),
+                    NULLIF(s.title,''), 'Untitled') AS base_name,
+           CASE WHEN json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.task.key') IS NOT NULL THEN 'worker'
+                WHEN s.title='orchestrator' THEN 'orchestrator' ELSE 'title' END AS kind
+    FROM sessions s
+    -- Each session's latest workflow event, found through orchestration_events_owned_idx.
+    LEFT JOIN orchestration_events e ON e.rowid = (
+        SELECT rowid FROM orchestration_events
+        WHERE json_extract(payload_json,'$.ownedId') = s.owned_id
+        ORDER BY sequence DESC LIMIT 1)
     WHERE s.cached_remote_profile_id IS NULL AND s.parent_owned_id IS NULL
 )
-SELECT CASE WHEN COALESCE(reserved,0)=0 AND COUNT(*) OVER (PARTITION BY base_name)>1
-            THEN base_name || ' [' || owned_id || ']' ELSE base_name END AS name,
+-- A retried step or a new review round gets a new session under the same worker name: the newest
+-- one keeps the plain name and older ones get their id added. The orchestrator name is never
+-- suffixed, so two orchestrators stay ambiguous. Other duplicate titles all get ids.
+SELECT CASE WHEN kind = 'orchestrator' THEN base_name
+            WHEN kind = 'worker' AND ROW_NUMBER() OVER (PARTITION BY base_name, kind
+                ORDER BY member_sequence DESC, created_at DESC, owned_id) = 1 THEN base_name
+            WHEN kind = 'title' AND COUNT(*) OVER (PARTITION BY base_name, kind) = 1 THEN base_name
+            ELSE base_name || ' [' || owned_id || ']' END AS name,
        owned_id, provider, project, state, run_id, step_id FROM names;";
 
 const ORCHESTRATION_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS orchestration_events (
@@ -680,6 +687,8 @@ CREATE INDEX IF NOT EXISTS orchestration_events_run_sequence_idx
     ON orchestration_events(run_id, sequence DESC);
 CREATE INDEX IF NOT EXISTS orchestration_events_workflow_idempotency_idx
     ON orchestration_events(workflow_id, idempotency_key);
+CREATE INDEX IF NOT EXISTS orchestration_events_owned_idx
+    ON orchestration_events(json_extract(payload_json,'$.ownedId'), sequence);
 CREATE UNIQUE INDEX IF NOT EXISTS orchestration_events_idempotency_idx
     ON orchestration_events(run_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;";

@@ -196,9 +196,8 @@ impl SessionStore {
         let id = new_id(&connection)?;
         let created_at_ms = now_ms()?;
         let (sender_name, run_id): (String, Option<String>) = db("could not name message sender", connection.query_row(
-            "SELECT COALESCE((SELECT name FROM session_directory WHERE owned_id=?),?),
-                    (SELECT run_id FROM session_directory WHERE owned_id=?)",
-            params![from, from, from], |row| Ok((row.get(0)?, row.get(1)?))))?;
+            "SELECT COALESCE(d.name, ?1), d.run_id FROM (SELECT 1) LEFT JOIN session_directory d ON d.owned_id = ?1",
+            params![from], |row| Ok((row.get(0)?, row.get(1)?))))?;
         db(
             "could not append the workflow message",
             connection.execute(
@@ -415,6 +414,31 @@ mod tests {
         let message = store.append_message("", "worker", "target", MessageKind::Message, "reply to me").unwrap();
         assert_eq!(message.sender_name, "tsk-1416/build");
         assert_eq!(message.run_id.as_deref(), Some("run-1"));
+    }
+
+    #[test]
+    fn retried_worker_name_points_at_the_newest_session() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.lock_write().unwrap().execute_batch(r#"INSERT INTO sessions
+            (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra) VALUES
+            ('first-try','codex','/work','closed',0,1,1,'{}'), ('second-try','codex','/work','working',0,2,2,'{}');
+            INSERT INTO orchestration_events (id,run_id,kind,timestamp,sequence,payload_json) VALUES
+            ('e1','run-1','workflow.node.started','1',1,'{"ownedId":"first-try","nodeId":"build","workflowPayload":{"run":{"inputSnapshot":{"task":{"key":"tsk-1416"}}}}}'),
+            ('e2','run-1','workflow.node.started','2',2,'{"ownedId":"second-try","nodeId":"build","workflowPayload":{"run":{"inputSnapshot":{"task":{"key":"tsk-1416"}}}}}');"#).unwrap();
+        assert_eq!(store.resolve_session_name("tsk-1416/build").unwrap(), "second-try");
+        assert_eq!(store.resolve_session_name("tsk-1416/build [first-try]").unwrap(), "first-try");
+        let reply = store.append_message("", "second-try", "first-try", MessageKind::Message, "hi").unwrap();
+        assert_eq!(reply.sender_name, "tsk-1416/build");
+    }
+
+    #[test]
+    fn directory_lookup_uses_owned_event_index() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let connection = store.lock().unwrap();
+        let mut statement = connection.prepare("EXPLAIN QUERY PLAN SELECT name FROM session_directory WHERE owned_id=?").unwrap();
+        let details = statement.query_map(["target"], |row| row.get::<_, String>(3)).unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>().unwrap().join("\n");
+        assert!(details.contains("orchestration_events_owned_idx"), "{details}");
     }
 
     #[test]
