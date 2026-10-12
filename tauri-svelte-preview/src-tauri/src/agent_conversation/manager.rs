@@ -1257,7 +1257,9 @@ impl AgentRuntimeManager {
         self.show_helper_to_parent(parent, &owned_id, name, "running")?;
         let prompt = AgentPrompt { text: prompt.to_string(), images: Vec::new(), attachment_ids: Vec::new() };
         if let Err(error) = self.send_message(&owned_id, connection.generation, prompt, model, None).await {
-            self.show_helper_to_parent(parent, &owned_id, name, "failed")?;
+            if let Err(show_error) = self.show_helper_to_parent(parent, &owned_id, name, "failed") {
+                crate::debug_log::stderr_log!("Could not mark the helper failed: {show_error}");
+            }
             return Err(error);
         }
         Ok(owned_id)
@@ -1390,6 +1392,13 @@ impl AgentRuntimeManager {
                 .map_err(|error| error.to_string())?;
         };
 
+        // A turn the person started since the caller looked takes the message
+        // when it ends, not as a steer in the middle of it.
+        if self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(owned_id)
+            && self.idle_generation(owned_id).is_none()
+        {
+            return Ok(false);
+        }
         let prompt = AgentPrompt {
             text: format!(
                 "[message from {}]\n{}",
