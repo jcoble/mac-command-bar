@@ -639,7 +639,8 @@ CREATE INDEX IF NOT EXISTS idx_workflow_messages_group
     ON workflow_messages(group_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_workflow_messages_target
     ON workflow_messages(to_owned_id, receipt, created_at_ms, id);
-CREATE VIEW IF NOT EXISTS session_directory AS
+DROP VIEW IF EXISTS session_directory;
+CREATE VIEW session_directory AS
 WITH names AS (
     SELECT s.owned_id, s.provider, s.project, s.created_at,
            CASE WHEN s.state IN ('starting','working','interrupting') THEN 'running'
