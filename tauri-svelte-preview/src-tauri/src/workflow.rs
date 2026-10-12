@@ -74,6 +74,22 @@ fn yaml_value(yaml: &yaml_rust::Yaml) -> Result<Value, WorkflowError> {
     })
 }
 
+const STEP_FIELDS: [&str; 10] = ["needs", "agent", "prompt", "run", "review", "gate", "on_fail", "expect_files", "if", "repeat"];
+
+/// Every step `id` depends on, directly or through other steps.
+fn needs_ancestry<'a>(steps: &'a serde_json::Map<String, Value>, id: &str) -> std::collections::HashSet<&'a str> {
+    let mut found = std::collections::HashSet::new();
+    let mut pending = vec![id.to_string()];
+    while let Some(next) = pending.pop() {
+        for need in steps.get(&next).and_then(|step| step["needs"].as_array()).into_iter().flatten() {
+            if let Some((key, _)) = need.as_str().and_then(|need| steps.get_key_value(need)) {
+                if found.insert(key.as_str()) { pending.push(key.clone()); }
+            }
+        }
+    }
+    found
+}
+
 fn contained_file(root: &Path, relative: &Path) -> Result<std::path::PathBuf, WorkflowError> {
     if relative.as_os_str().is_empty() || relative.components().any(|part| !matches!(part, Component::Normal(_))) {
         return Err(invalid_yaml("File paths must be relative and cannot contain ../"));
@@ -1345,6 +1361,22 @@ impl WorkflowEngine {
         mut input: Value,
         idempotency_key: String,
     ) -> Result<WorkflowRunRecord, WorkflowError> {
+        let definition = Self::validate_file(repo_root, relative_yaml)?;
+        let root = repo_root.canonicalize().map_err(invalid_yaml)?;
+        let values = input.as_object_mut().ok_or_else(|| invalid_yaml("Workflow input must be an object"))?;
+        let mut inputs = definition.inputs.iter().filter_map(|input| Some((
+            input["name"].as_str()?.to_string(), input["definition"].get("default")?.clone(),
+        ))).collect::<serde_json::Map<_, _>>();
+        if let Some(supplied) = values.get("inputs").and_then(Value::as_object) { inputs.extend(supplied.clone()); }
+        values.insert("inputs".into(), Value::Object(inputs));
+        values.insert("task".into(), serde_json::to_value(task).map_err(invalid_yaml)?);
+        values.insert("cwd".into(), json!(root));
+        self.create_run(definition, input, idempotency_key)
+    }
+
+    /// Reads a repository workflow and checks it the same way for `check_workflow`
+    /// and for starting a run, with prompt files read in. Writes nothing.
+    pub(crate) fn validate_file(repo_root: &Path, relative_yaml: &Path) -> Result<WorkflowDefinitionV1, WorkflowError> {
         if relative_yaml.parent() != Some(Path::new(".assembly/workflows"))
             || relative_yaml.extension().and_then(|value| value.to_str()) != Some("yml") {
             return Err(invalid_yaml("Workflow must be .assembly/workflows/*.yml"));
@@ -1356,6 +1388,10 @@ impl WorkflowEngine {
         let documents = yaml_rust::YamlLoader::load_from_str(&contents).map_err(invalid_yaml)?;
         if documents.len() != 1 { return Err(invalid_yaml("Expected one YAML workflow")); }
         let yaml = yaml_value(&documents[0])?;
+        if let Some(key) = yaml.as_object().into_iter().flatten().map(|(key, _)| key)
+            .find(|key| !["name", "inputs", "limits", "steps"].contains(&key.as_str())) {
+            return Err(invalid_yaml(format!("Unknown workflow field `{key}`")));
+        }
         let name = yaml["name"].as_str().ok_or_else(|| invalid_yaml("Workflow name is required"))?;
         let steps = yaml["steps"].as_object().ok_or_else(|| invalid_yaml("Workflow steps are required"))?;
         let mut roles = Vec::new();
@@ -1366,20 +1402,41 @@ impl WorkflowEngine {
             if id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
                 return Err(invalid_yaml("Invalid step id"));
             }
+            if let Some(key) = original.as_object().into_iter().flatten().map(|(key, _)| key)
+                .find(|key| !STEP_FIELDS.contains(&key.as_str())) {
+                return Err(invalid_yaml(format!("Unknown field `{key}` in step `{id}`")));
+            }
             let kinds = ["agent", "run", "review", "gate"];
             if kinds.iter().filter(|kind| original.get(**kind).is_some()).count() != 1 {
                 return Err(invalid_yaml("Each step requires exactly one kind"));
             }
             let mut step = original.clone();
+            let review = step.get("review").is_some();
+            if step.get("agent").is_some() && !step["agent"]["provider"].is_string() {
+                return Err(invalid_yaml(format!("Step `{id}` needs a string agent.provider")));
+            }
+            if review && !step["review"]["agent"]["provider"].is_string() {
+                return Err(invalid_yaml(format!("Review step `{id}` needs a string review.agent.provider")));
+            }
+            if review && step["review"].get("of").is_none() {
+                return Err(invalid_yaml(format!("Review step `{id}` needs review.of")));
+            }
+            if let Some(run) = step.get("run") {
+                if !run.as_array().is_some_and(|commands| !commands.is_empty() && commands.iter().all(Value::is_string)) {
+                    return Err(invalid_yaml(format!("Step `{id}`: run must be a non-empty list of commands")));
+                }
+            }
             for field in ["of", "on_fail"] {
                 let target = if field == "of" { step["review"].get(field) } else { step.get(field) };
                 if let Some(target) = target {
-                    if !target.as_str().is_some_and(|id| steps.contains_key(id)) {
+                    let Some(target) = target.as_str().filter(|target| steps.contains_key(*target)) else {
                         return Err(invalid_yaml("Unknown step target"));
+                    };
+                    if !needs_ancestry(steps, id).contains(target) {
+                        return Err(invalid_yaml(format!("Step `{id}`: {field} must name a step it needs, directly or through other steps")));
                     }
                 }
             }
-            let review = step.get("review").is_some();
             let agent = if review { &step["review"]["agent"] } else { &step["agent"] };
             let provider = agent["provider"].as_str().unwrap_or_default().to_string();
             let model = agent.get("model").cloned().unwrap_or(Value::Null);
@@ -1402,14 +1459,8 @@ impl WorkflowEngine {
             "inputs":inputs,"limits":yaml["limits"],"roles":roles,"nodes":nodes,
             "concurrency":{"global":max_sessions,"workflow":max_sessions},
             "budgets":{"maximumActiveAgents":max_sessions}})).map_err(invalid_yaml)?;
-        let values = input.as_object_mut().ok_or_else(|| invalid_yaml("Workflow input must be an object"))?;
-        let mut inputs = yaml["inputs"].as_object().into_iter().flatten().filter_map(|(name, value)|
-            value.get("default").cloned().map(|value| (name.clone(), value))).collect::<serde_json::Map<_, _>>();
-        if let Some(supplied) = values.get("inputs").and_then(Value::as_object) { inputs.extend(supplied.clone()); }
-        values.insert("inputs".into(), Value::Object(inputs));
-        values.insert("task".into(), serde_json::to_value(task).map_err(invalid_yaml)?);
-        values.insert("cwd".into(), json!(root));
-        self.create_run(definition, input, idempotency_key)
+        WorkflowPolicy::validate_definition(&definition)?;
+        Ok(definition)
     }
 
     pub fn create_run(
@@ -3715,6 +3766,43 @@ mod tests {
         assert!(engine.create_run_from_file(&root, path, task.clone(), json!({}), "prompt-escape".into()).is_err());
         std::fs::write(root.join(path), "name: Duplicate\nsteps:\n  build: { run: [first] }\n  build: { run: [second] }\n").unwrap();
         assert!(engine.create_run_from_file(&root, path, task, json!({}), "duplicate".into()).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn workflow_authoring_strict_validation_is_shared() {
+        let (root, engine) = yaml_fixture("strict");
+        let path = std::path::Path::new(".assembly/workflows/demo.yml");
+        let task = TaskSnapshot { key: "TSK-1416".into(), title: "Title".into(), body: "Body".into() };
+        let head = "name: Strict\nsteps:\n  build: { agent: { provider: codex }, prompt: prompts/build.md }\n";
+        let reviewer = |extra: &str| format!("{head}  review:\n    needs: [build]\n    review: {{ {extra}prompt: prompts/build.md }}\n");
+        let cases = [
+            ("name: Strict\nowner: me\nsteps:\n  build: { run: [ls] }\n".to_string(), "Unknown workflow field `owner`"),
+            (format!("{head}  checks: {{ needs: [build], run: [ls], retries: 2 }}\n"), "Unknown field `retries` in step `checks`"),
+            ("name: S\nsteps:\n  build: { agent: { model: x }, prompt: prompts/build.md }\n".to_string(), "Step `build` needs a string agent.provider"),
+            ("name: S\nsteps:\n  build: { agent: { provider: 3 }, prompt: prompts/build.md }\n".to_string(), "Step `build` needs a string agent.provider"),
+            (reviewer("of: build, agent: { model: x }, "), "Review step `review` needs a string review.agent.provider"),
+            (reviewer("agent: { provider: codex }, "), "Review step `review` needs review.of"),
+            (format!("{head}  review: {{ review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/build.md }} }}\n"), "Step `review`: of must name a step it needs"),
+            (format!("{head}  checks: {{ needs: [build], run: [ls], on_fail: checks }}\n"), "Step `checks`: on_fail must name a step it needs"),
+            (format!("{head}  checks: {{ needs: [build], run: [ls], on_fail: later }}\n  later: {{ needs: [checks], run: [ls] }}\n"), "Step `checks`: on_fail must name a step it needs"),
+            (format!("{head}  checks: {{ needs: [build], run: [ls], on_fail: missing }}\n"), "Unknown step target"),
+            (format!("{head}  checks: {{ needs: [build], run: [] }}\n"), "Step `checks`: run must be a non-empty list of commands"),
+            (format!("{head}  checks: {{ needs: [build], run: ls }}\n"), "Step `checks`: run must be a non-empty list of commands"),
+            (format!("{head}  checks: {{ needs: [build], run: [ls, 3] }}\n"), "Step `checks`: run must be a non-empty list of commands"),
+        ];
+        for (index, (yaml, expected)) in cases.iter().enumerate() {
+            std::fs::write(root.join(path), yaml).unwrap();
+            let check = WorkflowEngine::validate_file(&root, path).unwrap_err().to_string();
+            let start = engine.create_run_from_file(&root, path, task.clone(), json!({}), format!("bad-{index}")).unwrap_err().to_string();
+            assert!(check.contains(expected), "{yaml}\n{check}");
+            assert_eq!(check, start);
+        }
+        assert!(engine.list_runs().unwrap().is_empty());
+        // Two reviewers of the same step, reached through another step's needs.
+        std::fs::write(root.join(path), format!("{head}  checks: {{ needs: [build], run: [\"cargo test\", ls], on_fail: build }}\n  review-a:\n    needs: [checks]\n    review: {{ of: build, agent: {{ provider: codex }}, prompt: prompts/build.md }}\n  review-b:\n    needs: [checks]\n    review: {{ of: build, agent: {{ provider: claude }}, prompt: prompts/build.md }}\n")).unwrap();
+        WorkflowEngine::validate_file(&root, path).unwrap();
+        engine.create_run_from_file(&root, path, task, json!({}), "valid".into()).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 
