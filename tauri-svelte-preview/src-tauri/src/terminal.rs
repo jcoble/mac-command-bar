@@ -27,7 +27,7 @@ pub enum TerminalKind {
     BrowserAutomation,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalStartRequest {
     pub cwd: String,
@@ -41,7 +41,7 @@ pub struct TerminalStartRequest {
     pub command: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSessionInfo {
     pub session_id: String,
@@ -63,7 +63,7 @@ pub struct TerminalSessionInfo {
     pub tool_terminal_identity: Option<ToolTerminalIdentity>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalOutputEvent {
     pub session_id: String,
@@ -73,12 +73,21 @@ pub struct TerminalOutputEvent {
     pub signal: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalScrollbackSnapshot {
     pub data: String,
     pub generation: u64,
     pub sequence: i64,
+}
+
+/// One output chunk with its ordering, as a remote machine sends it to the desktop.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalOutputFrame {
+    pub generation: u64,
+    pub sequence: i64,
+    pub output: TerminalOutputEvent,
 }
 
 #[derive(Clone)]
@@ -656,8 +665,13 @@ fn terminal_cwd_from_request(cwd: &str) -> Result<PathBuf, String> {
     } else {
         PathBuf::from(cwd.trim())
     };
-    let metadata = std::fs::metadata(&path)
-        .map_err(|error| format!("Could not read terminal cwd metadata: {error}"))?;
+    let metadata = std::fs::metadata(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            format!("This session's folder no longer exists: {}", path.display())
+        } else {
+            format!("Could not read terminal cwd metadata: {error}")
+        }
+    })?;
     if !metadata.is_dir() {
         return Err("Terminal cwd is not a directory".to_string());
     }
@@ -868,7 +882,10 @@ mod tests {
 
         let missing_error =
             terminal_cwd_from_request(&root.join("missing").display().to_string()).unwrap_err();
-        assert!(missing_error.contains("Could not read terminal cwd metadata"));
+        assert_eq!(
+            missing_error,
+            format!("This session's folder no longer exists: {}", root.join("missing").display())
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }

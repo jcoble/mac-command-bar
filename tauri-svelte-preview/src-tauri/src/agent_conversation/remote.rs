@@ -28,7 +28,13 @@ use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as Tungs
 
 use super::manager::AgentRuntimeManager;
 use super::remote_history::RemoteHistory;
+use crate::projection_streams::ProjectionStreams;
+use crate::terminal::{
+    self, TerminalKind, TerminalOutputFrame, TerminalRegistry, TerminalScrollbackSnapshot,
+    TerminalSessionInfo, TerminalStartRequest,
+};
 type RemoteEventSink = Arc<dyn Fn(Vec<AgentConversationEvent>) -> Result<(), String> + Send + Sync>;
+type RemoteTerminalSink = Arc<dyn Fn(TerminalOutputFrame) + Send + Sync>;
 use super::attachments::{self, DeleteConversationAttachmentRequest, SavedConversationAttachment};
 use super::prompt_content::prompt_from_blocks;
 use super::protocol::{
@@ -45,7 +51,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 15;
+pub(super) const PROTOCOL_VERSION: u16 = 16;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -165,6 +171,11 @@ enum RemoteCommand {
     RespondPermission(RespondAgentConversationPermissionRequest),
     RespondInput(RespondAgentConversationInputRequest),
     Stop(StopAgentConversationTurnRequest),
+    TerminalStart(TerminalStartRequest),
+    TerminalWrite { session_id: String, data: String },
+    TerminalResize { session_id: String, cols: Option<u16>, rows: Option<u16> },
+    TerminalScrollback { session_id: String, max_bytes: Option<usize> },
+    TerminalClose { session_id: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -191,6 +202,8 @@ enum RemoteResponse {
     ImportProgress { added: usize, reached_start: bool },
     SendReceipt(AgentConversationSendReceipt),
     Empty,
+    TerminalSession(#[serde(deserialize_with = "deserialize_wire_payload")] TerminalSessionInfo),
+    TerminalScrollback(Option<TerminalScrollbackSnapshot>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -201,6 +214,7 @@ enum ServerFrame {
     Error { id: u64, message: String },
     ProviderDownloadProgress { id: u64, progress: super::providers::updates::ProviderDownloadProgress },
     Event { #[serde(deserialize_with = "deserialize_wire_payload")] event: AgentConversationEvent },
+    TerminalOutput { frame: TerminalOutputFrame },
 }
 
 // Serde's buffered tagged-enum decoder cannot deserialize u128 timestamps.
@@ -221,6 +235,52 @@ struct ServerState {
     restart_requested: Arc<tokio::sync::Notify>,
     restart_flushed: Arc<tokio::sync::Notify>,
     events: broadcast::Sender<AgentConversationEvent>,
+    terminals: RemoteTerminals,
+}
+
+/// Shells that desktops opened on this machine. Output fans out to every connected socket.
+#[derive(Clone)]
+struct RemoteTerminals {
+    registry: TerminalRegistry,
+    streams: ProjectionStreams,
+    output: broadcast::Sender<TerminalOutputFrame>,
+}
+
+impl RemoteTerminals {
+    fn new() -> Self {
+        let (output, _) = broadcast::channel(1024);
+        Self {
+            registry: TerminalRegistry::default(),
+            streams: ProjectionStreams::with_terminal_tap(output.clone()),
+            output,
+        }
+    }
+}
+
+/// A desktop names a remote shell by its machine and the machine's own terminal id.
+const REMOTE_TERMINAL_PREFIX: &str = "assembly-remote-terminal://";
+
+pub fn remote_terminal_id(profile_id: &str, session_id: &str) -> String {
+    format!("{REMOTE_TERMINAL_PREFIX}{profile_id}/{session_id}")
+}
+
+/// `(profile id, the machine's terminal id)` for a remote shell's id.
+pub fn split_remote_terminal_id(id: &str) -> Option<(&str, &str)> {
+    id.strip_prefix(REMOTE_TERMINAL_PREFIX)?.split_once('/')
+}
+
+fn terminal_bool(response: RemoteResponse) -> Result<bool, String> {
+    match response {
+        RemoteResponse::Bool(value) => Ok(value),
+        _ => Err("The remote backend returned an incompatible terminal response".into()),
+    }
+}
+
+/// `(profile id, native folder)` for a session folder on a saved machine.
+pub fn split_remote_workspace_path(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("assembly-remote://")?;
+    let slash = rest.find('/')?;
+    Some((&rest[..slash], &rest[slash..]))
 }
 
 #[derive(Debug)]
@@ -280,6 +340,8 @@ pub struct RemoteConnectionManager {
     /// no longer owns the profile.
     connecting: Arc<Mutex<HashMap<String, u64>>>,
     next_attempt_token: Arc<AtomicU64>,
+    /// Where remote shell output is shown; set once the desktop's streams exist.
+    terminal_output: Arc<Mutex<Option<ProjectionStreams>>>,
 }
 
 #[derive(Default)]
@@ -479,6 +541,7 @@ impl RemoteConnectionManager {
             attempts: Arc::new(Mutex::new(HashMap::new())),
             connecting: Arc::new(Mutex::new(HashMap::new())),
             next_attempt_token: Arc::new(AtomicU64::new(1)),
+            terminal_output: Arc::new(Mutex::new(None)),
         };
         let Some(url) = std::env::var("ASSEMBLY_REMOTE_WS_URL").ok() else {
             return Ok(manager);
@@ -515,7 +578,7 @@ impl RemoteConnectionManager {
             // The development environment client has no saved profile, so no rail
             // row maps to it and its transitions have nobody to tell.
             let status: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
-            client_loop(url, token, &mut request_rx, event_sink, None, actor_ready, &mut None, status)
+            client_loop(url, token, &mut request_rx, event_sink, None, None, actor_ready, &mut None, status)
                 .await;
         });
         Ok(manager)
@@ -876,7 +939,7 @@ impl RemoteConnectionManager {
             let report: Arc<dyn Fn() + Send + Sync> =
                 Arc::new(move || manager.publish_status(&reported_id));
             let task = tokio::spawn(profile_client_loop(profile.clone(), receiver, self.history_event_sink(&profile.id),
-                self.tunnel_processes.clone(), ready.clone(), Some(ready_tx), report));
+                self.terminal_sink(&profile.id), self.tunnel_processes.clone(), ready.clone(), Some(ready_tx), report));
             // Dropping a failed/cancelled candidate aborts only its own actor and tunnel.
             let candidate = RemoteClient { requests: Some(requests), profile: Some(profile.clone()),
                 target_key: Some(target_key), task: Some(task.abort_handle()), ready };
@@ -1066,6 +1129,65 @@ impl RemoteConnectionManager {
             .get(owned_id)
             .cloned()
             .ok_or_else(|| format!("No remote machine owns session {owned_id}"))
+    }
+
+    pub fn set_terminal_output(&self, streams: ProjectionStreams) {
+        *self.terminal_output.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(streams);
+    }
+
+    /// Shows a machine's shell output in the desktop's terminal stream under the desktop's id for it.
+    fn terminal_sink(&self, profile_id: &str) -> RemoteTerminalSink {
+        let streams = self.terminal_output.clone();
+        let profile_id = profile_id.to_string();
+        Arc::new(move |mut frame| {
+            let Some(streams) = streams.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() else {
+                return;
+            };
+            frame.output.session_id = remote_terminal_id(&profile_id, &frame.output.session_id);
+            streams.publish_terminal_output(frame.output.session_id.clone(), frame.generation, frame.sequence, frame.output);
+        })
+    }
+
+    /// Starts a shell on the machine that owns `request.cwd`, a native folder there.
+    /// A frontend `request_id` is the wire id, so cancelling it aborts the start on the server.
+    pub async fn start_terminal(&self, profile_id: &str, request: TerminalStartRequest, request_id: Option<u64>) -> Result<TerminalSessionInfo, String> {
+        let id = request_id.unwrap_or_else(|| self.next_request_id.fetch_add(1, Ordering::Relaxed));
+        let RemoteResponse::TerminalSession(mut info) =
+            self.request_with_id(profile_id, id, RemoteCommand::TerminalStart(request), None).await?
+        else {
+            return Err("The remote backend returned an incompatible terminal response".into());
+        };
+        info.session_id = remote_terminal_id(profile_id, &info.session_id);
+        Ok(info)
+    }
+
+    pub async fn write_terminal(&self, id: &str, data: String) -> Result<bool, String> {
+        terminal_bool(self.terminal_request(id, |session_id| RemoteCommand::TerminalWrite { session_id, data }).await?)
+    }
+
+    pub async fn resize_terminal(&self, id: &str, cols: Option<u16>, rows: Option<u16>) -> Result<bool, String> {
+        terminal_bool(self.terminal_request(id, |session_id| RemoteCommand::TerminalResize { session_id, cols, rows }).await?)
+    }
+
+    pub async fn close_terminal(&self, id: &str) -> Result<bool, String> {
+        terminal_bool(self.terminal_request(id, |session_id| RemoteCommand::TerminalClose { session_id }).await?)
+    }
+
+    pub async fn read_terminal_scrollback(&self, id: &str, max_bytes: Option<usize>) -> Result<Option<TerminalScrollbackSnapshot>, String> {
+        match self.terminal_request(id, |session_id| RemoteCommand::TerminalScrollback { session_id, max_bytes }).await? {
+            RemoteResponse::TerminalScrollback(snapshot) => Ok(snapshot),
+            _ => Err("The remote backend returned an incompatible terminal response".into()),
+        }
+    }
+
+    async fn terminal_request(
+        &self,
+        id: &str,
+        command: impl FnOnce(String) -> RemoteCommand,
+    ) -> Result<RemoteResponse, String> {
+        let (profile_id, session_id) = split_remote_terminal_id(id)
+            .ok_or_else(|| format!("{id} is not a remote terminal"))?;
+        self.request_for_profile(profile_id, command(session_id.to_string())).await
     }
 
     async fn request_for_owned(
@@ -2325,6 +2447,7 @@ async fn profile_client_loop(
     profile: RemoteAssemblyProfile,
     mut requests: mpsc::Receiver<ClientRequest>,
     event_sink: RemoteEventSink,
+    terminal_sink: RemoteTerminalSink,
     tunnel_processes: Arc<Mutex<HashMap<u32, Child>>>,
     ready: Arc<AtomicBool>,
     mut initial_ready: Option<oneshot::Sender<Result<Vec<AgentConversationSessionRecord>, String>>>,
@@ -2344,7 +2467,7 @@ async fn profile_client_loop(
         };
         let url = format!("ws://127.0.0.1:{}/assembly", tunnel.local_port);
         let token = tunnel.token.clone();
-        client_loop(url, token, &mut requests, event_sink.clone(), Some(4), ready.clone(),
+        client_loop(url, token, &mut requests, event_sink.clone(), Some(terminal_sink.clone()), Some(4), ready.clone(),
             &mut initial_ready, status.clone()).await;
         drop(tunnel);
     }
@@ -2483,6 +2606,7 @@ async fn client_loop(
     token: String,
     requests: &mut mpsc::Receiver<ClientRequest>,
     event_sink: RemoteEventSink,
+    terminal_sink: Option<RemoteTerminalSink>,
     reconnect_tunnel_after_failures: Option<u8>,
     ready: Arc<AtomicBool>,
     initial_ready: &mut Option<oneshot::Sender<Result<Vec<AgentConversationSessionRecord>, String>>>,
@@ -2697,6 +2821,9 @@ async fn client_loop(
                             }
                         }
                         ServerFrame::Event { .. } => unreachable!(),
+                        ServerFrame::TerminalOutput { frame } => {
+                            if let Some(sink) = &terminal_sink { sink(frame); }
+                        }
                         ServerFrame::ProviderDownloadProgress { id, progress } => {
                             if let Some(sender) = pending_progress.get(&id) { let _ = sender.send(progress); }
                         }
@@ -2814,6 +2941,7 @@ pub fn run_server_from_environment() -> Result<(), String> {
             restart_requested: Arc::new(tokio::sync::Notify::new()),
             restart_flushed: Arc::new(tokio::sync::Notify::new()),
             events,
+            terminals: RemoteTerminals::new(),
         };
         let restart_requested = state.restart_requested.clone();
         let restart_flushed = state.restart_flushed.clone();
@@ -2916,6 +3044,7 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
         })
         .await;
     let mut live_events = state.events.subscribe();
+    let mut live_terminals = state.terminals.output.subscribe();
     let mut queued = BTreeMap::<String, i64>::new();
     let (completed, mut completions) = mpsc::channel::<(u64, Result<RemoteResponse, String>)>(32);
     let upload = Arc::new(Mutex::new(None::<PendingAttachment>));
@@ -2956,6 +3085,17 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
                         }
                         if failed { break; }
                     }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+                None
+            }
+            frame = live_terminals.recv() => {
+                match frame {
+                    Ok(frame) => {
+                        if outbound.send(ServerFrame::TerminalOutput { frame }).await.is_err() { break; }
+                    }
+                    // A socket too slow to keep up loses those chunks; reopening the tab replays scrollback.
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
                 None
@@ -3196,6 +3336,38 @@ async fn execute_server_command(state: &ServerState, upload: &Arc<Mutex<Option<P
             return tokio::task::spawn_blocking(move ||
                 attachments::delete_at(&vault, &store, request).map(|_| RemoteResponse::Empty)
             ).await.map_err(|error| error.to_string())?;
+        }
+        RemoteCommand::TerminalStart(request) => {
+            // Runs inline, like the Mac's own start, so a cancel that arrives first starts nothing.
+            let terminals = &state.terminals;
+            // An exited shell is never reused, so drop this session's before starting a new one.
+            if let Some(owned_id) = request.owned_id.as_deref() {
+                for info in terminal::list_terminal_sessions(&terminals.registry)? {
+                    if info.kind == TerminalKind::UserPty && info.exited && info.owned_id.as_deref() == Some(owned_id) {
+                        terminal::close_terminal_session(&terminals.registry, &info.session_id)?;
+                    }
+                }
+            }
+            return terminal::start_terminal_session(&terminals.registry, terminals.streams.clone(), request)
+                .map(RemoteResponse::TerminalSession);
+        }
+        RemoteCommand::TerminalWrite { session_id, data } => {
+            return terminal::write_terminal_session(&state.terminals.registry, &session_id, &data).map(RemoteResponse::Bool);
+        }
+        RemoteCommand::TerminalResize { session_id, cols, rows } => {
+            return terminal::resize_terminal_session(&state.terminals.registry, &session_id, cols, rows).map(RemoteResponse::Bool);
+        }
+        RemoteCommand::TerminalScrollback { session_id, max_bytes } => {
+            return terminal::read_terminal_session_scrollback(&state.terminals.registry, &session_id, max_bytes)
+                .map(RemoteResponse::TerminalScrollback);
+        }
+        RemoteCommand::TerminalClose { session_id } => {
+            return terminal::close_terminal_session(&state.terminals.registry, &session_id).map(RemoteResponse::Bool);
+        }
+        RemoteCommand::Delete { owned_id } => {
+            // Close the session's shells first, so a failure leaves the session there to delete again.
+            state.terminals.registry.close_user_terminals_for_owned(&owned_id)?;
+            RemoteCommand::Delete { owned_id }
         }
         other => other,
     };
@@ -3477,6 +3649,10 @@ async fn execute_remote_command(
                 .cancel_turn(&request.owned_id, request.generation)
                 .await?;
             Ok(RemoteResponse::Empty)
+        }
+        RemoteCommand::TerminalStart(_) | RemoteCommand::TerminalWrite { .. } | RemoteCommand::TerminalResize { .. }
+        | RemoteCommand::TerminalScrollback { .. } | RemoteCommand::TerminalClose { .. } => {
+            Err("Terminal command needs the server's terminals".into())
         }
     }
 }
@@ -4462,7 +4638,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn readiness_requires_protocol_and_session_response() {
-        assert_eq!(PROTOCOL_VERSION, 15);
+        assert_eq!(PROTOCOL_VERSION, 16);
         for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -4486,7 +4662,7 @@ mod connection_tests {
             let (reply, mut result) = oneshot::channel();
             let ready = Arc::new(AtomicBool::new(false));
             let actor_ready = ready.clone();
-            let actor = tokio::spawn(async move { client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver, Arc::new(|_| Ok(())), Some(1), actor_ready, &mut Some(reply), Arc::new(|| {})).await });
+            let actor = tokio::spawn(async move { client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver, Arc::new(|_| Ok(())), None, Some(1), actor_ready, &mut Some(reply), Arc::new(|| {})).await });
             if version == PROTOCOL_VERSION {
                 probe_rx.await.unwrap();
                 assert!(!ready.load(Ordering::Acquire));
@@ -4533,7 +4709,7 @@ mod connection_tests {
         let (ready_reply, ready_answer) = oneshot::channel();
         let actor = tokio::spawn(async move {
             client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver,
-                Arc::new(|_| Ok(())), Some(1), Arc::new(AtomicBool::new(false)),
+                Arc::new(|_| Ok(())), None, Some(1), Arc::new(AtomicBool::new(false)),
                 &mut Some(ready_reply), Arc::new(|| {})).await;
         });
         let (reply, answer) = oneshot::channel();
@@ -4590,7 +4766,7 @@ mod connection_tests {
         let (ready_reply, ready_answer) = oneshot::channel();
         let actor = tokio::spawn(async move {
             client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver,
-                Arc::new(move |events| { captured.lock().unwrap().extend(events); Ok(()) }),
+                Arc::new(move |events| { captured.lock().unwrap().extend(events); Ok(()) }), None,
                 Some(2), Arc::new(AtomicBool::new(false)), &mut Some(ready_reply), Arc::new(|| {})).await;
         });
         ready_answer.await.unwrap().unwrap();
@@ -4630,6 +4806,7 @@ mod connection_tests {
             manager, data_dir: directory.clone(), token: Arc::from("test"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events,
+            terminals: RemoteTerminals::new(),
         };
         let (outbound, mut received) = mpsc::channel(8);
         let mut queued = BTreeMap::from([("large-history".to_string(), 1)]);
@@ -4700,6 +4877,7 @@ mod connection_tests {
             manager: manager.clone(), data_dir: directory.clone(), token: Arc::from("test-token"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events: events.clone(),
+            terminals: RemoteTerminals::new(),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -4763,7 +4941,7 @@ mod connection_tests {
         let (ready_reply, ready_answer) = oneshot::channel();
         let actor = tokio::spawn(async move {
             client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver,
-                Arc::new(|_| Ok(())), Some(1), Arc::new(AtomicBool::new(false)),
+                Arc::new(|_| Ok(())), None, Some(1), Arc::new(AtomicBool::new(false)),
                 &mut Some(ready_reply), Arc::new(|| {})).await;
         });
         ready_answer.await.unwrap().unwrap();
@@ -4879,6 +5057,7 @@ mod provider_restart_tests {
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
             events: broadcast::channel(2).0,
+            terminals: RemoteTerminals::new(),
         };
         let response = execute_server_command(&state, &Arc::new(Mutex::new(None)),
             RemoteCommand::RestartForProviderUpdates, Arc::new(|_| {})).await;
@@ -4932,5 +5111,94 @@ mod provider_restart_tests {
         assert!(error.contains("already running"), "install must reach the installer, got: {error}");
         drop(manager);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+
+    fn terminal_state(directory: &std::path::Path) -> ServerState {
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("sessions.db")).unwrap();
+        ServerState {
+            manager, data_dir: directory.to_path_buf(), token: Arc::from("test"),
+            maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
+            restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
+            events: broadcast::channel(2).0,
+            terminals: RemoteTerminals::new(),
+        }
+    }
+
+    fn start_request(cwd: &std::path::Path) -> TerminalStartRequest {
+        TerminalStartRequest {
+            cwd: cwd.display().to_string(), shell: Some("/bin/sh".into()), cols: Some(80), rows: Some(24),
+            owned_id: Some("remote-session".into()), command: None,
+        }
+    }
+
+    async fn run(state: &ServerState, command: RemoteCommand) -> Result<RemoteResponse, String> {
+        execute_server_command(state, &Arc::new(Mutex::new(None)), command, Arc::new(|_| {})).await
+    }
+
+    #[tokio::test]
+    async fn remote_shell_runs_on_the_server_and_streams_its_output() {
+        let directory = std::env::temp_dir().join(format!("assembly-remote-terminal-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let state = terminal_state(&directory);
+        let mut output = state.terminals.output.subscribe();
+
+        let Ok(RemoteResponse::TerminalSession(info)) = run(&state, RemoteCommand::TerminalStart(start_request(&directory))).await else {
+            panic!("the shell must start");
+        };
+        let Ok(RemoteResponse::TerminalSession(again)) = run(&state, RemoteCommand::TerminalStart(start_request(&directory))).await else {
+            panic!("the second start must succeed");
+        };
+        assert_eq!(again.session_id, info.session_id, "a live shell is reused for the same session");
+        let wire = encode_server_frame(&ServerFrame::Response { id: 1, response: RemoteResponse::TerminalSession(info.clone()) }).unwrap();
+        assert!(matches!(parse_server_frame(TungsteniteMessage::Text(wire.into())).unwrap(),
+            Some(ServerFrame::Response { response: RemoteResponse::TerminalSession(decoded), .. }) if decoded.session_id == info.session_id));
+
+        let write = RemoteCommand::TerminalWrite { session_id: info.session_id.clone(), data: "echo hi-$((1+1))\n".into() };
+        assert!(matches!(run(&state, write).await, Ok(RemoteResponse::Bool(true))));
+        let mut seen = String::new();
+        let frame = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let frame = output.recv().await.unwrap();
+                seen.push_str(&frame.output.data);
+                if seen.contains("hi-2") { return frame; }
+            }
+        }).await.expect("the shell's output must reach the socket broadcast");
+        assert_eq!(frame.output.session_id, info.session_id);
+
+        let wire = encode_server_frame(&ServerFrame::TerminalOutput { frame }).unwrap();
+        let Some(ServerFrame::TerminalOutput { frame }) = parse_server_frame(TungsteniteMessage::Text(wire.into())).unwrap() else {
+            panic!("terminal output must survive the wire");
+        };
+        assert_eq!(frame.output.session_id, info.session_id);
+
+        let close = RemoteCommand::TerminalClose { session_id: info.session_id.clone() };
+        assert!(matches!(run(&state, close).await, Ok(RemoteResponse::Bool(true))));
+        drop(state);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn remote_shell_reports_a_missing_session_folder() {
+        let directory = std::env::temp_dir().join(format!("assembly-remote-terminal-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let state = terminal_state(&directory);
+        let error = run(&state, RemoteCommand::TerminalStart(start_request(&directory.join("gone")))).await.unwrap_err();
+        assert_eq!(error, format!("This session's folder no longer exists: {}", directory.join("gone").display()));
+        drop(state);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn remote_terminal_and_folder_ids_split_into_machine_and_native_parts() {
+        let id = remote_terminal_id("profile-1", "terminal-7");
+        assert_eq!(split_remote_terminal_id(&id), Some(("profile-1", "terminal-7")));
+        assert_eq!(split_remote_terminal_id("terminal-7"), None);
+        assert_eq!(split_remote_workspace_path("assembly-remote://profile-1/home/me/repo"), Some(("profile-1", "/home/me/repo")));
+        assert_eq!(split_remote_workspace_path("/home/me/repo"), None);
     }
 }

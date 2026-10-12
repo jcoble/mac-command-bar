@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 globalThis.$state = <T>(value: T): T => value;
 const {
   createTerminalService,
+  createTerminalInput,
   isTerminalInputCommand,
   subscribeToTerminalOutput,
   tauriTerminalBackend
@@ -1078,6 +1079,28 @@ const ownedA = {
   const subscription = subscribeToTerminalOutput(() => undefined, controller.signal);
   await assert.rejects(subscription.ready, /Terminal output stream is unavailable/);
   controller.abort();
+}
+
+{
+  // Keys typed while a write is in flight go out next, together, in order: a remote
+  // backend runs each request as its own task, so two writes in flight could swap.
+  const sent: string[] = [];
+  const finishWrites: Array<() => void> = [];
+  const send = createTerminalInput(async (sessionId: string, data: string) => {
+    sent.push(`${sessionId}:${data}`);
+    await new Promise<void>((resolve) => finishWrites.push(resolve));
+  });
+  const first = send('pty-a', 'l');
+  const second = send('pty-a', 's');
+  const third = send('pty-a', '\r');
+  await second;
+  await third;
+  assert.deepEqual(sent, ['pty-a:l'], 'only one write is in flight');
+  finishWrites.shift()?.();
+  await settle();
+  assert.deepEqual(sent, ['pty-a:l', 'pty-a:s\r'], 'queued keys follow in one ordered write');
+  finishWrites.shift()?.();
+  await first;
 }
 
 console.log('terminalService tests passed');

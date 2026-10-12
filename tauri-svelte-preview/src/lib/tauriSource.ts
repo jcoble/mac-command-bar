@@ -968,14 +968,25 @@ function stopSourceScanProgressListener(): void {
 }
 
 export async function startTerminalSessionFromTauri(
-  request: TerminalStartRequest
+  request: TerminalStartRequest,
+  signal?: AbortSignal
 ): Promise<TerminalSessionInfo | null> {
-  if (!isTauriRuntime()) {
-    return null;
-  }
-
+  if (!isTauriRuntime() || signal?.aborted) return null;
+  // A remote session's shell starts over the network, so leaving cancels that request.
+  const requestId = createAgentConversationRequestId();
   const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<TerminalSessionInfo>('start_terminal_session', { request });
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    return await invoke<TerminalSessionInfo>('start_terminal_session', { request, requestId });
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
 }
 
 export async function listTerminalSessionsFromTauri(): Promise<TerminalSessionInfo[] | null> {
