@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TSK-1416 phone app mockup</title>
+<style>
+  /* Colors copied from Rental Command RC/lib/core/theme/app_tokens.dart (dark scheme, the app default). */
+  :root {
+    --surface: #121217;
+    --c-lowest: #0D0D11;
+    --c-low: #1A1A20;
+    --c: #202026;
+    --c-high: #2A2A31;
+    --c-highest: #363640;
+    --on-surface: #F2F0F7;
+    --on-variant: #CBC7D2;
+    --outline: #948F9C;
+    --outline-variant: #494750;
+    --primary: #D4BBFC;
+    --on-primary: #3A255B;
+    --primary-container: #513C73;
+    --on-primary-container: #ECDCFF;
+    --secondary: #2FD9F4;
+    --error: #FFB4AB;
+    --success: #45DFA4;
+    --warning: #F59E0B;
+    --info: #60A5FA;
+    /* M3TonalCard families: accent mixed 8% into the dark card (app_tokens.dart:403-412). */
+    --tone-sky: #1d2532;
+    --tone-amber: #2b241a;
+    --tone-rose: #2b2124;
+    --tone-mint: #1a2a26;
+    --tone-violet: #24212e;
+    --font: "Funnel Sans", "Inter", "Segoe UI", Roboto, system-ui, sans-serif;
+    --font-display: "Funnel Display", "Funnel Sans", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0a0a0d; color: var(--on-surface); font-family: var(--font); }
+  header.page { padding: 28px 40px 8px; }
+  header.page h1 { margin: 0 0 6px; font: 600 26px/1.2 var(--font-display); }
+  header.page p { margin: 0; color: var(--on-variant); font-size: 14px; max-width: 1500px; }
+  .row { display: flex; gap: 36px; padding: 24px 40px; flex-wrap: wrap; align-items: flex-start; }
+  figure { margin: 0; width: 390px; }
+  figcaption { margin-top: 12px; font-size: 12.5px; line-height: 1.5; color: var(--on-variant); }
+  figcaption b { color: var(--on-surface); display: block; font-size: 14px; margin-bottom: 4px; }
+  figcaption code { color: var(--primary); font-size: 11.5px; overflow-wrap: anywhere; }
+
+  .phone { width: 390px; height: 844px; background: var(--surface); border-radius: 40px; border: 1px solid #2c2c33;
+    overflow: hidden; display: flex; flex-direction: column; position: relative; box-shadow: 0 20px 50px rgba(0,0,0,.45); }
+  .status { height: 36px; display: flex; justify-content: space-between; align-items: center; padding: 0 24px; font-size: 13px; color: var(--on-surface); flex: none; }
+  .status .dots { letter-spacing: 3px; color: var(--on-variant); font-size: 11px; }
+  .appbar { height: 60px; display: flex; align-items: center; gap: 10px; padding: 0 16px; flex: none; }
+  .appbar h2 { margin: 0; font: 600 22px/1 var(--font-display); flex: 1; }
+  .appbar .back { font-size: 22px; color: var(--on-variant); width: 28px; }
+  .machine-chip { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 8px;
+    border: 1px solid var(--outline-variant); background: var(--c-low); font-size: 13px; font-weight: 500; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); display: inline-block; }
+  .content { flex: 1; overflow: hidden; padding: 4px 16px 12px; display: flex; flex-direction: column; gap: 10px; }
+
+  /* Bottom nav: copy of RC _MorphNavBar + M3MorphNavItem (home_shell.dart:1118, app_recipes.dart:270). */
+  .nav { height: 72px; flex: none; display: flex; justify-content: space-around; align-items: center; background: var(--c-low); border-top: 1px solid var(--outline-variant); }
+  .nav-item { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-radius: 9999px; color: var(--on-variant); font-size: 13px; font-weight: 500; position: relative; }
+  .nav-item.on { background: var(--primary-container); color: var(--on-primary-container); border-radius: 16px; }
+  .nav-item svg { width: 22px; height: 22px; }
+  .badge { position: static; margin-left: -2px; min-width: 18px; height: 18px; border-radius: 9px; background: var(--error); color: #690005; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; padding: 0 5px; }
+
+  /* Chat: RC _MessageBubble (message_detail_screen.dart:416) and _ComposeBar (512). */
+  .day { align-self: center; font-size: 11.5px; color: var(--on-variant); padding: 2px 10px; }
+  .bubble { max-width: 78%; padding: 10px 14px; font-size: 14px; line-height: 1.4; }
+  .bubble.mine { align-self: flex-end; background: var(--primary); color: var(--on-primary); border-radius: 16px 16px 4px 16px; }
+  .bubble.theirs { align-self: flex-start; background: var(--c-highest); color: var(--on-surface); border-radius: 16px 16px 16px 4px; }
+  .meta { font-size: 11px; color: var(--on-variant); margin-top: -6px; padding: 0 6px; }
+  .meta.r { align-self: flex-end; }
+  .tool { align-self: flex-start; font-size: 12px; color: var(--on-variant); display: flex; gap: 6px; align-items: center; padding: 0 4px; }
+  .tool code { font-family: ui-monospace, monospace; color: var(--secondary); font-size: 11.5px; }
+  /* M3TonalCard (app_recipes.dart:223): radius 28, tinted bg, accent border at half strength. */
+  .tonal { border-radius: 28px; padding: 14px 16px; border: 1px solid; }
+  .tonal.sky { background: var(--tone-sky); border-color: rgba(96,165,250,.35); }
+  .tonal.amber { background: var(--tone-amber); border-color: rgba(245,158,11,.4); }
+  .tonal.rose { background: var(--tone-rose); border-color: rgba(255,180,171,.35); }
+  .tonal.mint { background: var(--tone-mint); border-color: rgba(69,223,164,.3); }
+  .tonal .label { font-size: 11.5px; font-weight: 600; letter-spacing: .02em; display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .sky .label { color: var(--info); }
+  .amber .label { color: var(--warning); }
+  .rose .label { color: var(--error); }
+  .tonal p { margin: 0; font-size: 13.5px; line-height: 1.45; }
+  .tonal .fine { font-size: 11.5px; color: var(--on-variant); margin-top: 8px; }
+  .btns { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  /* Buttons: RC app_theme.dart:156-206, pill radius, min height 48 (shown at 40 for density). */
+  .btn { height: 40px; padding: 0 18px; border-radius: 9999px; font-size: 13.5px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; border: 1px solid transparent; }
+  .btn.filled { background: var(--primary); color: var(--on-primary); }
+  .btn.tonal-btn { background: var(--primary-container); color: var(--on-primary-container); }
+  .btn.outlined { border-color: var(--outline); color: var(--primary); }
+  .btn.danger { border-color: rgba(255,180,171,.6); color: var(--error); }
+  .btn.disabled { border-color: var(--outline-variant); color: #6d6975; }
+  .btn.wide { flex: 1; }
+  .working { font-size: 12px; color: var(--on-variant); display: flex; align-items: center; gap: 8px; padding: 0 4px; }
+  .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--primary); }
+  .compose { flex: none; border-top: 1px solid var(--outline-variant); padding: 8px; background: var(--surface); }
+  .field { height: 48px; border-radius: 24px; background: var(--c-highest); display: flex; align-items: center; padding: 0 4px 0 16px; color: var(--on-variant); font-size: 14px; }
+  .field .ph { flex: 1; }
+  .send { width: 40px; height: 40px; border-radius: 50%; background: var(--primary); display: flex; align-items: center; justify-content: center; }
+  .send svg { width: 18px; height: 18px; }
+
+  /* Lists: RC MobileM3ListItem (mobile_m3_list.dart:16), grouped rows with 16/4 corner pattern. */
+  .seg { display: flex; gap: 8px; }
+  .chip { height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--outline-variant); font-size: 13px; display: inline-flex; align-items: center; gap: 6px; color: var(--on-variant); }
+  .chip.sel { background: #004E5A; border-color: #004E5A; color: #A2EEFF; }
+  .section { font-size: 12px; font-weight: 600; color: var(--on-variant); margin: 6px 4px 0; letter-spacing: .03em; }
+  .group { display: flex; flex-direction: column; gap: 2px; }
+  .li { background: var(--c-low); padding: 12px 14px; display: flex; gap: 12px; align-items: center; border-radius: 4px; }
+  .group .li:first-child { border-radius: 16px 16px 4px 4px; }
+  .group .li:last-child { border-radius: 4px 4px 16px 16px; }
+  .group .li:only-child { border-radius: 16px; }
+  .lead { width: 40px; height: 40px; border-radius: 12px; background: var(--c-high); display: flex; align-items: center; justify-content: center; flex: none; }
+  .lead svg { width: 20px; height: 20px; }
+  .li .main { flex: 1; min-width: 0; }
+  .li .t { font-size: 14.5px; font-weight: 600; line-height: 1.3; }
+  .li .s { font-size: 12.5px; color: var(--on-variant); margin-top: 2px; }
+  .state { font-size: 11.5px; font-weight: 600; padding: 4px 10px; border-radius: 8px; white-space: nowrap; }
+  .st-run { background: rgba(96,165,250,.16); color: var(--info); }
+  .st-wait { background: rgba(245,158,11,.18); color: var(--warning); }
+  .st-pause { background: rgba(212,187,252,.16); color: var(--primary); }
+  .st-done { background: rgba(69,223,164,.14); color: var(--success); }
+  .st-stop { background: rgba(203,199,210,.12); color: var(--on-variant); }
+  .st-fail { background: rgba(255,180,171,.14); color: var(--error); }
+
+  /* Run detail */
+  .head .k { font-size: 12.5px; color: var(--secondary); font-weight: 600; }
+  .head .ttl { font: 600 19px/1.25 var(--font-display); margin: 2px 0 8px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .banner { border-radius: 16px; background: var(--tone-amber); border: 1px solid rgba(245,158,11,.4); padding: 10px 14px; font-size: 13px; display: flex; gap: 10px; align-items: center; }
+  .banner b { color: var(--warning); }
+  .banner .go { margin-left: auto; color: var(--primary); font-weight: 600; white-space: nowrap; }
+  .step .lead { width: 28px; height: 28px; border-radius: 50%; font-size: 13px; font-weight: 700; }
+  .step.pass .lead { background: rgba(69,223,164,.16); color: var(--success); }
+  .step.wait .lead { background: var(--c-high); color: var(--outline); }
+  .step.hold { outline: 1.5px solid rgba(245,158,11,.7); outline-offset: -1.5px; background: var(--tone-amber); }
+  .step.hold .lead { background: rgba(245,158,11,.25); color: var(--warning); }
+  .step .li { padding: 9px 14px; }
+  .step .t { font-size: 13.5px; }
+  .step .s { font-size: 11.5px; }
+  .attempts { font-size: 11.5px; color: var(--on-variant); white-space: nowrap; }
+  .tl { font-size: 12px; color: var(--on-variant); display: flex; flex-direction: column; gap: 4px; padding: 0 4px; }
+  .tl span b { color: var(--on-surface); font-weight: 500; }
+
+  /* Inbox */
+  pre.cmd { margin: 8px 0 0; padding: 8px 10px; background: var(--c-lowest); border-radius: 8px; font: 12px/1.4 ui-monospace, monospace; color: var(--on-surface); white-space: pre-wrap; }
+  .rounds { display: flex; gap: 6px; margin-top: 8px; }
+  .round { flex: 1; background: var(--c-lowest); border-radius: 8px; padding: 6px 8px; font-size: 11.5px; color: var(--on-variant); text-align: center; }
+  .round b { display: block; font-size: 16px; color: var(--on-surface); }
+  .round.bad b { color: var(--error); }
+  .reply { margin-top: 10px; height: 40px; border-radius: 16px; background: #2f2a3a; border: 1px solid var(--outline-variant); font-size: 13px; color: var(--on-variant); display: flex; align-items: center; padding: 0 14px; }
+
+  /* Pairing */
+  .cam { height: 300px; border-radius: 28px; background: radial-gradient(circle at 50% 45%, #2a2a33, #0d0d11 70%); position: relative; display: flex; align-items: center; justify-content: center; }
+  .frame { width: 190px; height: 190px; position: relative; }
+  .frame i { position: absolute; width: 38px; height: 38px; border: 4px solid var(--primary); }
+  .frame i:nth-child(1) { top: 0; left: 0; border-right: 0; border-bottom: 0; border-radius: 14px 0 0 0; }
+  .frame i:nth-child(2) { top: 0; right: 0; border-left: 0; border-bottom: 0; border-radius: 0 14px 0 0; }
+  .frame i:nth-child(3) { bottom: 0; left: 0; border-right: 0; border-top: 0; border-radius: 0 0 0 14px; }
+  .frame i:nth-child(4) { bottom: 0; right: 0; border-left: 0; border-top: 0; border-radius: 0 0 14px 0; }
+  .qr { position: absolute; inset: 34px; display: grid; grid-template-columns: repeat(11, 1fr); gap: 2px; opacity: .55; }
+  .qr div { background: #e8e4ef; border-radius: 1px; }
+  .qr div.o { background: transparent; }
+  .cam .hint { position: absolute; bottom: 14px; left: 0; right: 0; text-align: center; font-size: 12.5px; color: var(--on-variant); }
+  .howto { font-size: 13px; line-height: 1.5; color: var(--on-variant); }
+  .howto b { color: var(--on-surface); font-weight: 600; }
+  .input { height: 52px; border-radius: 16px; background: #2f2a3a; border: 1px solid var(--outline-variant); padding: 6px 14px; display: flex; flex-direction: column; justify-content: center; }
+  .input small { font-size: 11px; color: var(--primary); }
+  .input span { font-size: 14px; }
+  .home-tag { font-size: 11px; color: var(--secondary); font-weight: 600; }
+
+  /* Notes panel */
+  .notes { width: 690px; background: var(--c-low); border-radius: 28px; padding: 22px 26px; border: 1px solid var(--outline-variant); }
+  .notes h3 { margin: 0 0 10px; font: 600 18px/1.2 var(--font-display); }
+  .notes table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  .notes td, .notes th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--outline-variant); vertical-align: top; }
+  .notes th { color: var(--on-variant); font-weight: 600; }
+  .notes code { color: var(--primary); font-size: 11.5px; }
+  .notes p { font-size: 12.5px; color: var(--on-variant); line-height: 1.5; margin: 12px 0 0; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M4 5h16v11H9l-5 4z"/></symbol>
+    <symbol id="i-runs" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M5 6h3M5 12h3M5 18h3M11 6h8M11 12h8M11 18h8"/></symbol>
+    <symbol id="i-inbox" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M4 13l3-8h10l3 8v6H4zM4 13h5l1 2h4l1-2h5"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path fill="#3A255B" d="M3 20l18-8L3 4v6l12 2-12 2z"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path fill="currentColor" d="M7 5h4v14H7zM13 5h4v14h-4z"/></symbol>
+    <symbol id="i-hand" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" d="M12 3v9M8 6v7M16 6v7M5 11v3a7 7 0 0014 0v-4"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" d="M5 12l5 5 9-10"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" d="M4 5h16v6H4zM4 13h16v6H4z"/></symbol>
+  </defs>
+</svg>
+
+<header class="page">
+  <h1>Assembly phone app — mockup (TSK-1416 slice 5)</h1>
+  <p>Static mockup for owner review, 2026-10-12. Android, dark theme, 390×844 frames. Look and components are Rental Command's mobile app
+    (colors from <code>RC/lib/core/theme/app_tokens.dart</code>, fonts Funnel Display / Funnel Sans from <code>app_typography.dart</code>, shown here with a system fallback because the mockup loads nothing from the network).
+    Spec: <code>2026-10-12-tsk-1416-phone-app-design.md</code>.</p>
+</header>
+
+<div class="row">
+  <!-- 1. Chat -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span class="dots">●●● ▮</span></div>
+      <div class="appbar"><h2>Orchestrator</h2><span class="machine-chip"><span class="dot"></span>Workbox</span></div>
+      <div class="content">
+        <div class="bubble mine">Start TSK-1412 and TSK-1415 with the dev pipeline.</div>
+        <div class="tool"><code>start_run</code> 2 runs started on Workbox</div>
+        <div class="bubble theirs">Both started. I'll tell you when something needs you.</div>
+        <div class="tonal sky">
+          <div class="label">MESSAGE FROM tsk-1412/build</div>
+          <p>The migration has to drop the old usage_cache table. Please check with the owner.</p>
+        </div>
+        <div class="bubble theirs">Build wants to drop <b>usage_cache</b>. It only holds cached totals and is rebuilt on start.</div>
+        <div class="tonal amber">
+          <div class="label">CONFIRM · TSK-1412</div>
+          <p>Allow tsk-1412/build to drop the usage_cache table?</p>
+          <div class="btns"><span class="btn filled">Allow</span><span class="btn outlined">Don't allow</span></div>
+          <div class="fine">Only your tap counts. Typing "yes" in chat does not answer this.</div>
+        </div>
+        <div class="working"><span class="pulse"></span>Orchestrator is working…</div>
+      </div>
+      <div class="compose"><div class="field"><span class="ph">Message the orchestrator…</span><span class="send"><svg><use href="#i-send"/></svg></span></div></div>
+      <div class="nav">
+        <span class="nav-item on"><svg><use href="#i-chat"/></svg>Chat</span>
+        <span class="nav-item"><svg><use href="#i-runs"/></svg>Runs</span>
+        <span class="nav-item"><svg><use href="#i-inbox"/></svg>Inbox<span class="badge">2</span></span>
+      </div>
+    </div>
+    <figcaption><b>1 · Orchestrator chat</b>
+      Bubbles and composer: <code>_MessageBubble</code>, <code>_ComposeBar</code>, <code>_SendButton</code> (<code>RC/lib/features/messages/message_detail_screen.dart:416,512,632</code>), channel chips removed.
+      Relayed message and confirm card: <code>M3TonalCard</code> sky / amber (<code>app_recipes.dart:223</code>). The confirm buttons answer the inbox item (D13). Nav: <code>_MorphNavBar</code> + <code>M3MorphNavItem</code>.</figcaption>
+  </figure>
+
+  <!-- 2. Runs list -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span class="dots">●●● ▮</span></div>
+      <div class="appbar"><h2>Runs</h2><span class="machine-chip"><span class="dot"></span>Workbox</span></div>
+      <div class="content">
+        <div class="section">ACTIVE · 3</div>
+        <div class="group">
+          <div class="li"><span class="lead" style="color:var(--info)"><svg><use href="#i-play"/></svg></span>
+            <div class="main"><div class="t">TSK-1412 · Phone pairing endpoint</div><div class="s">build · round 2 · 18 min</div></div><span class="state st-run">Running</span></div>
+          <div class="li"><span class="lead" style="color:var(--warning)"><svg><use href="#i-hand"/></svg></span>
+            <div class="main"><div class="t">TSK-1415 · Usage cache rebuild</div><div class="s">code-review · round 3 · 41 min</div></div><span class="state st-wait">Waiting for you</span></div>
+          <div class="li"><span class="lead" style="color:var(--primary)"><svg><use href="#i-pause"/></svg></span>
+            <div class="main"><div class="t">TSK-1409 · Rail grouping fix</div><div class="s">proof · paused by you · 1 h 05</div></div><span class="state st-pause">Paused</span></div>
+        </div>
+        <div class="section">RECENT</div>
+        <div class="group">
+          <div class="li"><span class="lead" style="color:var(--success)"><svg><use href="#i-check"/></svg></span>
+            <div class="main"><div class="t">TSK-1401 · Inbox count query</div><div class="s">merged · PR #251 · yesterday</div></div><span class="state st-done">Done</span></div>
+          <div class="li"><span class="lead" style="color:var(--success)"><svg><use href="#i-check"/></svg></span>
+            <div class="main"><div class="t">TSK-1399 · Settings home machine</div><div class="s">PR open · I'll merge · yesterday</div></div><span class="state st-done">Done</span></div>
+          <div class="li"><span class="lead" style="color:var(--on-variant)">■</span>
+            <div class="main"><div class="t">TSK-1398 · Codex steer probe</div><div class="s">stopped by you · Oct 10</div></div><span class="state st-stop">Stopped</span></div>
+          <div class="li"><span class="lead" style="color:var(--error)">!</span>
+            <div class="main"><div class="t">TSK-1396 · Restart recovery</div><div class="s">checks failed · Oct 10</div></div><span class="state st-fail">Failed</span></div>
+        </div>
+      </div>
+      <div class="nav">
+        <span class="nav-item"><svg><use href="#i-chat"/></svg>Chat</span>
+        <span class="nav-item on"><svg><use href="#i-runs"/></svg>Runs</span>
+        <span class="nav-item"><svg><use href="#i-inbox"/></svg>Inbox<span class="badge">2</span></span>
+      </div>
+    </div>
+    <figcaption><b>2 · Runs list</b>
+      Rows: <code>MobileM3ListItem</code> + <code>MobileM3LeadingIcon</code> grouped list (<code>RC/lib/core/widgets/mobile_m3_list.dart</code>). State chips follow RC's per-feature status chips (e.g. <code>AppointmentStatusChip</code>, <code>appointments_shared.dart:57</code>) with the AppTokens success / warning / info colors. Pull to refresh; live "changed" notices refetch.</figcaption>
+  </figure>
+
+  <!-- 3. Run detail -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span class="dots">●●● ▮</span></div>
+      <div class="appbar"><span class="back">←</span><h2>Run</h2><span class="machine-chip"><span class="dot"></span>Workbox</span></div>
+      <div class="content">
+        <div class="head">
+          <div class="k">TSK-1415 · dev-pipeline</div>
+          <div class="ttl">Usage cache rebuild</div>
+          <div class="chips"><span class="state st-pause">Paused</span><span class="chip">tsk-1415-usage-cache</span><span class="chip">I'll merge: off</span></div>
+        </div>
+        <div class="btns" style="margin-top:2px"><span class="btn disabled wide">Pause</span><span class="btn filled wide">Resume</span><span class="btn danger wide">Stop</span></div>
+        <div class="banner"><span><b>Waiting for you:</b> code-review findings went up (2 → 4).</span><span class="go">Open ›</span></div>
+        <div class="group step">
+          <div class="li step pass"><span class="lead">✓</span><div class="main"><div class="t">recon</div></div><span class="attempts">1 attempt</span></div>
+          <div class="li step pass"><span class="lead">✓</span><div class="main"><div class="t">spec · spec-review</div></div><span class="attempts">2 rounds</span></div>
+          <div class="li step pass"><span class="lead">✓</span><div class="main"><div class="t">build</div><div class="s">redo after code-review round 2</div></div><span class="attempts">3 attempts</span></div>
+          <div class="li step pass"><span class="lead">✓</span><div class="main"><div class="t">checks</div><div class="s">3 of 3 commands passed</div></div><span class="attempts">3 attempts</span></div>
+          <div class="li step hold"><span class="lead">‖</span><div class="main"><div class="t">code-review</div><div class="s">round 3 · 4 findings · paused for you</div></div><span class="attempts">3 rounds</span></div>
+          <div class="li step wait"><span class="lead">·</span><div class="main"><div class="t">proof · pr · final-review · merge</div></div><span class="attempts">waiting</span></div>
+        </div>
+        <div class="section">RECENT ACTIVITY</div>
+        <div class="tl">
+          <span>9:38 <b>Run paused for owner</b> — findings 2 → 4</span>
+          <span>9:37 <b>code-review</b> reported 4 findings</span>
+          <span>9:31 <b>checks</b> passed (attempt 3)</span>
+          <span>9:30 message <b>tsk-1415/build → orchestrator</b> delivered</span>
+        </div>
+      </div>
+      <div class="nav">
+        <span class="nav-item"><svg><use href="#i-chat"/></svg>Chat</span>
+        <span class="nav-item on"><svg><use href="#i-runs"/></svg>Runs</span>
+        <span class="nav-item"><svg><use href="#i-inbox"/></svg>Inbox<span class="badge">2</span></span>
+      </div>
+    </div>
+    <figcaption><b>3 · Run detail (paused step)</b>
+      Pause / Resume / Stop: RC filled / outlined pill buttons (<code>app_theme.dart:156-206</code>); Stop asks to confirm first. Step list: <code>MobileM3ListItem</code>. Banner: amber <code>M3TonalFamily</code> tint. Tapping a step opens a bottom sheet (RC bottom-sheet theme, <code>app_theme.dart:265</code>) with its output or findings.</figcaption>
+  </figure>
+</div>
+
+<div class="row">
+  <!-- 4. Inbox -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span class="dots">●●● ▮</span></div>
+      <div class="appbar"><h2>Inbox</h2><span class="machine-chip"><span class="dot"></span>Workbox</span></div>
+      <div class="content">
+        <div class="tonal rose">
+          <div class="label">PERMISSION REQUEST · 9:40</div>
+          <p><b>tsk-1412/build</b> (Codex · Workbox) wants to run a command:</p>
+          <pre class="cmd">rm -rf target/phone-api-tmp</pre>
+          <div class="btns"><span class="btn filled">Allow once</span><span class="btn outlined">Reject</span></div>
+          <div class="fine">Buttons are the provider's own options.</div>
+        </div>
+        <div class="tonal amber">
+          <div class="label">LOOP STALLED · TSK-1415 · code-review</div>
+          <p>Findings stopped going down, so the run paused.</p>
+          <div class="rounds">
+            <div class="round"><b>5</b>round 1</div>
+            <div class="round"><b>2</b>round 2</div>
+            <div class="round bad"><b>4</b>round 3</div>
+          </div>
+          <div class="fine">See findings › · Checks: 3/3 passed</div>
+          <div class="reply">Add a note for the orchestrator (optional)</div>
+          <div class="btns"><span class="btn filled">Run another round</span><span class="btn tonal-btn">Accept as is</span><span class="btn danger">Stop the run</span></div>
+        </div>
+      </div>
+      <div class="nav">
+        <span class="nav-item"><svg><use href="#i-chat"/></svg>Chat</span>
+        <span class="nav-item"><svg><use href="#i-runs"/></svg>Runs</span>
+        <span class="nav-item on"><svg><use href="#i-inbox"/></svg>Inbox<span class="badge">2</span></span>
+      </div>
+    </div>
+    <figcaption><b>4 · Inbox</b>
+      Cards: <code>M3TonalCard</code> rose (permission) and amber (loop stalled). Buttons come from the backend's option list; the phone has no decision logic. Reply box: RC filled input (<code>app_theme.dart:126-153</code>). Push taps land here (<code>RC/lib/core/push/push_service.dart</code> pattern).</figcaption>
+  </figure>
+
+  <!-- 5. Pairing -->
+  <figure>
+    <div class="phone">
+      <div class="status"><span>9:41</span><span class="dots">●●● ▮</span></div>
+      <div class="appbar"><span class="back">←</span><h2>Pair a machine</h2></div>
+      <div class="content">
+        <div class="howto">On the Mac: <b>Assembly → Settings → Connections → Workbox → Pair phone</b>, then point the camera at the code.</div>
+        <div class="cam">
+          <div class="frame"><i></i><i></i><i></i><i></i>
+            <div class="qr">
+              <div></div><div></div><div></div><div class="o"></div><div></div><div class="o"></div><div></div><div class="o"></div><div></div><div></div><div></div>
+              <div></div><div class="o"></div><div></div><div></div><div class="o"></div><div></div><div class="o"></div><div></div><div></div><div class="o"></div><div></div>
+              <div></div><div></div><div></div><div class="o"></div><div></div><div class="o"></div><div></div><div class="o"></div><div></div><div></div><div></div>
+              <div class="o"></div><div></div><div class="o"></div><div></div><div class="o"></div><div></div><div></div><div class="o"></div><div></div><div class="o"></div><div></div>
+              <div></div><div class="o"></div><div></div><div class="o"></div><div></div><div></div><div class="o"></div><div></div><div class="o"></div><div></div><div class="o"></div>
+              <div class="o"></div><div></div><div></div><div></div><div class="o"></div><div class="o"></div><div></div><div></div><div></div><div class="o"></div><div></div>
+              <div></div><div class="o"></div><div class="o"></div><div></div><div></div><div></div><div class="o"></div><div></div><div class="o"></div><div></div><div></div>
+              <div class="o"></div><div class="o"></div><div class="o"></div><div class="o"></div><div></div><div class="o"></div><div></div><div></div><div class="o"></div><div class="o"></div><div></div>
+              <div></div><div></div><div></div><div class="o"></div><div class="o"></div><div></div><div></div><div class="o"></div><div></div><div class="o"></div><div></div>
+              <div></div><div class="o"></div><div></div><div class="o"></div><div></div><div class="o"></div><div class="o"></div><div></div><div></div><div></div><div class="o"></div>
+              <div></div><div></div><div></div><div class="o"></div><div></div><div></div><div class="o"></div><div class="o"></div><div></div><div class="o"></div><div></div>
+            </div>
+          </div>
+          <div class="hint">Looking for a pairing code…</div>
+        </div>
+        <div class="section">OR ENTER THE CODE</div>
+        <div class="input"><small>Machine URL</small><span>https://agent-workbox.chimp-map.ts.net:8777</span></div>
+        <div class="input"><small>Pairing code</small><span>K7QM 4XTD 9P</span></div>
+        <span class="btn filled" style="height:48px">Pair</span>
+        <div class="section">PAIRED</div>
+        <div class="group">
+          <div class="li"><span class="lead" style="color:var(--success)"><svg><use href="#i-server"/></svg></span><div class="main"><div class="t">Workbox</div><div class="s"><span class="home-tag">HOME · ORCHESTRATOR</span> · seen just now</div></div><span class="state st-done">Selected</span></div>
+        </div>
+      </div>
+    </div>
+    <figcaption><b>5 · Machines and pairing</b>
+      Camera view: new <code>mobile_scanner</code> package (RC has no QR scanner). Fields: RC filled input theme. Machine list: <code>MobileM3ListItem</code>. The code is single use and expires after 10 minutes; the phone stores only its own device token (<code>flutter_secure_storage</code>, as RC <code>token_store.dart</code>).</figcaption>
+  </figure>
+
+  <!-- Notes -->
+  <div class="notes">
+    <h3>What each part reuses from Rental Command</h3>
+    <table>
+      <tr><th>Mockup part</th><th>Rental Command source (read only)</th><th>In Assembly</th></tr>
+      <tr><td>Colors, radii, buttons, cards, chips, inputs</td><td><code>lib/core/theme/app_tokens.dart</code>, <code>app_theme.dart</code>, <code>app_typography.dart</code></td><td>copied whole</td></tr>
+      <tr><td>Bottom nav (3 tabs)</td><td><code>_MorphNavBar</code> <code>home_shell.dart:1118</code>, <code>M3MorphNavItem</code> <code>app_recipes.dart:270</code></td><td>copied, FAB gap removed</td></tr>
+      <tr><td>Chat bubbles, composer, send</td><td><code>message_detail_screen.dart:375-672</code></td><td>copied, channel chips removed</td></tr>
+      <tr><td>Relayed message, confirm, inbox cards</td><td><code>M3TonalCard</code> / <code>M3TonalFamily</code> <code>app_recipes.dart:19,223</code></td><td>copied</td></tr>
+      <tr><td>Runs, steps, machines lists</td><td><code>MobileM3ListItem</code> <code>lib/core/widgets/mobile_m3_list.dart</code></td><td>copied</td></tr>
+      <tr><td>Live updates</td><td><code>realtimeWatcherProvider</code> <code>realtime_providers.dart:64</code> (SignalR notices → invalidate)</td><td>same pattern over a plain WebSocket</td></tr>
+      <tr><td>Push</td><td><code>PushService</code> <code>lib/core/push/push_service.dart</code> (FCM + local notifications)</td><td>adapted, new channel <code>assembly_inbox</code></td></tr>
+    </table>
+    <p>Not shown: the machine picker sheet (opened from the Workbox chip) and empty / unreachable states ("Workbox is not reachable — check Tailscale", "Nothing waiting for you"). Approvals only ever come from the owner's taps on these buttons; agent text is never an answer (D13).</p>
+  </div>
+</div>
+</body>
+</html>
