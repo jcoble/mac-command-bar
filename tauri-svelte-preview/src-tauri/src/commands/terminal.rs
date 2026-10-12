@@ -15,11 +15,12 @@ pub(crate) async fn start_terminal_session(
     projection_streams: tauri::State<'_, ProjectionStreams>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     mut request: TerminalStartRequest,
+    request_id: Option<u64>,
 ) -> Result<TerminalSessionInfo, String> {
     if let Some((profile_id, path)) = split_remote_workspace_path(&request.cwd) {
         let profile_id = profile_id.to_string();
         request.cwd = path.to_string();
-        return remote.start_terminal(&profile_id, request).await;
+        return remote.start_terminal(&profile_id, request, request_id).await;
     }
     terminal::start_terminal_session(
         &terminal_registry,

@@ -1149,9 +1149,11 @@ impl RemoteConnectionManager {
     }
 
     /// Starts a shell on the machine that owns `request.cwd`, a native folder there.
-    pub async fn start_terminal(&self, profile_id: &str, request: TerminalStartRequest) -> Result<TerminalSessionInfo, String> {
+    /// A frontend `request_id` is the wire id, so cancelling it aborts the start on the server.
+    pub async fn start_terminal(&self, profile_id: &str, request: TerminalStartRequest, request_id: Option<u64>) -> Result<TerminalSessionInfo, String> {
+        let id = request_id.unwrap_or_else(|| self.next_request_id.fetch_add(1, Ordering::Relaxed));
         let RemoteResponse::TerminalSession(mut info) =
-            self.request_for_profile(profile_id, RemoteCommand::TerminalStart(request)).await?
+            self.request_with_id(profile_id, id, RemoteCommand::TerminalStart(request), None).await?
         else {
             return Err("The remote backend returned an incompatible terminal response".into());
         };
@@ -3336,19 +3338,18 @@ async fn execute_server_command(state: &ServerState, upload: &Arc<Mutex<Option<P
             ).await.map_err(|error| error.to_string())?;
         }
         RemoteCommand::TerminalStart(request) => {
-            let terminals = state.terminals.clone();
-            return tokio::task::spawn_blocking(move || {
-                // An exited shell is never reused, so drop this session's before starting a new one.
-                if let Some(owned_id) = request.owned_id.as_deref() {
-                    for info in terminal::list_terminal_sessions(&terminals.registry)? {
-                        if info.kind == TerminalKind::UserPty && info.exited && info.owned_id.as_deref() == Some(owned_id) {
-                            terminal::close_terminal_session(&terminals.registry, &info.session_id)?;
-                        }
+            // Runs inline, like the Mac's own start, so a cancel that arrives first starts nothing.
+            let terminals = &state.terminals;
+            // An exited shell is never reused, so drop this session's before starting a new one.
+            if let Some(owned_id) = request.owned_id.as_deref() {
+                for info in terminal::list_terminal_sessions(&terminals.registry)? {
+                    if info.kind == TerminalKind::UserPty && info.exited && info.owned_id.as_deref() == Some(owned_id) {
+                        terminal::close_terminal_session(&terminals.registry, &info.session_id)?;
                     }
                 }
-                terminal::start_terminal_session(&terminals.registry, terminals.streams.clone(), request)
-                    .map(RemoteResponse::TerminalSession)
-            }).await.map_err(|error| error.to_string())?;
+            }
+            return terminal::start_terminal_session(&terminals.registry, terminals.streams.clone(), request)
+                .map(RemoteResponse::TerminalSession);
         }
         RemoteCommand::TerminalWrite { session_id, data } => {
             return terminal::write_terminal_session(&state.terminals.registry, &session_id, &data).map(RemoteResponse::Bool);
