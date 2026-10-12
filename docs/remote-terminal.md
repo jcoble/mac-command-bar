@@ -25,7 +25,7 @@ Your keystrokes go Mac → tunnel → backend → shell. The shell's output goes
 
 ## Step by step
 
-1. **You open the Terminal tab.** The tab asks the Mac's Rust side to start a terminal in the session's own folder (its checkout, not the project root; `sessionTerminalRoot` in `workspacePaths.ts`). For a remote session that folder looks like `assembly-remote://<machine id>/home/you/project`.
+1. **You open the Terminal tab.** The tab asks the Mac's Rust side to start a terminal for the session folder. For a remote session that folder looks like `assembly-remote://<machine id>/home/you/project`.
 2. **The Mac sees the `assembly-remote://` prefix** (`commands/terminal.rs`). Instead of starting a local shell, it strips the prefix and sends a `TerminalStart` request with the real path (`/home/you/project`) over that machine's WebSocket. If you leave the tab before the answer comes back, the app cancels that request and the backend skips the start.
 3. **The backend starts the shell** (`remote.rs`, `execute_server_command`). It checks that the folder exists, then starts a login shell there. If this session already has a live shell, it reuses that one instead of starting a second. It answers with the shell's id.
 4. **The Mac renames the id** to `assembly-remote-terminal://<machine id>/<shell id>` and gives it to the tab. Every later call (typing, resize, reading scrollback, close) carries that id, and that prefix is how the Mac knows to send the call to the machine rather than to a local shell.

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mapWorkspaceSnapshotPaths, parseRemoteWorkspacePath, qualifyWorkspaceResult, remoteWorkspacePath, remoteWorkspaceRequest, sessionTerminalRoot, sessionWorkspaceRoot, workspaceChangePath } from '../src/lib/workspacePaths.ts';
+import { mapWorkspaceSnapshotPaths, parseRemoteWorkspacePath, qualifyWorkspaceResult, remoteWorkspacePath, remoteWorkspaceRequest, sessionWorkspaceRoot, workspaceChangePath } from '../src/lib/workspacePaths.ts';
 
 test('a workspace keeps its machine even when another session is selected', () => {
   const first = remoteWorkspacePath('workbox', '/home/me/project/a.ts');
@@ -74,10 +74,4 @@ test('hosted PR results keep their machine for follow-up reads and writes', () =
   assert.deepEqual(qualifyWorkspaceResult({ items: [{ localRoot: '/home/me/repo', url: 'https://github.com/o/r/pull/1' }] }, 'workbox'), {
     items: [{ localRoot: 'assembly-remote://workbox/home/me/repo', url: 'https://github.com/o/r/pull/1' }]
   });
-});
-test('a session terminal opens in the folder it works in, on its machine', () => {
-  const projects = [{ id: 'p2', machine: 'box', rootPath: '/srv/edi' }];
-  assert.equal(sessionTerminalRoot({ cwd: '/srv/worktrees/a', projectId: 'p2', executionEnvironment: 'remote', remoteProfileId: 'box' }), 'assembly-remote://box/srv/worktrees/a');
-  assert.equal(sessionTerminalRoot({ cwd: '/worktrees/tsk-1', projectId: 'p1', executionEnvironment: 'local' }), '/worktrees/tsk-1');
-  assert.equal(sessionWorkspaceRoot({ cwd: '/srv/worktrees/a', projectId: 'p2', executionEnvironment: 'remote', remoteProfileId: 'box' }, projects), 'assembly-remote://box/srv/edi');
 });

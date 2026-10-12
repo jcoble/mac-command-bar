@@ -36,8 +36,6 @@
     activeId: RightTabId;
     /** The active session's working folder, or '' when nothing is selected. */
     root: string;
-    /** The folder the active session works in, which its terminal opens in; '' when none. */
-    terminalRoot: string;
     /** False when the active session's checkout has disappeared. */
     rootAvailable?: boolean;
     /** Current route-owned checkout roots and stale-request generations. */
@@ -67,7 +65,6 @@
     visible,
     activeId,
     root,
-    terminalRoot,
     rootAvailable = true,
     checkoutScope,
     ownedId,
@@ -131,7 +128,7 @@
     {:else if visible && activeId === 'terminal'}
       <div class="panel-body showing">
         {#key ownedId}
-          {#key terminalRoot}<WorkspaceTerminal root={terminalRoot} {ownedId} />{/key}
+          {#key root}<WorkspaceTerminal {root} {ownedId} />{/key}
         {/key}
       </div>
     {:else if visible && activeId === 'run'}

@@ -589,7 +589,6 @@
 		visible={workbench.rightPanelOpen}
 		activeId={workbench.rightTab}
 		root={selection.newSession.draftOpen ? "" : selection.durableSessionRoot}
-		terminalRoot={selection.newSession.draftOpen ? "" : selection.durableSessionCwd}
 		rootAvailable={selection.activeRootAvailable}
 		ownedId={selection.activeOwnedId}
 		filesRoot={selection.filesProjectionRoot}

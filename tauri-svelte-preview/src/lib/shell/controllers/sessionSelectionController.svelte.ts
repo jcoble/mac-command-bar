@@ -1,4 +1,4 @@
-import { sessionTerminalRoot, sessionWorkspaceRoot, parseRemoteWorkspacePath } from '../../workspacePaths.ts';
+import { sessionWorkspaceRoot, parseRemoteWorkspacePath } from '../../workspacePaths.ts';
 import { projectRegistry } from '../projects/projectRegistry.svelte.ts';
 /**
  * Controller for session selection, filesystem projections, and workspace expansion.
@@ -91,11 +91,6 @@ export class SessionSelectionController {
 		const session = this.controlledSession ?? rail.owned.find((s) => s.ownedId === rail.activeOwnedId);
 		if (!session) return "";
 		return canonicalPath(sessionWorkspaceRoot(session, projectRegistry.projects));
-	}
-
-	get durableSessionCwd(): string {
-		const session = this.controlledSession ?? rail.owned.find((s) => s.ownedId === rail.activeOwnedId);
-		return session ? canonicalPath(sessionTerminalRoot(session)) : "";
 	}
 
 	/** The tree was filled for another root than the session's, as when its project's folder changed. */
