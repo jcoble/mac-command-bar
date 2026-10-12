@@ -5443,6 +5443,7 @@ fn main() {
                     }),
                     remote_session_store,
                 )?;
+            remote_connection.set_terminal_output(projection_streams.clone());
             if !remote_connection.is_configured() {
                 if let Some(profiles) = agent_runtime.read_app_setting(
                     agent_conversation::remote::REMOTE_ASSEMBLY_PROFILES_SETTING_KEY,

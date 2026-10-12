@@ -390,6 +390,8 @@ impl<T: Serialize + Send + 'static> BoundedProjectionStream<T> {
 pub struct ProjectionStreams {
     agent_conversation: Arc<BoundedProjectionStream<AgentConversationEvent>>,
     terminal_output: Arc<BoundedProjectionStream<TerminalOutputEvent>>,
+    /// Set on a remote server, which has no Tauri window: output goes to its sockets.
+    terminal_tap: Option<tokio::sync::broadcast::Sender<crate::terminal::TerminalOutputFrame>>,
 }
 
 impl Default for ProjectionStreams {
@@ -397,11 +399,18 @@ impl Default for ProjectionStreams {
         Self {
             agent_conversation: BoundedProjectionStream::new("agent-conversation-event"),
             terminal_output: BoundedProjectionStream::new("terminal_output"),
+            terminal_tap: None,
         }
     }
 }
 
 impl ProjectionStreams {
+    pub fn with_terminal_tap(
+        tap: tokio::sync::broadcast::Sender<crate::terminal::TerminalOutputFrame>,
+    ) -> Self {
+        Self { terminal_tap: Some(tap), ..Self::default() }
+    }
+
     pub fn publish_agent_event(&self, event: AgentConversationEvent) {
         let session = event.owned_id.clone();
         let generation = event.generation;
@@ -417,6 +426,10 @@ impl ProjectionStreams {
         sequence: i64,
         chunk: TerminalOutputEvent,
     ) {
+        if let Some(tap) = &self.terminal_tap {
+            let _ = tap.send(crate::terminal::TerminalOutputFrame { generation, sequence, output: chunk });
+            return;
+        }
         self.terminal_output
             .enqueue_terminal(session, generation, sequence, chunk);
     }
