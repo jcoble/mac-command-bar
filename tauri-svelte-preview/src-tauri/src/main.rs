@@ -5539,6 +5539,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             read_backend_capabilities,
+            list_installed_font_families,
             list_source_files,
             list_source_directory,
             cancel_source_scan,
@@ -5849,6 +5850,7 @@ fn main() {
             let _ = app_handle.emit(EXIT_REQUESTED_EVENT, serde_json::json!({ "kind": "quit" }));
         }
         tauri::RunEvent::Exit => {
+            app_handle.state::<terminal::TerminalRegistry>().shutdown();
             shutdown_agent_runtimes_on_exit(
                 &app_handle.state::<agent_conversation::manager::AgentRuntimeManager>(),
             );

@@ -1,5 +1,7 @@
 use crate::projection_streams::ProjectionStreams;
-use crate::terminal::{self, TerminalRegistry, TerminalSessionInfo, TerminalStartRequest};
+use crate::terminal::{
+    self, TerminalRegistry, TerminalScrollbackSnapshot, TerminalSessionInfo, TerminalStartRequest,
+};
 
 #[tauri::command]
 pub(crate) async fn start_terminal_session(
@@ -26,7 +28,7 @@ pub(crate) async fn read_terminal_session_scrollback(
     terminal_registry: tauri::State<'_, TerminalRegistry>,
     session_id: String,
     max_bytes: Option<usize>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<TerminalScrollbackSnapshot>, String> {
     terminal::read_terminal_session_scrollback(&terminal_registry, &session_id, max_bytes)
 }
 

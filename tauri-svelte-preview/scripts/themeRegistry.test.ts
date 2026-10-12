@@ -1,10 +1,10 @@
 /**
- * themeRegistry.test.mjs — proves a theme is complete, and proves the built-in
+ * themeRegistry.test.ts — proves a theme is complete, and proves the built-in
  * Houston theme still says exactly what the app already renders.
  *
  * The app shell is painted from three places that do NOT share a palette:
  * the CSS custom properties in `nextTokens.css`, Monaco's own theme object in
- * `sourcePreviewAppearance.ts`, and xterm's theme object in `xtermFactory.ts`.
+ * `sourcePreviewAppearance.ts`, and Ghostty's palette in the theme registry.
  * The theme registry gathers all three into one named set so switching themes
  * can change all three at once.
  *
@@ -13,7 +13,7 @@
  * looks one way until you pick a theme and another way afterwards. The checks
  * below read the original files and fail the moment the copy drifts.
  *
- * Run: node --experimental-strip-types scripts/themeRegistry.test.mjs
+ * Run: node --experimental-strip-types scripts/themeRegistry.test.ts
  */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
@@ -34,19 +34,19 @@ import {
 } from '../src/lib/shell/themes/themeRegistry.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const read = (relativePath) => readFileSync(resolve(projectRoot, relativePath), 'utf8');
+const read = (relativePath: string): string => readFileSync(resolve(projectRoot, relativePath), 'utf8');
 
 const NEXT_TOKENS_PATH = 'src/lib/shell/styles/nextTokens.css';
 const THEME_CHROME_PATH = 'src/lib/shell/styles/themeChrome.css';
-const XTERM_FACTORY_PATH = 'src/lib/shell/xtermFactory.ts';
+const GHOSTTY_FACTORY_PATH = 'src/lib/shell/ghosttyFactory.ts';
 const CONTRACT_PATH = 'src/lib/shell/themes/_(themes)-INTEGRATION.md';
 
-const stripComments = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
-const tidy = (value) => value.trim().replace(/\s+/g, ' ');
+const stripComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, '');
+const tidy = (value: string): string => value.trim().replace(/\s+/g, ' ');
 
 /** Every `--name: value;` a stylesheet declares, flattened into one map. */
-function readDeclarations(css) {
-  const declarations = new Map();
+function readDeclarations(css: string): Map<string, string> {
+  const declarations = new Map<string, string>();
   const source = stripComments(css);
   for (const match of source.matchAll(/(--[a-zA-Z0-9-]+)\s*:\s*([^;}]+)/g)) {
     declarations.set(match[1], tidy(match[2]));
@@ -227,40 +227,38 @@ function readDeclarations(css) {
   );
 }
 
-// ── Both themes carry the terminal colors the terminal is built with ───────
+// ── Every theme carries the established terminal palette shape ────────────
 //
 // The terminal has always been painted in Dracula's colors, in both shells.
 // Houston therefore keeps exactly those colors: picking Houston must not
 // repaint a terminal that has looked this way since before themes existed.
 {
-  const source = read(XTERM_FACTORY_PATH);
-  const block = source.match(/const DRACULA_THEME = \{([\s\S]*?)\n\} as const;/);
-  assert.ok(block, `could not find DRACULA_THEME in ${XTERM_FACTORY_PATH}`);
-
-  const live = {};
-  for (const match of block[1].matchAll(/([a-zA-Z]+):\s*'(#[0-9a-fA-F]{3,8})'/g)) {
-    live[match[1]] = match[2];
-  }
-  assert.ok(Object.keys(live).length >= 20, 'expected a full terminal palette in the factory');
+  const source = read(GHOSTTY_FACTORY_PATH);
+  assert.match(source, /theme:\s*\{ \.\.\.currentTheme\(\)\.terminal \}/);
+  const live = getTheme('dracula').terminal;
+  const expected = {
+    background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f2',
+    cursorAccent: '#282a36', selectionBackground: '#44475a', black: '#000000',
+    red: '#ff5555', green: '#50fa7b', yellow: '#f1fa8c', blue: '#bd93f9',
+    magenta: '#ff79c6', cyan: '#8be9fd', white: '#bbbbbb', brightBlack: '#555555',
+    brightRed: '#ff5555', brightGreen: '#50fa7b', brightYellow: '#f1fa8c',
+    brightBlue: '#caa9fa', brightMagenta: '#ff79c6', brightCyan: '#8be9fd',
+    brightWhite: '#ffffff'
+  };
+  assert.deepEqual(live, expected, 'Dracula’s established terminal palette has drifted');
 
   for (const theme of THEMES) {
     assert.deepEqual(
       Object.keys(theme.terminal).sort(),
       Object.keys(live).sort(),
-      `${theme.id}'s terminal colors name a different set of slots than the terminal reads`
+      `${theme.id}'s terminal colors name a different set of slots than Dracula`
+    );
+    assert.deepEqual(
+      theme.terminal,
+      expected,
+      `${theme.id}'s terminal colors have drifted from the established palette`
     );
   }
-
-  assert.deepEqual(
-    getTheme('houston').terminal,
-    live,
-    'Houston’s terminal colors have drifted from the terminal the app builds today'
-  );
-  assert.deepEqual(
-    getTheme('dracula').terminal,
-    live,
-    'Dracula’s terminal colors must be the ones the factory already ships'
-  );
 }
 
 // ── Dockview must follow the theme, not a color typed into a component ─────
@@ -331,4 +329,4 @@ function readDeclarations(css) {
   }
 }
 
-console.log('themeRegistry.test.mjs: all checks passed');
+console.log('themeRegistry.test.ts: all checks passed');

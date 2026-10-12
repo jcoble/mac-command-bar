@@ -10,7 +10,7 @@
  * 1. **Exactly one listener.** The old shell registered a listener per terminal,
  *    so output was written N times and every re-open leaked another
  *    subscription. Here `attach()` is idempotent. Inactive output stays in the
- *    backend scrollback ring; only the active session has an xterm view to feed.
+ *    backend scrollback ring; only the active session has a terminal view to feed.
  * 2. **`dispose()` never kills a PTY.** The old shell's
  *    `disposeEmbeddedTerminal` closed the backend session on teardown, so a
  *    dev-server reload murdered every running agent. Teardown here only
@@ -33,65 +33,86 @@ import {
   startTerminalSessionFromTauri,
   writeTerminalSessionFromTauri,
   type SessionSubscription,
+  type TerminalOutputEnvelope,
   type TerminalOutputPayload,
+  type TerminalScrollbackSnapshot,
   type TerminalSessionInfo,
   type TerminalStartRequest
 } from '../tauriSource.ts';
 import { hasBackendCapability } from './backendCapabilities.ts';
 import { trackTauriSubscriber } from './resourceDiagnostics.svelte.ts';
 
-export type TerminalOutputSubscriber = (payload: TerminalOutputPayload) => void;
+export type TerminalOutputSubscriber = (envelope: TerminalOutputEnvelope) => void;
+
+export type TerminalOutputSubscription = SessionSubscription & {
+  ready: Promise<void>;
+};
 
 const terminalOutputSubscribers = new Set<TerminalOutputSubscriber>();
 let terminalOutputUnlisten: SessionSubscription | null = null;
 let terminalOutputSetup: Promise<void> | null = null;
+let terminalOutputSetupGeneration = -1;
 let terminalOutputGeneration = 0;
 
 /** Subscribe to the one terminal-output stream without opening another Tauri listener. */
-export function subscribeToTerminalOutput(subscriber: TerminalOutputSubscriber): SessionSubscription {
+export function subscribeToTerminalOutput(
+  subscriber: TerminalOutputSubscriber,
+  signal: AbortSignal
+): TerminalOutputSubscription {
   terminalOutputSubscribers.add(subscriber);
-  ensureTerminalOutputListener();
+  const ready = ensureTerminalOutputListener();
+  const release = trackTauriSubscriber(() => {
+    terminalOutputSubscribers.delete(subscriber);
+    if (terminalOutputSubscribers.size === 0) stopTerminalOutputListener();
+  });
+  const unsubscribe = (): void => {
+    signal.removeEventListener('abort', unsubscribe);
+    release();
+  };
+  signal.addEventListener('abort', unsubscribe, { once: true });
+  if (signal.aborted) unsubscribe();
   return {
-    unsubscribe: trackTauriSubscriber(() => {
-      terminalOutputSubscribers.delete(subscriber);
-      if (terminalOutputSubscribers.size === 0) stopTerminalOutputListener();
-    })
+    ready,
+    unsubscribe
   };
 }
 
-function ensureTerminalOutputListener(): void {
-  if (terminalOutputUnlisten || terminalOutputSetup) return;
-  const generation = terminalOutputGeneration;
-  const setup = setupTerminalOutputListener(generation);
-  terminalOutputSetup = setup;
-  void clearTerminalOutputSetup(setup);
-}
-
-async function setupTerminalOutputListener(generation: number): Promise<void> {
-  try {
-    const stop = await listenToTerminalOutput((payload) => {
-      for (const subscriber of terminalOutputSubscribers) subscriber(payload);
-    });
-    if (generation !== terminalOutputGeneration || terminalOutputSubscribers.size === 0) {
-      stop?.unsubscribe();
-      return;
+async function ensureTerminalOutputListener(): Promise<void> {
+  while (!terminalOutputUnlisten && terminalOutputSubscribers.size > 0) {
+    let setup = terminalOutputSetup;
+    if (!setup) {
+      terminalOutputSetupGeneration = terminalOutputGeneration;
+      setup = setupTerminalOutputListener(terminalOutputSetupGeneration);
+      terminalOutputSetup = setup;
     }
-    terminalOutputUnlisten = stop;
-  } catch {
-    // A desktop build without the event leaves command reads as the authority.
+    const setupGeneration = terminalOutputSetupGeneration;
+    try {
+      await setup;
+    } catch (error) {
+      if (terminalOutputSetup === setup) terminalOutputSetup = null;
+      throw error;
+    }
+    if (terminalOutputSetup === setup) terminalOutputSetup = null;
+    if (setupGeneration === terminalOutputGeneration) return;
   }
 }
 
-async function clearTerminalOutputSetup(setup: Promise<void>): Promise<void> {
-  await setup;
-  if (terminalOutputSetup === setup) terminalOutputSetup = null;
+async function setupTerminalOutputListener(generation: number): Promise<void> {
+  const stop = await listenToTerminalOutput((envelope) => {
+    for (const subscriber of terminalOutputSubscribers) subscriber(envelope);
+  });
+  if (!stop) throw new Error('Terminal output stream is unavailable.');
+  if (generation !== terminalOutputGeneration || terminalOutputSubscribers.size === 0) {
+    stop.unsubscribe();
+    return;
+  }
+  terminalOutputUnlisten = stop;
 }
 
 function stopTerminalOutputListener(): void {
   terminalOutputGeneration += 1;
   terminalOutputUnlisten?.unsubscribe();
   terminalOutputUnlisten = null;
-  terminalOutputSetup = null;
 }
 
 /**
@@ -103,9 +124,12 @@ export type TerminalBackend = {
   write(sessionId: string, data: string): Promise<boolean>;
   resize(sessionId: string, cols: number, rows: number): Promise<boolean>;
   close(sessionId: string): Promise<boolean>;
-  readScrollback(sessionId: string, maxBytes?: number): Promise<string | null>;
+  readScrollback(
+    sessionId: string,
+    maxBytes?: number
+  ): Promise<TerminalScrollbackSnapshot | null>;
   list(): Promise<TerminalSessionInfo[] | null>;
-  listen(handler: (payload: TerminalOutputPayload) => void): Promise<(() => void) | null>;
+  listen(handler: (envelope: TerminalOutputEnvelope) => void): Promise<(() => void) | null>;
 };
 
 /**
@@ -130,7 +154,7 @@ export type OwnedTerminalProbe = {
   dispose(): Promise<CloseOwnedResult>;
 };
 
-/** Side effects a view reports back to the service (mirrors `xtermFactory`). */
+/** Side effects a view reports back to the service (mirrors `ghosttyFactory`). */
 export type TerminalViewHooks = {
   onData(data: string): void;
   onResize(cols: number, rows: number): void;
@@ -184,13 +208,13 @@ export type TerminalService = {
     host: HTMLElement,
     size?: { cols: number; rows: number } | null
   ): Promise<boolean>;
-  /** Remember a surviving PTY without allocating an xterm view for it. */
+  /** Remember a surviving PTY without allocating a terminal view for it. */
   trackExisting(
     owned: OwnedSession,
     size?: { cols: number; rows: number } | null
   ): boolean;
   /**
-   * Drop one xterm view's buffer while leaving its PTY, its routing metadata
+   * Drop one terminal view's buffer while leaving its PTY, its routing metadata
    * and its host intact, so `show` can rebuild it from the backend ring.
    */
   releaseView(ownedId: string): void;
@@ -271,7 +295,10 @@ export function tauriTerminalBackend(count: (command: string) => void): Terminal
       const closed = await closeTerminalSessionFromTauri(sessionId);
       return closed;
     },
-    async readScrollback(sessionId: string, maxBytes?: number): Promise<string | null> {
+    async readScrollback(
+      sessionId: string,
+      maxBytes?: number
+    ): Promise<TerminalScrollbackSnapshot | null> {
       count('read_terminal_session_scrollback');
       const scrollback = await readTerminalSessionScrollbackFromTauri(sessionId, maxBytes);
       return scrollback;
@@ -281,10 +308,17 @@ export function tauriTerminalBackend(count: (command: string) => void): Terminal
       const sessions = await listTerminalSessionsFromTauri();
       return sessions;
     },
-    async listen(handler: (payload: TerminalOutputPayload) => void): Promise<(() => void) | null> {
+    async listen(handler: (envelope: TerminalOutputEnvelope) => void): Promise<(() => void) | null> {
       count('listen:terminal_output');
-      const subscription = subscribeToTerminalOutput(handler);
-      return () => subscription.unsubscribe();
+      const controller = new AbortController();
+      const subscription = subscribeToTerminalOutput(handler, controller.signal);
+      try {
+        await subscription.ready;
+      } catch (error) {
+        controller.abort();
+        throw error;
+      }
+      return () => controller.abort();
     }
   };
 }
@@ -294,7 +328,7 @@ export function tauriTerminalBackend(count: (command: string) => void): Terminal
  * view, in UTF-16 code units.
  *
  * The backend ring holds up to 16 MB, but the view keeps only 8000 lines (see
- * `xtermFactory`). Everything older than that tail is parsed by xterm — escape
+ * `ghosttyFactory`). Everything older than that tail is parsed by the terminal — escape
  * sequences and all — purely to be dropped off the top of its own buffer. 4 MB
  * is a deliberate over-estimate of what 8000 lines can hold (~200 bytes/line),
  * so the cap costs nothing visible and bounds the worst-case re-attach at a
@@ -612,7 +646,8 @@ export function createTerminalService(opts: {
   }
 
   async function setupTerminalBackendListener(): Promise<void> {
-    const stop = await backend.listen((payload: TerminalOutputPayload): void => {
+    const stop = await backend.listen((envelope: TerminalOutputEnvelope): void => {
+      const payload = envelope.chunk;
       if (payload.data) {
         // Feed FIRST, including on the terminating payload, so the active
         // view gets the last bytes an agent printed. An inactive session has
@@ -730,7 +765,7 @@ export function createTerminalService(opts: {
     if (host.isConnected === false) return false;
     if (scrollback) {
       // Only the tail: the ring is 16 MB, the view keeps 8000 lines.
-      scrollbackCache.set(ptyId, replayTail(scrollback));
+      scrollbackCache.set(ptyId, replayTail(scrollback.data));
     }
     try {
       setPty(owned.ownedId, ptyId);
@@ -805,7 +840,7 @@ export function createTerminalService(opts: {
         return;
       }
       if (scrollback) {
-        scrollbackCache.set(ptyId, replayTail(scrollback));
+        scrollbackCache.set(ptyId, replayTail(scrollback.data));
       }
     }
     try {

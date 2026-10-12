@@ -790,12 +790,27 @@ pub async fn close_agent_conversation(
 pub async fn delete_agent_conversation_session(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
+    terminal_registry: tauri::State<'_, crate::terminal::TerminalRegistry>,
     owned_id: String,
 ) -> CommandResult<bool> {
     if remote.owns(&owned_id) {
         return command_result(remote.delete(owned_id).await);
     }
-    let result = manager.delete(&owned_id).await;
+    let result = async {
+        if manager
+            .store()
+            .get_session(&owned_id)
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Ok(false);
+        }
+        // Keep the durable row reachable when a PTY refuses to die, so the
+        // user can retry the deletion instead of orphaning its shell.
+        terminal_registry.close_user_terminals_for_owned(&owned_id)?;
+        manager.delete(&owned_id).await
+    }
+    .await;
     log_command_error("delete_agent_conversation_session", &owned_id, result)
 }
 

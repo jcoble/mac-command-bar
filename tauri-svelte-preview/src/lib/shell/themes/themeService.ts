@@ -8,12 +8,11 @@
  *                 carries the entire shadcn/dockview surface for free.
  *   the editor    Monaco keeps its own registry of themes by name. It has to be
  *                 told to define the theme and then to switch to it.
- *   the terminals xterm keeps a theme per terminal instance, and this shell
- *                 holds one live terminal per session, all of which have to be
- *                 repainted, not just the one on screen.
+ *   the terminal  Ghostty keeps a theme per mounted terminal view, so the
+ *                 workspace view receives changes while it is open.
  *
  * The last two live in files this module must not import (the editor component
- * is 2000+ lines of Monaco wiring; the terminal factory is the shell's xterm
+ * is 2000+ lines of Monaco wiring; the terminal factory is the Ghostty
  * seam). So instead of reaching into them, this module offers a place for them
  * to hand in a function: `registerMonacoApplier` and `registerTerminalApplier`.
  * Whoever registers is called straight away with the theme in force, so a code

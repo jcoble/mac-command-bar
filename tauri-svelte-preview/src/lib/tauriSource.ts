@@ -57,6 +57,11 @@ export type NativeSourceScanProgress = {
   matchedFiles: number;
 };
 
+export type InstalledFontFamilies = {
+  families: string[];
+  monospacedFamilies: string[];
+};
+
 export type SourceScanProgressSubscriber = (progress: NativeSourceScanProgress) => void;
 
 export type TerminalStartRequest = {
@@ -130,6 +135,12 @@ export type TerminalOutputPayload = {
   signal: string | null;
 };
 
+export type TerminalScrollbackSnapshot = {
+  data: string;
+  generation: number;
+  sequence: number;
+};
+
 type ProjectionStreamWireEnvelope<T> = {
   session: string;
   generation: number;
@@ -148,6 +159,8 @@ export type StreamEnvelope<T> = {
   kind: 'agent-conversation-event' | typeof terminalOutputEvent;
   chunk: T;
 };
+
+export type TerminalOutputEnvelope = StreamEnvelope<TerminalOutputPayload>;
 
 export type ProjectionStreamRegistration = {
   unregister(): Promise<void>;
@@ -722,6 +735,16 @@ export function isNativeTauriRuntime(): boolean {
   return isTauriRuntime();
 }
 
+export async function listInstalledFontFamiliesFromTauri(
+  signal?: AbortSignal
+): Promise<InstalledFontFamilies | null> {
+  if (!isTauriRuntime() || signal?.aborted) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  if (signal?.aborted) return null;
+  const families = await invoke<InstalledFontFamilies>('list_installed_font_families');
+  return signal?.aborted ? null : families;
+}
+
 let projectRootValidationRequestId = 0;
 
 export async function validateProjectRootFromTauri(
@@ -1152,13 +1175,16 @@ export async function runHelperJobFromTauri(
 export async function readTerminalSessionScrollbackFromTauri(
   sessionId: string,
   maxBytes?: number
-): Promise<string | null> {
+): Promise<TerminalScrollbackSnapshot | null> {
   if (!isTauriRuntime()) {
     return null;
   }
 
   const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<string | null>('read_terminal_session_scrollback', { sessionId, maxBytes });
+  return invoke<TerminalScrollbackSnapshot | null>('read_terminal_session_scrollback', {
+    sessionId,
+    maxBytes
+  });
 }
 
 export async function writeTerminalSessionFromTauri(
@@ -1293,10 +1319,10 @@ export async function registerTerminalOutputStream(
 }
 
 export async function listenToTerminalOutput(
-  handler: (payload: TerminalOutputPayload) => void
+  handler: (envelope: TerminalOutputEnvelope) => void
 ): Promise<SessionSubscription | null> {
   const registration = await registerTerminalOutputStream((envelope) => {
-    handler(envelope.chunk);
+    handler(envelope);
   });
   return registration
     ? { unsubscribe: () => void registration.unregister() }

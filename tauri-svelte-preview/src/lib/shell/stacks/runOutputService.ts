@@ -22,10 +22,13 @@ import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import {
   listTerminalSessionsFromTauri,
   readTerminalSessionScrollbackFromTauri,
-  type SessionSubscription
+  type TerminalOutputEnvelope
 } from '../../tauriSource.ts';
 import { appendOutputTail } from '../panels/run/runOutputTail.ts';
-import { subscribeToTerminalOutput } from '../terminalService.ts';
+import {
+  subscribeToTerminalOutput,
+  type TerminalOutputSubscription
+} from '../terminalService.ts';
 
 /**
  * How much of a saved scrollback is read into a fresh tail. The ring behind it
@@ -52,11 +55,13 @@ export async function watchRunOutput(
   onTail: (ownedId: string, tail: string[]) => void
 ): Promise<RunOutputWatch> {
   let stopped = false;
-  let unlisten: SessionSubscription | null = null;
+  const stopController = new AbortController();
+  let unlisten: TerminalOutputSubscription | null = null;
 
   const watch: RunOutputWatch = {
     stop(): void {
       stopped = true;
+      stopController.abort();
       unlisten?.unsubscribe();
       unlisten = null;
     }
@@ -78,30 +83,56 @@ export async function watchRunOutput(
   if (ownedByTerminal.size === 0) return watch;
 
   const tails = new Map<string, string[]>();
+  const watermarks = new Map<string, { generation: number; sequence: number }>();
+  const queued: TerminalOutputEnvelope[] = [];
+  let hydrating = true;
+
+  function applyOutput(envelope: TerminalOutputEnvelope): void {
+    const payload = envelope.chunk;
+    const ownedId = ownedByTerminal.get(payload.sessionId);
+    if (!ownedId || !payload.data) return;
+    const watermark = watermarks.get(payload.sessionId);
+    if (
+      watermark &&
+      envelope.generation === watermark.generation &&
+      envelope.sequence <= watermark.sequence
+    ) {
+      return;
+    }
+    const next = appendOutputTail(tails.get(ownedId) ?? [], payload.data);
+    tails.set(ownedId, next);
+    onTail(ownedId, next);
+  }
+
+  const stopListening = subscribeToTerminalOutput((envelope) => {
+    if (hydrating) queued.push(envelope);
+    else applyOutput(envelope);
+  }, stopController.signal);
+  try {
+    await stopListening.ready;
+  } catch (error) {
+    stopController.abort();
+    throw error;
+  }
+  if (stopped) return watch;
+  unlisten = stopListening;
 
   for (const [terminalId, ownedId] of ownedByTerminal) {
     countInvoke('read_terminal_session_scrollback');
     const scrollback = await readTerminalSessionScrollbackFromTauri(terminalId, SEED_MAX_CHARS);
     if (stopped) return watch;
-    const seed = appendOutputTail([], scrollback ?? '');
+    const seed = appendOutputTail([], scrollback?.data ?? '');
+    if (scrollback) {
+      watermarks.set(terminalId, {
+        generation: scrollback.generation,
+        sequence: scrollback.sequence
+      });
+    }
     tails.set(ownedId, seed);
     onTail(ownedId, seed);
   }
-
-  const stopListening = subscribeToTerminalOutput((payload) => {
-    const ownedId = ownedByTerminal.get(payload.sessionId);
-    if (!ownedId || !payload.data) return;
-    const next = appendOutputTail(tails.get(ownedId) ?? [], payload.data);
-    tails.set(ownedId, next);
-    onTail(ownedId, next);
-  });
-
-  // The panel may have been closed while the subscription was being set up, in
-  // which case it is dropped immediately rather than left running unseen.
-  if (stopped) {
-    stopListening.unsubscribe();
-    return watch;
-  }
-  unlisten = stopListening;
+  hydrating = false;
+  for (const envelope of queued) applyOutput(envelope);
+  queued.length = 0;
   return watch;
 }
