@@ -1,6 +1,6 @@
 use std::fmt;
 use std::ops::{Deref, DerefMut};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
@@ -2581,6 +2581,11 @@ impl SessionStore {
              FROM active",
             params![run_id, provider], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         ).map_err(|error| StoreError::sqlite("could not count active workflow agents", error))
+    }
+
+    /// The database file's path; None for an in-memory store.
+    pub fn database_path(&self) -> Result<Option<PathBuf>> {
+        Ok(self.lock()?.path().filter(|path| !path.is_empty()).map(PathBuf::from))
     }
 
     /// Lease holders from the latest snapshot of each run: (run id, node run id, workspace policy JSON, run cwd).

@@ -2117,17 +2117,20 @@ impl WorkflowEngine {
     }
 
     /// Dispatches this run, then any other run left waiting for agent capacity.
-    pub async fn dispatch_ready(&self, run_id: &str) -> Result<WorkflowRunRecord, WorkflowError> {
-        let run = self.dispatch_run(run_id).await?;
-        let waiting = self.store.workflow_runs_ready_for_dispatch(run_id)
-            .map_err(|error| WorkflowError::Ledger(error.to_string()))?;
-        for other in waiting {
-            // Another run's failure is recorded on that run; it must not fail this caller.
-            if let Err(error) = self.dispatch_run(&other).await {
-                eprintln!("workflow run {other} could not dispatch: {error}");
+    /// Boxed because a finished `run` step calls back into it from a spawned task.
+    pub fn dispatch_ready<'a>(&'a self, run_id: &'a str) -> PortFuture<'a, WorkflowRunRecord> {
+        Box::pin(async move {
+            let run = self.dispatch_run(run_id).await?;
+            let waiting = self.store.workflow_runs_ready_for_dispatch(run_id)
+                .map_err(|error| WorkflowError::Ledger(error.to_string()))?;
+            for other in waiting {
+                // Another run's failure is recorded on that run; it must not fail this caller.
+                if let Err(error) = self.dispatch_run(&other).await {
+                    eprintln!("workflow run {other} could not dispatch: {error}");
+                }
             }
-        }
-        Ok(run)
+            Ok(run)
+        })
     }
 
     async fn dispatch_run(&self, run_id: &str) -> Result<WorkflowRunRecord, WorkflowError> {
@@ -2152,7 +2155,10 @@ impl WorkflowEngine {
                 self.append(&mut run, "workflow.worktree.allocated", "worktree", None)?;
             }
             if run.definition.nodes.iter().any(|node| !node.step.is_null()) && run.input_snapshot["run"].is_null() {
-                let proof = std::env::temp_dir().join("assembly-workflow-proof").join(uuid::Uuid::new_v4().to_string());
+                // Beside the session database, so evidence outlives temp-folder cleanup.
+                let base = self.store.database_path().map_err(|error| WorkflowError::Ledger(error.to_string()))?
+                    .and_then(|path| path.parent().map(Path::to_path_buf)).unwrap_or_else(std::env::temp_dir);
+                let proof = base.join("workflow-proof").join(uuid::Uuid::new_v4().to_string());
                 std::fs::create_dir_all(&proof).map_err(|error| WorkflowError::Runtime(error.to_string()))?;
                 run.input_snapshot["run"] = json!({"proof_dir":proof,"pr_body":proof.join("pr-body.md")});
                 self.append(&mut run, "workflow.proof.allocated", "proof", None)?;
@@ -2211,8 +2217,12 @@ impl WorkflowEngine {
                 .clone();
             if !node_definition.step.is_null() {
                 if let Some(condition) = &node_definition.condition {
-                    let value = if let Some(text) = condition.as_str() { render_step_template(text, &run)? } else { condition.to_string() };
-                    if value != "true" && value != "false" { return Err(invalid_yaml("if must resolve to a boolean")); }
+                    let value = condition.as_str().map_or_else(|| Ok(condition.to_string()), |text| render_step_template(text, &run))
+                        .and_then(|value| if value == "true" || value == "false" { Ok(value) } else { Err(invalid_yaml("if must resolve to a boolean")) });
+                    let value = match value {
+                        Ok(value) => value,
+                        Err(error) => { self.fail_unrenderable_step(&mut run, index, error)?; continue; }
+                    };
                     if value == "false" {
                         run.nodes[index].state = WorkflowNodeState::Skipped;
                         run.nodes[index].finished_at_ms = Some(self.clock.now_ms());
@@ -2230,7 +2240,16 @@ impl WorkflowEngine {
                     return Ok(run);
                 }
                 if node_definition.step.get("run").is_some() {
-                    self.execute_commands(&mut run, index, &node_definition).await?;
+                    let commands = match render_commands(&node_definition, &run) {
+                        Ok(commands) => commands,
+                        Err(error) => { self.fail_unrenderable_step(&mut run, index, error)?; continue; }
+                    };
+                    self.begin_commands(&mut run, index)?;
+                    // Commands run outside the dispatch lock so other runs keep moving.
+                    let (engine, run_id, attempt_id) = (self.clone(), run_id.to_owned(), run.nodes[index].id.clone());
+                    tauri::async_runtime::spawn(async move {
+                        engine.run_commands(&run_id, &attempt_id, &node_definition, commands).await;
+                    });
                     continue;
                 }
             }
@@ -2262,6 +2281,12 @@ impl WorkflowEngine {
                     "Child depth budget exhausted",
                 )));
             }
+            let step_prompt = if node_definition.step.is_null() { None } else {
+                match render_step_template(&role.prompt_template_id, &run) {
+                    Ok(prompt) => Some(prompt),
+                    Err(error) => { self.fail_unrenderable_step(&mut run, index, error)?; continue; }
+                }
+            };
             let cwd = run
                 .input_snapshot
                 .get("cwd")
@@ -2359,7 +2384,7 @@ impl WorkflowEngine {
                 }
             })
             .to_string();
-            let prompt = if node_definition.step.is_null() { prompt } else { render_step_template(&role.prompt_template_id, &run)? };
+            let prompt = step_prompt.unwrap_or(prompt);
             if !node_definition.step.is_null() { self.arm_deadline(&run, index); }
             let dispatch = self
                 .runtime
@@ -2476,14 +2501,20 @@ impl WorkflowEngine {
             if let Some(deadlines) = deadlines.upgrade() {
                 deadlines.lock().unwrap().remove(&attempt_id);
                 let engine = Self { runtime, leases, clock, ids, store, dispatch_lock, deadlines };
-                let _ = engine.timeout_step(&run_id, &node_id).await;
+                // Another write to the run can land first; retry so the timeout is not lost.
+                for _ in 0..5 {
+                    match engine.timeout_step(&run_id, &node_id).await {
+                        Err(WorkflowError::Ledger(message)) if message.starts_with("Stale workflow transition") => continue,
+                        _ => break,
+                    }
+                }
             }
         });
         self.deadlines.lock().unwrap().insert(node.id.clone(), task.inner().abort_handle());
     }
 
-    async fn execute_commands(&self, run: &mut WorkflowRunRecord, index: usize, definition: &WorkflowNodeDefinition) -> Result<(), WorkflowError> {
-        let node_id = &definition.id;
+    /// Writes the PR body file and marks the `run` step running; called under the dispatch lock.
+    fn begin_commands(&self, run: &mut WorkflowRunRecord, index: usize) -> Result<(), WorkflowError> {
         let proof = Path::new(run.input_snapshot["run"]["proof_dir"].as_str().unwrap()).to_path_buf();
         let task_key = run.input_snapshot["task"]["key"].as_str().unwrap_or_default();
         let body = format!("Task: [{task_key}](https://www.notion.so/search?query={task_key})\n\n{}\n\n{}",
@@ -2492,18 +2523,40 @@ impl WorkflowEngine {
         std::fs::write(proof.join("pr-body.md"), body).map_err(|error| WorkflowError::Runtime(error.to_string()))?;
         run.nodes[index].state = WorkflowNodeState::Running;
         run.nodes[index].started_at_ms = Some(self.clock.now_ms());
-        self.append(run, "workflow.node.running", &format!("running:{}", run.nodes[index].id), Some(node_id))?;
+        let (node_id, key) = (run.nodes[index].node_id.clone(), format!("running:{}", run.nodes[index].id));
+        self.append(run, "workflow.node.running", &key, Some(&node_id))
+    }
+
+    /// Background half of a `run` step: runs the commands, records them, then schedules the run again.
+    async fn run_commands(&self, run_id: &str, attempt_id: &str, definition: &WorkflowNodeDefinition, commands: Vec<RenderedCommand>) {
+        if let Err(error) = self.execute_commands(run_id, attempt_id, definition, commands).await {
+            let _dispatch = self.dispatch_lock.lock().await;
+            let key = format!("command-error:{attempt_id}");
+            if let Err(error) = self.fail_agent_node(run_id, &definition.id, "runtime", &error.to_string(), &key) {
+                eprintln!("workflow step {attempt_id} could not record its failure: {error}");
+            }
+        }
+        if let Err(error) = self.dispatch_ready(run_id).await {
+            eprintln!("workflow run {run_id} could not continue after {attempt_id}: {error}");
+        }
+    }
+
+    async fn execute_commands(&self, run_id: &str, attempt_id: &str, definition: &WorkflowNodeDefinition, commands: Vec<RenderedCommand>) -> Result<(), WorkflowError> {
+        let node_id = &definition.id;
+        let run = self.require_run(run_id)?;
+        let proof = Path::new(run.input_snapshot["run"]["proof_dir"].as_str().unwrap()).to_path_buf();
+        let cwd = run.input_snapshot["cwd"].as_str().unwrap().to_string();
+        let attempt = run.nodes.iter().find(|node| node.id == attempt_id).map_or(1, |node| node.attempt);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(definition.timeout_seconds);
         let mut results = Vec::new();
-        for (number, command) in definition.step["run"].as_array().ok_or_else(|| invalid_yaml("run must list commands"))?.iter().enumerate() {
-            let command = render_step_template(command.as_str().ok_or_else(|| invalid_yaml("Command must be a string"))?, run)?;
-            let cwd = run.input_snapshot["cwd"].as_str().unwrap().to_string();
+        for (number, (command, values)) in commands.into_iter().enumerate() {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            let evidence = proof.join(format!("{}-{}-{}.txt", node_id, run.nodes[index].attempt, number + 1));
+            let evidence = proof.join(format!("{}-{}-{}.txt", node_id, attempt, number + 1));
             std::fs::write(&evidence, []).map_err(|error| WorkflowError::Runtime(error.to_string()))?;
-            let (script, log_path) = (command.clone(), evidence.clone());
+            let (script, log_path, cwd) = (command.clone(), evidence.clone(), cwd.clone());
             let output = tauri::async_runtime::spawn_blocking(move || crate::bounded_process::output(
-                std::process::Command::new("sh").args(["-c", r#"exec >"$1" 2>&1; eval "$2""#, "--", &log_path.to_string_lossy(), &script]).current_dir(cwd), "Workflow command", remaining)).await
+                std::process::Command::new("sh").args(["-c", r#"exec >"$1" 2>&1; eval "$2""#, "--", &log_path.to_string_lossy(), &script])
+                    .envs(values).current_dir(cwd), "Workflow command", remaining)).await
                 .map_err(|error| WorkflowError::Runtime(error.to_string()))?;
             let (exit_code, error, timed_out) = match output {
                 Ok(output) => (output.status.code(), None, false),
@@ -2513,19 +2566,37 @@ impl WorkflowEngine {
             let text = String::from_utf8_lossy(&bytes);
             let bounded = text.lines().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
             results.push(json!({"command":command,"exitCode":exit_code,"error":error,"output":bounded.chars().take(32_768).collect::<String>(),"evidencePath":evidence}));
-            *run = self.require_run(&run.id)?;
+            let _dispatch = self.dispatch_lock.lock().await;
+            let mut run = self.require_run(run_id)?;
+            let Some(index) = run.nodes.iter().position(|node| node.id == attempt_id && node.state == WorkflowNodeState::Running) else {
+                return Ok(()); // stopped, timed out or replaced while the command ran
+            };
             run.nodes[index].structured_output = Some(json!({"commands":results}));
-            let artifact_id = format!("{}:{}", run.nodes[index].id, number);
+            let artifact_id = format!("{}:{}", attempt_id, number);
             run.nodes[index].artifacts.push(WorkflowArtifactRef { id:artifact_id, kind:"command-output".into(), path:Some(evidence.to_string_lossy().into()), url:None, digest:None });
-            self.append(run, "workflow.node.command-recorded", &format!("command:{}:{}", run.nodes[index].id, number), Some(node_id))?;
-            if run.nodes[index].state != WorkflowNodeState::Running { return Ok(()); }
-            if timed_out { *run = self.timeout_step(&run.id, node_id).await?; return Ok(()); }
+            self.append(&mut run, "workflow.node.command-recorded", &format!("command:{}:{}", attempt_id, number), Some(node_id))?;
+            if timed_out { self.timeout_step(run_id, node_id).await?; return Ok(()); }
         }
         let count = results.iter().filter(|result| result["exitCode"] != 0).count();
         let summary = results.iter().filter_map(|result| result["output"].as_str()).collect::<Vec<_>>().join("\n");
         let summary = summary.lines().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
-        *run = self.finish_step(&run.id, node_id, json!({"commands":results,"findingCount":count,"summary":summary,"files":[]}), count == 0, &format!("result:{}", run.nodes[index].id))?;
+        let _dispatch = self.dispatch_lock.lock().await;
+        self.finish_step(run_id, node_id, json!({"commands":results,"findingCount":count,"summary":summary,"files":[]}), count == 0, &format!("result:{attempt_id}"))?;
         Ok(())
+    }
+
+    /// A step whose template cannot be filled fails with the reason before it takes a slot or runs anything.
+    fn fail_unrenderable_step(&self, run: &mut WorkflowRunRecord, index: usize, error: WorkflowError) -> Result<(), WorkflowError> {
+        let node = &mut run.nodes[index];
+        node.state = WorkflowNodeState::Failed;
+        node.failure = Some(WorkflowFailure { code: "template".into(), message: error.to_string(), budget: None });
+        node.finished_at_ms = Some(self.clock.now_ms());
+        let (node_id, key) = (node.node_id.clone(), format!("template:{}", node.id));
+        if run.definition.completion.cancel_descendants_on_failure {
+            cancel_descendants(run, &node_id);
+        }
+        refresh_ready_and_phase(run);
+        self.append(run, "workflow.node.failed", &key, Some(&node_id))
     }
 
     pub fn list_runs(&self) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
@@ -2547,8 +2618,6 @@ impl WorkflowEngine {
         Ok(runs)
     }
 
-    /// A new app process cannot receive completion events from the previous
-    /// process's agent turns. Leave their work visible and offer an explicit retry.
     /// Startup recovery. A `run` step marked `repeat: true` starts again as a new attempt; every other
     /// step that was starting or running when Assembly stopped waits for the owner, because its outcome
     /// is unknown (an agent turn, a pull request, a merge). No prompt or command is sent here. Returns the
@@ -2707,7 +2776,28 @@ impl WorkflowEngine {
     }
 }
 
+/// A shell command with its template values held back as environment variables.
+type RenderedCommand = (String, Vec<(String, String)>);
+
 fn render_step_template(template: &str, run: &WorkflowRunRecord) -> Result<String, WorkflowError> {
+    render_template(template, run, |value| value)
+}
+
+/// Each `${{ }}` value becomes `${ASSEMBLY_V<n>}`, passed as an environment variable, so text from agents
+/// or tasks reaches the shell as data and is never parsed as shell code.
+fn render_commands(definition: &WorkflowNodeDefinition, run: &WorkflowRunRecord) -> Result<Vec<RenderedCommand>, WorkflowError> {
+    definition.step["run"].as_array().ok_or_else(|| invalid_yaml("run must list commands"))?.iter().map(|command| {
+        let mut values = Vec::new();
+        let command = render_template(command.as_str().ok_or_else(|| invalid_yaml("Command must be a string"))?, run, |value| {
+            let name = format!("ASSEMBLY_V{}", values.len());
+            values.push((name.clone(), value));
+            format!("${{{name}}}")
+        })?;
+        Ok((command, values))
+    }).collect()
+}
+
+fn render_template(template: &str, run: &WorkflowRunRecord, mut emit: impl FnMut(String) -> String) -> Result<String, WorkflowError> {
     let mut output = String::new();
     let mut rest = template;
     while let Some(start) = rest.find("${{") {
@@ -2720,11 +2810,12 @@ fn render_step_template(template: &str, run: &WorkflowRunRecord) -> Result<Strin
             run.nodes.iter().find(|node| node.node_id == parts[1]).and_then(|node| node.structured_output.as_ref()).and_then(|output| output.get(parts[2])).cloned()
         } else {
             let mut value = &run.input_snapshot;
-            for part in parts { value = &value[part]; }
-            (!value.is_null()).then(|| value.clone())
+            for part in &parts { value = &value[*part]; }
+            // A first attempt has no redo values; a prompt shared by first attempts and redos renders them empty.
+            if value.is_null() && parts.first() == Some(&"redo") { Some(json!("")) } else { (!value.is_null()).then(|| value.clone()) }
         }.ok_or_else(|| invalid_yaml(format!("Unknown template value: {key}")))?;
         let value = if negate { json!(!value.as_bool().ok_or_else(|| invalid_yaml("Negation requires boolean"))?) } else { value };
-        output.push_str(&value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string()));
+        output.push_str(&emit(value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string())));
         rest = &rest[end + 2..];
     }
     output.push_str(rest);
@@ -3377,7 +3468,8 @@ mod tests {
         let runtime = Arc::new(FakeRuntime::default());
         let engine = run_engine(runtime.clone());
         let run = step_run(&engine, &repo.0, json!({"run":["printf first; exit 7", "pwd; exit 0"]}));
-        let finished = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+        tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+        let finished = settle(&engine, &run.id);
         let output = finished.nodes[0].structured_output.as_ref().unwrap();
         assert_eq!(output["commands"].as_array().unwrap().len(), 2);
         assert_eq!(output["commands"][0]["exitCode"], 7);
@@ -3487,6 +3579,7 @@ mod tests {
                 if !shell { tokio::time::sleep(std::time::Duration::from_millis(1100)).await; }
                 engine.require_run(&run.id).unwrap()
             });
+            let paused = if shell { settle(&engine, &run.id) } else { paused };
             assert_eq!(paused.state, WorkflowRunState::WaitingInput);
             assert_eq!(paused.nodes[0].state, WorkflowNodeState::WaitingInput);
             assert_eq!(runtime.dispatched.lock().unwrap().len(), if shell { 0 } else { 1 });
@@ -4107,6 +4200,62 @@ mod tests {
         assert_eq!(derive_phase(&run), WorkflowLoopPhase::Cancelled);
     }
 
+    /// Waits for background `run` steps to finish; their commands run after the dispatch call returns.
+    fn settle(engine: &WorkflowEngine, run_id: &str) -> WorkflowRunRecord {
+        for _ in 0..1000 {
+            let run = engine.require_run(run_id).unwrap();
+            let busy = run.nodes.iter().any(|node| node.state == WorkflowNodeState::Running
+                && run.definition.nodes.iter().any(|definition| definition.id == node.node_id && definition.step.get("run").is_some()));
+            if !busy { return run; }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("run step did not finish");
+    }
+
+    #[test]
+    fn run_step_commands_do_not_hold_up_the_dispatch_call() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let run = step_run(&engine, &repo.0, json!({"run":["sleep 1; touch done.txt"]}));
+        let started = std::time::Instant::now();
+        let running = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_millis(800), "start waited for the command");
+        assert_eq!(running.nodes[0].state, WorkflowNodeState::Running);
+        let finished = settle(&engine, &run.id);
+        assert!(repo.0.join("done.txt").exists());
+        assert_eq!(finished.nodes[0].state, WorkflowNodeState::Completed);
+    }
+
+    #[test]
+    fn template_error_fails_step_before_taking_a_slot() {
+        let repo = RunRepo::new();
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = run_engine(runtime.clone());
+        let mut run = step_run(&engine, &repo.0, json!({"agent":{"provider":"codex"}}));
+        assert_eq!(render_step_template("[${{ redo.findings }}]", &run).unwrap(), "[]", "no redo yet renders empty");
+        for role in &mut run.definition.roles { role.prompt_template_id = "Fix ${{ inputs.missing }}".into(); }
+        engine.append(&mut run, "workflow.test.prompt", "prompt", None).unwrap();
+        let failed = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+        assert_eq!(failed.nodes[0].state, WorkflowNodeState::Failed);
+        assert_eq!(failed.nodes[0].failure.as_ref().unwrap().code, "template");
+        assert!(failed.nodes[0].lease_id.is_none());
+        assert!(runtime.dispatched.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn command_values_are_not_parsed_as_shell() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let mut run = step_run(&engine, &repo.0, json!({"run":["printf '%s' \"${{ task.title }}\" > title.txt"]}));
+        let title = "x\"; touch pwned1; echo \"$(touch pwned2)`touch pwned3`";
+        run.input_snapshot["task"]["title"] = json!(title);
+        engine.append(&mut run, "workflow.test.title", "title", None).unwrap();
+        tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+        settle(&engine, &run.id);
+        for file in ["pwned1", "pwned2", "pwned3"] { assert!(!repo.0.join(file).exists(), "{file} ran"); }
+        assert_eq!(std::fs::read_to_string(repo.0.join("title.txt")).unwrap(), title);
+    }
+
     /// A fresh engine over the same store, as after an app restart.
     fn restarted_engine(engine: &WorkflowEngine, runtime: Arc<FakeRuntime>) -> WorkflowEngine {
         WorkflowEngine::new(runtime, Arc::new(InMemoryWorktreeLeasePort::default()),
@@ -4135,7 +4284,8 @@ mod tests {
                 assert_eq!(dispatch, vec![run.id.clone()]);
                 assert_eq!(recovered.nodes[0].state, WorkflowNodeState::Ready);
                 assert_eq!(recovered.nodes[0].attempt, 2);
-                let finished = tauri::async_runtime::block_on(restarted.dispatch_ready(&run.id)).unwrap();
+                tauri::async_runtime::block_on(restarted.dispatch_ready(&run.id)).unwrap();
+                let finished = settle(&restarted, &run.id);
                 assert!(repo.0.join("ran.txt").exists());
                 assert_eq!(finished.nodes[0].state, WorkflowNodeState::Completed);
             } else {
