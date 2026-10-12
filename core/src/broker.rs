@@ -104,6 +104,14 @@ impl SessionStore {
         db("could not read session directory", rows.collect())
     }
 
+    /// The name other sessions use to reach `owned_id`.
+    pub fn directory_name(&self, owned_id: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        let connection = self.lock()?;
+        db("could not read the session name", connection.query_row(
+            "SELECT name FROM session_directory WHERE owned_id = ?", [owned_id], |row| row.get(0)).optional())
+    }
+
     pub fn resolve_session_name(&self, name: &str) -> Result<String> {
         let connection = self.lock()?;
         let (count, owned_id): (i64, Option<String>) = db("could not resolve session name", connection.query_row(

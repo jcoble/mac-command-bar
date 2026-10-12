@@ -184,6 +184,9 @@ pub struct ManagedAgentSession {
     pub generation: u64,
     /// The registry project this session was started in, kept across generations.
     pub project_id: Option<String>,
+    /// The session that started this one with `start_session`; each turn this
+    /// session finishes is reported back to it as a message.
+    helper_of: Option<String>,
     pub owner: AgentExecutionOwner,
     pub state: AgentRuntimeState,
     pub capabilities: AgentCapabilities,
@@ -373,6 +376,9 @@ impl ChildHistoryWatcher {
         }
     }
 }
+
+/// The most of a helper's final reply that is sent back to its parent.
+const HELPER_REPLY_LIMIT: usize = 4000;
 
 #[derive(Clone)]
 pub struct AgentRuntimeManager {
@@ -1207,11 +1213,95 @@ impl AgentRuntimeManager {
         Ok(())
     }
 
+    /// Starts a helper session for `parent` in the parent's folder and project,
+    /// lists it among the parent's agents, and sends it `prompt` as its first
+    /// turn. Returns the helper's owned id.
+    pub(super) async fn start_helper(
+        &self,
+        parent: &str,
+        provider: AgentConversationProvider,
+        model: Option<String>,
+        name: &str,
+        prompt: &str,
+    ) -> Result<String, String> {
+        let parent_row = self.store.get_session(parent).map_err(|error| error.to_string())?
+            .ok_or_else(|| "The calling session was not found".to_string())?;
+        self.providers.manifest(provider)?;
+        let owned_id = uuid::Uuid::new_v4().to_string();
+        let connection = self.ensure_async(EnsureAgentConversationRequest {
+            owned_id: owned_id.clone(),
+            provider,
+            cwd: parent_row.cwd.clone(),
+            native_session_id: None,
+            execution_environment: ExecutionEnvironment::Local,
+            remote_profile_id: None,
+            native_session_mode: AgentNativeSessionMode::Resume,
+            reasoning_effort: None,
+            project_id: parent_row.project_id.clone(),
+        }).await?;
+        self.hydrate_overlay_from_store(&owned_id)?;
+        {
+            let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = current_session_mut(&mut sessions, &owned_id, connection.generation)?;
+            session.helper_of = Some(parent.to_string());
+            session.rail_meta.title = Some(name.to_string());
+            session.rail_meta.project = parent_row.project.clone();
+            session.title_source = Some(TITLE_SOURCE_USER.to_string());
+            persist_session(session)?;
+        }
+        // The rail adds a session it has not seen when it hears its name.
+        let listener = self.renamed_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if let Some(listener) = listener {
+            listener(&owned_id, name);
+        }
+        self.show_helper_to_parent(parent, &owned_id, name, "running")?;
+        let prompt = AgentPrompt { text: prompt.to_string(), images: Vec::new(), attachment_ids: Vec::new() };
+        self.send_message(&owned_id, connection.generation, prompt, model, None).await?;
+        Ok(owned_id)
+    }
+
+    /// Updates the helper's row in its parent's agents list.
+    fn show_helper_to_parent(&self, parent: &str, helper: &str, name: &str, state: &str) -> Result<(), String> {
+        self.hydrate_overlay_from_store(parent)?;
+        let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(session) = sessions.get_mut(parent) else { return Ok(()) };
+        record_payload_for_session_and_dispatch(session, &self.emitter, AgentConversationPayload::ChildUpdate {
+            child_id: helper.to_string(),
+            parent_tool_call_id: String::new(),
+            parent_id: Some(parent.to_string()),
+            transcript_id: None,
+            label: Some(name.to_string()),
+            state: state.to_string(),
+            latest_activity: None,
+        }).map(|_| ())
+    }
+
+    /// Queues a helper's final reply for the session that started it and
+    /// wakes that session. Sessions that are not helpers report nothing.
+    fn report_helper_turn(&self, owned_id: &str, turn_id: &str, outcome: &str) -> Result<(), String> {
+        let (parent, name) = {
+            let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(session) = sessions.get(owned_id) else { return Ok(()) };
+            let Some(parent) = session.helper_of.clone() else { return Ok(()) };
+            (parent, session.rail_meta.title.clone().unwrap_or_else(|| owned_id.to_string()))
+        };
+        let reply = self.store.latest_assistant_text_for_turn(owned_id, turn_id)
+            .map_err(|error| error.to_string())?.unwrap_or_default();
+        let reply: String = reply.chars().take(HELPER_REPLY_LIMIT).collect();
+        self.store.append_message("", owned_id, &parent, mcb_core::broker::MessageKind::Message,
+            &format!("[{name} {outcome}] {reply}")).map_err(|error| error.to_string())?;
+        let state = match outcome { "finished" => "finished", "failed" => "failed", _ => "cancelled" };
+        self.show_helper_to_parent(&parent, owned_id, &name, state)?;
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move { manager.deliver_if_idle(&parent).await });
+        Ok(())
+    }
+
     /// Sends a newly queued message at once when its target is between turns.
     /// A busy target receives it when its turn ends.
     /// Boxed because activation hands this to the messaging endpoint, and the
     /// send below activates again.
-    fn deliver_if_idle<'a>(&'a self, owned_id: &'a str)
+    pub(super) fn deliver_if_idle<'a>(&'a self, owned_id: &'a str)
         -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
         let generation = match self.hydrate_overlay_from_store(owned_id) {
@@ -1785,6 +1875,7 @@ impl AgentRuntimeManager {
                     .as_ref()
                     .and_then(|session| session.project_id.clone())
                     .or(request.project_id.clone()),
+                helper_of: prior.as_ref().and_then(|session| session.helper_of.clone()),
                 owner: AgentExecutionOwner::Stopped,
                 state: AgentRuntimeState::Starting,
                 capabilities: empty_capabilities(request.provider),
@@ -1934,11 +2025,7 @@ impl AgentRuntimeManager {
         };
         let endpoint = super::messaging::endpoint()?;
         let credential = endpoint.issue(owned_id);
-        let manager = self.clone();
-        endpoint.bind_store(&credential.token, &self.store, Some(Arc::new(move |target| {
-            let manager = manager.clone();
-            tauri::async_runtime::spawn(async move { manager.deliver_if_idle(&target).await });
-        })));
+        endpoint.bind_store(&credential.token, &self.store, Some(self.clone()));
         let mcp_servers = vec![credential.server()];
         let shared_key = AdapterPoolKey::Shared(provider);
         let mut pools = self.adapter_pools.lock().await;
@@ -4761,6 +4848,8 @@ struct StoredSessionExtra {
     rail_meta: AgentConversationSessionMeta,
     #[serde(default)]
     claude_children: HashMap<String, ClaudeChildSession>,
+    #[serde(default)]
+    helper_of: Option<String>,
 }
 
 /// The stored metadata an imported conversation starts life with.
@@ -4782,6 +4871,7 @@ pub(super) fn imported_session_extra(
         capabilities: empty_capabilities(provider),
         rail_meta: AgentConversationSessionMeta::default(),
         claude_children: HashMap::new(),
+        helper_of: None,
     })
     .map_err(|error| format!("Could not encode imported session metadata: {error}"))
 }
@@ -4805,6 +4895,7 @@ fn persisted_session_row_for_candidate(
         capabilities: candidate.capabilities.clone(),
         rail_meta: session.rail_meta.clone(),
         claude_children: session.claude_children.clone(),
+        helper_of: session.helper_of.clone(),
     };
     Ok(SessionRow {
         owned_id: session.owned_id.clone(),
@@ -4928,6 +5019,7 @@ fn recovered_session_from_row(
         native_session_mode: stored.native_session_mode,
         generation: stored.generation,
         project_id: row.project_id,
+        helper_of: stored.helper_of.clone(),
         owner: stored.owner,
         state,
         capabilities: stored.capabilities,
@@ -7139,6 +7231,10 @@ async fn handle_ordered_session_event(
             }
             if turn_completed {
                 manager.name_session_after_turn(owned_id, generation, &turn_id);
+            }
+            let outcome = if cancelled { "stopped" } else if runtime_error { "failed" } else { "finished" };
+            if let Err(error) = manager.report_helper_turn(owned_id, &turn_id, outcome) {
+                crate::debug_log::stderr_log!("Could not report the helper's turn: {error}");
             }
             if let Err(error) = manager
                 .drain_broker_message_at(owned_id, generation, store_timestamp(timestamp_millis()))
@@ -12409,6 +12505,59 @@ mod tests {
             AgentConversationPayload::UserMessage { text, .. } if text == expected
         )).count(), 1);
 
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn start_session_creates_named_child_in_callers_project() {
+        let fixture = fixture_manager_with_acp_session("multiplex").await;
+        let store = Arc::clone(&fixture.manager.store);
+        let endpoint = super::super::messaging::MessagingEndpoint::start().unwrap();
+        let caller = endpoint.issue(&fixture.owned_id);
+        endpoint.bind_store(&caller.token, &store, Some(fixture.manager.clone()));
+        let result = endpoint
+            .handle(&caller.token, json!({"name":"start_session","arguments":{
+                "provider":"codex","name":"Reviewer","prompt":"Check the patch"}}))
+            .await
+            .expect("start helper");
+        let started: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(started["name"], "Reviewer");
+        let helper = started["owned_id"].as_str().unwrap().to_string();
+        let parent_row = store.get_session(&fixture.owned_id).unwrap().unwrap();
+        let helper_row = store.get_session(&helper).unwrap().unwrap();
+        assert_eq!(helper_row.cwd, parent_row.cwd);
+        assert_eq!(helper_row.project_id, parent_row.project_id);
+        assert_eq!(store.resolve_session_name("Reviewer").unwrap(), helper);
+        let parent_events = || {
+            fixture.manager.snapshot(&fixture.owned_id).unwrap().unwrap().events
+        };
+        assert!(parent_events().iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::ChildUpdate { child_id, label, state, .. }
+                if *child_id == helper && label.as_deref() == Some("Reviewer") && state == "running")));
+
+        // The helper's finished turn is reported to the parent and wakes it.
+        let expected = "[message from Reviewer]\n[Reviewer finished] BRAVO";
+        wait_until(|| parent_events().iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::UserMessage { text, .. } if text == expected))).await;
+        assert!(parent_events().iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::ChildUpdate { child_id, state, .. }
+                if *child_id == helper && state == "finished")));
+        // The parent is not a helper, so its own turn reports to no one.
+        wait_until(|| fixture.manager.sessions.lock().unwrap()
+            .get(&fixture.owned_id).is_none_or(|session| session.active_turn_id.is_none())).await;
+        assert!(store.pending_for(&helper).unwrap().is_none());
+
+        let helper_generation = fixture.manager.sessions.lock().unwrap()
+            .get(&helper).map(|session| session.generation);
+        if let Some(generation) = helper_generation {
+            fixture.manager.close(&helper, generation).await.unwrap();
+        }
+        endpoint.revoke(&fixture.owned_id);
         fixture
             .manager
             .close(&fixture.owned_id, fixture.generation)
