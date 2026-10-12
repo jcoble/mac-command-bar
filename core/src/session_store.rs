@@ -2556,6 +2556,55 @@ impl SessionStore {
         ).map_err(|error| StoreError::sqlite("could not count active workflow agents", error))
     }
 
+    /// Lease holders from the latest snapshot of each run: (run id, node run id, workspace policy JSON, run cwd).
+    pub fn workflow_active_leases(&self) -> Result<Vec<(String, String, String, String)>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "WITH latest AS (
+                SELECT json_extract(e.payload_json, '$.workflowPayload.run') AS run
+                FROM orchestration_events e
+                WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%'
+                  AND e.rowid = (SELECT rowid FROM orchestration_events
+                    WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                    ORDER BY sequence DESC LIMIT 1)
+             )
+             SELECT json_extract(run, '$.id'), json_extract(n.value, '$.id'),
+                json_extract(r.value, '$.workspacePolicy'), COALESCE(json_extract(run, '$.inputSnapshot.cwd'), '')
+             FROM latest, json_each(run, '$.nodes') n
+             JOIN json_each(run, '$.definition.roles') r
+               ON json_extract(r.value, '$.id') = json_extract(n.value, '$.roleId')
+             WHERE json_extract(n.value, '$.leaseId') IS NOT NULL
+               AND json_extract(n.value, '$.state') IN ('starting', 'running', 'waiting-approval', 'waiting-input')",
+        ).map_err(|error| StoreError::sqlite("could not prepare workflow lease query", error))?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .map_err(|error| StoreError::sqlite("could not read workflow leases", error))?;
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(|error| StoreError::sqlite("could not read workflow lease row", error))
+    }
+
+    /// Other running runs whose latest snapshot has a step ready to start; used when agent capacity frees up.
+    pub fn workflow_runs_ready_for_dispatch(&self, except_run_id: &str) -> Result<Vec<String>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "WITH latest AS (
+                SELECT e.run_id, json_extract(e.payload_json, '$.workflowPayload.run') AS run
+                FROM orchestration_events e
+                WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%' AND e.run_id <> ?1
+                  AND e.rowid = (SELECT rowid FROM orchestration_events
+                    WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                    ORDER BY sequence DESC LIMIT 1)
+             )
+             SELECT run_id FROM latest
+             WHERE json_extract(run, '$.state') = 'running'
+               AND EXISTS (SELECT 1 FROM json_each(run, '$.nodes') n WHERE json_extract(n.value, '$.state') = 'ready')
+             ORDER BY run_id",
+        ).map_err(|error| StoreError::sqlite("could not prepare ready workflow query", error))?;
+        let rows = statement.query_map([except_run_id], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not read ready workflow runs", error))?;
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(|error| StoreError::sqlite("could not read ready workflow run", error))
+    }
+
     pub fn latest_workflow_orchestration_event(&self, run_id: &str) -> Result<Option<OrchestrationEventRow>> {
         let connection = self.lock()?;
         connection.query_row(

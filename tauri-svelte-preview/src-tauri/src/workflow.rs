@@ -1835,9 +1835,13 @@ impl WorkflowEngine {
         if !approved && run.definition.completion.cancel_descendants_on_failure {
             cancel_descendants(&mut run, node_id);
         }
+        // A gate answer is not a resume: a paused run records the answer and stays paused.
+        let paused = run.state == WorkflowRunState::Paused;
         if approved {
             materialize_plan_steps(&mut run, node_id, self.ids.as_ref())?;
-            run.state = WorkflowRunState::Running;
+            if !paused {
+                run.state = WorkflowRunState::Running;
+            }
         }
         refresh_ready_and_phase(&mut run);
         self.append(
@@ -1846,7 +1850,7 @@ impl WorkflowEngine {
             idempotency_key,
             Some(node_id),
         )?;
-        if approved {
+        if approved && !paused {
             self.dispatch_ready(run_id).await
         } else {
             Ok(run)
@@ -2112,7 +2116,21 @@ impl WorkflowEngine {
         self.dispatch_ready(run_id).await
     }
 
+    /// Dispatches this run, then any other run left waiting for agent capacity.
     pub async fn dispatch_ready(&self, run_id: &str) -> Result<WorkflowRunRecord, WorkflowError> {
+        let run = self.dispatch_run(run_id).await?;
+        let waiting = self.store.workflow_runs_ready_for_dispatch(run_id)
+            .map_err(|error| WorkflowError::Ledger(error.to_string()))?;
+        for other in waiting {
+            // Another run's failure is recorded on that run; it must not fail this caller.
+            if let Err(error) = self.dispatch_run(&other).await {
+                eprintln!("workflow run {other} could not dispatch: {error}");
+            }
+        }
+        Ok(run)
+    }
+
+    async fn dispatch_run(&self, run_id: &str) -> Result<WorkflowRunRecord, WorkflowError> {
         let _dispatch = self.dispatch_lock.lock().await;
         loop {
             let mut run = self.require_run(run_id)?;
@@ -2217,7 +2235,7 @@ impl WorkflowEngine {
                 }
             }
             let provider = WorkflowPolicy::provider_for(&role)?;
-            self.rebuild_active_leases(&self.list_runs()?)?;
+            self.rebuild_active_leases()?;
             let (global_active, workflow_active, provider_active, shared_limit) = self.store
                 .workflow_active_agent_counts(run_id, &provider).map_err(|error| WorkflowError::Ledger(error.to_string()))?;
             let provider_limit = run
@@ -2556,48 +2574,18 @@ impl WorkflowEngine {
             .transpose()?.ok_or_else(|| WorkflowError::NotFound(run_id.into()))
     }
 
-    fn rebuild_active_leases(&self, runs: &[WorkflowRunRecord]) -> Result<(), WorkflowError> {
-        let active = runs
-            .iter()
-            .flat_map(|run| {
-                run.nodes.iter().filter_map(move |node| {
-                    if node.lease_id.is_none()
-                        || !matches!(
-                            node.state,
-                            WorkflowNodeState::Starting
-                                | WorkflowNodeState::Running
-                                | WorkflowNodeState::WaitingApproval
-                                | WorkflowNodeState::WaitingInput
-                        )
-                    {
-                        return None;
-                    }
-                    let role = run
-                        .definition
-                        .roles
-                        .iter()
-                        .find(|role| role.id == node.role_id)?;
-                    let file_paths = match &role.workspace_policy {
-                        WorkflowWorkspacePolicy::SharedCurrent { file_allow_list } => {
-                            file_allow_list.clone()
-                        }
-                        _ => Vec::new(),
-                    };
-                    Some(WorktreeLeaseRequest {
-                        run_id: run.id.clone(),
-                        node_run_id: node.id.clone(),
-                        workspace: role.workspace_policy.clone(),
-                        cwd: run
-                            .input_snapshot
-                            .get("cwd")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                        file_paths,
-                    })
-                })
-            })
-            .collect();
+    fn rebuild_active_leases(&self) -> Result<(), WorkflowError> {
+        let rows = self.store.workflow_active_leases().map_err(|error| WorkflowError::Ledger(error.to_string()))?;
+        let mut active = Vec::with_capacity(rows.len());
+        for (run_id, node_run_id, policy, cwd) in rows {
+            let workspace: WorkflowWorkspacePolicy = serde_json::from_str(&policy)
+                .map_err(|error| WorkflowError::Ledger(error.to_string()))?;
+            let file_paths = match &workspace {
+                WorkflowWorkspacePolicy::SharedCurrent { file_allow_list } => file_allow_list.clone(),
+                _ => Vec::new(),
+            };
+            active.push(WorktreeLeaseRequest { run_id, node_run_id, workspace, cwd, file_paths });
+        }
         self.leases.rebuild(active)
     }
 
@@ -2641,12 +2629,16 @@ impl WorkflowEngine {
     ) -> Result<(), WorkflowError> {
         if matches!(run.state, WorkflowRunState::Completed | WorkflowRunState::Cancelled | WorkflowRunState::Failed)
             && run.input_snapshot.get("worktree").is_some() {
-            let merged = run.nodes.iter().find(|node| node.state == WorkflowNodeState::Completed
+            // The merged PR's head commit; the worktree is removed only when its HEAD is exactly that commit.
+            let merged_head = run.nodes.iter().find(|node| node.state == WorkflowNodeState::Completed
                 && node.output_contract == WorkflowOutputContract::PullRequestMergeReceipt)
                 .and_then(|node| node.structured_output.as_ref()).and_then(|receipt| receipt["url"].as_str())
-                .is_some_and(|url| std::process::Command::new("gh").args(["pr", "view", url, "--json", "state", "--jq", ".state"])
-                    .output().is_ok_and(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "MERGED"));
-            retain_run_worktree(run, merged)?;
+                .and_then(|url| std::process::Command::new("gh")
+                    .args(["pr", "view", url, "--json", "state,headRefOid", "--jq", "select(.state == \"MERGED\") | .headRefOid"])
+                    .output().ok().filter(|output| output.status.success()))
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+                .filter(|head| !head.is_empty());
+            retain_run_worktree(run, merged_head.as_deref())?;
         }
         for node in &run.nodes {
             if !matches!(node.state, WorkflowNodeState::Starting | WorkflowNodeState::Running) {
@@ -2706,7 +2698,7 @@ fn render_step_template(template: &str, run: &WorkflowRunRecord) -> Result<Strin
     Ok(output)
 }
 
-fn retain_run_worktree(run: &mut WorkflowRunRecord, pr_merged: bool) -> Result<(), WorkflowError> {
+fn retain_run_worktree(run: &mut WorkflowRunRecord, merged_head: Option<&str>) -> Result<(), WorkflowError> {
     let worktree = &mut run.input_snapshot["worktree"];
     if worktree["removed"] == true { return Ok(()); }
     let path = worktree["path"].as_str().ok_or_else(|| invalid_yaml("Missing run worktree path"))?.to_owned();
@@ -2714,7 +2706,11 @@ fn retain_run_worktree(run: &mut WorkflowRunRecord, pr_merged: bool) -> Result<(
     if !output.status.success() { return Err(invalid_yaml(String::from_utf8_lossy(&output.stderr))); }
     let status = String::from_utf8_lossy(&output.stdout).into_owned();
     worktree["status"] = json!(status);
-    if pr_merged && status.is_empty() {
+    let head = std::process::Command::new("git").arg("-C").arg(&path).args(["rev-parse", "HEAD"]).output().map_err(invalid_yaml)?;
+    if !head.status.success() { return Err(invalid_yaml(String::from_utf8_lossy(&head.stderr))); }
+    let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
+    worktree["head"] = json!(head);
+    if status.is_empty() && merged_head == Some(head.as_str()) {
         let common = std::process::Command::new("git").arg("-C").arg(&path)
             .args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().map_err(invalid_yaml)?;
         if !common.status.success() { return Err(invalid_yaml(String::from_utf8_lossy(&common.stderr))); }
@@ -3491,13 +3487,21 @@ mod tests {
         engine.append(&mut run, "workflow.test.redo", "redo", None).unwrap();
         tauri::async_runtime::block_on(engine.dispatch_ready(&run.id)).unwrap();
         assert_eq!(runtime.dispatched.lock().unwrap()[1].cwd, cwd);
-        retain_run_worktree(&mut run, true).unwrap();
+        let git = |args: &[&str]| String::from_utf8(std::process::Command::new("git").arg("-C").arg(&cwd).args(args).output().unwrap().stdout).unwrap().trim().to_owned();
+        let merged = git(&["rev-parse", "HEAD"]);
+        retain_run_worktree(&mut run, Some(&merged)).unwrap();
         assert_eq!(run.input_snapshot["worktree"]["status"], "?? dirty.txt\n");
         assert!(Path::new(&cwd).join("dirty.txt").exists());
         std::fs::remove_file(Path::new(&cwd).join("dirty.txt")).unwrap();
-        retain_run_worktree(&mut run, false).unwrap();
+        retain_run_worktree(&mut run, None).unwrap();
         assert!(Path::new(&cwd).exists());
-        retain_run_worktree(&mut run, true).unwrap();
+        // A clean commit made after the PR merged is not in the PR, so the worktree stays.
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "after merge"]);
+        retain_run_worktree(&mut run, Some(&merged)).unwrap();
+        assert!(Path::new(&cwd).exists());
+        assert_ne!(run.input_snapshot["worktree"]["head"], merged);
+        let head = git(&["rev-parse", "HEAD"]);
+        retain_run_worktree(&mut run, Some(&head)).unwrap();
         assert!(!Path::new(&cwd).exists());
     }
     #[test]
@@ -3511,6 +3515,14 @@ mod tests {
             tokio::try_join!(engine.start(&first.id, "start1"), engine.start(&second.id, "start2")).unwrap();
         });
         assert_eq!(runtime.dispatched.lock().unwrap().len(), 1);
+        // Finishing the only active agent frees the slot, and the waiting run starts.
+        let owned = runtime.dispatched.lock().unwrap()[0].owned_id.clone();
+        let (started, waiting) = if engine.require_run(&first.id).unwrap().nodes[0].owned_id == owned { (&first.id, &second.id) } else { (&second.id, &first.id) };
+        assert_eq!(engine.require_run(waiting).unwrap().nodes[0].state, WorkflowNodeState::Ready);
+        tauri::async_runtime::block_on(engine.submit_result(started, "a",
+            json!({"changedFiles":[],"summary":"done","tests":[],"knownRisks":[],"commit":null,"branch":null,"worktree":null,"artifacts":[]}), "finish")).unwrap();
+        assert_eq!(runtime.dispatched.lock().unwrap().len(), 2);
+        assert_eq!(engine.require_run(waiting).unwrap().nodes[0].state, WorkflowNodeState::Running);
     }
     #[test]
     fn pause_does_not_cancel_active_turn() {
@@ -3532,8 +3544,14 @@ mod tests {
             assert_eq!(finished.nodes[0].owned_id, active.nodes[0].owned_id);
             assert_eq!(finished.nodes[0].state, if gated { WorkflowNodeState::WaitingApproval } else { WorkflowNodeState::Completed });
             assert_eq!(finished.state, WorkflowRunState::Paused);
+            if gated {
+                let approved = tauri::async_runtime::block_on(engine.approve_gate(&run.id, "a", json!({"approved": true}), "owner", "approve")).unwrap();
+                assert_eq!(approved.state, WorkflowRunState::Paused);
+                assert_eq!(approved.nodes[0].state, WorkflowNodeState::Completed);
+                assert_eq!(runtime.dispatched.lock().unwrap().len(), 1);
+            }
             let resumed = tauri::async_runtime::block_on(engine.resume(&run.id, "resume")).unwrap();
-            assert_eq!(resumed.state, if gated { WorkflowRunState::WaitingApproval } else { WorkflowRunState::Completed });
+            assert_eq!(resumed.state, WorkflowRunState::Completed);
         }
     }
 
