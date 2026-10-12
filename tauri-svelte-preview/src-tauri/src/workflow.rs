@@ -665,7 +665,12 @@ impl AgentRuntimePort for AgentRuntimeManager {
                     native_session_mode:
                         crate::agent_conversation::protocol::AgentNativeSessionMode::Resume,
                     reasoning_effort: spawn_reasoning_effort,
-                    project_id: None,
+                    // The step's worktree shares its git directory with the project's root.
+                    project_id: crate::project_folders::match_local_folders(&self.store_handle(), &[request.cwd.clone()])
+                        .map_err(WorkflowError::Runtime)?
+                        .into_iter()
+                        .next()
+                        .map(|(_, project_id)| project_id),
                 })
                 .await
                 .map_err(WorkflowError::Runtime)?;

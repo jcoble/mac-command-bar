@@ -3858,20 +3858,29 @@ impl AgentRuntimeManager {
     pub fn set_workflow_session_title(&self, owned_id: &str, title: &str) -> Result<(), String> {
         let set_title = |session: &mut ManagedAgentSession| {
             if !session_title_is_empty(session.rail_meta.title.as_deref()) {
-                return Ok(());
+                return Ok(false);
             }
             session.rail_meta.title = Some(title.to_string());
             session.title_source = Some(TITLE_SOURCE_USER.to_string());
-            persist_session(session)
+            persist_session(session).map(|()| true)
         };
-        let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(session) = sessions.get_mut(owned_id) {
-            return set_title(session);
+        let live = {
+            let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            sessions.get_mut(owned_id).map(|session| set_title(session))
+        };
+        let named = if let Some(named) = live {
+            named?
+        } else {
+            let row = self.store.get_session(owned_id).map_err(|error| error.to_string())?
+                .ok_or_else(|| "Workflow agent session was not found".to_string())?;
+            set_title(&mut recovered_session_from_row(&self.store, row)?)?
+        };
+        // The rail adds a session it has not seen when it hears its name.
+        let listener = self.renamed_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if let (true, Some(listener)) = (named, listener) {
+            listener(owned_id, title);
         }
-        drop(sessions);
-        let row = self.store.get_session(owned_id).map_err(|error| error.to_string())?
-            .ok_or_else(|| "Workflow agent session was not found".to_string())?;
-        set_title(&mut recovered_session_from_row(&self.store, row)?)
+        Ok(())
     }
 
     /// Replaces the provisional name of a session with one the helper model
@@ -12564,6 +12573,34 @@ mod tests {
             .await
             .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn workflow_step_session_joins_its_project_and_is_announced() {
+        let fixture = fixture_manager_with_acp_session("multiplex").await;
+        let store = Arc::clone(&fixture.manager.store);
+        store.insert_or_get_project(&mcb_core::session_store::ProjectRow {
+            id: "project-demo".into(), machine: "local".into(),
+            root_path: fixture.root.to_string_lossy().into_owned(), title: "demo".into(),
+            repo_key: String::new(), created_at_ms: 1, group_key: String::new(),
+            pinned_at_ms: None, last_used_ms: None,
+        }).unwrap();
+        let announced = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let heard = Arc::clone(&announced);
+        fixture.manager.set_session_renamed_listener(Arc::new(move |owned_id, title| {
+            heard.lock().unwrap().push((owned_id.to_string(), title.to_string()));
+        }));
+        let worktree = fixture.root.join("step-worktree");
+        std::fs::create_dir_all(&worktree).unwrap();
+        crate::workflow::AgentRuntimePort::dispatch(&fixture.manager, crate::workflow::AgentDispatchRequest {
+            owned_id: "owned-step".into(), provider: "codex".into(),
+            cwd: worktree.to_string_lossy().into_owned(), title: "Build · build".into(),
+            prompt: "Build it".into(), role_id: "build".into(), model: None, effort: None,
+            permission: None, output_contract: crate::workflow::WorkflowOutputContract::ImplementationReceipt,
+        }).await.expect("dispatch");
+        let row = store.get_session("owned-step").unwrap().unwrap();
+        assert_eq!(row.project_id.as_deref(), Some("project-demo"));
+        assert_eq!(*announced.lock().unwrap(), [("owned-step".to_string(), "Build · build".to_string())]);
     }
 
     #[tokio::test(flavor = "current_thread")]
