@@ -50,6 +50,7 @@ The engine runs the checks itself.
 | D12 | Workers ride subscription-authenticated CLIs as today. **No API keys, no API costs** (carried from the 2026-08-20 design). |
 | D13 | Only the owner approves. A message from an agent never counts as approval; chat text the orchestrator relays is turned into a confirm button the owner taps. |
 | D14 | Authoring is conversational: the owner describes the workflow; any Assembly agent uses `workflow_format()` and `check_workflow(path)` to write and check the YAML and prompt files, then shows the owner for review and commit. The YAML in git is the only definition source and can be hand-edited. The picker lists only `.assembly/workflows/*.yml` from the selected project on the run machine; the tab shows name, path and steps read-only, with "Open file". The template creator is removed. Another reviewer means another `review` step with the same `of:`, never a `reviewers` list; findings from either reviewer redo that step. |
+| D15 | Ad-hoc delegation is visible (owner, 2026-10-12). Any session can start a Codex or Claude helper with `start_session`; the helper is an ordinary Assembly session (in the rail, openable, messageable by name) and also appears in the caller's sub-agent section. When the helper's turn ends, its final reply is sent to the caller as a message, which wakes the caller. This replaces untracked background `codex exec` jobs that could be lost and never woke anyone. |
 
 ## 3. Overall picture
 
@@ -112,6 +113,7 @@ remote session routing (`agent_conversation/mod.rs:110-170`). Change only what t
 | `list_sessions()` | every session | The directory above |
 | `workflow_format()` | every session of every provider | Return `docs/workflows/format.md` as markdown, compiled into the backend with `include_str!` so it works in any project |
 | `check_workflow(path)` | every session of every provider | Parse and validate with the shared strict loader (§5.1, authoring Task A) inside the caller's project root; reject `../`; create no run and write no ledger. Return `ok` and one line per step, or exact errors |
+| `start_session(provider, model, prompt, name)` | every session of every provider | Start an ordinary owned session in the caller's project on the caller's machine, named `name` (made unique per §4.1), linked to the caller as its parent; returns its name and id. Its final reply returns to the caller as a message (§4.4). Authoring-tools plan Task C. |
 | `send_message(to, text)` | every session | Queue a message; returns its id and status |
 | `report_review(verdict, findings[])` | review steps | Structured verdict the engine counts (§6.2) |
 | `start_run(workflow, tasks[], machine?, i_merge?)` | orchestrator | Start one run per task; each task is `{key, title, body}` (§5.3) |

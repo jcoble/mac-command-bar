@@ -31,7 +31,8 @@ Assembly supplies the reference and validation. ACP carries the existing MCP ser
 The slices 1–2 plan remains the execution plan. Insert **A immediately after Task
 7**, once slice 1 Task 3's tool bodies and Task 7 are integrated; then continue
 Tasks 8–12. Insert **B immediately after Task 12 and before Task 13**. In full:
-**1 → 2 → 3 → 4 → 5 → 6 → 7 → A → 8 → 9 → 10 → 11 → 12 → B → 13**.
+**1 → 2 → 3 → 4 → C → 5 → 6 → 7 → A → 8 → 9 → 10 → 11 → 12 → B → 13**.
+Task C (D15, added 2026-10-12) goes right after slice 1 Task 4, because it needs Task 4's delivery at turn boundaries.
 The controller may coordinate independent branches as stated in the lane rules;
 A must not edit a concurrent loader/endpoint branch before its dependency lands.
 
@@ -115,3 +116,25 @@ versionable files and a selectable workflow. Exact tool errors block completion;
 Task 13 still supplies engine-loop proof. **Expected diff:** 0–30 repository lines
 (proof links only; disposable files/evidence outside this repository).
 **Serial overlap:** Task 12 picker/source cutover, Task 13 prepared proof app.
+
+## Task C: `start_session` — visible helper sessions (D15, owner 2026-10-12)
+
+**Why:** helpers started with background `codex exec` were invisible in Assembly, could be lost, and never woke the session that started them. A helper must be a real Assembly session the owner can see and talk to.
+
+**Files:** `agent_conversation/messaging.rs` (tool list, permission check, handler), `agent_conversation/manager.rs` (create the session with the existing ensure path used by workflow dispatch, `AgentRuntimeManager::ensure_async`; on the helper's terminal turn event, queue its final reply to the parent), `core/src/session_store.rs` only for the parent link, the parent's sub-agent timeline item, and `main-architecture-explained.html`. Re-find anchors by symbol.
+
+**Interface:** `start_session(provider: "codex"|"claude", model?: string, prompt: string, name: string) -> {name, owned_id}`. The caller comes only from its session credential. The helper starts in the caller's project folder on the caller's machine, gets the readable name `name` (made unique by the directory rule), and is sent `prompt` as its first turn. When that helper's turn completes, fails or is interrupted, the backend queues one message from the helper to the parent: `[<name> finished|failed|stopped] <final reply, bounded>`. Task 4 delivers it at the parent's next turn boundary, which wakes an idle parent.
+
+**Display decision (recommended; confirm during recon):** keep the helper a top-level owned session, so the rail, the directory and `send_message` work unchanged. Do not reuse `sessions.parent_owned_id`: today it marks imported Claude sub-agent transcripts and the directory excludes those rows. Show the helper in the parent's existing sub-agent section with the same `subagent` timeline item shape the Claude adapter's sub-agents use (`SubagentSection.svelte`), carrying the helper's owned id so a click opens it. Record the parent link once (a column or the session's existing extra JSON, whichever the recon shows is already read by the rail) — no new table.
+
+- [ ] **Red tests:** `start_session_creates_named_child_in_callers_project` (messaging.rs, fake runtime: one ensure call with the caller's cwd and project, name resolvable, subagent item appended to the parent); `child_final_reply_is_queued_to_parent` (manager.rs: a terminal turn event of a child queues exactly one message to the parent, none for a session without a parent); `start_session_rejects_unknown_provider_and_missing_credential`.
+- [ ] **Verify failure:** `cd tauri-svelte-preview/src-tauri && CARGO_BUILD_JOBS=3 cargo test start_session_creates_named_child_in_callers_project` fails because the tool is not listed.
+- [ ] **Minimum edit:** one tool handler calling the existing ensure path; one hook on the existing terminal-turn path; the subagent item through the existing journal write. No new process supervisor, no polling, no second queue.
+- [ ] **Green:** the three tests, then the slice 1 gates. Live proof on **Workbox Test**: a Claude session calls `start_session` for a Codex helper; screenshot the helper in the rail and in the parent's sub-agent section, and the parent waking on the helper's finished message.
+
+**Done means:** a helper is visible, openable and messageable, and its finish wakes the caller. **Expected diff:** 200–300 lines.
+
+### Note: Claude Code plugin agents that call Codex (owner, 2026-10-12)
+
+The owner uses an OpenAI/Codex plugin for Claude Code whose agents (a Codex reviewer, an executor and others) show as real sub-agents in the Claude CLI. Those are Claude sub-agents, so in Assembly they would appear in the existing sub-agent section **if** Claude sessions started through `claude-agent-acp` load the user's plugins. Not verified: the plugin is not installed on the workbox (`~/.claude/plugins/installed_plugins.json` lists only superpowers and warp, checked 2026-10-12). Check before building anything: the owner names the plugin; install it inside **Workbox Test** only; start a Claude session there and invoke one plugin agent; record whether it appears and runs. If it works, nothing more is needed for that path; if plugins do not load, that is a separate task, not part of Task C.
+
