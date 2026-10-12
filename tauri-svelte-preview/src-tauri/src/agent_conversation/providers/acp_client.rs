@@ -995,7 +995,16 @@ impl AcpClient {
         request: &T,
         known_session_id: Option<&str>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
-        let result = self.request(method, request).await?;
+        let mut request = serde_json::to_value(request).map_err(serialization_error)?;
+        // Claude asks before every MCP tool call; Assembly's own tools
+        // (report_review, send_message, ...) are pre-allowed so unattended
+        // workflow sessions don't stall on a prompt nobody is watching.
+        if self.provider == Some(AgentConversationProvider::Claude)
+            && request["mcpServers"].as_array().is_some_and(|servers| !servers.is_empty())
+        {
+            request["_meta"] = json!({"claudeCode": {"options": {"allowedTools": ["mcp__assembly"]}}});
+        }
+        let result = self.request(method, &request).await?;
         // session/new must return the id; session/load and session/resume
         // may return a null result because the caller already knows it.
         let native_session_id = result
@@ -1603,7 +1612,10 @@ pub(crate) mod tests {
         assert_eq!(requests.len(), 3);
         let expected = json!([{"type":"http","name":"assembly","url":first.url,
             "headers":[{"name":"Authorization","value":format!("Bearer {}", first.token)}]}]);
-        for request in requests { assert!(request["params"]["mcpServers"] == expected, "bound HTTP MCP server missing"); }
+        for request in requests {
+            assert!(request["params"]["mcpServers"] == expected, "bound HTTP MCP server missing");
+            assert!(request["params"]["_meta"].is_null(), "only Claude gets the tool allowance");
+        }
         assert_eq!(endpoint.issue("owned-first").token, first.token);
         let log = root.join("unsupported.jsonl");
         let mut client = AcpClient::spawn(&fixture_manifest(&log), &root, "unsupported").unwrap();
@@ -1620,6 +1632,29 @@ pub(crate) mod tests {
                     assert!(servers.is_null() || *servers == json!([]));
                 }
             }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_sessions_preallow_assembly_mcp_tools() {
+        let endpoint = crate::agent_conversation::messaging::MessagingEndpoint::start().unwrap();
+        let bound = endpoint.issue("owned-claude");
+        let root = fixture_root();
+        let log = root.join("claude-mcp.jsonl");
+        let mut client = AcpClient::spawn(&fixture_manifest_named(&log, "mcp_http"), &root, "claude-mcp").unwrap();
+        client.initialize(AgentConversationProvider::Claude).await.unwrap();
+        client.new_session(&root, vec![bound.server()]).await.unwrap();
+        client.load_session(&root, "native-old", vec![bound.server()]).await.unwrap();
+        client.resume_session(&root, "native-old", vec![bound.server()]).await.unwrap();
+        client.detach().await.unwrap();
+        let requests: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|m| matches!(m["method"].as_str(), Some("session/new" | "session/load" | "session/resume")))
+            .collect();
+        assert_eq!(requests.len(), 3);
+        for request in requests {
+            assert_eq!(request["params"]["_meta"]["claudeCode"]["options"]["allowedTools"], json!(["mcp__assembly"]));
         }
         std::fs::remove_dir_all(root).unwrap();
     }
