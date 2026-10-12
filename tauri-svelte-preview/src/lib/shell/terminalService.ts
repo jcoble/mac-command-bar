@@ -270,6 +270,32 @@ export function isTerminalInputCommand(command: string): boolean {
 }
 
 /**
+ * Sends a terminal's keystrokes with one write in flight at a time. Keys typed meanwhile
+ * go out next as one write, so they arrive in order even when the backend runs each
+ * request as its own task (a remote session's shell does).
+ */
+export function createTerminalInput(
+  write: (sessionId: string, data: string) => Promise<unknown>
+): (sessionId: string, data: string) => Promise<void> {
+  let pending = '';
+  let sending = false;
+  return async (sessionId, data) => {
+    pending += data;
+    if (sending) return;
+    sending = true;
+    try {
+      while (pending) {
+        const chunk = pending;
+        pending = '';
+        await write(sessionId, chunk);
+      }
+    } finally {
+      sending = false;
+    }
+  };
+}
+
+/**
  * Wrap the Tauri terminal commands 1:1, reporting each call to `count` so the
  * dev HUD can show how much IPC the shell actually does.
  */

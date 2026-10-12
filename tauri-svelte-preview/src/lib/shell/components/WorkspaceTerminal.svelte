@@ -16,6 +16,7 @@
   } from '$lib/tauriSource';
   import type { TerminalView } from '$lib/liveConversationTerminals';
   import {
+    createTerminalInput,
     subscribeToTerminalOutput,
     type TerminalOutputSubscription
   } from '$lib/shell/terminalService';
@@ -45,12 +46,13 @@
     'generation' | 'sequence'
   >) | null = null;
   let queuedOutput: TerminalOutputEnvelope[] = [];
+  const sendInput = createTerminalInput(writeTerminalSessionFromTauri);
 
   async function writeInput(data: string, signal: AbortSignal): Promise<void> {
     const id = sessionId;
     if (!id || signal.aborted) return;
     try {
-      await writeTerminalSessionFromTauri(id, data);
+      await sendInput(id, data);
     } catch (cause) {
       if (signal.aborted) return;
       output?.unsubscribe();
