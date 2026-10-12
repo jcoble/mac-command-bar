@@ -447,7 +447,8 @@
               {/if}
               {#if waitingNode}
                 <Button size="sm" disabled={busy !== null} onclick={() => void control('Approve', () => approveWorkflowGate({ runId: selected.id, nodeId: waitingNode.nodeId, approval: { approved: true }, idempotencyKey: key('approve') }, machine))}><Check />Approve handoff</Button>
-                {#if nextNode}
+                <!-- Redirect is a template-run control this Mac's engine owns. -->
+                {#if nextNode && !machine}
                   <label class="flex h-8 items-center gap-2 rounded-lg border border-input bg-background px-2 text-xs text-muted-foreground">
                     Next
                     <select

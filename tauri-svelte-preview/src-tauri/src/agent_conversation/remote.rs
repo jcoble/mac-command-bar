@@ -3258,7 +3258,11 @@ async fn execute_server_command(state: &ServerState, upload: &Arc<Mutex<Option<P
         return Err("The remote server is restarting; reconnect before continuing".into());
     }
     if let RemoteCommand::Workflow { operation, args } = command {
-        return crate::workflow::execute_operation(&state.workflow, &operation, args).await.map(RemoteResponse::Workflow);
+        // A dropped socket or a client cancel aborts this request's task; the engine
+        // call runs on its own task so a run is never left half-started.
+        let workflow = state.workflow.clone();
+        return tokio::spawn(async move { crate::workflow::execute_operation(&workflow, &operation, args).await })
+            .await.map_err(|error| error.to_string())?.map(RemoteResponse::Workflow);
     }
     execute_remote_command(&state.manager, &vault, command, progress).await
 }

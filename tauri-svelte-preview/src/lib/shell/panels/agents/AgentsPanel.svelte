@@ -65,7 +65,10 @@
     { value: 'workflows', label: 'Workflows' }
   ] as const;
   const conversation = $derived(ownedId ? getConversationSession(ownedId) : null);
-  const machine = $derived(rail.owned.find((session) => session.ownedId === ownedId)?.remoteProfileId ?? null);
+  const session = $derived(rail.owned.find((owned) => owned.ownedId === ownedId) ?? null);
+  const machine = $derived(session?.remoteProfileId ?? null);
+  // A remote session without its machine cannot reach that machine's engine.
+  const workflowRoot = $derived(session?.executionEnvironment === 'remote' && !machine ? '' : root);
   const selectedChildId = $derived(conversation?.selectedChildId ?? null);
   // List rows use metadata; returning to the list releases the child body.
   const rows = $derived(agentActivityRows(conversation?.children ?? [], {}));
@@ -201,7 +204,7 @@
   </div>
 
   {#if view === 'workflows'}
-    <WorkflowRuns visible={visible} {root} {machine} />
+    <WorkflowRuns visible={visible} root={workflowRoot} {machine} />
   {:else if visible && selectedRow && ownedId}
     <div class="flex min-w-0 items-center gap-2 px-2 pb-2" data-testid="agent-transcript-header">
       <Button variant="ghost" size="sm" iconPosition="start" onclick={() => ownedId && release(ownedId)}>
