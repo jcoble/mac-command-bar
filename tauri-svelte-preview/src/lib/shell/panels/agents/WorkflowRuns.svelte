@@ -463,7 +463,7 @@
                 <Button size="sm" disabled={busy !== null} onclick={() => void control('Another round', () => answerWorkflowPause({ runId: selected.id, nodeId: pausedNode.nodeId, decision: 'another-round', reply: null, idempotencyKey: key('answer') }))}><RotateCcw />Run another round</Button>
                 <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void control('Accept', () => answerWorkflowPause({ runId: selected.id, nodeId: pausedNode.nodeId, decision: 'accept', reply: null, idempotencyKey: key('answer') }))}><Check />Accept as is</Button>
               {/if}
-              {#if failedNode && failedNode.attempt < 2}
+              {#if failedNode}
                 <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void control('Retry', () => retryWorkflowNode({ runId: selected.id, nodeId: failedNode.nodeId, idempotencyKey: key('retry') }))}><RotateCcw />Retry stage</Button>
               {/if}
               {#if !['completed', 'cancelled', 'failed'].includes(selected.state)}

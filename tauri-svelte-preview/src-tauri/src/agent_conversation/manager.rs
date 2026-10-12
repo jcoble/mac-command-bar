@@ -3084,7 +3084,7 @@ impl AgentRuntimeManager {
         Ok(config)
     }
 
-    async fn apply_conversation_config(
+    pub(crate) async fn apply_conversation_config(
         &self,
         request: SetAgentConversationConfigRequest,
         suspend_on_error: bool,

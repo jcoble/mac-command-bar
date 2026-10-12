@@ -683,8 +683,14 @@ impl AgentRuntimePort for AgentRuntimeManager {
             let capabilities = self
                 .capabilities(&connection.owned_id, connection.generation)
                 .map_err(WorkflowError::Runtime)?;
+            // Models are set the way the chat sets them; Codex lists its models without a config option.
+            if request.model.is_some() {
+                self.apply_conversation_config(crate::agent_conversation::protocol::SetAgentConversationConfigRequest {
+                    owned_id: connection.owned_id.clone(), generation: connection.generation,
+                    model: request.model.clone(), reasoning_effort: None, approval_policy: None,
+                }, false).await.map_err(WorkflowError::Runtime)?;
+            }
             for (categories, selected) in [
-                (&["model"][..], request.model.as_deref()),
                 (&["thought_level", "effort"][..], request.effort.as_deref()),
                 (
                     &["mode", "permission", "permissions"][..],
@@ -1792,7 +1798,8 @@ impl WorkflowEngine {
                 "Node failure is not retryable by role policy".into(),
             ));
         }
-        if node.attempt >= max {
+        // A repository step has no attempt budget; the owner's retry is the decision, and max_rounds bounds loops.
+        if node.attempt >= max && definition.step.is_null() {
             return Err(WorkflowError::BudgetExhausted(budget_failure(
                 "attempts",
                 "Node attempt budget exhausted",
@@ -3898,6 +3905,21 @@ mod tests {
         repo.git(&["remote", "set-url", "origin", repo.0.parent().unwrap().join("origin.git").to_str().unwrap()]);
         let started = tauri::async_runtime::block_on(engine.start(&run.id, "start-again")).unwrap();
         assert_eq!(step_of(&started, "build").state, WorkflowNodeState::Running);
+    }
+
+    #[test]
+    fn owner_can_retry_a_failed_yaml_step() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
+        let build = step_of(&run, "build").clone();
+        let failed = AgentConversationEvent { owned_id: build.owned_id.clone(), provider: AgentConversationProvider::Codex,
+            generation: 1, sequence: 1, timestamp_ms: 1, turn_id: Some("turn".into()),
+            payload: AgentConversationPayload::Turn { turn_id: "turn".into(), state: TurnState::Failed } };
+        let failed = tauri::async_runtime::block_on(engine.accept_agent_event(&failed)).unwrap().unwrap();
+        assert_eq!(step_of(&failed, "build").state, WorkflowNodeState::Failed);
+        let retried = tauri::async_runtime::block_on(engine.retry_node(&run.id, "build", "retry")).unwrap();
+        assert_eq!((step_of(&retried, "build").attempt, step_of(&retried, "build").state), (2, WorkflowNodeState::Running));
     }
 
     #[test]
