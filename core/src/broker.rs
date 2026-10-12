@@ -461,6 +461,16 @@ mod tests {
     }
 
     #[test]
+    fn directory_shows_the_session_project_title() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.lock_write().unwrap().execute_batch("INSERT INTO projects
+            (id,machine,root_path,title,repo_key,created_at) VALUES ('p1','local','/work','demo-repo','k',1);
+            INSERT INTO sessions (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra,project_id)
+            VALUES ('s1','codex','/work','ready',0,1,1,'{}','p1');").unwrap();
+        assert_eq!(store.list_directory().unwrap()[0].project.as_deref(), Some("demo-repo"));
+    }
+
+    #[test]
     fn retried_worker_name_points_at_the_newest_session() {
         let store = SessionStore::open_in_memory().unwrap();
         store.lock_write().unwrap().execute_batch(r#"INSERT INTO sessions

@@ -642,7 +642,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_messages_target
 DROP VIEW IF EXISTS session_directory;
 CREATE VIEW session_directory AS
 WITH names AS (
-    SELECT s.owned_id, s.provider, s.project, s.created_at,
+    SELECT s.owned_id, s.provider, COALESCE(p.title, s.project) AS project, s.created_at,
            CASE WHEN s.state IN ('starting','working','interrupting') THEN 'running'
                 WHEN s.state IN ('waiting-approval','waiting-input') THEN 'waiting'
                 WHEN s.state IN ('closed','failed') THEN 'stopped' ELSE 'idle' END AS state,
@@ -653,6 +653,7 @@ WITH names AS (
            CASE WHEN json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.task.key') IS NOT NULL THEN 'worker'
                 WHEN s.title='orchestrator' THEN 'orchestrator' ELSE 'title' END AS kind
     FROM sessions s
+    LEFT JOIN projects p ON p.id = s.project_id
     -- Each session's latest workflow event, found through orchestration_events_owned_idx.
     LEFT JOIN orchestration_events e ON e.rowid = (
         SELECT rowid FROM orchestration_events
@@ -5008,6 +5009,7 @@ mod tests {
         let connection = Connection::open(&path).unwrap();
         connection.execute_batch(
             "DROP INDEX sessions_project_idx;
+             DROP VIEW session_directory;
              ALTER TABLE sessions DROP COLUMN project_id;
              DROP TABLE projects;
              PRAGMA user_version = 19;",
