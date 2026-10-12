@@ -8,10 +8,12 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import {
+  answerWorkflowPauseFromTauri,
   approveWorkflowGateFromTauri,
   cancelWorkflowRunFromTauri,
   createWorkflowRunFromTauri,
   isNativeTauriRuntime,
+  listWorkflowFilesFromTauri,
   listWorkflowRunsFromTauri,
   pauseWorkflowRunFromTauri,
   redirectWorkflowNodeFromTauri,
@@ -26,6 +28,7 @@ import {
   trackTauriSubscriber
 } from '$lib/shell/resourceDiagnostics.svelte';
 import type {
+  AnswerWorkflowPauseDto,
   ApproveWorkflowGateDto,
   CancelWorkflowRunDto,
   CreateWorkflowRunDto,
@@ -48,7 +51,17 @@ export async function listWorkflowRuns(): Promise<WorkflowRunRecord[] | null> {
 export async function createWorkflowRun(
   input: CreateWorkflowRunDto
 ): Promise<WorkflowRunRecord | null> {
-  return createWorkflowRunFromTauri(input.definition, input.input, input.idempotencyKey);
+  return createWorkflowRunFromTauri(input.repoRoot, input.workflowPath, input.task, input.input, input.idempotencyKey);
+}
+
+export async function listWorkflowFiles(repoRoot: string): Promise<string[] | null> {
+  return listWorkflowFilesFromTauri(repoRoot);
+}
+
+export async function answerWorkflowPause(
+  input: AnswerWorkflowPauseDto
+): Promise<WorkflowRunRecord | null> {
+  return answerWorkflowPauseFromTauri(input.runId, input.nodeId, input.decision, input.reply, input.idempotencyKey);
 }
 
 export async function startWorkflowRun(

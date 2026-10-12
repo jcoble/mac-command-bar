@@ -433,9 +433,30 @@ export function providerNativeAgentView(input: {
 /* Tauri command DTOs                                                          */
 /* -------------------------------------------------------------------------- */
 
+/** The Notion task a run works on, snapshotted when the run is created. */
+export interface WorkflowTaskSnapshot {
+  key: string;
+  title: string;
+  body: string;
+}
+
 export interface CreateWorkflowRunDto {
-  definition: WorkflowDefinitionV1;
+  repoRoot: string;
+  /** A `.assembly/workflows/*.yml` path relative to `repoRoot`. */
+  workflowPath: string;
+  task: WorkflowTaskSnapshot;
   input: Record<string, unknown>;
+  idempotencyKey: string;
+}
+
+/** The owner's answer to a step waiting for them. */
+export type WorkflowPauseDecision = 'another-round' | 'accept' | 'stop';
+
+export interface AnswerWorkflowPauseDto {
+  runId: string;
+  nodeId: string;
+  decision: WorkflowPauseDecision;
+  reply: string | null;
   idempotencyKey: string;
 }
 

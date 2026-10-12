@@ -1277,6 +1277,9 @@ impl WorkflowEngine {
         ) {
             return Ok(None);
         }
+        // Recording the turn's result shares the scheduler's lock, so a dispatch still writing
+        // the run cannot make this write stale; it is released before scheduling the next steps.
+        let dispatch = self.dispatch_lock.lock().await;
         let Some((run_id, node_id)) = self.list_runs()?.into_iter().find_map(|run| {
             run.nodes
                 .iter()
@@ -1344,6 +1347,7 @@ impl WorkflowEngine {
                 } else {
                     self.finish_with_findings(&run_id, &node_id, target, output, findings.len().max(1), &idempotency_key).await?;
                 }
+                drop(dispatch);
                 return self.dispatch_ready(&run_id).await.map(Some);
             }
             if definition.step.get("agent").is_some() {
@@ -1361,9 +1365,11 @@ impl WorkflowEngine {
                     files.extend(matches);
                 }
                 self.finish_step(&run_id, &node_id, json!({"summary":text,"files":files}), true, &idempotency_key)?;
+                drop(dispatch);
                 return self.dispatch_ready(&run_id).await.map(Some);
             }
         }
+        drop(dispatch);
         let receipt = decode_agent_receipt(&text).and_then(|value| {
             let run = self.require_run(&run_id)?;
             let node = run
@@ -1576,6 +1582,10 @@ impl WorkflowEngine {
             return Ok(existing);
         }
         let mut run = self.require_run(run_id)?;
+        // A started run whose dispatch failed (for example, fetching main) is scheduled again.
+        if run.state == WorkflowRunState::Running {
+            return self.dispatch_ready(run_id).await;
+        }
         if !matches!(
             run.state,
             WorkflowRunState::Draft | WorkflowRunState::Queued
@@ -2559,13 +2569,22 @@ impl WorkflowEngine {
             return self.wait_for_owner(run_id, node_id, "loop-stopped", &message, Some(output), key);
         }
         let mut run = run;
-        let reviews: BTreeSet<_> = run.definition.nodes.iter().filter(|node| node.step.get("review").is_some()).map(|node| node.id.clone()).collect();
-        let redo_ids = step_and_dependents(&run.definition, target);
         let snapshot = run.input_snapshot.as_object_mut().ok_or_else(|| invalid_yaml("Workflow input must be an object"))?;
         let mut all_rounds = snapshot.get("rounds").cloned().unwrap_or_else(|| json!({}));
         all_rounds[node_id] = Value::Array(rounds.into_iter().chain([json!(count)]).collect());
         snapshot.insert("rounds".into(), all_rounds);
         snapshot.insert("redo".into(), json!({"findings":output["findings"].as_array().cloned().unwrap_or_default(),"output":output["summary"]}));
+        let live_turns = self.reset_for_redo(&mut run, node_id, target)?;
+        self.append(&mut run, "workflow.node.redo", key, Some(node_id))?;
+        for owned_id in live_turns { self.runtime.cancel(&owned_id).await?; }
+        Ok(run)
+    }
+
+    /// Gives `target` and every step after it that already ran a new attempt, and returns the
+    /// sessions of parallel steps still working on the old round, which the caller cancels.
+    fn reset_for_redo(&self, run: &mut WorkflowRunRecord, node_id: &str, target: &str) -> Result<Vec<String>, WorkflowError> {
+        let reviews: BTreeSet<_> = run.definition.nodes.iter().filter(|node| node.step.get("review").is_some()).map(|node| node.id.clone()).collect();
+        let redo_ids = step_and_dependents(&run.definition, target);
         let run_id_owned = run.id.clone();
         let agents: BTreeSet<_> = run.definition.nodes.iter().filter(|node| node.step.get("run").is_none()).map(|node| node.id.clone()).collect();
         let mut live_turns = Vec::new();
@@ -2591,14 +2610,55 @@ impl WorkflowEngine {
             node.structured_output = None;
             node.artifacts.clear();
         }
-        if run.state == WorkflowRunState::WaitingInput && !run.nodes.iter().any(|node|
-            matches!(node.state, WorkflowNodeState::WaitingInput | WorkflowNodeState::WaitingApproval)) {
-            run.state = WorkflowRunState::Running;
+        resume_if_nothing_waits(run);
+        refresh_ready_and_phase(run);
+        Ok(live_turns)
+    }
+
+    /// The owner's answer to a step waiting for them: `accept` completes it as it is,
+    /// `another-round` redoes it (or, after a loop stop, the step it sends back), `stop` cancels the run.
+    pub async fn answer_pause(&self, run_id: &str, node_id: &str, decision: &str, reply: Option<String>, origin: &str, idempotency_key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
+        if origin != "owner" {
+            return Err(WorkflowError::PolicyDenied("Only the owner can answer a paused step".into()));
         }
-        refresh_ready_and_phase(&mut run);
-        self.append(&mut run, "workflow.node.redo", key, Some(node_id))?;
+        if let Some(existing) = self.idempotent_run(run_id, idempotency_key)? {
+            return Ok(existing);
+        }
+        let mut run = self.require_run(run_id)?;
+        let node = run.nodes.iter().find(|node| node.node_id == node_id).ok_or_else(|| WorkflowError::NotFound(node_id.into()))?;
+        if node.state != WorkflowNodeState::WaitingInput {
+            return Err(WorkflowError::InvalidTransition("That step is not waiting for the owner".into()));
+        }
+        let loop_stopped = node.failure.as_ref().is_some_and(|failure| failure.code == "loop-stopped");
+        let snapshot = run.input_snapshot.as_object_mut().ok_or_else(|| invalid_yaml("Workflow input must be an object"))?;
+        let mut answers = snapshot.get("answers").cloned().unwrap_or_else(|| json!([]));
+        answers.as_array_mut().unwrap().push(json!({"step":node_id,"decision":decision,"reply":reply}));
+        snapshot.insert("answers".into(), answers);
+        let live_turns = match decision {
+            "accept" => {
+                let node = run.nodes.iter_mut().find(|node| node.node_id == node_id).unwrap();
+                node.state = WorkflowNodeState::Completed;
+                node.failure = None;
+                resume_if_nothing_waits(&mut run);
+                refresh_ready_and_phase(&mut run);
+                Vec::new()
+            }
+            "another-round" => {
+                let step = &run.definition.nodes.iter().find(|definition| definition.id == node_id).unwrap().step;
+                let target = if loop_stopped { step["review"]["of"].as_str().or(step["on_fail"].as_str()) } else { None }
+                    .unwrap_or(node_id).to_owned();
+                self.reset_for_redo(&mut run, node_id, &target)?
+            }
+            "stop" => return self.cancel(run_id, idempotency_key).await,
+            other => return Err(WorkflowError::InvalidTransition(format!("Unknown answer `{other}`; use accept, another-round or stop"))),
+        };
+        self.append(&mut run, "workflow.node.owner-answered", idempotency_key, Some(node_id))?;
         for owned_id in live_turns { self.runtime.cancel(&owned_id).await?; }
-        Ok(run)
+        self.dispatch_ready(run_id).await
+    }
+
+    pub fn get_run(&self, run_id: &str) -> Result<WorkflowRunRecord, WorkflowError> {
+        self.require_run(run_id)
     }
 
     fn finish_step(&self, run_id: &str, node_id: &str, output: Value, passed: bool, key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
@@ -2811,6 +2871,10 @@ impl WorkflowEngine {
             if run.state == WorkflowRunState::Running {
                 dispatch.push(run_id);
             }
+        }
+        // A running run with ready steps, such as one whose last dispatch failed, is scheduled too.
+        for run_id in self.store.workflow_runs_ready_for_dispatch("").map_err(|error| WorkflowError::Ledger(error.to_string()))? {
+            if !dispatch.contains(&run_id) { dispatch.push(run_id); }
         }
         Ok(dispatch)
     }
@@ -3258,6 +3322,14 @@ fn materialize_plan_steps(
     }
     run.nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
     Ok(())
+}
+
+/// A run waiting for the owner goes back to running once no step waits for them.
+fn resume_if_nothing_waits(run: &mut WorkflowRunRecord) {
+    if run.state == WorkflowRunState::WaitingInput && !run.nodes.iter().any(|node|
+        matches!(node.state, WorkflowNodeState::WaitingInput | WorkflowNodeState::WaitingApproval)) {
+        run.state = WorkflowRunState::Running;
+    }
 }
 
 fn refresh_ready_and_phase(run: &mut WorkflowRunRecord) {
@@ -3798,6 +3870,68 @@ mod tests {
         assert_eq!(step_of(&run, "second").state, WorkflowNodeState::Blocked);
         assert_eq!(step_of(&run, "build").state, WorkflowNodeState::Running);
         assert_eq!(run.state, WorkflowRunState::Running);
+    }
+
+    /// A run whose review stopped the loop and now waits for the owner.
+    fn loop_stopped_run(engine: &WorkflowEngine, root: &Path) -> WorkflowRunRecord {
+        let mut run = loop_run(engine, root, LOOP_REVIEW);
+        for count in [2, 2] {
+            end_turn(engine, &run.id, "build", &[]);
+            run = end_turn(engine, &run.id, "review", &[findings(count)]);
+        }
+        assert_eq!(step_of(&run, "review").failure.as_ref().unwrap().code, "loop-stopped");
+        run
+    }
+
+    #[test]
+    fn a_run_whose_first_dispatch_failed_is_scheduled_again() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        repo.git(&["remote", "set-url", "origin", "/var/tmp/no-such-origin.git"]);
+        std::fs::create_dir_all(repo.0.join(".assembly/workflows/prompts")).unwrap();
+        std::fs::write(repo.0.join(".assembly/workflows/prompts/p.md"), "Do the work").unwrap();
+        std::fs::write(repo.0.join(".assembly/workflows/loop.yml"), format!("name: Loop\nsteps:\n{LOOP_REVIEW}")).unwrap();
+        let task = TaskSnapshot { key: "TSK-1416".into(), title: "Task title".into(), body: "Task body".into() };
+        let run = engine.create_run_from_file(&repo.0, Path::new(".assembly/workflows/loop.yml"), task, json!({}), "create".into()).unwrap();
+        assert!(tauri::async_runtime::block_on(engine.start(&run.id, "start")).is_err());
+        assert_eq!(engine.recover_after_restart().unwrap(), vec![run.id.clone()]);
+        repo.git(&["remote", "set-url", "origin", repo.0.parent().unwrap().join("origin.git").to_str().unwrap()]);
+        let started = tauri::async_runtime::block_on(engine.start(&run.id, "start-again")).unwrap();
+        assert_eq!(step_of(&started, "build").state, WorkflowNodeState::Running);
+    }
+
+    #[test]
+    fn agent_cannot_answer_pause() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let run = loop_stopped_run(&engine, &repo.0);
+        let error = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", "accept", None, "agent", "answer")).unwrap_err();
+        assert!(matches!(error, WorkflowError::PolicyDenied(_)));
+        let error = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "build", "accept", None, "owner", "answer")).unwrap_err();
+        assert!(matches!(error, WorkflowError::InvalidTransition(_)));
+        assert_eq!(engine.get_run(&run.id).unwrap().state, WorkflowRunState::WaitingInput);
+    }
+
+    #[test]
+    fn owner_answers_a_paused_step() {
+        for (decision, run_state, build_attempt) in [("another-round", WorkflowRunState::Running, 3),
+            ("accept", WorkflowRunState::Completed, 2), ("stop", WorkflowRunState::Cancelled, 2)] {
+            let repo = RunRepo::new();
+            let engine = run_engine(Arc::new(FakeRuntime::default()));
+            let run = loop_stopped_run(&engine, &repo.0);
+            let answered = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", decision, Some("Try once more".into()), "owner", "answer")).unwrap();
+            assert_eq!(answered.state, run_state, "{decision}");
+            assert_eq!(step_of(&answered, "build").attempt, build_attempt, "{decision}");
+            if decision != "stop" {
+                assert_eq!(answered.input_snapshot["answers"], json!([{"step":"review","decision":decision,"reply":"Try once more"}]));
+            }
+        }
+    }
+
+    #[test]
+    fn start_run_requires_task_body_snapshot() {
+        let error = serde_json::from_value::<TaskSnapshot>(json!({"key":"TSK-1416","title":"Title"})).unwrap_err();
+        assert!(error.to_string().contains("missing field `body`"), "{error}");
     }
 
     #[test]
@@ -4581,7 +4715,8 @@ mod tests {
         for _ in 0..1000 {
             let run = engine.require_run(run_id).unwrap();
             // A finished run step schedules the next steps just after it records its result.
-            let busy = run.nodes.iter().any(|node| node.state == WorkflowNodeState::Ready || node.state == WorkflowNodeState::Running
+            let busy = run.nodes.iter().any(|node| matches!(node.state, WorkflowNodeState::Ready | WorkflowNodeState::Queued | WorkflowNodeState::Starting)
+                || node.state == WorkflowNodeState::Running
                 && run.definition.nodes.iter().any(|definition| definition.id == node.node_id && definition.step.get("run").is_some()));
             if !busy { return run; }
             std::thread::sleep(std::time::Duration::from_millis(20));

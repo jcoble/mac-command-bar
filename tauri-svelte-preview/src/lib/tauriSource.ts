@@ -11,9 +11,10 @@ import {
   type SessionWorkspaceSnapshot
 } from './shell/sessionWorkspaces.ts';
 import type {
-  WorkflowDefinitionV1,
+  WorkflowPauseDecision,
   WorkflowResultReceipt,
-  WorkflowRunRecord
+  WorkflowRunRecord,
+  WorkflowTaskSnapshot
 } from './shell/workflows/workflowTypes.ts';
 import type {
   ProjectRoot,
@@ -2646,13 +2647,33 @@ export async function listWorkflowRunsFromTauri(): Promise<WorkflowRunRecord[] |
 }
 
 export async function createWorkflowRunFromTauri(
-  definition: WorkflowDefinitionV1,
+  repoRoot: string,
+  workflowPath: string,
+  task: WorkflowTaskSnapshot,
   input: Record<string, unknown>,
   idempotencyKey: string
 ): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<WorkflowRunRecord>('create_workflow_run', { definition, input, idempotencyKey });
+  return invoke<WorkflowRunRecord>('create_workflow_run', { repoRoot, workflowPath, task, input, idempotencyKey });
+}
+
+export async function listWorkflowFilesFromTauri(repoRoot: string): Promise<string[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  return invoke<string[]>('list_workflow_files', { repoRoot });
+}
+
+export async function answerWorkflowPauseFromTauri(
+  runId: string,
+  nodeId: string,
+  decision: WorkflowPauseDecision,
+  reply: string | null,
+  idempotencyKey: string
+): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  return invoke<WorkflowRunRecord>('answer_workflow_pause', { runId, nodeId, decision, reply, idempotencyKey });
 }
 
 export async function startWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {

@@ -1,6 +1,6 @@
 use tauri::Emitter;
 
-use crate::workflow::{TaskSnapshot, WorkflowDefinitionV1, WorkflowEngine, WorkflowRunRecord};
+use crate::workflow::{TaskSnapshot, WorkflowEngine, WorkflowRunRecord};
 
 #[tauri::command]
 pub(crate) async fn list_workflow_runs(
@@ -17,21 +17,55 @@ pub(crate) fn emit_workflow_run_updated(app: &tauri::AppHandle, run: &WorkflowRu
 pub(crate) async fn create_workflow_run(
     app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
-    definition: Option<WorkflowDefinitionV1>,
-    repo_root: Option<String>,
-    workflow_path: Option<String>,
-    task: Option<TaskSnapshot>,
+    repo_root: String,
+    workflow_path: String,
+    task: TaskSnapshot,
     input: serde_json::Value,
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
-    let run = if let Some(path) = workflow_path {
-        engine.create_run_from_file(
-            std::path::Path::new(repo_root.as_deref().ok_or("Repository root is required")?),
-            std::path::Path::new(&path), task.ok_or("Task snapshot is required")?, input, idempotency_key,
-        )
-    } else {
-        engine.create_run(definition.ok_or("Workflow definition is required")?, input, idempotency_key)
-    }.map_err(|error| error.to_string())?;
+    let run = engine
+        .create_run_from_file(std::path::Path::new(&repo_root), std::path::Path::new(&workflow_path), task, input, idempotency_key)
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
+}
+
+#[tauri::command]
+pub(crate) async fn get_workflow_run(
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+) -> Result<WorkflowRunRecord, String> {
+    engine.get_run(&run_id).map_err(|error| error.to_string())
+}
+
+/// The repository's workflow files, as paths relative to `repo_root`.
+#[tauri::command]
+pub(crate) async fn list_workflow_files(repo_root: String) -> Result<Vec<String>, String> {
+    let directory = std::path::Path::new(&repo_root).join(".assembly/workflows");
+    let Ok(entries) = std::fs::read_dir(&directory) else { return Ok(Vec::new()) };
+    let mut files: Vec<String> = entries
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".yml"))
+        .map(|name| format!(".assembly/workflows/{name}"))
+        .collect();
+    files.sort();
+    Ok(files)
+}
+
+#[tauri::command]
+pub(crate) async fn answer_workflow_pause(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    node_id: String,
+    decision: String,
+    reply: Option<String>,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    let run = engine
+        .answer_pause(&run_id, &node_id, &decision, reply, "owner", &idempotency_key)
+        .await
+        .map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);
     Ok(run)
 }
