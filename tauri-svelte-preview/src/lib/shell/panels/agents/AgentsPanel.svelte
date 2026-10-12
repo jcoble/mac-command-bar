@@ -41,6 +41,7 @@
   import type { ConversationDisplayItem, ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
   import { requestOpenConversationFile } from '$lib/shell/openFileBus.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
+  import { parseRemoteWorkspacePath } from '$lib/workspacePaths.ts';
 
   import AgentRow from './AgentRow.svelte';
   import { AGENT_STATUS_TONE, AGENT_STATUS_WORD, agentActivityRows } from './agentActivityModel.ts';
@@ -65,10 +66,10 @@
     { value: 'workflows', label: 'Workflows' }
   ] as const;
   const conversation = $derived(ownedId ? getConversationSession(ownedId) : null);
-  const session = $derived(rail.owned.find((owned) => owned.ownedId === ownedId) ?? null);
-  const machine = $derived(session?.remoteProfileId ?? null);
-  // A remote session without its machine cannot reach that machine's engine.
-  const workflowRoot = $derived(session?.executionEnvironment === 'remote' && !machine ? '' : root);
+  // A remote project's workflows run on that machine's own engine, at its own path.
+  const remoteRoot = $derived(parseRemoteWorkspacePath(root));
+  const machine = $derived(remoteRoot?.profileId ?? null);
+  const workflowRoot = $derived(remoteRoot?.path ?? root);
   const selectedChildId = $derived(conversation?.selectedChildId ?? null);
   // List rows use metadata; returning to the list releases the child body.
   const rows = $derived(agentActivityRows(conversation?.children ?? [], {}));
