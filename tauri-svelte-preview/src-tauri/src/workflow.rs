@@ -1676,9 +1676,9 @@ impl WorkflowEngine {
             .iter_mut()
             .find(|node| node.node_id == node_id)
             .unwrap();
-        if node.state != WorkflowNodeState::Failed {
+        if !matches!(node.state, WorkflowNodeState::Failed | WorkflowNodeState::WaitingInput) {
             return Err(WorkflowError::InvalidTransition(
-                "Only a failed node can be retried".into(),
+                "Only a failed or waiting node can be retried".into(),
             ));
         }
         if !role.retry_policy.retryable_codes.is_empty()
@@ -2549,21 +2549,54 @@ impl WorkflowEngine {
 
     /// A new app process cannot receive completion events from the previous
     /// process's agent turns. Leave their work visible and offer an explicit retry.
-    pub fn fail_interrupted_stages(&self) -> Result<(), WorkflowError> {
-        for run in self.list_runs()? {
-            for node in run.nodes.iter().filter(|node| {
-                matches!(node.state, WorkflowNodeState::Starting | WorkflowNodeState::Running)
-            }) {
-                self.fail_agent_node(
-                    &run.id,
-                    &node.node_id,
-                    "runtime",
-                    "Assembly closed during this stage. Review its file changes before retrying.",
-                    &format!("startup-interrupted:{}", node.id),
-                )?;
+    /// Startup recovery. A `run` step marked `repeat: true` starts again as a new attempt; every other
+    /// step that was starting or running when Assembly stopped waits for the owner, because its outcome
+    /// is unknown (an agent turn, a pull request, a merge). No prompt or command is sent here. Returns the
+    /// runs to dispatch once the app is up.
+    pub fn recover_after_restart(&self) -> Result<Vec<String>, WorkflowError> {
+        let run_ids = self.store.workflow_runs_with_interrupted_steps()
+            .map_err(|error| WorkflowError::Ledger(error.to_string()))?;
+        let mut dispatch = Vec::new();
+        for run_id in run_ids {
+            let mut run = self.require_run(&run_id)?;
+            for index in 0..run.nodes.len() {
+                if !matches!(run.nodes[index].state, WorkflowNodeState::Starting | WorkflowNodeState::Running) {
+                    continue;
+                }
+                let step = &run.definition.nodes.iter().find(|definition| definition.id == run.nodes[index].node_id)
+                    .expect("validated node").step;
+                let repeatable = step.get("run").is_some() && step["repeat"] == true;
+                if let Some(lease_id) = run.nodes[index].lease_id.take() {
+                    self.leases.release(&lease_id)?;
+                }
+                let key = format!("restart:{}", run.nodes[index].id);
+                let node = &mut run.nodes[index];
+                if repeatable {
+                    node.attempt += 1;
+                    node.id = format!("{}:{}:{}", run.id, node.node_id, node.attempt);
+                    node.state = WorkflowNodeState::Ready;
+                    node.started_at_ms = None;
+                    node.structured_output = None;
+                } else {
+                    node.state = WorkflowNodeState::WaitingInput;
+                    node.finished_at_ms = Some(self.clock.now_ms());
+                    node.failure = Some(WorkflowFailure {
+                        code: "runtime".into(),
+                        message: "Assembly stopped during this step, so its outcome is unknown. Check its session, files and any pull request, then retry or stop.".into(),
+                        budget: None,
+                    });
+                    if run.state != WorkflowRunState::Paused {
+                        run.state = WorkflowRunState::WaitingInput;
+                    }
+                }
+                let node_id = node.node_id.clone();
+                self.append(&mut run, "workflow.node.restart-recovered", &key, Some(&node_id))?;
+            }
+            if run.state == WorkflowRunState::Running {
+                dispatch.push(run_id);
             }
         }
-        Ok(())
+        Ok(dispatch)
     }
 
     fn require_run(&self, run_id: &str) -> Result<WorkflowRunRecord, WorkflowError> {
@@ -4074,38 +4107,99 @@ mod tests {
         assert_eq!(derive_phase(&run), WorkflowLoopPhase::Cancelled);
     }
 
+    /// A fresh engine over the same store, as after an app restart.
+    fn restarted_engine(engine: &WorkflowEngine, runtime: Arc<FakeRuntime>) -> WorkflowEngine {
+        WorkflowEngine::new(runtime, Arc::new(InMemoryWorktreeLeasePort::default()),
+            Arc::new(FakeClock(AtomicU64::new(200))), Arc::new(FakeIds(AtomicU64::new(50))), engine.store.clone())
+    }
+    /// A step run whose `run` step (node "a") was mid-way when Assembly stopped.
+    fn interrupted_step_run(engine: &WorkflowEngine, root: &Path, step: Value) -> WorkflowRunRecord {
+        let mut run = step_run(engine, root, step);
+        run.state = WorkflowRunState::Running;
+        run.nodes[0].state = WorkflowNodeState::Running;
+        engine.append(&mut run, "workflow.test.interrupted", "interrupted", None).unwrap();
+        run
+    }
+
     #[test]
-    fn restart_marks_an_inflight_stage_failed_and_retriable() {
-        let store = Arc::new(SessionStore::open_in_memory().unwrap());
-        let engine = WorkflowEngine::new(
-            Arc::new(FakeRuntime::default()),
-            Arc::new(InMemoryWorktreeLeasePort::default()),
-            Arc::new(FakeClock(AtomicU64::new(100))),
-            Arc::new(FakeIds(AtomicU64::new(1))),
-            store.clone(),
-        );
+    fn restart_reruns_only_repeatable_checks() {
+        for repeat in [true, false] {
+            let repo = RunRepo::new();
+            let engine = run_engine(Arc::new(FakeRuntime::default()));
+            let run = interrupted_step_run(&engine, &repo.0, json!({"run":["touch ran.txt"], "repeat": repeat}));
+            let restarted = restarted_engine(&engine, Arc::new(FakeRuntime::default()));
+            let dispatch = restarted.recover_after_restart().unwrap();
+            let recovered = restarted.require_run(&run.id).unwrap();
+            assert!(!repo.0.join("ran.txt").exists(), "recovery itself runs nothing");
+            if repeat {
+                assert_eq!(dispatch, vec![run.id.clone()]);
+                assert_eq!(recovered.nodes[0].state, WorkflowNodeState::Ready);
+                assert_eq!(recovered.nodes[0].attempt, 2);
+                let finished = tauri::async_runtime::block_on(restarted.dispatch_ready(&run.id)).unwrap();
+                assert!(repo.0.join("ran.txt").exists());
+                assert_eq!(finished.nodes[0].state, WorkflowNodeState::Completed);
+            } else {
+                assert!(dispatch.is_empty());
+                assert_eq!(recovered.state, WorkflowRunState::WaitingInput);
+                assert_eq!(recovered.nodes[0].state, WorkflowNodeState::WaitingInput);
+                assert_eq!(recovered.nodes[0].failure.as_ref().unwrap().code, "runtime");
+            }
+        }
+    }
+
+    #[test]
+    fn restart_resumes_agent_without_second_prompt() {
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = run_engine(runtime.clone());
         let created = engine.create_run(definition(), json!({"cwd":"/repo"}), "create".into()).unwrap();
         let active = tauri::async_runtime::block_on(engine.start(&created.id, "start")).unwrap();
         assert_eq!(active.nodes[0].state, WorkflowNodeState::Running);
-        drop(engine);
-
-        let restarted = WorkflowEngine::new(
-            Arc::new(FakeRuntime::default()),
-            Arc::new(InMemoryWorktreeLeasePort::default()),
-            Arc::new(FakeClock(AtomicU64::new(200))),
-            Arc::new(FakeIds(AtomicU64::new(20))),
-            store,
-        );
-        restarted.fail_interrupted_stages().unwrap();
-        let failed = restarted.require_run(&created.id).unwrap();
-        assert_eq!(failed.state, WorkflowRunState::Failed);
-        assert_eq!(failed.nodes[0].failure.as_ref().unwrap().code, "runtime");
-        let sequence = failed.last_sequence;
-        restarted.fail_interrupted_stages().unwrap();
-        assert_eq!(restarted.require_run(&created.id).unwrap().last_sequence, sequence);
+        let after = Arc::new(FakeRuntime::default());
+        let restarted = restarted_engine(&engine, after.clone());
+        assert!(restarted.recover_after_restart().unwrap().is_empty());
+        let waiting = restarted.require_run(&created.id).unwrap();
+        assert!(after.dispatched.lock().unwrap().is_empty(), "no prompt is sent again");
+        assert_eq!(waiting.state, WorkflowRunState::WaitingInput);
+        assert_eq!(waiting.nodes[0].state, WorkflowNodeState::WaitingInput);
+        assert_eq!(waiting.nodes[0].owned_id, active.nodes[0].owned_id, "the agent keeps its session");
+        // The owner can retry it, which starts a new attempt.
         let retried = tauri::async_runtime::block_on(restarted.retry_node(&created.id, "a", "retry")).unwrap();
         assert_eq!(retried.nodes[0].state, WorkflowNodeState::Running);
         assert_eq!(retried.nodes[0].attempt, 2);
+    }
+
+    #[test]
+    fn restart_pauses_unknown_pr_or_merge() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let run = interrupted_step_run(&engine, &repo.0, json!({"run":["touch pushed.txt"]}));
+        let restarted = restarted_engine(&engine, Arc::new(FakeRuntime::default()));
+        assert!(restarted.recover_after_restart().unwrap().is_empty());
+        let waiting = restarted.require_run(&run.id).unwrap();
+        assert_eq!(waiting.nodes[0].state, WorkflowNodeState::WaitingInput);
+        assert_eq!(waiting.state, WorkflowRunState::WaitingInput);
+        assert!(!repo.0.join("pushed.txt").exists());
+        // A paused run keeps its paused state.
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let mut paused = interrupted_step_run(&engine, &repo.0, json!({"run":["true"]}));
+        paused.state = WorkflowRunState::Paused;
+        engine.append(&mut paused, "workflow.test.paused", "paused", None).unwrap();
+        let restarted = restarted_engine(&engine, Arc::new(FakeRuntime::default()));
+        restarted.recover_after_restart().unwrap();
+        assert_eq!(restarted.require_run(&paused.id).unwrap().state, WorkflowRunState::Paused);
+    }
+
+    #[test]
+    fn restart_twice_has_one_recovery_event() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let run = interrupted_step_run(&engine, &repo.0, json!({"run":["true"]}));
+        let first = restarted_engine(&engine, Arc::new(FakeRuntime::default()));
+        first.recover_after_restart().unwrap();
+        let sequence = first.require_run(&run.id).unwrap().last_sequence;
+        let second = restarted_engine(&engine, Arc::new(FakeRuntime::default()));
+        assert!(second.recover_after_restart().unwrap().is_empty());
+        assert_eq!(second.require_run(&run.id).unwrap().last_sequence, sequence);
     }
 
     #[test]

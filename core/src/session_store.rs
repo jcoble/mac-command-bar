@@ -2582,6 +2582,29 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read workflow lease row", error))
     }
 
+    /// Runs whose latest snapshot still shows a step starting or running; read once at startup.
+    pub fn workflow_runs_with_interrupted_steps(&self) -> Result<Vec<String>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "WITH latest AS (
+                SELECT e.run_id, json_extract(e.payload_json, '$.workflowPayload.run') AS run
+                FROM orchestration_events e
+                WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%'
+                  AND e.rowid = (SELECT rowid FROM orchestration_events
+                    WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                    ORDER BY sequence DESC LIMIT 1)
+             )
+             SELECT run_id FROM latest
+             WHERE EXISTS (SELECT 1 FROM json_each(run, '$.nodes') n
+                WHERE json_extract(n.value, '$.state') IN ('starting', 'running'))
+             ORDER BY run_id",
+        ).map_err(|error| StoreError::sqlite("could not prepare interrupted workflow query", error))?;
+        let rows = statement.query_map([], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not read interrupted workflow runs", error))?;
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(|error| StoreError::sqlite("could not read interrupted workflow run", error))
+    }
+
     /// Other running runs whose latest snapshot has a step ready to start; used when agent capacity frees up.
     pub fn workflow_runs_ready_for_dispatch(&self, except_run_id: &str) -> Result<Vec<String>> {
         let connection = self.lock()?;

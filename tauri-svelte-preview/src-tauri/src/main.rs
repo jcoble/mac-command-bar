@@ -5421,7 +5421,15 @@ fn main() {
             let workflow_store = agent_runtime.store_handle();
             let remote_session_store = Arc::clone(&workflow_store);
             let workflow_engine = WorkflowEngine::managed(agent_runtime.clone(), workflow_store);
-            workflow_engine.fail_interrupted_stages().map_err(|error| error.to_string())?;
+            let recovered_runs = workflow_engine.recover_after_restart().map_err(|error| error.to_string())?;
+            let recovery_engine = workflow_engine.clone();
+            tauri::async_runtime::spawn(async move {
+                for run_id in recovered_runs {
+                    if let Err(error) = recovery_engine.dispatch_ready(&run_id).await {
+                        eprintln!("workflow run {run_id} could not restart: {error}");
+                    }
+                }
+            });
             let live_session_ids = agent_runtime
                 .resource_roots()
                 .into_iter()
