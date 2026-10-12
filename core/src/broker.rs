@@ -270,6 +270,31 @@ impl SessionStore {
         }))
     }
 
+    /// Records a workflow reviewer's `report_review` call against its attempt.
+    /// Kept as a delivered row addressed to the attempt, so it is never sent.
+    pub fn add_review_report(&self, reviewer: &str, run_id: &str, attempt_id: &str, report: &str) -> Result<()> {
+        let connection = self.lock_write()?;
+        let now = now_ms()?;
+        db("could not record the review report", connection.execute(
+            "INSERT INTO workflow_messages
+             (id, group_id, from_owned_id, to_owned_id, sender_name, run_id, kind, body, receipt,
+              created_at_ms, updated_at_ms)
+             VALUES (?, NULL, ?, ?, ?, ?, 'review', ?, 'delivered', ?, ?)",
+            params![new_id(&connection)?, reviewer, attempt_id, reviewer, run_id, report, now, now],
+        ))?;
+        Ok(())
+    }
+
+    /// Every report recorded for a review attempt, oldest first.
+    pub fn review_reports(&self, attempt_id: &str) -> Result<Vec<String>> {
+        let connection = self.lock()?;
+        let mut statement = db("could not prepare review reports", connection.prepare(
+            "SELECT body FROM workflow_messages WHERE to_owned_id = ? AND kind = 'review'
+             ORDER BY created_at_ms, rowid"))?;
+        let rows = db("could not read review reports", statement.query_map([attempt_id], |row| row.get(0)))?;
+        db("could not read review report", rows.collect())
+    }
+
     /// The receipt of a message the caller sent. Another sender's message reads
     /// as unknown.
     pub fn message_status(&self, id: &str, from: &str) -> Result<String> {

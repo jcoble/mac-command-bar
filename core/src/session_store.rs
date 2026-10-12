@@ -2624,6 +2624,31 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read workflow lease row", error))
     }
 
+    /// The run and attempt of the workflow review step `owned_id` is running now.
+    pub fn workflow_running_review(&self, owned_id: &str) -> Result<Option<(String, String)>> {
+        use rusqlite::OptionalExtension;
+        let connection = self.lock()?;
+        connection.query_row(
+            "WITH latest AS (
+                SELECT json_extract(e.payload_json, '$.workflowPayload.run') AS run
+                FROM orchestration_events e
+                WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%'
+                  AND e.rowid = (SELECT rowid FROM orchestration_events
+                    WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                    ORDER BY sequence DESC LIMIT 1)
+             )
+             SELECT json_extract(run, '$.id'), json_extract(n.value, '$.id')
+             FROM latest, json_each(run, '$.nodes') n
+             JOIN json_each(run, '$.definition.nodes') d
+               ON json_extract(d.value, '$.id') = json_extract(n.value, '$.nodeId')
+             WHERE json_extract(n.value, '$.ownedId') = ?1
+               AND json_extract(n.value, '$.state') = 'running'
+               AND json_type(d.value, '$.step.review') IS NOT NULL
+             LIMIT 1",
+            [owned_id], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().map_err(|error| StoreError::sqlite("could not find the running review", error))
+    }
+
     /// Runs whose latest snapshot still shows a step starting or running; read once at startup.
     pub fn workflow_runs_with_interrupted_steps(&self) -> Result<Vec<String>> {
         let connection = self.lock()?;

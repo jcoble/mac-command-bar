@@ -74,6 +74,21 @@ fn yaml_value(yaml: &yaml_rust::Yaml) -> Result<Value, WorkflowError> {
     })
 }
 
+/// `id` and every step that depends on it, directly or through other steps.
+fn step_and_dependents(definition: &WorkflowDefinitionV1, id: &str) -> BTreeSet<String> {
+    let mut found = BTreeSet::from([id.to_string()]);
+    loop {
+        let next: Vec<_> = definition.nodes.iter()
+            .filter(|node| !found.contains(&node.id)
+                && (node.depends_on.iter().any(|dependency| found.contains(dependency))
+                    || definition.edges.iter().any(|edge| edge.to == node.id && found.contains(&edge.from))))
+            .map(|node| node.id.clone())
+            .collect();
+        if next.is_empty() { return found; }
+        found.extend(next);
+    }
+}
+
 const STEP_FIELDS: [&str; 10] = ["needs", "agent", "prompt", "run", "review", "gate", "on_fail", "expect_files", "if", "repeat"];
 
 /// Every step `id` depends on, directly or through other steps.
@@ -1279,6 +1294,9 @@ impl WorkflowEngine {
             && enforce_node_timeout(&run, index, self.clock.now_ms()).is_err() {
             return self.timeout_step(&run_id, &node_id).await.map(Some);
         }
+        if *state != TurnState::Completed && run.definition.nodes.iter().any(|node| node.id == node_id && node.step.get("review").is_some()) {
+            return self.wait_for_owner(&run_id, &node_id, "review-report", "The review turn did not complete", None, &idempotency_key).map(Some);
+        }
         if *state != TurnState::Completed {
             return self
                 .fail_agent_node(
@@ -1308,6 +1326,26 @@ impl WorkflowEngine {
         let run = self.require_run(&run_id)?;
         if !run.definition.nodes.iter().find(|node| node.id == node_id).unwrap().step.is_null() {
             let definition = run.definition.nodes.iter().find(|node| node.id == node_id).unwrap();
+            if let Some(target) = definition.step["review"]["of"].as_str() {
+                let attempt_id = &run.nodes[index].id;
+                let reports = self.store.review_reports(attempt_id).map_err(|error| WorkflowError::Ledger(error.to_string()))?;
+                let report = match reports.as_slice() {
+                    [report] => serde_json::from_str::<Value>(report).ok(),
+                    _ => None,
+                };
+                let Some(report) = report else {
+                    let message = format!("The reviewer must call report_review once; it called it {} times", reports.len());
+                    return self.wait_for_owner(&run_id, &node_id, "review-report", &message, None, &idempotency_key).map(Some);
+                };
+                let findings = report["findings"].as_array().cloned().unwrap_or_default();
+                let output = json!({"verdict":report["verdict"],"findings":findings,"findingCount":findings.len(),"summary":text,"files":[]});
+                if report["verdict"] == "pass" && findings.is_empty() {
+                    self.finish_step(&run_id, &node_id, output, true, &idempotency_key)?;
+                } else {
+                    self.finish_with_findings(&run_id, &node_id, target, output, findings.len().max(1), &idempotency_key)?;
+                }
+                return self.dispatch_ready(&run_id).await.map(Some);
+            }
             if definition.step.get("agent").is_some() {
                 let mut files = Vec::new();
                 for pattern in definition.step["expect_files"].as_array().into_iter().flatten() {
@@ -2044,29 +2082,7 @@ impl WorkflowEngine {
             if let Some(redo_index) = redo_index {
                 // A late review must repeat every completed stage that relied
                 // on the corrected work, including verification and PR update.
-                let mut redo_ids = BTreeSet::from([run.nodes[redo_index].node_id.clone()]);
-                loop {
-                    let next: Vec<_> = run
-                        .definition
-                        .nodes
-                        .iter()
-                        .filter(|definition| {
-                            !redo_ids.contains(&definition.id)
-                                && (definition
-                                    .depends_on
-                                    .iter()
-                                    .any(|dependency| redo_ids.contains(dependency))
-                                    || run.definition.edges.iter().any(|edge| {
-                                        edge.to == definition.id && redo_ids.contains(&edge.from)
-                                    }))
-                        })
-                        .map(|definition| definition.id.clone())
-                        .collect();
-                    if next.is_empty() {
-                        break;
-                    }
-                    redo_ids.extend(next);
-                }
+                let redo_ids = step_and_dependents(&run.definition, &run.nodes[redo_index].node_id);
                 let rerun_indices: Vec<_> = run
                     .nodes
                     .iter()
@@ -2509,6 +2525,69 @@ impl WorkflowEngine {
         }
     }
 
+    /// Stops a running step and the run until the owner answers.
+    fn wait_for_owner(&self, run_id: &str, node_id: &str, code: &str, message: &str, output: Option<Value>, key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
+        let mut run = self.require_run(run_id)?;
+        let node = run.nodes.iter_mut().find(|node| node.node_id == node_id).unwrap();
+        if node.state != WorkflowNodeState::Running { return Ok(run); }
+        if output.is_some() { node.structured_output = output; }
+        if let Some(lease) = node.lease_id.take() { self.leases.release(&lease)?; }
+        node.state = WorkflowNodeState::WaitingInput;
+        node.failure = Some(WorkflowFailure { code: code.into(), message: message.into(), budget: None });
+        node.finished_at_ms = Some(self.clock.now_ms());
+        run.state = WorkflowRunState::WaitingInput;
+        self.append(&mut run, "workflow.node.waiting-owner", key, Some(node_id))?;
+        Ok(run)
+    }
+
+    /// Records a review or check that found `count` problems. The first round,
+    /// and each later round with fewer problems than the one before, sends
+    /// `target` back with every step after it; otherwise the owner decides.
+    fn finish_with_findings(&self, run_id: &str, node_id: &str, target: &str, output: Value, count: usize, key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
+        let run = self.require_run(run_id)?;
+        if !run.nodes.iter().any(|node| node.node_id == node_id && node.state == WorkflowNodeState::Running) { return Ok(run); }
+        let rounds = run.input_snapshot["rounds"][node_id].as_array().cloned().unwrap_or_default();
+        let max_rounds = run.definition.limits["max_rounds"].as_u64().unwrap_or(5) as usize;
+        let previous = rounds.last().and_then(Value::as_u64);
+        let stop = if rounds.len() >= max_rounds {
+            Some(format!("Stopped after {max_rounds} rounds with {count} still found"))
+        } else {
+            previous.filter(|previous| count as u64 >= *previous)
+                .map(|previous| format!("Found {count} after {previous} last round, so the work is not converging"))
+        };
+        if let Some(message) = stop {
+            return self.wait_for_owner(run_id, node_id, "loop-stopped", &message, Some(output), key);
+        }
+        let mut run = run;
+        let reviews: BTreeSet<_> = run.definition.nodes.iter().filter(|node| node.step.get("review").is_some()).map(|node| node.id.clone()).collect();
+        let redo_ids = step_and_dependents(&run.definition, target);
+        let snapshot = run.input_snapshot.as_object_mut().ok_or_else(|| invalid_yaml("Workflow input must be an object"))?;
+        let mut all_rounds = snapshot.get("rounds").cloned().unwrap_or_else(|| json!({}));
+        all_rounds[node_id] = Value::Array(rounds.into_iter().chain([json!(count)]).collect());
+        snapshot.insert("rounds".into(), all_rounds);
+        snapshot.insert("redo".into(), json!({"findings":output["findings"].as_array().cloned().unwrap_or_default(),"output":output["summary"]}));
+        let run_id_owned = run.id.clone();
+        for node in run.nodes.iter_mut().filter(|node| redo_ids.contains(&node.node_id) && !matches!(node.state,
+            WorkflowNodeState::Blocked | WorkflowNodeState::Ready | WorkflowNodeState::Queued | WorkflowNodeState::Skipped)) {
+            if let Some(lease) = node.lease_id.take() { self.leases.release(&lease)?; }
+            node.attempt += 1;
+            node.id = format!("{}:{}:{}", run_id_owned, node.node_id, node.attempt);
+            // The worker keeps its session and context; each review round gets a fresh reviewer.
+            if reviews.contains(&node.node_id) { node.owned_id = self.ids.next_id("workflow-agent"); }
+            node.provider_instance_id = None;
+            node.state = WorkflowNodeState::Blocked;
+            node.started_at_ms = None;
+            node.finished_at_ms = None;
+            node.gate = None;
+            node.failure = None;
+            node.structured_output = None;
+            node.artifacts.clear();
+        }
+        refresh_ready_and_phase(&mut run);
+        self.append(&mut run, "workflow.node.redo", key, Some(node_id))?;
+        Ok(run)
+    }
+
     fn finish_step(&self, run_id: &str, node_id: &str, output: Value, passed: bool, key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
         let mut run = self.require_run(run_id)?;
         let node = run.nodes.iter_mut().find(|node| node.node_id == node_id).unwrap();
@@ -2632,7 +2711,11 @@ impl WorkflowEngine {
         let summary = results.iter().filter_map(|result| result["output"].as_str()).collect::<Vec<_>>().join("\n");
         let summary = summary.lines().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
         let _dispatch = self.dispatch_lock.lock().await;
-        self.finish_step(run_id, node_id, json!({"commands":results,"findingCount":count,"summary":summary,"files":[]}), count == 0, &format!("result:{attempt_id}"))?;
+        let output = json!({"commands":results,"findingCount":count,"summary":summary,"files":[]});
+        match definition.step["on_fail"].as_str() {
+            Some(target) if count > 0 => self.finish_with_findings(run_id, node_id, target, output, count, &format!("result:{attempt_id}"))?,
+            _ => self.finish_step(run_id, node_id, output, count == 0, &format!("result:{attempt_id}"))?,
+        };
         Ok(())
     }
 
@@ -3513,6 +3596,163 @@ mod tests {
         let terminal = AgentConversationEvent { payload:AgentConversationPayload::Turn { turn_id:"turn".into(), state:TurnState::Completed }, ..event };
         tauri::async_runtime::block_on(engine.accept_agent_event(&terminal)).unwrap().unwrap()
     }
+    const LOOP_REVIEW: &str = "  build: { agent: { provider: codex }, prompt: prompts/p.md }\n  review:\n    needs: [build]\n    review: { of: build, agent: { provider: claude }, prompt: prompts/p.md }\n";
+
+    /// A run of the repository workflow `steps`, ready to start.
+    fn loop_run(engine: &WorkflowEngine, root: &Path, steps: &str) -> WorkflowRunRecord {
+        std::fs::create_dir_all(root.join(".assembly/workflows/prompts")).unwrap();
+        std::fs::write(root.join(".assembly/workflows/prompts/p.md"), "Do the work").unwrap();
+        let path = Path::new(".assembly/workflows/loop.yml");
+        std::fs::write(root.join(path), format!("name: Loop\nsteps:\n{steps}")).unwrap();
+        let definition = WorkflowEngine::validate_file(root, path).unwrap();
+        let proof = root.parent().unwrap().join("proof");
+        std::fs::create_dir_all(&proof).unwrap();
+        let run = engine.create_run(definition, json!({"cwd":root,"worktree":{"path":root,"branch":"main"},
+            "run":{"proof_dir":proof,"pr_body":proof.join("pr-body.md")},
+            "task":{"key":"TSK-1416","title":"Task title","body":"Task body"},"inputs":{}}), "create".into()).unwrap();
+        tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap()
+    }
+
+    fn step_of<'a>(run: &'a WorkflowRunRecord, id: &str) -> &'a WorkflowNodeRunRecord {
+        run.nodes.iter().find(|node| node.node_id == id).unwrap()
+    }
+
+    /// Ends the current turn of step `id` with `text`, after `reports` review reports.
+    fn end_turn(engine: &WorkflowEngine, run_id: &str, id: &str, reports: &[Value]) -> WorkflowRunRecord {
+        static TURNS: AtomicU64 = AtomicU64::new(1);
+        let turn = format!("turn-{}", TURNS.fetch_add(1, Ordering::SeqCst));
+        let run = engine.require_run(run_id).unwrap();
+        let step = step_of(&run, id);
+        assert_eq!(step.state, WorkflowNodeState::Running, "{id} is not running");
+        for report in reports {
+            engine.store.add_review_report(&step.owned_id, run_id, &step.id, &report.to_string()).unwrap();
+        }
+        engine.store.upsert_session(&SessionRow { owned_id:step.owned_id.clone(), native_session_id:None,
+            provider:"codex".into(), model:None, effort:None, cwd:"/repo".into(), worktree:None,
+            branch:None, title:None, title_source:None, project:None, project_id:None, state:"ready".into(),
+            suspended:false, created_at_ms:1, last_activity_at_ms:1, extra_json:"{}".into() }).unwrap();
+        let seq = engine.store.latest_seq(&step.owned_id).unwrap() + 1;
+        let event = AgentConversationEvent { owned_id:step.owned_id.clone(), provider:AgentConversationProvider::Codex,
+            generation:1, sequence:seq, timestamp_ms:1, turn_id:Some(turn.clone()),
+            payload:AgentConversationPayload::AssistantMessage { item_id:turn.clone(), text:"Done.".into(), completed:true, blocks:None } };
+        engine.store.append_event(&EventRow { owned_id:step.owned_id.clone(), seq, turn_id:Some(turn.clone()),
+            kind:"item.completed".into(), payload_json:serde_json::to_string(&event).unwrap(), created_at_ms:1 }).unwrap();
+        let terminal = AgentConversationEvent { payload:AgentConversationPayload::Turn { turn_id:turn, state:TurnState::Completed }, ..event };
+        tauri::async_runtime::block_on(engine.accept_agent_event(&terminal)).unwrap().unwrap()
+    }
+
+    fn findings(count: usize) -> Value {
+        json!({"verdict":"fail","findings":(0..count).map(|number| format!("finding {number}")).collect::<Vec<_>>()})
+    }
+
+    #[test]
+    fn review_requires_exactly_one_report() {
+        for (reports, passes) in [(vec![], false), (vec![json!({"verdict":"pass","findings":[]}); 2], false),
+            (vec![json!({"verdict":"pass","findings":[]})], true)] {
+            let repo = RunRepo::new();
+            let engine = run_engine(Arc::new(FakeRuntime::default()));
+            let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
+            end_turn(&engine, &run.id, "build", &[]);
+            let run = end_turn(&engine, &run.id, "review", &reports);
+            if passes {
+                assert_eq!(step_of(&run, "review").state, WorkflowNodeState::Completed);
+                assert_eq!(run.state, WorkflowRunState::Completed);
+            } else {
+                assert_eq!(step_of(&run, "review").state, WorkflowNodeState::WaitingInput);
+                assert_eq!(step_of(&run, "review").failure.as_ref().unwrap().code, "review-report");
+                assert_eq!(run.state, WorkflowRunState::WaitingInput);
+                assert_eq!(step_of(&run, "build").attempt, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn redo_invalidates_all_transitive_dependents() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let steps = "  build: { agent: { provider: codex }, prompt: prompts/p.md }\n  checks: { needs: [build], run: [\"true\"] }\n  review:\n    needs: [checks]\n    review: { of: build, agent: { provider: claude }, prompt: prompts/p.md }\n  proof: { needs: [review], agent: { provider: claude }, prompt: prompts/p.md }\n";
+        let run = loop_run(&engine, &repo.0, steps);
+        end_turn(&engine, &run.id, "build", &[]);
+        let checked = settle(&engine, &run.id);
+        assert_eq!(step_of(&checked, "checks").state, WorkflowNodeState::Completed);
+        let run = end_turn(&engine, &run.id, "review", &[findings(2)]);
+        assert_eq!(step_of(&run, "build").attempt, 2);
+        assert_eq!(step_of(&run, "build").state, WorkflowNodeState::Running);
+        for id in ["checks", "review"] {
+            assert_eq!(step_of(&run, id).attempt, 2, "{id}");
+            assert_eq!(step_of(&run, id).state, WorkflowNodeState::Blocked, "{id}");
+            assert!(step_of(&run, id).structured_output.is_none(), "{id}");
+            assert!(step_of(&run, id).artifacts.is_empty(), "{id}");
+        }
+        assert_eq!((step_of(&run, "proof").attempt, step_of(&run, "proof").state), (1, WorkflowNodeState::Blocked));
+        assert_eq!(run.input_snapshot["redo"]["findings"], json!(["finding 0", "finding 1"]));
+        // The earlier attempts stay in the history.
+        let events = crate::orchestration::read_workflow_event_values(&engine.store).unwrap();
+        assert!(events.iter().any(|event| event["workflowPayload"]["run"]["nodes"].as_array().unwrap().iter()
+            .any(|node| node["nodeId"] == "checks" && node["attempt"] == 1 && node["state"] == "completed")));
+    }
+
+    #[test]
+    fn loop_stops_on_equal_count_or_fifth_round() {
+        for (counts, rounds) in [(vec![2, 2], 1), (vec![9, 8, 7, 6, 5, 4], 5)] {
+            let repo = RunRepo::new();
+            let engine = run_engine(Arc::new(FakeRuntime::default()));
+            let mut run = loop_run(&engine, &repo.0, LOOP_REVIEW);
+            for count in &counts {
+                end_turn(&engine, &run.id, "build", &[]);
+                run = end_turn(&engine, &run.id, "review", &[findings(*count)]);
+            }
+            assert_eq!(step_of(&run, "build").attempt, rounds + 1);
+            assert_eq!(step_of(&run, "review").state, WorkflowNodeState::WaitingInput);
+            assert_eq!(step_of(&run, "review").failure.as_ref().unwrap().code, "loop-stopped");
+            assert_eq!(step_of(&run, "review").structured_output.as_ref().unwrap()["findingCount"], *counts.last().unwrap());
+            assert_eq!(run.state, WorkflowRunState::WaitingInput);
+        }
+        // A failing check sends its on_fail step back the same way.
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let run = loop_run(&engine, &repo.0, "  build: { agent: { provider: codex }, prompt: prompts/p.md }\n  checks: { needs: [build], run: [\"exit 1\", \"true\"], on_fail: build }\n");
+        end_turn(&engine, &run.id, "build", &[]);
+        settle(&engine, &run.id);
+        let run = engine.require_run(&run.id).unwrap();
+        assert_eq!(step_of(&run, "build").attempt, 2);
+        assert_eq!(run.input_snapshot["rounds"]["checks"], json!([1]));
+    }
+
+    #[test]
+    fn report_review_is_only_for_the_running_reviewer() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
+        let run = end_turn(&engine, &run.id, "build", &[]);
+        let endpoint = crate::agent_conversation::messaging::MessagingEndpoint::start().unwrap();
+        let (reviewer, worker) = (endpoint.issue(&step_of(&run, "review").owned_id), endpoint.issue(&step_of(&run, "build").owned_id));
+        for caller in [&reviewer, &worker] { endpoint.bind_store(&caller.token, &engine.store, None); }
+        let report = |verdict: &str| json!({"name":"report_review","arguments":{"verdict":verdict,"findings":[]}});
+        let error = tauri::async_runtime::block_on(endpoint.handle(&worker.token, report("pass"))).unwrap_err();
+        assert_eq!(error, "Only a session running a workflow review step can report a review");
+        let error = tauri::async_runtime::block_on(endpoint.handle(&reviewer.token, report("maybe"))).unwrap_err();
+        assert_eq!(error, "verdict must be pass or fail");
+        tauri::async_runtime::block_on(endpoint.handle(&reviewer.token, report("PASS"))).unwrap();
+        assert_eq!(engine.store.review_reports(&step_of(&run, "review").id).unwrap(), vec![r#"{"verdict":"pass","findings":[]}"#]);
+    }
+
+    #[test]
+    fn redo_keeps_worker_and_replaces_reviewer() {
+        let repo = RunRepo::new();
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = run_engine(runtime.clone());
+        let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
+        end_turn(&engine, &run.id, "build", &[]);
+        let first = engine.require_run(&run.id).unwrap();
+        let redone = end_turn(&engine, &run.id, "review", &[findings(1)]);
+        assert_eq!(step_of(&redone, "build").owned_id, step_of(&first, "build").owned_id);
+        let redone = end_turn(&engine, &run.id, "build", &[]);
+        assert_ne!(step_of(&redone, "review").owned_id, step_of(&first, "review").owned_id);
+        let workers: Vec<_> = runtime.dispatched.lock().unwrap().iter().map(|request| request.owned_id.clone()).collect();
+        assert_eq!(workers.iter().filter(|id| **id == step_of(&first, "build").owned_id).count(), 2);
+    }
+
     #[test]
     fn run_step_records_each_command_and_fails_if_any_fail() {
         let repo = RunRepo::new();

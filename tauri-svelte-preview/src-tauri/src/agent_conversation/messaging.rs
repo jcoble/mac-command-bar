@@ -135,6 +135,22 @@ impl MessagingEndpoint {
                 Ok(json!({"content":[{"type":"text","text":json!({"name":name,"owned_id":helper}).to_string()}]}))
             }
             Some("workflow_format") => Ok(text(WORKFLOW_FORMAT)),
+            Some("report_review") => {
+                let args = &tool_call["arguments"];
+                let verdict = args["verdict"].as_str().map(str::to_ascii_lowercase)
+                    .filter(|verdict| verdict == "pass" || verdict == "fail")
+                    .ok_or("verdict must be pass or fail")?;
+                let findings = match &args["findings"] {
+                    Value::Null => json!([]),
+                    findings @ Value::Array(_) => findings.clone(),
+                    _ => return Err("findings must be a list".into()),
+                };
+                let (run_id, attempt_id) = store.workflow_running_review(&owned_id).map_err(|error| error.to_string())?
+                    .ok_or("Only a session running a workflow review step can report a review")?;
+                store.add_review_report(&owned_id, &run_id, &attempt_id, &json!({"verdict":verdict,"findings":findings}).to_string())
+                    .map_err(|error| error.to_string())?;
+                Ok(text("recorded"))
+            }
             Some("check_workflow") => {
                 let path = tool_call["arguments"]["path"].as_str()
                     .ok_or("path must be a workflow file relative to your project")?;
@@ -172,6 +188,9 @@ impl MessagingEndpoint {
                  "inputSchema":{"type":"object","properties":{}}},
                 {"name":"check_workflow","description":"Check a workflow file in your project, the same way starting it would. Returns ok and its steps, or the first error.",
                  "inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
+                {"name":"report_review","description":"Workflow review steps only: report your verdict once. Use pass with no findings, or fail with each finding.",
+                 "inputSchema":{"type":"object","properties":{"verdict":{"type":"string","enum":["pass","fail"]},
+                     "findings":{"type":"array","items":{"type":"string"}}},"required":["verdict","findings"]}},
                 {"name":"message_status","description":"Read whether a message you sent is queued, delivered or failed.",
                  "inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}
             ]}),
@@ -451,11 +470,11 @@ mod tests {
         assert_eq!(init["result"]["protocolVersion"], "2024-11-05");
         assert_eq!(init["result"]["capabilities"], json!({"tools":{}}));
         let list: Value = call(&c, Some(&c.token), "tools/list", json!({})).await.json().await.unwrap();
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 6);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 7);
         assert_eq!(list["result"]["tools"][0]["name"], "list_sessions");
         assert_eq!(list["result"]["tools"][1]["name"], "send_message");
         assert_eq!(list["result"]["tools"][2]["name"], "start_session");
-        assert_eq!(list["result"]["tools"][5]["name"], "message_status");
+        assert_eq!(list["result"]["tools"][6]["name"], "message_status");
         assert_eq!(call(&c, Some(&c.token), "notifications/initialized", json!({})).await.status(), 202);
     }
 }
