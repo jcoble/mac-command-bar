@@ -95,6 +95,7 @@ pub fn import_if_store_empty(store: &SessionStore, directory: &Path) -> Result<u
             let canonical: AgentEvent = serde_json::from_str(line)
                 .map_err(|error| format!("Could not decode {}: {error}", events_path.display()))?;
             let frontend = AgentConversationEvent {
+                runtime_state: None,
                 owned_id: canonical.owned_id.clone(),
                 provider: canonical.provider,
                 generation: canonical.generation,

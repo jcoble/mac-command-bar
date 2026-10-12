@@ -1309,11 +1309,12 @@ await test('an admitted send returns the native receipt', async () => {
   }
 });
 
-test('completed file notifications do not depend on the selected transcript', async () => {
+test('file notifications and runtime state do not depend on the selected transcript', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
   const handler = source.slice(source.indexOf('async function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
   for (const selection of ['root', 'child', 'another-session']) {
     const ownedId = `file-notification-${selection}`;
+    const runtimeStates: string[] = [];
     const notifications: Array<{ ownedId: string; path: string }> = [];
     const current = selection === 'another-session' ? null : { generation: 1, selectedChildId: selection === 'child' ? 'child' : null };
     const dependencies = {
@@ -1326,7 +1327,11 @@ test('completed file notifications do not depend on the selected transcript', as
       agentItemFromEvent, displayItemFromAgentItem,
       publishWorkspaceFileChange: (change: { ownedId: string; path: string }) => notifications.push(change),
       sessionPresenceEventFromConversation: () => null,
-      recordAgentConversationPresenceEvent: () => undefined
+      recordAgentConversationPresenceEvent: () => undefined,
+      updateOwnedSession: (_id: string, patch: { runtimeState?: string }) => {
+        if (patch.runtimeState) runtimeStates.push(patch.runtimeState);
+      },
+      synchronizeSessionPresenceWork: () => undefined, setConversationSending: () => undefined
     };
     const deliver = Function(...Object.keys(dependencies), `${stripTypeScriptTypes(handler, { mode: 'strip' })}\nreturn handleConversationStreamEnvelope;`)(...Object.values(dependencies));
     const event = (sequence: number, generation = 1) => ({
@@ -1340,6 +1345,12 @@ test('completed file notifications do not depend on the selected transcript', as
     await deliver(1, { chunk: event(2) });
     await deliver(1, { chunk: event(3, 0) });
     assert.deepEqual(notifications, [{ ownedId, path: '/workspace/new.txt' }], `${selection}: only a fresh completion publishes once`);
+    await deliver(1, { chunk: { ...event(4), runtimeState: 'working',
+      payload: { kind: 'turn', turnId: 'foreground', state: 'completed' } } });
+    assert.equal(runtimeStates.at(-1), 'working', 'background work outlives foreground completion');
+    await deliver(1, { chunk: { ...event(5), runtimeState: 'ready',
+      payload: { kind: 'connection', state: 'connected' } } });
+    assert.equal(runtimeStates.at(-1), 'ready', 'completion or Stop clears background Working');
   }
 });
 

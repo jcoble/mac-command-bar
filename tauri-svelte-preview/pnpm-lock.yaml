@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   '@agentclientprotocol/claude-agent-acp':
-    hash: 78f07a6156f3b7b70f2f0af714c9d7c0a9bc3f33520fd342102aa69fd403f83c
+    hash: a438745dcccb08fbbc6a350444a5c8563f1ee5c3fee5c651f702498558595e2b
     path: patches/@agentclientprotocol__claude-agent-acp.patch
   '@keenmate/svelte-treeview@4.8.0':
     hash: 3de2051c6bf236ed156980aa27d669a0a9000a58d95f94a0c35da4b9c5bba49a
@@ -23,8 +23,8 @@ importers:
   .:
     dependencies:
       '@agentclientprotocol/claude-agent-acp':
-        specifier: 0.88.0
-        version: 0.88.0(patch_hash=78f07a6156f3b7b70f2f0af714c9d7c0a9bc3f33520fd342102aa69fd403f83c)(@anthropic-ai/sdk@0.123.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.30.0(zod@4.6.5))
+        specifier: 0.89.1
+        version: 0.89.1(patch_hash=a438745dcccb08fbbc6a350444a5c8563f1ee5c3fee5c651f702498558595e2b)(@anthropic-ai/sdk@0.123.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.30.0(zod@4.6.5))
       '@agentclientprotocol/codex-acp':
         specifier: 1.13.1
         version: 1.13.1
@@ -277,8 +277,8 @@ packages:
       zod:
         optional: true
 
-  '@agentclientprotocol/claude-agent-acp@0.88.0':
-    resolution: {integrity: sha512-o2bfN6S47wHTV7US/0SrDguCQVs7RhgSwA5CzC37oeDvcXTfHJFTlAquglEybIMQXwSk1zYda5Wxa0F17pOlnA==}
+  '@agentclientprotocol/claude-agent-acp@0.89.1':
+    resolution: {integrity: sha512-t1k8YPDvo/zUghL3x2pFs40tWfYTLhYmK8jt37CVBpY7eq1Ztj2hLZBAmy9ZX++tUyJaGfuuMrzvJGvU9tjBsg==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -291,8 +291,8 @@ packages:
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
-  '@agentclientprotocol/sdk@1.7.0':
-    resolution: {integrity: sha512-ZORuxsuEnLjRly7t6Ad7zAsWitjWsyprswyPUHz/yycPb+tTm3DGa8XheaHhRXqX8LS9snuxaYavXSRA50TlHw==}
+  '@agentclientprotocol/sdk@1.8.0':
+    resolution: {integrity: sha512-fbP7qHZsFyTJVT0/RPrcWJ8An26qLXHEuGCHHEKDyxD1xpXV+Ejyh2LAE6vBAFePkpVjZeeohnbgvuEhZ7wLMg==}
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
 
@@ -2537,9 +2537,9 @@ snapshots:
     optionalDependencies:
       zod: 4.6.5
 
-  '@agentclientprotocol/claude-agent-acp@0.88.0(patch_hash=78f07a6156f3b7b70f2f0af714c9d7c0a9bc3f33520fd342102aa69fd403f83c)(@anthropic-ai/sdk@0.123.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.30.0(zod@4.6.5))':
+  '@agentclientprotocol/claude-agent-acp@0.89.1(patch_hash=a438745dcccb08fbbc6a350444a5c8563f1ee5c3fee5c651f702498558595e2b)(@anthropic-ai/sdk@0.123.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.30.0(zod@4.6.5))':
     dependencies:
-      '@agentclientprotocol/sdk': 1.7.0(zod@4.6.5)
+      '@agentclientprotocol/sdk': 1.8.0(zod@4.6.5)
       '@anthropic-ai/claude-agent-sdk': 0.3.293(@anthropic-ai/sdk@0.123.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.30.0(zod@4.6.5))(zod@4.6.5)
       diff: 9.0.0
       zod: 4.6.5
@@ -2560,7 +2560,7 @@ snapshots:
     dependencies:
       zod: 4.6.5
 
-  '@agentclientprotocol/sdk@1.7.0(zod@4.6.5)':
+  '@agentclientprotocol/sdk@1.8.0(zod@4.6.5)':
     dependencies:
       zod: 4.6.5
 

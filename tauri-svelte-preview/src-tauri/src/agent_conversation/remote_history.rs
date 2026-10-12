@@ -39,6 +39,7 @@ mod tests {
 
     fn event(sequence: i64) -> AgentConversationEvent {
         AgentConversationEvent {
+            runtime_state: None,
             owned_id: "same-session-id".into(),
             provider: AgentConversationProvider::Codex,
             generation: 1,

@@ -3939,6 +3939,7 @@ mod connection_tests {
 
     fn large_history_event(bytes: usize) -> AgentConversationEvent {
         AgentConversationEvent {
+            runtime_state: None,
             owned_id: "large-history".into(),
             provider: AgentConversationProvider::Codex,
             generation: 1,

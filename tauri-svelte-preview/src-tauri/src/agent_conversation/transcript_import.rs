@@ -858,6 +858,7 @@ fn imported_event_row(
         "An imported record reached the store with no event of its own".to_string()
     })?;
     let event = AgentConversationEvent {
+        runtime_state: None,
         owned_id: owned_id.to_string(),
         provider,
         generation: 0,

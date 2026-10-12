@@ -1,3 +1,6 @@
+# A patch that no longer applies fails the install instead of shipping the
+# adapter unpatched (the nightly provider release follows upstream).
+ignorePatchFailures: false
 patchedDependencies:
   '@agentclientprotocol/claude-agent-acp': patches/@agentclientprotocol__claude-agent-acp.patch
   '@keenmate/svelte-treeview@4.8.0': patches/@keenmate__svelte-treeview@4.8.0.patch

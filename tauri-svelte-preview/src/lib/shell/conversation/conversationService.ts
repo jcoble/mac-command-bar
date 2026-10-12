@@ -1143,6 +1143,10 @@ async function handleConversationStreamEnvelope(
       ...(working ? { lastError: null } : {})
     });
   }
+  if (payload.runtimeState) updateOwnedSession(payload.ownedId, {
+    runtimeState: payload.runtimeState,
+    ...(['ready', 'suspended', 'closed', 'failed'].includes(payload.runtimeState) ? { backgroundWork: [] } : {})
+  });
   if (terminal && !transition) synchronizeSessionPresenceWork(payload.ownedId, null, false);
   recordAgentConversationPresenceEvent(payload);
   if (

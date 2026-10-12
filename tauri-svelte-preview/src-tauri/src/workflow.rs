@@ -3831,6 +3831,7 @@ mod tests {
             })
             .unwrap();
         let assistant = AgentConversationEvent {
+            runtime_state: None,
             owned_id: first.owned_id.clone(),
             provider: AgentConversationProvider::Codex,
             generation: 1,
