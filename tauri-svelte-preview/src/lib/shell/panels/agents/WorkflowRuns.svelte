@@ -398,7 +398,7 @@
               <span class="text-xs tabular-nums text-muted-foreground">{completedCount}/{selected.nodes.length}</span>
             </div>
 
-            <ol class="flex flex-col gap-1.5">
+            <ol class="flex list-none flex-col gap-1.5">
               {#each orderedNodes as node, index (node.id)}
                 <li>
                   <button
