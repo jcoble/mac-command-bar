@@ -2,6 +2,7 @@ use agent_client_protocol::schema::v1 as acp;
 use axum::{extract::State, http::{HeaderMap, StatusCode}, response::{IntoResponse, Response}, routing::post, Json, Router};
 use serde_json::{json, Value};
 use mcb_core::{broker::MessageKind, session_store::SessionStore};
+use super::{manager::AgentRuntimeManager, protocol::AgentConversationProvider};
 use std::{collections::HashMap, sync::{Arc, Mutex, OnceLock, Weak}};
 
 pub struct SessionCredential { pub url: String, pub token: String }
@@ -12,9 +13,9 @@ impl SessionCredential {
     }
 }
 
-/// Starts delivery to a session that was just sent a message.
-pub type Wake = Arc<dyn Fn(String) + Send + Sync>;
-type Caller = (String, Weak<SessionStore>, Option<Wake>);
+/// The caller's session id, its backend's store, and the manager that delivers
+/// messages and starts helper sessions on that backend.
+type Caller = (String, Weak<SessionStore>, Option<AgentRuntimeManager>);
 
 pub struct MessagingEndpoint {
     url: String,
@@ -54,10 +55,10 @@ impl MessagingEndpoint {
         SessionCredential { url: self.url.clone(), token }
     }
 
-    pub fn bind_store(&self, token: &str, store: &Arc<SessionStore>, wake: Option<Wake>) {
-        if let Some((_, bound, bound_wake)) = self.callers.lock().unwrap().get_mut(token) {
+    pub fn bind_store(&self, token: &str, store: &Arc<SessionStore>, manager: Option<AgentRuntimeManager>) {
+        if let Some((_, bound, bound_manager)) = self.callers.lock().unwrap().get_mut(token) {
             *bound = Arc::downgrade(store);
-            *bound_wake = wake;
+            *bound_manager = manager;
         }
     }
 
@@ -69,8 +70,8 @@ impl MessagingEndpoint {
         self.callers.lock().unwrap().get(token).cloned().ok_or_else(|| "Unauthorized".into())
     }
 
-    pub fn handle(&self, token: &str, tool_call: Value) -> Result<Value, String> {
-        let (owned_id, store, wake) = self.caller(token)?;
+    pub async fn handle(&self, token: &str, tool_call: Value) -> Result<Value, String> {
+        let (owned_id, store, manager) = self.caller(token)?;
         let store = store.upgrade().ok_or("Session store unavailable")?;
         match tool_call["name"].as_str() {
             Some("list_sessions") => {
@@ -84,13 +85,32 @@ impl MessagingEndpoint {
                 let target = store.resolve_session_name(to).map_err(|error| error.to_string())?;
                 let message = store.append_message("", &owned_id, &target, MessageKind::Message, text)
                     .map_err(|error| error.to_string())?;
-                if let Some(wake) = wake { wake(target); }
+                if let Some(manager) = manager {
+                    tauri::async_runtime::spawn(async move { manager.deliver_if_idle(&target).await });
+                }
                 Ok(json!({"content":[{"type":"text","text":json!({"id":message.id,"status":"queued"}).to_string()}]}))
             }
             Some("message_status") => {
                 let id = tool_call["arguments"]["id"].as_str().ok_or("id must be a message id")?;
                 let status = store.message_status(id, &owned_id).map_err(|error| error.to_string())?;
                 Ok(json!({"content":[{"type":"text","text":json!({"id":id,"status":status}).to_string()}]}))
+            }
+            Some("start_session") => {
+                let args = &tool_call["arguments"];
+                let provider = match args["provider"].as_str() {
+                    Some("codex") => AgentConversationProvider::Codex,
+                    Some("claude") => AgentConversationProvider::Claude,
+                    _ => return Err("provider must be codex or claude".into()),
+                };
+                let name = args["name"].as_str().map(str::trim).filter(|name| !name.is_empty())
+                    .ok_or("name must be a session name")?;
+                let prompt = args["prompt"].as_str().ok_or("prompt must be a string")?;
+                let model = args["model"].as_str().map(str::to_string);
+                let manager = manager.ok_or("Sessions cannot be started from here")?;
+                let helper = manager.start_helper(&owned_id, provider, model, name, prompt).await?;
+                let name = store.directory_name(&helper).map_err(|error| error.to_string())?
+                    .unwrap_or_else(|| name.to_string());
+                Ok(json!({"content":[{"type":"text","text":json!({"name":name,"owned_id":helper}).to_string()}]}))
             }
             _ => Err("Tool not allowed".into()),
         }
@@ -110,10 +130,13 @@ impl MessagingEndpoint {
                  "inputSchema":{"type":"object","properties":{}}},
                 {"name":"send_message","description":"Send a message to a named Assembly session.",
                  "inputSchema":{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}},
+                {"name":"start_session","description":"Start a Codex or Claude helper session in your project. It is listed with your agents, and its final reply is sent to you as a message when it finishes.",
+                 "inputSchema":{"type":"object","properties":{"provider":{"type":"string","enum":["codex","claude"]},
+                     "model":{"type":"string"},"prompt":{"type":"string"},"name":{"type":"string"}},"required":["provider","prompt","name"]}},
                 {"name":"message_status","description":"Read whether a message you sent is queued, delivered or failed.",
                  "inputSchema":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}}
             ]}),
-            Some("tools/call") => match endpoint.handle(token, request["params"].clone()) {
+            Some("tools/call") => match endpoint.handle(token, request["params"].clone()).await {
                 Ok(value) => value,
                 Err(error) => json!({"isError":true,"content":[{"type":"text","text":error}]}),
             },
@@ -157,19 +180,19 @@ mod tests {
         let caller = endpoint.issue("caller");
         endpoint.bind_store(&caller.token, &store, None);
         let error = endpoint.handle(&caller.token, json!({"name":"send_message",
-            "arguments":{"to":"missing","text":"hello"}})).unwrap_err();
+            "arguments":{"to":"missing","text":"hello"}})).await.unwrap_err();
         assert!(error.contains("Unknown session name"), "{error}");
         let error = endpoint.handle(&caller.token, json!({"name":"send_message",
-            "arguments":{"to":"orchestrator","text":"hello"}})).unwrap_err();
+            "arguments":{"to":"orchestrator","text":"hello"}})).await.unwrap_err();
         assert!(error.contains("Ambiguous session name"), "{error}");
-        let listing = endpoint.handle(&caller.token, json!({"name":"list_sessions"})).unwrap();
+        let listing = endpoint.handle(&caller.token, json!({"name":"list_sessions"})).await.unwrap();
         let entries: Value = serde_json::from_str(listing["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(entries.as_array().unwrap().len(), 7);
         let entries = store.list_directory().unwrap();
         assert!(entries.iter().any(|entry| entry.name == "Duplicate [d1]"));
         assert_eq!(store.resolve_session_name("Duplicate [d2]").unwrap(), "d2");
         let result = endpoint.handle(&caller.token, json!({"name":"send_message",
-            "arguments":{"to":"b","text":"hello"}})).unwrap();
+            "arguments":{"to":"b","text":"hello"}})).await.unwrap();
         let receipt: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         let message = store.pending_for("owned-b").unwrap().unwrap();
         assert_eq!(receipt["id"], message.id);
@@ -200,8 +223,8 @@ mod tests {
         assert_eq!(call(&a, Some(&a.token), "tools/list", json!({})).await.status(), 401);
         assert_eq!(call(&b, Some(&b.token), "tools/list", json!({})).await.status(), 200);
     }
-    fn receipt(endpoint: &MessagingEndpoint, token: &str, tool: Value) -> Result<Value, String> {
-        let result = endpoint.handle(token, tool)?;
+    async fn receipt(endpoint: &MessagingEndpoint, token: &str, tool: Value) -> Result<Value, String> {
+        let result = endpoint.handle(token, tool).await?;
         Ok(serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap())
     }
 
@@ -217,13 +240,13 @@ mod tests {
         let send = json!({"name":"send_message","arguments":{"to":"b","text":"hello"}});
         let status = |id: &Value| json!({"name":"message_status","arguments":{"id":id}});
         for (outcome, label) in [(Receipt::Delivered, "delivered"), (Receipt::Failed, "failed")] {
-            let sent = receipt(&endpoint, &a.token, send.clone()).unwrap();
-            assert_eq!(receipt(&endpoint, &a.token, status(&sent["id"])).unwrap(),
+            let sent = receipt(&endpoint, &a.token, send.clone()).await.unwrap();
+            assert_eq!(receipt(&endpoint, &a.token, status(&sent["id"])).await.unwrap(),
                 json!({"id":sent["id"],"status":"queued"}));
             store.set_receipt(sent["id"].as_str().unwrap(), outcome).unwrap();
-            assert_eq!(receipt(&endpoint, &a.token, status(&sent["id"])).unwrap(),
+            assert_eq!(receipt(&endpoint, &a.token, status(&sent["id"])).await.unwrap(),
                 json!({"id":sent["id"],"status":label}));
-            let error = receipt(&endpoint, &b.token, status(&sent["id"])).unwrap_err();
+            let error = receipt(&endpoint, &b.token, status(&sent["id"])).await.unwrap_err();
             assert!(error.contains("Unknown message"), "{error}");
         }
     }
@@ -235,24 +258,30 @@ mod tests {
         let a = endpoint.issue("owned-a");
         endpoint.bind_store(&a.token, &store, None);
         receipt(&endpoint, &a.token, json!({"name":"send_message",
-            "arguments":{"from":"o1","to":"b","text":"hello"}})).unwrap();
+            "arguments":{"from":"o1","to":"b","text":"hello"}})).await.unwrap();
         assert_eq!(store.pending_for("owned-b").unwrap().unwrap().from_agent, "owned-a");
         for tool in ["approve_gate", "answer_decision", "answer_pause"] {
-            let error = endpoint.handle(&a.token, json!({"name":tool,"arguments":{}})).unwrap_err();
+            let error = endpoint.handle(&a.token, json!({"name":tool,"arguments":{}})).await.unwrap_err();
             assert_eq!(error, "Tool not allowed");
         }
     }
 
     #[tokio::test]
-    async fn send_message_wakes_the_target_once() {
+    async fn start_session_rejects_unknown_provider_and_missing_credential() {
         let endpoint = MessagingEndpoint::start().unwrap();
         let store = store();
         let a = endpoint.issue("owned-a");
-        let woken = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&woken);
-        endpoint.bind_store(&a.token, &store, Some(Arc::new(move |target| sink.lock().unwrap().push(target))));
-        receipt(&endpoint, &a.token, json!({"name":"send_message","arguments":{"to":"b","text":"hello"}})).unwrap();
-        assert_eq!(*woken.lock().unwrap(), vec!["owned-b".to_string()]);
+        let start = |provider: &str| json!({"name":"start_session",
+            "arguments":{"provider":provider,"name":"Helper","prompt":"Look"}});
+        assert_eq!(endpoint.handle("missing", start("codex")).await.unwrap_err(), "Unauthorized");
+        endpoint.bind_store(&a.token, &store, None);
+        assert_eq!(endpoint.handle(&a.token, start("gemini")).await.unwrap_err(), "provider must be codex or claude");
+        assert_eq!(endpoint.handle(&a.token, start("codex")).await.unwrap_err(), "Sessions cannot be started from here");
+        let manager = AgentRuntimeManager::default();
+        endpoint.bind_store(&a.token, &store, Some(manager));
+        let error = endpoint.handle(&a.token, start("claude")).await.unwrap_err();
+        assert_eq!(error, "The calling session was not found");
+        assert!(store.list_directory().unwrap().iter().all(|entry| entry.name != "Helper"));
     }
 
     #[tokio::test]
@@ -263,10 +292,11 @@ mod tests {
         assert_eq!(init["result"]["protocolVersion"], "2024-11-05");
         assert_eq!(init["result"]["capabilities"], json!({"tools":{}}));
         let list: Value = call(&c, Some(&c.token), "tools/list", json!({})).await.json().await.unwrap();
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 3);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 4);
         assert_eq!(list["result"]["tools"][0]["name"], "list_sessions");
         assert_eq!(list["result"]["tools"][1]["name"], "send_message");
-        assert_eq!(list["result"]["tools"][2]["name"], "message_status");
+        assert_eq!(list["result"]["tools"][2]["name"], "start_session");
+        assert_eq!(list["result"]["tools"][3]["name"], "message_status");
         assert_eq!(call(&c, Some(&c.token), "notifications/initialized", json!({})).await.status(), 202);
     }
 }

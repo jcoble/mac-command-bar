@@ -14,6 +14,7 @@
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import ConversationTimeline from '$lib/shell/components/conversation/ConversationTimeline.svelte';
+  import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
   import {
     getConversationSession,
     setConversationSelectedChild,
@@ -139,6 +140,12 @@
 
   async function select(childId: string): Promise<void> {
     if (!ownedId || !conversation || !visible || view !== 'session' || openedChildId === childId) return;
+    // A helper started with `start_session` is a session of its own; open it.
+    if (rail.owned.some((session) => session.ownedId === childId)) {
+      setConversationSelectedChild(ownedId, null);
+      await sessionRowJump(childId, 'session');
+      return;
+    }
     const parentId = ownedId;
     release(parentId);
     openedChildId = childId;
