@@ -67,8 +67,8 @@
 	import { diffPathFor } from "$lib/shell/sessionWorkspaces";
 	import { ownedSessionStatusPatch, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
 	import type { CenterTabId } from "$lib/shell/workbenchNavigation";
-	import { clearWorkbenchNavigation, registerWorkbenchNavigation } from "$lib/shell/workbenchNavigation";
-	import { updateAgentConversationSessionMetaFromTauri } from "$lib/tauriSource";
+	import { clearWorkbenchNavigation, openIncomingLink, registerWorkbenchNavigation } from "$lib/shell/workbenchNavigation";
+	import { isTauriRuntime, updateAgentConversationSessionMetaFromTauri } from "$lib/tauriSource";
 
 	const selection = new SessionSelectionController();
 	const workbench = new WorkbenchController();
@@ -303,12 +303,14 @@
 
 	onMount(() => {
 		const historyStop = new AbortController();
+		const linkStop = new AbortController();
 		const releaseSessionRowJump = registerSessionRowJumpTarget({
 			selectSession,
 			showCenterPanel: (_ownedId, id) => selectCenterTab(id),
 			showSidebarView: (_ownedId, id) => selectRightTab(id),
 		});
 		registerWorkbenchNavigation({
+			selectSession,
 			showCenterTab: selectCenterTab,
 			showRightTab: selectRightTab,
 			openDiff: async (request) => {
@@ -341,23 +343,49 @@
 				await sendStructuredMessage(request.ownedId, request.text);
 			},
 		});
-		void startShell({
-			onSelectInitial: async (ownedId, stopSignal) => {
-				if (stopSignal.aborted) return;
-				await selectSession(ownedId);
-				if (stopSignal.aborted) return;
-			},
-		});
+		void startShellThenListenForLinks(linkStop.signal);
 		void historyHost.rescan(historyStop.signal);
 
 		return () => {
 			historyStop.abort();
+			linkStop.abort();
 			historyHost.release();
 			releaseSessionRowJump();
 			clearWorkbenchNavigation();
 			void disposeRoute();
 		};
 	});
+
+	/** Start the shell, then take links from other apps: the one that launched
+	 * the app, and every one after while the page lives. Links wait for the
+	 * first session so a launch link is not replaced by the restored session. */
+	async function startShellThenListenForLinks(signal: AbortSignal): Promise<void> {
+		await startShell({
+			onSelectInitial: async (ownedId, stopSignal) => {
+				if (stopSignal.aborted) return;
+				await selectSession(ownedId);
+				if (stopSignal.aborted) return;
+			},
+		});
+		if (signal.aborted || !isTauriRuntime()) return;
+		try {
+			const { getCurrent, onOpenUrl } = await import("@tauri-apps/plugin-deep-link");
+			if (signal.aborted) return;
+			const unlisten = await onOpenUrl((urls) => {
+				for (const url of urls) void openIncomingLink(url);
+			});
+			if (signal.aborted) {
+				unlisten();
+				return;
+			}
+			signal.addEventListener("abort", unlisten, { once: true });
+			const launchUrls = await getCurrent();
+			if (signal.aborted) return;
+			for (const url of launchUrls ?? []) void openIncomingLink(url);
+		} catch (error) {
+			console.warn("Links from other apps are unavailable", error);
+		}
+	}
 
 	async function disposeRoute(): Promise<void> {
 		routeDisposal ??= disposeRouteOnce();

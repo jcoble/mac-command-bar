@@ -5350,6 +5350,7 @@ fn main() {
         .manage(resources::ResourceRegistry::default())
         .manage(usage_history::UsageHistoryState::default())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
@@ -5797,8 +5798,14 @@ fn main() {
             notion_tasks::save_notion_task_settings,
             notion_tasks::clear_notion_task_settings,
             notion_tasks::list_notion_tasks,
+            notion_tasks::read_cached_notion_task,
             notion_tasks::read_notion_task_detail,
+            notion_tasks::cancel_notion_task_detail,
             notion_tasks::update_notion_task_status,
+            notion_tasks::update_notion_task_property,
+            notion_tasks::update_notion_block,
+            notion_tasks::append_notion_task_text,
+            notion_tasks::append_notion_task_image,
             notion_tasks::refresh_notion_tasks,
             notion_oauth::begin_notion_oauth,
             notion_oauth::claim_notion_oauth,

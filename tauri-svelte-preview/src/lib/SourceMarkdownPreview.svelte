@@ -83,6 +83,7 @@
     type MarkdownBlockToken
   } from './shell/components/editor/markdownPreview';
   import { readSourceImageFromTauri } from './tauriSource';
+  import { openUrlInBrowser } from './shell/workbenchNavigation';
 
   /**
    * A Markdown file rendered by @humanspeak/svelte-markdown. It never rewrites
@@ -265,8 +266,13 @@
 {/snippet}
 
 {#snippet anchor(href: string | undefined, title: string | undefined, children: Snippet | undefined)}
-  <!-- A link opens outside the app; only #anchors move within the page. -->
-  <a {href} {title} target={href?.startsWith('#') ? undefined : '_blank'} rel="noreferrer">{@render children?.()}</a>
+  <!-- A web link goes through the app's link handler (pull requests, tasks, the
+       in-app browser); #anchors move within the page; anything else opens outside. -->
+  {#if href && /^https?:/i.test(href)}
+    <a {href} {title} onclick={(event) => { event.preventDefault(); void openUrlInBrowser({ url: href }); }}>{@render children?.()}</a>
+  {:else}
+    <a {href} {title} target={href?.startsWith('#') ? undefined : '_blank'} rel="noreferrer">{@render children?.()}</a>
+  {/if}
 {/snippet}
 
 <style>
