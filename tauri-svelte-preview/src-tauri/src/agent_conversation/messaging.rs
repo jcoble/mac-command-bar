@@ -32,6 +32,18 @@ fn workflow_summary(definition: &crate::workflow::WorkflowDefinitionV1) -> Strin
         if let Some(on_fail) = node.step["on_fail"].as_str() { line += &format!(" on_fail={on_fail}"); }
         lines.push(line);
     }
+    // A redone step only learns why from these placeholders in its own prompt.
+    for node in &definition.nodes {
+        let redo = [(node.step["on_fail"].as_str(), "redo.output", "failure"),
+            (node.step["review"]["of"].as_str(), "redo.findings", "findings")];
+        for (target, placeholder, what) in redo {
+            let Some(target) = target.and_then(|id| definition.nodes.iter().find(|other| other.id == id)) else { continue };
+            let prompt = target.step["prompt"].as_str().unwrap_or_default().replace(' ', "");
+            if !prompt.contains(&format!("${{{{{placeholder}}}}}")) {
+                lines.push(format!("warning: `{}` redoes `{}`, but its prompt has no ${{{{ {placeholder} }}}}, so it will not see the {what}", node.id, target.id));
+            }
+        }
+    }
     lines.join("\n")
 }
 
@@ -186,7 +198,7 @@ impl MessagingEndpoint {
                      "model":{"type":"string"},"prompt":{"type":"string"},"name":{"type":"string"}},"required":["provider","prompt","name"]}},
                 {"name":"workflow_format","description":"Read the reference for writing an Assembly workflow (.assembly/workflows/*.yml).",
                  "inputSchema":{"type":"object","properties":{}}},
-                {"name":"check_workflow","description":"Check a workflow file in your project, the same way starting it would. Returns ok and its steps, or the first error.",
+                {"name":"check_workflow","description":"Check a workflow file in your project, the same way starting it would. Returns ok, its steps and any warnings, or the first error.",
                  "inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
                 {"name":"report_review","description":"Workflow review steps only: report your verdict once. Use pass with no findings, or fail with each finding.",
                  "inputSchema":{"type":"object","properties":{"verdict":{"type":"string","enum":["pass","fail"]},
@@ -395,12 +407,28 @@ mod tests {
         session_in(&store, "owned-a", "codex", &root);
         endpoint.bind_store(&a.token, &store, None);
         let summary = tool_text(&endpoint, &a.token, check(".assembly/workflows/flow.yml")).await.unwrap();
-        assert_eq!(summary, "ok\nbuild agent\nchecks run needs=build on_fail=build\nreview review needs=checks of=build");
+        assert!(summary.starts_with("ok\nbuild agent\nchecks run needs=build on_fail=build\nreview review needs=checks of=build\n"), "{summary}");
         // A failed check reaches the agent as an MCP tool error.
         std::fs::write(root.join(".assembly/workflows/flow.yml"), "name: Flow\nsteps:\n  build: { run: [] }\n").unwrap();
         let result: Value = call(&a, Some(&a.token), "tools/call", check(".assembly/workflows/flow.yml")).await.json().await.unwrap();
         assert_eq!(result["result"]["isError"], true);
         assert_eq!(result["result"]["content"][0]["text"], "Step `build`: run must be a non-empty list of commands");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn check_workflow_warns_when_a_redone_step_cannot_see_why() {
+        let root = project("redo", &format!("{BUILD}  checks: {{ needs: [build], run: [ls], on_fail: build }}\n  review:\n    needs: [checks]\n    review: {{ of: build, agent: {{ provider: claude }}, prompt: prompts/build.md }}\n"));
+        let endpoint = MessagingEndpoint::start().unwrap();
+        let store = store();
+        let a = endpoint.issue("owned-a");
+        session_in(&store, "owned-a", "codex", &root);
+        endpoint.bind_store(&a.token, &store, None);
+        let path = ".assembly/workflows/flow.yml";
+        let summary = tool_text(&endpoint, &a.token, check(path)).await.unwrap();
+        assert!(summary.ends_with("\nwarning: `checks` redoes `build`, but its prompt has no ${{ redo.output }}, so it will not see the failure\nwarning: `review` redoes `build`, but its prompt has no ${{ redo.findings }}, so it will not see the findings"), "{summary}");
+        std::fs::write(root.join(".assembly/workflows/prompts/build.md"), "Build it. Fix ${{ redo.findings }} and ${{redo.output}}").unwrap();
+        assert!(!tool_text(&endpoint, &a.token, check(path)).await.unwrap().contains("warning"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
