@@ -669,7 +669,7 @@ SELECT CASE WHEN kind = 'orchestrator' THEN base_name
                 ORDER BY member_sequence DESC, created_at DESC, owned_id) = 1 THEN base_name
             WHEN kind = 'title' AND COUNT(*) OVER (PARTITION BY base_name, kind) = 1 THEN base_name
             ELSE base_name || ' [' || owned_id || ']' END AS name,
-       owned_id, handle, base_name AS label, provider, project, state, run_id, step_id FROM names;";
+       owned_id, handle, provider, project, state, run_id, step_id FROM names;";
 
 const ORCHESTRATION_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS orchestration_events (
     id TEXT PRIMARY KEY,
@@ -4262,10 +4262,12 @@ fn add_session_handle(connection: &Connection) -> Result<()> {
     if !exists {
         connection
             .execute_batch(&format!(
-                "ALTER TABLE sessions ADD COLUMN handle TEXT;
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE sessions ADD COLUMN handle TEXT;
                  UPDATE sessions SET handle = {PICK};
                  UPDATE sessions SET handle = handle || '-' || substr(owned_id, 1, 8)
-                 WHERE rowid NOT IN (SELECT MIN(rowid) FROM sessions GROUP BY handle);"
+                 WHERE rowid NOT IN (SELECT MIN(rowid) FROM sessions GROUP BY handle);
+                 COMMIT;"
             ))
             .map_err(|error| StoreError::sqlite("could not add the session handle column", error))?;
     }

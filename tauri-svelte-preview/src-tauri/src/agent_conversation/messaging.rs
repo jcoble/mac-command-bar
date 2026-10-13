@@ -173,14 +173,11 @@ impl MessagingEndpoint {
                 let to = args["to"].as_str().ok_or("to must be a session name")?;
                 let text = args["text"].as_str().ok_or("text must be a string")?;
                 let relay = self.relay.lock().unwrap().clone();
-                // A name with @machine, or one no session here has, is for another machine.
-                let local = match split_address(to) {
-                    (_, Some(_)) if relay.is_some() => None,
-                    _ => match store.resolve_session_name(to) {
-                        Ok(target) => Some(target),
-                        Err(error) if relay.is_some() && error.to_string().contains("Unknown session name") => None,
-                        Err(error) => return Err(error.to_string()),
-                    },
+                // A name no session here has, such as handle@machine, is for another machine.
+                let local = match store.resolve_session_name(to) {
+                    Ok(target) => Some(target),
+                    Err(error) if relay.is_some() && error.to_string().contains("Unknown session name") => None,
+                    Err(error) => return Err(error.to_string()),
                 };
                 let id = match (local, relay) {
                     (Some(target), _) => {

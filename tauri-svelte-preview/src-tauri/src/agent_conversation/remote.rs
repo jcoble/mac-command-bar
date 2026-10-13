@@ -271,6 +271,8 @@ impl RelayLink {
         let (reply, answer) = oneshot::channel();
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(request_id, reply);
         let sent = desktop.send(ServerFrame::RelayRequest { request_id, op, args }).await.is_ok();
+        // A closing socket waits for every sender, so this one is not held through the wait.
+        drop(desktop);
         let answer = if sent { tokio::time::timeout(Duration::from_secs(30), answer).await.ok() } else { None };
         self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&request_id);
         answer.and_then(Result::ok)
@@ -2628,6 +2630,9 @@ fn validate_profile(profile: &RemoteAssemblyProfile) -> Result<(), String> {
             "Remote machine id may contain only letters, numbers, '_', and '-'".to_string(),
         );
     }
+    if profile.id == LOCAL_MACHINE {
+        return Err(format!("Remote machine id {LOCAL_MACHINE} is reserved for this desktop"));
+    }
     if profile.name.trim().is_empty() {
         return Err("Remote machine name is required".to_string());
     }
@@ -4014,6 +4019,8 @@ mod connection_tests {
         let error = connections.route_message(LOCAL_MACHINE, "enqueue", serde_json::json!({
             "to": "brisk-heron@workbox-test", "text": "hi", "from": "a", "sender": "calm-otter · A"})).await.unwrap_err();
         assert!(error.contains("target machine not reachable"), "{error}");
+        // No saved machine can take the desktop's own name.
+        assert!(validate_profile(&profile(LOCAL_MACHINE)).unwrap_err().contains("reserved"));
         // A remote machine with no desktop connected cannot reach any other machine.
         let error = Arc::new(RelayLink::default()).ask("directory".into(), serde_json::json!({})).await.unwrap_err();
         assert!(error.contains("target machine not reachable"), "{error}");
