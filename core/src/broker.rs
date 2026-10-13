@@ -84,6 +84,7 @@ pub struct Envelope {
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryEntry {
     pub name: String,
+    pub handle: String,
     pub owned_id: String,
     pub provider: String,
     pub project: Option<String>,
@@ -96,26 +97,31 @@ impl SessionStore {
     pub fn list_directory(&self) -> Result<Vec<DirectoryEntry>> {
         let connection = self.lock()?;
         let mut statement = db("could not prepare session directory", connection.prepare(
-            "SELECT name,owned_id,provider,project,state,run_id,step_id FROM session_directory ORDER BY name,owned_id"))?;
+            "SELECT name,owned_id,provider,project,state,run_id,step_id,handle FROM session_directory ORDER BY name,owned_id"))?;
         let rows = db("could not query session directory", statement.query_map([], |row| Ok(DirectoryEntry {
             name: row.get(0)?, owned_id: row.get(1)?, provider: row.get(2)?, project: row.get(3)?,
-            state: row.get(4)?, run_id: row.get(5)?, step_id: row.get(6)?,
+            state: row.get(4)?, run_id: row.get(5)?, step_id: row.get(6)?, handle: row.get(7)?,
         })))?;
         db("could not read session directory", rows.collect())
     }
 
-    /// The name other sessions use to reach `owned_id`.
-    pub fn directory_name(&self, owned_id: &str) -> Result<Option<String>> {
+    /// The handle and name other sessions use to reach `owned_id`.
+    pub fn directory_name(&self, owned_id: &str) -> Result<Option<(String, String)>> {
         use rusqlite::OptionalExtension;
         let connection = self.lock()?;
         db("could not read the session name", connection.query_row(
-            "SELECT name FROM session_directory WHERE owned_id = ?", [owned_id], |row| row.get(0)).optional())
+            "SELECT handle, name FROM session_directory WHERE owned_id = ?", [owned_id],
+            |row| Ok((row.get(0)?, row.get(1)?))).optional())
     }
 
+    /// Finds a session by its title, its handle, its owned id, or a message sender name
+    /// (`handle · title`), whose handle comes before the dot.
     pub fn resolve_session_name(&self, name: &str) -> Result<String> {
         let connection = self.lock()?;
+        let handle = name.split(" · ").next().unwrap_or(name);
         let (count, owned_id): (i64, Option<String>) = db("could not resolve session name", connection.query_row(
-            "SELECT COUNT(*),MIN(owned_id) FROM session_directory WHERE name=?", [name],
+            "SELECT COUNT(DISTINCT owned_id),MIN(owned_id) FROM session_directory
+             WHERE name=?1 OR handle=?2 OR owned_id=?1", params![name, handle],
             |row| Ok((row.get(0)?, row.get(1)?))))?;
         match (count, owned_id) {
             (1, Some(id)) => Ok(id),
@@ -204,7 +210,7 @@ impl SessionStore {
         let id = new_id(&connection)?;
         let created_at_ms = now_ms()?;
         let (sender_name, run_id): (String, Option<String>) = db("could not name message sender", connection.query_row(
-            "SELECT COALESCE(d.name, ?1), d.run_id FROM (SELECT 1) LEFT JOIN session_directory d ON d.owned_id = ?1",
+            "SELECT COALESCE(d.handle || ' · ' || d.name, ?1), d.run_id FROM (SELECT 1) LEFT JOIN session_directory d ON d.owned_id = ?1",
             params![from], |row| Ok((row.get(0)?, row.get(1)?))))?;
         db(
             "could not append the workflow message",
@@ -456,8 +462,26 @@ mod tests {
             '{"ownedId":"worker","nodeId":"build","workflowPayload":{"run":{"inputSnapshot":{"task":{"key":"tsk-1416"}}}}}');"#).unwrap();
         assert_eq!(store.resolve_session_name("tsk-1416/build").unwrap(), "worker");
         let message = store.append_message("", "worker", "target", MessageKind::Message, "reply to me").unwrap();
-        assert_eq!(message.sender_name, "tsk-1416/build");
+        assert!(message.sender_name.ends_with(" · tsk-1416/build"), "{}", message.sender_name);
         assert_eq!(message.run_id.as_deref(), Some("run-1"));
+    }
+
+    #[test]
+    fn every_session_keeps_a_handle_that_outlives_renames() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.lock_write().unwrap().execute_batch("INSERT INTO sessions
+            (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra,title) VALUES
+            ('a','codex','/work','ready',0,1,1,'{}','Lane A'), ('b','claude','/work','ready',0,2,2,'{}','Lane B');").unwrap();
+        let entries = store.list_directory().unwrap();
+        let handle = entries.iter().find(|entry| entry.owned_id == "a").unwrap().handle.clone();
+        assert!(handle.split('-').count() >= 2 && handle != entries[1].handle, "{handle}");
+        store.lock_write().unwrap().execute("UPDATE sessions SET title='Renamed' WHERE owned_id='a'", []).unwrap();
+        assert_eq!(store.resolve_session_name(&handle).unwrap(), "a");
+        assert_eq!(store.resolve_session_name("a").unwrap(), "a");
+        let message = store.append_message("", "a", "b", MessageKind::Message, "hi").unwrap();
+        assert_eq!(message.sender_name, format!("{handle} · Renamed"));
+        // A reply addressed to the whole label reaches the sender.
+        assert_eq!(store.resolve_session_name(&message.sender_name).unwrap(), "a");
     }
 
     #[test]
@@ -482,7 +506,8 @@ mod tests {
         assert_eq!(store.resolve_session_name("tsk-1416/build").unwrap(), "second-try");
         assert_eq!(store.resolve_session_name("tsk-1416/build [first-try]").unwrap(), "first-try");
         let reply = store.append_message("", "second-try", "first-try", MessageKind::Message, "hi").unwrap();
-        assert_eq!(reply.sender_name, "tsk-1416/build");
+        assert!(reply.sender_name.ends_with(" · tsk-1416/build"), "{}", reply.sender_name);
+        assert_eq!(store.resolve_session_name(&reply.sender_name).unwrap(), "second-try");
     }
 
     #[test]

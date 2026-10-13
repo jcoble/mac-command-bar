@@ -642,7 +642,7 @@ CREATE INDEX IF NOT EXISTS idx_workflow_messages_target
 DROP VIEW IF EXISTS session_directory;
 CREATE VIEW session_directory AS
 WITH names AS (
-    SELECT s.owned_id, s.provider, COALESCE(p.title, s.project) AS project, s.created_at,
+    SELECT s.owned_id, s.handle, s.provider, COALESCE(p.title, s.project) AS project, s.created_at,
            CASE WHEN s.state IN ('starting','working','interrupting') THEN 'running'
                 WHEN s.state IN ('waiting-approval','waiting-input') THEN 'waiting'
                 WHEN s.state IN ('closed','failed') THEN 'stopped' ELSE 'idle' END AS state,
@@ -669,7 +669,7 @@ SELECT CASE WHEN kind = 'orchestrator' THEN base_name
                 ORDER BY member_sequence DESC, created_at DESC, owned_id) = 1 THEN base_name
             WHEN kind = 'title' AND COUNT(*) OVER (PARTITION BY base_name, kind) = 1 THEN base_name
             ELSE base_name || ' [' || owned_id || ']' END AS name,
-       owned_id, provider, project, state, run_id, step_id FROM names;";
+       owned_id, handle, base_name AS label, provider, project, state, run_id, step_id FROM names;";
 
 const ORCHESTRATION_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS orchestration_events (
     id TEXT PRIMARY KEY,
@@ -1897,6 +1897,7 @@ impl SessionStore {
         add_remote_history_column(&connection)?;
         add_child_session_schema(&connection)?;
         add_project_schema(&connection)?;
+        add_session_handle(&connection)?;
         upgrade_broker_queue(&mut connection)?;
 
         let interrupt_handle = connection.get_interrupt_handle();
@@ -1988,19 +1989,24 @@ impl SessionStore {
     }
 
     pub fn list_sessions(&self) -> Result<Vec<SessionRow>> {
+        Ok(self.list_sessions_with_handles()?.into_iter().map(|(row, _)| row).collect())
+    }
+
+    /// The session list with each session's permanent handle (`brisk-heron`).
+    pub fn list_sessions_with_handles(&self) -> Result<Vec<(SessionRow, Option<String>)>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
                 "SELECT owned_id, native_session_id, provider, model, effort, cwd, worktree,
                         branch, title, project, state, suspended, created_at, last_activity_at,
-                        extra, title_source, project_id
+                        extra, title_source, project_id, handle
                  FROM sessions
                  WHERE cached_remote_profile_id IS NULL AND parent_owned_id IS NULL
                  ORDER BY last_activity_at DESC, owned_id ASC",
             )
             .map_err(|error| StoreError::sqlite("could not prepare the session list", error))?;
         let rows = statement
-            .query_map([], session_from_row)
+            .query_map([], |row| Ok((session_from_row(row)?, row.get(17)?)))
             .map_err(|error| StoreError::sqlite("could not list sessions", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read the session list", error))
@@ -4242,6 +4248,39 @@ fn add_child_session_schema(connection: &Connection) -> Result<()> {
             "CREATE INDEX IF NOT EXISTS sessions_parent_owned_idx ON sessions(parent_owned_id);",
         )
         .map_err(|error| StoreError::sqlite("could not index child session ownership", error))
+}
+
+/// Every session gets a permanent, memorable handle such as `brisk-heron`, picked at random
+/// when the row is inserted. Renaming a session changes its title, never its handle, so
+/// messages and people can keep using it. A handle another session already has gets the
+/// first eight characters of the owned id added.
+fn add_session_handle(connection: &Connection) -> Result<()> {
+    const PICK: &str = "json_extract('[\"amber\",\"bold\",\"brisk\",\"calm\",\"clever\",\"cosy\",\"crisp\",\"dapper\",\"eager\",\"fancy\",\"fleet\",\"fond\",\"gentle\",\"glad\",\"golden\",\"grand\",\"happy\",\"hardy\",\"humble\",\"jolly\",\"keen\",\"kind\",\"lively\",\"lucky\",\"merry\",\"mighty\",\"misty\",\"modest\",\"neat\",\"nimble\",\"noble\",\"plucky\",\"polite\",\"proud\",\"quick\",\"quiet\",\"rapid\",\"ready\",\"rosy\",\"rustic\",\"sage\",\"shiny\",\"silver\",\"sleek\",\"smart\",\"snowy\",\"solid\",\"spry\",\"steady\",\"stout\",\"sunny\",\"swift\",\"tidy\",\"true\",\"vivid\",\"warm\",\"wise\",\"witty\",\"young\",\"zesty\",\"breezy\",\"cheery\",\"dusky\",\"frosty\"]','$['||(abs(random())%64)||']') || '-' || json_extract('[\"badger\",\"beacon\",\"bison\",\"canyon\",\"cedar\",\"comet\",\"condor\",\"coral\",\"crane\",\"delta\",\"dolphin\",\"ember\",\"falcon\",\"fern\",\"finch\",\"fjord\",\"fox\",\"gecko\",\"glacier\",\"harbor\",\"hare\",\"hawk\",\"heron\",\"ibis\",\"jaguar\",\"kestrel\",\"koala\",\"lagoon\",\"lark\",\"lemur\",\"lynx\",\"maple\",\"marmot\",\"meadow\",\"mesa\",\"moose\",\"newt\",\"orca\",\"osprey\",\"otter\",\"owl\",\"panda\",\"pebble\",\"pine\",\"puffin\",\"quail\",\"raven\",\"reef\",\"ridge\",\"robin\",\"salmon\",\"sparrow\",\"spruce\",\"stoat\",\"summit\",\"swan\",\"tern\",\"thistle\",\"tiger\",\"trout\",\"tundra\",\"walrus\",\"willow\",\"wren\"]','$['||(abs(random())%64)||']')";
+    let exists: bool = connection
+        .query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'handle')", [], |row| row.get(0))
+        .map_err(|error| StoreError::sqlite("could not inspect the session handle column", error))?;
+    if !exists {
+        connection
+            .execute_batch(&format!(
+                "ALTER TABLE sessions ADD COLUMN handle TEXT;
+                 UPDATE sessions SET handle = {PICK};
+                 UPDATE sessions SET handle = handle || '-' || substr(owned_id, 1, 8)
+                 WHERE rowid NOT IN (SELECT MIN(rowid) FROM sessions GROUP BY handle);"
+            ))
+            .map_err(|error| StoreError::sqlite("could not add the session handle column", error))?;
+    }
+    connection
+        .execute_batch(&format!(
+            "CREATE INDEX IF NOT EXISTS sessions_handle_idx ON sessions(handle);
+             CREATE TRIGGER IF NOT EXISTS sessions_handle_pick AFTER INSERT ON sessions
+             WHEN NEW.handle IS NULL BEGIN
+                UPDATE sessions SET handle = {PICK} WHERE owned_id = NEW.owned_id;
+                UPDATE sessions SET handle = handle || '-' || substr(owned_id, 1, 8)
+                WHERE owned_id = NEW.owned_id
+                  AND (SELECT COUNT(*) FROM sessions other WHERE other.handle = sessions.handle) > 1;
+             END;"
+        ))
+        .map_err(|error| StoreError::sqlite("could not set up session handles", error))
 }
 
 fn upgrade_broker_queue(connection: &mut Connection) -> Result<()> {

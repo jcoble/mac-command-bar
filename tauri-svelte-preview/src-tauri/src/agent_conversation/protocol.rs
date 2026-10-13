@@ -904,6 +904,9 @@ pub struct AgentConversationSessionRecord {
     pub native_session_id: Option<String>,
     #[serde(default)]
     pub project_id: Option<String>,
+    /// The session's permanent handle (`brisk-heron`); renaming never changes it.
+    #[serde(default)]
+    pub handle: Option<String>,
     /// The rail group the desktop computed in SQL from `project_id`, and its
     /// label. Empty, and left off the wire, wherever no desktop grouped the
     /// record (a remote server never does), so protocol 13 is unchanged.
@@ -974,6 +977,7 @@ mod contract_tests {
             }],
             native_session_id: None,
             project_id: Some("p1".into()),
+            handle: None,
             project_group_key: String::new(),
             project_group_label: String::new(),
             meta: AgentConversationSessionMeta::default(),

@@ -546,6 +546,8 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   backgroundWork: BackgroundWorkItem[];
   nativeSessionId: string | null;
   projectId: string | null;
+  /** The session's permanent handle (`brisk-heron`) other sessions message it by; renaming never changes it. */
+  handle?: string | null;
   /** The session's project group, computed in SQL on this Mac: `repo:<key>`, `project:<id>` or `none`. */
   projectGroupKey: string;
   projectGroupLabel: string;

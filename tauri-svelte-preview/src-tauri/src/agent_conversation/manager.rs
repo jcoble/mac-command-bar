@@ -3639,14 +3639,14 @@ impl AgentRuntimeManager {
     pub fn list_sessions(&self) -> Result<Vec<AgentConversationSessionRecord>, String> {
         let rows = self
             .store
-            .list_sessions()
+            .list_sessions_with_handles()
             .map_err(|error| error.to_string())?;
         let sessions = self
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         rows.into_iter()
-            .map(|row| {
+            .map(|(row, handle)| {
                 let live = sessions.get(&row.owned_id);
                 let (
                     provider,
@@ -3703,6 +3703,7 @@ impl AgentRuntimeManager {
                     background_work,
                     native_session_id,
                     project_id: row.project_id,
+                    handle,
                     // Filled by the list command, in one SQL statement for the whole list.
                     project_group_key: String::new(),
                     project_group_label: String::new(),
@@ -12739,6 +12740,7 @@ mod tests {
             .expect("start helper");
         let started: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(started["name"], "Reviewer");
+        assert!(started["handle"].as_str().unwrap().contains('-'), "{started}");
         let helper = started["owned_id"].as_str().unwrap().to_string();
         let parent_row = store.get_session(&fixture.owned_id).unwrap().unwrap();
         let helper_row = store.get_session(&helper).unwrap().unwrap();
@@ -12753,9 +12755,9 @@ mod tests {
                 if *child_id == helper && label.as_deref() == Some("Reviewer") && state == "running")));
 
         // The helper's finished turn is reported to the parent and wakes it.
-        let expected = "[message from Reviewer]\n[Reviewer finished] BRAVO";
+        let expected = format!("[message from {} · Reviewer]\n[Reviewer finished] BRAVO", started["handle"].as_str().unwrap());
         wait_until(|| parent_events().iter().any(|event| matches!(&event.payload,
-            AgentConversationPayload::UserMessage { text, .. } if text == expected))).await;
+            AgentConversationPayload::UserMessage { text, .. } if *text == expected))).await;
         assert!(parent_events().iter().any(|event| matches!(&event.payload,
             AgentConversationPayload::ChildUpdate { child_id, state, .. }
                 if *child_id == helper && state == "finished")));
@@ -12800,7 +12802,7 @@ mod tests {
             let helper = started["owned_id"].as_str().unwrap().to_string();
             wait_until(|| parent_events().iter().any(|event| matches!(&event.payload,
                 AgentConversationPayload::UserMessage { text, .. }
-                    if text.starts_with("[message from Fragile]\n[Fragile failed]")))).await;
+                    if text.starts_with(&format!("[message from {} · Fragile]\n[Fragile failed]", started["handle"].as_str().unwrap()))))).await;
             assert!(store.pending_for(&helper).unwrap().is_none());
         }
         endpoint.revoke(&fixture.owned_id);

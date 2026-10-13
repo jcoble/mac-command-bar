@@ -142,9 +142,9 @@ impl MessagingEndpoint {
                 let model = args["model"].as_str().map(str::to_string);
                 let manager = manager.ok_or("Sessions cannot be started from here")?;
                 let helper = manager.start_helper(&owned_id, provider, model, name, prompt).await?;
-                let name = store.directory_name(&helper).map_err(|error| error.to_string())?
-                    .unwrap_or_else(|| name.to_string());
-                Ok(json!({"content":[{"type":"text","text":json!({"name":name,"owned_id":helper}).to_string()}]}))
+                let (handle, name) = store.directory_name(&helper).map_err(|error| error.to_string())?
+                    .unwrap_or_else(|| (String::new(), name.to_string()));
+                Ok(json!({"content":[{"type":"text","text":json!({"handle":handle,"name":name,"owned_id":helper}).to_string()}]}))
             }
             Some("workflow_format") => Ok(text(WORKFLOW_FORMAT)),
             Some("report_review") => {
@@ -191,7 +191,7 @@ impl MessagingEndpoint {
             Some("tools/list") => json!({"tools":[
                 {"name":"list_sessions","description":"List Assembly sessions on this backend.",
                  "inputSchema":{"type":"object","properties":{}}},
-                {"name":"send_message","description":"Send a message to a named Assembly session.",
+                {"name":"send_message","description":"Send a message to an Assembly session, addressed by its handle (such as brisk-heron), its name, or its owned id. A handle never changes when the session is renamed.",
                  "inputSchema":{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}},
                 {"name":"start_session","description":"Start a Codex or Claude helper session in your project. It is listed with your agents, and its final reply is sent to you as a message when it finishes.",
                  "inputSchema":{"type":"object","properties":{"provider":{"type":"string","enum":["codex","claude"]},
@@ -267,7 +267,7 @@ mod tests {
         let message = store.pending_for("owned-b").unwrap().unwrap();
         assert_eq!(receipt["id"], message.id);
         assert_eq!(receipt["status"], "queued");
-        assert_eq!(message.sender_name, "Caller");
+        assert!(message.sender_name.ends_with(" · Caller"), "{}", message.sender_name);
         assert_eq!(store.resolve_session_name(&message.sender_name).unwrap(), "caller");
     }
 
@@ -288,7 +288,7 @@ mod tests {
         assert_ne!(result["result"]["isError"], true);
         let message = store.pending_for("owned-b").unwrap().unwrap();
         assert_eq!(message.from_agent, "owned-a");
-        assert_eq!(message.sender_name, "a");
+        assert!(message.sender_name.ends_with(" · a"), "{}", message.sender_name);
         endpoint.revoke("owned-a");
         assert_eq!(call(&a, Some(&a.token), "tools/list", json!({})).await.status(), 401);
         assert_eq!(call(&b, Some(&b.token), "tools/list", json!({})).await.status(), 200);

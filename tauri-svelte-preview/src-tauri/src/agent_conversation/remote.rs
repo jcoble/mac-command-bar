@@ -4309,6 +4309,7 @@ mod connection_tests {
             }],
             native_session_id: Some(format!("native-{owned_id}")),
             project_id: None,
+            handle: None,
             project_group_key: String::new(),
             project_group_label: String::new(),
             meta: super::super::protocol::AgentConversationSessionMeta {
@@ -4692,7 +4693,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn readiness_requires_protocol_and_session_response() {
-        assert_eq!(PROTOCOL_VERSION, 16);
+        assert_eq!(PROTOCOL_VERSION, 17);
         for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
