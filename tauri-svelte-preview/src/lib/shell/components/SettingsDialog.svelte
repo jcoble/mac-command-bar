@@ -62,6 +62,7 @@
   } from '$lib/shell/editor/sourceIntelligence';
   import {
     readHelperSettingsFromTauri,
+    listInstalledFontFamiliesFromTauri,
     setHelperKeyFromTauri,
     testHelperFromTauri,
     writeHelperSettingsFromTauri,
@@ -72,8 +73,8 @@
   import { DEFAULT_THEME_ID } from '$lib/shell/themes/themeRegistry';
   import { apply as applyTheme, themeChoices } from '$lib/shell/themes/themeService';
   import { applyUiFont, applyMonoFont } from '$lib/shell/themes/fontService';
-  import { getMonoFont, UI_FONTS, MONO_FONTS } from '$lib/shell/themes/fontRegistry';
-  import { applyTerminalSettings } from '$lib/shell/xtermFactory';
+  import { getMonoFont, mergeFontChoices, UI_FONTS, MONO_FONTS } from '$lib/shell/themes/fontRegistry';
+  import { applyTerminalSettings } from '$lib/shell/ghosttyFactory';
   import {
     appUpdateState,
     checkForAppUpdate,
@@ -101,20 +102,17 @@
   // ── Option lists ────────────────────────────────────────────────────────
   /** The themes the app actually ships, straight from the registry. */
   const themeItems = themeChoices();
-  /** The faces the app ships, from the same kind of registry. */
-  const uiFontItems = UI_FONTS.map((font) => ({ value: font.id, label: font.label }));
-  const monoFontItems = MONO_FONTS.map((font) => ({ value: font.id, label: font.label }));
-  const editorFontFamilyItems = MONO_FONTS.map((font) => ({ value: font.id, label: font.label }));
-
-  const fontFamilyItems = [
-    { value: 'Google Sans Mono', label: 'Google Sans Mono' },
-    { value: 'SF Mono', label: 'SF Mono' },
-    { value: 'JetBrains Mono', label: 'JetBrains Mono' },
-    { value: 'Fira Code', label: 'Fira Code' },
-    { value: 'Menlo', label: 'Menlo' },
-    { value: 'Monaco', label: 'Monaco' },
-    { value: 'Consolas', label: 'Consolas' }
-  ];
+  let installedFontFamilies = $state<string[]>([]);
+  let installedMonospacedFamilies = $state<string[]>([]);
+  const uiFontPresets = UI_FONTS.map((font) => ({ value: font.id, label: font.label }));
+  const monoFontPresets = MONO_FONTS.map((font) => ({ value: font.id, label: font.label }));
+  const terminalFontPresets = MONO_FONTS
+    .filter((font) => font.id !== 'system')
+    .map((font) => ({ value: font.label, label: font.label }));
+  const uiFontItems = $derived(mergeFontChoices(uiFontPresets, installedFontFamilies));
+  const monoFontItems = $derived(mergeFontChoices(monoFontPresets, installedMonospacedFamilies));
+  const editorFontFamilyItems = $derived(mergeFontChoices(monoFontPresets, installedMonospacedFamilies));
+  const fontFamilyItems = $derived(mergeFontChoices(terminalFontPresets, installedMonospacedFamilies));
 
   // Mirrors the SourceTerminalApp options in +page.svelte.
   const terminalAppItems = [
@@ -444,8 +442,20 @@
   let languageServersSupported = $state(true);
   let languageServerNote = $state<string | null>(null);
   const updateOwner = new AbortController();
+  let installedFontRequest = 0;
 
   onDestroy(() => updateOwner.abort());
+
+  async function loadInstalledFonts(request: number, signal: AbortSignal): Promise<void> {
+    try {
+      const installed = await listInstalledFontFamiliesFromTauri(signal);
+      if (signal.aborted || !open || request !== installedFontRequest || !installed) return;
+      installedFontFamilies = installed.families;
+      installedMonospacedFamilies = installed.monospacedFamilies;
+    } catch {
+      // The shipped choices remain available if native enumeration is unavailable.
+    }
+  }
 
   function moveProblems(location: ProblemsLocation): void {
     settings.panels.problemsLocation = location;
@@ -661,6 +671,16 @@
   // way to reach a setting, and it costs a person nothing to ignore.
   $effect(() => {
     if (open) searchField?.focus();
+  });
+
+  $effect(() => {
+    const request = ++installedFontRequest;
+    if (!open) {
+      installedFontFamilies = [];
+      installedMonospacedFamilies = [];
+      return;
+    }
+    void loadInstalledFonts(request, updateOwner.signal);
   });
 
   // Read the helper's settings each time the screen opens, so a key stored or
@@ -914,6 +934,7 @@
     items={uiFontItems}
     value={settings.appearance.uiFontId}
     ariaLabel="Interface font"
+    searchable
     onChange={(value) => applyUiFont(value)}
   />
 {/snippet}
@@ -923,6 +944,7 @@
     items={monoFontItems}
     value={settings.appearance.monoFontId}
     ariaLabel="Code font"
+    searchable
     onChange={(value) => applyMonoFont(value)}
   />
 {/snippet}
@@ -946,6 +968,7 @@
     items={editorFontFamilyItems}
     value={getMonoFont(settings.editor.fontFamily).id}
     ariaLabel="Editor font family"
+    searchable
     onChange={setEditorFontFamily}
   />
 {/snippet}
@@ -987,6 +1010,7 @@
     items={fontFamilyItems}
     value={settings.terminal.fontFamily}
     ariaLabel="Terminal font family"
+    searchable
     onChange={(value) => (settings.terminal.fontFamily = value)}
   />
 {/snippet}

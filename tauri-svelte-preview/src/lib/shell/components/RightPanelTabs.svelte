@@ -4,7 +4,7 @@
    *
    * One rounded island of icon tabs, Codex style: four permanent ones (Files,
    * Source control, Agents, Tasks), then the one ⋯-menu tab last picked
-   * (Worktrees, Run, Context or History; the next pick replaces it); outside
+   * (Worktrees, Terminal, Run, Context or History; the next pick replaces it); outside
    * the island, the ⋯ menu and the drawer's close button. Tabs are
    * not closable; only the drawer closes.
    * PRESENTATIONAL ONLY: the selected tab is handed in and every click is
@@ -19,6 +19,7 @@
   import GitFork from '@lucide/svelte/icons/git-fork';
   import History from '@lucide/svelte/icons/history';
   import ListChecks from '@lucide/svelte/icons/list-checks';
+  import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import X from '@lucide/svelte/icons/x';
 
   import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
@@ -45,6 +46,7 @@
 
   const EXTRA = [
     { id: 'worktrees', label: 'Worktrees', icon: GitFork },
+    { id: 'terminal', label: 'Terminal', icon: SquareTerminal },
     { id: 'run', label: 'Run', icon: CirclePlay },
     { id: 'context', label: 'Context', icon: Gauge },
     { id: 'history', label: 'History', icon: History }

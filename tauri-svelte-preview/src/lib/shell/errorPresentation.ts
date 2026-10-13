@@ -83,6 +83,14 @@ function humanSummary(raw: string): string {
     return 'The agent replied without any text.';
   }
 
+  if (
+    normalized.includes('acp sidecar exited')
+    && normalized.includes('node_modules/.bin/claude-agent-acp')
+    && normalized.includes('syntaxerror:')
+  ) {
+    return "Claude's provider adapter couldn't start. Open Settings → Updates, check Provider adapters, then install or update Claude.";
+  }
+
   if (/\b(?:exited|exit status|terminated unexpectedly)\b/.test(normalized)) {
     return 'The agent stopped unexpectedly.';
   }

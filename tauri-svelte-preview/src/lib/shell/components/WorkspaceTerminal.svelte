@@ -1,39 +1,65 @@
 <script lang="ts">
   import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
-  /** A single, lazy PTY for the workspace shown in the bottom dock. */
-  import '@xterm/xterm/css/xterm.css';
+  /** A single, lazy PTY for the workspace shown in the right panel. */
   import { onDestroy, onMount } from 'svelte';
 
   import {
     closeTerminalSessionFromTauri,
+    listTerminalSessionsFromTauri,
+    readTerminalSessionScrollbackFromTauri,
     resizeTerminalSessionFromTauri,
     startTerminalSessionFromTauri,
     writeTerminalSessionFromTauri,
-    type SessionSubscription
+    type TerminalOutputEnvelope,
+    type TerminalScrollbackSnapshot,
+    type TerminalSessionInfo
   } from '$lib/tauriSource';
   import type { TerminalView } from '$lib/liveConversationTerminals';
-  import { subscribeToTerminalOutput } from '$lib/shell/terminalService';
-  import { loadXtermModules, makeTerminalView } from '$lib/shell/xtermFactory';
+  import {
+    createTerminalInput,
+    subscribeToTerminalOutput,
+    type TerminalOutputSubscription
+  } from '$lib/shell/terminalService';
+  import { loadGhosttyModules, makeTerminalView } from '$lib/shell/ghosttyFactory';
 
   interface Props {
     root: string;
+    ownedId: string | null;
   }
-  let { root }: Props = $props();
+  let { root, ownedId }: Props = $props();
+
+  const REPLAY_MAX_BYTES = 4 * 1024 * 1024;
 
   let host: HTMLElement;
   let status = $state<'starting' | 'ready' | 'ended' | 'error'>('starting');
   let error = $state('');
   let sessionId: string | null = null;
   let view: TerminalView | null = null;
-  let output: SessionSubscription | null = null;
+  let output: TerminalOutputSubscription | null = null;
   let sizes: ResizeObserver | null = null;
-  let stop = new AbortController();
+  const stop = new AbortController();
   let lastSize = '';
+  let resizeReady = false;
+  let replaying = true;
+  let replayWatermark: ({ sessionId: string } & Pick<
+    TerminalScrollbackSnapshot,
+    'generation' | 'sequence'
+  >) | null = null;
+  let queuedOutput: TerminalOutputEnvelope[] = [];
+  const sendInput = createTerminalInput(writeTerminalSessionFromTauri);
 
   async function writeInput(data: string, signal: AbortSignal): Promise<void> {
     const id = sessionId;
     if (!id || signal.aborted) return;
-    await writeTerminalSessionFromTauri(id, data);
+    try {
+      await sendInput(id, data);
+    } catch (cause) {
+      if (signal.aborted) return;
+      output?.unsubscribe();
+      output = null;
+      status = 'error';
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
   }
 
   async function resize(cols: number, rows: number, signal: AbortSignal): Promise<void> {
@@ -41,10 +67,83 @@
     const size = `${cols}x${rows}`;
     if (!id || signal.aborted || lastSize === size) return;
     lastSize = size;
-    await resizeTerminalSessionFromTauri(id, cols, rows);
+    try {
+      await resizeTerminalSessionFromTauri(id, cols, rows);
+    } catch (cause) {
+      if (signal.aborted) return;
+      output?.unsubscribe();
+      output = null;
+      status = 'error';
+      error = cause instanceof Error ? cause.message : String(cause);
+    }
+  }
+
+  function deliverOutput(envelope: TerminalOutputEnvelope, signal: AbortSignal): void {
+    const payload = envelope.chunk;
+    if (payload.sessionId !== sessionId || signal.aborted) return;
+    if (
+      replayWatermark &&
+      payload.sessionId === replayWatermark.sessionId &&
+      envelope.generation === replayWatermark.generation &&
+      envelope.sequence <= replayWatermark.sequence
+    ) {
+      return;
+    }
+    if (payload.data) view?.write(payload.data);
+    if (payload.terminated) status = 'ended';
+  }
+
+  function receiveOutput(envelope: TerminalOutputEnvelope, signal: AbortSignal): void {
+    if (signal.aborted) return;
+    if (replaying) {
+      if (sessionId && envelope.chunk.sessionId !== sessionId) return;
+      queuedOutput.push(envelope);
+      return;
+    }
+    deliverOutput(envelope, signal);
+  }
+
+  function finishReplay(
+    replayedSessionId: string,
+    snapshot: TerminalScrollbackSnapshot | null,
+    signal: AbortSignal
+  ): void {
+    const queued = queuedOutput;
+    queuedOutput = [];
+    replayWatermark = snapshot
+      ? {
+          sessionId: replayedSessionId,
+          generation: snapshot.generation,
+          sequence: snapshot.sequence
+        }
+      : null;
+    replaying = false;
+    for (const envelope of queued) {
+      if (envelope.chunk.sessionId !== replayedSessionId) continue;
+      deliverOutput(envelope, signal);
+    }
+  }
+
+  async function replayScrollback(id: string, signal: AbortSignal): Promise<void> {
+    const snapshot = await readTerminalSessionScrollbackFromTauri(id, REPLAY_MAX_BYTES);
+    if (signal.aborted) return;
+    if (snapshot?.data) view?.write(snapshot.data);
+    finishReplay(id, snapshot, signal);
+  }
+
+  function ownedUserTerminal(sessions: TerminalSessionInfo[]): TerminalSessionInfo | null {
+    const owned = sessions.filter(
+      (session) => session.kind === 'user-pty' && session.ownedId === ownedId
+    );
+    return owned.find((session) => !session.exited) ?? owned.find((session) => session.exited) ?? null;
   }
 
   async function start(signal: AbortSignal): Promise<void> {
+    if (!ownedId) {
+      status = 'error';
+      error = 'Pick an Assembly session to open its terminal.';
+      return;
+    }
     if (!root.trim()) {
       status = 'error';
       error = 'Pick a local workspace to open its terminal.';
@@ -52,7 +151,7 @@
     }
 
     try {
-      const modules = await loadXtermModules();
+      const modules = await loadGhosttyModules();
       if (signal.aborted) return;
 
       let measured = { cols: 80, rows: 24 };
@@ -62,28 +161,36 @@
         },
         onResize(cols, rows): void {
           measured = { cols, rows };
-          void resize(cols, rows, signal);
+          if (resizeReady) void resize(cols, rows, signal);
         }
       });
       view.setVisible(true);
       view.fit();
 
-      output = subscribeToTerminalOutput((payload) => {
-        if (payload.sessionId !== sessionId || signal.aborted) return;
-        if (payload.data) view?.write(payload.data);
-        if (payload.terminated) status = 'ended';
-      });
+      output = subscribeToTerminalOutput((envelope) => receiveOutput(envelope, signal), signal);
+      await output.ready;
+      if (signal.aborted) return;
+
+      const existingSessions = await listTerminalSessionsFromTauri();
+      if (signal.aborted) return;
+      const existing = ownedUserTerminal(existingSessions ?? []);
+      if (existing?.exited) {
+        sessionId = existing.sessionId;
+        await replayScrollback(existing.sessionId, signal);
+        if (signal.aborted) return;
+        await closeTerminalSessionFromTauri(existing.sessionId);
+        if (signal.aborted) return;
+        sessionId = null;
+        replaying = true;
+      }
 
       const session = await startTerminalSessionFromTauri({
         cwd: root,
-        ownedId: `workspace-dock:${root}`,
+        ownedId,
         cols: measured.cols,
         rows: measured.rows
-      });
-      if (signal.aborted) {
-        if (session) await closeTerminalSessionFromTauri(session.sessionId);
-        return;
-      }
+      }, signal);
+      if (signal.aborted) return;
       if (!session) {
         status = 'error';
         error = 'The workspace terminal is available in the desktop app.';
@@ -93,18 +200,25 @@
       sessionId = session.sessionId;
       lastSize = `${session.cols}x${session.rows}`;
       status = 'ready';
+      view.fit();
+      await resize(measured.cols, measured.rows, signal);
+      if (signal.aborted) return;
+      resizeReady = true;
+      await replayScrollback(session.sessionId, signal);
+      if (signal.aborted) return;
       view.focus();
 
       sizes = new ResizeObserver(() => view?.fit());
       sizes.observe(host);
     } catch (cause) {
       if (signal.aborted) return;
+      close();
       status = 'error';
       error = cause instanceof Error ? cause.message : String(cause);
     }
   }
 
-  export async function close(): Promise<void> {
+  function close(): void {
     stop.abort();
     sizes?.disconnect();
     sizes = null;
@@ -112,14 +226,9 @@
     output = null;
     view?.dispose();
     view = null;
-    const id = sessionId;
     sessionId = null;
-    if (id) await closeTerminalSessionFromTauri(id);
-  }
-
-  export function refit(): void {
-    view?.fit();
-    view?.focus();
+    replayWatermark = null;
+    queuedOutput = [];
   }
 
   onMount(() => {
@@ -127,7 +236,7 @@
   });
 
   onDestroy(() => {
-    void close();
+    close();
   });
 </script>
 

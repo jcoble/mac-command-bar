@@ -121,7 +121,7 @@
   const conversation = $derived(activeOwnedId ? conversationSessions[activeOwnedId] ?? null : null);
   const presence = $derived(activeOwnedId ? $sessionPresenceHistory[activeOwnedId] : null);
   const activeTurnId = $derived(presence ? presence.activeTurnId : (conversation?.activeTurnId ?? active?.activeTurnId ?? null));
-  const turnActive = $derived(Boolean(conversation?.sending || activeTurnId));
+  const turnActive = $derived(Boolean(conversation?.sending || activeTurnId || active?.runtimeState === 'working'));
   const origin = $derived(activeOrigin ?? active?.origin ?? 'external');
   const appOwned = $derived(origin === 'app');
   function isStructuredAgent(agent: string | undefined): boolean {
@@ -786,7 +786,7 @@
           attachments={conversation.attachments}
           pendingImageCount={pendingImageCounts[active.ownedId] ?? 0}
           sending={turnActive}
-          supportsSteering={conversation.capabilities?.session.steering === true}
+          supportsSteering={Boolean(activeTurnId) && conversation.capabilities?.session.steering === true}
           configState={conversation.agentConfig}
           pendingConfig={conversation.pendingAgentConfig}
           configError={conversation.agentConfigError}

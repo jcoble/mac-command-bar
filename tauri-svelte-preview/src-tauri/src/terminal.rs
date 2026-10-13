@@ -27,7 +27,7 @@ pub enum TerminalKind {
     BrowserAutomation,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalStartRequest {
     pub cwd: String,
@@ -41,7 +41,7 @@ pub struct TerminalStartRequest {
     pub command: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSessionInfo {
     pub session_id: String,
@@ -63,7 +63,7 @@ pub struct TerminalSessionInfo {
     pub tool_terminal_identity: Option<ToolTerminalIdentity>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalOutputEvent {
     pub session_id: String,
@@ -73,10 +73,28 @@ pub struct TerminalOutputEvent {
     pub signal: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalScrollbackSnapshot {
+    pub data: String,
+    pub generation: u64,
+    pub sequence: i64,
+}
+
+/// One output chunk with its ordering, as a remote machine sends it to the desktop.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalOutputFrame {
+    pub generation: u64,
+    pub sequence: i64,
+    pub output: TerminalOutputEvent,
+}
+
 #[derive(Clone)]
 struct TerminalOutputOrdering {
     generation: u64,
     next_sequence: Arc<AtomicI64>,
+    last_data_sequence: Arc<AtomicI64>,
 }
 
 impl TerminalOutputOrdering {
@@ -84,11 +102,22 @@ impl TerminalOutputOrdering {
         Self {
             generation: TERMINAL_INSTANCE_GENERATION.fetch_add(1, Ordering::Relaxed) + 1,
             next_sequence: Arc::new(AtomicI64::new(0)),
+            last_data_sequence: Arc::new(AtomicI64::new(-1)),
         }
     }
 
     fn next_sequence(&self) -> i64 {
         self.next_sequence.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn next_data_sequence(&self) -> i64 {
+        let sequence = self.next_sequence();
+        self.last_data_sequence.store(sequence, Ordering::Relaxed);
+        sequence
+    }
+
+    fn last_data_sequence(&self) -> i64 {
+        self.last_data_sequence.load(Ordering::Relaxed)
     }
 }
 
@@ -103,6 +132,7 @@ struct TerminalSessionHandle {
     writer: Mutex<Box<dyn Write + Send>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
     scrollback: Arc<Mutex<String>>,
+    ordering: TerminalOutputOrdering,
 }
 
 pub fn start_terminal_session(
@@ -126,6 +156,31 @@ fn start_terminal_session_typed(
     tool_terminal_identity: Option<ToolTerminalIdentity>,
     projection_streams: crate::projection_streams::ProjectionStreams,
 ) -> Result<TerminalSessionInfo, String> {
+    let owned_id = request
+        .owned_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let mut owned_sessions = if kind == TerminalKind::UserPty && owned_id.is_some() {
+        Some(
+            registry
+                .inner
+                .lock()
+                .map_err(|_| "Terminal session registry is unavailable".to_string())?,
+        )
+    } else {
+        None
+    };
+    if let (Some(owned_id), Some(sessions)) = (owned_id.as_deref(), owned_sessions.as_ref()) {
+        if let Some(existing) = sessions.values().find(|session| {
+            session.info.kind == TerminalKind::UserPty
+                && !session.info.exited
+                && session.info.owned_id.as_deref() == Some(owned_id)
+        }) {
+            return Ok(existing.info.clone());
+        }
+    }
     let cwd = terminal_cwd_from_request(&request.cwd)?;
     let shell = terminal_shell_from_request(request.shell);
     let run_command = terminal_command_from_request(request.command);
@@ -194,20 +249,24 @@ fn start_terminal_session_typed(
         exit_code: None,
         signal: None,
         kind,
-        owned_id: request.owned_id,
+        owned_id,
         tool_terminal_identity,
     };
 
-    registry.insert(
-        session_id.clone(),
-        TerminalSessionHandle {
-            info: info.clone(),
-            master: pair.master,
-            writer: Mutex::new(writer),
-            killer: Mutex::new(killer),
-            scrollback: Arc::clone(&scrollback),
-        },
-    )?;
+    let handle = TerminalSessionHandle {
+        info: info.clone(),
+        master: pair.master,
+        writer: Mutex::new(writer),
+        killer: Mutex::new(killer),
+        scrollback: Arc::clone(&scrollback),
+        ordering: ordering.clone(),
+    };
+    if let Some(sessions) = owned_sessions.as_mut() {
+        sessions.insert(session_id.clone(), handle);
+    } else {
+        registry.insert(session_id.clone(), handle)?;
+    }
+    drop(owned_sessions);
 
     let reader_done = spawn_terminal_reader(
         session_id.clone(),
@@ -220,6 +279,7 @@ fn start_terminal_session_typed(
         registry.clone(),
         session_id,
         ordering,
+        Arc::clone(&scrollback),
         projection_streams,
         reader_done,
         child,
@@ -245,11 +305,11 @@ pub fn read_terminal_session_scrollback(
     registry: &TerminalRegistry,
     session_id: &str,
     max_bytes: Option<usize>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<TerminalScrollbackSnapshot>, String> {
     let Some(session_id) = normalize_terminal_session_id(session_id) else {
         return Ok(None);
     };
-    let scrollback = {
+    let (scrollback, ordering) = {
         let sessions = registry
             .inner
             .lock()
@@ -257,7 +317,7 @@ pub fn read_terminal_session_scrollback(
         let Some(session) = sessions.get(session_id) else {
             return Ok(None);
         };
-        Arc::clone(&session.scrollback)
+        (Arc::clone(&session.scrollback), session.ordering.clone())
     };
     let scrollback = scrollback
         .lock()
@@ -272,7 +332,11 @@ pub fn read_terminal_session_scrollback(
             start
         })
         .unwrap_or(0);
-    Ok(Some(scrollback[start..].to_owned()))
+    Ok(Some(TerminalScrollbackSnapshot {
+        data: scrollback[start..].to_owned(),
+        generation: ordering.generation,
+        sequence: ordering.last_data_sequence(),
+    }))
 }
 
 pub fn write_terminal_session(
@@ -377,6 +441,38 @@ impl TerminalRegistry {
         Ok(true)
     }
 
+    pub fn close_user_terminals_for_owned(&self, owned_id: &str) -> Result<(), String> {
+        let session_ids = {
+            let sessions = self
+                .inner
+                .lock()
+                .map_err(|_| "Terminal session registry is unavailable".to_string())?;
+            sessions
+                .iter()
+                .filter(|(_, handle)| {
+                    handle.info.kind == TerminalKind::UserPty
+                        && handle.info.owned_id.as_deref() == Some(owned_id)
+                })
+                .map(|(session_id, _)| session_id.clone())
+                .collect::<Vec<_>>()
+        };
+        for session_id in session_ids {
+            self.kill_and_remove(&session_id)?;
+        }
+        Ok(())
+    }
+
+    pub fn shutdown(&self) {
+        let session_ids = self
+            .inner
+            .lock()
+            .map(|sessions| sessions.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for session_id in session_ids {
+            let _ = self.kill_and_remove(&session_id);
+        }
+    }
+
     fn mark_exited(
         &self,
         session_id: &str,
@@ -413,13 +509,17 @@ fn spawn_terminal_reader(
                 Ok(0) => break,
                 Ok(read_count) => {
                     let data = String::from_utf8_lossy(&buffer[..read_count]).to_string();
-                    if let Ok(mut stored_scrollback) = scrollback.lock() {
-                        append_terminal_scrollback(&mut stored_scrollback, &data);
-                    }
+                    let sequence = match scrollback.lock() {
+                        Ok(mut stored_scrollback) => {
+                            append_terminal_scrollback(&mut stored_scrollback, &data);
+                            ordering.next_data_sequence()
+                        }
+                        Err(_) => continue,
+                    };
                     projection_streams.publish_terminal_output(
                         session_id.clone(),
                         ordering.generation,
-                        ordering.next_sequence(),
+                        sequence,
                         TerminalOutputEvent {
                             session_id: session_id.clone(),
                             data,
@@ -462,6 +562,7 @@ fn spawn_terminal_waiter(
     registry: TerminalRegistry,
     session_id: String,
     ordering: TerminalOutputOrdering,
+    scrollback: Arc<Mutex<String>>,
     projection_streams: crate::projection_streams::ProjectionStreams,
     reader_done: std::thread::JoinHandle<()>,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
@@ -478,10 +579,14 @@ fn spawn_terminal_waiter(
         // Keep the session as a tombstone: the rail shows "finished — read final
         // output", and the scrollback stays readable. Only an explicit close purges it.
         let _ = registry.mark_exited(&session_id, exit_code, signal.clone());
+        let sequence = scrollback
+            .lock()
+            .map(|_| ordering.next_sequence())
+            .unwrap_or_else(|_| ordering.next_sequence());
         projection_streams.publish_terminal_output(
             session_id.clone(),
             ordering.generation,
-            ordering.next_sequence(),
+            sequence,
             TerminalOutputEvent {
                 session_id,
                 data: String::new(),
@@ -560,8 +665,13 @@ fn terminal_cwd_from_request(cwd: &str) -> Result<PathBuf, String> {
     } else {
         PathBuf::from(cwd.trim())
     };
-    let metadata = std::fs::metadata(&path)
-        .map_err(|error| format!("Could not read terminal cwd metadata: {error}"))?;
+    let metadata = std::fs::metadata(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            format!("This session's folder no longer exists: {}", path.display())
+        } else {
+            format!("Could not read terminal cwd metadata: {error}")
+        }
+    })?;
     if !metadata.is_dir() {
         return Err("Terminal cwd is not a directory".to_string());
     }
@@ -738,6 +848,24 @@ mod tests {
     }
 
     #[test]
+    fn terminal_snapshot_watermark_tracks_data_but_not_termination() {
+        let ordering = TerminalOutputOrdering::new();
+        assert_eq!(ordering.last_data_sequence(), -1);
+
+        let data_sequence = ordering.next_data_sequence();
+        assert_eq!(data_sequence, 0);
+        assert_eq!(ordering.last_data_sequence(), data_sequence);
+
+        let termination_sequence = ordering.next_sequence();
+        assert_eq!(termination_sequence, 1);
+        assert_eq!(
+            ordering.last_data_sequence(),
+            data_sequence,
+            "a snapshot cannot drop a queued termination frame that its data does not include"
+        );
+    }
+
+    #[test]
     fn terminal_cwd_trims_canonicalizes_and_rejects_invalid_paths() {
         let root = unique_terminal_test_root();
         let nested = root.join("workspace");
@@ -754,7 +882,10 @@ mod tests {
 
         let missing_error =
             terminal_cwd_from_request(&root.join("missing").display().to_string()).unwrap_err();
-        assert!(missing_error.contains("Could not read terminal cwd metadata"));
+        assert_eq!(
+            missing_error,
+            format!("This session's folder no longer exists: {}", root.join("missing").display())
+        );
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -763,20 +894,18 @@ mod tests {
     fn invalid_terminal_session_ids_are_noops() {
         let registry = TerminalRegistry::default();
 
-        assert_eq!(
-            read_terminal_session_scrollback(&registry, "missing-terminal", None).unwrap(),
-            None
-        );
+        assert!(read_terminal_session_scrollback(&registry, "missing-terminal", None)
+            .unwrap()
+            .is_none());
         assert!(!write_terminal_session(&registry, "missing-terminal", "echo nope\n").unwrap());
         assert!(
             !resize_terminal_session(&registry, "missing-terminal", Some(100), Some(32)).unwrap()
         );
         assert!(!close_terminal_session(&registry, "missing-terminal").unwrap());
 
-        assert_eq!(
-            read_terminal_session_scrollback(&registry, "   ", None).unwrap(),
-            None
-        );
+        assert!(read_terminal_session_scrollback(&registry, "   ", None)
+            .unwrap()
+            .is_none());
         assert!(!write_terminal_session(&registry, "   ", "echo nope\n").unwrap());
         assert!(!resize_terminal_session(&registry, "   ", Some(100), Some(32)).unwrap());
         assert!(!close_terminal_session(&registry, "   ").unwrap());
@@ -798,6 +927,51 @@ mod tests {
         };
         assert_ne!(first, second);
         assert_eq!(TerminalKind::AgentTool, TerminalKind::AgentTool);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn user_terminal_reuses_its_owner_and_owner_cleanup_leaves_agent_tools() {
+        let registry = TerminalRegistry::default();
+        let projection_streams = crate::projection_streams::ProjectionStreams::default();
+        let request = || TerminalStartRequest {
+            cwd: std::env::temp_dir().display().to_string(),
+            shell: Some("/bin/sh".to_string()),
+            cols: Some(80),
+            rows: Some(20),
+            owned_id: Some("owned-terminal-test".to_string()),
+            command: None,
+        };
+
+        let first = start_terminal_session(&registry, projection_streams.clone(), request())
+            .expect("first user terminal should start");
+        let reused = start_terminal_session(&registry, projection_streams.clone(), request())
+            .expect("second start should reuse the owner terminal");
+        assert_eq!(reused.session_id, first.session_id);
+
+        let tool = start_terminal_session_typed(
+            &registry,
+            request(),
+            TerminalKind::AgentTool,
+            Some(ToolTerminalIdentity {
+                owned_id: "owned-terminal-test".into(),
+                turn_id: "turn-test".into(),
+                tool_call_id: "tool-test".into(),
+                terminal_id: "agent-tool-terminal-test".into(),
+            }),
+            projection_streams,
+        )
+        .expect("agent tool terminal should start");
+
+        assert_eq!(list_terminal_sessions(&registry).unwrap().len(), 2);
+        registry
+            .close_user_terminals_for_owned("owned-terminal-test")
+            .expect("owned user terminal should close");
+        let remaining = list_terminal_sessions(&registry).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].session_id, tool.session_id);
+        assert_eq!(remaining[0].kind, TerminalKind::AgentTool);
+        close_terminal_session(&registry, &tool.session_id).unwrap();
     }
 
     #[cfg(not(windows))]
@@ -855,16 +1029,18 @@ mod tests {
 
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
-                let scrollback =
+                let snapshot =
                     read_terminal_session_scrollback(&registry, &copied_session_id, None)
                         .expect("terminal scrollback should read")
-                        .unwrap_or_default();
-                if scrollback.contains("mcb-terminal-ready") {
+                        .expect("terminal session should remain registered");
+                if snapshot.data.contains("mcb-terminal-ready") {
+                    assert!(snapshot.sequence >= 0);
                     break Ok(());
                 }
                 if Instant::now() >= deadline {
                     break Err(format!(
-                        "terminal scrollback did not receive sentinel; got {scrollback:?}"
+                        "terminal scrollback did not receive sentinel; got {:?}",
+                        snapshot.data
                     ));
                 }
                 thread::sleep(Duration::from_millis(25));

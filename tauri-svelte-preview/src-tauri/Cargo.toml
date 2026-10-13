@@ -1,6 +1,6 @@
 [package]
 name = "mac-command-bar-webview-preview"
-version = "0.1.4"
+version = "0.1.5"
 description = "Tauri shell for Assembly"
 authors = ["blackcolours"]
 edition = "2021"
@@ -52,6 +52,7 @@ tokio-tungstenite = "0.29"
 # Trash through this crate instead.
 trash = "5"
 uuid = { version = "1", features = ["v4"] }
+tauri-plugin-deep-link = "2"
 
 # Already in the tree through tauri/wry; declared here so the browser view can
 # ask the NSWindow for its content inset, which Tauri's window APIs do not
@@ -59,6 +60,8 @@ uuid = { version = "1", features = ["v4"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
 objc2 = "0.6"
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFString"] }
+objc2-core-text = { version = "0.3.2", default-features = false, features = ["std", "CTFont", "CTFontManager", "CTFontTraits"] }
 objc2-foundation = "0.3"
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKNavigation", "WKWebView"] }
 

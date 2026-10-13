@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 globalThis.$state = <T>(value: T): T => value;
 const {
   createTerminalService,
+  createTerminalInput,
   isTerminalInputCommand,
+  subscribeToTerminalOutput,
   tauriTerminalBackend
 } = await import('../src/lib/shell/terminalService.ts');
 
@@ -92,7 +94,7 @@ function makeBackend(log) {
       },
       readScrollback: async (id) => {
         log.push(['readScrollback', id]);
-        return scrollback;
+        return { data: scrollback, generation: 1, sequence: 0 };
       },
       list: async () => [],
       listen: async (h) => {
@@ -104,7 +106,14 @@ function makeBackend(log) {
         };
       }
     },
-    emit: (p) => listener?.(p),
+    emit: (p) => listener?.({
+      sessionId: p.sessionId,
+      generation: 1,
+      sequence: 1,
+      byteLength: p.data.length,
+      kind: 'terminal-output',
+      chunk: p
+    }),
     listening: () => listener !== null,
     failClose: (error) => {
       closeError = error;
@@ -833,7 +842,7 @@ const ownedA = {
     readScrollback: async (id) => {
       log.push(['readScrollback', id]);
       if (id === 'pty-bad') throw new Error('scrollback read failed');
-      return 'OLD OUTPUT';
+      return { data: 'OLD OUTPUT', generation: 1, sequence: 0 };
     }
   };
   const svc = createTerminalService({ backend, createView: () => makeView(log, 'after') });
@@ -1063,6 +1072,35 @@ const ownedA = {
     1,
     'service-wide listener ownership remains singular'
   );
+}
+
+{
+  const controller = new AbortController();
+  const subscription = subscribeToTerminalOutput(() => undefined, controller.signal);
+  await assert.rejects(subscription.ready, /Terminal output stream is unavailable/);
+  controller.abort();
+}
+
+{
+  // Keys typed while a write is in flight go out next, together, in order: a remote
+  // backend runs each request as its own task, so two writes in flight could swap.
+  const sent: string[] = [];
+  const finishWrites: Array<() => void> = [];
+  const send = createTerminalInput(async (sessionId: string, data: string) => {
+    sent.push(`${sessionId}:${data}`);
+    await new Promise<void>((resolve) => finishWrites.push(resolve));
+  });
+  const first = send('pty-a', 'l');
+  const second = send('pty-a', 's');
+  const third = send('pty-a', '\r');
+  await second;
+  await third;
+  assert.deepEqual(sent, ['pty-a:l'], 'only one write is in flight');
+  finishWrites.shift()?.();
+  await settle();
+  assert.deepEqual(sent, ['pty-a:l', 'pty-a:s\r'], 'queued keys follow in one ordered write');
+  finishWrites.shift()?.();
+  await first;
 }
 
 console.log('terminalService tests passed');

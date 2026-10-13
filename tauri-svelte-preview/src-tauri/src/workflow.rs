@@ -3727,7 +3727,7 @@ mod tests {
             provider:"codex".into(), model:None, effort:None, cwd:"/repo".into(), worktree:None,
             branch:None, title:None, title_source:None, project:None, project_id:None, state:"ready".into(),
             suspended:false, created_at_ms:1, last_activity_at_ms:1, extra_json:"{}".into() }).unwrap();
-        let event = AgentConversationEvent { owned_id:first.owned_id.clone(), provider:AgentConversationProvider::Codex,
+        let event = AgentConversationEvent { runtime_state:None, owned_id:first.owned_id.clone(), provider:AgentConversationProvider::Codex,
             generation:1, sequence:1, timestamp_ms:1, turn_id:Some("turn".into()),
             payload:AgentConversationPayload::AssistantMessage { item_id:"reply".into(), text:text.into(), completed:true, blocks:None } };
         engine.store.append_event(&EventRow { owned_id:first.owned_id.clone(), seq:1, turn_id:Some("turn".into()),
@@ -3771,7 +3771,7 @@ mod tests {
             branch:None, title:None, title_source:None, project:None, project_id:None, state:"ready".into(),
             suspended:false, created_at_ms:1, last_activity_at_ms:1, extra_json:"{}".into() }).unwrap();
         let seq = engine.store.latest_seq(&step.owned_id).unwrap() + 1;
-        let event = AgentConversationEvent { owned_id:step.owned_id.clone(), provider:AgentConversationProvider::Codex,
+        let event = AgentConversationEvent { runtime_state:None, owned_id:step.owned_id.clone(), provider:AgentConversationProvider::Codex,
             generation:1, sequence:seq, timestamp_ms:1, turn_id:Some(turn.clone()),
             payload:AgentConversationPayload::AssistantMessage { item_id:turn.clone(), text:"Done.".into(), completed:true, blocks:None } };
         engine.store.append_event(&EventRow { owned_id:step.owned_id.clone(), seq, turn_id:Some(turn.clone()),
@@ -3960,7 +3960,7 @@ mod tests {
         let engine = run_engine(Arc::new(FakeRuntime::default()));
         let run = loop_run(&engine, &repo.0, LOOP_REVIEW);
         let build = step_of(&run, "build").clone();
-        let failed = AgentConversationEvent { owned_id: build.owned_id.clone(), provider: AgentConversationProvider::Codex,
+        let failed = AgentConversationEvent { runtime_state: None, owned_id: build.owned_id.clone(), provider: AgentConversationProvider::Codex,
             generation: 1, sequence: 1, timestamp_ms: 1, turn_id: Some("turn".into()),
             payload: AgentConversationPayload::Turn { turn_id: "turn".into(), state: TurnState::Failed } };
         let failed = tauri::async_runtime::block_on(engine.accept_agent_event(&failed)).unwrap().unwrap();
@@ -5357,6 +5357,7 @@ mod tests {
             })
             .unwrap();
         let assistant = AgentConversationEvent {
+            runtime_state: None,
             owned_id: first.owned_id.clone(),
             provider: AgentConversationProvider::Codex,
             generation: 1,

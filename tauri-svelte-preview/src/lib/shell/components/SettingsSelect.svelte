@@ -15,9 +15,10 @@
     value: string;
     ariaLabel: string;
     onChange: (value: string) => void;
+    searchable?: boolean;
   }
 
-  let { items, value, ariaLabel, onChange }: Props = $props();
+  let { items, value, ariaLabel, onChange, searchable = false }: Props = $props();
 </script>
 
 <div class="settings-select">
@@ -25,7 +26,7 @@
     {items}
     {value}
     valueMode="id"
-    searchable={false}
+    {searchable}
     clearable={false}
     showChevron
     inputAttributes={{ 'aria-label': ariaLabel }}

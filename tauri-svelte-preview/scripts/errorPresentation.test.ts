@@ -47,6 +47,19 @@ const mappedCases = [
     summary: 'The agent stopped unexpectedly.'
   },
   {
+    name: 'Claude pnpm shim parsed as JavaScript',
+    raw: `transport: ACP sidecar exited: /Users/example/app/node_modules/.bin/claude-agent-acp:2
+| basedir=$(dirname "$(echo "$0" | sed -e 's,\\\\,/,g')")
+| ^^^^^^^
+|
+| SyntaxError: missing ) after argument list
+| at wrapSafe (node:internal/modules/cjs/loader:1762:18)
+| at Module._compile (node:internal/modules/cjs/loader:1803:20)
+|
+| Node.js v26.0.0`,
+    summary: "Claude's provider adapter couldn't start. Open Settings → Updates, check Provider adapters, then install or update Claude."
+  },
+  {
     name: 'sidecar spawn failure',
     raw: 'sidecar-spawn: failed to start adapter process',
     summary: "The agent couldn't start."

@@ -42,7 +42,7 @@ export type SafeMarkdownBlock =
   | { kind: 'table'; headers: SafeInlinePart[][]; rows: SafeInlinePart[][][] }
   | { kind: 'rule' };
 
-const SAFE_PROTOCOL = /^(?:https?:|mailto:|#)/i;
+const SAFE_PROTOCOL = /^(?:https?:|mailto:|assembly:|#)/i;
 
 /** A URL scheme at the front of a target, which a file path never has. */
 const SCHEME_PREFIX = /^[a-z][a-z0-9+.-]*:/i;

@@ -5354,6 +5354,7 @@ fn main() {
         .manage(resources::ResourceRegistry::default())
         .manage(usage_history::UsageHistoryState::default())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
@@ -5454,6 +5455,7 @@ fn main() {
                     }),
                     remote_session_store,
                 )?;
+            remote_connection.set_terminal_output(projection_streams.clone());
             if !remote_connection.is_configured() {
                 if let Some(profiles) = agent_runtime.read_app_setting(
                     agent_conversation::remote::REMOTE_ASSEMBLY_PROFILES_SETTING_KEY,
@@ -5550,6 +5552,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             read_backend_capabilities,
+            list_installed_font_families,
             list_source_files,
             list_source_directory,
             cancel_source_scan,
@@ -5813,8 +5816,14 @@ fn main() {
             notion_tasks::save_notion_task_settings,
             notion_tasks::clear_notion_task_settings,
             notion_tasks::list_notion_tasks,
+            notion_tasks::read_cached_notion_task,
             notion_tasks::read_notion_task_detail,
+            notion_tasks::cancel_notion_task_detail,
             notion_tasks::update_notion_task_status,
+            notion_tasks::update_notion_task_property,
+            notion_tasks::update_notion_block,
+            notion_tasks::append_notion_task_text,
+            notion_tasks::append_notion_task_image,
             notion_tasks::refresh_notion_tasks,
             notion_oauth::begin_notion_oauth,
             notion_oauth::claim_notion_oauth,
@@ -5858,6 +5867,7 @@ fn main() {
             let _ = app_handle.emit(EXIT_REQUESTED_EVENT, serde_json::json!({ "kind": "quit" }));
         }
         tauri::RunEvent::Exit => {
+            app_handle.state::<terminal::TerminalRegistry>().shutdown();
             shutdown_agent_runtimes_on_exit(
                 &app_handle.state::<agent_conversation::manager::AgentRuntimeManager>(),
             );

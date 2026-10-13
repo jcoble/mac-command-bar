@@ -2799,6 +2799,37 @@ impl SessionStore {
         })
     }
 
+    /// One cached task by its Notion page id, for opening a task from a link.
+    pub fn notion_task_projection_by_id(
+        &self,
+        source_task_id: &str,
+    ) -> Result<Option<NotionTaskProjection>> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT source_task_id, title, project, status, priority, assignee, due_date,
+                        source_url, fetched_at_ms
+                 FROM notion_task_projections
+                 WHERE source_task_id = ?1",
+                params![source_task_id],
+                |row| {
+                    Ok(NotionTaskProjection {
+                        source_task_id: row.get(0)?,
+                        title: row.get(1)?,
+                        project: row.get(2)?,
+                        status: row.get(3)?,
+                        priority: row.get(4)?,
+                        assignee: row.get(5)?,
+                        due_date: row.get(6)?,
+                        source_url: row.get(7)?,
+                        fetched_at_ms: row.get(8)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| StoreError::sqlite("could not read the Notion task projection", error))
+    }
+
     pub fn query_notion_task_projections(
         &self,
         offset: u32,
@@ -5986,6 +6017,21 @@ mod tests {
                 has_more: false,
             }
         );
+    }
+
+    #[test]
+    fn notion_task_projection_by_id_reads_one_cached_task() {
+        let (_directory, _path, store) = open_temp_store();
+        let task = fixture_notion_task("task-one", "Assembly", "Doing", "Linked task", None);
+        store
+            .replace_notion_task_projections(std::slice::from_ref(&task))
+            .expect("write Notion task snapshot");
+
+        assert_eq!(
+            store.notion_task_projection_by_id("task-one").expect("read task"),
+            Some(task)
+        );
+        assert_eq!(store.notion_task_projection_by_id("task-missing").expect("read task"), None);
     }
 
     #[test]

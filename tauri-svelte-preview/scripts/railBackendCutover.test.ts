@@ -23,7 +23,8 @@ const settingsDialog = read('../src/lib/shell/components/SettingsDialog.svelte')
 const settingsStore = read('../src/lib/settingsStore.svelte.ts');
 const codeMirrorTheme = read('../src/lib/shell/editor/codeMirrorTheme.ts');
 const codeMirrorSourceEditor = read('../src/lib/CodeMirrorSourceEditor.svelte');
-const xtermFactory = read('../src/lib/shell/xtermFactory.ts');
+const ghosttyFactory = read('../src/lib/shell/ghosttyFactory.ts');
+const ghosttyBundle = read('../node_modules/ghostty-web/dist/ghostty-web.js');
 const rightPanel = read('../src/lib/shell/components/RightPanel.svelte');
 const browserPanel = read('../src/lib/shell/panels/browser/BrowserPanel.svelte');
 const browserToolbar = read('../src/lib/shell/panels/browser/BrowserToolbar.svelte');
@@ -170,7 +171,13 @@ assert.match(codeMirrorSourceEditor, />Change All Occurrences<\/ContextMenu\.Ite
 assert.match(codeMirrorSourceEditor, />Format Document<\/ContextMenu\.Item>/);
 assert.match(codeMirrorSourceEditor, />Rename Symbol<\/ContextMenu\.Item>/);
 assert.match(codeMirrorSourceEditor, />Peek References<\/ContextMenu\.Item>/);
-assert.match(xtermFactory, /terminal\.options\.cursorBlink = appearance\.cursorBlink/);
+assert.match(ghosttyFactory, /terminal\.options\.cursorBlink = appearance\.cursorBlink/);
+assert.match(ghosttyBundle, /requestRender\(A = !1\)/);
+assert.match(ghosttyBundle, /setVisible\(A\)/);
+assert.match(ghosttyBundle, /removeEventListener\("beforeinput"/);
+assert.match(ghosttyBundle, /removeEventListener\("mousedown", this\.boundDocumentMouseDownHandler/);
+assert.match(ghosttyBundle, /this\.wasmTerm\.free\(\)/);
+assert.doesNotMatch(ghosttyBundle, /startRenderLoop|cursorBlinkInterval|setInterval\(\(\) => \{\s*this\.cursorVisible/);
 assert.match(languageControls, /serverState === 'ready'[\s\S]*?'running'[\s\S]*?'waiting'/);
 assert.match(page, /onCloseAllEditors=\{\(\) => selection\.editorSessions\.clearActiveEditors\(\)\}/);
 // 193547d08 lets a checkout change keep unsaved drafts; with no kept files it still persists an empty editor.

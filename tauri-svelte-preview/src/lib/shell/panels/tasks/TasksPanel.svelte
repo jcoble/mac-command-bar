@@ -12,6 +12,7 @@
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { buttonVariants } from '$lib/components/ui/button/index.js';
+  import { Chip } from '$lib/components/ui/chip/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { FilterPills } from '$lib/components/ui/filter-pills/index.js';
@@ -25,39 +26,24 @@
     readNotionTaskSettings,
     refreshNotionTasks,
     saveNotionTaskSettings,
+    splitTaskTitle,
+    taskPriorityTone,
+    taskStatusTone,
     type NotionTaskRow,
     type NotionTaskSettings
   } from '$lib/shell/notionTasks.ts';
   import { connectNotion } from '$lib/shell/notionOAuth.ts';
+  import { requestOpenConversationFile } from '$lib/shell/openFileBus.ts';
+  import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
+  import { registerNotionTaskNavigation } from '$lib/shell/workbenchNavigation.ts';
   import { matchNotionProject } from '$lib/shell/notionProjectMatch.ts';
   import type { SessionTasksWorkspace } from '$lib/shell/sessionWorkspaces.ts';
   import { cn } from '$lib/utils.js';
   import NotionTaskViewer from './NotionTaskViewer.svelte';
 
   const PAGE_SIZE = 25;
-  const TASK_ROW_HEIGHT = 48;
+  const TASK_ROW_HEIGHT = 64;
   const TASK_ROW_OVERSCAN = 5;
-
-  function taskStatusIconClass(status: string): string {
-    switch (status.trim().toLowerCase()) {
-      case 'done':
-      case 'complete':
-      case 'completed':
-        return 'text-[var(--color-good)]';
-      case 'doing':
-      case 'in progress':
-      case 'working':
-        return 'text-[var(--color-live)]';
-      case 'blocked':
-        return 'text-[var(--color-bad)]';
-      case 'todo':
-      case 'to do':
-      case 'not started':
-        return 'text-[var(--color-attention)]';
-      default:
-        return 'text-[var(--color-idle)]';
-    }
-  }
 
   interface Props {
     /** The active session's folder; the list follows the Notion project it maps to. */
@@ -324,7 +310,14 @@
   onMount(() => {
     const owner = ++generation;
     void initialize(owner);
+    return registerNotionTaskNavigation((linked) => (selectedTask = linked));
   });
+
+  /** A file link on the task page opens in the editor against this session's folder. */
+  function openFileLink(reference: string): void {
+    const active = rail.owned.find((session) => session.ownedId === ownedId);
+    error = active ? requestOpenConversationFile(active, reference) ?? '' : 'That file link could not be opened.';
+  }
   $effect(() => {
     const next = sessionProject;
     untrack(() => {
@@ -573,16 +566,27 @@
     {:else}
       <div class="relative mx-2" style={`height: ${tasks.length * TASK_ROW_HEIGHT}px`}>
         {#each visibleTasks as task, index (task.sourceTaskId)}
+          {@const title = splitTaskTitle(task.title)}
+          {@const statusTone = taskStatusTone(task.status)}
           <button
             type="button"
-            class="absolute inset-x-0 grid h-[44px] w-full grid-cols-[16px_minmax(0,1fr)] items-center gap-(--space-3) rounded-(--radius-md) px-(--space-2) text-left hover:bg-[var(--menu-row-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            class="absolute inset-x-0 grid h-[60px] w-full grid-cols-[16px_minmax(0,1fr)] items-center gap-(--space-3) rounded-(--radius-md) px-(--space-2) text-left hover:bg-[var(--menu-row-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             style={`transform: translateY(${(firstTaskIndex + index) * TASK_ROW_HEIGHT}px)`}
             onclick={() => (selectedTask = task)}
           >
-            <FileText class={`size-[16px] stroke-[1.8] ${taskStatusIconClass(task.status)}`} aria-hidden="true" />
+            <FileText
+              class="size-[16px] stroke-[1.8]"
+              style={`color: var(--color-${statusTone === 'neutral' ? 'idle' : statusTone})`}
+              aria-hidden="true"
+            />
             <span class="min-w-0">
-              <span class="block truncate text-[13px] leading-[18px] font-medium text-foreground">{task.title}</span>
-              <span class="block truncate text-[12px] leading-[16px] text-muted-foreground">{[task.project || 'Unspecified project', task.status || 'Unspecified', task.priority].filter(Boolean).join(' · ')}</span>
+              <span class="line-clamp-2 text-[13px] leading-[18px] font-medium text-foreground">{title.text}</span>
+              <span class="mt-0.5 flex min-w-0 items-center gap-1.5 overflow-hidden text-[12px] leading-[16px] text-muted-foreground">
+                {#if title.key}<span class="shrink-0 tabular-nums">{title.key}</span>{/if}
+                <Chip tone={statusTone} class="text-[12px]">{task.status || 'Unspecified'}</Chip>
+                {#if task.priority}<Chip tone={taskPriorityTone(task.priority)} class="text-[12px]">{task.priority}</Chip>{/if}
+                {#if !projectFilter}<span class="min-w-0 truncate">{task.project || 'Unspecified project'}</span>{/if}
+              </span>
             </span>
           </button>
         {/each}
@@ -601,10 +605,12 @@
       <NotionTaskViewer
         task={selectedTask}
         {statuses}
+        {priorities}
         onBack={() => (selectedTask = null)}
         onOpenExternal={(url) => void openNotionUrl(url)}
-        onStatusUpdated={async (status) => {
-          selectedTask = selectedTask ? { ...selectedTask, status } : null;
+        onFileLink={openFileLink}
+        onTaskUpdated={async (changes) => {
+          selectedTask = selectedTask ? { ...selectedTask, ...changes } : null;
           await reloadCached();
         }}
       />

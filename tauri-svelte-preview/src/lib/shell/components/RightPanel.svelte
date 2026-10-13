@@ -27,6 +27,7 @@
   import SourceControlPanel from '$lib/shell/panels/sourceControl/SourceControlPanel.svelte';
   import WorktreesPanel from '$lib/shell/panels/worktrees/WorktreesPanel.svelte';
   import TasksPanel from '$lib/shell/panels/tasks/TasksPanel.svelte';
+  import WorkspaceTerminal from './WorkspaceTerminal.svelte';
 
   interface Props {
     /** False while the drawer is closed. */
@@ -124,6 +125,12 @@
       </div>
     {:else if visible && activeId === 'worktrees'}
       <div class="panel-body showing"><WorktreesPanel visible={true} {root} {ownedId} /></div>
+    {:else if visible && activeId === 'terminal'}
+      <div class="panel-body showing">
+        {#key ownedId}
+          {#key root}<WorkspaceTerminal {root} {ownedId} />{/key}
+        {/key}
+      </div>
     {:else if visible && activeId === 'run'}
       <div class="panel-body showing"><RunPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'context'}

@@ -1,3 +1,5 @@
+import type { AgentRuntimeState } from '../ownedSessions.ts';
+
 export type AgentConversationProvider = 'codex' | 'claude' | 'antigravity';
 
 export interface ConversationCommandError {
@@ -558,6 +560,7 @@ export type AgentConversationRichPayload =
     };
 
 export interface AgentConversationEvent {
+  runtimeState?: AgentRuntimeState;
   ownedId: string;
   provider: AgentConversationProvider;
   generation: number;

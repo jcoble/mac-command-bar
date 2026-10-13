@@ -10,12 +10,13 @@ const pending: Array<(value: unknown) => void> = [];
   __TAURI_INTERNALS__: {
     async invoke(command: string, args: Record<string, unknown>): Promise<unknown> {
       calls.push({ command, args });
-      if (command !== 'remote_workspace') return null;
+      if (command !== 'remote_workspace' && command !== 'start_terminal_session') return null;
       return await new Promise((resolve) => { pending.push(resolve); });
     }
   }
 };
 const { invoke } = await import('../src/lib/workspaceInvoke.ts');
+const { startTerminalSessionFromTauri } = await import('../src/lib/tauriSource.ts');
 const remoteArgs = { root: 'assembly-remote://box/repo', path: 'assembly-remote://box/repo/a.ts' };
 const release = (): void => { for (const resolve of pending.splice(0)) resolve({}); };
 const settle = async (): Promise<void> => { await setImmediate(); await setImmediate(); };
@@ -59,4 +60,19 @@ test('a local call ignores the signal', async () => {
   controller.abort();
   await invoke('read_source_git_diff', { root: '/repo', path: '/repo/a.ts' }, undefined, controller.signal);
   assert.deepEqual(calls, [{ command: 'read_source_git_diff', args: { root: '/repo', path: '/repo/a.ts' } }]);
+});
+
+test('closing the tab while its terminal starts cancels the start with the id it sent', async () => {
+  calls.length = 0;
+  const controller = new AbortController();
+  const start = startTerminalSessionFromTauri({ cwd: 'assembly-remote://box/repo', ownedId: 'owned-a' }, controller.signal);
+  await settle();
+  const sent = calls.find((call) => call.command === 'start_terminal_session');
+  assert.equal(typeof sent?.args.requestId, 'number');
+  controller.abort();
+  await settle();
+  const cancel = calls.find((call) => call.command === 'cancel_agent_conversation_request');
+  assert.deepEqual(cancel?.args, { requestId: sent?.args.requestId });
+  release();
+  await start;
 });

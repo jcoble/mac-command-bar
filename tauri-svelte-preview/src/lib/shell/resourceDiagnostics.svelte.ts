@@ -28,7 +28,7 @@ export const resourceDiagnostics = $state({
   loadedTreeNodes: 0,
   loadedGitHistoryRows: 0,
   activeDiffs: 0,
-  xtermViews: 0,
+  terminalViews: 0,
   codeMirrorEditorViews: 0,
   codeMirrorEditorStates: 0,
   codeMirrorDocBytes: 0,
@@ -307,9 +307,9 @@ export function textBytes(text: string): number {
   return new TextEncoder().encode(text).byteLength;
 }
 
-export function addXtermView(delta: 1 | -1): void {
+export function addTerminalView(delta: 1 | -1): void {
   if (!resourceDiagnosticsDev) return;
-  resourceDiagnostics.xtermViews = Math.max(0, resourceDiagnostics.xtermViews + delta);
+  resourceDiagnostics.terminalViews = Math.max(0, resourceDiagnostics.terminalViews + delta);
 }
 
 export function addCodeMirrorEditorView(delta: 1 | -1): void {

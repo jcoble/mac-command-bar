@@ -18,6 +18,7 @@ export type SessionRowMenuAction =
   | 'reopen'
   | 'archive'
   | 'unsettle'
+  | 'copy-deeplink'
   | 'copy-session-id'
   | 'copy-resume-command'
   | 'copy-worktree-path'
@@ -82,12 +83,18 @@ export function sessionRowMenuItems(input: SessionRowMenuInput): SessionRowMenuI
 
   items.push(
     {
+      id: 'copy-deeplink',
+      label: 'Copy deeplink',
+      enabled: true,
+      hint: 'An assembly:// link that opens this session from anywhere',
+      startsGroup: true
+    },
+    {
       id: 'copy-session-id',
       label: 'Copy session id',
       enabled: Boolean(input.sessionId),
       disabledReason: input.sessionId ? undefined : 'This session has no id recorded',
-      hint: input.sessionId ?? undefined,
-      startsGroup: true
+      hint: input.sessionId ?? undefined
     },
     {
       id: 'copy-resume-command',

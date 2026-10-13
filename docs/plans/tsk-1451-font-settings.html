@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TSK-1451 installed fonts and live composer settings plan</title>
+<style>
+body{font:15px/1.5 system-ui,sans-serif;max-width:1040px;margin:40px auto;padding:0 24px;color:#202124;background:#fff}h1,h2{line-height:1.2}h1{font-size:28px}h2{font-size:19px;margin-top:28px}code{background:#f1f3f4;padding:2px 5px;border-radius:4px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #dadce0;padding:8px;text-align:left;vertical-align:top}th{background:#f7f8f8}.ok{border-left:4px solid #188038;padding-left:12px}.scope{border-left:4px solid #1a73e8;padding-left:12px}li{margin:5px 0}.pickers{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}.picker{border:1px solid #d7d9dd;border-radius:10px;background:#f8f9fa;padding:12px}.picker strong{display:block;margin-bottom:8px}.search{border:1px solid #c7cbd1;border-radius:6px;background:#fff;color:#6b7280;padding:5px 8px;margin-bottom:6px}.choice{display:flex;justify-content:space-between;gap:12px;padding:5px 8px;border-radius:6px}.choice.selected{background:#e8f0fe;color:#174ea6}.choice small{color:#6b7280}.sample{margin-top:9px;padding-top:8px;border-top:1px solid #ddd}.mono{font-family:"JetBrains Mono",Menlo,monospace}
+</style>
+</head>
+<body>
+<h1>TSK-1451: Installed font choices and live composer settings</h1>
+<p class="ok"><strong>Decision:</strong> list the fonts installed on the Mac in the existing Settings pickers. The interface picker receives every visible family, including monospace; app code, editor, and terminal receive only fixed-pitch families. Keep the app's shipped faces and system choices as dependable defaults, add no new font assets, and save the selected family through the existing SQLite settings row.</p>
+<p class="scope"><strong>Boundary:</strong> one small native metadata command enumerates family names when Settings opens. It reads no font bytes, retains no font catalog, starts no watcher, and adds no import tool, schema, settings interface, resolver layer, or network request. <a href="./tsk-1450-ghostty-terminal.html">TSK-1450</a> remains the authority for Ghostty rendering, PTY fit, and terminal lifecycle.</p>
+
+<h2>Confirmed current behavior</h2>
+<ul>
+<li><code>fontRegistry.ts:29-46</code> exposes only hard-coded shipped/system choices. <code>SettingsDialog.svelte:101-117</code> builds all four font selectors from those lists or a separate seven-name terminal list. There is no installed-font command or CoreText use in source.</li>
+<li><code>fontService.ts:28-50</code> already repaints <code>--font-ui</code> and <code>--font-mono</code> live and persists the selected string. <code>CodeMirrorSourceEditor.svelte:203-211,457-460,1100-1103</code> already rebuilds its live theme from editor family and size. Those paths need family-name support, not replacement.</li>
+<li><code>ConversationComposer.svelte:447-461,618</code> declares <code>font: 14px/1.5 inherit</code>. CSS-wide <code>inherit</code> cannot be mixed into that shorthand, so the declaration is invalid. <code>settingsStore.svelte.ts:139-149</code> saves interface size, but the composer never reads it.</li>
+<li><code>ghosttyFactory.ts:20-47</code> duplicates terminal defaults and can hand Canvas an invalid family string. The existing TSK-1450 live-settings path already refits the view and PTY after a real font change.</li>
+</ul>
+
+<h2>Rendered existing-picker result</h2>
+<p>The existing select remains the control. Font selects become searchable because an installed catalog is longer than the current preset list.</p>
+<div class="pickers">
+<div class="picker"><strong>Interface font</strong><div class="search">Search installed fonts…</div><div class="choice"><span>System</span><small>shipped choice</small></div><div class="choice selected"><span>Avenir</span><small>installed</small></div><div class="choice"><span>Inter · Figtree · IBM Plex Sans</span><small>available here</small></div><div class="sample">Message Claude · readable app text</div></div>
+<div class="picker"><strong>Code font / Editor font</strong><div class="search">Search fixed-pitch fonts…</div><div class="choice"><span>Menlo</span><small>shipped choice</small></div><div class="choice selected"><span class="mono">MesloLGS NF</span><small>installed</small></div><div class="choice"><span>IBM Plex Mono · Source Code Pro</span><small>installed</small></div><div class="sample mono">const answer = 42; // 0O 1l {} =&gt;</div></div>
+<div class="picker"><strong>Terminal font</strong><div class="search">Search fixed-pitch fonts…</div><div class="choice"><span class="mono">JetBrains Mono</span><small>dependable default</small></div><div class="choice selected"><span class="mono">Meslo LG M for Powerline</span><small>installed</small></div><div class="choice"><span>Google Sans Mono · SF Mono</span><small>installed</small></div><div class="sample mono">~/workspace $ pnpm check</div></div>
+</div>
+
+<h2>Minimal implementation</h2>
+<ol>
+<li>Add <code>list_installed_font_families</code> to the existing application command module. On macOS, use CoreText's retained <code>CTFontManagerCopyAvailableFontFamilyNames</code> result, create only temporary family matches, confirm each match reports the requested family, and classify fixed-pitch families with <code>CTFontGetSymbolicTraits(...).TraitMonoSpace</code>. Return <code>{ families, monospacedFamilies }</code> in Apple's UI order. RAII releases Core Foundation objects. The non-macOS build returns empty installed lists so the existing shipped choices remain buildable.</li>
+<li>Add the already locked <code>objc2-core-text 0.3.2</code> and <code>objc2-core-foundation 0.3.2</code> as direct macOS dependencies with only the required font, font-manager, trait, array, and string features. Register the command in the existing Tauri handler and add one typed <code>tauriSource.ts</code> wrapper; this is metadata only and has no background lifetime.</li>
+<li>Each time <code>SettingsDialog</code> opens, reuse its existing <code>updateOwner.signal</code> to await that wrapper. Merge and label the returned family names locally with the shipped presets, deduplicated by displayed family. Clear the installed lists when Settings closes, and ignore a result delivered after close or destroy. The interface list uses every visible family; the code, editor, and terminal lists use only fixed-pitch families. <code>SettingsSelect</code> gains one optional <code>searchable</code> prop, enabled only for the four font controls.</li>
+<li>Keep existing registry IDs for shipped interface and code choices. For an installed choice, use the exact family name as its saved string. The terminal picker always writes actual family names, including its shipped choices, because <code>terminal.fontFamily</code> is already a raw-family setting. Extend the existing <code>getUiFont</code>/<code>getMonoFont</code> functions to quote an unknown nonempty family name and append the existing CSS fallback. Do not reject a stored nonempty family during settings hydration: rendering saved Avenir, Meslo, or Google Sans Mono must not depend on a retained Settings component or a second native lookup.</li>
+<li>Make bundled JetBrains Mono the new-install terminal default, but preserve every existing saved terminal family, including Google Sans Mono. Remove the Ghostty factory's duplicate defaults; creation and live updates use <code>settings.terminal</code> and a valid <code>"Chosen Family", monospace</code> Canvas value. The existing live fit still updates backend PTY geometry.</li>
+<li>Import the reactive settings store in <code>ConversationComposer.svelte</code>. Bind <code>settings.appearance.appFontSize</code> to the textarea, replace the invalid shorthand with explicit <code>font-family:var(--font-ui)</code> and <code>line-height:1.5</code>, and make its existing <code>resizePrompt()</code> effect depend on both family and size so a saved multiline draft is remeasured immediately. No shell-wide type-scale change is included.</li>
+</ol>
+
+<h2>Exact files and budget</h2>
+<table><tr><th>Files after approval</th><th>Purpose</th></tr>
+<tr><td><code>tauri-svelte-preview/src-tauri/Cargo.toml</code>, <code>Cargo.lock</code>, <code>src/commands/application.rs</code>, <code>src/main.rs</code></td><td>Typed CoreText enumeration, fixed-pitch classification, command registration. No new native module.</td></tr>
+<tr><td><code>tauri-svelte-preview/src/lib/tauriSource.ts</code>, <code>src/lib/shell/themes/fontRegistry.ts</code>, <code>src/lib/shell/components/SettingsDialog.svelte</code>, <code>src/lib/shell/components/SettingsSelect.svelte</code></td><td>One DTO/wrapper, exact-family CSS stacks, and searchable merged picker items.</td></tr>
+<tr><td><code>tauri-svelte-preview/src/lib/settingsStore.svelte.ts</code>, <code>src/lib/shell/components/conversation/ConversationComposer.svelte</code>, <code>src/lib/shell/ghosttyFactory.ts</code></td><td>Preserve saved family strings, bind and remeasure composer text, and use direct terminal settings.</td></tr>
+<tr><td><code>tauri-svelte-preview/src/lib/shell/themes/fontRegistry.test.ts</code></td><td>Pure logic proof for exact-family quoting, preset deduplication, and fixed-pitch picker filtering; no component/layout assertion.</td></tr>
+<tr><td><code>main-architecture-explained.html</code> sections 01 and 13; both task plans</td><td>Record the native metadata boundary and the four consumers without duplicating TSK-1450 lifecycle architecture.</td></tr></table>
+<p>Expected product/test change: about 180–230 lines; no font assets. Stop for review at roughly 280 lines, any additional product file, a new schema/interface layer, cache, watcher, import feature, or second font path.</p>
+
+<h2>Measurable acceptance</h2>
+<ul>
+<li>On the owner's Mac, the interface picker contains Avenir and Menlo, and the three fixed-pitch pickers contain MesloLGS NF; proportional Avenir is absent from code, editor, and terminal. Menlo, Meslo LG variants, Google Sans Mono, SF Mono, JetBrains Mono, Fira Code, IBM Plex Mono, Source Code Pro, Consolas, and Monaco reflect CoreText's installed results rather than a handwritten terminal list.</li>
+<li>Select Avenir for the interface and MesloLGS NF for code/editor/terminal. Verify computed family names, Canvas text metrics, and <code>document.fonts.check()</code>; no font network request occurs. Change composer size with a saved multiline draft and verify computed pixels and textarea height update without typing. Change terminal size/family and verify Canvas plus PTY rows/columns update without reopening.</li>
+<li>Restart from an isolated copy of the owner's SQLite database and confirm the exact selected family names and sizes restore in composer, app code, CodeMirror, and Ghostty even before Settings is reopened. Closing Settings clears its local catalog; reopening it re-enumerates current installed metadata once.</li>
+<li>Verify the composer flow with Claude Code local, Codex local, Claude Code on Workbox Test, and Codex on Workbox Test at 1710×990. Record all four rows; never connect the proof app to an owner's machine.</li>
+<li>Run the focused Rust command/classification test on macOS, TypeScript/Svelte, async-lifecycle, font-registry logic, terminal lifecycle, and production-build checks appropriate to the touched paths. Add no component structure, layout, colour, or style test.</li>
+</ul>
+
+<h2>How another installed font appears</h2>
+<p><a href="https://support.apple.com/en-gb/guide/font-book/fntbk1000/mac">Install the font with Font Book</a>, then reopen Settings. CoreText supplies its family name automatically; fixed-pitch metadata decides whether it appears in the code/editor/terminal pickers. No Assembly asset, registry row, license copy, restart, or import workflow is needed.</p>
+</body>
+</html>
