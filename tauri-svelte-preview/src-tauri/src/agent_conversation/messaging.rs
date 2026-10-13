@@ -3,7 +3,44 @@ use axum::{extract::State, http::{HeaderMap, StatusCode}, response::{IntoRespons
 use serde_json::{json, Value};
 use mcb_core::{broker::MessageKind, session_store::SessionStore};
 use super::{manager::AgentRuntimeManager, protocol::AgentConversationProvider};
-use std::{collections::HashMap, sync::{Arc, Mutex, OnceLock, Weak}};
+use std::{collections::HashMap, future::Future, pin::Pin, sync::{Arc, Mutex, OnceLock, Weak}};
+
+/// Carries one messaging operation (`directory`, `enqueue`, `status`) to the
+/// other machines. The desktop routes it itself; a remote server asks the
+/// desktop over its socket.
+pub type Relay = Arc<dyn Fn(String, Value) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>> + Send + Sync>;
+
+/// `brisk-heron@workbox-test`, or a received label `brisk-heron@workbox-test · Title`, as
+/// the session and the machine it names. Anything else names a session on any machine.
+pub fn split_address(to: &str) -> (&str, Option<&str>) {
+    let handle = to.split(" · ").next().unwrap_or(to);
+    match handle.rsplit_once('@') {
+        Some((name, machine)) if !name.is_empty() && !name.contains(char::is_whitespace) && !machine.is_empty()
+            && machine.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') => (name, Some(machine)),
+        _ => (to, None),
+    }
+}
+
+/// One messaging operation on this machine's own sessions, asked for by the desktop's router.
+pub fn answer(store: &SessionStore, manager: Option<&AgentRuntimeManager>, op: &str, args: &Value) -> Result<Value, String> {
+    let arg = |key: &str| args[key].as_str().ok_or_else(|| format!("{key} is required"));
+    match op {
+        "directory" => serde_json::to_value(store.list_directory().map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string()),
+        "resolve" => Ok(json!(store.resolve_session_name(arg("to")?).map_err(|error| error.to_string())?)),
+        "enqueue" => {
+            let target = store.resolve_session_name(arg("to")?).map_err(|error| error.to_string())?;
+            let message = store.append_message_as("", arg("from")?, &target, MessageKind::Message, arg("text")?, Some(arg("sender")?))
+                .map_err(|error| error.to_string())?;
+            if let Some(manager) = manager.cloned() {
+                tauri::async_runtime::spawn(async move { manager.deliver_if_idle(&target).await });
+            }
+            Ok(json!(message.id))
+        }
+        "status" => Ok(json!(store.message_status(arg("id")?, arg("from")?).map_err(|error| error.to_string())?)),
+        _ => Err(format!("Unknown messaging operation {op}")),
+    }
+}
 
 pub struct SessionCredential { pub url: String, pub token: String }
 impl SessionCredential {
@@ -18,6 +55,10 @@ const WORKFLOW_FORMAT: &str = include_str!("../../../../docs/workflows/format.md
 
 fn text(value: impl Into<String>) -> Value {
     json!({"content":[{"type":"text","text":value.into()}]})
+}
+
+fn text_json(value: Value) -> Value {
+    text(value.to_string())
 }
 
 /// `ok`, then one line per step: id, kind, needs, and review/redo targets.
@@ -55,6 +96,7 @@ pub struct MessagingEndpoint {
     url: String,
     callers: Mutex<HashMap<String, Caller>>,
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    relay: Mutex<Option<Relay>>,
 }
 
 /// One endpoint per owning backend, including the remote server.
@@ -68,7 +110,7 @@ impl MessagingEndpoint {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let url = format!("http://{}/mcp", listener.local_addr().map_err(|e| e.to_string())?);
-        let endpoint = Arc::new(Self { url, callers: Mutex::new(HashMap::new()), task: Mutex::new(None) });
+        let endpoint = Arc::new(Self { url, callers: Mutex::new(HashMap::new()), task: Mutex::new(None), relay: Mutex::new(None) });
         let router = Router::new().route("/mcp", post(Self::post)).with_state(Arc::downgrade(&endpoint));
         *endpoint.task.lock().unwrap() = Some(tauri::async_runtime::spawn(async move {
             if let Ok(listener) = tokio::net::TcpListener::from_std(listener) {
@@ -96,6 +138,10 @@ impl MessagingEndpoint {
         }
     }
 
+    pub fn set_relay(&self, relay: Relay) {
+        *self.relay.lock().unwrap() = Some(relay);
+    }
+
     pub fn revoke(&self, owned_id: &str) {
         self.callers.lock().unwrap().retain(|_, (id, _, _)| id != owned_id);
     }
@@ -109,25 +155,61 @@ impl MessagingEndpoint {
         let store = store.upgrade().ok_or("Session store unavailable")?;
         match tool_call["name"].as_str() {
             Some("list_sessions") => {
-                let entries = store.list_directory().map_err(|error| error.to_string())?;
-                Ok(json!({"content":[{"type":"text","text":serde_json::to_string(&entries).map_err(|e| e.to_string())?}]}))
+                let mut entries = serde_json::to_value(store.list_directory().map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?;
+                // Other machines' sessions come from the desktop, which also says what this machine is called.
+                let relay = self.relay.lock().unwrap().clone();
+                let others = match relay {
+                    Some(relay) => relay("directory".into(), json!({})).await.unwrap_or(Value::Null),
+                    None => Value::Null,
+                };
+                let entries = entries.as_array_mut().ok_or("the session directory is not a list")?;
+                for entry in entries.iter_mut() { entry["machine"] = others["machine"].clone(); }
+                entries.extend(others["entries"].as_array().cloned().unwrap_or_default());
+                Ok(text(serde_json::to_string(entries).map_err(|e| e.to_string())?))
             }
             Some("send_message") => {
                 let args = &tool_call["arguments"];
                 let to = args["to"].as_str().ok_or("to must be a session name")?;
                 let text = args["text"].as_str().ok_or("text must be a string")?;
-                let target = store.resolve_session_name(to).map_err(|error| error.to_string())?;
-                let message = store.append_message("", &owned_id, &target, MessageKind::Message, text)
-                    .map_err(|error| error.to_string())?;
-                if let Some(manager) = manager {
-                    tauri::async_runtime::spawn(async move { manager.deliver_if_idle(&target).await });
-                }
-                Ok(json!({"content":[{"type":"text","text":json!({"id":message.id,"status":"queued"}).to_string()}]}))
+                let relay = self.relay.lock().unwrap().clone();
+                // A name with @machine, or one no session here has, is for another machine.
+                let local = match split_address(to) {
+                    (_, Some(_)) if relay.is_some() => None,
+                    _ => match store.resolve_session_name(to) {
+                        Ok(target) => Some(target),
+                        Err(error) if relay.is_some() && error.to_string().contains("Unknown session name") => None,
+                        Err(error) => return Err(error.to_string()),
+                    },
+                };
+                let id = match (local, relay) {
+                    (Some(target), _) => {
+                        let message = store.append_message("", &owned_id, &target, MessageKind::Message, text)
+                            .map_err(|error| error.to_string())?;
+                        if let Some(manager) = manager {
+                            tauri::async_runtime::spawn(async move { manager.deliver_if_idle(&target).await });
+                        }
+                        message.id
+                    }
+                    (None, Some(relay)) => {
+                        let sender = store.directory_name(&owned_id).map_err(|error| error.to_string())?
+                            .map_or_else(|| owned_id.clone(), |(handle, name)| format!("{handle} · {name}"));
+                        let id = relay("enqueue".into(), json!({"to":to,"text":text,"from":owned_id,"sender":sender})).await?;
+                        id.as_str().unwrap_or_default().to_string()
+                    }
+                    (None, None) => return Err("Unknown session name".into()),
+                };
+                Ok(text_json(json!({"id":id,"status":"queued"})))
             }
             Some("message_status") => {
                 let id = tool_call["arguments"]["id"].as_str().ok_or("id must be a message id")?;
-                let status = store.message_status(id, &owned_id).map_err(|error| error.to_string())?;
-                Ok(json!({"content":[{"type":"text","text":json!({"id":id,"status":status}).to_string()}]}))
+                // A message sent to another machine has that machine's name before its id.
+                let relay = self.relay.lock().unwrap().clone().filter(|_| id.contains(':'));
+                let status = match relay {
+                    Some(relay) => relay("status".into(), json!({"id":id,"from":owned_id})).await?,
+                    None => json!(store.message_status(id, &owned_id).map_err(|error| error.to_string())?),
+                };
+                Ok(text_json(json!({"id":id,"status":status})))
             }
             Some("start_session") => {
                 let args = &tool_call["arguments"];
@@ -189,9 +271,9 @@ impl MessagingEndpoint {
             Some("initialize") => json!({"protocolVersion":"2024-11-05","capabilities":{"tools":{}},
                 "serverInfo":{"name":"assembly","version":"1"}}),
             Some("tools/list") => json!({"tools":[
-                {"name":"list_sessions","description":"List Assembly sessions on this backend.",
+                {"name":"list_sessions","description":"List Assembly sessions on this machine and on the other machines connected to the desktop. Each has a handle, a name and the machine it runs on; send to handle@machine.",
                  "inputSchema":{"type":"object","properties":{}}},
-                {"name":"send_message","description":"Send a message to an Assembly session, addressed by its handle (such as brisk-heron), its name, or its owned id. A handle never changes when the session is renamed.",
+                {"name":"send_message","description":"Send a message to an Assembly session, addressed by its handle (such as brisk-heron), its name, or its owned id; add @machine (brisk-heron@workbox-test) for a session on another machine. A handle never changes when the session is renamed.",
                  "inputSchema":{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}},
                 {"name":"start_session","description":"Start a Codex or Claude helper session in your project. It is listed with your agents, and its final reply is sent to you as a message when it finishes.",
                  "inputSchema":{"type":"object","properties":{"provider":{"type":"string","enum":["codex","claude"]},

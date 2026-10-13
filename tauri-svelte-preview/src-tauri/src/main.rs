@@ -5456,6 +5456,10 @@ fn main() {
                     remote_session_store,
                 )?;
             remote_connection.set_terminal_output(projection_streams.clone());
+            // Sessions on this desktop and on connected machines message each other through it.
+            remote_connection.set_message_host(agent_runtime.clone());
+            agent_conversation::messaging::endpoint()?
+                .set_relay(remote_connection.message_relay(agent_conversation::remote::LOCAL_MACHINE));
             if !remote_connection.is_configured() {
                 if let Some(profiles) = agent_runtime.read_app_setting(
                     agent_conversation::remote::REMOTE_ASSEMBLY_PROFILES_SETTING_KEY,

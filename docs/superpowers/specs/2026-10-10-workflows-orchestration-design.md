@@ -149,10 +149,11 @@ answers with `send_message`.
   backend-to-backend link in this version.
 - (D17) Machines are named from the desktop's point of view: a remote by its profile id
   (`workbox-test`), the desktop itself as `mac`. A session elsewhere is addressed
-  `handle@machine`; an unqualified handle or title is looked up on every reachable machine and
-  must match exactly one session. `list_sessions` includes reachable machines' sessions with
-  their `machine`. The desktop asks a remote through one `Messaging` remote command (directory,
-  enqueue, status); a remote asks the desktop through a `RelayRequest` server frame answered by a
+  `handle@machine`. An unqualified handle or title goes to the caller's own machine when a
+  session there has it (no network for a local send); otherwise it is looked up on every other
+  reachable machine and must match exactly one session. `list_sessions` includes reachable
+  machines' sessions with their `machine`. The desktop asks a remote through one `Messaging`
+  remote command (directory, resolve, enqueue, status); a remote asks the desktop through a `RelayRequest` server frame answered by a
   `RelayReply` client frame on the same authenticated socket. The desktop adds the source machine
   to the sender label (`brisk-heron@workbox-test · Messaging Test`), so a reply addressed to that
   label reaches the sender. A relayed message id is returned as `<machine>:<id>` and

@@ -66,6 +66,8 @@ pub const REMOTE_ASSEMBLY_PROFILES_SETTING_KEY: &str = "remote-assembly.profiles
 const REMOTE_SESSION_PROJECTIONS_SETTING_KEY: &str = "remote-assembly.session-projections.v1";
 const REMOTE_SERVER_PORT: u16 = 7777;
 const READINESS_REQUEST_ID: u64 = u64::MAX;
+/// What messages call this desktop; a remote machine is called by its profile id.
+pub const LOCAL_MACHINE: &str = "mac";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -73,6 +75,8 @@ enum ClientFrame {
     Request { id: u64, command: RemoteCommand },
     Cancel { id: u64 },
     Resume { cursors: BTreeMap<String, i64> },
+    /// The desktop's answer to a `RelayRequest`.
+    RelayReply { request_id: u64, result: Result<serde_json::Value, String> },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -173,6 +177,8 @@ enum RemoteCommand {
     Stop(StopAgentConversationTurnRequest),
     /// One `workflow::execute_operation` on this machine's workflow engine.
     Workflow { operation: String, args: serde_json::Value },
+    /// One `messaging::answer` on this machine's sessions, for a message from another machine.
+    Messaging { op: String, args: serde_json::Value },
     TerminalStart(TerminalStartRequest),
     TerminalWrite { session_id: String, data: String },
     TerminalResize { session_id: String, cols: Option<u16>, rows: Option<u16> },
@@ -204,6 +210,7 @@ enum RemoteResponse {
     ImportProgress { added: usize, reached_start: bool },
     SendReceipt(AgentConversationSendReceipt),
     Workflow(serde_json::Value),
+    Messaging(serde_json::Value),
     Empty,
     TerminalSession(#[serde(deserialize_with = "deserialize_wire_payload")] TerminalSessionInfo),
     TerminalScrollback(Option<TerminalScrollbackSnapshot>),
@@ -218,6 +225,8 @@ enum ServerFrame {
     ProviderDownloadProgress { id: u64, progress: super::providers::updates::ProviderDownloadProgress },
     Event { #[serde(deserialize_with = "deserialize_wire_payload")] event: AgentConversationEvent },
     TerminalOutput { frame: TerminalOutputFrame },
+    /// A session here messaging another machine; the desktop routes it and answers with `RelayReply`.
+    RelayRequest { request_id: u64, op: String, args: serde_json::Value },
 }
 
 // Serde's buffered tagged-enum decoder cannot deserialize u128 timestamps.
@@ -241,6 +250,40 @@ struct ServerState {
     /// Runs started on this machine, kept in its own `sessions.db`.
     workflow: crate::workflow::WorkflowEngine,
     terminals: RemoteTerminals,
+    relay: Arc<RelayLink>,
+}
+
+/// The desktops connected to this server, through which its sessions message other machines.
+#[derive(Default)]
+struct RelayLink {
+    desktops: Mutex<Vec<(u64, mpsc::Sender<ServerFrame>)>>,
+    pending: Mutex<HashMap<u64, oneshot::Sender<Result<serde_json::Value, String>>>>,
+    next_id: AtomicU64,
+}
+
+impl RelayLink {
+    /// Asks the most recently connected desktop to carry one messaging operation.
+    async fn ask(&self, op: String, args: serde_json::Value) -> Result<serde_json::Value, String> {
+        let desktop = self.desktops.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .last().map(|(_, outbound)| outbound.clone())
+            .ok_or("target machine not reachable: no desktop is connected to this machine")?;
+        let request_id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (reply, answer) = oneshot::channel();
+        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(request_id, reply);
+        let sent = desktop.send(ServerFrame::RelayRequest { request_id, op, args }).await.is_ok();
+        let answer = if sent { tokio::time::timeout(Duration::from_secs(30), answer).await.ok() } else { None };
+        self.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&request_id);
+        answer.and_then(Result::ok)
+            .unwrap_or_else(|| Err("target machine not reachable: the desktop did not answer".into()))
+    }
+
+    fn relay(self: &Arc<Self>) -> super::messaging::Relay {
+        let link = self.clone();
+        Arc::new(move |op, args| {
+            let link = link.clone();
+            Box::pin(async move { link.ask(op, args).await })
+        })
+    }
 }
 
 /// The server's state over `manager`: its events go to the sockets, and a
@@ -286,6 +329,7 @@ fn server_state(manager: AgentRuntimeManager, data_dir: PathBuf, token: Arc<str>
         events,
         workflow,
         terminals: RemoteTerminals::new(),
+        relay: Arc::default(),
     })
 }
 
@@ -393,6 +437,8 @@ pub struct RemoteConnectionManager {
     next_attempt_token: Arc<AtomicU64>,
     /// Where remote shell output is shown; set once the desktop's streams exist.
     terminal_output: Arc<Mutex<Option<ProjectionStreams>>>,
+    /// This desktop's own sessions, which messages from other machines reach.
+    message_host: Arc<Mutex<Option<AgentRuntimeManager>>>,
 }
 
 #[derive(Default)]
@@ -593,6 +639,7 @@ impl RemoteConnectionManager {
             connecting: Arc::new(Mutex::new(HashMap::new())),
             next_attempt_token: Arc::new(AtomicU64::new(1)),
             terminal_output: Arc::new(Mutex::new(None)),
+            message_host: Arc::new(Mutex::new(None)),
         };
         let Some(url) = std::env::var("ASSEMBLY_REMOTE_WS_URL").ok() else {
             return Ok(manager);
@@ -629,7 +676,7 @@ impl RemoteConnectionManager {
             // The development environment client has no saved profile, so no rail
             // row maps to it and its transitions have nobody to tell.
             let status: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
-            client_loop(url, token, &mut request_rx, event_sink, None, None, actor_ready, &mut None, status)
+            client_loop(url, token, &mut request_rx, event_sink, None, None, actor_ready, &mut None, status, None)
                 .await;
         });
         Ok(manager)
@@ -990,7 +1037,8 @@ impl RemoteConnectionManager {
             let report: Arc<dyn Fn() + Send + Sync> =
                 Arc::new(move || manager.publish_status(&reported_id));
             let task = tokio::spawn(profile_client_loop(profile.clone(), receiver, self.history_event_sink(&profile.id),
-                self.terminal_sink(&profile.id), self.tunnel_processes.clone(), ready.clone(), Some(ready_tx), report));
+                self.terminal_sink(&profile.id), self.tunnel_processes.clone(), ready.clone(), Some(ready_tx), report,
+                self.message_relay(&profile.id)));
             // Dropping a failed/cancelled candidate aborts only its own actor and tunnel.
             let candidate = RemoteClient { requests: Some(requests), profile: Some(profile.clone()),
                 target_key: Some(target_key), task: Some(task.abort_handle()), ready };
@@ -1180,6 +1228,89 @@ impl RemoteConnectionManager {
             .get(owned_id)
             .cloned()
             .ok_or_else(|| format!("No remote machine owns session {owned_id}"))
+    }
+
+    pub fn set_message_host(&self, manager: AgentRuntimeManager) {
+        *self.message_host.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(manager);
+    }
+
+    /// Routes messaging operations from sessions on `source`: this desktop (`LOCAL_MACHINE`) or a profile.
+    pub fn message_relay(&self, source: &str) -> super::messaging::Relay {
+        let manager = self.clone();
+        let source = source.to_string();
+        Arc::new(move |op, args| {
+            let manager = manager.clone();
+            let source = source.clone();
+            Box::pin(async move { manager.route_message(&source, &op, args).await })
+        })
+    }
+
+    /// Carries one messaging operation from a session on `source` to the machines it concerns.
+    /// The desktop is the only router: remote machines reach each other through it. A sender's
+    /// label gets `@source` after its handle, so the receiver can answer it from anywhere.
+    async fn route_message(&self, source: &str, op: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+        use serde_json::json;
+        match op {
+            "directory" => {
+                let mut entries = Vec::new();
+                for machine in self.message_machines(source) {
+                    let Ok(serde_json::Value::Array(list)) = self.message_machine(&machine, "directory", json!({})).await else { continue };
+                    entries.extend(list.into_iter().map(|mut entry| { entry["machine"] = json!(machine); entry }));
+                }
+                Ok(json!({"machine": source, "entries": entries}))
+            }
+            "enqueue" => {
+                let to = args["to"].as_str().ok_or("to must be a session name")?;
+                let (name, machine) = super::messaging::split_address(to);
+                let machine = match machine {
+                    Some(machine) if self.message_machines("").iter().any(|known| known == machine) => machine.to_string(),
+                    Some(machine) => return Err(format!("target machine not reachable: {machine}")),
+                    None => {
+                        let mut found = Vec::new();
+                        for machine in self.message_machines(source) {
+                            if self.message_machine(&machine, "resolve", json!({"to": name})).await.is_ok() { found.push(machine); }
+                        }
+                        match found.len() {
+                            0 => return Err("Unknown session name".into()),
+                            1 => found.remove(0),
+                            _ => return Err(format!("Ambiguous session name: {name} is on {}; add @machine", found.join(" and "))),
+                        }
+                    }
+                };
+                let sender = args["sender"].as_str().unwrap_or_default();
+                let sender = match sender.split_once(" · ") {
+                    Some((handle, label)) => format!("{handle}@{source} · {label}"),
+                    None => format!("{sender}@{source}"),
+                };
+                let id = self.message_machine(&machine, "enqueue",
+                    json!({"to": name, "text": args["text"], "from": args["from"], "sender": sender})).await?;
+                Ok(json!(format!("{machine}:{}", id.as_str().unwrap_or_default())))
+            }
+            "status" => {
+                let (machine, id) = args["id"].as_str().and_then(|id| id.split_once(':')).ok_or("Unknown message")?;
+                self.message_machine(machine, "status", json!({"id": id, "from": args["from"]})).await
+            }
+            _ => Err(format!("Unknown messaging operation {op}")),
+        }
+    }
+
+    /// This desktop and every connected machine, except `source`.
+    fn message_machines(&self, source: &str) -> Vec<String> {
+        std::iter::once(LOCAL_MACHINE.to_string()).chain(self.environment().ready_profile_ids)
+            .filter(|machine| machine != source).collect()
+    }
+
+    async fn message_machine(&self, machine: &str, op: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+        if machine == LOCAL_MACHINE {
+            let host = self.message_host.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+                .ok_or("target machine not reachable: this desktop's sessions are not open yet")?;
+            return super::messaging::answer(host.store(), Some(&host), op, &args);
+        }
+        match self.request_for_profile(machine, RemoteCommand::Messaging { op: op.into(), args }).await
+            .map_err(|error| format!("target machine not reachable: {error}"))? {
+            RemoteResponse::Messaging(value) => Ok(value),
+            _ => Err("The remote backend does not relay messages; update its backend first".into()),
+        }
     }
 
     pub fn set_terminal_output(&self, streams: ProjectionStreams) {
@@ -2513,6 +2644,7 @@ async fn profile_client_loop(
     ready: Arc<AtomicBool>,
     mut initial_ready: Option<oneshot::Sender<Result<Vec<AgentConversationSessionRecord>, String>>>,
     status: Arc<dyn Fn() + Send + Sync>,
+    relay: super::messaging::Relay,
 ) {
     while !requests.is_closed() {
         let target = profile.ssh_target.clone();
@@ -2529,7 +2661,7 @@ async fn profile_client_loop(
         let url = format!("ws://127.0.0.1:{}/assembly", tunnel.local_port);
         let token = tunnel.token.clone();
         client_loop(url, token, &mut requests, event_sink.clone(), Some(terminal_sink.clone()), Some(4), ready.clone(),
-            &mut initial_ready, status.clone()).await;
+            &mut initial_ready, status.clone(), Some(relay.clone())).await;
         drop(tunnel);
     }
 }
@@ -2672,6 +2804,7 @@ async fn client_loop(
     ready: Arc<AtomicBool>,
     initial_ready: &mut Option<oneshot::Sender<Result<Vec<AgentConversationSessionRecord>, String>>>,
     status: Arc<dyn Fn() + Send + Sync>,
+    relay: Option<super::messaging::Relay>,
 ) {
     let _end = ConnectionEnd { ready: ready.clone(), status: status.clone() };
     let cursors = Arc::new(Mutex::new(BTreeMap::<String, i64>::new()));
@@ -2739,8 +2872,12 @@ async fn client_loop(
         let mut pending = HashMap::<u64, ClientReply>::new();
         let mut pending_progress = HashMap::<u64, mpsc::UnboundedSender<super::providers::updates::ProviderDownloadProgress>>::new();
         let mut interruption = "The Remote Assembly connection was interrupted".to_string();
+        let (relay_replies, mut relay_outgoing) = mpsc::channel::<ClientFrame>(8);
         'connected: loop {
             tokio::select! {
+                Some(reply) = relay_outgoing.recv() => {
+                    if send_client_frame(&mut socket, &reply).await.is_err() { break; }
+                }
                 request = requests.recv() => {
                     let Some(request) = request else {
                         return;
@@ -2888,6 +3025,17 @@ async fn client_loop(
                         ServerFrame::ProviderDownloadProgress { id, progress } => {
                             if let Some(sender) = pending_progress.get(&id) { let _ = sender.send(progress); }
                         }
+                        ServerFrame::RelayRequest { request_id, op, args } => {
+                            let relay = relay.clone();
+                            let replies = relay_replies.clone();
+                            tokio::spawn(async move {
+                                let result = match relay {
+                                    Some(relay) => relay(op, args).await,
+                                    None => Err("target machine not reachable: this desktop does not relay messages".into()),
+                                };
+                                let _ = replies.send(ClientFrame::RelayReply { request_id, result }).await;
+                            });
+                        }
                     }
                 }
             }
@@ -2989,6 +3137,8 @@ pub fn run_server_from_environment() -> Result<(), String> {
             &data_dir.join("sessions.db"),
         )?;
         let state = server_state(manager, data_dir.clone(), Arc::from(token))?;
+        // This machine's sessions reach other machines through a connected desktop.
+        super::messaging::endpoint()?.set_relay(state.relay.relay());
         let restart_requested = state.restart_requested.clone();
         let restart_flushed = state.restart_flushed.clone();
         let restart_manager = state.manager.clone();
@@ -3089,6 +3239,8 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
             protocol_version: PROTOCOL_VERSION,
         })
         .await;
+    let socket_id = state.relay.next_id.fetch_add(1, Ordering::Relaxed);
+    state.relay.desktops.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((socket_id, outbound.clone()));
     let mut live_events = state.events.subscribe();
     let mut live_terminals = state.terminals.output.subscribe();
     let mut queued = BTreeMap::<String, i64>::new();
@@ -3228,6 +3380,11 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
                     selected_child_watches.remove(&(parent_owned_id, request_id));
                 }
             }
+            ClientFrame::RelayReply { request_id, result } => {
+                if let Some(reply) = state.relay.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&request_id) {
+                    let _ = reply.send(result);
+                }
+            }
             ClientFrame::Resume { cursors } => {
                 queued.extend(cursors);
                 let mut failed = false;
@@ -3242,6 +3399,8 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
             }
         }
     }
+    // The writer ends once every sender is gone, this one included.
+    state.relay.desktops.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(id, _)| *id != socket_id);
     for (_, task) in request_tasks.drain() {
         task.abort();
     }
@@ -3448,6 +3607,8 @@ async fn execute_remote_command(
     match command {
         RemoteCommand::RestartForProviderUpdates => Err("Remote restart requires exclusive request ownership".into()),
         RemoteCommand::Workflow { .. } => Err("Workflow requests need the server's workflow engine".into()),
+        RemoteCommand::Messaging { op, args } => super::messaging::answer(manager.store(), Some(manager), &op, &args)
+            .map(RemoteResponse::Messaging),
         RemoteCommand::Workspace { operation, args } => super::remote_workspace::execute(operation, args).await.map(RemoteResponse::Workspace),
         RemoteCommand::ProbeProviderConfig { provider, cwd } => manager
             .probe_provider_config(provider, &cwd)
@@ -3746,6 +3907,117 @@ fn workspace_wait_seconds(operation: &str) -> u64 {
 #[cfg(test)]
 mod connection_tests {
     use super::*;
+
+    fn add_session(manager: &AgentRuntimeManager, owned_id: &str, title: &str) {
+        manager.store().upsert_session(&mcb_core::session_store::SessionRow {
+            owned_id: owned_id.into(), native_session_id: None, provider: "codex".into(), model: None,
+            effort: None, cwd: "/work".into(), worktree: None, branch: None, title: Some(title.into()),
+            title_source: None, project: None, project_id: None, state: "suspended".into(), suspended: true,
+            created_at_ms: 1, last_activity_at_ms: 1,
+            extra_json: super::super::manager::imported_session_extra(AgentConversationProvider::Codex).unwrap(),
+        }).unwrap();
+    }
+
+    /// A message's sender label and text, read from the store file, whatever delivery did to it since.
+    fn stored_message(database: &std::path::Path, id: &str) -> (String, String) {
+        rusqlite::Connection::open(database).unwrap().query_row(
+            "SELECT sender_name, body FROM workflow_messages WHERE id = ?", [id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
+    }
+
+    async fn tool(endpoint: &super::super::messaging::MessagingEndpoint, token: &str, call: serde_json::Value) -> serde_json::Value {
+        let result = endpoint.handle(token, call).await.unwrap();
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn remote_message_relay_uses_connected_desktop_and_target_store() {
+        use serde_json::json;
+        use super::super::messaging::MessagingEndpoint;
+        let directory = std::env::temp_dir().join(format!("assembly-message-relay-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        // The remote machine and its session.
+        let remote = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("remote.db")).unwrap();
+        add_session(&remote, "there", "There");
+        let state = ServerState {
+            workflow: crate::workflow::WorkflowEngine::managed(remote.clone(), remote.store_handle()),
+            manager: remote.clone(), data_dir: directory.clone(), token: Arc::from("test-token"),
+            maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
+            restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
+            events: broadcast::channel(2).0, terminals: RemoteTerminals::new(), relay: Arc::default(),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(axum::serve(listener, Router::new().route("/assembly", get(upgrade_remote_socket)).with_state(state.clone())).into_future());
+        // The desktop and its session, connected to that machine as `workbox-test`.
+        let desktop = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("desktop.db")).unwrap();
+        add_session(&desktop, "here", "Here");
+        let connections = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), desktop.store_handle()).unwrap();
+        connections.set_message_host(desktop.clone());
+        let (requests, mut receiver) = mpsc::channel(8);
+        let ready = Arc::new(AtomicBool::new(false));
+        let (ready_reply, ready_answer) = oneshot::channel();
+        let (actor_ready, relay) = (ready.clone(), connections.message_relay("workbox-test"));
+        let actor = tokio::spawn(async move {
+            client_loop(format!("ws://{address}/assembly"), "test-token".into(), &mut receiver, Arc::new(|_| Ok(())), None,
+                Some(1), actor_ready, &mut Some(ready_reply), Arc::new(|| {}), Some(relay)).await;
+        });
+        ready_answer.await.unwrap().unwrap();
+        connections.client.lock().unwrap().clients.insert("workbox-test".into(), RemoteClient {
+            requests: Some(requests), profile: Some(profile("workbox-test")), target_key: None, task: None, ready });
+
+        // The remote session finds the desktop's session by its title, through the desktop.
+        let there = MessagingEndpoint::start().unwrap();
+        there.set_relay(state.relay.relay());
+        let there_token = there.issue("there").token;
+        there.bind_store(&there_token, &remote.store_handle(), None);
+        let listing = tool(&there, &there_token, json!({"name":"list_sessions"})).await;
+        let machine_of = |owned_id: &str| listing.as_array().unwrap().iter()
+            .find(|entry| entry["ownedId"] == owned_id).map(|entry| entry["machine"].clone());
+        assert_eq!(machine_of("there"), Some(json!("workbox-test")), "{listing}");
+        assert_eq!(machine_of("here"), Some(json!("mac")), "{listing}");
+        let sent = tool(&there, &there_token, json!({"name":"send_message","arguments":{"to":"Here","text":"hello from there"}})).await;
+        let id = sent["id"].as_str().unwrap();
+        assert!(id.starts_with("mac:"), "{sent}");
+        let (sender, body) = stored_message(&directory.join("desktop.db"), &id["mac:".len()..]);
+        let there_handle = remote.store().directory_name("there").unwrap().unwrap().0;
+        assert_eq!(sender, format!("{there_handle}@workbox-test · There"));
+        assert_eq!(body, "hello from there");
+        // These test machines run no agent, so delivery may already have failed it.
+        let status = tool(&there, &there_token, json!({"name":"message_status","arguments":{"id":id}})).await;
+        assert!(["queued", "delivered", "failed"].contains(&status["status"].as_str().unwrap()), "{status}");
+
+        // The desktop session answers the label it was given, and the reply lands in the remote store.
+        let here = MessagingEndpoint::start().unwrap();
+        here.set_relay(connections.message_relay(LOCAL_MACHINE));
+        let here_token = here.issue("here").token;
+        here.bind_store(&here_token, &desktop.store_handle(), None);
+        let reply = tool(&here, &here_token, json!({"name":"send_message","arguments":{"to":sender,"text":"hello back"}})).await;
+        let reply_id = reply["id"].as_str().unwrap();
+        assert!(reply_id.starts_with("workbox-test:"), "{reply}");
+        let (sender, body) = stored_message(&directory.join("remote.db"), &reply_id["workbox-test:".len()..]);
+        let here_handle = desktop.store().directory_name("here").unwrap().unwrap().0;
+        assert_eq!(sender, format!("{here_handle}@mac · Here"));
+        assert_eq!(body, "hello back");
+        let status = tool(&here, &here_token, json!({"name":"message_status","arguments":{"id":reply_id}})).await;
+        assert!(["queued", "delivered", "failed"].contains(&status["status"].as_str().unwrap()), "{status}");
+
+        connections.client.lock().unwrap().clients.clear();
+        actor.await.unwrap();
+        server.abort();
+        let _ = server.await;
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn remote_message_relay_rejects_disconnected_target() {
+        let connections = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+        let error = connections.route_message(LOCAL_MACHINE, "enqueue", serde_json::json!({
+            "to": "brisk-heron@workbox-test", "text": "hi", "from": "a", "sender": "calm-otter · A"})).await.unwrap_err();
+        assert!(error.contains("target machine not reachable"), "{error}");
+        // A remote machine with no desktop connected cannot reach any other machine.
+        let error = Arc::new(RelayLink::default()).ask("directory".into(), serde_json::json!({})).await.unwrap_err();
+        assert!(error.contains("target machine not reachable"), "{error}");
+    }
 
     #[test]
     fn workspace_network_ops_wait_past_the_remote_git_limit() {
@@ -4717,7 +4989,7 @@ mod connection_tests {
             let (reply, mut result) = oneshot::channel();
             let ready = Arc::new(AtomicBool::new(false));
             let actor_ready = ready.clone();
-            let actor = tokio::spawn(async move { client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver, Arc::new(|_| Ok(())), None, Some(1), actor_ready, &mut Some(reply), Arc::new(|| {})).await });
+            let actor = tokio::spawn(async move { client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver, Arc::new(|_| Ok(())), None, Some(1), actor_ready, &mut Some(reply), Arc::new(|| {}), None).await });
             if version == PROTOCOL_VERSION {
                 probe_rx.await.unwrap();
                 assert!(!ready.load(Ordering::Acquire));
@@ -4765,7 +5037,7 @@ mod connection_tests {
         let actor = tokio::spawn(async move {
             client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver,
                 Arc::new(|_| Ok(())), None, Some(1), Arc::new(AtomicBool::new(false)),
-                &mut Some(ready_reply), Arc::new(|| {})).await;
+                &mut Some(ready_reply), Arc::new(|| {}), None).await;
         });
         let (reply, answer) = oneshot::channel();
         requests.send(ClientRequest::Execute {
@@ -4822,7 +5094,7 @@ mod connection_tests {
         let actor = tokio::spawn(async move {
             client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver,
                 Arc::new(move |events| { captured.lock().unwrap().extend(events); Ok(()) }), None,
-                Some(2), Arc::new(AtomicBool::new(false)), &mut Some(ready_reply), Arc::new(|| {})).await;
+                Some(2), Arc::new(AtomicBool::new(false)), &mut Some(ready_reply), Arc::new(|| {}), None).await;
         });
         ready_answer.await.unwrap().unwrap();
         server.await.unwrap();
@@ -4862,7 +5134,7 @@ mod connection_tests {
             manager, data_dir: directory.clone(), token: Arc::from("test"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events,
-            terminals: RemoteTerminals::new(),
+            terminals: RemoteTerminals::new(), relay: Arc::default(),
         };
         let (outbound, mut received) = mpsc::channel(8);
         let mut queued = BTreeMap::from([("large-history".to_string(), 1)]);
@@ -4934,7 +5206,7 @@ mod connection_tests {
             manager: manager.clone(), data_dir: directory.clone(), token: Arc::from("test-token"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events: events.clone(),
-            terminals: RemoteTerminals::new(),
+            terminals: RemoteTerminals::new(), relay: Arc::default(),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -4999,7 +5271,7 @@ mod connection_tests {
         let actor = tokio::spawn(async move {
             client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver,
                 Arc::new(|_| Ok(())), None, Some(1), Arc::new(AtomicBool::new(false)),
-                &mut Some(ready_reply), Arc::new(|| {})).await;
+                &mut Some(ready_reply), Arc::new(|| {}), None).await;
         });
         ready_answer.await.unwrap().unwrap();
         let (reply, answer) = oneshot::channel();
@@ -5193,7 +5465,7 @@ mod provider_restart_tests {
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
             events: broadcast::channel(2).0,
-            terminals: RemoteTerminals::new(),
+            terminals: RemoteTerminals::new(), relay: Arc::default(),
         };
         let response = execute_server_command(&state, &Arc::new(Mutex::new(None)),
             RemoteCommand::RestartForProviderUpdates, Arc::new(|_| {})).await;
@@ -5262,7 +5534,7 @@ mod terminal_tests {
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
             events: broadcast::channel(2).0,
-            terminals: RemoteTerminals::new(),
+            terminals: RemoteTerminals::new(), relay: Arc::default(),
         }
     }
 

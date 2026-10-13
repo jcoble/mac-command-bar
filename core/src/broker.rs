@@ -206,12 +206,26 @@ impl SessionStore {
         kind: MessageKind,
         body: &str,
     ) -> Result<Envelope> {
+        self.append_message_as(group_id, from, to, kind, body, None)
+    }
+
+    /// `append_message` with the sender's label given, for a message from a
+    /// session on another machine, which this machine's directory does not know.
+    pub fn append_message_as(
+        &self,
+        group_id: &str,
+        from: &str,
+        to: &str,
+        kind: MessageKind,
+        body: &str,
+        sender_name: Option<&str>,
+    ) -> Result<Envelope> {
         let connection = self.lock_write()?;
         let id = new_id(&connection)?;
         let created_at_ms = now_ms()?;
         let (sender_name, run_id): (String, Option<String>) = db("could not name message sender", connection.query_row(
-            "SELECT COALESCE(d.handle || ' · ' || d.name, ?1), d.run_id FROM (SELECT 1) LEFT JOIN session_directory d ON d.owned_id = ?1",
-            params![from], |row| Ok((row.get(0)?, row.get(1)?))))?;
+            "SELECT COALESCE(?2, d.handle || ' · ' || d.name, ?1), d.run_id FROM (SELECT 1) LEFT JOIN session_directory d ON d.owned_id = ?1",
+            params![from, sender_name], |row| Ok((row.get(0)?, row.get(1)?))))?;
         db(
             "could not append the workflow message",
             connection.execute(
@@ -482,6 +496,18 @@ mod tests {
         assert_eq!(message.sender_name, format!("{handle} · Renamed"));
         // A reply addressed to the whole label reaches the sender.
         assert_eq!(store.resolve_session_name(&message.sender_name).unwrap(), "a");
+    }
+
+    #[test]
+    fn a_message_from_another_machine_keeps_its_sender_label() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.lock_write().unwrap().execute_batch("INSERT INTO sessions
+            (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra,title) VALUES
+            ('here','codex','/work','ready',0,1,1,'{}','Here');").unwrap();
+        let message = store.append_message_as("", "elsewhere", "here", MessageKind::Message, "hi",
+            Some("brisk-heron@workbox-test · There")).unwrap();
+        assert_eq!(message.sender_name, "brisk-heron@workbox-test · There");
+        assert_eq!(store.message_status(&message.id, "elsewhere").unwrap(), "queued");
     }
 
     #[test]
