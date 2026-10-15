@@ -199,7 +199,7 @@ export function buildMyWorkGroups(
 ): MyWorkGroup[] {
   const prepared = prepareMyWorkSessions(sessions, options, manualOrder);
   // A helper sits under its parent's row, and a workflow run's workers in a
-  // section of their own; each appears once. A helper whose parent is not
+  // section of their own unless pinned; each appears once. A helper whose parent is not
   // listed stays an ordinary row.
   const listed = new Set(prepared.map((session) => session.ownedId));
   const helpers = new Map<string, OwnedSession[]>();
@@ -208,7 +208,7 @@ export function buildMyWorkGroups(
   for (const session of prepared) {
     if (session.helperOf && listed.has(session.helperOf)) {
       helpers.set(session.helperOf, [...(helpers.get(session.helperOf) ?? []), session]);
-    } else if (session.runId) {
+    } else if (session.runId && !session.pinnedAt) {
       const key = `run:${session.runId}`;
       const run = runs.get(key) ?? { key, label: session.runLabel ?? 'Workflow run', sessions: [] };
       run.sessions.push(session);

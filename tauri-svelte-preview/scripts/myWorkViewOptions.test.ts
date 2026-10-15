@@ -243,6 +243,18 @@ function shape(groups: MyWorkGroup[]): unknown[] {
   ]);
 }
 
+// pinned_worker_sits_in_pinned: pinning a workflow worker moves it out of its run's section.
+{
+  const rows = [
+    session('build', { title: 'b', runId: 'run-1', runLabel: 'TSK-9 · Fix and review' }),
+    session('review', { title: 'c', runId: 'run-1', runLabel: 'TSK-9 · Fix and review', pinnedAt: 5 })
+  ];
+  assert.deepEqual(shape(buildMyWorkGroups(rows, DEFAULT_MY_WORK_VIEW_OPTIONS)), [
+    ['pinned', 'Pinned', ['review']],
+    ['run:run-1', 'TSK-9 · Fix and review', ['build']]
+  ]);
+}
+
 // child_needing_owner_marks_group: a helper waiting on the owner counts in its
 // parent's section, so the section's "needs you" mark lifts.
 {

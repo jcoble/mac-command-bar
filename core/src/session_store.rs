@@ -2075,8 +2075,21 @@ impl SessionStore {
 
     pub fn delete_session(&self, owned_id: &str) -> Result<()> {
         let connection = self.lock_write()?;
-        connection
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|error| StoreError::sqlite("could not delete the session", error))?;
+        transaction
             .execute("DELETE FROM sessions WHERE owned_id = ?", [owned_id])
+            .map_err(|error| StoreError::sqlite("could not delete the session", error))?;
+        // A deleted main orchestrator leaves no mark behind.
+        transaction
+            .execute(
+                "DELETE FROM app_settings WHERE setting_key = 'orchestrator.main' AND json_extract(value_json,'$') = ?",
+                [owned_id],
+            )
+            .map_err(|error| StoreError::sqlite("could not clear the orchestrator mark", error))?;
+        transaction
+            .commit()
             .map_err(|error| StoreError::sqlite("could not delete the session", error))?;
         Ok(())
     }
@@ -5091,6 +5104,18 @@ mod tests {
         store.delete_session("parent").unwrap();
         assert!(store.get_session("child").unwrap().is_none());
         assert!(store.list_events("child", i64::MIN, 100).unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_the_main_orchestrator_clears_its_mark() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&fixture_session("main", 1)).unwrap();
+        store.upsert_session(&fixture_session("other", 2)).unwrap();
+        store.set_main_orchestrator(Some("main")).unwrap();
+        store.delete_session("other").unwrap();
+        assert_eq!(store.main_orchestrator().unwrap().map(|(id, _)| id).as_deref(), Some("main"));
+        store.delete_session("main").unwrap();
+        assert!(store.main_orchestrator().unwrap().is_none());
     }
 
     #[test]
