@@ -18,6 +18,14 @@ steps:
       - cd tauri-svelte-preview && pnpm run check:svelte
       - cd tauri-svelte-preview && pnpm test:async-lifecycle
       - cd core && PATH="$HOME/.cargo/bin:$PATH" CARGO_BUILD_JOBS=3 cargo test
+      # The app crate too. The four skipped tests need macOS and fail on a Linux machine.
+      - >-
+        cd tauri-svelte-preview/src-tauri && PATH="$HOME/.cargo/bin:$PATH" CARGO_BUILD_JOBS=3
+        cargo test --no-default-features --
+        --skip reaper::tests::macos_process_marker_readback_preserves_provider_scope
+        --skip reaper::tests::reaper_kills_marked_group_with_dead_owner
+        --skip lsp::tests::a_read_mode_workspace_starts_no_language_server
+        --skip resources::tests::a_process_is_measured_by_its_physical_footprint
     repeat: true
     on_fail: build
   code-review:

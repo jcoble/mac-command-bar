@@ -36,7 +36,8 @@ const items = sessionRowMenuItems({
   resumeCommand: `cd /work && claude --resume ${ID}`,
   worktreePath: '/work',
   pinned: false,
-  orchestrator: false
+  orchestrator: false,
+  topLevel: true
 });
 const copyId = items.find((item) => item.id === 'copy-session-id');
 const copyResume = items.find((item) => item.id === 'copy-resume-command');
@@ -61,9 +62,22 @@ const noResume = sessionRowMenuItems({
   resumeCommand: null,
   worktreePath: null,
   pinned: false,
-  orchestrator: false
+  orchestrator: false,
+  topLevel: true
 }).find((item) => item.id === 'copy-resume-command');
 assert.equal(noResume?.enabled, false);
+// A helper or a workflow worker cannot be the main orchestrator.
+const helperMark = sessionRowMenuItems({
+  status: 'working',
+  sessionId: ID,
+  resumeCommand: null,
+  worktreePath: null,
+  pinned: false,
+  orchestrator: false,
+  topLevel: false
+}).find((item) => item.id === 'mark-orchestrator');
+assert.equal(helperMark?.enabled, false);
+assert.match(helperMark?.disabledReason ?? '', /top-level/);
 
 // History: a session started in this app has no scan details, but its card
 // still copies the same command the rail does.

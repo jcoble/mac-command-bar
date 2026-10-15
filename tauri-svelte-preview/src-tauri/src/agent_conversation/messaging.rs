@@ -45,6 +45,9 @@ pub fn answer(store: &SessionStore, manager: Option<&AgentRuntimeManager>, op: &
             let owned_id = args["owned_id"].as_str();
             if let Some(owned_id) = owned_id {
                 store.get_session(owned_id).map_err(|error| error.to_string())?.ok_or("Unknown session")?;
+                if matches!(store.session_role(owned_id).map_err(|error| error.to_string())?.as_str(), "helper" | "worker") {
+                    return Err("Only a top-level session can be the main orchestrator".into());
+                }
             }
             store.set_main_orchestrator(owned_id).map_err(|error| error.to_string())?;
             Ok(Value::Null)
@@ -482,6 +485,14 @@ mod tests {
         assert!(error.contains("Unknown session"), "{error}");
         assert_eq!(marked(&store), ["owned-b"]);
         answer(&store, None, "designate", &json!({"owned_id":null})).unwrap();
+        assert!(marked(&store).is_empty());
+        // A helper or a workflow worker cannot be the main orchestrator.
+        let mut helper = store.get_session("owned-a").unwrap().unwrap();
+        helper.owned_id = "helper".into();
+        helper.extra_json = r#"{"helperOf":"owned-b"}"#.into();
+        store.upsert_session(&helper).unwrap();
+        let error = answer(&store, None, "designate", &json!({"owned_id":"helper"})).unwrap_err();
+        assert!(error.contains("top-level"), "{error}");
         assert!(marked(&store).is_empty());
     }
 

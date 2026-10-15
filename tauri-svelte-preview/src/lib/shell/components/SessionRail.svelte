@@ -89,6 +89,7 @@
 					worktreePath: contextMenu.session.cwd || null,
 					pinned: Boolean(contextMenu.session.pinnedAt),
 					orchestrator: Boolean(contextMenu.session.orchestratorMarkedAtMs),
+					topLevel: !contextMenu.session.helperOf && !contextMenu.session.runId,
 				})
 			: [],
 	);

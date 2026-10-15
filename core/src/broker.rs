@@ -343,8 +343,12 @@ impl SessionStore {
         let id = new_id(&connection)?;
         let created_at_ms = now_ms()?;
         let (sender_name, run_id): (String, Option<String>) = db("could not name message sender", connection.query_row(
-            "SELECT COALESCE(?2, d.handle || ' · ' || d.name, ?1), d.run_id FROM (SELECT 1) LEFT JOIN session_directory d ON d.owned_id = ?1",
-            params![from, sender_name], |row| Ok((row.get(0)?, row.get(1)?))))?;
+            // A message takes the sender's run, or else the receiver's, so a reply to a worker
+            // stays with its run.
+            "SELECT COALESCE(?2, d.handle || ' · ' || d.name, ?1), COALESCE(d.run_id, r.run_id)
+             FROM (SELECT 1) LEFT JOIN session_directory d ON d.owned_id = ?1
+             LEFT JOIN session_directory r ON r.owned_id = ?3",
+            params![from, sender_name, to], |row| Ok((row.get(0)?, row.get(1)?))))?;
         db(
             "could not append the workflow message",
             connection.execute(
@@ -613,6 +617,9 @@ mod tests {
         let message = store.append_message("", "worker", "target", MessageKind::Message, "reply to me").unwrap();
         assert!(message.sender_name.ends_with(" · tsk-1416/build"), "{}", message.sender_name);
         assert_eq!(message.run_id.as_deref(), Some("run-1"));
+        // A reply to the worker belongs to the same run, so the run's Messages view shows it.
+        let reply = store.append_message("", "target", "worker", MessageKind::Message, "done").unwrap();
+        assert_eq!(reply.run_id.as_deref(), Some("run-1"));
     }
 
     #[test]
