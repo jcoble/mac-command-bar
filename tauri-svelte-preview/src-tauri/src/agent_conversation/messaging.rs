@@ -80,6 +80,22 @@ fn forges_label(text: &str) -> bool {
 
 const HELPER_LIMIT: i64 = 3;
 
+/// A parent's place for a helper that is starting, given back when the start ends however it ends.
+struct StartingHelper {
+    starting: Arc<Mutex<HashMap<String, i64>>>,
+    parent: String,
+}
+
+impl Drop for StartingHelper {
+    fn drop(&mut self) {
+        let mut starting = self.starting.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(count) = starting.get_mut(&self.parent) {
+            *count -= 1;
+            if *count <= 0 { starting.remove(&self.parent); }
+        }
+    }
+}
+
 pub struct SessionCredential { pub url: String, pub token: String }
 impl SessionCredential {
     pub fn server(&self) -> acp::McpServer {
@@ -172,6 +188,8 @@ pub struct MessagingEndpoint {
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     relay: Mutex<Option<Relay>>,
     workflow: Mutex<Option<crate::workflow::WorkflowEngine>>,
+    /// Helpers each parent is starting now; they count toward its limit before the store knows them.
+    starting_helpers: Arc<Mutex<HashMap<String, i64>>>,
 }
 
 /// One endpoint per owning backend, including the remote server.
@@ -186,7 +204,7 @@ impl MessagingEndpoint {
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let url = format!("http://{}/mcp", listener.local_addr().map_err(|e| e.to_string())?);
         let endpoint = Arc::new(Self { url, callers: Mutex::new(HashMap::new()), task: Mutex::new(None), relay: Mutex::new(None),
-            workflow: Mutex::new(None) });
+            workflow: Mutex::new(None), starting_helpers: Arc::default() });
         let router = Router::new().route("/mcp", post(Self::post)).with_state(Arc::downgrade(&endpoint));
         *endpoint.task.lock().unwrap() = Some(tauri::async_runtime::spawn(async move {
             if let Ok(listener) = tokio::net::TcpListener::from_std(listener) {
@@ -314,9 +332,15 @@ impl MessagingEndpoint {
                     "helper" => return Err("helpers cannot start helpers".into()),
                     _ => {}
                 }
-                if store.unfinished_helpers_of(&owned_id).map_err(|error| error.to_string())? >= HELPER_LIMIT {
-                    return Err("at most 3 unfinished helpers".into());
-                }
+                let _place = {
+                    let mut starting = self.starting_helpers.lock().unwrap();
+                    let in_flight = starting.get(&owned_id).copied().unwrap_or(0);
+                    if store.unfinished_helpers_of(&owned_id).map_err(|error| error.to_string())? + in_flight >= HELPER_LIMIT {
+                        return Err("at most 3 unfinished helpers".into());
+                    }
+                    starting.insert(owned_id.clone(), in_flight + 1);
+                    StartingHelper { starting: Arc::clone(&self.starting_helpers), parent: owned_id.clone() }
+                };
                 let model = args["model"].as_str().map(str::to_string);
                 let manager = manager.ok_or("Sessions cannot be started from here")?;
                 let helper = manager.start_helper(&owned_id, provider, model, name, prompt).await?;
@@ -928,7 +952,13 @@ mod tests {
         let start = json!({"name":"start_session","arguments":{"provider":"codex","name":"Helper","prompt":"Look"}});
         assert_eq!(endpoint.handle(&tokens[0], start.clone()).await.unwrap_err(), "at most 3 unfinished helpers");
         // top1 has one idle helper, so it passes the limit and fails only for want of a manager here.
+        assert_eq!(endpoint.handle(&tokens[1], start.clone()).await.unwrap_err(), "Sessions cannot be started from here");
+        // Helpers still starting count too, so parallel starts cannot pass the limit together.
+        endpoint.starting_helpers.lock().unwrap().insert("top1".into(), 3);
+        assert_eq!(endpoint.handle(&tokens[1], start.clone()).await.unwrap_err(), "at most 3 unfinished helpers");
+        endpoint.starting_helpers.lock().unwrap().insert("top1".into(), 2);
         assert_eq!(endpoint.handle(&tokens[1], start).await.unwrap_err(), "Sessions cannot be started from here");
+        assert_eq!(endpoint.starting_helpers.lock().unwrap().get("top1"), Some(&2), "a finished start releases its place");
     }
 
     #[tokio::test]

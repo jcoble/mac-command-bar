@@ -255,6 +255,15 @@ function shape(groups: MyWorkGroup[]): unknown[] {
   ]);
 }
 
+// pinned_helper_sits_in_pinned: pinning a helper moves it out from under its parent.
+{
+  const rows = [session('parent', { title: 'p' }), session('helper', { title: 'h', helperOf: 'parent', pinnedAt: 5 })];
+  assert.deepEqual(shape(buildMyWorkGroups(rows, DEFAULT_MY_WORK_VIEW_OPTIONS)), [
+    ['pinned', 'Pinned', ['helper']],
+    ['repo:github.com/me/mac-command-bar', 'mac-command-bar', ['parent']]
+  ]);
+}
+
 // child_needing_owner_marks_group: a helper waiting on the owner counts in its
 // parent's section, so the section's "needs you" mark lifts.
 {
