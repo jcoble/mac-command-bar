@@ -1052,17 +1052,22 @@ export async function adoptSession(ownedId: string, signal?: AbortSignal): Promi
   }
 }
 
+const SESSION_READERS = {
+  local: listAgentConversationSessionsFromTauri,
+  remote: listRemoteAgentConversationSessionsFromTauri
+};
+
 async function lookUpSession(ownedId: string, signal: AbortSignal): Promise<boolean> {
   for (let lookup = 1; ; lookup += 1) {
     try {
-      const record = await findSessionRecord(ownedId, {
-        local: listAgentConversationSessionsFromTauri,
-        remote: listRemoteAgentConversationSessionsFromTauri
-      }, signal);
+      const seen = railActivityEvents.get(ownedId);
+      const record = await findSessionRecord(ownedId, SESSION_READERS, signal);
       if (signal.aborted) return false;
       if (record) {
         sessionsNotFound.delete(ownedId);
         if (!rail.owned.some((session) => session.ownedId === ownedId)) addOwnedSession(ownedSessionFromBackend(record));
+        // An event that came during the read found no row and changed nothing; read the state again.
+        if (railActivityEvents.get(ownedId) !== seen) await refreshAdoptedSession(ownedId, signal);
         return true;
       }
     } catch (error) {
@@ -1076,6 +1081,26 @@ async function lookUpSession(ownedId: string, signal: AbortSignal): Promise<bool
     await waitFor(SESSION_LOOKUP_RETRY_MS, signal);
     if (signal.aborted) return false;
     if (rail.owned.some((session) => session.ownedId === ownedId)) return true;
+  }
+}
+
+/** Reads an adopted session's live state once more, unless an event during the read is newer. */
+async function refreshAdoptedSession(ownedId: string, signal: AbortSignal): Promise<void> {
+  const seen = railActivityEvents.get(ownedId);
+  try {
+    const record = await findSessionRecord(ownedId, SESSION_READERS, signal);
+    if (signal.aborted || !record || railActivityEvents.get(ownedId) !== seen) return;
+    const fresh = ownedSessionFromBackend(record);
+    updateOwnedSession(ownedId, {
+      state: fresh.state,
+      runtimeState: fresh.runtimeState,
+      activeTurnId: fresh.activeTurnId,
+      pendingPermission: fresh.pendingPermission,
+      pendingInput: fresh.pendingInput,
+      backgroundWork: fresh.backgroundWork
+    });
+  } catch (error) {
+    if (!signal.aborted) rail.error = `Could not refresh a new session: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
