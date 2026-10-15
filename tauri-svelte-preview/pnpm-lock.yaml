@@ -5,9 +5,6 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@agentclientprotocol/claude-agent-acp':
-    hash: f835989336bf292b8f88e2fe9afdae749fe71d63f25b845cc658c1604acbbcdd
-    path: patches/@agentclientprotocol__claude-agent-acp.patch
   '@keenmate/svelte-treeview@4.8.0':
     hash: 3de2051c6bf236ed156980aa27d669a0a9000a58d95f94a0c35da4b9c5bba49a
     path: patches/@keenmate__svelte-treeview@4.8.0.patch
@@ -27,10 +24,13 @@ importers:
     dependencies:
       '@agentclientprotocol/claude-agent-acp':
         specifier: 0.90.0
-        version: 0.90.0(patch_hash=f835989336bf292b8f88e2fe9afdae749fe71d63f25b845cc658c1604acbbcdd)(@anthropic-ai/sdk@0.123.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.30.0(zod@4.6.5))
+        version: 0.90.0(@anthropic-ai/sdk@0.123.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.30.0(zod@4.6.7))
       '@agentclientprotocol/codex-acp':
         specifier: 1.13.1
         version: 1.13.1
+      '@agentclientprotocol/sdk':
+        specifier: 1.8.0
+        version: 1.8.0(zod@4.6.7)
       '@codemirror/autocomplete':
         specifier: 6.20.3
         version: 6.20.3
@@ -117,10 +117,10 @@ importers:
         version: 6.0.2(@codemirror/autocomplete@6.20.3)(@codemirror/commands@6.11.0)(@codemirror/language@6.12.4)(@codemirror/lint@6.9.7)(@codemirror/search@6.7.1)(@codemirror/state@6.7.1)(@codemirror/view@6.43.9)
       '@tanstack/ai':
         specifier: 0.63.0
-        version: 0.63.0(zod@4.6.5)
+        version: 0.63.0(zod@4.6.7)
       '@tanstack/ai-svelte':
         specifier: 0.24.3
-        version: 0.24.3(patch_hash=591f13c78fa2252eb9e77e2d4e9a57cb39699f685e45b9d432bf13fd7bf9e0aa)(@tanstack/ai@0.63.0(zod@4.6.5))(svelte@5.56.3)(zod@4.6.5)
+        version: 0.24.3(patch_hash=591f13c78fa2252eb9e77e2d4e9a57cb39699f685e45b9d432bf13fd7bf9e0aa)(@tanstack/ai@0.63.0(zod@4.6.7))(svelte@5.56.3)(zod@4.6.7)
       '@tanstack/svelte-virtual':
         specifier: 3.13.35
         version: 3.13.35(svelte@5.56.3)
@@ -249,11 +249,6 @@ packages:
   '@agentclientprotocol/codex-acp@1.13.1':
     resolution: {integrity: sha512-NAbXTb6GRReox7B+8RN9VRB+sKUqFJh5Vg7Ex7RskYCO8EsYPJKN1WJvN7mOqjCKKK9lVDrNxtP7Bp/OUKPyAg==}
     hasBin: true
-
-  '@agentclientprotocol/sdk@1.5.0':
-    resolution: {integrity: sha512-524jwbB2iYWA+kWWyv9fhKbhU89dH/lu9u5EXwVNmfYzopV8BujCDxByBDZhxRUkB7RWIJzISCnwivdDk+bdVg==}
-    peerDependencies:
-      zod: ^3.25.0 || ^4.0.0
 
   '@agentclientprotocol/sdk@1.8.0':
     resolution: {integrity: sha512-fbP7qHZsFyTJVT0/RPrcWJ8An26qLXHEuGCHHEKDyxD1xpXV+Ejyh2LAE6vBAFePkpVjZeeohnbgvuEhZ7wLMg==}
@@ -2425,14 +2420,14 @@ packages:
 
 snapshots:
 
-  '@ag-ui/core@1.0.0(zod@4.6.5)':
+  '@ag-ui/core@1.0.0(zod@4.6.7)':
     optionalDependencies:
-      zod: 4.6.5
+      zod: 4.6.7
 
-  '@agentclientprotocol/claude-agent-acp@0.90.0(patch_hash=f835989336bf292b8f88e2fe9afdae749fe71d63f25b845cc658c1604acbbcdd)(@anthropic-ai/sdk@0.123.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.30.0(zod@4.6.5))':
+  '@agentclientprotocol/claude-agent-acp@0.90.0(@anthropic-ai/sdk@0.123.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.30.0(zod@4.6.7))':
     dependencies:
       '@agentclientprotocol/sdk': 1.8.0(zod@4.6.7)
-      '@anthropic-ai/claude-agent-sdk': 0.3.296(@anthropic-ai/sdk@0.123.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.30.0(zod@4.6.5))(zod@4.6.7)
+      '@anthropic-ai/claude-agent-sdk': 0.3.296(@anthropic-ai/sdk@0.123.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.30.0(zod@4.6.7))(zod@4.6.7)
       diff: 9.0.0
       zod: 4.6.7
     transitivePeerDependencies:
@@ -2441,14 +2436,14 @@ snapshots:
 
   '@agentclientprotocol/codex-acp@1.13.1':
     dependencies:
-      '@agentclientprotocol/sdk': 1.5.0(zod@4.6.5)
+      '@agentclientprotocol/sdk': 1.8.0(zod@4.6.5)
       '@openai/codex': 0.156.1
       diff: 9.0.0
       open: 11.0.4
       vscode-jsonrpc: 9.0.2
       zod: 4.6.5
 
-  '@agentclientprotocol/sdk@1.5.0(zod@4.6.5)':
+  '@agentclientprotocol/sdk@1.8.0(zod@4.6.5)':
     dependencies:
       zod: 4.6.5
 
@@ -2490,10 +2485,10 @@ snapshots:
   '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.296':
     optional: true
 
-  '@anthropic-ai/claude-agent-sdk@0.3.296(@anthropic-ai/sdk@0.123.0(zod@4.6.5))(@modelcontextprotocol/sdk@1.30.0(zod@4.6.5))(zod@4.6.7)':
+  '@anthropic-ai/claude-agent-sdk@0.3.296(@anthropic-ai/sdk@0.123.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.30.0(zod@4.6.7))(zod@4.6.7)':
     dependencies:
-      '@anthropic-ai/sdk': 0.123.0(zod@4.6.5)
-      '@modelcontextprotocol/sdk': 1.30.0(zod@4.6.5)
+      '@anthropic-ai/sdk': 0.123.0(zod@4.6.7)
+      '@modelcontextprotocol/sdk': 1.30.0(zod@4.6.7)
       zod: 4.6.7
     optionalDependencies:
       '@anthropic-ai/claude-agent-sdk-darwin-arm64': 0.3.296
@@ -2505,12 +2500,12 @@ snapshots:
       '@anthropic-ai/claude-agent-sdk-win32-arm64': 0.3.296
       '@anthropic-ai/claude-agent-sdk-win32-x64': 0.3.296
 
-  '@anthropic-ai/sdk@0.123.0(zod@4.6.5)':
+  '@anthropic-ai/sdk@0.123.0(zod@4.6.7)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.1.1
     optionalDependencies:
-      zod: 4.6.5
+      zod: 4.6.7
 
   '@babel/runtime@7.29.7': {}
 
@@ -2907,7 +2902,7 @@ snapshots:
     dependencies:
       '@chevrotain/types': 13.2.0
 
-  '@modelcontextprotocol/sdk@1.30.0(zod@4.6.5)':
+  '@modelcontextprotocol/sdk@1.30.0(zod@4.6.7)':
     dependencies:
       '@hono/node-server': 2.1.1(hono@4.13.9)
       ajv: 8.20.0
@@ -2924,8 +2919,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.6.5
-      zod-to-json-schema: 3.25.2(zod@4.6.5)
+      zod: 4.6.7
+      zod-to-json-schema: 3.25.2(zod@4.6.7)
     transitivePeerDependencies:
       - supports-color
 
@@ -3143,9 +3138,9 @@ snapshots:
       tailwindcss: 4.3.3
       vite: 8.0.16(@types/node@25.9.2)(jiti@2.7.0)
 
-  '@tanstack/ai-client@0.36.0(zod@4.6.5)':
+  '@tanstack/ai-client@0.36.0(zod@4.6.7)':
     dependencies:
-      '@tanstack/ai': 0.63.0(zod@4.6.5)
+      '@tanstack/ai': 0.63.0(zod@4.6.7)
       '@tanstack/ai-event-client': 0.13.0
       '@tanstack/ai-utils': 0.4.1
     transitivePeerDependencies:
@@ -3156,10 +3151,10 @@ snapshots:
     dependencies:
       '@tanstack/devtools-event-client': 0.4.4
 
-  '@tanstack/ai-svelte@0.24.3(patch_hash=591f13c78fa2252eb9e77e2d4e9a57cb39699f685e45b9d432bf13fd7bf9e0aa)(@tanstack/ai@0.63.0(zod@4.6.5))(svelte@5.56.3)(zod@4.6.5)':
+  '@tanstack/ai-svelte@0.24.3(patch_hash=591f13c78fa2252eb9e77e2d4e9a57cb39699f685e45b9d432bf13fd7bf9e0aa)(@tanstack/ai@0.63.0(zod@4.6.7))(svelte@5.56.3)(zod@4.6.7)':
     dependencies:
-      '@tanstack/ai': 0.63.0(zod@4.6.5)
-      '@tanstack/ai-client': 0.36.0(zod@4.6.5)
+      '@tanstack/ai': 0.63.0(zod@4.6.7)
+      '@tanstack/ai-client': 0.36.0(zod@4.6.7)
       svelte: 5.56.3
     transitivePeerDependencies:
       - '@opentelemetry/api'
@@ -3167,9 +3162,9 @@ snapshots:
 
   '@tanstack/ai-utils@0.4.1': {}
 
-  '@tanstack/ai@0.63.0(zod@4.6.5)':
+  '@tanstack/ai@0.63.0(zod@4.6.7)':
     dependencies:
-      '@ag-ui/core': 1.0.0(zod@4.6.5)
+      '@ag-ui/core': 1.0.0(zod@4.6.7)
       '@standard-schema/spec': 1.1.0
       '@tanstack/ai-event-client': 0.13.0
       '@tanstack/ai-utils': 0.4.1
@@ -4652,9 +4647,9 @@ snapshots:
 
   zimmerframe@1.1.4: {}
 
-  zod-to-json-schema@3.25.2(zod@4.6.5):
+  zod-to-json-schema@3.25.2(zod@4.6.7):
     dependencies:
-      zod: 4.6.5
+      zod: 4.6.7
 
   zod@4.6.5: {}
 

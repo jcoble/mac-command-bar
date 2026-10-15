@@ -11,6 +11,7 @@ on:
       - '.github/workflows/provider-updates.yml'
       - 'tauri-svelte-preview/scripts/prepareReleaseAdapters.ts'
       - 'tauri-svelte-preview/scripts/prepareProviderReleaseAssets.ts'
+      - 'tauri-svelte-preview/scripts/claudeAcpLauncher.ts'
       - 'tauri-svelte-preview/package.json'
       - 'tauri-svelte-preview/pnpm-lock.yaml'
       - 'tauri-svelte-preview/pnpm-workspace.yaml'
@@ -48,8 +49,9 @@ jobs:
         working-directory: tauri-svelte-preview
         run: |
           pnpm install --frozen-lockfile
-          # Both follow upstream. Assembly's Claude patch applies to any version;
-          # if a new release breaks it, install fails here and nothing is published.
+          # Both follow upstream. The stock Claude adapter is compiled with Assembly's
+          # launcher (scripts/claudeAcpLauncher.ts); if an upstream release breaks the
+          # launcher's imports, the build fails and nothing is published.
           pnpm update @agentclientprotocol/codex-acp @agentclientprotocol/claude-agent-acp --latest
       - name: Package and sign adapters
         working-directory: tauri-svelte-preview
