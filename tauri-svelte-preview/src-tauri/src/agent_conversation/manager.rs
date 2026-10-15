@@ -8959,6 +8959,12 @@ mod tests {
         assert_eq!(state(), "running");
         append(r#"{"type":"event_msg","payload":{"type":"turn_aborted"}}"#);
         assert_eq!(state(), "finished");
+        // A child that died without its closing record stops counting once it has been silent too long.
+        append(r#"{"type":"event_msg","payload":{"type":"task_started"}}"#);
+        assert_eq!(state(), "running");
+        let silent_since = std::time::SystemTime::now() - transcript::CHILD_SILENCE_LIMIT - Duration::from_secs(60);
+        fs::OpenOptions::new().append(true).open(&child).unwrap().set_modified(silent_since).unwrap();
+        assert_eq!(state(), "finished");
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -119,6 +119,9 @@ pub fn claude_transcript_holds_a_turn(native_session_id: &str) -> Result<bool, S
     claude::holds_a_turn(&safe_session_id(native_session_id)?)
 }
 
+#[cfg(test)]
+pub(crate) use codex::CHILD_SILENCE_LIMIT;
+
 pub(crate) fn scan_codex_child_rollouts(
     parent_path: &Path,
     parent_id: &str,

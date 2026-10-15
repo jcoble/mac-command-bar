@@ -120,7 +120,7 @@ fn child_rollout_from_first_line(
         })
         .unwrap_or("Sub-agent");
     let label = role.map_or_else(|| name.to_string(), |role| format!("{name} ({role})"));
-    let running = !last_turn_ended(path);
+    let running = !last_turn_ended(path) && !silent_too_long(path);
     Some(CodexChildRollout {
         child_id,
         label,
@@ -129,12 +129,22 @@ fn child_rollout_from_first_line(
     })
 }
 
+/// How long a child may write nothing before it counts as gone. A child that crashed or was
+/// killed never writes its closing record; without this its session could never suspend.
+pub(crate) const CHILD_SILENCE_LIMIT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+fn silent_too_long(path: &Path) -> bool {
+    path.metadata().and_then(|metadata| metadata.modified()).ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|silence| silence > CHILD_SILENCE_LIMIT)
+}
+
 /// How much of a child transcript's end is read to find its newest turn record.
 const TURN_RECORD_TAIL_BYTES: u64 = 64 * 1024;
 
 /// Whether the transcript's newest turn record says the turn ended (`task_complete` or
-/// `turn_aborted`) rather than started. Quiet time proves nothing: a long command writes
-/// nothing until it returns. Only the end of the file is read.
+/// `turn_aborted`) rather than started. A short quiet time proves nothing: a long command
+/// writes nothing until it returns. Only the end of the file is read.
 fn last_turn_ended(path: &Path) -> bool {
     let Ok(len) = path.metadata().map(|metadata| metadata.len()) else { return false };
     let start = len.saturating_sub(TURN_RECORD_TAIL_BYTES);

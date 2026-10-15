@@ -1322,20 +1322,26 @@ impl RemoteConnectionManager {
             host.store().upsert_app_setting(ORCHESTRATOR_CHOICE,
                 &serde_json::json!({"machine": machine, "owned_id": owned_id}).to_string()).map_err(|error| error.to_string())?;
         }
-        // Rows kept for machines that are away show the new choice too, also after a restart.
-        let cached = self.cached_sessions();
-        let chosen = |row: &AgentConversationSessionRecord|
-            row.remote_profile_id.as_deref() == Some(machine) && Some(row.owned_id.as_str()) == owned_id;
-        if cached.iter().any(|row| row.orchestrator_marked_at_ms.is_some() && !chosen(row)) {
-            self.save_cached_sessions(cached.into_iter().map(|mut row| {
-                if !chosen(&row) { row.orchestrator_marked_at_ms = None; }
-                row
-            }).collect())?;
-        }
+        self.remember_cached_orchestrator(machine, owned_id)?;
         for other in self.message_machines(if owned_id.is_some() { machine } else { "" }) {
             if let Err(error) = self.message_machine(&other, "designate", serde_json::json!({"owned_id": null})).await {
                 crate::debug_log::stderr_log!("Could not clear the orchestrator mark on {other}: {error}");
             }
+        }
+        Ok(())
+    }
+
+    /// Rows kept for machines that are away show the owner's choice too, also after a restart.
+    fn remember_cached_orchestrator(&self, machine: &str, owned_id: Option<&str>) -> Result<(), String> {
+        let cached = self.cached_sessions();
+        let chosen = |row: &AgentConversationSessionRecord|
+            row.remote_profile_id.as_deref() == Some(machine) && Some(row.owned_id.as_str()) == owned_id;
+        if cached.iter().any(|row| row.orchestrator_marked_at_ms.is_some() != chosen(row)) {
+            let now = chrono::Utc::now().timestamp_millis();
+            self.save_cached_sessions(cached.into_iter().map(|mut row| {
+                row.orchestrator_marked_at_ms = if chosen(&row) { row.orchestrator_marked_at_ms.or(Some(now)) } else { None };
+                row
+            }).collect())?;
         }
         Ok(())
     }
@@ -4798,6 +4804,21 @@ mod connection_tests {
         manager.set_main_orchestrator("", None).await.unwrap();
         let restarted = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
         assert!(restarted.cached_sessions().iter().all(|row| row.orchestrator_marked_at_ms.is_none()));
+    }
+
+    #[test]
+    fn a_chosen_remote_orchestrator_stays_marked_in_the_offline_cache() {
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), shared.clone()).unwrap();
+        let mut marked = session("remote-1", "workbox", 10);
+        marked.orchestrator_marked_at_ms = Some(5);
+        manager.replace_cached_profile_sessions("workbox", &[marked, session("remote-2", "workbox", 9)]).unwrap();
+        manager.remember_cached_orchestrator("workbox", Some("remote-2")).unwrap();
+        // After a restart, with that machine still away, the rail shows the new choice.
+        let restarted = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
+        let marked: Vec<_> = restarted.cached_sessions().into_iter()
+            .filter(|row| row.orchestrator_marked_at_ms.is_some()).map(|row| row.owned_id).collect();
+        assert_eq!(marked, ["remote-2"]);
     }
 
     #[test]
