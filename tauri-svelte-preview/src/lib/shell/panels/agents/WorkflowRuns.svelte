@@ -300,13 +300,21 @@
     }
   }
 
+  // A newer click, or the view going away, makes a slow lookup's answer stale.
+  let stageOpen = 0;
+
   async function openStage(ownedId: string | null): Promise<void> {
     if (!ownedId) return;
+    const attempt = ++stageOpen;
+    const generation = loadGeneration;
+    const current = (): boolean => attempt === stageOpen && generation === loadGeneration;
     try {
-      if (!await adoptSession(ownedId)) throw new Error('Agent conversation is not available yet.');
+      const adopted = await adoptSession(ownedId);
+      if (!current()) return;
+      if (!adopted) throw new Error('Agent conversation is not available yet.');
       await sessionRowJump(ownedId, 'session');
     } catch (error) {
-      workflowState.error = `Could not open agent: ${message(error)}`;
+      if (current()) workflowState.error = `Could not open agent: ${message(error)}`;
     }
   }
 </script>

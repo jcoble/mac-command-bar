@@ -129,6 +129,7 @@
     transcriptState = 'unavailable';
     transcriptError = '';
     fileError = '';
+    selection += 1;
   }
 
   $effect(() => {
@@ -144,15 +145,19 @@
     if (childId && visible && view === 'session') untrack(() => void select(childId));
   });
 
+  // Each click or release counts up, so a slow helper lookup never overrides a newer choice.
+  let selection = 0;
+
   async function select(childId: string): Promise<void> {
     if (!ownedId || !conversation || !visible || view !== 'session' || openedChildId === childId) return;
+    const attempt = ++selection;
     // A helper started with `start_session` is a session of its own, on any
     // machine; open it. Native sub-agents come from a tool call.
     const helper = !conversation.children.find((entry) => entry.childId === childId)?.parentToolCallId;
     if (helper) {
       const helperParentId = ownedId;
       const adopted = await adoptSession(childId);
-      if (ownedId !== helperParentId || !conversation || !visible || view !== 'session') return;
+      if (attempt !== selection || ownedId !== helperParentId || !conversation || !visible || view !== 'session') return;
       if (adopted) {
         setConversationSelectedChild(helperParentId, null);
         await sessionRowJump(childId, 'session');
