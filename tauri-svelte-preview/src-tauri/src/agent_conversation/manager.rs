@@ -1302,7 +1302,8 @@ impl AgentRuntimeManager {
         };
         let reply = self.store.latest_assistant_text_for_turn(owned_id, turn_id)
             .map_err(|error| error.to_string())?.unwrap_or_default();
-        let reply: String = reply.chars().take(HELPER_REPLY_LIMIT).collect();
+        // The reply is the helper's own text, so it may not pass as another sender's label.
+        let reply = super::messaging::quote_labels(&reply.chars().take(HELPER_REPLY_LIMIT).collect::<String>());
         self.store.append_message("", owned_id, &parent, mcb_core::broker::MessageKind::Message,
             &format!("[{name} {outcome}]\n{reply}")).map_err(|error| error.to_string())?;
         let state = match outcome { "finished" => "finished", "failed" => "failed", _ => "cancelled" };

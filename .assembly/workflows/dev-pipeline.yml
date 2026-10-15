@@ -44,8 +44,13 @@ steps:
   final-review:
     needs: [pr]
     review: { of: build, agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/final-review.md }
-  merge:
+  # The body is rewritten when a command step starts, so this one carries the final review.
+  pr-body:
     needs: [final-review]
+    run:
+      - gh pr edit --body-file "${{ run.pr_body }}"
+  merge:
+    needs: [pr-body]
     if: "${{ !inputs.i_merge }}"
     run:
       - gh pr checks --required --watch

@@ -52,7 +52,7 @@ pub(crate) async fn list_owner_inbox(
             let page = if machine == crate::agent_conversation::remote::LOCAL_MACHINE {
                 crate::workflow::execute_operation(&engine, "inbox", serde_json::Value::Null).await
             } else {
-                remote.workflow_operation(&machine, "inbox".into(), serde_json::Value::Null).await
+                remote.workflow_operation(&machine, "inbox".into(), serde_json::Value::Null, Some(request_id)).await
             };
             let Ok(serde_json::Value::Array(page)) = page else { continue };
             steps.extend(page.into_iter().map(|mut step| { step["machine"] = serde_json::json!(machine); step }));

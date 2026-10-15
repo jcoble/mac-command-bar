@@ -1271,7 +1271,7 @@ impl RemoteConnectionManager {
             "directory" => {
                 let mut entries = Vec::new();
                 for machine in self.message_machines(source) {
-                    let Ok(serde_json::Value::Array(list)) = self.message_machine(&machine, "directory", json!({"role": args["role"]})).await else { continue };
+                    let Ok(serde_json::Value::Array(list)) = self.message_machine(&machine, "directory", json!({"role": args["role"]}), None).await else { continue };
                     entries.extend(list.into_iter().map(|mut entry| { entry["machine"] = json!(machine); entry }));
                 }
                 Ok(json!({"machine": source, "entries": entries}))
@@ -1285,7 +1285,7 @@ impl RemoteConnectionManager {
                     None => {
                         let mut found = Vec::new();
                         for machine in self.message_machines(source) {
-                            if self.message_machine(&machine, "resolve", json!({"to": name, "role": args["role"]})).await.is_ok() { found.push(machine); }
+                            if self.message_machine(&machine, "resolve", json!({"to": name, "role": args["role"]}), None).await.is_ok() { found.push(machine); }
                         }
                         match found.len() {
                             0 => return Err("Unknown session name".into()),
@@ -1300,12 +1300,12 @@ impl RemoteConnectionManager {
                     None => format!("{sender}@{source}"),
                 };
                 let id = self.message_machine(&machine, "enqueue",
-                    json!({"to": name, "text": args["text"], "from": args["from"], "sender": sender, "role": args["role"]})).await?;
+                    json!({"to": name, "text": args["text"], "from": args["from"], "sender": sender, "role": args["role"]}), None).await?;
                 Ok(json!(format!("{machine}:{}", id.as_str().unwrap_or_default())))
             }
             "status" => {
                 let (machine, id) = args["id"].as_str().and_then(|id| id.split_once(':')).ok_or("Unknown message")?;
-                self.message_machine(machine, "status", json!({"id": id, "from": args["from"]})).await
+                self.message_machine(machine, "status", json!({"id": id, "from": args["from"]}), None).await
             }
             _ => Err(format!("Unknown messaging operation {op}")),
         }
@@ -1316,7 +1316,7 @@ impl RemoteConnectionManager {
     /// kept on this desktop, and a machine that could not be reached gets it when it connects.
     pub async fn set_main_orchestrator(&self, machine: &str, owned_id: Option<&str>) -> Result<(), String> {
         if owned_id.is_some() {
-            self.message_machine(machine, "designate", serde_json::json!({"owned_id": owned_id})).await?;
+            self.message_machine(machine, "designate", serde_json::json!({"owned_id": owned_id}), None).await?;
         }
         if let Some(host) = self.message_host.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
             host.store().upsert_app_setting(ORCHESTRATOR_CHOICE,
@@ -1324,7 +1324,7 @@ impl RemoteConnectionManager {
         }
         self.remember_cached_orchestrator(machine, owned_id)?;
         for other in self.message_machines(if owned_id.is_some() { machine } else { "" }) {
-            if let Err(error) = self.message_machine(&other, "designate", serde_json::json!({"owned_id": null})).await {
+            if let Err(error) = self.message_machine(&other, "designate", serde_json::json!({"owned_id": null}), None).await {
                 crate::debug_log::stderr_log!("Could not clear the orchestrator mark on {other}: {error}");
             }
         }
@@ -1353,7 +1353,7 @@ impl RemoteConnectionManager {
         let Ok(Some(choice)) = host.store().get_app_setting(ORCHESTRATOR_CHOICE) else { return };
         let Ok(choice) = serde_json::from_str::<serde_json::Value>(&choice) else { return };
         let owned_id = if choice["machine"].as_str() == Some(machine) { choice["owned_id"].clone() } else { serde_json::Value::Null };
-        if let Err(error) = self.message_machine(machine, "designate", serde_json::json!({"owned_id": owned_id})).await {
+        if let Err(error) = self.message_machine(machine, "designate", serde_json::json!({"owned_id": owned_id}), None).await {
             crate::debug_log::stderr_log!("Could not restore the orchestrator mark on {machine}: {error}");
         }
     }
@@ -1361,11 +1361,11 @@ impl RemoteConnectionManager {
     /// One page of agent-to-agent messages, newest first, from `machine` or from this desktop and
     /// every connected machine. Each message is stored once, on its receiver's machine, so the
     /// pages merge by time; a machine that cannot be reached is left out.
-    pub async fn list_messages(&self, machine: Option<&str>, args: serde_json::Value) -> Vec<serde_json::Value> {
+    pub async fn list_messages(&self, machine: Option<&str>, args: serde_json::Value, request_id: u64) -> Vec<serde_json::Value> {
         let machines = machine.map_or_else(|| self.message_machines(""), |machine| vec![machine.to_string()]);
         let mut pages = Vec::new();
         for machine in machines {
-            let Ok(serde_json::Value::Array(page)) = self.message_machine(&machine, "messages", args.clone()).await else { continue };
+            let Ok(serde_json::Value::Array(page)) = self.message_machine(&machine, "messages", args.clone(), Some(request_id)).await else { continue };
             pages.push((machine, page));
         }
         merge_message_pages(pages, args["limit"].as_u64().unwrap_or(100) as usize)
@@ -1386,13 +1386,15 @@ impl RemoteConnectionManager {
             .filter(|machine| machine != source).collect()
     }
 
-    async fn message_machine(&self, machine: &str, op: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+    /// A frontend `request_id` is the wire id, so cancelling it stops the read on the server.
+    async fn message_machine(&self, machine: &str, op: &str, args: serde_json::Value, request_id: Option<u64>) -> Result<serde_json::Value, String> {
         if machine == LOCAL_MACHINE {
             let host = self.message_host.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
                 .ok_or("target machine not reachable: this desktop's sessions are not open yet")?;
             return super::messaging::answer(host.store(), Some(&host), op, &args);
         }
-        match self.request_for_profile(machine, RemoteCommand::Messaging { op: op.into(), args }).await
+        let id = request_id.unwrap_or_else(|| self.next_request_id.fetch_add(1, Ordering::Relaxed));
+        match self.request_with_id(machine, id, RemoteCommand::Messaging { op: op.into(), args }, None).await
             .map_err(|error| format!("target machine not reachable: {error}"))? {
             RemoteResponse::Messaging(value) => Ok(value),
             _ => Err("The remote backend does not relay messages; update its backend first".into()),
@@ -1477,8 +1479,10 @@ impl RemoteConnectionManager {
     }
 
     /// Runs one workflow operation on the remote machine's own engine.
-    pub async fn workflow_operation(&self, profile_id: &str, operation: String, args: serde_json::Value) -> Result<serde_json::Value, String> {
-        match self.request_for_profile(profile_id, RemoteCommand::Workflow { operation, args }).await? {
+    /// A frontend `request_id` is the wire id, so cancelling it stops the operation on the server.
+    pub async fn workflow_operation(&self, profile_id: &str, operation: String, args: serde_json::Value, request_id: Option<u64>) -> Result<serde_json::Value, String> {
+        let id = request_id.unwrap_or_else(|| self.next_request_id.fetch_add(1, Ordering::Relaxed));
+        match self.request_with_id(profile_id, id, RemoteCommand::Workflow { operation, args }, None).await? {
             RemoteResponse::Workflow(value) => Ok(value),
             _ => Err("The remote backend does not run workflows; update its backend first".into()),
         }
@@ -4371,6 +4375,33 @@ mod connection_tests {
     }
 
     #[tokio::test]
+    async fn message_and_inbox_reads_are_cancelled_by_the_frontend_request_id() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+        let mut requests = connect(&manager);
+        let caller = manager.clone();
+        let messages = tokio::spawn(async move { caller.list_messages(Some("cache-test"), serde_json::json!({}), 78).await });
+        let caller = manager.clone();
+        let inbox = tokio::spawn(async move {
+            caller.workflow_operation("cache-test", "inbox".into(), serde_json::Value::Null, Some(79)).await
+        });
+        let mut ids = Vec::new();
+        let mut replies = Vec::new();
+        for _ in 0..2 {
+            let ClientRequest::Execute { id, reply, .. } = requests.recv().await.unwrap() else { panic!("expected a read"); };
+            ids.push(id);
+            replies.push(reply);
+        }
+        ids.sort();
+        assert_eq!(ids, [78, 79], "each read must go out under the id its view cancels");
+        manager.cancel_request(78).await;
+        let ClientRequest::Cancel { id } = requests.recv().await.unwrap() else { panic!("expected the cancel"); };
+        assert_eq!(id, 78);
+        drop(replies);
+        assert!(messages.await.unwrap().is_empty());
+        assert!(inbox.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
     async fn item_page_waiting_on_the_history_copy_stops_when_its_request_is_cancelled() {
         let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
         manager.remember("large-history", "cache-test");
@@ -5479,7 +5510,7 @@ pub async fn remote_workflow(
     operation: String,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    remote.workflow_operation(&profile_id, operation, args).await
+    remote.workflow_operation(&profile_id, operation, args, None).await
 }
 
 #[tauri::command]
