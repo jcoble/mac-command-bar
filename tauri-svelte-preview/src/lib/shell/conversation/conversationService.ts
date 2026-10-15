@@ -1157,7 +1157,9 @@ async function handleConversationStreamEnvelope(
   )) return;
   railActivityEvents.set(payload.ownedId, { generation: payload.generation, sequence: payload.sequence });
   // The lookup reads the session's current state, a pending permission included.
-  if (!rail.owned.some((session) => session.ownedId === payload.ownedId)) void adoptSession(payload.ownedId);
+  // An open sub-agent transcript has a private id that is never in the rail.
+  if (childConversationRead?.ownedId !== payload.ownedId
+    && !rail.owned.some((session) => session.ownedId === payload.ownedId)) void adoptSession(payload.ownedId);
   const item = agentItemFromEvent(displayEvent);
   const row = item ? displayItemFromAgentItem(item, displayEvent.timestampMs) : null;
   if (row?.kind === 'tool' && row.state === 'completed' && row.path && row.diff) {
