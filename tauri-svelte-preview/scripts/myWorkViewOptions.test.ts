@@ -186,6 +186,30 @@ function shape(groups: MyWorkGroup[]): unknown[] {
   ]);
 }
 
+// designated_orchestrator_is_pinned_first: the session the owner marked sits alone
+// above everything, Pinned included. If two machines still carry a mark, the
+// newest wins and the older one stays in its own group.
+{
+  const rows = [
+    session('working', { title: 'a' }),
+    session('pinned', { title: 'b', pinnedAt: '2026-10-07T10:00:00.000Z' }),
+    session('old-mark', { title: 'c', orchestratorMarkedAtMs: 1 }),
+    session('main', { title: 'd', pinnedAt: '2026-10-07T11:00:00.000Z', orchestratorMarkedAtMs: 2 })
+  ];
+  assert.deepEqual(shape(buildMyWorkGroups(rows, { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc' })), [
+    ['orchestrator', 'Main orchestrator', ['main']],
+    ['pinned', 'Pinned', ['pinned']],
+    ['repo:github.com/me/mac-command-bar', 'mac-command-bar', ['working', 'old-mark']]
+  ]);
+}
+
+// renamed_session_is_not_pinned: a title never makes an orchestrator.
+{
+  const rows = [session('named', { title: 'orchestrator' })];
+  assert.deepEqual(shape(buildMyWorkGroups(rows, DEFAULT_MY_WORK_VIEW_OPTIONS)).map((group) => (group as unknown[])[0]),
+    ['repo:github.com/me/mac-command-bar']);
+}
+
 // Custom order follows the saved order inside each group; a session with no
 // saved place yet goes to the top, newest first.
 {

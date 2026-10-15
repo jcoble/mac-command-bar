@@ -651,7 +651,10 @@ WITH names AS (
                         || json_extract(e.payload_json,'$.nodeId'),
                     NULLIF(s.title,''), 'Untitled') AS base_name,
            CASE WHEN json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.task.key') IS NOT NULL THEN 'worker'
-                WHEN s.title='orchestrator' THEN 'orchestrator' ELSE 'title' END AS kind
+                ELSE 'title' END AS kind,
+           -- The owner marks the main orchestrator; a title never makes one.
+           s.owned_id IS (SELECT json_extract(value_json,'$') FROM app_settings
+                          WHERE setting_key='orchestrator.main') AS orchestrator
     FROM sessions s
     LEFT JOIN projects p ON p.id = s.project_id
     -- Each session's latest workflow event, found through orchestration_events_owned_idx.
@@ -662,14 +665,12 @@ WITH names AS (
     WHERE s.cached_remote_profile_id IS NULL AND s.parent_owned_id IS NULL
 )
 -- A retried step or a new review round gets a new session under the same worker name: the newest
--- one keeps the plain name and older ones get their id added. The orchestrator name is never
--- suffixed, so two orchestrators stay ambiguous. Other duplicate titles all get ids.
-SELECT CASE WHEN kind = 'orchestrator' THEN base_name
-            WHEN kind = 'worker' AND ROW_NUMBER() OVER (PARTITION BY base_name, kind
+-- one keeps the plain name and older ones get their id added. Other duplicate titles all get ids.
+SELECT CASE WHEN kind = 'worker' AND ROW_NUMBER() OVER (PARTITION BY base_name, kind
                 ORDER BY member_sequence DESC, created_at DESC, owned_id) = 1 THEN base_name
             WHEN kind = 'title' AND COUNT(*) OVER (PARTITION BY base_name, kind) = 1 THEN base_name
             ELSE base_name || ' [' || owned_id || ']' END AS name,
-       owned_id, handle, provider, project, state, run_id, step_id FROM names;";
+       owned_id, handle, provider, project, state, run_id, step_id, orchestrator FROM names;";
 
 const ORCHESTRATION_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS orchestration_events (
     id TEXT PRIMARY KEY,

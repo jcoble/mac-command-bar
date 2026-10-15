@@ -38,6 +38,15 @@ pub fn answer(store: &SessionStore, manager: Option<&AgentRuntimeManager>, op: &
             Ok(json!(message.id))
         }
         "status" => Ok(json!(store.message_status(arg("id")?, arg("from")?).map_err(|error| error.to_string())?)),
+        // The owner's main orchestrator mark on this machine: a session here, or none.
+        "designate" => {
+            let owned_id = args["owned_id"].as_str();
+            if let Some(owned_id) = owned_id {
+                store.get_session(owned_id).map_err(|error| error.to_string())?.ok_or("Unknown session")?;
+            }
+            store.set_main_orchestrator(owned_id).map_err(|error| error.to_string())?;
+            Ok(Value::Null)
+        }
         _ => Err(format!("Unknown messaging operation {op}")),
     }
 }
@@ -322,6 +331,22 @@ mod tests {
         let request = if let Some(token) = token { request.bearer_auth(token) } else { request };
         request.send().await.unwrap()
     }
+    #[test]
+    fn designate_moves_the_mark() {
+        let store = store();
+        let marked = |store: &SessionStore| store.list_directory().unwrap().into_iter()
+            .filter(|entry| entry.orchestrator).map(|entry| entry.owned_id).collect::<Vec<_>>();
+        answer(&store, None, "designate", &json!({"owned_id":"owned-a"})).unwrap();
+        assert_eq!(marked(&store), ["owned-a"]);
+        answer(&store, None, "designate", &json!({"owned_id":"owned-b"})).unwrap();
+        assert_eq!(marked(&store), ["owned-b"]);
+        let error = answer(&store, None, "designate", &json!({"owned_id":"missing"})).unwrap_err();
+        assert!(error.contains("Unknown session"), "{error}");
+        assert_eq!(marked(&store), ["owned-b"]);
+        answer(&store, None, "designate", &json!({"owned_id":null})).unwrap();
+        assert!(marked(&store).is_empty());
+    }
+
     #[tokio::test]
     async fn directory_rejects_ambiguous_or_missing_name() {
         let endpoint = MessagingEndpoint::start().unwrap();
@@ -331,9 +356,10 @@ mod tests {
         let error = endpoint.handle(&caller.token, json!({"name":"send_message",
             "arguments":{"to":"missing","text":"hello"}})).await.unwrap_err();
         assert!(error.contains("Unknown session name"), "{error}");
+        // A title never makes an orchestrator: duplicate titles get their ids, like any other.
         let error = endpoint.handle(&caller.token, json!({"name":"send_message",
             "arguments":{"to":"orchestrator","text":"hello"}})).await.unwrap_err();
-        assert!(error.contains("Ambiguous session name"), "{error}");
+        assert!(error.contains("Unknown session name"), "{error}");
         let listing = endpoint.handle(&caller.token, json!({"name":"list_sessions"})).await.unwrap();
         let entries: Value = serde_json::from_str(listing["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(entries.as_array().unwrap().len(), 7);

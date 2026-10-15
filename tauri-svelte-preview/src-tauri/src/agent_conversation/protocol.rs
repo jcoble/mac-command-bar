@@ -914,6 +914,9 @@ pub struct AgentConversationSessionRecord {
     pub project_group_key: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_group_label: String,
+    /// When the owner marked this session as the main orchestrator; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestrator_marked_at_ms: Option<i64>,
     #[serde(flatten)]
     pub meta: AgentConversationSessionMeta,
 }
@@ -980,6 +983,7 @@ mod contract_tests {
             handle: None,
             project_group_key: String::new(),
             project_group_label: String::new(),
+            orchestrator_marked_at_ms: None,
             meta: AgentConversationSessionMeta::default(),
         };
         let value = serde_json::to_value(&record).unwrap();

@@ -195,12 +195,21 @@ export function buildMyWorkGroups(
   options: MyWorkViewOptions,
   manualOrder: readonly string[] = []
 ): MyWorkGroup[] {
-  const sorted = prepareMyWorkSessions(sessions, options, manualOrder);
+  const all = prepareMyWorkSessions(sessions, options, manualOrder);
+  // The owner's main orchestrator sits alone above everything. A machine that
+  // could not be reached may still carry an older mark; the newest one wins.
+  const orchestrator = all.reduce<OwnedSession | null>((newest, session) =>
+    (session.orchestratorMarkedAtMs ?? 0) > (newest?.orchestratorMarkedAtMs ?? 0) ? session : newest, null);
+  const sorted = orchestrator ? all.filter((session) => session !== orchestrator) : all;
   // Pinned sessions sit in their own section at the top, whatever their status.
   const pinned = sorted.filter((session) => session.pinnedAt);
   const prepared = pinned.length ? sorted.filter((session) => !session.pinnedAt) : sorted;
   const groups = groupUnpinned(prepared, options);
-  return pinned.length ? [{ key: 'pinned', label: 'Pinned', sessions: pinned }, ...groups] : groups;
+  return [
+    ...(orchestrator ? [{ key: 'orchestrator', label: 'Main orchestrator', sessions: [orchestrator] }] : []),
+    ...(pinned.length ? [{ key: 'pinned', label: 'Pinned', sessions: pinned }] : []),
+    ...groups
+  ];
 }
 
 function groupUnpinned(prepared: OwnedSession[], options: MyWorkViewOptions): MyWorkGroup[] {

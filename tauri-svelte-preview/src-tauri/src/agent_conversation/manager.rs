@@ -3641,6 +3641,7 @@ impl AgentRuntimeManager {
             .store
             .list_sessions_with_handles()
             .map_err(|error| error.to_string())?;
+        let main_orchestrator = self.store.main_orchestrator().map_err(|error| error.to_string())?;
         let sessions = self
             .sessions
             .lock()
@@ -3685,6 +3686,8 @@ impl AgentRuntimeManager {
                 meta.branch.clone_from(&row.branch);
                 meta.title.clone_from(&row.title);
                 meta.project.clone_from(&row.project);
+                let orchestrator_marked_at_ms = main_orchestrator.as_ref()
+                    .filter(|(owned_id, _)| *owned_id == row.owned_id).map(|(_, marked_at)| *marked_at);
                 Ok(AgentConversationSessionRecord {
                     owned_id: row.owned_id,
                     execution_environment: ExecutionEnvironment::Local,
@@ -3707,6 +3710,7 @@ impl AgentRuntimeManager {
                     // Filled by the list command, in one SQL statement for the whole list.
                     project_group_key: String::new(),
                     project_group_label: String::new(),
+                    orchestrator_marked_at_ms,
                     meta,
                 })
             })

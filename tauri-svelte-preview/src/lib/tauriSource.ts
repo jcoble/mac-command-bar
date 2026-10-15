@@ -551,6 +551,8 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   /** The session's project group, computed in SQL on this Mac: `repo:<key>`, `project:<id>` or `none`. */
   projectGroupKey: string;
   projectGroupLabel: string;
+  /** When the owner marked this session as the main orchestrator; absent otherwise. */
+  orchestratorMarkedAtMs?: number | null;
 };
 
 export type ExecutionEnvironment = 'local' | 'remote';
@@ -2139,6 +2141,13 @@ export async function listAgentConversationSessionsFromTauri(): Promise<AgentCon
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<AgentConversationSessionRecord[]>('list_agent_conversation_sessions');
+}
+
+/** Marks a session as the owner's main orchestrator on its machine and clears the mark elsewhere; `null` clears it everywhere. */
+export async function setMainOrchestratorFromTauri(ownedId: string | null, remoteProfileId: string | null): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  await invoke<void>('set_main_orchestrator', { ownedId, remoteProfileId });
 }
 
 export async function listRemoteAgentConversationSessionsFromTauri(

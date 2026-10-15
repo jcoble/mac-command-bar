@@ -5725,6 +5725,7 @@ fn main() {
             agent_conversation::agent_conversation_set_session_draft,
             agent_conversation::agent_conversation_get_session_draft,
             agent_conversation::agent_conversation_clear_session_draft,
+            agent_conversation::set_main_orchestrator,
             agent_conversation::write_agent_conversation_workspace,
             agent_conversation::read_agent_conversation_workspace,
             agent_conversation::read_agent_conversation_workspace_expanded_paths,

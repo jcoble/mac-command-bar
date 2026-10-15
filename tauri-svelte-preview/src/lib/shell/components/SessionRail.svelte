@@ -41,6 +41,7 @@
 		onSettle?(ownedId: string): void;
 		onUnsettle?(ownedId: string): void;
 		onPin?(ownedId: string, pinned: boolean): void;
+		onMarkOrchestrator?(ownedId: string, marked: boolean): void;
 		onRename?(ownedId: string, title: string): void;
 		onConnect?(ownedId: string): void;
 		onAskRemove?(ownedId: string): void;
@@ -58,6 +59,7 @@
 		onSettle,
 		onUnsettle,
 		onPin,
+		onMarkOrchestrator,
 		onRename,
 		onConnect,
 		onAskRemove,
@@ -84,6 +86,7 @@
 					resumeCommand: resumeCommand(contextMenu.session.agent, contextMenu.session.nativeSessionId, contextMenu.session.cwd),
 					worktreePath: contextMenu.session.cwd || null,
 					pinned: Boolean(contextMenu.session.pinnedAt),
+					orchestrator: Boolean(contextMenu.session.orchestratorMarkedAtMs),
 				})
 			: [],
 	);
@@ -196,6 +199,8 @@
 		else if (action === "archive") onSettle?.(session.ownedId);
 		else if (action === "unsettle") onUnsettle?.(session.ownedId);
 		else if (action === "pin" || action === "unpin") onPin?.(session.ownedId, action === "pin");
+		else if (action === "mark-orchestrator" || action === "unmark-orchestrator")
+			onMarkOrchestrator?.(session.ownedId, action === "mark-orchestrator");
 		else if (action === "copy-deeplink") copyText(`assembly://session/${encodeURIComponent(session.ownedId)}`);
 		else if (action === "copy-session-id") copyText(session.nativeSessionId || session.ownedId);
 		else if (action === "copy-resume-command")
@@ -214,7 +219,7 @@
 	<!-- Project headings sit at the top level, or inside each status when both
 	     groupings are on. The Pinned section is not a project. -->
 	{@const projectHeading =
-		options.groupByProject && (nested || !options.groupByStatus) && group.key !== "pinned"}
+		options.groupByProject && (nested || !options.groupByStatus) && group.key !== "pinned" && group.key !== "orchestrator"}
 	<section data-testid="session-rail-section" data-group-key={group.key} class:collapsed={!isOpen(group.key)}>
 		{#if group.label}
 			<button

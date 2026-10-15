@@ -1296,6 +1296,21 @@ impl RemoteConnectionManager {
         }
     }
 
+    /// Marks `owned_id` on `machine` as the owner's main orchestrator, then clears the
+    /// mark on every other reachable machine; `None` clears it everywhere. A machine
+    /// that cannot be reached keeps an older mark, and the rail pins the newest.
+    pub async fn set_main_orchestrator(&self, machine: &str, owned_id: Option<&str>) -> Result<(), String> {
+        if owned_id.is_some() {
+            self.message_machine(machine, "designate", serde_json::json!({"owned_id": owned_id})).await?;
+        }
+        for other in self.message_machines(if owned_id.is_some() { machine } else { "" }) {
+            if let Err(error) = self.message_machine(&other, "designate", serde_json::json!({"owned_id": null})).await {
+                crate::debug_log::stderr_log!("Could not clear the orchestrator mark on {other}: {error}");
+            }
+        }
+        Ok(())
+    }
+
     /// This desktop and every connected machine, except `source`.
     fn message_machines(&self, source: &str) -> Vec<String> {
         std::iter::once(LOCAL_MACHINE.to_string()).chain(self.environment().ready_profile_ids)
@@ -4591,6 +4606,7 @@ mod connection_tests {
             handle: None,
             project_group_key: String::new(),
             project_group_label: String::new(),
+            orchestrator_marked_at_ms: None,
             meta: super::super::protocol::AgentConversationSessionMeta {
                 title: Some(format!("Session {owned_id}")),
                 ..Default::default()

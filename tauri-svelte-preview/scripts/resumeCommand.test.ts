@@ -35,7 +35,8 @@ const items = sessionRowMenuItems({
   sessionId: ID,
   resumeCommand: `cd /work && claude --resume ${ID}`,
   worktreePath: '/work',
-  pinned: false
+  pinned: false,
+  orchestrator: false
 });
 const copyId = items.find((item) => item.id === 'copy-session-id');
 const copyResume = items.find((item) => item.id === 'copy-resume-command');
@@ -59,7 +60,8 @@ const noResume = sessionRowMenuItems({
   sessionId: null,
   resumeCommand: null,
   worktreePath: null,
-  pinned: false
+  pinned: false,
+  orchestrator: false
 }).find((item) => item.id === 'copy-resume-command');
 assert.equal(noResume?.enabled, false);
 

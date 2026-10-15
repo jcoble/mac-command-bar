@@ -91,18 +91,41 @@ pub struct DirectoryEntry {
     pub state: String,
     pub run_id: Option<String>,
     pub step_id: Option<String>,
+    /// The session the owner marked as the main orchestrator.
+    pub orchestrator: bool,
 }
+
+/// The `app_settings` row naming the main orchestrator on this machine.
+const MAIN_ORCHESTRATOR: &str = "orchestrator.main";
 
 impl SessionStore {
     pub fn list_directory(&self) -> Result<Vec<DirectoryEntry>> {
         let connection = self.lock()?;
         let mut statement = db("could not prepare session directory", connection.prepare(
-            "SELECT name,owned_id,provider,project,state,run_id,step_id,handle FROM session_directory ORDER BY name,owned_id"))?;
+            "SELECT name,owned_id,provider,project,state,run_id,step_id,handle,orchestrator FROM session_directory ORDER BY name,owned_id"))?;
         let rows = db("could not query session directory", statement.query_map([], |row| Ok(DirectoryEntry {
             name: row.get(0)?, owned_id: row.get(1)?, provider: row.get(2)?, project: row.get(3)?,
             state: row.get(4)?, run_id: row.get(5)?, step_id: row.get(6)?, handle: row.get(7)?,
+            orchestrator: row.get(8)?,
         })))?;
         db("could not read session directory", rows.collect())
+    }
+
+    /// The session marked as the main orchestrator on this machine, and when it was marked (ms).
+    pub fn main_orchestrator(&self) -> Result<Option<(String, i64)>> {
+        use rusqlite::OptionalExtension;
+        let connection = self.lock()?;
+        db("could not read the main orchestrator", connection.query_row(
+            "SELECT json_extract(value_json,'$'), updated_at FROM app_settings WHERE setting_key = ?",
+            [MAIN_ORCHESTRATOR], |row| Ok((row.get(0)?, row.get(1)?))).optional())
+    }
+
+    /// Marks `owned_id` as the main orchestrator on this machine, or clears the mark.
+    pub fn set_main_orchestrator(&self, owned_id: Option<&str>) -> Result<()> {
+        match owned_id {
+            Some(owned_id) => self.upsert_app_setting(MAIN_ORCHESTRATOR, &serde_json::Value::from(owned_id).to_string()),
+            None => self.delete_app_setting(MAIN_ORCHESTRATOR),
+        }
     }
 
     /// The handle and name other sessions use to reach `owned_id`.
@@ -534,6 +557,24 @@ mod tests {
         let reply = store.append_message("", "second-try", "first-try", MessageKind::Message, "hi").unwrap();
         assert!(reply.sender_name.ends_with(" · tsk-1416/build"), "{}", reply.sender_name);
         assert_eq!(store.resolve_session_name(&reply.sender_name).unwrap(), "second-try");
+    }
+
+    #[test]
+    fn orchestrator_comes_from_setting_not_title() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.lock_write().unwrap().execute_batch(r#"INSERT INTO sessions
+            (owned_id,provider,cwd,title,state,suspended,created_at,last_activity_at,extra) VALUES
+            ('named','codex','/work','orchestrator','ready',0,1,1,'{}'),
+            ('marked','codex','/work','Controller','ready',0,2,2,'{}');"#).unwrap();
+        let marked = |store: &SessionStore| store.list_directory().unwrap().into_iter()
+            .filter(|entry| entry.orchestrator).map(|entry| entry.owned_id).collect::<Vec<_>>();
+        assert!(marked(&store).is_empty(), "a title does not make an orchestrator");
+        store.set_main_orchestrator(Some("marked")).unwrap();
+        assert_eq!(marked(&store), ["marked"]);
+        assert_eq!(store.main_orchestrator().unwrap().map(|(id, _)| id).as_deref(), Some("marked"));
+        store.set_main_orchestrator(None).unwrap();
+        assert!(marked(&store).is_empty());
+        assert_eq!(store.main_orchestrator().unwrap(), None);
     }
 
     #[test]
