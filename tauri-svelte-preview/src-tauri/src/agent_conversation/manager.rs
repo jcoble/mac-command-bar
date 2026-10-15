@@ -2644,12 +2644,10 @@ impl AgentRuntimeManager {
             .native_session_id
             .clone()
             .ok_or_else(|| "Structured provider session has not started".to_string())?;
-        let sessions = Arc::downgrade(&self.sessions);
-        let emitter = Arc::clone(&self.emitter);
+        let manager = self.clone();
         let owned_id = owned_id.to_string();
         session.child_rollout_scan = Some(tokio::spawn(async move {
-            run_child_rollout_scan(sessions, emitter, owned_id, generation, native_session_id)
-                .await;
+            run_child_rollout_scan(manager, owned_id, generation, native_session_id).await;
         }));
         Ok(())
     }
@@ -7016,17 +7014,17 @@ fn raw_update_failed(params: &Value) -> bool {
 }
 
 async fn run_child_rollout_scan(
-    sessions: Weak<Mutex<HashMap<String, ManagedAgentSession>>>,
-    emitter: Arc<Mutex<Option<ConversationEmitter>>>,
+    manager: AgentRuntimeManager,
     owned_id: String,
     generation: u64,
     native_session_id: String,
 ) {
+    let sessions = Arc::downgrade(&manager.sessions);
     let mut parent_path = None;
     loop {
         let Some(outcome) = scan_codex_children_once(
             &sessions,
-            &emitter,
+            &manager.emitter,
             &owned_id,
             generation,
             &native_session_id,
@@ -7039,6 +7037,18 @@ async fn run_child_rollout_scan(
         parent_path = Some(outcome.parent_path);
         // After the turn ends, keep polling only while a child is still working.
         if !outcome.keep_scanning {
+            // The last child finished after the turn did, so the idle process
+            // may stop now. Detach this task first so stopping does not abort it.
+            if let Ok(session) = current_session_mut(
+                &mut manager.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+                &owned_id,
+                generation,
+            ) {
+                session.child_rollout_scan.take();
+            }
+            if let Err(error) = manager.suspend_if_quiescent(&owned_id, generation).await {
+                crate::debug_log::stderr_log!("Could not tear down quiescent runtime: {error}");
+            }
             return;
         }
         tokio::time::sleep(CHILD_ROLLOUT_SCAN_INTERVAL).await;
@@ -8549,6 +8559,8 @@ fn session_is_quiescent(session: &ManagedAgentSession) -> bool {
         && session.writer_lease_transition.is_none()
         && session.live_tool_calls.is_empty()
         && session.background_work.is_empty()
+        // Stopping the process would stop a Codex sub-agent still at work.
+        && !session.codex_children.values().any(|child| child.state == "running")
 }
 
 fn abort_cancel_deadline(session: &mut ManagedAgentSession) {
@@ -10137,6 +10149,23 @@ mod tests {
         assert!(!suspended(&fixture));
         feed(&fixture, &[claude_state("idle")]);
         wait_until(|| suspended(&fixture)).await;
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_running_codex_sub_agent_blocks_suspend() {
+        let (fixture, _) = feed_fixture("suspend_codex_child", AgentConversationProvider::Codex).await;
+        fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
+            .codex_children.insert("child-1".into(), CodexChildRollout {
+                child_id: "child-1".into(), label: "probe".into(),
+                state: "running".into(), latest_activity: "Running".into(),
+            });
+        assert!(!fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap());
+        assert!(!suspended(&fixture));
         finish(fixture).await;
     }
 
