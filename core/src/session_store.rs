@@ -654,7 +654,11 @@ WITH names AS (
                 ELSE 'title' END AS kind,
            -- The owner marks the main orchestrator; a title never makes one.
            s.owned_id IS (SELECT json_extract(value_json,'$') FROM app_settings
-                          WHERE setting_key='orchestrator.main') AS orchestrator
+                          WHERE setting_key='orchestrator.main') AS orchestrator,
+           -- Who may message whom: the helper's parent, and the session that started a worker's run
+           -- (NULL when the owner started it).
+           json_extract(s.extra,'$.helperOf') AS helper_of,
+           json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.started_by') AS run_lead
     FROM sessions s
     LEFT JOIN projects p ON p.id = s.project_id
     -- Each session's latest workflow event, found through orchestration_events_owned_idx.
@@ -670,7 +674,7 @@ SELECT CASE WHEN kind = 'worker' AND ROW_NUMBER() OVER (PARTITION BY base_name, 
                 ORDER BY member_sequence DESC, created_at DESC, owned_id) = 1 THEN base_name
             WHEN kind = 'title' AND COUNT(*) OVER (PARTITION BY base_name, kind) = 1 THEN base_name
             ELSE base_name || ' [' || owned_id || ']' END AS name,
-       owned_id, handle, provider, project, state, run_id, step_id, orchestrator FROM names;";
+       owned_id, handle, provider, project, state, run_id, step_id, orchestrator, helper_of, run_lead FROM names;";
 
 const ORCHESTRATION_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS orchestration_events (
     id TEXT PRIMARY KEY,

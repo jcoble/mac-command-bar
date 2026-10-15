@@ -1256,7 +1256,7 @@ impl RemoteConnectionManager {
             "directory" => {
                 let mut entries = Vec::new();
                 for machine in self.message_machines(source) {
-                    let Ok(serde_json::Value::Array(list)) = self.message_machine(&machine, "directory", json!({})).await else { continue };
+                    let Ok(serde_json::Value::Array(list)) = self.message_machine(&machine, "directory", json!({"role": args["role"]})).await else { continue };
                     entries.extend(list.into_iter().map(|mut entry| { entry["machine"] = json!(machine); entry }));
                 }
                 Ok(json!({"machine": source, "entries": entries}))
@@ -1270,7 +1270,7 @@ impl RemoteConnectionManager {
                     None => {
                         let mut found = Vec::new();
                         for machine in self.message_machines(source) {
-                            if self.message_machine(&machine, "resolve", json!({"to": name})).await.is_ok() { found.push(machine); }
+                            if self.message_machine(&machine, "resolve", json!({"to": name, "role": args["role"]})).await.is_ok() { found.push(machine); }
                         }
                         match found.len() {
                             0 => return Err("Unknown session name".into()),
@@ -1285,7 +1285,7 @@ impl RemoteConnectionManager {
                     None => format!("{sender}@{source}"),
                 };
                 let id = self.message_machine(&machine, "enqueue",
-                    json!({"to": name, "text": args["text"], "from": args["from"], "sender": sender})).await?;
+                    json!({"to": name, "text": args["text"], "from": args["from"], "sender": sender, "role": args["role"]})).await?;
                 Ok(json!(format!("{machine}:{}", id.as_str().unwrap_or_default())))
             }
             "status" => {
@@ -3972,6 +3972,8 @@ mod connection_tests {
         // The desktop and its session, connected to that machine as `workbox-test`.
         let desktop = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("desktop.db")).unwrap();
         add_session(&desktop, "here", "Here");
+        // Top-level sessions reach each other only through the main orchestrator.
+        desktop.store().set_main_orchestrator(Some("here")).unwrap();
         let connections = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), desktop.store_handle()).unwrap();
         connections.set_message_host(desktop.clone());
         let (requests, mut receiver) = mpsc::channel(8);
@@ -3994,7 +3996,7 @@ mod connection_tests {
         let listing = tool(&there, &there_token, json!({"name":"list_sessions"})).await;
         let machine_of = |owned_id: &str| listing.as_array().unwrap().iter()
             .find(|entry| entry["ownedId"] == owned_id).map(|entry| entry["machine"].clone());
-        assert_eq!(machine_of("there"), Some(json!("workbox-test")), "{listing}");
+        assert_eq!(machine_of("there"), None, "a session does not list itself: {listing}");
         assert_eq!(machine_of("here"), Some(json!("mac")), "{listing}");
         let sent = tool(&there, &there_token, json!({"name":"send_message","arguments":{"to":"Here","text":"hello from there"}})).await;
         let id = sent["id"].as_str().unwrap();

@@ -1226,6 +1226,9 @@ impl AgentRuntimeManager {
     ) -> Result<String, String> {
         let parent_row = self.store.get_session(parent).map_err(|error| error.to_string())?
             .ok_or_else(|| "The calling session was not found".to_string())?;
+        // The helper hears its instructions as its parent's message, never as the owner's.
+        let sender = self.store.directory_name(parent).map_err(|error| error.to_string())?
+            .map_or_else(|| parent.to_string(), |(handle, title)| format!("{handle} · {title}"));
         self.providers.manifest(provider)?;
         let owned_id = uuid::Uuid::new_v4().to_string();
         let connection = self.ensure_async(EnsureAgentConversationRequest {
@@ -1255,8 +1258,15 @@ impl AgentRuntimeManager {
             listener(&owned_id, name);
         }
         self.show_helper_to_parent(parent, &owned_id, name, "running")?;
-        let prompt = AgentPrompt { text: prompt.to_string(), images: Vec::new(), attachment_ids: Vec::new() };
-        if let Err(error) = self.send_message(&owned_id, connection.generation, prompt, model, None).await {
+        let prompt = AgentPrompt { text: format!("[message from {sender}]\n{prompt}"), images: Vec::new(), attachment_ids: Vec::new() };
+        // A helper gets its parent's permission mode. Modes are named per provider, so a helper
+        // on another provider keeps that provider's default mode.
+        let approval_policy = {
+            let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            sessions.get(parent).filter(|session| session.provider == provider)
+                .and_then(|session| session.config.approval_policy.clone())
+        };
+        if let Err(error) = self.send_message(&owned_id, connection.generation, prompt, model, approval_policy).await {
             if let Err(show_error) = self.show_helper_to_parent(parent, &owned_id, name, "failed") {
                 crate::debug_log::stderr_log!("Could not mark the helper failed: {show_error}");
             }
@@ -12781,6 +12791,40 @@ mod tests {
             .close(&fixture.owned_id, fixture.generation)
             .await
             .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn helper_first_prompt_is_labelled_with_parent_and_takes_its_mode() {
+        let fixture = fixture_manager_with_acp_session("multiplex").await;
+        let store = Arc::clone(&fixture.manager.store);
+        // A mode the parent is on that no request has asked the adapter for yet.
+        fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
+            .config.approval_policy = Some("untrusted".into());
+        let endpoint = super::super::messaging::MessagingEndpoint::start().unwrap();
+        let caller = endpoint.issue(&fixture.owned_id);
+        endpoint.bind_store(&caller.token, &store, Some(fixture.manager.clone()));
+        let result = endpoint
+            .handle(&caller.token, json!({"name":"start_session","arguments":{
+                "provider":"codex","name":"Labelled","prompt":"Check the patch"}}))
+            .await
+            .expect("start helper");
+        let started: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        let helper = started["owned_id"].as_str().unwrap().to_string();
+        let (handle, name) = store.directory_name(&fixture.owned_id).unwrap().unwrap();
+        let expected = format!("[message from {handle} · {name}]\nCheck the patch");
+        let helper_events = fixture.manager.snapshot(&helper).unwrap().unwrap().events;
+        assert!(helper_events.iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::UserMessage { text, .. } if *text == expected)), "{expected}");
+        let log = fs::read_to_string(fixture.root.join("multiplex.jsonl")).unwrap();
+        assert!(log.contains(r#""approvalPolicy":"untrusted""#), "{log}");
+        let helper_generation = fixture.manager.sessions.lock().unwrap()
+            .get(&helper).map(|session| session.generation);
+        if let Some(generation) = helper_generation {
+            fixture.manager.close(&helper, generation).await.unwrap();
+        }
+        endpoint.revoke(&fixture.owned_id);
+        fixture.manager.close(&fixture.owned_id, fixture.generation).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 

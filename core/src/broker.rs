@@ -98,17 +98,86 @@ pub struct DirectoryEntry {
 /// The `app_settings` row naming the main orchestrator on this machine.
 const MAIN_ORCHESTRATOR: &str = "orchestrator.main";
 
+/// The sessions caller `?1` may see and message on this machine (scope `?2` = `local`), or, for a
+/// request relayed from another machine, those a caller with that role may reach: `orchestrator`
+/// gets the top-level sessions, `top` gets the main orchestrator.
+const SCOPED_DIRECTORY: &str = "SELECT d.* FROM session_directory d
+    LEFT JOIN (SELECT run_id, helper_of, run_lead, orchestrator FROM session_directory WHERE owned_id = ?1) me ON 1
+    WHERE d.owned_id IS NOT ?1 AND CASE
+      WHEN ?2 = 'orchestrator' THEN d.run_id IS NULL AND d.helper_of IS NULL
+      WHEN ?2 = 'top' THEN d.orchestrator
+      WHEN ?2 <> 'local' THEN 0
+      -- A worker: its own run, and the session that started it (the main orchestrator when the owner did).
+      WHEN me.run_id IS NOT NULL THEN d.run_id = me.run_id OR d.owned_id IS COALESCE(me.run_lead,
+          (SELECT json_extract(value_json,'$') FROM app_settings WHERE setting_key = 'orchestrator.main'))
+      -- A helper: its parent, and workers of runs it started.
+      WHEN me.helper_of IS NOT NULL THEN d.owned_id = me.helper_of OR (d.run_id IS NOT NULL AND d.run_lead IS ?1)
+      -- The main orchestrator: every top-level session, its helpers, and workers of runs it or the owner started.
+      WHEN me.orchestrator THEN (d.run_id IS NULL AND d.helper_of IS NULL) OR d.helper_of IS ?1
+          OR (d.run_id IS NOT NULL AND (d.run_lead IS ?1 OR d.run_lead IS NULL))
+      -- Any other top-level session: the main orchestrator, its helpers, and workers of runs it started.
+      ELSE d.orchestrator OR d.helper_of IS ?1 OR (d.run_id IS NOT NULL AND d.run_lead IS ?1) END";
+
+fn directory_entry(row: &rusqlite::Row) -> rusqlite::Result<DirectoryEntry> {
+    Ok(DirectoryEntry {
+        name: row.get(0)?, owned_id: row.get(1)?, provider: row.get(2)?, project: row.get(3)?,
+        state: row.get(4)?, run_id: row.get(5)?, step_id: row.get(6)?, handle: row.get(7)?,
+        orchestrator: row.get(8)?,
+    })
+}
+
 impl SessionStore {
     pub fn list_directory(&self) -> Result<Vec<DirectoryEntry>> {
         let connection = self.lock()?;
         let mut statement = db("could not prepare session directory", connection.prepare(
             "SELECT name,owned_id,provider,project,state,run_id,step_id,handle,orchestrator FROM session_directory ORDER BY name,owned_id"))?;
-        let rows = db("could not query session directory", statement.query_map([], |row| Ok(DirectoryEntry {
-            name: row.get(0)?, owned_id: row.get(1)?, provider: row.get(2)?, project: row.get(3)?,
-            state: row.get(4)?, run_id: row.get(5)?, step_id: row.get(6)?, handle: row.get(7)?,
-            orchestrator: row.get(8)?,
-        })))?;
+        let rows = db("could not query session directory", statement.query_map([], directory_entry))?;
         db("could not read session directory", rows.collect())
+    }
+
+    /// The sessions `caller` may message, or, with a relayed role as `scope`, those that role may reach.
+    pub fn list_directory_for(&self, caller: &str, scope: &str) -> Result<Vec<DirectoryEntry>> {
+        let connection = self.lock()?;
+        let mut statement = db("could not prepare session directory", connection.prepare(&format!(
+            "SELECT name,owned_id,provider,project,state,run_id,step_id,handle,orchestrator
+             FROM ({SCOPED_DIRECTORY}) ORDER BY name,owned_id")))?;
+        let rows = db("could not query session directory", statement.query_map(params![caller, scope], directory_entry))?;
+        db("could not read session directory", rows.collect())
+    }
+
+    /// `resolve_session_name` among the sessions `list_directory_for` returns; any other is unknown.
+    pub fn resolve_session_name_for(&self, name: &str, caller: &str, scope: &str) -> Result<String> {
+        let connection = self.lock()?;
+        let handle = name.split(" · ").next().unwrap_or(name);
+        let (count, owned_id): (i64, Option<String>) = db("could not resolve session name", connection.query_row(
+            &format!("SELECT COUNT(DISTINCT owned_id),MIN(owned_id) FROM ({SCOPED_DIRECTORY})
+             WHERE name=?3 OR handle=?4 OR owned_id=?3"), params![caller, scope, name, handle],
+            |row| Ok((row.get(0)?, row.get(1)?))))?;
+        match (count, owned_id) {
+            (1, Some(id)) => Ok(id),
+            (0, _) => Err(StoreError::message("Unknown session name")),
+            _ => Err(StoreError::message("Ambiguous session name")),
+        }
+    }
+
+    /// `worker`, `helper`, `orchestrator` or `top`: what decides whom `owned_id` may reach.
+    pub fn session_role(&self, owned_id: &str) -> Result<String> {
+        use rusqlite::OptionalExtension;
+        let connection = self.lock()?;
+        let role: Option<String> = db("could not read the session role", connection.query_row(
+            "SELECT CASE WHEN run_id IS NOT NULL THEN 'worker' WHEN helper_of IS NOT NULL THEN 'helper'
+                    WHEN orchestrator THEN 'orchestrator' ELSE 'top' END
+             FROM session_directory WHERE owned_id = ?", [owned_id], |row| row.get(0)).optional())?;
+        Ok(role.unwrap_or_else(|| "top".into()))
+    }
+
+    /// Helpers of `parent` that are starting, working or waiting on the owner.
+    pub fn unfinished_helpers_of(&self, parent: &str) -> Result<i64> {
+        let connection = self.lock()?;
+        db("could not count helpers", connection.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE json_extract(extra,'$.helperOf') = ?
+               AND state IN ('starting','working','interrupting','waiting-approval','waiting-input')",
+            [parent], |row| row.get(0)))
     }
 
     /// The session marked as the main orchestrator on this machine, and when it was marked (ms).
