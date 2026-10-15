@@ -589,6 +589,16 @@ impl Drop for ConnectionEnd {
     }
 }
 
+/// Machines' message pages as one page, newest first, each message tagged with its machine.
+fn merge_message_pages(pages: Vec<(String, Vec<serde_json::Value>)>, limit: usize) -> Vec<serde_json::Value> {
+    let mut messages: Vec<_> = pages.into_iter().flat_map(|(machine, page)| page.into_iter()
+        .map(move |mut message| { message["machine"] = serde_json::json!(machine); message })).collect();
+    messages.sort_by_key(|message| std::cmp::Reverse((message["createdAtMs"].as_i64().unwrap_or_default(),
+        message["id"].as_str().unwrap_or_default().to_string())));
+    messages.truncate(limit);
+    messages
+}
+
 fn read_cached_sessions(store: &SessionStore) -> Result<Vec<AgentConversationSessionRecord>, String> {
     let Some(json) = store
         .get_app_setting(REMOTE_SESSION_PROJECTIONS_SETTING_KEY)
@@ -1311,8 +1321,21 @@ impl RemoteConnectionManager {
         Ok(())
     }
 
+    /// One page of agent-to-agent messages, newest first, from `machine` or from this desktop and
+    /// every connected machine. Each message is stored once, on its receiver's machine, so the
+    /// pages merge by time; a machine that cannot be reached is left out.
+    pub async fn list_messages(&self, machine: Option<&str>, args: serde_json::Value) -> Vec<serde_json::Value> {
+        let machines = machine.map_or_else(|| self.message_machines(""), |machine| vec![machine.to_string()]);
+        let mut pages = Vec::new();
+        for machine in machines {
+            let Ok(serde_json::Value::Array(page)) = self.message_machine(&machine, "messages", args.clone()).await else { continue };
+            pages.push((machine, page));
+        }
+        merge_message_pages(pages, args["limit"].as_u64().unwrap_or(100) as usize)
+    }
+
     /// This desktop and every connected machine, except `source`.
-    fn message_machines(&self, source: &str) -> Vec<String> {
+    pub(crate) fn message_machines(&self, source: &str) -> Vec<String> {
         std::iter::once(LOCAL_MACHINE.to_string()).chain(self.environment().ready_profile_ids)
             .filter(|machine| machine != source).collect()
     }
@@ -4031,6 +4054,18 @@ mod connection_tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    fn machine_pages_merge_by_time() {
+        use serde_json::json;
+        let message = |id: &str, at: i64| json!({"id": id, "createdAtMs": at});
+        let merged = super::merge_message_pages(vec![
+            ("mac".into(), vec![message("m3", 30), message("m1", 10)]),
+            ("workbox-test".into(), vec![message("r2", 20), message("r1", 10)]),
+        ], 3);
+        assert_eq!(merged.iter().map(|m| (m["id"].as_str().unwrap(), m["machine"].as_str().unwrap())).collect::<Vec<_>>(),
+            [("m3", "mac"), ("r2", "workbox-test"), ("r1", "workbox-test")]);
+    }
+
     #[tokio::test]
     async fn remote_message_relay_rejects_disconnected_target() {
         let connections = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
@@ -4610,6 +4645,9 @@ mod connection_tests {
             project_group_key: String::new(),
             project_group_label: String::new(),
             orchestrator_marked_at_ms: None,
+            helper_of: None,
+            run_id: None,
+            run_label: None,
             meta: super::super::protocol::AgentConversationSessionMeta {
                 title: Some(format!("Session {owned_id}")),
                 ..Default::default()

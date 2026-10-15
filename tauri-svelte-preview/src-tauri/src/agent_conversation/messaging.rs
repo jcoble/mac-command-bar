@@ -49,6 +49,13 @@ pub fn answer(store: &SessionStore, manager: Option<&AgentRuntimeManager>, op: &
             store.set_main_orchestrator(owned_id).map_err(|error| error.to_string())?;
             Ok(Value::Null)
         }
+        // A page of this machine's agent-to-agent messages, for the owner's traffic view.
+        "messages" => {
+            let before = args["before_ms"].as_i64().zip(args["before_id"].as_str());
+            let limit = args["limit"].as_i64().unwrap_or(100).clamp(1, 500);
+            serde_json::to_value(store.list_messages(args["run_id"].as_str(), args["session"].as_str(), before, limit)
+                .map_err(|error| error.to_string())?).map_err(|error| error.to_string())
+        }
         _ => Err(format!("Unknown messaging operation {op}")),
     }
 }
@@ -856,6 +863,24 @@ mod tests {
             assert!(enqueue(to, role).is_err(), "{to} as {role}");
         }
         assert!(answer(&store, None, "resolve", &json!({"to":"top1","role":"top"})).is_err());
+    }
+
+    #[test]
+    fn messages_op_pages_this_machines_traffic() {
+        let store = hierarchy();
+        for text in ["one", "two", "three"] {
+            store.append_message("", "top1", "orch", mcb_core::broker::MessageKind::Message, text).unwrap();
+            // Messages in the same millisecond order by id; these are meant to be apart.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let page = answer(&store, None, "messages", &json!({"limit": 2})).unwrap();
+        let page = page.as_array().unwrap();
+        assert_eq!(page.iter().map(|message| message["body"].as_str().unwrap()).collect::<Vec<_>>(), ["three", "two"]);
+        let last = &page[1];
+        let rest = answer(&store, None, "messages", &json!({"limit": 0, "session": "orch",
+            "before_ms": last["createdAtMs"], "before_id": last["id"]})).unwrap();
+        // A limit below 1 still returns one message.
+        assert_eq!(rest.as_array().unwrap().iter().map(|message| message["body"].as_str().unwrap()).collect::<Vec<_>>(), ["one"]);
     }
 
     #[tokio::test]

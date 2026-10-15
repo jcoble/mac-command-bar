@@ -3589,6 +3589,9 @@ pub(crate) async fn execute_operation(engine: &WorkflowEngine, operation: &str, 
     let text = |key: &str| args[key].as_str().map(str::to_string).ok_or_else(|| format!("{key} is required"));
     let run = match operation {
         "listFiles" => return Ok(json!(workflow_files(Path::new(&text("repoRoot")?)))),
+        // The steps on this machine waiting on the owner, for the desktop's inbox.
+        "inbox" => return serde_json::to_value(engine.store.waiting_workflow_steps().map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string()),
         "list" => return serde_json::to_value(engine.list_runs().map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string()),
         "get" => engine.get_run(&text("runId")?),

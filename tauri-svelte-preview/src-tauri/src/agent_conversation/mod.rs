@@ -877,6 +877,21 @@ pub async fn set_main_orchestrator(
 }
 
 #[tauri::command]
+/// One page of agent-to-agent messages, newest first, from one machine or all reachable ones.
+pub async fn list_agent_messages(
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    machine: Option<String>,
+    run_id: Option<String>,
+    session: Option<String>,
+    before_ms: Option<i64>,
+    before_id: Option<String>,
+    limit: i64,
+) -> CommandResult<Vec<serde_json::Value>> {
+    Ok(remote.list_messages(machine.as_deref(), serde_json::json!({"run_id": run_id, "session": session,
+        "before_ms": before_ms, "before_id": before_id, "limit": limit})).await)
+}
+
+#[tauri::command]
 /// Lists local sessions plus the compact cached references for remote sessions.
 /// Remote transcripts and events remain exclusively on their remote backend.
 pub async fn list_agent_conversation_sessions(

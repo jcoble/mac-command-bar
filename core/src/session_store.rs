@@ -639,6 +639,8 @@ CREATE INDEX IF NOT EXISTS idx_workflow_messages_group
     ON workflow_messages(group_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_workflow_messages_target
     ON workflow_messages(to_owned_id, receipt, created_at_ms, id);
+CREATE INDEX IF NOT EXISTS idx_workflow_messages_created
+    ON workflow_messages(created_at_ms, id);
 DROP VIEW IF EXISTS session_directory;
 CREATE VIEW session_directory AS
 WITH names AS (
@@ -784,6 +786,33 @@ impl std::error::Error for StoreError {
             .as_ref()
             .map(|source| source as &(dyn std::error::Error + 'static))
     }
+}
+
+/// A workflow step waiting on the owner: a pause to answer or a gate to approve.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitingStep {
+    pub run_id: String,
+    pub task_key: Option<String>,
+    pub workflow_name: Option<String>,
+    pub node_id: String,
+    /// `waiting-input` (a pause) or `waiting-approval` (a gate).
+    pub state: String,
+    pub reason: Option<String>,
+    pub owned_id: Option<String>,
+    pub updated_at_ms: i64,
+}
+
+/// A row of the session list: the session, its handle, and where it came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedSession {
+    pub row: SessionRow,
+    pub handle: Option<String>,
+    /// The session that started this helper with `start_session`.
+    pub helper_of: Option<String>,
+    /// The workflow run this worker belongs to, and its `<task key> · <workflow name>`.
+    pub run_id: Option<String>,
+    pub run_label: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1994,24 +2023,41 @@ impl SessionStore {
     }
 
     pub fn list_sessions(&self) -> Result<Vec<SessionRow>> {
-        Ok(self.list_sessions_with_handles()?.into_iter().map(|(row, _)| row).collect())
+        Ok(self.list_sessions_with_handles()?.into_iter().map(|listed| listed.row).collect())
     }
 
-    /// The session list with each session's permanent handle (`brisk-heron`).
-    pub fn list_sessions_with_handles(&self) -> Result<Vec<(SessionRow, Option<String>)>> {
+    /// The session list with each session's permanent handle (`brisk-heron`) and where it came
+    /// from: the session that started a helper, and the workflow run a worker belongs to.
+    pub fn list_sessions_with_handles(&self) -> Result<Vec<ListedSession>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
-                "SELECT owned_id, native_session_id, provider, model, effort, cwd, worktree,
-                        branch, title, project, state, suspended, created_at, last_activity_at,
-                        extra, title_source, project_id, handle
-                 FROM sessions
-                 WHERE cached_remote_profile_id IS NULL AND parent_owned_id IS NULL
-                 ORDER BY last_activity_at DESC, owned_id ASC",
+                "SELECT s.owned_id, s.native_session_id, s.provider, s.model, s.effort, s.cwd, s.worktree,
+                        s.branch, s.title, s.project, s.state, s.suspended, s.created_at, s.last_activity_at,
+                        s.extra, s.title_source, s.project_id, s.handle,
+                        json_extract(s.extra,'$.helperOf'),
+                        CASE WHEN json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.task.key')
+                             IS NOT NULL THEN e.run_id END,
+                        json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.task.key') || ' · '
+                            || json_extract(e.payload_json,'$.workflowPayload.run.definition.name')
+                 FROM sessions s
+                 -- Each session's latest workflow event, as in session_directory.
+                 LEFT JOIN orchestration_events e ON e.rowid = (
+                     SELECT rowid FROM orchestration_events
+                     WHERE json_extract(payload_json,'$.ownedId') = s.owned_id
+                     ORDER BY sequence DESC LIMIT 1)
+                 WHERE s.cached_remote_profile_id IS NULL AND s.parent_owned_id IS NULL
+                 ORDER BY s.last_activity_at DESC, s.owned_id ASC",
             )
             .map_err(|error| StoreError::sqlite("could not prepare the session list", error))?;
         let rows = statement
-            .query_map([], |row| Ok((session_from_row(row)?, row.get(17)?)))
+            .query_map([], |row| Ok(ListedSession {
+                row: session_from_row(row)?,
+                handle: row.get(17)?,
+                helper_of: row.get(18)?,
+                run_id: row.get(19)?,
+                run_label: row.get(20)?,
+            }))
             .map_err(|error| StoreError::sqlite("could not list sessions", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read the session list", error))
@@ -2575,6 +2621,32 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not query latest workflow runs", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read latest workflow runs", error))
+    }
+
+    /// Workflow steps waiting on the owner, read from each run's latest event, oldest wait first.
+    pub fn waiting_workflow_steps(&self) -> Result<Vec<WaitingStep>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT e.run_id,
+                    json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.task.key'),
+                    json_extract(e.payload_json,'$.workflowPayload.run.definition.name'),
+                    json_extract(n.value,'$.nodeId'), json_extract(n.value,'$.state'),
+                    json_extract(n.value,'$.failure.message'), json_extract(n.value,'$.ownedId'),
+                    COALESCE(json_extract(e.payload_json,'$.workflowPayload.run.updatedAtMs'), 0)
+             FROM orchestration_events e, json_each(e.payload_json,'$.workflowPayload.run.nodes') n
+             WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%'
+               AND e.rowid = (SELECT rowid FROM orchestration_events
+                   WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                   ORDER BY sequence DESC LIMIT 1)
+               AND json_extract(n.value,'$.state') IN ('waiting-input','waiting-approval')
+             ORDER BY 8, e.run_id, 4"
+        ).map_err(|error| StoreError::sqlite("could not prepare waiting workflow steps", error))?;
+        let rows = statement.query_map([], |row| Ok(WaitingStep {
+            run_id: row.get(0)?, task_key: row.get(1)?, workflow_name: row.get(2)?, node_id: row.get(3)?,
+            state: row.get(4)?, reason: row.get(5)?, owned_id: row.get(6)?, updated_at_ms: row.get(7)?,
+        })).map_err(|error| StoreError::sqlite("could not query waiting workflow steps", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read waiting workflow steps", error))
     }
 
     /// Counts only agent steps from the latest snapshot of each run, including paused turns.
@@ -4570,6 +4642,32 @@ mod tests {
         EvidenceRunDiskUsage, NotionTaskProjection, ProjectRow, RepresentedTurnFacts, SessionRow,
         SessionStore,
     };
+
+    #[test]
+    fn waiting_steps_are_selected_in_sql() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let event = |id: &str, run: &str, sequence: i64, nodes: &str, updated: i64| format!(
+            "('{id}','{run}','workflow.node.updated','1',{sequence},'flow',
+              '{{\"workflowPayload\":{{\"run\":{{\"updatedAtMs\":{updated},\"definition\":{{\"name\":\"Flow\"}},\"inputSnapshot\":{{\"task\":{{\"key\":\"T-{run}\"}}}},\"nodes\":[{nodes}]}}}}}}')");
+        let node = |id: &str, state: &str| format!(
+            "{{\"nodeId\":\"{id}\",\"state\":\"{state}\",\"ownedId\":\"s-{id}\",\"failure\":{{\"message\":\"why {id}\"}}}}");
+        let rows = [
+            // run-1 waited on review, but its latest event has moved on.
+            event("a", "run-1", 1, &node("review", "waiting-input"), 1),
+            event("b", "run-1", 2, &node("review", "running"), 2),
+            event("c", "run-2", 1, &[node("build", "completed"), node("review", "waiting-input")].join(","), 5),
+            event("d", "run-3", 1, &node("merge", "waiting-approval"), 3),
+        ].join(",");
+        store.lock_write().unwrap().execute_batch(&format!("INSERT INTO orchestration_events
+            (id,run_id,kind,timestamp,sequence,workflow_id,payload_json) VALUES {rows};")).unwrap();
+        let waiting = store.waiting_workflow_steps().unwrap();
+        assert_eq!(waiting.iter().map(|step| (step.run_id.as_str(), step.node_id.as_str(), step.state.as_str()))
+            .collect::<Vec<_>>(), [("run-3", "merge", "waiting-approval"), ("run-2", "review", "waiting-input")]);
+        assert_eq!(waiting[1].reason.as_deref(), Some("why review"));
+        assert_eq!(waiting[1].task_key.as_deref(), Some("T-run-2"));
+        assert_eq!(waiting[1].workflow_name.as_deref(), Some("Flow"));
+        assert_eq!(waiting[1].owned_id.as_deref(), Some("s-review"));
+    }
 
     #[test]
     fn workflow_active_agent_counts_uses_latest_snapshots_and_paused_turns() {

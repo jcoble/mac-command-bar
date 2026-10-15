@@ -9,6 +9,7 @@
 	 */
 	import ChevronRight from "@lucide/svelte/icons/chevron-right";
 	import MessageCircle from "@lucide/svelte/icons/message-circle";
+	import Workflow from "@lucide/svelte/icons/workflow";
 	import { onMount } from "svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
@@ -17,6 +18,7 @@
 	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
 	import {
 		buildMyWorkGroups,
+		myWorkGroupSessions,
 		reorderMyWorkSessions,
 		type MyWorkGroup,
 		type MyWorkViewOptions,
@@ -212,14 +214,34 @@
 	}
 </script>
 
+<!-- One session row; a helper row is the same row with no drop target. -->
+{#snippet row(session: OwnedSession, dropPosition: "before" | "after" | null)}
+	<WorktreeAgentRow
+		{session}
+		{nowMs}
+		active={session.ownedId === visualActiveOwnedId}
+		onSelect={() => void selectRow(session.ownedId)}
+		onContextMenu={(event) => openContextMenu(event, session)}
+		renaming={session.ownedId === renamingOwnedId}
+		onRename={(title) => {
+			renamingOwnedId = null;
+			if (title) onRename?.(session.ownedId, title);
+		}}
+		onConnect={() => onConnect?.(session.ownedId)}
+		{dropPosition}
+	/>
+{/snippet}
+
 <!-- A section is a heading and its rows, or, with both groupings on, a status
      heading and the project sections inside it. -->
 {#snippet section(group: MyWorkGroup, nested: boolean)}
-	{@const needsYouCount = group.sessions.filter(sessionNeedsYou).length}
+	{@const allSessions = myWorkGroupSessions(group)}
+	{@const needsYouCount = allSessions.filter(sessionNeedsYou).length}
 	<!-- Project headings sit at the top level, or inside each status when both
 	     groupings are on. The Pinned section is not a project. -->
+	{@const runHeading = group.key.startsWith("run:")}
 	{@const projectHeading =
-		options.groupByProject && (nested || !options.groupByStatus) && group.key !== "pinned" && group.key !== "orchestrator"}
+		options.groupByProject && (nested || !options.groupByStatus) && group.key !== "pinned" && group.key !== "orchestrator" && !runHeading}
 	<section data-testid="session-rail-section" data-group-key={group.key} class:collapsed={!isOpen(group.key)}>
 		{#if group.label}
 			<button
@@ -227,7 +249,7 @@
 				type="button"
 				class="section-heading"
 				class:nested
-				class:project={projectHeading}
+				class:project={projectHeading || runHeading}
 				aria-expanded={isOpen(group.key)}
 				onclick={() => toggleGroup(group.key)}
 			>
@@ -235,7 +257,9 @@
            turn is what tells a person the section answered them. -->
 				<ChevronRight class="chevron" aria-hidden="true" />
 				<!-- Inside a status the key reads "<status>::none". -->
-				{#if projectHeading && (group.key === "none" || group.key.endsWith("::none"))}
+				{#if runHeading}
+					<Workflow class="group-icon" aria-hidden="true" />
+				{:else if projectHeading && (group.key === "none" || group.key.endsWith("::none"))}
 					<MessageCircle class="group-icon" aria-hidden="true" />
 				{:else if projectHeading}
 					<Badge variant="outline" class="h-4 rounded-sm px-1 font-mono text-[10px]" aria-hidden="true">
@@ -243,7 +267,7 @@
 					</Badge>
 				{/if}
 				<span class="name">{group.label}</span>
-				<span data-testid="session-rail-section-count" class="count">{group.sessions.length}</span>
+				<span data-testid="session-rail-section-count" class="count">{allSessions.length}</span>
 				{#if needsYouCount > 0}
 					<span
 						data-testid="session-rail-needs-you-count"
@@ -264,20 +288,18 @@
 			{:else}
 				<ul class="rows" data-group-key={group.key}>
 					{#each group.sessions as session (session.ownedId)}
-						<WorktreeAgentRow
-							{session}
-							{nowMs}
-							active={session.ownedId === visualActiveOwnedId}
-							onSelect={() => void selectRow(session.ownedId)}
-							onContextMenu={(event) => openContextMenu(event, session)}
-							renaming={session.ownedId === renamingOwnedId}
-							onRename={(title) => {
-								renamingOwnedId = null;
-								if (title) onRename?.(session.ownedId, title);
-							}}
-							onConnect={() => onConnect?.(session.ownedId)}
-							dropPosition={dropTarget?.ownedId === session.ownedId ? dropTarget.position : null}
-						/>
+						{@render row(session, dropTarget?.ownedId === session.ownedId ? dropTarget.position : null)}
+						<!-- The session's helpers, one step in under it. Their list carries no
+						     group key, so they are never a drag source or drop target. -->
+						{#if group.helpers?.[session.ownedId]}
+							<li class="helpers">
+								<ul class="helper-rows">
+									{#each group.helpers[session.ownedId] as helper (helper.ownedId)}
+										{@render row(helper, null)}
+									{/each}
+								</ul>
+							</li>
+						{/if}
 					{/each}
 				</ul>
 			{/if}
@@ -450,6 +472,21 @@
 		gap: 2px;
 		margin: 0;
 		padding: 0;
+		list-style: none;
+	}
+
+	/* Helper rows sit one step in, on a thin guide line from their parent. */
+	.helpers {
+		list-style: none;
+	}
+	.helper-rows {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
+		gap: 2px;
+		margin: 0 0 0 var(--space-5);
+		padding: 0 0 0 var(--space-1);
+		border-left: 1px solid var(--color-border);
 		list-style: none;
 	}
 

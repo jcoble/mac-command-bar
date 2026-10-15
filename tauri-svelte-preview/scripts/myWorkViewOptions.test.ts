@@ -9,6 +9,7 @@ import {
   buildMyWorkGroups,
   DEFAULT_MY_WORK_VIEW_OPTIONS,
   matchesMyWorkFilters,
+  myWorkGroupSessions,
   myWorkProject,
   normalizeMyWorkFilters,
   normalizeMyWorkViewOptions,
@@ -201,6 +202,54 @@ function shape(groups: MyWorkGroup[]): unknown[] {
     ['pinned', 'Pinned', ['pinned']],
     ['repo:github.com/me/mac-command-bar', 'mac-command-bar', ['working', 'old-mark']]
   ]);
+}
+
+// helpers_group_under_parent_once: a helper is drawn under its parent's row and
+// nowhere else, the orchestrator's helpers included. A helper whose parent is not
+// in the list stays an ordinary row.
+{
+  const rows = [
+    session('parent', { title: 'a' }),
+    session('helper', { title: 'b', helperOf: 'parent' }),
+    session('main', { title: 'c', orchestratorMarkedAtMs: 1 }),
+    session('main-helper', { title: 'd', helperOf: 'main' }),
+    session('orphan', { title: 'e', helperOf: 'gone' })
+  ];
+  const groups = buildMyWorkGroups(rows, { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc' });
+  assert.deepEqual(shape(groups), [
+    ['orchestrator', 'Main orchestrator', ['main']],
+    ['repo:github.com/me/mac-command-bar', 'mac-command-bar', ['parent', 'orphan']]
+  ]);
+  assert.deepEqual(groups[0].helpers?.main?.map((row) => row.ownedId), ['main-helper']);
+  assert.deepEqual(groups[1].helpers?.parent?.map((row) => row.ownedId), ['helper']);
+  assert.deepEqual(groups.flatMap(myWorkGroupSessions).map((row) => row.ownedId).sort(),
+    ['helper', 'main', 'main-helper', 'orphan', 'parent']);
+}
+
+// workers_group_under_machine_and_run_once: each run's workers form one section,
+// named for the run, after the project sections; a worker is in no other section.
+{
+  const rows = [
+    session('lane', { title: 'a' }),
+    session('build', { title: 'b', runId: 'run-1', runLabel: 'TSK-9 · Fix and review' }),
+    session('review', { title: 'c', runId: 'run-1', runLabel: 'TSK-9 · Fix and review' }),
+    session('remote-build', { title: 'd', runId: 'run-2', runLabel: 'TSK-10 · Ship',
+      executionEnvironment: 'remote', remoteProfileId: 'workbox-test' })
+  ];
+  assert.deepEqual(shape(buildMyWorkGroups(rows, { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc' })), [
+    ['repo:github.com/me/mac-command-bar', 'mac-command-bar', ['lane']],
+    ['run:run-1', 'TSK-9 · Fix and review', ['build', 'review']],
+    ['run:run-2', 'TSK-10 · Ship', ['remote-build']]
+  ]);
+}
+
+// child_needing_owner_marks_group: a helper waiting on the owner counts in its
+// parent's section, so the section's "needs you" mark lifts.
+{
+  const rows = [session('parent'), session('helper', { helperOf: 'parent', pendingPermission: true })];
+  const [group] = buildMyWorkGroups(rows, DEFAULT_MY_WORK_VIEW_OPTIONS);
+  assert.deepEqual(myWorkGroupSessions(group).filter((row) => (row as unknown as { pendingPermission?: boolean }).pendingPermission)
+    .map((row) => row.ownedId), ['helper']);
 }
 
 // renamed_session_is_not_pinned: a title never makes an orchestrator.

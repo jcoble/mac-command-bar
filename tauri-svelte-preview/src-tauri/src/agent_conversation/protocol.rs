@@ -917,6 +917,14 @@ pub struct AgentConversationSessionRecord {
     /// When the owner marked this session as the main orchestrator; absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrator_marked_at_ms: Option<i64>,
+    /// The session that started this helper; absent for any other session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub helper_of: Option<String>,
+    /// The workflow run this worker belongs to, and its `<task key> · <workflow name>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_label: Option<String>,
     #[serde(flatten)]
     pub meta: AgentConversationSessionMeta,
 }
@@ -984,6 +992,9 @@ mod contract_tests {
             project_group_key: String::new(),
             project_group_label: String::new(),
             orchestrator_marked_at_ms: None,
+            helper_of: None,
+            run_id: None,
+            run_label: None,
             meta: AgentConversationSessionMeta::default(),
         };
         let value = serde_json::to_value(&record).unwrap();

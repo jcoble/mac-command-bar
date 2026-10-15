@@ -553,6 +553,11 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   projectGroupLabel: string;
   /** When the owner marked this session as the main orchestrator; absent otherwise. */
   orchestratorMarkedAtMs?: number | null;
+  /** The session that started this helper; absent for any other session. */
+  helperOf?: string | null;
+  /** The workflow run this worker belongs to, and its `<task key> · <workflow name>`. */
+  runId?: string | null;
+  runLabel?: string | null;
 };
 
 export type ExecutionEnvironment = 'local' | 'remote';
@@ -2148,6 +2153,65 @@ export async function setMainOrchestratorFromTauri(ownedId: string | null, remot
   if (!isTauriRuntime()) return;
   const { invoke } = await import('./workspaceInvoke.ts');
   await invoke<void>('set_main_orchestrator', { ownedId, remoteProfileId });
+}
+
+/** One agent-to-agent message in the owner's traffic view; `machine` is where it is stored (its receiver's machine). */
+export type AgentMessage = {
+  id: string;
+  createdAtMs: number;
+  senderName: string;
+  fromOwnedId: string;
+  toOwnedId: string;
+  receiver: string;
+  body: string;
+  receipt: 'queued' | 'delivered' | 'failed' | 'expired';
+  runId: string | null;
+  kind: string;
+  machine: string;
+};
+
+export type AgentMessageFilter = {
+  machine?: string | null;
+  runId?: string | null;
+  session?: string | null;
+  /** The oldest message already shown; the page continues after it. */
+  before?: Pick<AgentMessage, 'createdAtMs' | 'id'> | null;
+  limit: number;
+};
+
+/** A page of agent-to-agent messages, newest first, from one machine or every reachable one. */
+export async function listAgentMessagesFromTauri(filter: AgentMessageFilter): Promise<AgentMessage[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  return invoke<AgentMessage[]>('list_agent_messages', {
+    machine: filter.machine ?? null,
+    runId: filter.runId ?? null,
+    session: filter.session ?? null,
+    beforeMs: filter.before?.createdAtMs ?? null,
+    beforeId: filter.before?.id ?? null,
+    limit: filter.limit
+  });
+}
+
+/** A workflow step waiting on the owner: a pause to answer (`waiting-input`) or a gate to approve (`waiting-approval`). */
+export type OwnerInboxStep = {
+  runId: string;
+  taskKey: string | null;
+  workflowName: string | null;
+  nodeId: string;
+  state: 'waiting-input' | 'waiting-approval';
+  reason: string | null;
+  ownedId: string | null;
+  updatedAtMs: number;
+  /** `mac` for this Mac, otherwise the remote profile id that owns the run. */
+  machine: string;
+};
+
+/** Workflow steps waiting on the owner on this Mac and every connected machine. */
+export async function listOwnerInboxFromTauri(): Promise<OwnerInboxStep[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  return invoke<OwnerInboxStep[]>('list_owner_inbox');
 }
 
 export async function listRemoteAgentConversationSessionsFromTauri(

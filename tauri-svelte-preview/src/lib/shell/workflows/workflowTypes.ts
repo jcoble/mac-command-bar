@@ -501,3 +501,28 @@ export type WorkflowCommandDto =
   | { kind: 'submit-result'; input: SubmitWorkflowResultDto };
 
 export type WorkflowFilter = 'all' | 'active' | 'waiting' | 'failed' | 'completed';
+
+/** What a step did, read from its structured output: what the owner sees under a step. */
+export interface WorkflowStepFacts {
+  commands: { command: string; exitCode: number | null; lastLines: string }[];
+  verdict: string | null;
+  findings: string[];
+  prUrl: string | null;
+}
+
+/** A step's commands with their exit codes and last 5 output lines, its review verdict and findings, and its PR. */
+export function workflowStepFacts(node: Pick<WorkflowNodeRunRecord, 'structuredOutput'>): WorkflowStepFacts {
+  const output = (node.structuredOutput ?? {}) as Record<string, unknown>;
+  const commands = Array.isArray(output.commands) ? output.commands as Record<string, unknown>[] : [];
+  return {
+    commands: commands.map((command) => ({
+      command: String(command.command ?? ''),
+      exitCode: typeof command.exitCode === 'number' ? command.exitCode : null,
+      lastLines: String(command.output ?? '').split('\n').filter((line, index, lines) =>
+        index < lines.length - 1 || line !== '').slice(-5).join('\n')
+    })),
+    verdict: typeof output.verdict === 'string' ? output.verdict : null,
+    findings: Array.isArray(output.findings) ? output.findings.map(String) : [],
+    prUrl: typeof output.url === 'string' && output.url ? output.url : null
+  };
+}

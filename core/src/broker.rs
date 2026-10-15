@@ -80,6 +80,33 @@ pub struct Envelope {
     pub updated_at_ms: i64,
 }
 
+/// One agent-to-agent message as the owner's traffic view shows it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficMessage {
+    pub id: String,
+    pub created_at_ms: i64,
+    pub sender_name: String,
+    pub from_owned_id: String,
+    pub to_owned_id: String,
+    /// The receiver's `handle · title`, or its owned id when it has none.
+    pub receiver: String,
+    pub body: String,
+    pub receipt: String,
+    pub run_id: Option<String>,
+    pub kind: String,
+}
+
+/// Newest first, one page. ?1 run, ?2 session (sender or receiver), ?3 and ?4 the
+/// (time, id) of the oldest message already shown, ?5 page size. NULL skips a filter.
+const TRAFFIC: &str = "SELECT m.id, m.created_at_ms, m.sender_name, m.from_owned_id, m.to_owned_id,
+        COALESCE(s.handle || ' · ' || s.title, s.handle, m.to_owned_id), m.body, m.receipt, m.run_id, m.kind
+    FROM workflow_messages m LEFT JOIN sessions s ON s.owned_id = m.to_owned_id
+    WHERE (?1 IS NULL OR m.run_id = ?1)
+      AND (?2 IS NULL OR m.from_owned_id = ?2 OR m.to_owned_id = ?2)
+      AND (?3 IS NULL OR (m.created_at_ms, m.id) < (?3, ?4))
+    ORDER BY m.created_at_ms DESC, m.id DESC LIMIT ?5";
+
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirectoryEntry {
@@ -440,6 +467,22 @@ impl SessionStore {
         )
     }
 
+    /// A page of agent-to-agent messages stored on this machine, newest first. Each message is
+    /// stored on its receiver's machine, so pages from every machine together list each once.
+    pub fn list_messages(&self, run_id: Option<&str>, session: Option<&str>,
+                         before: Option<(i64, &str)>, limit: i64) -> Result<Vec<TrafficMessage>> {
+        let connection = self.lock()?;
+        let mut statement = db("could not prepare the message list", connection.prepare(TRAFFIC))?;
+        let rows = db("could not list messages", statement.query_map(
+            params![run_id, session, before.map(|(at, _)| at), before.map(|(_, id)| id), limit],
+            |row| Ok(TrafficMessage {
+                id: row.get(0)?, created_at_ms: row.get(1)?, sender_name: row.get(2)?,
+                from_owned_id: row.get(3)?, to_owned_id: row.get(4)?, receiver: row.get(5)?,
+                body: row.get(6)?, receipt: row.get(7)?, run_id: row.get(8)?, kind: row.get(9)?,
+            })))?;
+        db("could not read messages", rows.collect())
+    }
+
     pub fn list_open_groups(&self) -> Result<Vec<(String, String, Option<String>, Vec<String>)>> {
         let connection = self.lock()?;
         let mut statement = db(
@@ -573,6 +616,25 @@ mod tests {
     }
 
     #[test]
+    fn session_list_says_where_each_session_came_from() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.lock_write().unwrap().execute_batch(r#"INSERT INTO sessions
+            (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra) VALUES
+            ('parent','codex','/work','ready',0,1,1,'{}'),
+            ('helper','claude','/work','ready',0,1,1,'{"helperOf":"parent"}'),
+            ('worker','codex','/work','ready',0,1,1,'{}');
+            INSERT INTO orchestration_events (id,run_id,kind,timestamp,sequence,payload_json) VALUES
+            ('e','run-1','workflow.node.started','1',1,
+             '{"ownedId":"worker","nodeId":"build","workflowPayload":{"run":{"definition":{"name":"Fix and review"},"inputSnapshot":{"task":{"key":"TSK-9"}}}}}');"#).unwrap();
+        let listed = store.list_sessions_with_handles().unwrap();
+        let lineage = |id: &str| listed.iter().find(|entry| entry.row.owned_id == id)
+            .map(|entry| (entry.helper_of.clone(), entry.run_id.clone(), entry.run_label.clone())).unwrap();
+        assert_eq!(lineage("parent"), (None, None, None));
+        assert_eq!(lineage("helper"), (Some("parent".into()), None, None));
+        assert_eq!(lineage("worker"), (None, Some("run-1".into()), Some("TSK-9 · Fix and review".into())));
+    }
+
+    #[test]
     fn every_session_keeps_a_handle_that_outlives_renames() {
         let store = SessionStore::open_in_memory().unwrap();
         store.lock_write().unwrap().execute_batch("INSERT INTO sessions
@@ -654,6 +716,39 @@ mod tests {
         let details = statement.query_map(["target"], |row| row.get::<_, String>(3)).unwrap()
             .collect::<rusqlite::Result<Vec<_>>>().unwrap().join("\n");
         assert!(details.contains("orchestration_events_owned_idx"), "{details}");
+    }
+
+    #[test]
+    fn list_messages_filters_and_pages_in_sql() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.lock_write().unwrap().execute_batch("INSERT INTO sessions
+            (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra,title,handle) VALUES
+            ('b','codex','/work','ready',0,1,1,'{}','Lane B','calm-otter');
+            INSERT INTO workflow_messages (id,from_owned_id,to_owned_id,sender_name,run_id,kind,body,receipt,created_at_ms,updated_at_ms) VALUES
+            ('m1','a','b','brisk-heron · A','run-1','message','one','delivered',10,10),
+            ('m2','a','b','brisk-heron · A',NULL,'message','two','queued',20,20),
+            ('m3','c','gone','x · C','run-2','message','three','failed',20,20),
+            ('m4','b','a','calm-otter · Lane B','run-1','message','four','delivered',30,30);").unwrap();
+        use super::{TrafficMessage, TRAFFIC};
+        use rusqlite::params;
+        let ids = |page: Vec<TrafficMessage>| page.into_iter().map(|message| message.id).collect::<Vec<_>>();
+        assert_eq!(ids(store.list_messages(None, None, None, 10).unwrap()), ["m4", "m3", "m2", "m1"]);
+        assert_eq!(ids(store.list_messages(Some("run-1"), None, None, 10).unwrap()), ["m4", "m1"]);
+        assert_eq!(ids(store.list_messages(None, Some("b"), None, 10).unwrap()), ["m4", "m2", "m1"]);
+        // Paging resumes after the last row shown, even between two rows of the same time.
+        let first = store.list_messages(None, None, None, 2).unwrap();
+        assert_eq!(ids(first.clone()), ["m4", "m3"]);
+        let last = first.last().unwrap();
+        assert_eq!(ids(store.list_messages(None, None, Some((last.created_at_ms, &last.id)), 10).unwrap()), ["m2", "m1"]);
+        let messages = store.list_messages(None, None, None, 10).unwrap();
+        assert_eq!(messages[2].receiver, "calm-otter · Lane B");
+        assert_eq!(messages[1].receiver, "gone");
+        let connection = store.lock().unwrap();
+        let mut statement = connection.prepare(&format!("EXPLAIN QUERY PLAN {TRAFFIC}")).unwrap();
+        let details = statement.query_map(params![None::<String>, None::<String>, None::<i64>, None::<String>, 10], |row| row.get::<_, String>(3)).unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>().unwrap().join("\n");
+        assert!(details.contains("idx_workflow_messages_created"), "{details}");
+        assert!(!details.contains("TEMP B-TREE"), "{details}");
     }
 
     #[test]
