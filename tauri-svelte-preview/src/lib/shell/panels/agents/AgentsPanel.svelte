@@ -168,18 +168,19 @@
 
   async function select(childId: string): Promise<void> {
     if (!ownedId || !conversation || !visible || view !== 'session' || openedChildId === childId) return;
-    const attempt = ++selection;
+    selection += 1;
     // A helper started with `start_session` is a session of its own, on any
     // machine; open it. Native sub-agents come from a tool call.
     const helper = !conversation.children.find((entry) => entry.childId === childId)?.parentToolCallId;
     if (helper) {
-      lookupError = '';
       const helperParentId = ownedId;
-      helperLookup?.abort();
+      // An open sub-agent transcript is not this helper's; drop it while the helper is looked up.
+      release(helperParentId);
+      const current = selection;
       const lookup = new AbortController();
       helperLookup = lookup;
       const adopted = await adoptSession(childId, lookup.signal);
-      if (attempt !== selection || ownedId !== helperParentId || !conversation || !visible || view !== 'session') return;
+      if (current !== selection || ownedId !== helperParentId || !conversation || !visible || view !== 'session') return;
       if (adopted) {
         setConversationSelectedChild(helperParentId, null);
         await sessionRowJump(childId, 'session');
