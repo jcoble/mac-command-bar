@@ -185,7 +185,8 @@
         await sessionRowJump(childId, 'session');
         return;
       }
-      // A helper is a session of its own, never a native sub-agent; a later click looks again.
+      // A helper is a session of its own, never a native sub-agent; back in the list, a later click looks again.
+      setConversationSelectedChild(helperParentId, null);
       lookupError = 'This helper’s session was not found yet. Try again in a moment.';
       return;
     }
