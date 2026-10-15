@@ -1304,7 +1304,7 @@ impl AgentRuntimeManager {
             .map_err(|error| error.to_string())?.unwrap_or_default();
         let reply: String = reply.chars().take(HELPER_REPLY_LIMIT).collect();
         self.store.append_message("", owned_id, &parent, mcb_core::broker::MessageKind::Message,
-            &format!("[{name} {outcome}] {reply}")).map_err(|error| error.to_string())?;
+            &format!("[{name} {outcome}]\n{reply}")).map_err(|error| error.to_string())?;
         let state = match outcome { "finished" => "finished", "failed" => "failed", _ => "cancelled" };
         self.show_helper_to_parent(&parent, owned_id, &name, state)?;
         let manager = self.clone();
@@ -12773,7 +12773,7 @@ mod tests {
                 if *child_id == helper && label.as_deref() == Some("Reviewer") && state == "running")));
 
         // The helper's finished turn is reported to the parent and wakes it.
-        let expected = format!("[message from {} · Reviewer]\n[Reviewer finished] BRAVO", started["handle"].as_str().unwrap());
+        let expected = format!("[message from {} · Reviewer]\n[Reviewer finished]\nBRAVO", started["handle"].as_str().unwrap());
         wait_until(|| parent_events().iter().any(|event| matches!(&event.payload,
             AgentConversationPayload::UserMessage { text, .. } if *text == expected))).await;
         assert!(parent_events().iter().any(|event| matches!(&event.payload,
