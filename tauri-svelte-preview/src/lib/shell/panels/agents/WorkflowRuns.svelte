@@ -14,9 +14,7 @@
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
   import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
-  import { listAgentConversationSessionsFromTauri } from '$lib/tauriSource';
-  import { ownedSessionFromBackend } from '$lib/shell/ownedSessions.ts';
-  import { addOwnedSession, rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
+  import { adoptSession } from '$lib/shell/conversation/conversationService.ts';
   import {
     answerWorkflowPause,
     approveWorkflowGate,
@@ -305,11 +303,7 @@
   async function openStage(ownedId: string | null): Promise<void> {
     if (!ownedId) return;
     try {
-      if (!rail.owned.some((session) => session.ownedId === ownedId)) {
-        const record = (await listAgentConversationSessionsFromTauri())?.find((session) => session.ownedId === ownedId);
-        if (!record) throw new Error('Agent conversation is not available yet.');
-        if (!rail.owned.some((session) => session.ownedId === ownedId)) addOwnedSession(ownedSessionFromBackend(record));
-      }
+      if (!await adoptSession(ownedId)) throw new Error('Agent conversation is not available yet.');
       await sessionRowJump(ownedId, 'session');
     } catch (error) {
       workflowState.error = `Could not open agent: ${message(error)}`;

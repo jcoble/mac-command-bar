@@ -294,6 +294,25 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
+/** The session lists `findSessionRecord` reads: this machine, then every connected one. */
+export interface SessionRecordReaders {
+  local: () => Promise<AgentConversationSessionRecord[] | null>;
+  remote: (signal: AbortSignal) => Promise<AgentConversationSessionRecord[] | null>;
+}
+
+/** A session the rail has not seen yet (a helper or workflow worker), on any machine. */
+export async function findSessionRecord(
+  ownedId: string,
+  readers: SessionRecordReaders,
+  signal: AbortSignal
+): Promise<AgentConversationSessionRecord | null> {
+  const local = (await readers.local())?.find((record) => record.ownedId === ownedId);
+  if (signal.aborted) return null;
+  if (local) return local;
+  const remote = (await readers.remote(signal))?.find((record) => record.ownedId === ownedId);
+  return signal.aborted ? null : remote ?? null;
+}
+
 export function ownedSessionFromBackend(record: AgentConversationSessionRecord): OwnedSession {
   const { agent, viaCmux: providerViaCmux } = normalizeProvider(record.provider);
   const terminalOwned = record.origin === 'external' && record.ptySessionId !== null;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   normalizeProvider, adoptAgentSession, createFreshSession,
   ownedSessionFromBackend, ownedSessionMetaForBackend, parseStoredOwnedSessions, reconcileOwnedSessions,
+  findSessionRecord,
 } from '../src/lib/shell/ownedSessions.ts';
 
 const mint = () => 'owned-1';
@@ -304,5 +305,25 @@ const scanRecord = {
   const withProject = ownedSessionFromBackend({ ...record, projectId: 'project-1' });
   assert.equal(withProject.projectId, 'project-1');
   assert.equal('projectId' in ownedSessionMetaForBackend(withProject), false);
+}
+{ // find_session_record_checks_remote_after_local_miss
+  const local = async () => [{ ownedId: 'here', remoteProfileId: null }];
+  const remote = async () => [{ ownedId: 'helper', remoteProfileId: 'workbox-test' }];
+  const found = await findSessionRecord('helper', { local, remote } as never, new AbortController().signal);
+  assert.equal(found?.remoteProfileId, 'workbox-test');
+  const remoteNotAsked = await findSessionRecord('here', { local, remote: async () => { throw new Error('asked'); } } as never, new AbortController().signal);
+  assert.equal(remoteNotAsked?.ownedId, 'here');
+}
+{ // find_session_record_returns_null_when_no_machine_has_it
+  const none = async () => null;
+  assert.equal(await findSessionRecord('gone', { local: async () => [], remote: none } as never, new AbortController().signal), null);
+}
+{ // find_session_record_stops_when_aborted
+  const controller = new AbortController();
+  let remoteAsked = false;
+  const local = async () => { controller.abort(); return []; };
+  const remote = async () => { remoteAsked = true; return [{ ownedId: 'helper' }]; };
+  assert.equal(await findSessionRecord('helper', { local, remote } as never, controller.signal), null);
+  assert.equal(remoteAsked, false);
 }
 console.log('ownedSessions tests passed');

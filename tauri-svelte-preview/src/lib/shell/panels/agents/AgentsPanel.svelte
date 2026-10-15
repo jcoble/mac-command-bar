@@ -22,6 +22,7 @@
     setSelectedConversationViewState
   } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import {
+    adoptSession,
     readChildConversationHistory,
     stopChildConversationHistory
   } from '$lib/shell/conversation/conversationService.ts';
@@ -145,8 +146,10 @@
 
   async function select(childId: string): Promise<void> {
     if (!ownedId || !conversation || !visible || view !== 'session' || openedChildId === childId) return;
-    // A helper started with `start_session` is a session of its own; open it.
-    if (rail.owned.some((session) => session.ownedId === childId)) {
+    // A helper started with `start_session` is a session of its own, on any
+    // machine; open it. Native sub-agents come from a tool call.
+    const helper = !conversation.children.find((entry) => entry.childId === childId)?.parentToolCallId;
+    if (helper && await adoptSession(childId)) {
       setConversationSelectedChild(ownedId, null);
       await sessionRowJump(childId, 'session');
       return;

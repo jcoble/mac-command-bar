@@ -29,7 +29,7 @@ import { sessionTitleFromPrompt } from '../sessionStrip.ts';
 import { publishWorkspaceFileChange } from '../workspaceFileChangeBus.ts';
 import { agentItemFromEvent, displayItemFromAgentItem } from './conversationTimeline.ts';
 import { addOwnedSession, rail, setRemoteConnection, updateOwnedSession } from '../stores/sessionRailStore.svelte';
-import { ownedSessionFromBackend } from '../ownedSessions.ts';
+import { findSessionRecord, ownedSessionFromBackend } from '../ownedSessions.ts';
 import type { RemoteConnectionState } from '../stores/sessionRailStore.svelte';
 import {
   decideConversationActivation,
@@ -940,7 +940,7 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
   try {
     const stopTitleEvents = await listen<{ ownedId: string; title: string }>(
       'session-title-changed',
-      ({ payload }) => void showNamedSession(payload.ownedId, payload.title, streamGeneration)
+      ({ payload }) => showNamedSession(payload.ownedId, payload.title)
     );
     stopTitles = trackTauriListener(stopTitleEvents);
     const stopRemoteConnectionEvents = await listen<{
@@ -1021,21 +1021,54 @@ async function refreshRemoteSessionActivity(streamGeneration: number): Promise<v
   }
 }
 
-// A helper session an agent starts with `start_session` is first heard of
-// through its name, so a name for a session the rail lacks adds that session.
-async function showNamedSession(ownedId: string, title: string, streamGeneration: number): Promise<void> {
-  if (rail.owned.some((session) => session.ownedId === ownedId)) {
-    updateOwnedSession(ownedId, { title });
-    return;
-  }
+// A session an agent started (a helper, a workflow worker) may live on any
+// machine. The rail adds it the first time an event, its name or a click
+// names it. A miss is not looked up again for a few seconds, because a new
+// session's first events can come before its row is stored.
+const SESSION_LOOKUP_RETRY_MS = 5_000;
+let adoptController = new AbortController();
+const adoptingSessions = new Map<string, Promise<boolean>>();
+const sessionsNotFound = new Map<string, number>();
+
+/** Adds a session the rail lacks from whichever machine has it; true when the rail has it. */
+export async function adoptSession(ownedId: string): Promise<boolean> {
+  if (rail.owned.some((session) => session.ownedId === ownedId)) return true;
+  if (Date.now() - (sessionsNotFound.get(ownedId) ?? -Infinity) < SESSION_LOOKUP_RETRY_MS) return false;
+  const pending = adoptingSessions.get(ownedId);
+  if (pending) return pending;
+  const lookup = lookUpSession(ownedId, adoptController.signal);
+  adoptingSessions.set(ownedId, lookup);
   try {
-    const record = (await listAgentConversationSessionsFromTauri())?.find((session) => session.ownedId === ownedId);
-    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !record) return;
-    if (!rail.owned.some((session) => session.ownedId === ownedId)) addOwnedSession(ownedSessionFromBackend(record));
-  } catch (error) {
-    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
-    rail.error = `Could not show a new session: ${error instanceof Error ? error.message : String(error)}`;
+    return await lookup;
+  } finally {
+    adoptingSessions.delete(ownedId);
   }
+}
+
+async function lookUpSession(ownedId: string, signal: AbortSignal): Promise<boolean> {
+  try {
+    const record = await findSessionRecord(ownedId, {
+      local: listAgentConversationSessionsFromTauri,
+      remote: listRemoteAgentConversationSessionsFromTauri
+    }, signal);
+    if (signal.aborted) return false;
+    if (!record) {
+      sessionsNotFound.set(ownedId, Date.now());
+      return false;
+    }
+    sessionsNotFound.delete(ownedId);
+    if (!rail.owned.some((session) => session.ownedId === ownedId)) addOwnedSession(ownedSessionFromBackend(record));
+    return true;
+  } catch (error) {
+    if (signal.aborted) return false;
+    rail.error = `Could not show a new session: ${error instanceof Error ? error.message : String(error)}`;
+    return false;
+  }
+}
+
+function showNamedSession(ownedId: string, title: string): void {
+  if (rail.owned.some((session) => session.ownedId === ownedId)) updateOwnedSession(ownedId, { title });
+  else void adoptSession(ownedId);
 }
 
 function updateBackgroundWork(
@@ -1114,6 +1147,8 @@ async function handleConversationStreamEnvelope(
     || (payload.payload.kind === 'turn' && payload.payload.turnId !== activeTurnId)
   )) return;
   railActivityEvents.set(payload.ownedId, { generation: payload.generation, sequence: payload.sequence });
+  // The lookup reads the session's current state, a pending permission included.
+  if (!rail.owned.some((session) => session.ownedId === payload.ownedId)) void adoptSession(payload.ownedId);
   const item = agentItemFromEvent(displayEvent);
   const row = item ? displayItemFromAgentItem(item, displayEvent.timestampMs) : null;
   if (row?.kind === 'tool' && row.state === 'completed' && row.path && row.diff) {
@@ -1205,6 +1240,9 @@ export function stopConversationEvents(): void {
   childConversationRead?.abortController.abort();
   childConversationRead = null;
   railActivityEvents.clear();
+  adoptController.abort();
+  adoptController = new AbortController();
+  sessionsNotFound.clear();
   void conversationStream?.unregister();
   conversationStream = null;
   unlistenTitles?.();
