@@ -1,17 +1,17 @@
 diff --git a/dist/acp-agent.js b/dist/acp-agent.js
-index a991808..8075bb3 100644
+index cafc73c..770abe6 100644
 --- a/dist/acp-agent.js
 +++ b/dist/acp-agent.js
 @@ -4,7 +4,7 @@ import { GOAL_ACTIONS, GOAL_CONTROL_METHOD, GOAL_EXTENSION_VERSION, goalUpdateFr
  import { sanitizeTitle, SessionTitles } from "./session-titles.js";
- import { AIR_NATIVE_SUBAGENT_SESSIONS_CAPABILITY, asSdkSessionNotification, clientSupportsSubagents, } from "./acp-subagents.js";
- import { isNativeSubagentControlTool, isNativeSubagentControlUpdate, NativeSubagentRuntime, nativeSubagentState, resumedNativeSubagentId, sendMessageResumePrompt, } from "./native-subagents.js";
+ import { AIR_NATIVE_SUBAGENT_SESSIONS_CAPABILITY, asSdkSessionNotification, clientSupportsSubagents, subagentForm, } from "./acp-subagents.js";
+ import { isNativeSubagentControlTool, isNativeSubagentControlUpdate, NativeSubagentRuntime, nativeSubagentState, resumedNativeSubagentId, sendMessageResume, sendMessageResumePrompt, } from "./native-subagents.js";
 -import { AIR_ASYNC_TASKS_CAPABILITY, AIR_CUSTOM_INSTRUCTIONS_CAPABILITY, airCustomInstructions, AIR_DIFF_PATCH_CAPABILITY, AIR_PLAN_FILE_CAPABILITY, AIR_GOAL_KEY, AIR_KIND_KEY, AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY, AIR_SKILL_PATH_KEY, clientSupportsAirCapability, withAirMeta, } from "./air-extension.js";
 +import { AIR_ASYNC_TASKS_CAPABILITY, AIR_BACKGROUND_SUBAGENTS_CAPABILITY, AIR_OUT_OF_TURN_KEY, AIR_SESSION_STATE_KEY, AIR_CUSTOM_INSTRUCTIONS_CAPABILITY, airCustomInstructions, AIR_DIFF_PATCH_CAPABILITY, AIR_PLAN_FILE_CAPABILITY, AIR_GOAL_KEY, AIR_KIND_KEY, AIR_RECOMMENDED_CONFIG_VALUE_CAPABILITY, AIR_SKILL_PATH_KEY, clientSupportsAirCapability, withAirMeta, } from "./air-extension.js";
  import * as sessionIndex from "./session-index/connection.js";
  import { AsyncTaskRuntime, backgroundBashTaskFromToolResult, backgroundedBashToolCallIds, clientSupportsAsyncTasks, } from "./async-tasks.js";
  import { AUTH_STATUS_PROBE_TIMEOUT_MS, AUTH_STATUS_UPDATE_METHOD, authStatusCapability, fromAccountInfo, fromCliStatus, gatewayAuthStatus, mergeAuthStatus, notLoggedInAuthStatus, sameAuthStatus, } from "./auth-status.js";
-@@ -283,7 +283,8 @@ const AUTONOMOUS_RESULT_ORIGINS = new Set([
+@@ -288,7 +288,8 @@ const AUTONOMOUS_CYCLE = "autonomous-cycle";
  /** Whether this turn's terminal result arrived but its settlement is being
   *  held for background subagents it spawned (see Turn.deferredSettle). The
   *  single spelling of the hold predicate, shared by the consumer's settle
@@ -21,7 +21,7 @@ index a991808..8075bb3 100644
  function isHeldOpen(turn) {
      return turn != null && turn.deferredSettle !== undefined && !turn.settled;
  }
-@@ -1194,6 +1195,16 @@ export class ClaudeAcpAgent {
+@@ -1179,6 +1180,16 @@ export class ClaudeAcpAgent {
       * express: see {@link ToolCallClientCapabilities.v2}.
       */
      v2;
@@ -35,10 +35,10 @@ index a991808..8075bb3 100644
 +        return (!this.v2 &&
 +            clientSupportsAirCapability(this.clientCapabilities, AIR_BACKGROUND_SUBAGENTS_CAPABILITY));
 +    }
-     /** The session index (docs/air-extensions.md, "Session index"). */
-     sessionIndex = new sessionIndex.SessionIndexConnection({
-         agent: this,
-@@ -1420,7 +1431,9 @@ export class ClaudeAcpAgent {
+     /** See the `foreground` constructor option. */
+     foregroundEvents;
+     /**
+@@ -1418,7 +1429,9 @@ export class ClaudeAcpAgent {
              // `jetbrains.air`.
              _meta: {
                  ...(this.toolCallCapabilities.air.client
@@ -49,7 +49,7 @@ index a991808..8075bb3 100644
                          version: GOAL_EXTENSION_VERSION,
                          controlMethod: GOAL_CONTROL_METHOD,
                          actions: [...GOAL_ACTIONS],
-@@ -2586,7 +2599,22 @@ export class ClaudeAcpAgent {
+@@ -2647,7 +2660,22 @@ export class ClaudeAcpAgent {
                      session.titles.onAssistantText(update.content);
                  }
              }
@@ -73,18 +73,22 @@ index a991808..8075bb3 100644
              if (toolCallId &&
                  update.sessionUpdate === "tool_call_update" &&
                  isFinalToolCallStatus(update.status)) {
-@@ -2971,7 +2999,8 @@ export class ClaudeAcpAgent {
+@@ -3042,9 +3070,10 @@ export class ClaudeAcpAgent {
          };
          /** Registers a live background task (see `liveBackgroundTasks`). A
           *  subagent is also recorded on the active turn, so that turn holds until
--         *  the subagent settles (see `Turn.spawnedTaskIds`). */
+-         *  the subagent settles (see `Turn.spawnedTaskIds`). Its requests may
+-         *  already be open, and where it runs decides whether they block the
+-         *  foreground work, so that is checked again. */
 +         *  the subagent settles (see `Turn.spawnedTaskIds`). A client with
-+         *  `backgroundSubagents` gets no hold (see `turnAwaitingSubagents`). */
-         const registerLiveTask = (taskId, parentToolUseId, isSubagent) => {
-             session.liveBackgroundTasks.set(taskId, { parentToolUseId, isSubagent });
-             if (parentToolUseId)
-@@ -2984,8 +3013,9 @@ export class ClaudeAcpAgent {
-         const settleLiveTask = (taskId) => settleLiveBackgroundTask(session, taskId);
++         *  `backgroundSubagents` gets no hold (see `turnAwaitingSubagents`). Its
++         *  requests may already be open, and where it runs decides whether they
++         *  block the foreground work, so that is checked again. */
+         const registerLiveTask = (taskId, parentToolUseId, isSubagent, placement = {}) => {
+             session.liveBackgroundTasks.set(taskId, {
+                 parentToolUseId,
+@@ -3091,8 +3120,9 @@ export class ClaudeAcpAgent {
+         };
          /** Registers a settled subagent again when the SDK resumes it without a
           *  new `task_started`. The active turn is the one that resumed it, so it
 -         *  holds until the subagent settles again. A repeated resume signal finds
@@ -95,7 +99,7 @@ index a991808..8075bb3 100644
          const resumeLiveTask = (taskId) => {
              if (session.liveBackgroundTasks.has(taskId))
                  return;
-@@ -2996,9 +3026,12 @@ export class ClaudeAcpAgent {
+@@ -3104,9 +3134,12 @@ export class ClaudeAcpAgent {
          /** Whether any background subagent this turn spawned is still live —
           *  while true, the turn's settlement stays deferred so the subagent's
           *  output and permission requests land inside it (see
@@ -110,7 +114,7 @@ index a991808..8075bb3 100644
                  return false;
              }
              for (const taskId of turn.spawnedTaskIds) {
-@@ -3029,7 +3062,8 @@ export class ClaudeAcpAgent {
+@@ -3137,7 +3170,8 @@ export class ClaudeAcpAgent {
           *  turn open (see Turn.deferredSettle). Every result-time settle of a
           *  turn that can have spawned subagents must route through here: a site
           *  calling settleActive directly bypasses the hold and re-opens the
@@ -120,7 +124,7 @@ index a991808..8075bb3 100644
          const settleOrDefer = async (outcome) => {
              // No result ends a steered turn: the steer aborted the cycle this result
              // may belong to, and the steered one is still to come. Record the outcome
-@@ -3643,6 +3677,18 @@ export class ClaudeAcpAgent {
+@@ -3865,6 +3899,18 @@ export class ClaudeAcpAgent {
                                  const previousState = session.lastSessionState;
                                  session.lastSessionState = message.state;
                                  sessionIndex.noteSessionState(session, previousState, message.state);
@@ -139,7 +143,7 @@ index a991808..8075bb3 100644
                                  if (message.state === "running")
                                      this.sessionIndex.onTurnStarted(params.sessionId);
                                  this.sessionIndex.onOwnSessionChanged(params.sessionId);
-@@ -4179,6 +4225,16 @@ export class ClaudeAcpAgent {
+@@ -4433,6 +4479,16 @@ export class ClaudeAcpAgent {
                              case "control_request_progress":
                                  break;
                              case "background_tasks_changed":
@@ -156,7 +160,7 @@ index a991808..8075bb3 100644
                                  await asyncTasks.backgroundTasksChanged(message.tasks);
                                  // A level signal: the full live background-task set on every
                                  // membership change, with REPLACE semantics. Used only to
-@@ -4403,15 +4459,20 @@ export class ClaudeAcpAgent {
+@@ -4652,15 +4708,20 @@ export class ClaudeAcpAgent {
                              if (matchingModelUsage &&
                                  typeof matchingModelUsage.usage.contextWindow === "number" &&
                                  matchingModelUsage.usage.contextWindow > 0) {
@@ -180,7 +184,7 @@ index a991808..8075bb3 100644
                                  // Also cache under the assistant message's own (bare) spelling.
                                  // Seed-time reads fall back to a picker value / verbatim live id
                                  // when a row carries no resolvedModel (the synthesized
-@@ -4420,7 +4481,7 @@ export class ClaudeAcpAgent {
+@@ -4669,7 +4730,7 @@ export class ClaudeAcpAgent {
                                  // the decorated modelUsage key — without this entry such rows
                                  // could never hit the cache.
                                  if (lastAssistantModel && lastAssistantModel !== matchingModelUsage.key) {
@@ -189,7 +193,7 @@ index a991808..8075bb3 100644
                                  }
                              }
                              session.lastTotalCostUsd = message.total_cost_usd;
-@@ -4498,6 +4559,23 @@ export class ClaudeAcpAgent {
+@@ -4785,6 +4846,23 @@ export class ClaudeAcpAgent {
                                      await settleOrDefer({ ...heldTurn.deferredSettle, stopReason: "cancelled" });
                                      break;
                                  }
@@ -213,7 +217,7 @@ index a991808..8075bb3 100644
                                  // CLI 2.1.274+ answers background-task completions that were
                                  // already queued with ONE model call: every queued
                                  // notification still gets its own result, but all except the
-@@ -4751,7 +4829,9 @@ export class ClaudeAcpAgent {
+@@ -5038,7 +5116,9 @@ export class ClaudeAcpAgent {
                              // permission requests, and the model's promised summary all land
                              // inside the turn. `session/cancel` and the next prompt's echo
                              // hand-off still settle a deferred turn early, so a long-running
@@ -223,8 +227,8 @@ index a991808..8075bb3 100644
 +                            // the subagent traffic goes out after the prompt response.
                              //
                              // is_error/auth already settled via failActive (activeTurn is null
-                             // then, so both branches no-op); cancellation is left to the
-@@ -5419,7 +5499,11 @@ export class ClaudeAcpAgent {
+                             // then, so both branches no-op); a cancelled turn settles at
+@@ -5776,7 +5856,11 @@ export class ClaudeAcpAgent {
          }
      }
      async cancel(params) {
@@ -237,7 +241,7 @@ index a991808..8075bb3 100644
      }
      /** Cancel the session's turns and interrupt the SDK query. With
       *  `awaitInterrupt: false` the interrupt is sent, but its reply is not
-@@ -6510,6 +6594,11 @@ export class ClaudeAcpAgent {
+@@ -7092,6 +7176,11 @@ export class ClaudeAcpAgent {
                  defaultToNo,
                  availableModes: this.sessionModes.availableModeIds(session.modes),
                  prePlanMode: session.prePlanMode,
