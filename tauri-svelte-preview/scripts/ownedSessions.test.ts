@@ -314,6 +314,15 @@ const scanRecord = {
   const remoteNotAsked = await findSessionRecord('here', { local, remote: async () => { throw new Error('asked'); } } as never, new AbortController().signal);
   assert.equal(remoteNotAsked?.ownedId, 'here');
 }
+{ // find_session_record_reads_a_cached_remote_session_fresh
+  // This machine's list carries cached remote rows; their live state is on the remote.
+  const local = async () => [{ ownedId: 'helper', remoteProfileId: 'workbox-test', pendingPermission: false }];
+  const remote = async () => [{ ownedId: 'helper', remoteProfileId: 'workbox-test', pendingPermission: true }];
+  const found = await findSessionRecord('helper', { local, remote } as never, new AbortController().signal);
+  assert.equal(found?.pendingPermission, true);
+  const offline = await findSessionRecord('helper', { local, remote: async () => null } as never, new AbortController().signal);
+  assert.equal(offline?.pendingPermission, false);
+}
 { // find_session_record_returns_null_when_no_machine_has_it
   const none = async () => null;
   assert.equal(await findSessionRecord('gone', { local: async () => [], remote: none } as never, new AbortController().signal), null);
