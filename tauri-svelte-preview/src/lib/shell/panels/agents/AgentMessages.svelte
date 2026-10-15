@@ -122,7 +122,8 @@
     <ScrollArea class="min-h-0 flex-1">
       <ul class="flex flex-col gap-1 p-2">
         {#each messages as item (item.id)}
-          <li>
+          <!-- Rows off screen skip layout and paint, so many loaded pages stay cheap. -->
+          <li class="[contain-intrinsic-size:auto_112px] [content-visibility:auto]">
             <button
               type="button"
               class="flex w-full min-w-0 flex-col gap-1 rounded-lg px-2 py-2 text-left hover:bg-accent/60 focus-visible:ring-3 focus-visible:ring-ring/50"
