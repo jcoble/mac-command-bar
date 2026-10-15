@@ -3804,14 +3804,15 @@ mod tests {
         let engine = run_engine(Arc::new(FakeRuntime::default()));
         let endpoint = agent_endpoint(&engine, &repo.0);
         let token = agent(&engine, &endpoint, "starter", &repo.0);
-        let started = std::thread::scope(|scope| {
+        let results = std::thread::scope(|scope| {
             let starts: Vec<_> = (0..8).map(|index| {
                 let (endpoint, token) = (&endpoint, &token);
-                scope.spawn(move || tool(endpoint, token, "start_workflow", start_args(&format!("TSK-{index}"))).is_ok())
+                scope.spawn(move || tool(endpoint, token, "start_workflow", start_args(&format!("TSK-{index}"))))
             }).collect();
-            starts.into_iter().filter_map(|start| start.join().unwrap().then_some(())).count()
+            starts.into_iter().map(|start| start.join().unwrap()).collect::<Vec<_>>()
         });
-        assert_eq!(started, 3);
+        let refusals = results.iter().filter(|result| result.as_ref().is_err_and(|error| error == "at most 3 unfinished runs")).count();
+        assert_eq!((results.len() - refusals, refusals), (3, 5), "{results:?}");
     }
 
     #[test]

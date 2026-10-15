@@ -1322,6 +1322,16 @@ impl RemoteConnectionManager {
             host.store().upsert_app_setting(ORCHESTRATOR_CHOICE,
                 &serde_json::json!({"machine": machine, "owned_id": owned_id}).to_string()).map_err(|error| error.to_string())?;
         }
+        // Rows kept for machines that are away show the new choice too, also after a restart.
+        let cached = self.cached_sessions();
+        let chosen = |row: &AgentConversationSessionRecord|
+            row.remote_profile_id.as_deref() == Some(machine) && Some(row.owned_id.as_str()) == owned_id;
+        if cached.iter().any(|row| row.orchestrator_marked_at_ms.is_some() && !chosen(row)) {
+            self.save_cached_sessions(cached.into_iter().map(|mut row| {
+                if !chosen(&row) { row.orchestrator_marked_at_ms = None; }
+                row
+            }).collect())?;
+        }
         for other in self.message_machines(if owned_id.is_some() { machine } else { "" }) {
             if let Err(error) = self.message_machine(&other, "designate", serde_json::json!({"owned_id": null})).await {
                 crate::debug_log::stderr_log!("Could not clear the orchestrator mark on {other}: {error}");
@@ -4775,6 +4785,19 @@ mod connection_tests {
         assert_eq!(manager.store().get_project("p").unwrap(), None);
         drop((manager, remote));
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_new_orchestrator_choice_clears_an_offline_machines_cached_mark() {
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), shared.clone()).unwrap();
+        let mut marked = session("remote-1", "workbox", 10);
+        marked.orchestrator_marked_at_ms = Some(5);
+        manager.replace_cached_profile_sessions("workbox", &[marked, session("remote-2", "workbox", 9)]).unwrap();
+        // The owner clears the mark while that machine is away; a restart must not bring it back.
+        manager.set_main_orchestrator("", None).await.unwrap();
+        let restarted = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
+        assert!(restarted.cached_sessions().iter().all(|row| row.orchestrator_marked_at_ms.is_none()));
     }
 
     #[test]

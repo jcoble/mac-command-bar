@@ -15445,7 +15445,8 @@ mod tests {
             .await
             .expect("a valid send after a refused one");
 
-        fs::remove_dir_all(fixture.root).unwrap();
+        // Close first: the restarted adapter still writes in the folder.
+        finish(fixture).await;
     }
 
     #[tokio::test(flavor = "current_thread")]

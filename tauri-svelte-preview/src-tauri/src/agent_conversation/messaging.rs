@@ -205,7 +205,8 @@ pub struct MessagingEndpoint {
     relay: Mutex<Option<Relay>>,
     workflow: Mutex<Option<crate::workflow::WorkflowEngine>>,
     starting_helpers: Starting,
-    starting_runs: Starting,
+    /// Held from the run-limit check until the run is stored, so parallel starts see each other.
+    run_starts: Mutex<()>,
 }
 
 /// One endpoint per owning backend, including the remote server.
@@ -221,7 +222,7 @@ impl MessagingEndpoint {
         let url = format!("http://{}/mcp", listener.local_addr().map_err(|e| e.to_string())?);
         let endpoint = Arc::new(Self { url, callers: Mutex::new(HashMap::new()), task: Mutex::new(None), relay: Mutex::new(None),
             workflow: Mutex::new(None), starting_helpers: Arc::default(),
-            starting_runs: Arc::default() });
+            run_starts: Mutex::new(()) });
         let router = Router::new().route("/mcp", post(Self::post)).with_state(Arc::downgrade(&endpoint));
         *endpoint.task.lock().unwrap() = Some(tauri::async_runtime::spawn(async move {
             if let Ok(listener) = tokio::net::TcpListener::from_std(listener) {
@@ -392,12 +393,15 @@ impl MessagingEndpoint {
                     .map_err(|_| "task must have a key, a title and a body")?;
                 let project = project_of(&store, &owned_id)?;
                 // Starting a task again returns its run, so that run does not count.
-                let _place = StartPlace::take(&self.starting_runs, &owned_id, 3,
-                    || store.unfinished_workflow_runs_started_by(&owned_id, &task.key).map_err(|error| error.to_string()),
-                    "at most 3 unfinished runs")?;
                 let key = format!("agent:{owned_id}:{}", task.key);
-                let run = engine.create_run_from_file(std::path::Path::new(&project), std::path::Path::new(path), task,
-                    json!({"started_by":owned_id}), key.clone()).map_err(workflow_error)?;
+                let run = {
+                    let _counting = self.run_starts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if store.unfinished_workflow_runs_started_by(&owned_id, &task.key).map_err(|error| error.to_string())? >= 3 {
+                        return Err("at most 3 unfinished runs".into());
+                    }
+                    engine.create_run_from_file(std::path::Path::new(&project), std::path::Path::new(path), task,
+                        json!({"started_by":owned_id}), key.clone()).map_err(workflow_error)?
+                };
                 let run = engine.start(&run.id, &format!("{key}:start")).await.map_err(workflow_error)?;
                 Ok(text_json(json!({"run_id":run.id,"state":run.state})))
             }
