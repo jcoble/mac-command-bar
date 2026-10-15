@@ -1023,8 +1023,8 @@ async function refreshRemoteSessionActivity(streamGeneration: number): Promise<v
 
 // A session an agent started (a helper, a workflow worker) may live on any
 // machine. The rail adds it the first time an event, its name or a click
-// names it. A miss is not looked up again for a few seconds, because a new
-// session's first events can come before its row is stored.
+// names it. A miss or a failed read is not retried for a few seconds, because
+// a new session's first events can come before its row is stored.
 const SESSION_LOOKUP_RETRY_MS = 5_000;
 let adoptController = new AbortController();
 const adoptingSessions = new Map<string, Promise<boolean>>();
@@ -1061,6 +1061,7 @@ async function lookUpSession(ownedId: string, signal: AbortSignal): Promise<bool
     return true;
   } catch (error) {
     if (signal.aborted) return false;
+    sessionsNotFound.set(ownedId, Date.now());
     rail.error = `Could not show a new session: ${error instanceof Error ? error.message : String(error)}`;
     return false;
   }

@@ -149,10 +149,15 @@
     // A helper started with `start_session` is a session of its own, on any
     // machine; open it. Native sub-agents come from a tool call.
     const helper = !conversation.children.find((entry) => entry.childId === childId)?.parentToolCallId;
-    if (helper && await adoptSession(childId)) {
-      setConversationSelectedChild(ownedId, null);
-      await sessionRowJump(childId, 'session');
-      return;
+    if (helper) {
+      const helperParentId = ownedId;
+      const adopted = await adoptSession(childId);
+      if (ownedId !== helperParentId || !conversation || !visible || view !== 'session') return;
+      if (adopted) {
+        setConversationSelectedChild(helperParentId, null);
+        await sessionRowJump(childId, 'session');
+        return;
+      }
     }
     const parentId = ownedId;
     release(parentId);
