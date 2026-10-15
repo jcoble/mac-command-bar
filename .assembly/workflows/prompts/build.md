@@ -4,7 +4,7 @@ ${{ task.body }}
 
 Read the whole task before anything else: `notion-fetch` ${{ task.key }} and read its sections verbatim; the owner's decisions and later corrections are there. If the task has reference screenshots, `Read` each one at the absolute path recorded in the task body (attached screenshots are also saved under `~/dev/work/reports/tsk-ui-base/screenshots/`) and judge the work against them.
 
-Implement this reviewed spec:
+Implement this reviewed spec, working through its checklist; if a requirement is `blocked`, stop and report it instead of building around it:
 ${{ steps.spec.summary }}
 
 On redo, fix these review findings: ${{ redo.findings }}

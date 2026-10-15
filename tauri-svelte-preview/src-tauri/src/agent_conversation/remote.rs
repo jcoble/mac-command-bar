@@ -1317,10 +1317,11 @@ impl RemoteConnectionManager {
 
     /// Marks `owned_id` on `machine` as the owner's main orchestrator, then clears the
     /// mark on every other reachable machine; `None` clears it everywhere. The choice is
-    /// kept on this desktop, and a machine that could not be reached gets it when it connects.
+    /// kept on this desktop, and a machine that is away gets it when it connects.
     pub async fn set_main_orchestrator(&self, machine: &str, owned_id: Option<&str>) -> Result<(), String> {
         let _choosing = self.orchestrator_choice.lock().await;
-        if owned_id.is_some() {
+        let away = !self.message_machines("").iter().any(|connected| connected == machine);
+        if owned_id.is_some() && !away {
             self.message_machine(machine, "designate", serde_json::json!({"owned_id": owned_id}), None).await?;
         }
         if let Some(host) = self.message_host.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
@@ -4850,14 +4851,15 @@ mod connection_tests {
         assert!(restarted.cached_sessions().iter().all(|row| row.orchestrator_marked_at_ms.is_none()));
     }
 
-    #[test]
-    fn a_chosen_remote_orchestrator_stays_marked_in_the_offline_cache() {
+    #[tokio::test]
+    async fn a_chosen_remote_orchestrator_stays_marked_in_the_offline_cache() {
         let shared = store();
         let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), shared.clone()).unwrap();
         let mut marked = session("remote-1", "workbox", 10);
         marked.orchestrator_marked_at_ms = Some(5);
         manager.replace_cached_profile_sessions("workbox", &[marked, session("remote-2", "workbox", 9)]).unwrap();
-        manager.remember_cached_orchestrator("workbox", Some("remote-2")).unwrap();
+        // The owner picks a session on a machine that is away; it is marked there when it connects.
+        manager.set_main_orchestrator("workbox", Some("remote-2")).await.unwrap();
         // After a restart, with that machine still away, the rail shows the new choice.
         let restarted = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
         let marked: Vec<_> = restarted.cached_sessions().into_iter()
