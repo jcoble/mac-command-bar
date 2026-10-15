@@ -1033,10 +1033,14 @@ let adoptController = new AbortController();
 const adoptingSessions = new Map<string, Promise<boolean>>();
 const sessionsNotFound = new Map<string, number>();
 
-/** Adds a session the rail lacks from whichever machine has it; true when the rail has it. */
-export async function adoptSession(ownedId: string): Promise<boolean> {
+/**
+ * Adds a session the rail lacks from whichever machine has it; true when the rail has it.
+ * A panel passes its own `signal` and gets a lookup of its own that stops when the panel does.
+ */
+export async function adoptSession(ownedId: string, signal?: AbortSignal): Promise<boolean> {
   if (rail.owned.some((session) => session.ownedId === ownedId)) return true;
   if (Date.now() - (sessionsNotFound.get(ownedId) ?? -Infinity) < SESSION_LOOKUP_RETRY_MS) return false;
+  if (signal) return lookUpSession(ownedId, AbortSignal.any([adoptController.signal, signal]));
   const pending = adoptingSessions.get(ownedId);
   if (pending) return pending;
   const lookup = lookUpSession(ownedId, adoptController.signal);

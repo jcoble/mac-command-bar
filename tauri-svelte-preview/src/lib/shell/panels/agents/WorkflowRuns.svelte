@@ -300,16 +300,23 @@
     }
   }
 
-  // A newer click, or the view going away, makes a slow lookup's answer stale.
+  // A newer click, another run, or the view going away makes a slow lookup's answer stale.
   let stageOpen = 0;
+  let stageLookup: AbortController | null = null;
+  $effect(() => () => stageLookup?.abort());
 
   async function openStage(ownedId: string | null): Promise<void> {
     if (!ownedId) return;
+    stageLookup?.abort();
+    const lookup = new AbortController();
+    stageLookup = lookup;
     const attempt = ++stageOpen;
     const generation = loadGeneration;
-    const current = (): boolean => attempt === stageOpen && generation === loadGeneration;
+    const runId = workflowState.selectedWorkflowRunId;
+    const current = (): boolean => !lookup.signal.aborted && attempt === stageOpen && generation === loadGeneration
+      && runId === workflowState.selectedWorkflowRunId;
     try {
-      const adopted = await adoptSession(ownedId);
+      const adopted = await adoptSession(ownedId, lookup.signal);
       if (!current()) return;
       if (!adopted) throw new Error('Agent conversation is not available yet.');
       await sessionRowJump(ownedId, 'session');
