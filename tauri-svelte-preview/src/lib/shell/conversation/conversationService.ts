@@ -1023,9 +1023,12 @@ async function refreshRemoteSessionActivity(streamGeneration: number): Promise<v
 
 // A session an agent started (a helper, a workflow worker) may live on any
 // machine. The rail adds it the first time an event, its name or a click
-// names it. A miss or a failed read is not retried for a few seconds, because
-// a new session's first events can come before its row is stored.
+// names it. A new session's first events can come before its row is stored, and
+// a helper waiting on a permission sends nothing more, so a miss is looked up
+// again twice, five seconds apart. After that the session is not looked up for
+// five seconds.
 const SESSION_LOOKUP_RETRY_MS = 5_000;
+const SESSION_LOOKUPS = 3;
 let adoptController = new AbortController();
 const adoptingSessions = new Map<string, Promise<boolean>>();
 const sessionsNotFound = new Map<string, number>();
@@ -1046,24 +1049,29 @@ export async function adoptSession(ownedId: string): Promise<boolean> {
 }
 
 async function lookUpSession(ownedId: string, signal: AbortSignal): Promise<boolean> {
-  try {
-    const record = await findSessionRecord(ownedId, {
-      local: listAgentConversationSessionsFromTauri,
-      remote: listRemoteAgentConversationSessionsFromTauri
-    }, signal);
-    if (signal.aborted) return false;
-    if (!record) {
+  for (let lookup = 1; ; lookup += 1) {
+    try {
+      const record = await findSessionRecord(ownedId, {
+        local: listAgentConversationSessionsFromTauri,
+        remote: listRemoteAgentConversationSessionsFromTauri
+      }, signal);
+      if (signal.aborted) return false;
+      if (record) {
+        sessionsNotFound.delete(ownedId);
+        if (!rail.owned.some((session) => session.ownedId === ownedId)) addOwnedSession(ownedSessionFromBackend(record));
+        return true;
+      }
+    } catch (error) {
+      if (signal.aborted) return false;
+      rail.error = `Could not show a new session: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    if (lookup === SESSION_LOOKUPS) {
       sessionsNotFound.set(ownedId, Date.now());
       return false;
     }
-    sessionsNotFound.delete(ownedId);
-    if (!rail.owned.some((session) => session.ownedId === ownedId)) addOwnedSession(ownedSessionFromBackend(record));
-    return true;
-  } catch (error) {
+    await waitFor(SESSION_LOOKUP_RETRY_MS, signal);
     if (signal.aborted) return false;
-    sessionsNotFound.set(ownedId, Date.now());
-    rail.error = `Could not show a new session: ${error instanceof Error ? error.message : String(error)}`;
-    return false;
+    if (rail.owned.some((session) => session.ownedId === ownedId)) return true;
   }
 }
 
@@ -1373,15 +1381,15 @@ export async function changeStructuredConversationCheckout(
 
 const preparingSends = new Map<string, AbortController>();
 
-/** Waits out the send's scroll glide; Stop ends the wait at once. */
-async function waitForSendGlide(signal: AbortSignal): Promise<void> {
+/** Waits the given time; aborting the signal ends the wait at once. */
+async function waitFor(ms: number, signal: AbortSignal): Promise<void> {
   await new Promise<void>((resolve) => {
     const finish = (): void => {
       clearTimeout(timer);
       signal.removeEventListener('abort', finish);
       resolve();
     };
-    const timer = setTimeout(finish, 300);
+    const timer = setTimeout(finish, ms);
     signal.addEventListener('abort', finish, { once: true });
     if (signal.aborted) finish();
   });
@@ -1512,7 +1520,7 @@ export async function sendStructuredMessage(
       // Image bytes cross the IPC as a JSON number array, which holds the main
       // thread (~80 ms per 600 KB measured). Wait out the send's scroll glide
       // (~250 ms in WebKit) so the message lands smoothly before that work.
-      await waitForSendGlide(preparation.signal);
+      await waitFor(300, preparation.signal);
       if (preparation.signal.aborted) {
         if (!turnWasAlreadyActive) await invoke('stop_agent_conversation_turn', {
           request: { ownedId, generation: state.generation }
