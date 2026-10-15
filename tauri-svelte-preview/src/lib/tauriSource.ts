@@ -2180,17 +2180,15 @@ export type AgentMessageFilter = {
 };
 
 /** A page of agent-to-agent messages, newest first, from one machine or every reachable one. */
-export async function listAgentMessagesFromTauri(filter: AgentMessageFilter): Promise<AgentMessage[] | null> {
-  if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<AgentMessage[]>('list_agent_messages', {
+export async function listAgentMessagesFromTauri(filter: AgentMessageFilter, signal: AbortSignal): Promise<AgentMessage[] | null> {
+  return invokeCancellable<AgentMessage[]>('list_agent_messages', {
     machine: filter.machine ?? null,
     runId: filter.runId ?? null,
     session: filter.session ?? null,
     beforeMs: filter.before?.createdAtMs ?? null,
     beforeId: filter.before?.id ?? null,
     limit: filter.limit
-  });
+  }, signal);
 }
 
 /** A workflow step waiting on the owner: a pause to answer (`waiting-input`) or a gate to approve (`waiting-approval`). */
@@ -2208,10 +2206,28 @@ export type OwnerInboxStep = {
 };
 
 /** Workflow steps waiting on the owner on this Mac and every connected machine. */
-export async function listOwnerInboxFromTauri(): Promise<OwnerInboxStep[] | null> {
-  if (!isTauriRuntime()) return null;
+export async function listOwnerInboxFromTauri(signal: AbortSignal): Promise<OwnerInboxStep[] | null> {
+  return invokeCancellable<OwnerInboxStep[]>('list_owner_inbox', {}, signal);
+}
+
+/** Invokes a command that reads other machines; aborting `signal` cancels it there and returns null. */
+async function invokeCancellable<T>(command: string, args: Record<string, unknown>, signal: AbortSignal): Promise<T | null> {
+  if (!isTauriRuntime() || signal.aborted) return null;
+  const requestId = createAgentConversationRequestId();
   const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<OwnerInboxStep[]>('list_owner_inbox');
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal.aborted) return null;
+    return await invoke<T>(command, { ...args, requestId });
+  } catch (error) {
+    if (signal.aborted) return null;
+    throw error;
+  } finally {
+    signal.removeEventListener('abort', cancel);
+  }
 }
 
 export async function listRemoteAgentConversationSessionsFromTauri(

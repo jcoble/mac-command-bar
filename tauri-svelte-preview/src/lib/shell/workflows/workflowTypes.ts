@@ -526,3 +526,8 @@ export function workflowStepFacts(node: Pick<WorkflowNodeRunRecord, 'structuredO
     prUrl: typeof output.url === 'string' && output.url ? output.url : null
   };
 }
+
+/** The machine a workflow command goes to: null for this Mac, else the remote profile id. */
+export function workflowMachine(machine: string): string | null {
+  return machine === 'mac' ? null : machine;
+}

@@ -1334,6 +1334,15 @@ impl RemoteConnectionManager {
         merge_message_pages(pages, args["limit"].as_u64().unwrap_or(100) as usize)
     }
 
+    /// Runs `work` until it ends or the desktop cancels `request_id`; a cancelled call gives `None`.
+    pub(crate) async fn unless_cancelled<T>(&self, request_id: u64, work: impl std::future::Future<Output = T>) -> Option<T> {
+        let mut cancellations = self.cancelled_requests.subscribe();
+        tokio::select! {
+            value = work => Some(value),
+            _ = wait_for_cancel(&mut cancellations, request_id) => None,
+        }
+    }
+
     /// This desktop and every connected machine, except `source`.
     pub(crate) fn message_machines(&self, source: &str) -> Vec<String> {
         std::iter::once(LOCAL_MACHINE.to_string()).chain(self.environment().ready_profile_ids)

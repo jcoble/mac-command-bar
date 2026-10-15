@@ -4,6 +4,7 @@
   import Check from '@lucide/svelte/icons/check';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+  import CircleStop from '@lucide/svelte/icons/circle-stop';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
@@ -13,6 +14,7 @@
   import { adoptSession } from '$lib/shell/conversation/conversationService.ts';
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
   import { answerWorkflowPause, approveWorkflowGate } from '$lib/shell/workflows/workflowService.ts';
+  import { workflowMachine } from '$lib/shell/workflows/workflowTypes.ts';
   import { listOwnerInboxFromTauri, type OwnerInboxStep } from '$lib/tauriSource.ts';
 
   interface Props {
@@ -63,7 +65,7 @@
     loading = true;
     error = '';
     try {
-      const found = (await listOwnerInboxFromTauri()) ?? [];
+      const found = (await listOwnerInboxFromTauri(signal)) ?? [];
       if (signal.aborted) return;
       steps = found;
       stepCount = found.length;
@@ -73,10 +75,10 @@
     if (!signal.aborted) loading = false;
   }
 
-  async function act(label: string, step: OwnerInboxStep, decision: 'approve' | 'another-round' | 'accept'): Promise<void> {
+  async function act(label: string, step: OwnerInboxStep, decision: 'approve' | 'another-round' | 'accept' | 'stop'): Promise<void> {
     const signal = shown?.signal;
     if (!signal) return;
-    const machine = step.machine === 'mac' ? null : step.machine;
+    const machine = workflowMachine(step.machine);
     const idempotencyKey = `agents:inbox:${crypto.randomUUID()}`;
     busy = true;
     error = '';
@@ -89,7 +91,11 @@
       if (signal.aborted) return;
       start();
     } catch (cause) {
-      if (!signal.aborted) error = `${label}: ${message(cause)}`;
+      // The step may have been answered elsewhere; show what is waiting now, then the error.
+      if (!signal.aborted) {
+        start();
+        error = `${label}: ${message(cause)}`;
+      }
     }
     if (!signal.aborted) busy = false;
   }
@@ -145,6 +151,7 @@
               {:else}
                 <Button size="sm" disabled={busy} onclick={() => void act('Another round', step, 'another-round')}><RotateCcw />Another round</Button>
                 <Button size="sm" variant="outline" disabled={busy} onclick={() => void act('Accept', step, 'accept')}><Check />Accept</Button>
+                <Button size="sm" variant="ghost" disabled={busy} onclick={() => void act('Stop', step, 'stop')}><CircleStop />Stop</Button>
               {/if}
               {#if step.ownedId}
                 <Button size="sm" variant="ghost" onclick={() => step.ownedId && void open(step.ownedId)}>Open</Button>

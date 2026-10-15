@@ -886,9 +886,10 @@ pub async fn list_agent_messages(
     before_ms: Option<i64>,
     before_id: Option<String>,
     limit: i64,
+    request_id: u64,
 ) -> CommandResult<Vec<serde_json::Value>> {
-    Ok(remote.list_messages(machine.as_deref(), serde_json::json!({"run_id": run_id, "session": session,
-        "before_ms": before_ms, "before_id": before_id, "limit": limit})).await)
+    let args = serde_json::json!({"run_id": run_id, "session": session, "before_ms": before_ms, "before_id": before_id, "limit": limit});
+    Ok(remote.unless_cancelled(request_id, remote.list_messages(machine.as_deref(), args)).await.unwrap_or_default())
 }
 
 #[tauri::command]

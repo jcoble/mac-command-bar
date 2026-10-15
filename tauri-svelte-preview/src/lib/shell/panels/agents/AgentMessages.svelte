@@ -71,7 +71,7 @@
         runId: run,
         before: last ? { createdAtMs: last.createdAtMs, id: last.id } : null,
         limit: LIMIT
-      })) ?? [];
+      }, signal)) ?? [];
       if (signal.aborted) return;
       messages = older ? [...messages, ...page] : page;
       hasOlder = page.length === LIMIT;

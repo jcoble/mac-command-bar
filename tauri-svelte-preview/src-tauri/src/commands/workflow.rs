@@ -44,18 +44,22 @@ pub(crate) async fn get_workflow_run(
 pub(crate) async fn list_owner_inbox(
     engine: tauri::State<'_, WorkflowEngine>,
     remote: tauri::State<'_, crate::agent_conversation::remote::RemoteConnectionManager>,
+    request_id: u64,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let mut steps = Vec::new();
-    for machine in remote.message_machines("") {
-        let page = if machine == crate::agent_conversation::remote::LOCAL_MACHINE {
-            crate::workflow::execute_operation(&engine, "inbox", serde_json::Value::Null).await
-        } else {
-            remote.workflow_operation(&machine, "inbox".into(), serde_json::Value::Null).await
-        };
-        let Ok(serde_json::Value::Array(page)) = page else { continue };
-        steps.extend(page.into_iter().map(|mut step| { step["machine"] = serde_json::json!(machine); step }));
-    }
-    Ok(steps)
+    let work = async {
+        let mut steps = Vec::new();
+        for machine in remote.message_machines("") {
+            let page = if machine == crate::agent_conversation::remote::LOCAL_MACHINE {
+                crate::workflow::execute_operation(&engine, "inbox", serde_json::Value::Null).await
+            } else {
+                remote.workflow_operation(&machine, "inbox".into(), serde_json::Value::Null).await
+            };
+            let Ok(serde_json::Value::Array(page)) = page else { continue };
+            steps.extend(page.into_iter().map(|mut step| { step["machine"] = serde_json::json!(machine); step }));
+        }
+        steps
+    };
+    Ok(remote.unless_cancelled(request_id, work).await.unwrap_or_default())
 }
 
 /// The repository's workflow files, as paths relative to `repo_root`.

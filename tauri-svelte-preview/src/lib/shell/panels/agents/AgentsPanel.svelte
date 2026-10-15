@@ -43,6 +43,7 @@
   import { requestOpenConversationFile } from '$lib/shell/openFileBus.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { parseRemoteWorkspacePath } from '$lib/workspacePaths.ts';
+  import { listOwnerInboxFromTauri } from '$lib/tauriSource.ts';
 
   import AgentRow from './AgentRow.svelte';
   import { AGENT_STATUS_TONE, AGENT_STATUS_WORD, agentActivityRows } from './agentActivityModel.ts';
@@ -73,6 +74,21 @@
     session.pendingPermission === true || session.pendingInput === true
       || session.runtimeState === 'waiting-approval' || session.runtimeState === 'waiting-input'));
   const inboxCount = $derived(inboxStepCount + waitingSessions.length);
+  // The count covers waiting steps before the Inbox is opened: read once each time the panel shows.
+  $effect(() => {
+    if (!visible) return;
+    const controller = new AbortController();
+    void countInboxSteps(controller.signal);
+    return () => controller.abort();
+  });
+  async function countInboxSteps(signal: AbortSignal): Promise<void> {
+    try {
+      const steps = await listOwnerInboxFromTauri(signal);
+      if (!signal.aborted && steps) inboxStepCount = steps.length;
+    } catch {
+      // The Inbox view reports a failed read when it is opened.
+    }
+  }
   const VIEW_OPTIONS = $derived([
     { value: 'session', label: 'Session' },
     { value: 'workflows', label: 'Workflows' },
