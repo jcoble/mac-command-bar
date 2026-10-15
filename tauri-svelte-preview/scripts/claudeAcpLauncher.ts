@@ -9,6 +9,11 @@
 //      session through the documented `emitRawSDKMessages` session meta).
 //   D. _meta.jetbrains.air.outOfTurn on root updates while no prompt is open.
 //   E. session/cancel also stops the running background tasks.
+//   F. The context window stays the effective one from getContextUsage (it
+//      includes an autoCompactWindow override); results report the model's full
+//      capacity, which the stock adapter would otherwise store and cache.
+//   G. Out of a turn, ExitPlanMode offers no "clear context" choice: a fresh
+//      context continues the open prompt, and there is none.
 // The release build compiles this file with bun (prepareReleaseAdapters.ts).
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,6 +22,7 @@ import { ClaudeAcpAgent, nodeToWebReadable, nodeToWebWritable } from '@agentclie
 import { runPromptWithCancellation } from '@agentclientprotocol/claude-agent-acp/dist/acp-agent.js';
 import { withAirMeta } from '@agentclientprotocol/claude-agent-acp/dist/air-extension.js';
 import { GOAL_CONTROL_METHOD, parseGoalRequest } from '@agentclientprotocol/claude-agent-acp/dist/goal-extension.js';
+import { exitPlanClearContextMode } from '@agentclientprotocol/claude-agent-acp/dist/permissions/effects.js';
 import { applyManagedPolicyEnv } from '@agentclientprotocol/claude-agent-acp/dist/managed-policy.js';
 import { onSessionIndexRequests } from '@agentclientprotocol/claude-agent-acp/dist/session-index/connection.js';
 
@@ -36,7 +42,7 @@ logger?.log('Claude ACP started');
 type Params = Record<string, any>;
 const RAW_TASKS = [{ type: 'system', subtype: 'background_tasks_changed' }];
 const SESSION_LEVEL = new Set(['available_commands_update', 'current_mode_update', 'config_option_update', 'session_info_update']);
-const openPrompts = new Map<string, (outcome: any) => void>(); // sessionId -> listener for the end of the prompt's work
+const openPrompts = new Map<string, (outcome: any) => void>(); // sessionId -> listener for the end of the active prompt's work
 const backgroundTasks = new Map<string, Array<{ task_id: string }>>(); // sessionId -> Claude Code's latest background task list
 let agent: LauncherAgent;
 let client: Client;
@@ -56,7 +62,12 @@ class Client {
     }
     return this.ctx.notify(methods.client.session.update, n as any);
   }
-  requestPermission(p: any, signal?: AbortSignal) { return this.ctx.request(methods.client.session.requestPermission, p, { cancellationSignal: signal }); }
+  requestPermission(p: any, signal?: AbortSignal) {
+    if (agent.sessions[p.sessionId] && !openPrompts.has(p.sessionId)) {
+      p = { ...p, options: p.options.filter((o: any) => exitPlanClearContextMode(o.optionId) === undefined) };
+    }
+    return this.ctx.request(methods.client.session.requestPermission, p, { cancellationSignal: signal });
+  }
   readTextFile(p: any) { return this.ctx.request(methods.client.fs.readTextFile, p); }
   writeTextFile(p: any) { return this.ctx.request(methods.client.fs.writeTextFile, p); }
   createElicitation(p: any, signal?: AbortSignal) { return this.ctx.request(methods.client.elicitation.create, p, { cancellationSignal: signal }); }
@@ -85,10 +96,10 @@ class LauncherAgent extends ClaudeAcpAgent {
     const { sessionId } = params;
     let mine: (outcome: any) => void;
     return new Promise((resolve, reject) => {
-      let inserted = false;
-      mine = (outcome) => inserted && resolve(outcome);
-      openPrompts.set(sessionId, mine);
-      this.startTurn(params as any, { inserted: () => { inserted = true; }, ended: resolve, failed: reject } as any).catch(reject);
+      mine = resolve;
+      // Open only once the prompt is active: until then, an earlier autonomous
+      // cycle's updates stay out of turn and its end does not answer this prompt.
+      this.startTurn(params as any, { inserted: () => openPrompts.set(sessionId, mine), ended: resolve, failed: reject } as any).catch(reject);
     }).finally(() => openPrompts.get(sessionId) === mine && openPrompts.delete(sessionId));
   }
   async cancel(params: Params) {
@@ -100,12 +111,38 @@ class LauncherAgent extends ClaudeAcpAgent {
   }
 }
 
+// F: a result never widens a window the session already holds as authoritative.
+const clampedQueries = new WeakSet<object>();
+function clampResultWindows(session: any) {
+  const { query } = session;
+  if (!query || clampedQueries.has(query)) return;
+  clampedQueries.add(query);
+  const next = query.next.bind(query);
+  query.next = async (...args: any[]) => {
+    const result = await next(...args);
+    const message = result.value;
+    if (!result.done && message?.type === 'result' && session.contextWindowAuthoritative && session.contextWindowSize > 0) {
+      for (const usage of Object.values<any>(message.modelUsage ?? {})) {
+        if (usage.contextWindow > session.contextWindowSize) usage.contextWindow = session.contextWindowSize;
+      }
+    }
+    return result;
+  };
+}
+
 const withRawTasks = (p: any) => ({ ...p, _meta: { ...p._meta, claudeCode: { ...p._meta?.claudeCode, emitRawSDKMessages: RAW_TASKS } } });
 const passThrough = { parse: (p: any) => p };
 const app = acpAgent({ name: 'claude-code-acp' })
   .onConnect((connection) => {
     client = new Client(connection.client);
     agent = new LauncherAgent(client as any, logger as any, { foreground } as any);
+    agent.sessions = new Proxy(agent.sessions, {
+      set(sessions, id, session) {
+        if (session) clampResultWindows(session);
+        sessions[id as string] = session;
+        return true;
+      }
+    });
   })
   .onRequest(methods.agent.initialize, (ctx) => agent.initialize(ctx.params))
   .onRequest(methods.agent.session.new, (ctx) => agent.newSession(withRawTasks(ctx.params)))
