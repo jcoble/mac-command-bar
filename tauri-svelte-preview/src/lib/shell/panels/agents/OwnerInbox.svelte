@@ -96,8 +96,10 @@
 
   async function open(ownedId: string): Promise<void> {
     const attempt = ++opening;
+    const signal = shown?.signal;
+    if (!signal) return;
     try {
-      const adopted = await adoptSession(ownedId);
+      const adopted = await adoptSession(ownedId, signal);
       if (attempt !== opening) return;
       if (!adopted) throw new Error('That session is not available yet.');
       await sessionRowJump(ownedId, 'session');

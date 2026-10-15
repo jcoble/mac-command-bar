@@ -143,6 +143,8 @@
     transcriptError = '';
     fileError = '';
     lookupError = '';
+    helperLookup?.abort();
+    helperLookup = null;
     selection += 1;
   }
 
@@ -161,6 +163,8 @@
 
   // Each click or release counts up, so a slow helper lookup never overrides a newer choice.
   let selection = 0;
+  // A release stops the helper lookup in flight.
+  let helperLookup: AbortController | null = null;
 
   async function select(childId: string): Promise<void> {
     if (!ownedId || !conversation || !visible || view !== 'session' || openedChildId === childId) return;
@@ -171,7 +175,10 @@
     if (helper) {
       lookupError = '';
       const helperParentId = ownedId;
-      const adopted = await adoptSession(childId);
+      helperLookup?.abort();
+      const lookup = new AbortController();
+      helperLookup = lookup;
+      const adopted = await adoptSession(childId, lookup.signal);
       if (attempt !== selection || ownedId !== helperParentId || !conversation || !visible || view !== 'session') return;
       if (adopted) {
         setConversationSelectedChild(helperParentId, null);

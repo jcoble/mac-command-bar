@@ -38,8 +38,9 @@
   let loading = $state(false);
   let error = $state('');
   let loader: AbortController | null = null;
-  // A newer click, or the view going away, makes a slow session lookup stale.
+  // A newer click, or the view going away, makes a slow session lookup stale and stops it.
   let opening = 0;
+  let openLookup: AbortController | null = null;
 
   $effect(() => {
     if (!visible) return;
@@ -49,6 +50,8 @@
       loader?.abort();
       loader = null;
       opening += 1;
+      openLookup?.abort();
+      openLookup = null;
     };
   });
 
@@ -85,8 +88,11 @@
 
   async function open(ownedId: string): Promise<void> {
     const attempt = ++opening;
+    openLookup?.abort();
+    const lookup = new AbortController();
+    openLookup = lookup;
     try {
-      const adopted = await adoptSession(ownedId);
+      const adopted = await adoptSession(ownedId, lookup.signal);
       if (attempt !== opening) return;
       if (!adopted) throw new Error('That session is not available yet.');
       await sessionRowJump(ownedId, 'session');
