@@ -940,7 +940,7 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
   try {
     const stopTitleEvents = await listen<{ ownedId: string; title: string }>(
       'session-title-changed',
-      ({ payload }) => showNamedSession(payload.ownedId, payload.title)
+      ({ payload }) => showNamedSession(payload.ownedId, payload.title, streamGeneration)
     );
     stopTitles = trackTauriListener(stopTitleEvents);
     const stopRemoteConnectionEvents = await listen<{
@@ -1075,7 +1075,9 @@ async function lookUpSession(ownedId: string, signal: AbortSignal): Promise<bool
   }
 }
 
-function showNamedSession(ownedId: string, title: string): void {
+function showNamedSession(ownedId: string, title: string, streamGeneration: number): void {
+  // A name heard after teardown, or from an older stream, starts nothing.
+  if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
   if (rail.owned.some((session) => session.ownedId === ownedId)) updateOwnedSession(ownedId, { title });
   else void adoptSession(ownedId);
 }
