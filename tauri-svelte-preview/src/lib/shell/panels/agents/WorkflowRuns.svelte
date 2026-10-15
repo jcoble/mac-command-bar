@@ -143,6 +143,8 @@
       controller.abort();
       actionController?.abort();
       actionController = null;
+      stageLookup?.abort();
+      stageLookup = null;
       stop();
       loadGeneration += 1;
       resetWorkflowStore();
@@ -308,7 +310,6 @@
   // A newer click, another run, or the view going away makes a slow lookup's answer stale.
   let stageOpen = 0;
   let stageLookup: AbortController | null = null;
-  $effect(() => () => stageLookup?.abort());
 
   async function openStage(ownedId: string | null): Promise<void> {
     if (!ownedId) return;

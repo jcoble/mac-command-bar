@@ -322,6 +322,9 @@ const scanRecord = {
   assert.equal(found?.pendingPermission, true);
   const offline = await findSessionRecord('helper', { local, remote: async () => null } as never, new AbortController().signal);
   assert.equal(offline?.pendingPermission, false);
+  const failing = async () => { throw new Error('every machine failed'); };
+  const unreachable = await findSessionRecord('helper', { local, remote: failing } as never, new AbortController().signal);
+  assert.equal(unreachable?.pendingPermission, false);
 }
 { // find_session_record_returns_null_when_no_machine_has_it
   const none = async () => null;

@@ -317,7 +317,13 @@ export async function findSessionRecord(
   if (signal.aborted) return null;
   // A cached remote row may be stale (a pending permission, say); its machine has the live one.
   if (local && !local.remoteProfileId) return local;
-  const remote = (await readers.remote(signal))?.find((record) => record.ownedId === ownedId);
+  let remote: AgentConversationSessionRecord | undefined;
+  try {
+    remote = (await readers.remote(signal))?.find((record) => record.ownedId === ownedId);
+  } catch (error) {
+    // With no machine answering, the cached row is still the session.
+    if (!local || signal.aborted) throw error;
+  }
   return signal.aborted ? null : remote ?? local ?? null;
 }
 
