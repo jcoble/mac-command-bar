@@ -32,6 +32,8 @@
   let error = $state('');
   let loader: AbortController | null = null;
   // Lives while the inbox is shown; an action that finishes after it closes changes nothing.
+  // The owner's decision itself is not cancelled: stopping it partway on the other machine
+  // could leave a gate approved with its next step never started.
   let shown: AbortController | null = null;
   // A newer click, or the view going away, makes a slow session lookup stale.
   let opening = 0;
