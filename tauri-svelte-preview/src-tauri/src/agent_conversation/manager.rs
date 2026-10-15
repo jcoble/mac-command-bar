@@ -12737,11 +12737,15 @@ mod tests {
             owned_id: "owned-step".into(), provider: "codex".into(),
             cwd: worktree.to_string_lossy().into_owned(), title: "Build · build".into(),
             prompt: "Build it".into(), role_id: "build".into(), model: None, effort: None,
-            permission: None, output_contract: crate::workflow::WorkflowOutputContract::ImplementationReceipt,
+            permission: None,
         }).await.expect("dispatch");
         let row = store.get_session("owned-step").unwrap().unwrap();
         assert_eq!(row.project_id.as_deref(), Some("project-demo"));
         assert_eq!(*announced.lock().unwrap(), [("owned-step".to_string(), "Build · build".to_string())]);
+        // The worker's chat shows the task as written, not a JSON wrapper.
+        let events = fixture.manager.snapshot("owned-step").unwrap().unwrap().events;
+        assert!(events.iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::UserMessage { text, .. } if text == "Build it")), "{events:?}");
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -618,7 +618,6 @@ pub(crate) struct AgentDispatchRequest {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub permission: Option<String>,
-    pub output_contract: WorkflowOutputContract,
 }
 
 #[derive(Debug, Clone)]
@@ -739,16 +738,11 @@ impl AgentRuntimePort for AgentRuntimeManager {
                     .map_err(WorkflowError::Runtime)?;
                 }
             }
-            let envelope = json!({
-                "roleId": request.role_id, "model": request.model, "effort": request.effort,
-                "permission": request.permission, "outputContract": request.output_contract.name(),
-                "task": request.prompt
-            });
             self.prompt(
                 &connection.owned_id,
                 connection.generation,
                 AgentPrompt {
-                    text: envelope.to_string(),
+                    text: request.prompt,
                     images: Vec::new(),
                     attachment_ids: Vec::new(),
                 },
@@ -2408,7 +2402,6 @@ impl WorkflowEngine {
                     model: role.model_policy.value,
                     effort: role.effort_policy.value,
                     permission: role.permission_policy.value,
-                    output_contract: role.output_contract,
                 })
                 .await;
             let mut run = self.require_run(run_id)?;
