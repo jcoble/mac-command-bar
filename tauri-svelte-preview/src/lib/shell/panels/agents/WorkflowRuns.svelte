@@ -1,35 +1,28 @@
 <script lang="ts">
   import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { untrack } from 'svelte';
-  import ArrowDown from '@lucide/svelte/icons/arrow-down';
-  import ArrowUp from '@lucide/svelte/icons/arrow-up';
   import Check from '@lucide/svelte/icons/check';
   import CircleStop from '@lucide/svelte/icons/circle-stop';
-  import Copy from '@lucide/svelte/icons/copy';
   import Pause from '@lucide/svelte/icons/pause';
   import Play from '@lucide/svelte/icons/play';
   import Plus from '@lucide/svelte/icons/plus';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
-  import Save from '@lucide/svelte/icons/save';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
-  import X from '@lucide/svelte/icons/x';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
   import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
-  import {
-    listAgentConversationSessionsFromTauri,
-    readAssemblySettingFromTauri,
-    writeAssemblySettingFromTauri
-  } from '$lib/tauriSource';
+  import { listAgentConversationSessionsFromTauri } from '$lib/tauriSource';
   import { ownedSessionFromBackend } from '$lib/shell/ownedSessions.ts';
   import { addOwnedSession, rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import {
+    answerWorkflowPause,
     approveWorkflowGate,
     cancelWorkflowRun,
     createWorkflowRun,
+    listWorkflowFiles,
     listWorkflowRuns,
     pauseWorkflowRun,
     redirectWorkflowNode,
@@ -49,82 +42,36 @@
     upsertWorkflowSnapshot,
     workflowState
   } from '$lib/shell/workflows/workflowStore.svelte.ts';
-  import {
-    savedWorkflowDefinition,
-    taskWorkflowDefinition,
-    type SavedWorkflowStage,
-    type SavedWorkflowTemplate,
-    type TaskWorkflowProviders,
-    type WorkflowProvider
-  } from '$lib/shell/workflows/taskWorkflowTemplate.ts';
   import type {
     WorkflowNodeRunRecord,
     WorkflowNodeState,
-    WorkflowOutputContract,
     WorkflowRunRecord
   } from '$lib/shell/workflows/workflowTypes.ts';
 
   interface Props {
     visible: boolean;
     root: string;
+    /** The remote profile whose engine runs this project's workflows; null for this Mac. */
+    machine: string | null;
   }
 
-  let { visible, root }: Props = $props();
+  let { visible, root, machine }: Props = $props();
   let composing = $state(false);
-  let task = $state('');
-  let providers = $state<TaskWorkflowProviders>({
-    plan: 'claude',
-    implement: 'codex',
-    review: 'claude'
-  });
+  let taskKey = $state('');
+  let taskTitle = $state('');
+  let taskBody = $state('');
+  let workflowFiles = $state<string[]>([]);
+  let workflowPath = $state('');
   let busy = $state<string | null>(null);
   let loadGeneration = 0;
   let actionController: AbortController | null = null;
   let now = $state(Date.now());
 
-  const STAGES = [
-    ['plan', 'Plan'],
-    ['implement', 'Build'],
-    ['review', 'Review']
-  ] as const;
-
-  const TEMPLATES_SETTING_KEY = 'agents.workflow-templates';
-  // Stages a saved workflow can add. No Plan stage: saved workflows start from an approved plan.
-  const STAGE_PRESETS: { label: string; contract: WorkflowOutputContract; provider: WorkflowProvider; instructions: string }[] = [
-    { label: 'Implement', contract: 'ImplementationReceipt', provider: 'codex', instructions: 'Implement the approved plan, keep the diff scoped, and verify the changed behavior.' },
-    { label: 'Review', contract: 'ReviewReceipt', provider: 'claude', instructions: 'Review the implementation against the approved plan. Report one blocking finding, or a non-blocking no-finding receipt.' },
-    { label: 'Spec check', contract: 'ReviewReceipt', provider: 'claude', instructions: 'Independently check the implementation against each requirement in the approved plan. Return one blocking finding for any requirement that is missing or wrong, or a non-blocking no-finding receipt.' },
-    { label: 'Verify', contract: 'VerificationReceipt', provider: 'claude', instructions: 'Run relevant regression, integration, and UI checks. Browser checks must be headless at 1710x990 with the viewport verified after launch; save before and after screenshots to ~/Workbox/screenshots/ and stop the browser process tree. For native Assembly checks, use workbox-native-ui. Report commands, exits, evidence, and cleanup. Set evidenceArtifacts to [] when there is no saved artifact; otherwise each entry must contain id, kind, path, url, and digest.' },
-    { label: 'Open PR', contract: 'PullRequestReceipt', provider: 'codex', instructions: 'Commit any verified uncommitted changes, push the branch, then open or update its pull request with before and after UI screenshots when relevant. For Notion tasks use a tsk-<id> branch. End every commit message body with Committed-by: <actual committer>; never add a co-author trailer. Do not merge. Return the PR URL and branch.' },
-    { label: 'PR review', contract: 'ReviewReceipt', provider: 'claude', instructions: 'Independently review the opened pull request diff, check results, and before and after UI evidence against the approved plan. Return one blocking finding if the PR is not ready to merge, or a non-blocking no-finding receipt.' },
-    { label: 'Merge PR', contract: 'PullRequestMergeReceipt', provider: 'codex', instructions: 'After a passing PR review, merge the PR from the Open PR receipt, verify its merged state and merge commit SHA on GitHub, and return both. If the merge fails, report the failure instead of a success receipt.' }
-  ];
-  const RECEIPTS: [WorkflowOutputContract, string][] = [
-    ['ImplementationReceipt', 'Implementation'],
-    ['ReviewReceipt', 'Review'],
-    ['SpecComplianceReceipt', 'Spec report (never blocks)'],
-    ['VerificationReceipt', 'Verification'],
-    ['PullRequestReceipt', 'Pull request'],
-    ['PullRequestMergeReceipt', 'Merge']
-  ];
-
-  let templates = $state<SavedWorkflowTemplate[]>([]);
-  // null runs the built-in planning workflow; otherwise the saved workflow being edited.
-  let draft = $state<SavedWorkflowTemplate | null>(null);
-  const draftError = $derived.by(() => {
-    if (!draft) return null;
-    try {
-      savedWorkflowDefinition(draft);
-      return null;
-    } catch (error) {
-      return message(error);
-    }
-  });
-
   const runs = $derived(filteredWorkflowRuns());
   const selected = $derived(selectedWorkflowRun());
   const orderedNodes = $derived(selected ? orderNodes(selected) : []);
   const waitingNode = $derived(selected?.nodes.find((node) => node.state === 'waiting-approval') ?? null);
+  const pausedNode = $derived(selected?.nodes.find((node) => node.state === 'waiting-input') ?? null);
   const failedNode = $derived(selected?.nodes.find((node) => node.state === 'failed') ?? null);
   const runningNode = $derived(selected?.nodes.find((node) => node.state === 'running') ?? null);
   const nextNode = $derived(
@@ -180,13 +127,15 @@
     if (!visible) return;
     const controller = new AbortController();
     const generation = ++loadGeneration;
+    const owner = machine;
     const stop = untrack(() => subscribeWorkflowSnapshots((snapshot) => {
-      if (controller.signal.aborted || generation !== loadGeneration) return;
+      // These are this Mac's runs; a remote machine's runs are read from it.
+      if (controller.signal.aborted || generation !== loadGeneration || owner) return;
       if (Array.isArray(snapshot)) applyWorkflowSnapshots(snapshot);
       else upsertWorkflowSnapshot(snapshot);
     }));
     void refresh(controller.signal, generation);
-    void loadTemplates(controller.signal);
+    void loadWorkflowFiles(root, owner, controller.signal);
     return () => {
       controller.abort();
       actionController?.abort();
@@ -197,12 +146,15 @@
     };
   });
 
-  async function loadTemplates(signal: AbortSignal): Promise<void> {
+  async function loadWorkflowFiles(repoRoot: string, owner: string | null, signal: AbortSignal): Promise<void> {
+    if (!repoRoot) return;
     try {
-      const value = await readAssemblySettingFromTauri(TEMPLATES_SETTING_KEY);
-      if (!signal.aborted && Array.isArray(value)) templates = value as SavedWorkflowTemplate[];
+      const files = await listWorkflowFiles(repoRoot, owner);
+      if (signal.aborted || !files) return;
+      workflowFiles = files;
+      if (!files.includes(workflowPath)) workflowPath = files[0] ?? '';
     } catch (error) {
-      if (!signal.aborted) workflowState.error = `Could not load saved workflows: ${message(error)}`;
+      if (!signal.aborted) workflowState.error = `Could not list workflows: ${message(error)}`;
     }
   }
 
@@ -288,7 +240,7 @@
   async function refresh(signal: AbortSignal, generation = loadGeneration): Promise<void> {
     beginWorkflowLoad();
     try {
-      const snapshots = await listWorkflowRuns();
+      const snapshots = await listWorkflowRuns(machine);
       if (signal.aborted || generation !== loadGeneration) return;
       applyWorkflowSnapshots(snapshots);
       if (!workflowState.selectedWorkflowRunId && snapshots?.length) {
@@ -328,91 +280,25 @@
   }
 
   async function createAndStart(): Promise<void> {
-    const trimmed = task.trim();
-    if (!trimmed || !root || draftError) return;
-    if (draft && !(await saveTemplate())) return;
+    const task = { key: taskKey.trim(), title: taskTitle.trim(), body: taskBody.trim() };
+    if (!task.key || !task.title || !root || !workflowPath) return;
     await control('Starting workflow', async () => {
       const created = await createWorkflowRun({
-        definition: draft ? savedWorkflowDefinition(draft) : taskWorkflowDefinition(providers),
-        input: { task: trimmed, cwd: root },
+        repoRoot: root,
+        workflowPath,
+        task,
+        input: {},
         idempotencyKey: key('create')
-      });
+      }, machine);
       if (!created) return null;
-      const started = await startWorkflowRun({ runId: created.id, idempotencyKey: key('start') });
+      const started = await startWorkflowRun({ runId: created.id, idempotencyKey: key('start') }, machine);
       return started ?? created;
     });
     if (!workflowState.error) {
-      task = '';
+      taskKey = '';
+      taskTitle = '';
+      taskBody = '';
       composing = false;
-    }
-  }
-
-  function setProvider(stage: keyof TaskWorkflowProviders, value: string): void {
-    providers[stage] = value as WorkflowProvider;
-  }
-
-  function newId(prefix: string): string {
-    return `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
-  }
-
-  function stageFrom(label: string, earlier: SavedWorkflowStage[]): SavedWorkflowStage {
-    const preset = STAGE_PRESETS.find((item) => item.label === label) ?? STAGE_PRESETS[0];
-    return {
-      id: newId('stage'),
-      title: preset.label,
-      instructions: preset.instructions,
-      provider: preset.provider,
-      outputContract: preset.contract,
-      redoStageId: preset.contract === 'ReviewReceipt'
-        ? earlier.findLast((item) => item.outputContract === 'ImplementationReceipt')?.id ?? null
-        : null,
-      approvalPrompt: null
-    };
-  }
-
-  function chooseWorkflow(id: string): void {
-    if (id === 'built-in') {
-      draft = null;
-    } else if (id === 'new') {
-      const stages: SavedWorkflowStage[] = [];
-      for (const label of ['Implement', 'Review', 'Verify', 'Open PR', 'PR review']) {
-        stages.push(stageFrom(label, stages));
-      }
-      draft = { id: newId('saved'), name: '', stages };
-    } else {
-      const template = templates.find((item) => item.id === id);
-      if (template) draft = $state.snapshot(template);
-    }
-  }
-
-  function duplicateTemplate(): void {
-    if (!draft) return;
-    draft = { ...$state.snapshot(draft), id: newId('saved'), name: `${draft.name} copy` };
-  }
-
-  function addStage(label: string): void {
-    if (draft) draft.stages.push(stageFrom(label, draft.stages));
-  }
-
-  function moveStage(index: number, offset: number): void {
-    if (!draft) return;
-    const [stage] = draft.stages.splice(index, 1);
-    draft.stages.splice(index + offset, 0, stage);
-  }
-
-  async function saveTemplate(): Promise<boolean> {
-    if (!draft || draftError) return false;
-    const saved = $state.snapshot(draft);
-    const next = templates.some((item) => item.id === saved.id)
-      ? templates.map((item) => (item.id === saved.id ? saved : item))
-      : [...templates, saved];
-    try {
-      await writeAssemblySettingFromTauri(TEMPLATES_SETTING_KEY, next);
-      templates = next;
-      return true;
-    } catch (error) {
-      workflowState.error = `Could not save workflow: ${message(error)}`;
-      return false;
     }
   }
 
@@ -434,7 +320,7 @@
 <div class="flex h-full min-h-0 flex-col">
   <div class="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
     <p class="min-w-0 text-sm text-muted-foreground">
-      Scripted agent stages. New task pauses for approval after spec, plan, and build; saved workflows run straight through.
+      Runs of this project's workflows from <code>.assembly/workflows/</code>.
     </p>
     <Button size="sm" variant={composing ? 'secondary' : 'default'} onclick={() => (composing = !composing)}>
       <Plus />
@@ -450,147 +336,33 @@
 
   {#if composing}
     <form class="flex max-h-[60%] flex-col gap-3 overflow-y-auto border-b border-border bg-card p-3" onsubmit={(event) => { event.preventDefault(); void createAndStart(); }}>
-      <div class="flex items-end gap-2">
-        <label class="flex min-w-0 flex-1 flex-col gap-1 text-xs text-muted-foreground">
+      {#if workflowFiles.length === 0}
+        <p class="text-sm text-muted-foreground">This project has no workflows yet. Ask an agent to write one in <code>.assembly/workflows/</code>.</p>
+      {:else}
+        <label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
           Workflow
-          <select
-            value={draft?.id ?? 'built-in'}
-            onchange={(event) => chooseWorkflow(event.currentTarget.value)}
-            class="h-8 min-w-0 rounded-lg border border-input bg-background px-2 text-sm text-foreground outline-none focus-visible:border-ring"
-          >
-            <option value="built-in">New task (spec and plan first)</option>
-            {#each templates as template (template.id)}
-              <option value={template.id}>{template.name}</option>
+          <select bind:value={workflowPath} class="h-8 rounded-lg border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring min-w-0 text-foreground">
+            {#each workflowFiles as file (file)}
+              <option value={file}>{file.replace('.assembly/workflows/', '')}</option>
             {/each}
-            {#if draft && !templates.some((item) => item.id === draft?.id)}
-              <option value={draft.id}>{draft.name.trim() || 'Unsaved workflow'}</option>
-            {/if}
-            <option value="new">New saved workflow…</option>
           </select>
         </label>
-        {#if draft}
-          <Button size="sm" variant="outline" type="button" disabled={draftError !== null} onclick={() => void saveTemplate()}><Save />Save</Button>
-          <Button size="sm" variant="outline" type="button" onclick={duplicateTemplate}><Copy />Duplicate</Button>
-        {/if}
-      </div>
-      <label class="flex flex-col gap-1.5 text-sm font-medium">
-        {draft ? 'Approved plan' : 'Task'}
+        <div class="grid grid-cols-[8rem_1fr] gap-2">
+          <input bind:value={taskKey} placeholder="TSK-123" aria-label="Task key" class="h-8 min-w-0 rounded-lg border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring" />
+          <input bind:value={taskTitle} placeholder="Task title" aria-label="Task title" class="h-8 min-w-0 rounded-lg border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring" />
+        </div>
         <textarea
-          bind:value={task}
+          bind:value={taskBody}
           rows="4"
-          placeholder={draft ? 'Paste the reviewed plan and its ordered steps…' : 'Describe the outcome for the agents…'}
+          placeholder="Task description for the agents…"
+          aria-label="Task description"
           class="min-h-24 resize-y rounded-xl border border-input bg-background px-3 py-2 text-sm font-normal outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40"
         ></textarea>
-      </label>
-      {#if draft}
-        <input
-          bind:value={draft.name}
-          placeholder="Workflow name"
-          aria-label="Workflow name"
-          class="h-8 rounded-lg border border-input bg-background px-2 text-sm outline-none focus-visible:border-ring"
-        />
-        <ol class="flex flex-col gap-2">
-          {#each draft.stages as stage, index (stage.id)}
-            <li class="flex flex-col gap-1.5 rounded-lg border border-border bg-background p-2">
-              <div class="flex items-center gap-1">
-                <span class="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold">{index + 1}</span>
-                <input
-                  bind:value={stage.title}
-                  aria-label="Stage title"
-                  class="h-7 min-w-0 flex-1 rounded-md bg-transparent px-1.5 text-sm font-medium outline-none focus-visible:bg-muted"
-                />
-                <Button size="icon-xs" variant="ghost" type="button" aria-label="Move up" disabled={index === 0} onclick={() => moveStage(index, -1)}><ArrowUp /></Button>
-                <Button size="icon-xs" variant="ghost" type="button" aria-label="Move down" disabled={index === draft.stages.length - 1} onclick={() => moveStage(index, 1)}><ArrowDown /></Button>
-                <Button size="icon-xs" variant="ghost" type="button" aria-label="Remove stage" onclick={() => draft?.stages.splice(index, 1)}><X /></Button>
-              </div>
-              <textarea
-                bind:value={stage.instructions}
-                rows="2"
-                aria-label="Stage instructions"
-                class="resize-y rounded-md border border-input bg-background px-2 py-1 text-xs outline-none focus-visible:border-ring"
-              ></textarea>
-              <div class="grid grid-cols-3 gap-2">
-                <label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
-                  Agent
-                  <select bind:value={stage.provider} class="h-7 min-w-0 rounded-md border border-input bg-background px-1.5 text-xs text-foreground outline-none focus-visible:border-ring">
-                    <option value="codex">Codex</option>
-                    <option value="claude">Claude</option>
-                    <option value="antigravity">Agy</option>
-                  </select>
-                </label>
-                <label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
-                  Receipt
-                  <select
-                    value={stage.outputContract}
-                    onchange={(event) => {
-                      stage.outputContract = event.currentTarget.value as WorkflowOutputContract;
-                      if (stage.outputContract !== 'ReviewReceipt') stage.redoStageId = null;
-                    }}
-                    class="h-7 min-w-0 rounded-md border border-input bg-background px-1.5 text-xs text-foreground outline-none focus-visible:border-ring">
-                    {#each RECEIPTS as [contract, label]}
-                      <option value={contract}>{label}</option>
-                    {/each}
-                  </select>
-                </label>
-                <label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
-                  On finding, redo
-                  <select
-                    bind:value={stage.redoStageId}
-                    disabled={stage.outputContract !== 'ReviewReceipt'}
-                    class="h-7 min-w-0 rounded-md border border-input bg-background px-1.5 text-xs text-foreground outline-none focus-visible:border-ring disabled:opacity-50"
-                  >
-                    <option value={null}>None</option>
-                    {#each draft.stages.slice(0, index).filter((item) => item.outputContract === 'ImplementationReceipt') as target (target.id)}
-                      <option value={target.id}>{target.title}</option>
-                    {/each}
-                  </select>
-                </label>
-              </div>
-            </li>
-          {/each}
-        </ol>
-        <select
-          value=""
-          aria-label="Add stage"
-          onchange={(event) => { addStage(event.currentTarget.value); event.currentTarget.value = ''; }}
-          class="h-8 rounded-lg border border-dashed border-input bg-background px-2 text-sm text-muted-foreground outline-none focus-visible:border-ring"
-        >
-          <option value="" disabled>Add stage…</option>
-          {#each STAGE_PRESETS as preset (preset.label)}
-            <option value={preset.label}>{preset.label}</option>
-          {/each}
-        </select>
-        {#if draft.stages.some((stage, index, all) => stage.outputContract === 'ReviewReceipt' && all.slice(0, index).some((item) => item.outputContract === 'PullRequestReceipt')) && !draft.stages.some((stage) => stage.outputContract === 'PullRequestMergeReceipt')}
-          <p class="text-xs text-muted-foreground">Without a Merge PR stage, the run ends after PR review for owner handoff.</p>
-        {/if}
-        {#if draftError}
-          <p class="flex items-start gap-2 rounded-lg bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
-            <TriangleAlert class="mt-0.5 size-3.5 shrink-0" />
-            {draftError}
-          </p>
-        {/if}
-      {:else}
-      <div class="grid grid-cols-3 gap-2">
-        {#each STAGES as [stage, label]}
-          <label class="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
-            {label}
-            <select
-              value={providers[stage]}
-              onchange={(event) => setProvider(stage, event.currentTarget.value)}
-              class="h-8 min-w-0 rounded-lg border border-input bg-background px-2 text-sm text-foreground outline-none focus-visible:border-ring"
-            >
-              <option value="codex">Codex</option>
-              <option value="claude">Claude</option>
-              <option value="antigravity">Agy</option>
-            </select>
-          </label>
-        {/each}
-      </div>
+        <Button type="submit" disabled={!taskKey.trim() || !taskTitle.trim() || !root || !workflowPath || busy !== null}>
+          <Play />
+          Start workflow
+        </Button>
       {/if}
-      <Button type="submit" disabled={!task.trim() || !root || busy !== null || draftError !== null}>
-        <Play />
-        Start workflow
-      </Button>
     </form>
   {/if}
 
@@ -599,7 +371,7 @@
   {:else if runs.length === 0}
     <div class="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
       <p class="font-medium">No workflows yet</p>
-      <p class="max-w-72 text-sm text-muted-foreground">Start with one task. You will see each agent and approve every handoff.</p>
+      <p class="max-w-72 text-sm text-muted-foreground">Start a run from one of this project's workflow files.</p>
     </div>
   {:else}
     <ScrollArea class="min-h-0 flex-1">
@@ -611,7 +383,7 @@
             onclick={() => selectWorkflowRun(run.id)}
           >
             <span class="flex w-full min-w-0 items-center gap-2">
-              <span class="min-w-0 flex-1 truncate text-sm font-semibold">{(run.inputSnapshot as { task?: string }).task ?? run.definition.name}</span>
+              <span class="min-w-0 flex-1 truncate text-sm font-semibold">{(run.inputSnapshot as { task?: { title?: string } }).task?.title ?? run.definition.name}</span>
               <Chip tone={run.state === 'failed' ? 'bad' : run.state === 'completed' ? 'good' : run.state === 'waiting-approval' ? 'attention' : 'live'}>{run.state}</Chip>
             </span>
             <span class="text-xs text-muted-foreground">{run.phase} · {run.nodes.filter((node) => ['completed', 'skipped'].includes(node.state)).length}/{run.nodes.length} stages</span>
@@ -630,7 +402,7 @@
               <span class="text-xs tabular-nums text-muted-foreground">{completedCount}/{selected.nodes.length}</span>
             </div>
 
-            <ol class="flex flex-col gap-1.5">
+            <ol class="flex list-none flex-col gap-1.5">
               {#each orderedNodes as node, index (node.id)}
                 <li>
                   <button
@@ -667,15 +439,16 @@
 
             <div class="mt-3 flex flex-wrap gap-2 border-t border-border pt-3">
               {#if selected.state === 'draft' || selected.state === 'queued'}
-                <Button size="sm" disabled={busy !== null} onclick={() => void control('Start', () => startWorkflowRun({ runId: selected.id, idempotencyKey: key('start') }))}><Play />Start</Button>
+                <Button size="sm" disabled={busy !== null} onclick={() => void control('Start', () => startWorkflowRun({ runId: selected.id, idempotencyKey: key('start') }, machine))}><Play />Start</Button>
               {:else if selected.state === 'paused'}
-                <Button size="sm" disabled={busy !== null} onclick={() => void control('Resume', () => resumeWorkflowRun({ runId: selected.id, idempotencyKey: key('resume') }))}><Play />Resume</Button>
+                <Button size="sm" disabled={busy !== null} onclick={() => void control('Resume', () => resumeWorkflowRun({ runId: selected.id, idempotencyKey: key('resume') }, machine))}><Play />Resume</Button>
               {:else if selected.state === 'running'}
-                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void control('Pause', () => pauseWorkflowRun({ runId: selected.id, idempotencyKey: key('pause') }))}><Pause />Pause after stage</Button>
+                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void control('Pause', () => pauseWorkflowRun({ runId: selected.id, idempotencyKey: key('pause') }, machine))}><Pause />Pause after stage</Button>
               {/if}
               {#if waitingNode}
-                <Button size="sm" disabled={busy !== null} onclick={() => void control('Approve', () => approveWorkflowGate({ runId: selected.id, nodeId: waitingNode.nodeId, approval: { approved: true }, idempotencyKey: key('approve') }))}><Check />Approve handoff</Button>
-                {#if nextNode}
+                <Button size="sm" disabled={busy !== null} onclick={() => void control('Approve', () => approveWorkflowGate({ runId: selected.id, nodeId: waitingNode.nodeId, approval: { approved: true }, idempotencyKey: key('approve') }, machine))}><Check />Approve handoff</Button>
+                <!-- Redirect is a template-run control this Mac's engine owns. -->
+                {#if nextNode && !machine}
                   <label class="flex h-8 items-center gap-2 rounded-lg border border-input bg-background px-2 text-xs text-muted-foreground">
                     Next
                     <select
@@ -691,11 +464,15 @@
                   </label>
                 {/if}
               {/if}
-              {#if failedNode && failedNode.attempt < 2}
-                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void control('Retry', () => retryWorkflowNode({ runId: selected.id, nodeId: failedNode.nodeId, idempotencyKey: key('retry') }))}><RotateCcw />Retry stage</Button>
+              {#if pausedNode}
+                <Button size="sm" disabled={busy !== null} onclick={() => void control('Another round', () => answerWorkflowPause({ runId: selected.id, nodeId: pausedNode.nodeId, decision: 'another-round', reply: null, idempotencyKey: key('answer') }, machine))}><RotateCcw />Run another round</Button>
+                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void control('Accept', () => answerWorkflowPause({ runId: selected.id, nodeId: pausedNode.nodeId, decision: 'accept', reply: null, idempotencyKey: key('answer') }, machine))}><Check />Accept as is</Button>
+              {/if}
+              {#if failedNode}
+                <Button size="sm" variant="outline" disabled={busy !== null} onclick={() => void control('Retry', () => retryWorkflowNode({ runId: selected.id, nodeId: failedNode.nodeId, idempotencyKey: key('retry') }, machine))}><RotateCcw />Retry stage</Button>
               {/if}
               {#if !['completed', 'cancelled', 'failed'].includes(selected.state)}
-                <Button size="sm" variant="destructive" disabled={busy !== null} onclick={() => void control('Stop', () => cancelWorkflowRun({ runId: selected.id, idempotencyKey: key('cancel') }))}><CircleStop />Stop</Button>
+                <Button size="sm" variant="destructive" disabled={busy !== null} onclick={() => void control('Stop', () => cancelWorkflowRun({ runId: selected.id, idempotencyKey: key('cancel') }, machine))}><CircleStop />Stop</Button>
               {/if}
             </div>
           </section>

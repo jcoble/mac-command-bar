@@ -58,6 +58,8 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
   viaCmux: boolean;
   source: 'scanned' | 'fresh';
   title: string;
+  /** The permanent handle (`brisk-heron`) other sessions message this one by. */
+  handle?: string | null;
   /** Model reported by the session scanner, when one was available. */
   model?: string | null;
   /** The registry project the session was started in; null for older sessions and "No project". */
@@ -304,6 +306,7 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
     viaCmux: record.viaCmux || providerViaCmux,
     source: record.source ?? 'fresh',
     title: record.title ?? '',
+    handle: record.handle ?? null,
     model: record.model,
     projectId: record.projectId ?? null,
     // Both are left out of the record when empty, which only happens for a record that skipped the

@@ -11,9 +11,10 @@ import {
   type SessionWorkspaceSnapshot
 } from './shell/sessionWorkspaces.ts';
 import type {
-  WorkflowDefinitionV1,
+  WorkflowPauseDecision,
   WorkflowResultReceipt,
-  WorkflowRunRecord
+  WorkflowRunRecord,
+  WorkflowTaskSnapshot
 } from './shell/workflows/workflowTypes.ts';
 import type {
   ProjectRoot,
@@ -545,6 +546,8 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   backgroundWork: BackgroundWorkItem[];
   nativeSessionId: string | null;
   projectId: string | null;
+  /** The session's permanent handle (`brisk-heron`) other sessions message it by; renaming never changes it. */
+  handle?: string | null;
   /** The session's project group, computed in SQL on this Mac: `repo:<key>`, `project:<id>` or `none`. */
   projectGroupKey: string;
   projectGroupLabel: string;
@@ -2683,13 +2686,44 @@ export async function listWorkflowRunsFromTauri(): Promise<WorkflowRunRecord[] |
 }
 
 export async function createWorkflowRunFromTauri(
-  definition: WorkflowDefinitionV1,
+  repoRoot: string,
+  workflowPath: string,
+  task: WorkflowTaskSnapshot,
   input: Record<string, unknown>,
   idempotencyKey: string
 ): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<WorkflowRunRecord>('create_workflow_run', { definition, input, idempotencyKey });
+  return invoke<WorkflowRunRecord>('create_workflow_run', { repoRoot, workflowPath, task, input, idempotencyKey });
+}
+
+/** One workflow operation on a remote machine's own engine (`remote_workflow`). */
+export async function remoteWorkflowFromTauri<T>(
+  profileId: string,
+  operation: string,
+  args: object
+): Promise<T | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  return invoke<T>('remote_workflow', { profileId, operation, args });
+}
+
+export async function listWorkflowFilesFromTauri(repoRoot: string): Promise<string[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  return invoke<string[]>('list_workflow_files', { repoRoot });
+}
+
+export async function answerWorkflowPauseFromTauri(
+  runId: string,
+  nodeId: string,
+  decision: WorkflowPauseDecision,
+  reply: string | null,
+  idempotencyKey: string
+): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  return invoke<WorkflowRunRecord>('answer_workflow_pause', { runId, nodeId, decision, reply, idempotencyKey });
 }
 
 export async function startWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {

@@ -503,6 +503,7 @@ pub struct AcpClient {
     primary_session_id: Option<SessionId>,
     provider: Option<AgentConversationProvider>,
     personal_authentication: bool,
+    mcp_http: bool,
 }
 
 const CLAUDE_VERIFIED_EXTRA_MODELS: [&str; 3] = ["opus", "claude-opus-5", "claude-fable-5"];
@@ -540,6 +541,7 @@ impl AcpClient {
             primary_session_id: None,
             provider: None,
             personal_authentication: false,
+            mcp_http: false,
         })
     }
 
@@ -581,6 +583,7 @@ impl AcpClient {
             request["clientCapabilities"]["elicitation"] = json!({"form": {}});
         }
         let result = self.request("initialize", &request).await?;
+        self.mcp_http = bool_at(&result, &["agentCapabilities", "mcpCapabilities", "http"]);
         self.personal_authentication = result.get("authMethods").and_then(Value::as_array)
             .is_some_and(|methods| methods.iter().any(|method| method.get("id").and_then(Value::as_str) == Some("oauth-personal")));
         let implementation = result.get("agentInfo").or_else(|| result.get("agent_info"));
@@ -667,25 +670,27 @@ impl AcpClient {
     pub async fn new_session(
         &mut self,
         cwd: &Path,
+        mcp_servers: Vec<acp::McpServer>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         let cwd = provider_session_cwd(self.provider, cwd)?;
-        let request = acp::NewSessionRequest::new(&cwd);
+        let request = acp::NewSessionRequest::new(&cwd).mcp_servers(if self.mcp_http { mcp_servers } else { vec![] });
         self.start_session("session/new", &request, None).await
     }
 
     /// Start an additional native session without changing the primary session.
     #[allow(dead_code)] // Track B calls this after the manager multiplexing cutover.
-    pub async fn new_session_multi(&mut self, cwd: &Path) -> Result<SessionId, AgentRuntimeError> {
-        Ok(self.new_session(cwd).await?.native_session_id)
+    pub async fn new_session_multi(&mut self, cwd: &Path, mcp_servers: Vec<acp::McpServer>) -> Result<SessionId, AgentRuntimeError> {
+        Ok(self.new_session(cwd, mcp_servers).await?.native_session_id)
     }
 
     pub async fn resume_session(
         &mut self,
         cwd: &Path,
         native_session_id: &str,
+        mcp_servers: Vec<acp::McpServer>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         let cwd = provider_session_cwd(self.provider, cwd)?;
-        let request = acp::ResumeSessionRequest::new(native_session_id.to_string(), &cwd);
+        let request = acp::ResumeSessionRequest::new(native_session_id.to_string(), &cwd).mcp_servers(if self.mcp_http { mcp_servers } else { vec![] });
         self.start_session("session/resume", &request, Some(native_session_id))
             .await
     }
@@ -696,9 +701,10 @@ impl AcpClient {
         &mut self,
         cwd: &Path,
         native_session_id: &str,
+        mcp_servers: Vec<acp::McpServer>,
     ) -> Result<SessionId, AgentRuntimeError> {
         Ok(self
-            .resume_session(cwd, native_session_id)
+            .resume_session(cwd, native_session_id, mcp_servers)
             .await?
             .native_session_id)
     }
@@ -707,9 +713,10 @@ impl AcpClient {
         &mut self,
         cwd: &Path,
         native_session_id: &str,
+        mcp_servers: Vec<acp::McpServer>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         let cwd = provider_session_cwd(self.provider, cwd)?;
-        let request = acp::LoadSessionRequest::new(native_session_id.to_string(), &cwd);
+        let request = acp::LoadSessionRequest::new(native_session_id.to_string(), &cwd).mcp_servers(if self.mcp_http { mcp_servers } else { vec![] });
         self.start_session("session/load", &request, Some(native_session_id))
             .await
     }
@@ -718,9 +725,10 @@ impl AcpClient {
         &mut self,
         cwd: &Path,
         native_session_id: &str,
+        mcp_servers: Vec<acp::McpServer>,
     ) -> Result<SessionId, AgentRuntimeError> {
         Ok(self
-            .load_session(cwd, native_session_id)
+            .load_session(cwd, native_session_id, mcp_servers)
             .await?
             .native_session_id)
     }
@@ -987,7 +995,16 @@ impl AcpClient {
         request: &T,
         known_session_id: Option<&str>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
-        let result = self.request(method, request).await?;
+        let mut request = serde_json::to_value(request).map_err(serialization_error)?;
+        // Claude asks before every MCP tool call; Assembly's own tools
+        // (report_review, send_message, ...) are pre-allowed so unattended
+        // workflow sessions don't stall on a prompt nobody is watching.
+        if self.provider == Some(AgentConversationProvider::Claude)
+            && request["mcpServers"].as_array().is_some_and(|servers| !servers.is_empty())
+        {
+            request["_meta"] = json!({"claudeCode": {"options": {"allowedTools": ["mcp__assembly"]}}});
+        }
+        let result = self.request(method, &request).await?;
         // session/new must return the id; session/load and session/resume
         // may return a null result because the caller already knows it.
         let native_session_id = result
@@ -1574,6 +1591,74 @@ pub(crate) mod tests {
     use crate::agent_conversation::protocol::{ProviderSource, ProviderTransport};
     use crate::agent_conversation::providers::AgentRuntimeAdapter;
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn acp_new_load_and_resume_include_bound_assembly_mcp() {
+        let endpoint = crate::agent_conversation::messaging::MessagingEndpoint::start().unwrap();
+        let first = endpoint.issue("owned-first");
+        let second = endpoint.issue("owned-second");
+        assert_ne!(first.token, second.token);
+        let root = fixture_root();
+        let log = root.join("mcp.jsonl");
+        let mut client = AcpClient::spawn(&fixture_manifest_named(&log, "mcp_http"), &root, "mcp").unwrap();
+        client.initialize(AgentConversationProvider::Codex).await.unwrap();
+        client.new_session(&root, vec![first.server()]).await.unwrap();
+        client.load_session(&root, "native-old", vec![first.server()]).await.unwrap();
+        client.resume_session(&root, "native-old", vec![first.server()]).await.unwrap();
+        client.detach().await.unwrap();
+        let requests: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|m| matches!(m["method"].as_str(), Some("session/new" | "session/load" | "session/resume")))
+            .collect();
+        assert_eq!(requests.len(), 3);
+        let expected = json!([{"type":"http","name":"assembly","url":first.url,
+            "headers":[{"name":"Authorization","value":format!("Bearer {}", first.token)}]}]);
+        for request in requests {
+            assert!(request["params"]["mcpServers"] == expected, "bound HTTP MCP server missing");
+            assert!(request["params"]["_meta"].is_null(), "only Claude gets the tool allowance");
+        }
+        assert_eq!(endpoint.issue("owned-first").token, first.token);
+        let log = root.join("unsupported.jsonl");
+        let mut client = AcpClient::spawn(&fixture_manifest(&log), &root, "unsupported").unwrap();
+        client.initialize(AgentConversationProvider::Codex).await.unwrap();
+        client.new_session(&root, vec![second.server()]).await.unwrap();
+        client.load_session(&root, "native-old", vec![second.server()]).await.unwrap();
+        client.resume_session(&root, "native-old", vec![second.server()]).await.unwrap();
+        client.detach().await.unwrap();
+        for line in std::fs::read_to_string(log).unwrap().lines() {
+            if let Ok(request) = serde_json::from_str::<Value>(line) {
+                if matches!(request["method"].as_str(), Some("session/new" | "session/load" | "session/resume")) {
+                    // ACP omits an empty mcpServers list on resume requests.
+                    let servers = &request["params"]["mcpServers"];
+                    assert!(servers.is_null() || *servers == json!([]));
+                }
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_sessions_preallow_assembly_mcp_tools() {
+        let endpoint = crate::agent_conversation::messaging::MessagingEndpoint::start().unwrap();
+        let bound = endpoint.issue("owned-claude");
+        let root = fixture_root();
+        let log = root.join("claude-mcp.jsonl");
+        let mut client = AcpClient::spawn(&fixture_manifest_named(&log, "mcp_http"), &root, "claude-mcp").unwrap();
+        client.initialize(AgentConversationProvider::Claude).await.unwrap();
+        client.new_session(&root, vec![bound.server()]).await.unwrap();
+        client.load_session(&root, "native-old", vec![bound.server()]).await.unwrap();
+        client.resume_session(&root, "native-old", vec![bound.server()]).await.unwrap();
+        client.detach().await.unwrap();
+        let requests: Vec<Value> = std::fs::read_to_string(&log).unwrap().lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|m| matches!(m["method"].as_str(), Some("session/new" | "session/load" | "session/resume")))
+            .collect();
+        assert_eq!(requests.len(), 3);
+        for request in requests {
+            assert_eq!(request["params"]["_meta"]["claudeCode"]["options"]["allowedTools"], json!(["mcp__assembly"]));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn fixture_manifest(log_path: &Path) -> AgentProviderManifest {
         fixture_manifest_named(log_path, "default")
     }
@@ -1610,6 +1695,8 @@ while IFS= read -r line; do
 	  *'"method":"initialize"'*)
 	    if [ "$fixture" = "auth" ] || [ "$fixture" = "auth_wait" ]; then
           printf '{{"jsonrpc":"2.0","id":%s,"result":{{"authMethods":[{{"id":"oauth-personal","name":"Google"}}],"agentCapabilities":{{}},"agentInfo":{{"name":"antigravity-acp","version":"1.2.1"}}}}}}\n' "$id"
+        elif [ "$fixture" = "mcp_http" ]; then
+          printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentCapabilities":{{"mcpCapabilities":{{"http":true}}}}}}}}\n' "$id"
         elif [ "$fixture" = "multiplex" ]; then
 	      printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentInfo":{{"name":"fake-acp","version":"1"}},"agentCapabilities":{{"loadSession":true,"sessionCapabilities":{{"resume":true,"close":true,"multiSession":true}},"promptCapabilities":{{"image":true}}}}}}}}\n' "$id"
 	    elif [ "$fixture" = "steering" ] || [ "$fixture" = "steering_idle" ] || [ "$fixture" = "steering_failed" ]; then
@@ -2046,7 +2133,7 @@ done"#,
             .initialize(AgentConversationProvider::Codex)
             .await
             .unwrap();
-        let session = client.new_session(&root).await.unwrap();
+        let session = client.new_session(&root, vec![]).await.unwrap();
         let generated = client
             .prompt_on(
                 &session.native_session_id,
@@ -2078,7 +2165,7 @@ done"#,
             .initialize(AgentConversationProvider::Codex)
             .await
             .unwrap();
-        let session = client.new_session(&root).await.unwrap();
+        let session = client.new_session(&root, vec![]).await.unwrap();
         let generated = client
             .prompt_on(
                 &session.native_session_id,
@@ -2119,7 +2206,7 @@ done"#,
             .unwrap();
         assert!(capabilities.prompt.image);
         let started = adapter
-            .new_session(super::super::NewAgentSession { cwd: root.clone() })
+            .new_session(super::super::NewAgentSession { cwd: root.clone(), mcp_servers: vec![] })
             .await
             .unwrap();
         assert_eq!(started.native_session_id, "new-session");
@@ -2219,7 +2306,7 @@ done"#,
             &fixture_manifest_named(&log, "config_options"), &root, "model-enables-effort",
         ).unwrap();
         client.initialize(AgentConversationProvider::Codex).await.unwrap();
-        let started = client.new_session(&root).await.unwrap();
+        let started = client.new_session(&root, vec![]).await.unwrap();
         {
             // A resumed model absent from the catalog offers no effort control.
             // The next model-change reply from the fixture adds it back.
@@ -2272,7 +2359,7 @@ done"#,
             .await
             .unwrap();
 
-        let started = client.new_session(&root).await.unwrap();
+        let started = client.new_session(&root, vec![]).await.unwrap();
 
         assert_eq!(
             started.config,
@@ -2354,7 +2441,7 @@ done"#,
             .await
             .unwrap();
 
-        let started = client.new_session(&root).await.unwrap();
+        let started = client.new_session(&root, vec![]).await.unwrap();
         assert_eq!(started.config.model.as_deref(), Some("claude-fable-5[1m]"));
         assert_eq!(
             started.config.available_models,
@@ -2450,7 +2537,7 @@ done"#,
             .initialize(AgentConversationProvider::Codex)
             .await
             .unwrap();
-        let started = client.new_session(&root).await.unwrap();
+        let started = client.new_session(&root, vec![]).await.unwrap();
         assert_eq!(started.commands[0].id, "initial");
         let mut inbound = client.take_inbound().unwrap();
         let update = inbound.recv().await.expect("command update");
@@ -2477,10 +2564,10 @@ done"#,
             .initialize(AgentConversationProvider::Claude)
             .await
             .unwrap();
-        let started = client.resume_session(&root, "native-old").await.unwrap();
+        let started = client.resume_session(&root, "native-old", vec![]).await.unwrap();
         assert_eq!(started.native_session_id, "resumed-session");
         let resumed = client
-            .resume_session_multi(&root, "native-second")
+            .resume_session_multi(&root, "native-second", vec![])
             .await
             .unwrap();
         assert_eq!(resumed, "resumed-session");
@@ -2499,7 +2586,7 @@ done"#,
             .initialize(AgentConversationProvider::Codex)
             .await
             .unwrap();
-        let started = client.load_session(&root, "native-old").await.unwrap();
+        let started = client.load_session(&root, "native-old", vec![]).await.unwrap();
         assert_eq!(started.native_session_id, "loaded-session");
         client.close().await.unwrap();
         let frames = std::fs::read_to_string(log).unwrap();
@@ -2518,8 +2605,8 @@ done"#,
             .initialize(AgentConversationProvider::Codex)
             .await
             .unwrap();
-        let session_a = client.new_session_multi(&root).await.unwrap();
-        let session_b = client.new_session_multi(&root).await.unwrap();
+        let session_a = client.new_session_multi(&root, vec![]).await.unwrap();
+        let session_b = client.new_session_multi(&root, vec![]).await.unwrap();
 
         let (alpha, bravo) = tokio::join!(
             client.prompt_on(
@@ -2556,8 +2643,8 @@ done"#,
             .initialize(AgentConversationProvider::Codex)
             .await
             .unwrap();
-        let primary = client.new_session(&root).await.unwrap();
-        let second = client.new_session_multi(&root).await.unwrap();
+        let primary = client.new_session(&root, vec![]).await.unwrap();
+        let second = client.new_session_multi(&root, vec![]).await.unwrap();
         assert_ne!(primary.native_session_id, second);
         let config = client.set_model_on(&second, "new").await.unwrap();
         assert_eq!(config.model.as_deref(), Some("gpt-5.6-terra"));
@@ -2593,8 +2680,8 @@ done"#,
             .initialize(AgentConversationProvider::Codex)
             .await
             .unwrap();
-        let session_a = client.new_session_multi(&root).await.unwrap();
-        let session_b = client.new_session_multi(&root).await.unwrap();
+        let session_a = client.new_session_multi(&root, vec![]).await.unwrap();
+        let session_b = client.new_session_multi(&root, vec![]).await.unwrap();
         client
             .prompt_on(
                 &session_b,
@@ -2627,8 +2714,8 @@ done"#,
             .initialize(AgentConversationProvider::Codex)
             .await
             .unwrap();
-        let session_a = client.new_session_multi(&root).await.unwrap();
-        let session_b = client.new_session_multi(&root).await.unwrap();
+        let session_a = client.new_session_multi(&root, vec![]).await.unwrap();
+        let session_b = client.new_session_multi(&root, vec![]).await.unwrap();
 
         client.close_session(&session_a).await.unwrap();
         let generated = client

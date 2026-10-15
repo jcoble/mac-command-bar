@@ -14,6 +14,7 @@
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import ConversationTimeline from '$lib/shell/components/conversation/ConversationTimeline.svelte';
+  import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
   import {
     getConversationSession,
     setConversationSelectedChild,
@@ -40,6 +41,7 @@
   import type { ConversationDisplayItem, ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
   import { requestOpenConversationFile } from '$lib/shell/openFileBus.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
+  import { parseRemoteWorkspacePath } from '$lib/workspacePaths.ts';
 
   import AgentRow from './AgentRow.svelte';
   import { AGENT_STATUS_TONE, AGENT_STATUS_WORD, agentActivityRows } from './agentActivityModel.ts';
@@ -64,6 +66,10 @@
     { value: 'workflows', label: 'Workflows' }
   ] as const;
   const conversation = $derived(ownedId ? getConversationSession(ownedId) : null);
+  // A remote project's workflows run on that machine's own engine, at its own path.
+  const remoteRoot = $derived(parseRemoteWorkspacePath(root));
+  const machine = $derived(remoteRoot?.profileId ?? null);
+  const workflowRoot = $derived(remoteRoot?.path ?? root);
   const selectedChildId = $derived(conversation?.selectedChildId ?? null);
   // List rows use metadata; returning to the list releases the child body.
   const rows = $derived(agentActivityRows(conversation?.children ?? [], {}));
@@ -139,6 +145,12 @@
 
   async function select(childId: string): Promise<void> {
     if (!ownedId || !conversation || !visible || view !== 'session' || openedChildId === childId) return;
+    // A helper started with `start_session` is a session of its own; open it.
+    if (rail.owned.some((session) => session.ownedId === childId)) {
+      setConversationSelectedChild(ownedId, null);
+      await sessionRowJump(childId, 'session');
+      return;
+    }
     const parentId = ownedId;
     release(parentId);
     openedChildId = childId;
@@ -193,7 +205,7 @@
   </div>
 
   {#if view === 'workflows'}
-    <WorkflowRuns visible={visible} {root} />
+    <WorkflowRuns visible={visible} root={workflowRoot} {machine} />
   {:else if visible && selectedRow && ownedId}
     <div class="flex min-w-0 items-center gap-2 px-2 pb-2" data-testid="agent-transcript-header">
       <Button variant="ghost" size="sm" iconPosition="start" onclick={() => ownedId && release(ownedId)}>

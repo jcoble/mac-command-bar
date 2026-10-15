@@ -1,6 +1,6 @@
 [package]
 name = "mac-command-bar-webview-preview"
-version = "0.1.5"
+version = "0.1.6"
 description = "Tauri shell for Assembly"
 authors = ["blackcolours"]
 edition = "2021"
@@ -9,6 +9,7 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+yaml-rust = "0.4.5"
 agent-client-protocol = "=2.0.0"
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"

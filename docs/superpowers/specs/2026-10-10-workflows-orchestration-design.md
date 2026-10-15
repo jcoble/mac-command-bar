@@ -49,6 +49,8 @@ The engine runs the checks itself.
 | D11 | Phone app: **Flutter, Android first**, starting as a shell of the Rental Command app, talking to Assembly through an API like Rental Command does, reusing its messaging system. Three parts: main chat with the orchestrator; runs (see, pause, resume); permissions and decisions. |
 | D12 | Workers ride subscription-authenticated CLIs as today. **No API keys, no API costs** (carried from the 2026-08-20 design). |
 | D13 | Only the owner approves. A message from an agent never counts as approval; chat text the orchestrator relays is turned into a confirm button the owner taps. |
+| D16 | (owner, 2026-10-13) Every session gets a permanent **handle** when it is created, a memorable two-word name such as `brisk-heron`, unique on its machine. The title stays the visible label and can be renamed freely; messages always travel by owned id underneath. `send_message` takes a handle, a title or an owned id. A message label shows both: `[message from brisk-heron · Messaging Test]`. |
+| D17 | (owner, 2026-10-13) **Messaging between machines is required**: a lane here and a lane on a remote machine must be able to talk. Built now through the desktop relay (§4.5). |
 
 ## 3. Overall picture
 
@@ -83,6 +85,10 @@ remote session routing (`agent_conversation/mod.rs:110-170`). Change only what t
   (`running`, `idle`, `waiting`, `stopped`), and its run and step if any.
 - Names resolve to owned ids at send time. An ambiguous or unknown name is an error returned
   to the sender, never a guess.
+- (D16) Each session also has a permanent handle, `<adjective>-<noun>`, chosen at random when
+  the session is created and stored in `sessions.handle`; a clash on that machine adds the first
+  four characters of the owned id. A rename changes the title only. The handle is shown beside
+  the title in the session list.
 
 ### 4.2 Hosting and caller identity
 
@@ -141,6 +147,17 @@ answers with `send_message`.
 - A message to a session on another machine is relayed by the desktop app while it is
   connected to both; otherwise `send_message` returns "target machine not reachable". No
   backend-to-backend link in this version.
+- (D17) Machines are named from the desktop's point of view: a remote by its profile id
+  (`workbox-test`), the desktop itself as `mac`. A session elsewhere is addressed
+  `handle@machine`. An unqualified handle or title goes to the caller's own machine when a
+  session there has it (no network for a local send); otherwise it is looked up on every other
+  reachable machine and must match exactly one session. `list_sessions` includes reachable
+  machines' sessions with their `machine`. The desktop asks a remote through one `Messaging`
+  remote command (directory, resolve, enqueue, status); a remote asks the desktop through a `RelayRequest` server frame answered by a
+  `RelayReply` client frame on the same authenticated socket. The desktop adds the source machine
+  to the sender label (`brisk-heron@workbox-test · Messaging Test`), so a reply addressed to that
+  label reaches the sender. A relayed message id is returned as `<machine>:<id>` and
+  `message_status` routes on that prefix; the destination checks the caller against its row.
 - The main orchestrator lives on one **home machine**, chosen in Settings, **default: the
   workbox remote** (it stays up when the Mac is closed). The desktop and the phone both reach it
   directly on that backend. `start_run(..., machine?)` defaults to the home machine; a run on

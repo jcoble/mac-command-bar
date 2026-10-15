@@ -224,6 +224,10 @@
 
 			<span class="line line-meta">
 				<span data-testid="worktree-agent-meta" class="machine">{machine}</span>
+				{#if session.handle}
+					<span class="sep" aria-hidden="true">•</span>
+					<span class="handle" title="Other sessions send messages to this one as {session.handle}">{session.handle}</span>
+				{/if}
 				{#if session.branch}
 					<span class="sep" aria-hidden="true">•</span>
 					<span class="branch">{session.branch}</span>
@@ -500,6 +504,7 @@
 		font-size: 12px;
 	}
 
+	.handle,
 	.branch {
 		min-width: 0;
 		flex: 0 1 auto;

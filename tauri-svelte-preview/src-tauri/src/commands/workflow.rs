@@ -1,6 +1,6 @@
 use tauri::Emitter;
 
-use crate::workflow::{WorkflowDefinitionV1, WorkflowEngine, WorkflowRunRecord};
+use crate::workflow::{TaskSnapshot, WorkflowEngine, WorkflowRunRecord};
 
 #[tauri::command]
 pub(crate) async fn list_workflow_runs(
@@ -17,12 +17,46 @@ pub(crate) fn emit_workflow_run_updated(app: &tauri::AppHandle, run: &WorkflowRu
 pub(crate) async fn create_workflow_run(
     app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
-    definition: WorkflowDefinitionV1,
+    repo_root: String,
+    workflow_path: String,
+    task: TaskSnapshot,
     input: serde_json::Value,
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
     let run = engine
-        .create_run(definition, input, idempotency_key)
+        .create_run_from_file(std::path::Path::new(&repo_root), std::path::Path::new(&workflow_path), task, input, idempotency_key)
+        .map_err(|error| error.to_string())?;
+    emit_workflow_run_updated(&app, &run);
+    Ok(run)
+}
+
+#[tauri::command]
+pub(crate) async fn get_workflow_run(
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+) -> Result<WorkflowRunRecord, String> {
+    engine.get_run(&run_id).map_err(|error| error.to_string())
+}
+
+/// The repository's workflow files, as paths relative to `repo_root`.
+#[tauri::command]
+pub(crate) async fn list_workflow_files(repo_root: String) -> Result<Vec<String>, String> {
+    Ok(crate::workflow::workflow_files(std::path::Path::new(&repo_root)))
+}
+
+#[tauri::command]
+pub(crate) async fn answer_workflow_pause(
+    app: tauri::AppHandle,
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+    node_id: String,
+    decision: String,
+    reply: Option<String>,
+    idempotency_key: String,
+) -> Result<WorkflowRunRecord, String> {
+    let run = engine
+        .answer_pause(&run_id, &node_id, &decision, reply, "owner", &idempotency_key)
+        .await
         .map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);
     Ok(run)
@@ -145,7 +179,7 @@ pub(crate) async fn approve_workflow_gate(
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
     let run = engine
-        .approve_gate(&run_id, &node_id, approval, &idempotency_key)
+        .approve_gate(&run_id, &node_id, approval, "owner", &idempotency_key)
         .await
         .map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);

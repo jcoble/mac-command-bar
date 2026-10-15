@@ -3,6 +3,7 @@ import {
   createAgentConversationRequestId,
   listAgentConversationItemsAfterFromTauri,
   listAgentConversationItemsBeforeFromTauri,
+  listAgentConversationSessionsFromTauri,
   listRemoteAgentConversationSessionsFromTauri,
   readAgentConversationCapabilitiesFromTauri,
   readAgentConversationChildHistoryFromTauri,
@@ -27,7 +28,8 @@ import {
 import { sessionTitleFromPrompt } from '../sessionStrip.ts';
 import { publishWorkspaceFileChange } from '../workspaceFileChangeBus.ts';
 import { agentItemFromEvent, displayItemFromAgentItem } from './conversationTimeline.ts';
-import { rail, setRemoteConnection, updateOwnedSession } from '../stores/sessionRailStore.svelte';
+import { addOwnedSession, rail, setRemoteConnection, updateOwnedSession } from '../stores/sessionRailStore.svelte';
+import { ownedSessionFromBackend } from '../ownedSessions.ts';
 import type { RemoteConnectionState } from '../stores/sessionRailStore.svelte';
 import {
   decideConversationActivation,
@@ -938,7 +940,7 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
   try {
     const stopTitleEvents = await listen<{ ownedId: string; title: string }>(
       'session-title-changed',
-      ({ payload }) => updateOwnedSession(payload.ownedId, { title: payload.title })
+      ({ payload }) => void showNamedSession(payload.ownedId, payload.title, streamGeneration)
     );
     stopTitles = trackTauriListener(stopTitleEvents);
     const stopRemoteConnectionEvents = await listen<{
@@ -1016,6 +1018,23 @@ async function refreshRemoteSessionActivity(streamGeneration: number): Promise<v
     if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
     if (read !== remoteActivityRead) return;
     rail.error = `Could not refresh remote turn activity: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+// A helper session an agent starts with `start_session` is first heard of
+// through its name, so a name for a session the rail lacks adds that session.
+async function showNamedSession(ownedId: string, title: string, streamGeneration: number): Promise<void> {
+  if (rail.owned.some((session) => session.ownedId === ownedId)) {
+    updateOwnedSession(ownedId, { title });
+    return;
+  }
+  try {
+    const record = (await listAgentConversationSessionsFromTauri())?.find((session) => session.ownedId === ownedId);
+    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !record) return;
+    if (!rail.owned.some((session) => session.ownedId === ownedId)) addOwnedSession(ownedSessionFromBackend(record));
+  } catch (error) {
+    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
+    rail.error = `Could not show a new session: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
