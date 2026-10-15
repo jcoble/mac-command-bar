@@ -2980,7 +2980,11 @@ impl WorkflowEngine {
         run.updated_at_ms = self.clock.now_ms();
         run.phase = derive_phase(run);
         let node = node_id.and_then(|id| run.nodes.iter().find(|node| node.node_id == id));
-        let before = self.store.workflow_run_state(&run.id).map_err(|error| WorkflowError::Ledger(error.to_string()))?;
+        // Only a run an agent started reports its state, so only it needs the state stored before.
+        let before = match run.input_snapshot["started_by"].is_string() {
+            true => self.store.workflow_run_state(&run.id).map_err(|error| WorkflowError::Ledger(error.to_string()))?,
+            false => None,
+        };
         let event = json!({
             "id": format!("workflow:{}:{}", run.id, run.last_sequence.saturating_add(1)),
             "schemaVersion": 1, "runId": run.id, "timestamp": run.updated_at_ms.to_string(), "kind": kind,
@@ -3003,7 +3007,11 @@ impl WorkflowEngine {
             .get("sequence")
             .and_then(Value::as_u64)
             .unwrap_or(run.last_sequence);
-        self.tell_starter(run, before.as_deref())
+        // The event is stored; a message that cannot be queued does not undo it.
+        if let Err(error) = self.tell_starter(run, before.as_deref()) {
+            crate::debug_log::stderr_log!("Could not tell the starter of run {} about it: {error}", run.id);
+        }
+        Ok(())
     }
 
     /// The session that started a run hears once each time the run starts waiting for the owner or ends.
@@ -3889,6 +3897,8 @@ mod tests {
         let first = tool(&endpoint, &token, "start_workflow", start_args("TSK-1")).unwrap();
         for key in ["TSK-2", "TSK-3"] { tool(&endpoint, &token, "start_workflow", start_args(key)).unwrap(); }
         assert_eq!(tool(&endpoint, &token, "start_workflow", start_args("TSK-4")).unwrap_err(), "at most 3 unfinished runs");
+        // Starting one of its own tasks again still returns that run.
+        assert_eq!(tool(&endpoint, &token, "start_workflow", start_args("TSK-1")).unwrap()["run_id"], first["run_id"]);
         // Another session's runs do not count against this one.
         let other = agent(&engine, &endpoint, "other", &repo.0);
         tool(&endpoint, &other, "start_workflow", start_args("TSK-5")).unwrap();
@@ -3909,6 +3919,8 @@ mod tests {
         assert_eq!(runtime.cancelled.load(Ordering::SeqCst), 0);
         assert_eq!(tool(&endpoint, &starter, "stop_workflow_run", json!({"run_id":run_id})).unwrap()["state"], "cancelled");
         assert_eq!(runtime.cancelled.load(Ordering::SeqCst), 1);
+        // A run that has ended keeps its outcome.
+        assert_eq!(tool(&endpoint, &starter, "stop_workflow_run", json!({"run_id":run_id})).unwrap_err(), "this run has already ended");
     }
 
     #[test]

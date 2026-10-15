@@ -2669,8 +2669,9 @@ impl SessionStore {
         ).optional().map_err(|error| StoreError::sqlite("could not read the run state", error))
     }
 
-    /// Runs `owned_id` started whose latest snapshot is not completed, failed or cancelled.
-    pub fn unfinished_workflow_runs_started_by(&self, owned_id: &str) -> Result<i64> {
+    /// Runs `owned_id` started, other than its run of `task_key`, whose latest snapshot is not
+    /// completed, failed or cancelled.
+    pub fn unfinished_workflow_runs_started_by(&self, owned_id: &str, task_key: &str) -> Result<i64> {
         let connection = self.lock()?;
         connection.query_row(
             "WITH latest AS (
@@ -2683,8 +2684,9 @@ impl SessionStore {
              )
              SELECT COUNT(*) FROM latest
              WHERE json_extract(run, '$.inputSnapshot.started_by') = ?1
+               AND json_extract(run, '$.inputSnapshot.task.key') IS NOT ?2
                AND json_extract(run, '$.state') NOT IN ('completed', 'failed', 'cancelled')",
-            [owned_id], |row| row.get(0),
+            [owned_id, task_key], |row| row.get(0),
         ).map_err(|error| StoreError::sqlite("could not count unfinished runs", error))
     }
 

@@ -312,7 +312,8 @@ impl MessagingEndpoint {
                 let task: crate::workflow::TaskSnapshot = serde_json::from_value(args["task"].clone())
                     .map_err(|_| "task must have a key, a title and a body")?;
                 let project = project_of(&store, &owned_id)?;
-                if store.unfinished_workflow_runs_started_by(&owned_id).map_err(|error| error.to_string())? >= 3 {
+                // Starting a task again returns its run, so that run does not count.
+                if store.unfinished_workflow_runs_started_by(&owned_id, &task.key).map_err(|error| error.to_string())? >= 3 {
                     return Err("at most 3 unfinished runs".into());
                 }
                 let key = format!("agent:{owned_id}:{}", task.key);
@@ -340,6 +341,10 @@ impl MessagingEndpoint {
                 let run = engine.get_run(run_id).map_err(workflow_error)?;
                 if run.input_snapshot["started_by"].as_str() != Some(owned_id.as_str()) {
                     return Err("only the session that started this run, or the owner, can stop it".into());
+                }
+                if matches!(run.state, crate::workflow::WorkflowRunState::Completed
+                    | crate::workflow::WorkflowRunState::Failed | crate::workflow::WorkflowRunState::Cancelled) {
+                    return Err("this run has already ended".into());
                 }
                 let run = engine.cancel(run_id, &format!("agent:{owned_id}:stop")).await.map_err(workflow_error)?;
                 Ok(text_json(json!({"run_id":run.id,"state":run.state})))
