@@ -80,18 +80,34 @@ fn forges_label(text: &str) -> bool {
 
 const HELPER_LIMIT: i64 = 3;
 
-/// A parent's place for a helper that is starting, given back when the start ends however it ends.
-struct StartingHelper {
-    starting: Arc<Mutex<HashMap<String, i64>>>,
-    parent: String,
+/// What each session is starting now, by session: it counts toward the session's limit before the store knows it.
+type Starting = Arc<Mutex<HashMap<String, i64>>>;
+
+/// A session's place for something it is starting, given back when the start ends however it ends.
+struct StartPlace {
+    starting: Starting,
+    owner: String,
 }
 
-impl Drop for StartingHelper {
+impl StartPlace {
+    /// Takes a place unless `stored` plus the starts in flight reach `limit`.
+    fn take(starting: &Starting, owner: &str, limit: i64, stored: impl FnOnce() -> Result<i64, String>, refusal: &str) -> Result<Self, String> {
+        let mut places = starting.lock().unwrap();
+        let in_flight = places.get(owner).copied().unwrap_or(0);
+        if stored()? + in_flight >= limit {
+            return Err(refusal.into());
+        }
+        places.insert(owner.to_string(), in_flight + 1);
+        Ok(Self { starting: Arc::clone(starting), owner: owner.to_string() })
+    }
+}
+
+impl Drop for StartPlace {
     fn drop(&mut self) {
-        let mut starting = self.starting.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(count) = starting.get_mut(&self.parent) {
+        let mut places = self.starting.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(count) = places.get_mut(&self.owner) {
             *count -= 1;
-            if *count <= 0 { starting.remove(&self.parent); }
+            if *count <= 0 { places.remove(&self.owner); }
         }
     }
 }
@@ -188,8 +204,8 @@ pub struct MessagingEndpoint {
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     relay: Mutex<Option<Relay>>,
     workflow: Mutex<Option<crate::workflow::WorkflowEngine>>,
-    /// Helpers each parent is starting now; they count toward its limit before the store knows them.
-    starting_helpers: Arc<Mutex<HashMap<String, i64>>>,
+    starting_helpers: Starting,
+    starting_runs: Starting,
 }
 
 /// One endpoint per owning backend, including the remote server.
@@ -204,7 +220,8 @@ impl MessagingEndpoint {
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let url = format!("http://{}/mcp", listener.local_addr().map_err(|e| e.to_string())?);
         let endpoint = Arc::new(Self { url, callers: Mutex::new(HashMap::new()), task: Mutex::new(None), relay: Mutex::new(None),
-            workflow: Mutex::new(None), starting_helpers: Arc::default() });
+            workflow: Mutex::new(None), starting_helpers: Arc::default(),
+            starting_runs: Arc::default() });
         let router = Router::new().route("/mcp", post(Self::post)).with_state(Arc::downgrade(&endpoint));
         *endpoint.task.lock().unwrap() = Some(tauri::async_runtime::spawn(async move {
             if let Ok(listener) = tokio::net::TcpListener::from_std(listener) {
@@ -332,15 +349,9 @@ impl MessagingEndpoint {
                     "helper" => return Err("helpers cannot start helpers".into()),
                     _ => {}
                 }
-                let _place = {
-                    let mut starting = self.starting_helpers.lock().unwrap();
-                    let in_flight = starting.get(&owned_id).copied().unwrap_or(0);
-                    if store.unfinished_helpers_of(&owned_id).map_err(|error| error.to_string())? + in_flight >= HELPER_LIMIT {
-                        return Err("at most 3 unfinished helpers".into());
-                    }
-                    starting.insert(owned_id.clone(), in_flight + 1);
-                    StartingHelper { starting: Arc::clone(&self.starting_helpers), parent: owned_id.clone() }
-                };
+                let _place = StartPlace::take(&self.starting_helpers, &owned_id, HELPER_LIMIT,
+                    || store.unfinished_helpers_of(&owned_id).map_err(|error| error.to_string()),
+                    "at most 3 unfinished helpers")?;
                 let model = args["model"].as_str().map(str::to_string);
                 let manager = manager.ok_or("Sessions cannot be started from here")?;
                 let helper = manager.start_helper(&owned_id, provider, model, name, prompt).await?;
@@ -381,9 +392,9 @@ impl MessagingEndpoint {
                     .map_err(|_| "task must have a key, a title and a body")?;
                 let project = project_of(&store, &owned_id)?;
                 // Starting a task again returns its run, so that run does not count.
-                if store.unfinished_workflow_runs_started_by(&owned_id, &task.key).map_err(|error| error.to_string())? >= 3 {
-                    return Err("at most 3 unfinished runs".into());
-                }
+                let _place = StartPlace::take(&self.starting_runs, &owned_id, 3,
+                    || store.unfinished_workflow_runs_started_by(&owned_id, &task.key).map_err(|error| error.to_string()),
+                    "at most 3 unfinished runs")?;
                 let key = format!("agent:{owned_id}:{}", task.key);
                 let run = engine.create_run_from_file(std::path::Path::new(&project), std::path::Path::new(path), task,
                     json!({"started_by":owned_id}), key.clone()).map_err(workflow_error)?;

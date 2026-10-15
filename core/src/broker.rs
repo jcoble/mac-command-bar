@@ -97,12 +97,12 @@ pub struct TrafficMessage {
     pub kind: String,
 }
 
-/// Newest first, one page. ?1 run, ?2 session (sender or receiver), ?3 and ?4 the
+/// Agent messages only (not review reports or group bookkeeping), newest first, one page. ?1 run, ?2 session (sender or receiver), ?3 and ?4 the
 /// (time, id) of the oldest message already shown, ?5 page size. NULL skips a filter.
 const TRAFFIC: &str = "SELECT m.id, m.created_at_ms, m.sender_name, m.from_owned_id, m.to_owned_id,
         COALESCE(s.handle || ' · ' || s.title, s.handle, m.to_owned_id), m.body, m.receipt, m.run_id, m.kind
     FROM workflow_messages m LEFT JOIN sessions s ON s.owned_id = m.to_owned_id
-    WHERE (?1 IS NULL OR m.run_id = ?1)
+    WHERE m.kind = 'message' AND (?1 IS NULL OR m.run_id = ?1)
       AND (?2 IS NULL OR m.from_owned_id = ?2 OR m.to_owned_id = ?2)
       AND (?3 IS NULL OR (m.created_at_ms, m.id) < (?3, ?4))
     ORDER BY m.created_at_ms DESC, m.id DESC LIMIT ?5";
@@ -735,7 +735,10 @@ mod tests {
             ('m1','a','b','brisk-heron · A','run-1','message','one','delivered',10,10),
             ('m2','a','b','brisk-heron · A',NULL,'message','two','queued',20,20),
             ('m3','c','gone','x · C','run-2','message','three','failed',20,20),
-            ('m4','b','a','calm-otter · Lane B','run-1','message','four','delivered',30,30);").unwrap();
+            ('m4','b','a','calm-otter · Lane B','run-1','message','four','delivered',30,30),
+            ('m5','b','attempt-1','calm-otter · Lane B','run-1','review','{}','delivered',40,40),
+            ('m6','a','b','brisk-heron · A',NULL,'system','joined','delivered',40,40);").unwrap();
+        // Review reports and group bookkeeping are not agent messages, so the owner's view leaves them out.
         use super::{TrafficMessage, TRAFFIC};
         use rusqlite::params;
         let ids = |page: Vec<TrafficMessage>| page.into_iter().map(|message| message.id).collect::<Vec<_>>();

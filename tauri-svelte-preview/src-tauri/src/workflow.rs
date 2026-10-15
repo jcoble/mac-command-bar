@@ -3799,6 +3799,22 @@ mod tests {
     }
 
     #[test]
+    fn parallel_starts_cannot_pass_the_run_limit() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let endpoint = agent_endpoint(&engine, &repo.0);
+        let token = agent(&engine, &endpoint, "starter", &repo.0);
+        let started = std::thread::scope(|scope| {
+            let starts: Vec<_> = (0..8).map(|index| {
+                let (endpoint, token) = (&endpoint, &token);
+                scope.spawn(move || tool(endpoint, token, "start_workflow", start_args(&format!("TSK-{index}"))).is_ok())
+            }).collect();
+            starts.into_iter().filter_map(|start| start.join().unwrap().then_some(())).count()
+        });
+        assert_eq!(started, 3);
+    }
+
+    #[test]
     fn fourth_unfinished_run_is_refused() {
         let repo = RunRepo::new();
         let engine = run_engine(Arc::new(FakeRuntime::default()));
