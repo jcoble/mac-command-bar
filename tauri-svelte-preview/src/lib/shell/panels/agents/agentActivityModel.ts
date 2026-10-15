@@ -16,11 +16,12 @@ import type { UIMessage } from '@tanstack/ai/client';
 import type { ConversationChildAgent } from '../../conversation/conversationTypes.ts';
 import { conversationMessageDisplayItem } from '../../conversation/conversationMessages.ts';
 
-export type AgentStatus = 'working' | 'done' | 'failed' | 'disconnected' | 'stopped' | 'idle';
+export type AgentStatus = 'working' | 'waiting' | 'done' | 'failed' | 'disconnected' | 'stopped' | 'idle';
 
 /** The word and chip tone each status shows in the Agents panel. */
 export const AGENT_STATUS_WORD: Record<AgentStatus, string> = {
   working: 'Working',
+  waiting: 'Needs you',
   done: 'Done',
   failed: 'Failed',
   disconnected: 'Disconnected',
@@ -29,6 +30,7 @@ export const AGENT_STATUS_WORD: Record<AgentStatus, string> = {
 };
 export const AGENT_STATUS_TONE = {
   working: 'live',
+  waiting: 'attention',
   done: 'good',
   failed: 'bad',
   disconnected: 'neutral',
@@ -109,20 +111,23 @@ function activityFrom(timeline: readonly UIMessage[]): string {
 }
 
 /** Rows for one session's children, most recently updated first.
- *  `timelineByChild` supplies a count only for children whose transcript has been read. */
+ *  `timelineByChild` supplies a count only for children whose transcript has been read.
+ *  `waiting` holds helper sessions waiting on the owner; a working one among them needs you. */
 export function agentActivityRows(
   children: readonly ConversationChildAgent[],
-  timelineByChild: Readonly<Record<string, readonly UIMessage[]>>
+  timelineByChild: Readonly<Record<string, readonly UIMessage[]>>,
+  waiting: ReadonlySet<string> = new Set()
 ): AgentActivityRow[] {
   return [...children]
     .sort((left, right) => right.updatedAtMs - left.updatedAtMs)
     .map((child) => {
       const timeline = timelineByChild[child.childId] ?? null;
       const transcriptActivity = timeline ? activityFrom(timeline) : '';
+      const status = agentStatus(child.state);
       return {
         childId: child.childId,
         label: child.title,
-        status: agentStatus(child.state),
+        status: status === 'working' && waiting.has(child.childId) ? 'waiting' : status,
         activity: transcriptActivity || firstLine(child.latestActivity ?? ''),
         messageCount: timeline ? timeline.length : null,
         // A child agent record carries no log path, so there is never one to

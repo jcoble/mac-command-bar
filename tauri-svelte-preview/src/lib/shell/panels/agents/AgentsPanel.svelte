@@ -102,7 +102,8 @@
   const workflowRoot = $derived(remoteRoot?.path ?? root);
   const selectedChildId = $derived(conversation?.selectedChildId ?? null);
   // List rows use metadata; returning to the list releases the child body.
-  const rows = $derived(agentActivityRows(conversation?.children ?? [], {}));
+  const waitingIds = $derived(new Set(waitingSessions.map((session) => session.ownedId)));
+  const rows = $derived(agentActivityRows(conversation?.children ?? [], {}, waitingIds));
   const selectedRow = $derived(rows.find((row) => row.childId === selectedChildId) ?? null);
   const historyOwnedId = $derived(conversation?.selectedChildHistoryOwnedId ?? null);
   const childConversation = $derived(historyOwnedId ? getConversationSession(historyOwnedId) : null);
