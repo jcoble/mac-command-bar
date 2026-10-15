@@ -18,9 +18,11 @@
     visible: boolean;
     /** Show only this workflow run's messages; null shows all of them. */
     runId: string | null;
+    /** The run's name, shown on its filter chip. */
+    runLabel: string;
     onClearRun: () => void;
   }
-  let { visible, runId, onClearRun }: Props = $props();
+  let { visible, runId, runLabel, onClearRun }: Props = $props();
 
   const LIMIT = 100;
   const RECEIPT_TONE: Record<AgentMessage['receipt'], ChipTone> = {
@@ -76,6 +78,11 @@
     if (!signal.aborted) loading = false;
   }
 
+  /** A sender's label without the trailing `[owned id]` it carries for replies. */
+  function senderName(label: string): string {
+    return label.replace(/ \[[^\]]*\]$/, '');
+  }
+
   async function open(ownedId: string): Promise<void> {
     const attempt = ++opening;
     try {
@@ -92,7 +99,7 @@
 <div class="flex h-full min-h-0 flex-col" data-testid="agent-messages">
   <div class="flex min-w-0 items-center gap-2 border-b border-border px-3 py-2">
     {#if runId}
-      <Chip tone="neutral">Run {runId.slice(-8)}</Chip>
+      <span class="min-w-0 truncate"><Chip tone="neutral">{runLabel}</Chip></span>
       <IconButton label="Show messages from every run" size="xs" onclick={onClearRun}><X /></IconButton>
     {:else}
       <p class="min-w-0 flex-1 truncate text-sm text-muted-foreground">Messages between agents on every machine.</p>
@@ -116,9 +123,10 @@
               onclick={() => void open(item.toOwnedId)}
             >
               <span class="flex w-full min-w-0 items-center gap-2 text-sm">
-                <span class="min-w-0 flex-1 truncate font-medium">{item.senderName} → {item.receiver}</span>
+                <span class="min-w-0 flex-1 truncate font-medium" title={item.senderName}>{senderName(item.senderName)}</span>
                 <Chip tone={RECEIPT_TONE[item.receipt]}>{item.receipt}</Chip>
               </span>
+              <span class="truncate text-sm text-muted-foreground" title={item.receiver}>to {item.receiver}</span>
               <span class="text-sm text-muted-foreground">
                 {time.format(item.createdAtMs)}{item.machine !== 'mac' ? ` · ${item.machine}` : ''}
               </span>

@@ -54,8 +54,8 @@
     root: string;
     /** The remote profile whose engine runs this project's workflows; null for this Mac. */
     machine: string | null;
-    /** Show the agent messages sent during this run. */
-    onShowMessages: (runId: string) => void;
+    /** Show the agent messages sent during this run, named as in the run list. */
+    onShowMessages: (runId: string, label: string) => void;
   }
 
   let { visible, root, machine, onShowMessages }: Props = $props();
@@ -473,7 +473,7 @@
             {/if}
 
             <div class="mt-3 flex flex-wrap gap-2 border-t border-border pt-3">
-              <Button size="sm" variant="ghost" onclick={() => onShowMessages(selected.id)}><MessagesSquare />Messages</Button>
+              <Button size="sm" variant="ghost" onclick={() => onShowMessages(selected.id, (selected.inputSnapshot as { task?: { title?: string } }).task?.title ?? selected.definition.name)}><MessagesSquare />Messages</Button>
               {#if selected.state === 'draft' || selected.state === 'queued'}
                 <Button size="sm" disabled={busy !== null} onclick={() => void control('Start', () => startWorkflowRun({ runId: selected.id, idempotencyKey: key('start') }, machine))}><Play />Start</Button>
               {:else if selected.state === 'paused'}

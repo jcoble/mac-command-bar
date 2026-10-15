@@ -58,7 +58,7 @@
   let { visible, root, ownedId }: Props = $props();
   let view = $state<'session' | 'workflows' | 'messages' | 'inbox'>('session');
   /** The workflow run whose messages the Messages view shows; null shows all of them. */
-  let messageRunId = $state<string | null>(null);
+  let messageRun = $state<{ id: string; label: string } | null>(null);
   let inboxStepCount = $state(0);
   let transcriptState = $state<'loading' | 'unavailable' | 'ready' | 'error'>('unavailable');
   let transcriptError = $state('');
@@ -240,10 +240,10 @@
       visible={visible}
       root={workflowRoot}
       {machine}
-      onShowMessages={(runId) => { messageRunId = runId; view = 'messages'; }}
+      onShowMessages={(id, label) => { messageRun = { id, label }; view = 'messages'; }}
     />
   {:else if view === 'messages'}
-    <AgentMessages visible={visible && view === 'messages'} runId={messageRunId} onClearRun={() => (messageRunId = null)} />
+    <AgentMessages visible={visible && view === 'messages'} runId={messageRun?.id ?? null} runLabel={messageRun?.label ?? ''} onClearRun={() => (messageRun = null)} />
   {:else if view === 'inbox'}
     <OwnerInbox visible={visible && view === 'inbox'} sessions={waitingSessions} bind:stepCount={inboxStepCount} />
   {:else if visible && selectedRow && ownedId}
