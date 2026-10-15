@@ -308,9 +308,10 @@ export async function findSessionRecord(
 ): Promise<AgentConversationSessionRecord | null> {
   const local = (await readers.local())?.find((record) => record.ownedId === ownedId);
   if (signal.aborted) return null;
-  if (local) return local;
+  // A cached remote row may be stale (a pending permission, say); its machine has the live one.
+  if (local && !local.remoteProfileId) return local;
   const remote = (await readers.remote(signal))?.find((record) => record.ownedId === ownedId);
-  return signal.aborted ? null : remote ?? null;
+  return signal.aborted ? null : remote ?? local ?? null;
 }
 
 export function ownedSessionFromBackend(record: AgentConversationSessionRecord): OwnedSession {
