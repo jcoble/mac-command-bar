@@ -1,0 +1,44 @@
+name: Dev pipeline
+inputs:
+  task: { description: Notion task, required: true }
+  i_merge: { description: "I'll merge", default: false }
+limits: { max_sessions: 3, step_timeout_minutes: 60, max_rounds: 5 }
+steps:
+  recon: { agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/recon.md }
+  spec: { needs: [recon], agent: { provider: claude, model: opus }, prompt: prompts/spec.md }
+  spec-review:
+    needs: [spec]
+    review: { of: spec, agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/spec-review.md }
+  build: { needs: [spec-review], agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/build.md }
+  checks:
+    needs: [build]
+    run:
+      - cd tauri-svelte-preview && pnpm install --frozen-lockfile --prefer-offline
+      - cd tauri-svelte-preview && npx tsc --noEmit -p .
+      - cd tauri-svelte-preview && pnpm run check:svelte
+      - cd tauri-svelte-preview && pnpm test:async-lifecycle
+      - cd core && PATH="$HOME/.cargo/bin:$PATH" CARGO_BUILD_JOBS=3 cargo test
+    repeat: true
+    on_fail: build
+  code-review:
+    needs: [checks]
+    review: { of: build, agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/code-review.md }
+  proof:
+    needs: [code-review]
+    agent: { provider: claude, model: opus }
+    prompt: prompts/proof.md
+  pr:
+    needs: [proof]
+    run:
+      - git push -u origin HEAD
+      - gh pr create --fill --body-file "${{ run.pr_body }}" || gh pr edit --body-file "${{ run.pr_body }}"
+      - evidence publish "${{ task.key }}"
+  final-review:
+    needs: [pr]
+    review: { of: build, agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/final-review.md }
+  merge:
+    needs: [final-review]
+    if: "${{ !inputs.i_merge }}"
+    run:
+      - gh pr checks --required --watch
+      - ALLOW_MERGE=1 gh pr merge --merge --match-head-commit "$(git rev-parse HEAD)"

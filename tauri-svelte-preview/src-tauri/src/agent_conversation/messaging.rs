@@ -97,7 +97,7 @@ fn text_json(value: Value) -> Value {
 }
 
 /// `ok`, then one line per step: id, kind, needs, and review/redo targets.
-fn workflow_summary(definition: &crate::workflow::WorkflowDefinitionV1) -> String {
+pub(crate) fn workflow_summary(definition: &crate::workflow::WorkflowDefinitionV1) -> String {
     let mut lines = vec!["ok".to_string()];
     for node in &definition.nodes {
         let kind = ["agent", "run", "review", "gate"].into_iter()

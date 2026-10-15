@@ -4456,6 +4456,36 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// The repository's own dev pipeline, as the owner starts it.
+    fn dev_pipeline() -> (std::path::PathBuf, WorkflowDefinitionV1) {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+        let definition = WorkflowEngine::validate_file(&repo, Path::new(".assembly/workflows/dev-pipeline.yml")).unwrap();
+        (repo, definition)
+    }
+
+    #[test]
+    fn dev_pipeline_file_loads_with_all_prompts() {
+        let (_, definition) = dev_pipeline();
+        let summary = crate::agent_conversation::messaging::workflow_summary(&definition);
+        assert!(summary.starts_with("ok") && !summary.contains("warning"), "{summary}");
+        let prompts = definition.nodes.iter().filter_map(|node| node.step["prompt"].as_str().or(node.step["review"]["prompt"].as_str()))
+            .filter(|prompt| !prompt.trim().is_empty()).count();
+        assert_eq!(prompts, 7);
+    }
+
+    #[test]
+    fn dev_pipeline_i_merge_skips_only_merge() {
+        let (repo, definition) = dev_pipeline();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        for (i_merge, merge_runs) in [(true, "false"), (false, "true")] {
+            let run = engine.create_run(definition.clone(), json!({"cwd":repo,"inputs":{"i_merge":i_merge},
+                "task":{"key":"TSK-1","title":"T","body":"B"}}), format!("create-{i_merge}")).unwrap();
+            let conditions = run.definition.nodes.iter().filter_map(|node| node.condition.as_ref().map(|condition|
+                (node.id.as_str(), render_step_template(condition.as_str().unwrap(), &run).unwrap()))).collect::<Vec<_>>();
+            assert_eq!(conditions, [("merge", merge_runs.to_string())]);
+        }
+    }
+
     #[test]
     fn workflow_authoring_strict_validation_is_shared() {
         let (root, engine) = yaml_fixture("strict");
