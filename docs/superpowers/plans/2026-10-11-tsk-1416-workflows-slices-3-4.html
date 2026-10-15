@@ -3,48 +3,58 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TSK-1416 — desktop and orchestrator plan</title>
+<title>TSK-1416 — slices 3 and 4 plan, version 2</title>
 <style>
 :root{color-scheme:dark;--bg:#141517;--card:#202329;--text:#e2e4e7;--quiet:#adb3bd;--accent:#9bdac6}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,sans-serif}main{max-width:1140px;margin:auto;padding:40px 28px}h1{font-size:28px;line-height:1.3}h2{font-size:21px;margin-top:32px}p{max-width:90ch}a{color:var(--accent)}.card{background:var(--card);padding:20px 24px;border-radius:16px;margin:16px 0}.muted{color:var(--quiet)}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:12px;vertical-align:top;border-bottom:1px solid #363b43}th{color:var(--accent)}code{font-size:13px}ol{padding-left:24px}li{margin:12px 0}.scroll{overflow:auto}strong{font-weight:650}
 </style>
 </head>
 <body><main>
-<h1>Choose a YAML file, inspect its runs, then let one orchestrator supervise delivery.</h1>
-<p>This plan adds the desktop views first, then the home-machine orchestrator and the repository dev pipeline. The owner reviews a complete desktop mockup before any UI code. D6 already authorizes the guarded engine merge rule; proof publication reuses the owner’s evidence tool.</p>
-<p><a href="2026-10-11-tsk-1416-workflows-slices-3-4.md">Read the full task-by-task implementation plan</a> · <a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></p>
-<div class="card"><strong>This is the plan reading companion.</strong> It is not the visual approval mockup. Task 14 creates that separate HTML artifact and records owner approval before implementation. This docs lane changes no product code and runs no builds.</div>
-<h2>Slice 3: desktop views</h2>
-<div class="scroll"><table>
-<thead><tr><th>Task</th><th>Reviewable outcome</th><th>Expected changed lines</th></tr></thead>
-<tbody>
-<tr><td>14 · Mockup</td><td>New run, YAML list, run list/timeline, inbox, rail and pinned orchestrator; owner approval first. Visible UI: Opus lane.</td><td>250–400 HTML</td></tr>
-<tr><td>15 · YAML catalog</td><td>Only selected-machine repository .yml files; name, path, steps and Open file. No app templates. Visible UI: Opus lane.</td><td>220–320 + architecture</td></tr>
-<tr><td>16 · New run</td><td>Full Notion bodies for one or many tasks; one run per task, selected machine and default-off I'll merge. Visible UI: Opus lane.</td><td>280–420 + architecture</td></tr>
-<tr><td>17 · Run inspection</td><td>Machine-qualified runs, all numbered attempts, real command outputs, messages, review verdicts, decisions and proof. Visible UI: Opus lane.</td><td>400–600 + architecture</td></tr>
-<tr><td>18 · Run inbox</td><td>Durable pause items and owner buttons; stale or agent answers cannot approve. Visible UI: Opus lane.</td><td>260–400 + architecture</td></tr>
-<tr><td>19 · Rail</td><td>Workers grouped under their run, ordinary chat selection, designated orchestrator at top. Visible UI: Opus lane.</td><td>160–250 + architecture</td></tr>
-<tr><td>20 · Proof</td><td>Real local/remote runs and all four provider × machine chat cases; idle-resource and selection-latency receipts.</td><td>0–30; external proof</td></tr>
-</tbody></table></div>
-<h2>Slice 4: orchestrator and dev pipeline</h2>
-<div class="scroll"><table>
-<thead><tr><th>Task</th><th>Reviewable outcome</th><th>Expected changed lines</th></tr></thead>
-<tbody>
-<tr><td>21 · Home session</td><td>Explicit home machine, default Workbox; one resumable ordinary orchestrator session. Settings UI: Opus lane.</td><td>220–330 + architecture</td></tr>
-<tr><td>22 · MCP controls</td><td>Seven orchestrator-only tools with backend token/designation checks; connected desktop relay for other machines.</td><td>240–360 + architecture</td></tr>
-<tr><td>23 · Permissions</td><td>Chat and inbox answer the same permission request once; agent text never approves. Visible UI: Opus lane.</td><td>230–350 + architecture</td></tr>
-<tr><td>24 · Proof and merge</td><td>Published proof, final structured review and checks tied to exact PR head; I'll merge prevents merge.</td><td>300–450 + architecture</td></tr>
-<tr><td>25 · Pipeline files</td><td>Versioned dev-pipeline.yml and seven prompt files follow C1's format reference.</td><td>280–420 + architecture</td></tr>
-<tr><td>26 · Real-task proof</td><td>One scoped real task reaches an observed merged PR; separate I'll merge handoff proof.</td><td>0–30; real task has its own scope</td></tr>
-</tbody></table></div>
-<h2>Three questions resolved by the spec and existing tools</h2>
+<h1>Talk to one orchestrator; see every agent, every message and every decision.</h1>
+<p>Version 2 (2026-10-15). Messaging, helper sessions, handles, cross-machine relay, the workflow engine and the YAML picker have merged (PR #249, backend 0.1.53, desktop 0.1.6). This plan fixes today's helper bug first, then lets agents start and watch workflows, marks a main orchestrator, adds the message view and the inbox, and ends with one real task delivered to a merged PR and a dead-code cleanup.</p>
+<p><a href="2026-10-11-tsk-1416-workflows-slices-3-4.md">Read the full task-by-task plan</a> · <a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></p>
+<div class="card"><strong>This is a reading companion.</strong> It changes no product code. Every code claim in the Markdown plan carries a file and line on <code>main</code> at <code>cce1069c1</code>.</div>
+
+<h2>Questions for the owner</h2>
 <ol>
-<li><strong>Home machine — settled.</strong> D10 requires one orchestrator; §4.5 specifies a Settings home with Workbox default. D7 fixes run placement. Test only against Workbox Test.</li>
-<li><strong>Standing merge authorization — settled.</strong> D6 explicitly grants the workflow rule standing authorization for that run with I'll merge off. Other agents, controllers and slice PRs still require specific owner merge requests.</li>
-<li><strong>Proof attachment — reuse.</strong> D6 requires attached proof and final review. Register selected media in ~/Workbox/screenshots/ with <code>evidence add ... --key</code>, then <code>evidence publish TSK-&lt;id&gt;</code>. Record returned Drive folder/file links and current attempt/commit. Nonvisual command receipts go directly in PR/task. Final review opens proof at the current PR head; refresh the PR body with its verdict before merge or handoff. No new proof-release system.</li>
+<li><strong>One kind of session?</strong> Recommended: yes. Helpers, workflow workers and the orchestrator are all ordinary Assembly sessions, grouped in the rail under the session that started them or the run they work for.</li>
+<li><strong>What may agents do with workflows?</strong> Recommended: start a workflow in their own project, list and read runs on their machine, stop runs they started. Every pause answer and gate stays owner-only. No pause or resume for agents.</li>
+<li><strong>How is the main orchestrator chosen?</strong> Recommended: the owner marks any existing session from its rail menu; it is pinned at the top. This replaces the Settings home-machine control and the auto-created <code>orchestrator</code> session.</li>
+<li><strong>Limits on starting agents.</strong> Recommended: helpers cannot start helpers; at most 3 unfinished helpers and 3 unfinished runs per session; workers stay under each workflow's <code>max_sessions</code>.</li>
+<li><strong>Helper permissions.</strong> Recommended: a helper takes its parent's permission mode (never more); anything it still asks for goes to the owner's rail and inbox, never to the parent agent.</li>
 </ol>
-<h2>What must be ready first</h2>
-<p>Tasks 6 and 13 prove messaging and the engine. Task 7's loader commit <code>7817ca1bb</code> is on the engine branch, not this plan's fresh main base <code>248eb8280</code>. Integrate and re-find symbols before implementation. C1 separately supplies D14, <code>docs/workflows/format.md</code> and the authoring-tools plan; this plan does not rewrite them.</p>
-<div class="card"><strong>One source and one authority for each job.</strong><p>YAML files define workflows; the owning backend's ledger records runs. The engine runs checks and applies rules. One home session supervises. Only owner buttons answer decisions. SQL selects bounded data; the desktop does not become a second engine.</p></div>
-<p class="muted">No visual editor, phone API, fan-out, backend-to-backend networking, compatibility template path or speculative framework. No UI structure tests or CSS relational selectors. Future implementation checks in the Markdown are requirements, not results claimed by this docs lane.</p>
+
+<h2>Today's bug, fixed first (Task 14)</h2>
+<p>On Agent Workbox, two helpers started with <code>start_session</code> never reached the rail, opened as an empty transcript, and hung 40 minutes on a permission request nobody could see. One cause: the rail learns about a new session only from a rename signal the remote server never sends, and only looks in the local list. The fix adds a session the rail does not know as soon as its first event arrives, from whichever machine has it. Opening it then shows its transcript, and its permission request shows on its rail row.</p>
+
+<h2>Slice 3: every agent visible and supervisable</h2>
+<div class="scroll"><table>
+<thead><tr><th>Task</th><th>Outcome</th><th>Expected lines</th></tr></thead>
+<tbody>
+<tr><td>14 · Started sessions in the rail</td><td>Helpers and remote workers appear in the rail on every machine, open with their transcript, and show permission requests.</td><td>60–120</td></tr>
+<tr><td>15 · Guardrails</td><td>Owner authority stated to every agent; forged <code>[message from …]</code> lines refused; helper first prompts labelled with the parent; helpers cannot start helpers; at most 3 per parent.</td><td>80–140</td></tr>
+<tr><td>16 · Workflow tools for agents</td><td><code>start_workflow</code>, <code>list_workflow_runs</code>, <code>get_workflow_run</code>, <code>stop_workflow_run</code> on the caller's machine; the starter is messaged when its run waits or ends; at most 3 unfinished runs per session.</td><td>220–320</td></tr>
+<tr><td>17 · Main orchestrator</td><td>Owner marks a session; one settings row on its machine; pinned at the top; renaming cannot claim it. Visible part: Opus.</td><td>150–230</td></tr>
+<tr><td>18 · Grouping</td><td>Helpers under their parent, workers under their run; a child waiting on the owner marks its group. Visible part: Opus.</td><td>120–200</td></tr>
+<tr><td>19 · Message view</td><td>All agent-to-agent traffic: time, sender, receiver, machine, text, status; filter by machine, session, run; one SQL query per machine. Visible part: Opus.</td><td>200–300</td></tr>
+<tr><td>20 · Inbox</td><td>Waiting workflow steps with their existing buttons, plus sessions waiting on permission (opens their chat). Visible part: Opus.</td><td>200–300</td></tr>
+<tr><td>21 · Sub-agents</td><td>Codex native sub-agents count as background work in the rail, like Claude's.</td><td>20–60</td></tr>
+<tr><td>22 · Workflows view</td><td>Step facts (exit codes, findings, PR link) from the loaded run; link to its messages; remove template-only controls.</td><td>60–150</td></tr>
+<tr><td>23 · Proof</td><td>Four chat cases plus helper, workflow, pin, messages and inbox walked in the real app.</td><td>0–30</td></tr>
+</tbody></table></div>
+
+<h2>Slice 4: the orchestrator delivers a real task</h2>
+<div class="scroll"><table>
+<thead><tr><th>Task</th><th>Outcome</th><th>Expected lines</th></tr></thead>
+<tbody>
+<tr><td>24 · Dev pipeline</td><td><code>dev-pipeline.yml</code> and seven prompts; merge runs <code>gh pr checks --required --watch</code> then <code>gh pr merge --match-head-commit</code>.</td><td>150–250</td></tr>
+<tr><td>25 · Real task</td><td>The owner asks the orchestrator; the task reaches a merged PR with receipts; an I'll merge run stops at the open PR.</td><td>0–30</td></tr>
+<tr><td>26 · Dead-code cleanup</td><td>Test-only code under <code>#[cfg(test)]</code>, unused code deleted, no release warnings in workflow and orchestration files.</td><td>net negative</td></tr>
+</tbody></table></div>
+
+<h2>Removed from the old plan</h2>
+<p>The full desktop mockup, the YAML catalog with Open file, the multi-task Notion dialog, the full run timeline and history API, a separate inbox ledger, the Settings home machine, seven orchestrator-only tools, <code>ask_owner</code>, a second permission answer path, and the proof-publication and merge-guard script. The orchestrator, the message view, the inbox query and two <code>gh</code> commands cover each of them with less code.</p>
+
+<div class="card"><strong>One authority for each job.</strong><p>The owner's own chat and inbox carry the owner's authority; no message does. The engine runs checks and applies rules. Sender labels are written by Assembly. Every agent is an ordinary session the owner can open.</p></div>
+<p class="muted">Not in this plan: the phone app (slice 5, separate design). It gets two hooks: the inbox operation and the message list operation.</p>
 </main></body></html>
