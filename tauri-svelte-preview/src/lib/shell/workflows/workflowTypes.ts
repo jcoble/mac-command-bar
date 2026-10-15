@@ -281,15 +281,6 @@ export interface PullRequestMergeReceipt {
   mergeCommitSha: string;
 }
 
-export type WorkflowResultReceipt =
-  | ImplementationReceipt
-  | PullRequestReceipt
-  | PullRequestMergeReceipt
-  | ReviewReceipt
-  | SpecComplianceReceipt
-  | VerificationReceipt
-  | PlanReceipt;
-
 /* -------------------------------------------------------------------------- */
 /* Presentation views                                                         */
 /* -------------------------------------------------------------------------- */
@@ -473,20 +464,11 @@ export interface ApproveWorkflowGateDto extends WorkflowNodeIdempotencyDto {
   approval: { approved: boolean; [key: string]: unknown };
 }
 
-export interface RedirectWorkflowNodeDto extends WorkflowNodeIdempotencyDto {
-  provider: string;
-}
-
-export interface SubmitWorkflowResultDto extends WorkflowNodeIdempotencyDto {
-  result: WorkflowResultReceipt;
-}
-
 export type StartWorkflowRunDto = WorkflowRunIdempotencyDto;
 export type PauseWorkflowRunDto = WorkflowRunIdempotencyDto;
 export type ResumeWorkflowRunDto = WorkflowRunIdempotencyDto;
 export type CancelWorkflowRunDto = WorkflowRunIdempotencyDto;
 export type RetryWorkflowNodeDto = WorkflowNodeIdempotencyDto;
-export type SkipWorkflowNodeDto = WorkflowNodeIdempotencyDto;
 
 /** Useful for callers that want to describe one control action without IO. */
 export type WorkflowCommandDto =
@@ -495,10 +477,7 @@ export type WorkflowCommandDto =
   | { kind: 'resume'; input: ResumeWorkflowRunDto }
   | { kind: 'cancel'; input: CancelWorkflowRunDto }
   | { kind: 'retry-node'; input: RetryWorkflowNodeDto }
-  | { kind: 'redirect-node'; input: RedirectWorkflowNodeDto }
-  | { kind: 'skip-node'; input: SkipWorkflowNodeDto }
-  | { kind: 'approve-gate'; input: ApproveWorkflowGateDto }
-  | { kind: 'submit-result'; input: SubmitWorkflowResultDto };
+  | { kind: 'approve-gate'; input: ApproveWorkflowGateDto };
 
 export type WorkflowFilter = 'all' | 'active' | 'waiting' | 'failed' | 'completed';
 

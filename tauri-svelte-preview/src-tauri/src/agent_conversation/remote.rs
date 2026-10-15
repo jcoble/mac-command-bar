@@ -42,7 +42,7 @@ use super::protocol::{
     AgentConversationChildHistorySelection, AgentConversationConnection, AgentConversationEvent,
     AgentConversationEventPage, AgentConversationItemPage, AgentConversationProvider, AgentConversationSelectionSnapshot,
     AgentConversationSendReceipt, AgentConversationSessionRecord, AgentConversationSnapshot,
-    BackgroundWorkItem, BackgroundWorkKind, ChangeAgentConversationCheckoutRequest,
+    ChangeAgentConversationCheckoutRequest,
     EnsureAgentConversationRequest, ExecutionEnvironment,
     RespondAgentConversationApprovalRequest, RespondAgentConversationInputRequest,
     RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest,
@@ -3960,6 +3960,7 @@ fn workspace_wait_seconds(operation: &str) -> u64 {
 #[cfg(test)]
 mod connection_tests {
     use super::*;
+    use super::super::protocol::{BackgroundWorkItem, BackgroundWorkKind};
 
     fn add_session(manager: &AgentRuntimeManager, owned_id: &str, title: &str) {
         manager.store().upsert_session(&mcb_core::session_store::SessionRow {

@@ -25,7 +25,6 @@
     listWorkflowFiles,
     listWorkflowRuns,
     pauseWorkflowRun,
-    redirectWorkflowNode,
     resumeWorkflowRun,
     retryWorkflowNode,
     startWorkflowRun,
@@ -77,11 +76,6 @@
   const pausedNode = $derived(selected?.nodes.find((node) => node.state === 'waiting-input') ?? null);
   const failedNode = $derived(selected?.nodes.find((node) => node.state === 'failed') ?? null);
   const runningNode = $derived(selected?.nodes.find((node) => node.state === 'running') ?? null);
-  const nextNode = $derived(
-    waitingNode
-      ? selected?.nodes.find((node) => node.state === 'blocked' || node.state === 'ready') ?? null
-      : null
-  );
   const runningDefinition = $derived(
     runningNode ? selected?.definition.nodes.find((node) => node.id === runningNode.nodeId) ?? null : null
   );
@@ -496,22 +490,6 @@
               {/if}
               {#if waitingNode}
                 <Button size="sm" disabled={busy !== null} onclick={() => void control('Approve', () => approveWorkflowGate({ runId: selected.id, nodeId: waitingNode.nodeId, approval: { approved: true }, idempotencyKey: key('approve') }, machine))}><Check />Approve handoff</Button>
-                <!-- Redirect is a template-run control this Mac's engine owns. -->
-                {#if nextNode && !machine}
-                  <label class="flex h-8 items-center gap-2 rounded-lg border border-input bg-background px-2 text-xs text-muted-foreground">
-                    Next
-                    <select
-                      value={nextNode.provider}
-                      disabled={busy !== null}
-                      onchange={(event) => void control('Redirect', () => redirectWorkflowNode({ runId: selected.id, nodeId: nextNode.nodeId, provider: event.currentTarget.value, idempotencyKey: key('redirect') }))}
-                      class="bg-transparent text-sm text-foreground outline-none"
-                    >
-                      <option value="codex">Codex</option>
-                      <option value="claude">Claude</option>
-                      <option value="antigravity">Agy</option>
-                    </select>
-                  </label>
-                {/if}
               {/if}
               {#if pausedNode}
                 <Button size="sm" disabled={busy !== null} onclick={() => void control('Another round', () => answerWorkflowPause({ runId: selected.id, nodeId: pausedNode.nodeId, decision: 'another-round', reply: null, idempotencyKey: key('answer') }, machine))}><RotateCcw />Run another round</Button>

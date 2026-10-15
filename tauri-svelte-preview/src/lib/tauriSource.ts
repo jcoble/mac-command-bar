@@ -12,7 +12,6 @@ import {
 } from './shell/sessionWorkspaces.ts';
 import type {
   WorkflowPauseDecision,
-  WorkflowResultReceipt,
   WorkflowRunRecord,
   WorkflowTaskSnapshot
 } from './shell/workflows/workflowTypes.ts';
@@ -2845,23 +2844,6 @@ export async function retryWorkflowNodeFromTauri(runId: string, nodeId: string, 
   return invoke<WorkflowRunRecord>('retry_workflow_node', { runId, nodeId, idempotencyKey });
 }
 
-export async function redirectWorkflowNodeFromTauri(
-  runId: string,
-  nodeId: string,
-  provider: string,
-  idempotencyKey: string
-): Promise<WorkflowRunRecord | null> {
-  if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<WorkflowRunRecord>('redirect_workflow_node', { runId, nodeId, provider, idempotencyKey });
-}
-
-export async function skipWorkflowNodeFromTauri(runId: string, nodeId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
-  if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<WorkflowRunRecord>('skip_workflow_node', { runId, nodeId, idempotencyKey });
-}
-
 export async function approveWorkflowGateFromTauri(
   runId: string,
   nodeId: string,
@@ -2871,17 +2853,6 @@ export async function approveWorkflowGateFromTauri(
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkflowRunRecord>('approve_workflow_gate', { runId, nodeId, approval, idempotencyKey });
-}
-
-export async function submitWorkflowResultFromTauri(
-  runId: string,
-  nodeId: string,
-  result: WorkflowResultReceipt,
-  idempotencyKey: string
-): Promise<WorkflowRunRecord | null> {
-  if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<WorkflowRunRecord>('submit_workflow_result', { runId, nodeId, result, idempotencyKey });
 }
 
 export async function searchSourceFilesFromTauri(

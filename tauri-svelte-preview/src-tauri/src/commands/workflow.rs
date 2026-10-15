@@ -162,38 +162,6 @@ pub(crate) async fn retry_workflow_node(
 }
 
 #[tauri::command]
-pub(crate) async fn redirect_workflow_node(
-    app: tauri::AppHandle,
-    engine: tauri::State<'_, WorkflowEngine>,
-    run_id: String,
-    node_id: String,
-    provider: String,
-    idempotency_key: String,
-) -> Result<WorkflowRunRecord, String> {
-    let run = engine
-        .redirect_node(&run_id, &node_id, &provider, &idempotency_key)
-        .map_err(|error| error.to_string())?;
-    emit_workflow_run_updated(&app, &run);
-    Ok(run)
-}
-
-#[tauri::command]
-pub(crate) async fn skip_workflow_node(
-    app: tauri::AppHandle,
-    engine: tauri::State<'_, WorkflowEngine>,
-    run_id: String,
-    node_id: String,
-    idempotency_key: String,
-) -> Result<WorkflowRunRecord, String> {
-    let run = engine
-        .skip_node(&run_id, &node_id, &idempotency_key)
-        .await
-        .map_err(|error| error.to_string())?;
-    emit_workflow_run_updated(&app, &run);
-    Ok(run)
-}
-
-#[tauri::command]
 pub(crate) async fn approve_workflow_gate(
     app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
@@ -204,23 +172,6 @@ pub(crate) async fn approve_workflow_gate(
 ) -> Result<WorkflowRunRecord, String> {
     let run = engine
         .approve_gate(&run_id, &node_id, approval, "owner", &idempotency_key)
-        .await
-        .map_err(|error| error.to_string())?;
-    emit_workflow_run_updated(&app, &run);
-    Ok(run)
-}
-
-#[tauri::command]
-pub(crate) async fn submit_workflow_result(
-    app: tauri::AppHandle,
-    engine: tauri::State<'_, WorkflowEngine>,
-    run_id: String,
-    node_id: String,
-    result: serde_json::Value,
-    idempotency_key: String,
-) -> Result<WorkflowRunRecord, String> {
-    let run = engine
-        .submit_result(&run_id, &node_id, result, &idempotency_key)
         .await
         .map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);

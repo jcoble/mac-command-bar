@@ -929,8 +929,10 @@ impl IdGenerator for UuidGenerator {
     }
 }
 
+#[cfg(test)]
 pub(crate) struct WorkflowReducer;
 
+#[cfg(test)]
 impl WorkflowReducer {
     pub fn reduce(events: Vec<Value>) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
         let mut ordered: Vec<(u64, String, WorkflowRunRecord)> = events
@@ -1638,58 +1640,6 @@ impl WorkflowEngine {
         Ok(run)
     }
 
-    pub fn redirect_node(
-        &self,
-        run_id: &str,
-        node_id: &str,
-        provider: &str,
-        idempotency_key: &str,
-    ) -> Result<WorkflowRunRecord, WorkflowError> {
-        if let Some(existing) = self.idempotent_run(run_id, idempotency_key)? {
-            return Ok(existing);
-        }
-        let mut run = self.require_run(run_id)?;
-        let provider = provider.trim().to_ascii_lowercase();
-        let node = run
-            .nodes
-            .iter_mut()
-            .find(|node| node.node_id == node_id)
-            .ok_or_else(|| WorkflowError::NotFound(node_id.into()))?;
-        if node.started_at_ms.is_some()
-            || !matches!(node.state, WorkflowNodeState::Blocked | WorkflowNodeState::Ready)
-        {
-            return Err(WorkflowError::InvalidTransition(
-                "Only a pending stage can be redirected".into(),
-            ));
-        }
-        let role = run
-            .definition
-            .roles
-            .iter_mut()
-            .find(|role| role.id == node.role_id)
-            .ok_or_else(|| WorkflowError::NotFound(node.role_id.clone()))?;
-        if !role
-            .provider_policy
-            .allowed_providers
-            .iter()
-            .any(|allowed| allowed.eq_ignore_ascii_case(&provider))
-        {
-            return Err(WorkflowError::PolicyDenied(format!(
-                "Provider {provider} is not allowed for role {}",
-                role.id
-            )));
-        }
-        role.provider_policy.provider = provider.clone();
-        node.provider = provider;
-        self.append(
-            &mut run,
-            "workflow.node.redirected",
-            idempotency_key,
-            Some(node_id),
-        )?;
-        Ok(run)
-    }
-
     pub async fn resume(
         &self,
         run_id: &str,
@@ -1860,42 +1810,6 @@ impl WorkflowEngine {
         self.append(
             &mut run,
             "workflow.node.retried",
-            idempotency_key,
-            Some(node_id),
-        )?;
-        self.dispatch_ready(run_id).await
-    }
-
-    pub async fn skip_node(
-        &self,
-        run_id: &str,
-        node_id: &str,
-        idempotency_key: &str,
-    ) -> Result<WorkflowRunRecord, WorkflowError> {
-        if let Some(existing) = self.idempotent_run(run_id, idempotency_key)? {
-            return Ok(existing);
-        }
-        let mut run = self.require_run(run_id)?;
-        let node = run
-            .nodes
-            .iter_mut()
-            .find(|node| node.node_id == node_id)
-            .ok_or_else(|| WorkflowError::NotFound(node_id.into()))?;
-        if matches!(
-            node.state,
-            WorkflowNodeState::Completed | WorkflowNodeState::Running | WorkflowNodeState::Starting
-        ) {
-            return Err(WorkflowError::InvalidTransition(
-                "Active or completed nodes cannot be skipped".into(),
-            ));
-        }
-        node.state = WorkflowNodeState::Skipped;
-        node.finished_at_ms = Some(self.clock.now_ms());
-        run.state = WorkflowRunState::Running;
-        refresh_ready_and_phase(&mut run);
-        self.append(
-            &mut run,
-            "workflow.node.skipped",
             idempotency_key,
             Some(node_id),
         )?;
@@ -5241,34 +5155,6 @@ mod tests {
             "result",
         ));
         assert!(matches!(result, Err(WorkflowError::OutputContract(message)) if message.contains("at least one")));
-    }
-
-    #[test]
-    fn workflow_pending_stage_can_be_redirected_to_an_allowed_provider() {
-        let store = Arc::new(SessionStore::open_in_memory().unwrap());
-        let engine = WorkflowEngine::new(
-            Arc::new(FakeRuntime::default()),
-            Arc::new(InMemoryWorktreeLeasePort::default()),
-            Arc::new(FakeClock(AtomicU64::new(100))),
-            Arc::new(FakeIds(AtomicU64::new(1))),
-            store,
-        );
-        let mut definition = definition();
-        definition.roles[0].provider_policy.allowed_providers =
-            vec!["codex".into(), "claude".into()];
-        let created = engine
-            .create_run(definition, json!({"cwd":"/repo"}), "create".into())
-            .unwrap();
-
-        let redirected = engine
-            .redirect_node(&created.id, "a", "claude", "redirect")
-            .unwrap();
-
-        assert_eq!(redirected.nodes[0].provider, "claude");
-        assert_eq!(
-            redirected.definition.roles[0].provider_policy.provider,
-            "claude"
-        );
     }
     #[test]
     fn workflow_concurrency_provider_depth_and_attempt_policy_are_bounded() {
