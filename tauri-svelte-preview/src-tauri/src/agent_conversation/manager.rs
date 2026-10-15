@@ -7081,10 +7081,7 @@ async fn scan_codex_children_once(
                     .canonical_path
             }
         };
-        let active_after = SystemTime::now()
-            .checked_sub(CHILD_ROLLOUT_SCAN_INTERVAL.saturating_mul(2))
-            .unwrap_or(UNIX_EPOCH);
-        transcript::scan_codex_child_rollouts(&path, &scan_parent_id, active_after)
+        transcript::scan_codex_child_rollouts(&path, &scan_parent_id)
             .ok()
             .map(|children| (path, children))
     })
@@ -8931,9 +8928,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let active_after = UNIX_EPOCH;
-        let children =
-            transcript::scan_codex_child_rollouts(&parent, "parent", active_after).unwrap();
+        let children = transcript::scan_codex_child_rollouts(&parent, "parent").unwrap();
         let mut known = HashMap::new();
 
         assert_eq!(
@@ -8949,6 +8944,21 @@ mod tests {
             }]
         );
         assert!(changed_child_updates("parent", &mut known, children).is_empty());
+        // The child's own transcript says when its turn ends, however long it was quiet before.
+        let child = today_directory.join("rollout-child.jsonl");
+        let append = |line: &str| {
+            use std::io::Write;
+            writeln!(fs::OpenOptions::new().append(true).open(&child).unwrap(), "{line}").unwrap();
+        };
+        let state = || transcript::scan_codex_child_rollouts(&parent, "parent").unwrap()[0].state.clone();
+        append(r#"{"type":"event_msg","payload":{"type":"task_started"}}"#);
+        assert_eq!(state(), "running");
+        append(r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#);
+        assert_eq!(state(), "finished");
+        append(r#"{"type":"event_msg","payload":{"type":"task_started"}}"#);
+        assert_eq!(state(), "running");
+        append(r#"{"type":"event_msg","payload":{"type":"turn_aborted"}}"#);
+        assert_eq!(state(), "finished");
         fs::remove_dir_all(root).unwrap();
     }
 

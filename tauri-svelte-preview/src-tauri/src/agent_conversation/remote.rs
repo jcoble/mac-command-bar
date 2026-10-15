@@ -411,6 +411,9 @@ enum ClientRequest {
     },
 }
 
+/// This desktop's record of the owner's latest main orchestrator choice: `{machine, owned_id}`.
+const ORCHESTRATOR_CHOICE: &str = "orchestrator.choice";
+
 /// Owns the remote socket, SSH tunnels, and compact routing data needed to reconnect.
 #[derive(Clone)]
 pub struct RemoteConnectionManager {
@@ -873,10 +876,12 @@ impl RemoteConnectionManager {
     }
 
     fn publish_status(&self, profile_id: &str) {
-        (self.status_sink)(RemoteConnectionStatus {
-            profile_id: profile_id.to_string(),
-            state: self.connection_state(profile_id),
-        });
+        let state = self.connection_state(profile_id);
+        if state == RemoteConnectionState::Connected {
+            let (manager, machine) = (self.clone(), profile_id.to_string());
+            tauri::async_runtime::spawn(async move { manager.restore_orchestrator_choice(&machine).await });
+        }
+        (self.status_sink)(RemoteConnectionStatus { profile_id: profile_id.to_string(), state });
     }
 
     pub fn shutdown(&self) {
@@ -1307,11 +1312,15 @@ impl RemoteConnectionManager {
     }
 
     /// Marks `owned_id` on `machine` as the owner's main orchestrator, then clears the
-    /// mark on every other reachable machine; `None` clears it everywhere. A machine
-    /// that cannot be reached keeps an older mark, and the rail pins the newest.
+    /// mark on every other reachable machine; `None` clears it everywhere. The choice is
+    /// kept on this desktop, and a machine that could not be reached gets it when it connects.
     pub async fn set_main_orchestrator(&self, machine: &str, owned_id: Option<&str>) -> Result<(), String> {
         if owned_id.is_some() {
             self.message_machine(machine, "designate", serde_json::json!({"owned_id": owned_id})).await?;
+        }
+        if let Some(host) = self.message_host.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
+            host.store().upsert_app_setting(ORCHESTRATOR_CHOICE,
+                &serde_json::json!({"machine": machine, "owned_id": owned_id}).to_string()).map_err(|error| error.to_string())?;
         }
         for other in self.message_machines(if owned_id.is_some() { machine } else { "" }) {
             if let Err(error) = self.message_machine(&other, "designate", serde_json::json!({"owned_id": null})).await {
@@ -1319,6 +1328,18 @@ impl RemoteConnectionManager {
             }
         }
         Ok(())
+    }
+
+    /// Puts the owner's latest orchestrator choice on `machine`, which has just connected:
+    /// its session is marked if the owner chose one there, and any older mark is cleared otherwise.
+    pub(crate) async fn restore_orchestrator_choice(&self, machine: &str) {
+        let Some(host) = self.message_host.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() else { return };
+        let Ok(Some(choice)) = host.store().get_app_setting(ORCHESTRATOR_CHOICE) else { return };
+        let Ok(choice) = serde_json::from_str::<serde_json::Value>(&choice) else { return };
+        let owned_id = if choice["machine"].as_str() == Some(machine) { choice["owned_id"].clone() } else { serde_json::Value::Null };
+        if let Err(error) = self.message_machine(machine, "designate", serde_json::json!({"owned_id": owned_id})).await {
+            crate::debug_log::stderr_log!("Could not restore the orchestrator mark on {machine}: {error}");
+        }
     }
 
     /// One page of agent-to-agent messages, newest first, from `machine` or from this desktop and
@@ -4056,6 +4077,18 @@ mod connection_tests {
         assert_eq!(body, "hello back");
         let status = tool(&here, &here_token, json!({"name":"message_status","arguments":{"id":reply_id}})).await;
         assert!(["queued", "delivered", "failed"].contains(&status["status"].as_str().unwrap()), "{status}");
+
+        // A machine that was away while the owner chose an orchestrator keeps its older mark
+        // until it connects; then the owner's latest choice is put back there.
+        connections.set_main_orchestrator(LOCAL_MACHINE, Some("here")).await.unwrap();
+        remote.store().set_main_orchestrator(Some("there")).unwrap();
+        connections.restore_orchestrator_choice("workbox-test").await;
+        assert!(remote.store().main_orchestrator().unwrap().is_none());
+        connections.set_main_orchestrator("workbox-test", Some("there")).await.unwrap();
+        assert!(desktop.store().main_orchestrator().unwrap().is_none());
+        remote.store().set_main_orchestrator(None).unwrap();
+        connections.restore_orchestrator_choice("workbox-test").await;
+        assert_eq!(remote.store().main_orchestrator().unwrap().map(|(id, _)| id).as_deref(), Some("there"));
 
         connections.client.lock().unwrap().clients.clear();
         actor.await.unwrap();
