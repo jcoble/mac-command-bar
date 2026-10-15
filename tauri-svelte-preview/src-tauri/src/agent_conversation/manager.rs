@@ -1306,7 +1306,7 @@ impl AgentRuntimeManager {
     /// A busy target receives it when its turn ends.
     /// Boxed because activation hands this to the messaging endpoint, and the
     /// send below activates again.
-    pub(super) fn deliver_if_idle<'a>(&'a self, owned_id: &'a str)
+    pub(crate) fn deliver_if_idle<'a>(&'a self, owned_id: &'a str)
         -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
         let generation = match self.hydrate_overlay_from_store(owned_id) {

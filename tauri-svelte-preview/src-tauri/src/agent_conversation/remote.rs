@@ -3159,6 +3159,7 @@ pub fn run_server_from_environment() -> Result<(), String> {
         let state = server_state(manager, data_dir.clone(), Arc::from(token))?;
         // This machine's sessions reach other machines through a connected desktop.
         super::messaging::endpoint()?.set_relay(state.relay.relay());
+        super::messaging::endpoint()?.set_workflow(state.workflow.clone());
         let restart_requested = state.restart_requested.clone();
         let restart_flushed = state.restart_flushed.clone();
         let restart_manager = state.manager.clone();

@@ -97,6 +97,42 @@ fn workflow_summary(definition: &crate::workflow::WorkflowDefinitionV1) -> Strin
     lines.join("\n")
 }
 
+/// The caller's project folder: workflows it checks and starts are read from there.
+fn project_of(store: &SessionStore, owned_id: &str) -> Result<String, String> {
+    store.get_session(owned_id).map_err(|error| error.to_string())?
+        .map(|row| row.cwd).filter(|cwd| !cwd.is_empty())
+        .ok_or_else(|| "This session has no project folder".into())
+}
+
+fn workflow_error(error: crate::workflow::WorkflowError) -> String {
+    match error {
+        crate::workflow::WorkflowError::InvalidDefinition(message) => message,
+        error => format!("{error:?}"),
+    }
+}
+
+/// What happened in a run, step by step: no prompts and no definition.
+fn run_facts(run: &crate::workflow::WorkflowRunRecord, store: &SessionStore) -> Value {
+    let steps = run.nodes.iter().map(|node| {
+        let output = node.structured_output.clone().unwrap_or(Value::Null);
+        let mut step = json!({"id":node.node_id,"state":node.state,"attempt":node.attempt,
+            "worker":store.directory_name(&node.owned_id).ok().flatten().map(|(handle, _)| handle)});
+        if let Some(failure) = &node.failure { step["failure"] = json!(failure.message); }
+        if let Some(commands) = output["commands"].as_array() {
+            step["commands"] = commands.iter().map(|command| {
+                let lines: Vec<_> = command["output"].as_str().unwrap_or_default().lines().collect();
+                json!({"command":command["command"],"exit_code":command["exitCode"],
+                    "last_lines":lines[lines.len().saturating_sub(5)..].join("\n")})
+            }).collect();
+        }
+        if !output["verdict"].is_null() { step["verdict"] = output["verdict"].clone(); step["findings"] = output["findings"].clone(); }
+        if let Some(url) = output["url"].as_str().filter(|url| !url.is_empty()) { step["pr"] = json!(url); }
+        step
+    }).collect::<Vec<_>>();
+    json!({"run_id":run.id,"name":run.definition.name,"task_key":run.input_snapshot["task"]["key"],
+        "state":run.state,"phase":run.phase,"started_by":run.input_snapshot["started_by"],"steps":steps})
+}
+
 /// The caller's session id, its backend's store, and the manager that delivers
 /// messages and starts helper sessions on that backend.
 type Caller = (String, Weak<SessionStore>, Option<AgentRuntimeManager>);
@@ -106,6 +142,7 @@ pub struct MessagingEndpoint {
     callers: Mutex<HashMap<String, Caller>>,
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     relay: Mutex<Option<Relay>>,
+    workflow: Mutex<Option<crate::workflow::WorkflowEngine>>,
 }
 
 /// One endpoint per owning backend, including the remote server.
@@ -119,7 +156,8 @@ impl MessagingEndpoint {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(|e| e.to_string())?;
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
         let url = format!("http://{}/mcp", listener.local_addr().map_err(|e| e.to_string())?);
-        let endpoint = Arc::new(Self { url, callers: Mutex::new(HashMap::new()), task: Mutex::new(None), relay: Mutex::new(None) });
+        let endpoint = Arc::new(Self { url, callers: Mutex::new(HashMap::new()), task: Mutex::new(None), relay: Mutex::new(None),
+            workflow: Mutex::new(None) });
         let router = Router::new().route("/mcp", post(Self::post)).with_state(Arc::downgrade(&endpoint));
         *endpoint.task.lock().unwrap() = Some(tauri::async_runtime::spawn(async move {
             if let Ok(listener) = tokio::net::TcpListener::from_std(listener) {
@@ -149,6 +187,15 @@ impl MessagingEndpoint {
 
     pub fn set_relay(&self, relay: Relay) {
         *self.relay.lock().unwrap() = Some(relay);
+    }
+
+    /// This machine's workflow engine, which agents start and watch their runs on.
+    pub fn set_workflow(&self, engine: crate::workflow::WorkflowEngine) {
+        *self.workflow.lock().unwrap() = Some(engine);
+    }
+
+    fn workflow(&self) -> Result<crate::workflow::WorkflowEngine, String> {
+        self.workflow.lock().unwrap().clone().ok_or_else(|| "Workflows cannot be run from here".into())
     }
 
     pub fn revoke(&self, owned_id: &str) {
@@ -254,14 +301,48 @@ impl MessagingEndpoint {
             Some("check_workflow") => {
                 let path = tool_call["arguments"]["path"].as_str()
                     .ok_or("path must be a workflow file relative to your project")?;
-                let project = store.get_session(&owned_id).map_err(|error| error.to_string())?
-                    .map(|row| row.cwd).filter(|cwd| !cwd.is_empty())
-                    .ok_or("This session has no project folder")?;
-                match crate::workflow::WorkflowEngine::validate_file(std::path::Path::new(&project), std::path::Path::new(path)) {
-                    Ok(definition) => Ok(text(workflow_summary(&definition))),
-                    Err(crate::workflow::WorkflowError::InvalidDefinition(message)) => Err(message),
-                    Err(error) => Err(format!("{error:?}")),
+                let project = project_of(&store, &owned_id)?;
+                crate::workflow::WorkflowEngine::validate_file(std::path::Path::new(&project), std::path::Path::new(path))
+                    .map(|definition| text(workflow_summary(&definition))).map_err(workflow_error)
+            }
+            Some("start_workflow") => {
+                let engine = self.workflow()?;
+                let args = &tool_call["arguments"];
+                let path = args["path"].as_str().ok_or("path must be a workflow file relative to your project")?;
+                let task: crate::workflow::TaskSnapshot = serde_json::from_value(args["task"].clone())
+                    .map_err(|_| "task must have a key, a title and a body")?;
+                let project = project_of(&store, &owned_id)?;
+                if store.unfinished_workflow_runs_started_by(&owned_id).map_err(|error| error.to_string())? >= 3 {
+                    return Err("at most 3 unfinished runs".into());
                 }
+                let key = format!("agent:{owned_id}:{}", task.key);
+                let run = engine.create_run_from_file(std::path::Path::new(&project), std::path::Path::new(path), task,
+                    json!({"started_by":owned_id}), key.clone()).map_err(workflow_error)?;
+                let run = engine.start(&run.id, &format!("{key}:start")).await.map_err(workflow_error)?;
+                Ok(text_json(json!({"run_id":run.id,"state":run.state})))
+            }
+            Some("list_workflow_runs") => {
+                let runs = self.workflow()?.list_runs().map_err(workflow_error)?;
+                Ok(text_json(Value::Array(runs.iter().map(|run| json!({"run_id":run.id,"name":run.definition.name,
+                    "task_key":run.input_snapshot["task"]["key"],"state":run.state,"phase":run.phase,
+                    "current_step":run.nodes.iter().find(|node| !matches!(node.state, crate::workflow::WorkflowNodeState::Completed
+                        | crate::workflow::WorkflowNodeState::Skipped | crate::workflow::WorkflowNodeState::Blocked)).map(|node| &node.node_id),
+                    "started_by":run.input_snapshot["started_by"]})).collect())))
+            }
+            Some("get_workflow_run") => {
+                let run_id = tool_call["arguments"]["run_id"].as_str().ok_or("run_id must be a run id")?;
+                let run = self.workflow()?.get_run(run_id).map_err(workflow_error)?;
+                Ok(text_json(run_facts(&run, &store)))
+            }
+            Some("stop_workflow_run") => {
+                let engine = self.workflow()?;
+                let run_id = tool_call["arguments"]["run_id"].as_str().ok_or("run_id must be a run id")?;
+                let run = engine.get_run(run_id).map_err(workflow_error)?;
+                if run.input_snapshot["started_by"].as_str() != Some(owned_id.as_str()) {
+                    return Err("only the session that started this run, or the owner, can stop it".into());
+                }
+                let run = engine.cancel(run_id, &format!("agent:{owned_id}:stop")).await.map_err(workflow_error)?;
+                Ok(text_json(json!({"run_id":run.id,"state":run.state})))
             }
             _ => Err("Tool not allowed".into()),
         }
@@ -288,6 +369,16 @@ impl MessagingEndpoint {
                  "inputSchema":{"type":"object","properties":{}}},
                 {"name":"check_workflow","description":"Check a workflow file in your project, the same way starting it would. Returns ok, its steps and any warnings, or the first error.",
                  "inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}},
+                {"name":"start_workflow","description":"Start a workflow from your project's .assembly/workflows on this machine for a task. You are messaged when it waits for the owner or ends. At most 3 of your runs can be unfinished.",
+                 "inputSchema":{"type":"object","properties":{"path":{"type":"string"},
+                     "task":{"type":"object","properties":{"key":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"}},"required":["key","title","body"]}},
+                     "required":["path","task"]}},
+                {"name":"list_workflow_runs","description":"List the workflow runs on this machine.",
+                 "inputSchema":{"type":"object","properties":{}}},
+                {"name":"get_workflow_run","description":"Read what happened in a workflow run, step by step: state, attempt, worker, failure, command exit codes, review verdict and findings, pull request.",
+                 "inputSchema":{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"]}},
+                {"name":"stop_workflow_run","description":"Stop a workflow run you started.",
+                 "inputSchema":{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"]}},
                 {"name":"report_review","description":"Workflow review steps only: report your verdict once. Use pass with no findings, or fail with each finding.",
                  "inputSchema":{"type":"object","properties":{"verdict":{"type":"string","enum":["pass","fail"]},
                      "findings":{"type":"array","items":{"type":"string"}}},"required":["verdict","findings"]}},
@@ -603,11 +694,11 @@ mod tests {
         assert_eq!(init["result"]["protocolVersion"], "2024-11-05");
         assert_eq!(init["result"]["capabilities"], json!({"tools":{}}));
         let list: Value = call(&c, Some(&c.token), "tools/list", json!({})).await.json().await.unwrap();
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 7);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 11);
         assert_eq!(list["result"]["tools"][0]["name"], "list_sessions");
         assert_eq!(list["result"]["tools"][1]["name"], "send_message");
         assert_eq!(list["result"]["tools"][2]["name"], "start_session");
-        assert_eq!(list["result"]["tools"][6]["name"], "message_status");
+        assert_eq!(list["result"]["tools"][10]["name"], "message_status");
         assert_eq!(call(&c, Some(&c.token), "notifications/initialized", json!({})).await.status(), 202);
     }
 }

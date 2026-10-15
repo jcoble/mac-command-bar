@@ -2657,6 +2657,37 @@ impl SessionStore {
         ).optional().map_err(|error| StoreError::sqlite("could not find the running review", error))
     }
 
+    /// The state in a run's latest snapshot, read before the engine stores the next one.
+    pub fn workflow_run_state(&self, run_id: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        let connection = self.lock()?;
+        connection.query_row(
+            "SELECT json_extract(payload_json, '$.workflowPayload.run.state') FROM orchestration_events
+             WHERE run_id = ?1 AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+             ORDER BY sequence DESC LIMIT 1",
+            [run_id], |row| row.get(0),
+        ).optional().map_err(|error| StoreError::sqlite("could not read the run state", error))
+    }
+
+    /// Runs `owned_id` started whose latest snapshot is not completed, failed or cancelled.
+    pub fn unfinished_workflow_runs_started_by(&self, owned_id: &str) -> Result<i64> {
+        let connection = self.lock()?;
+        connection.query_row(
+            "WITH latest AS (
+                SELECT json_extract(e.payload_json, '$.workflowPayload.run') AS run
+                FROM orchestration_events e
+                WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%'
+                  AND e.rowid = (SELECT rowid FROM orchestration_events
+                    WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                    ORDER BY sequence DESC LIMIT 1)
+             )
+             SELECT COUNT(*) FROM latest
+             WHERE json_extract(run, '$.inputSnapshot.started_by') = ?1
+               AND json_extract(run, '$.state') NOT IN ('completed', 'failed', 'cancelled')",
+            [owned_id], |row| row.get(0),
+        ).map_err(|error| StoreError::sqlite("could not count unfinished runs", error))
+    }
+
     /// Runs whose latest snapshot still shows a step starting or running; read once at startup.
     pub fn workflow_runs_with_interrupted_steps(&self) -> Result<Vec<String>> {
         let connection = self.lock()?;

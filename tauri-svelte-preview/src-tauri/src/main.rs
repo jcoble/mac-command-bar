@@ -5460,6 +5460,7 @@ fn main() {
             remote_connection.set_message_host(agent_runtime.clone());
             agent_conversation::messaging::endpoint()?
                 .set_relay(remote_connection.message_relay(agent_conversation::remote::LOCAL_MACHINE));
+            agent_conversation::messaging::endpoint()?.set_workflow(workflow_engine.clone());
             if !remote_connection.is_configured() {
                 if let Some(profiles) = agent_runtime.read_app_setting(
                     agent_conversation::remote::REMOTE_ASSEMBLY_PROFILES_SETTING_KEY,

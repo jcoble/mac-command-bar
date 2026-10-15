@@ -632,9 +632,16 @@ pub(crate) trait AgentRuntimePort: Send + Sync {
         request: AgentDispatchRequest,
     ) -> PortFuture<'a, AgentDispatchReceipt>;
     fn cancel<'a>(&'a self, owned_id: &'a str) -> PortFuture<'a, ()>;
+    /// Sends `owned_id` its queued messages if it is between turns.
+    fn deliver_messages<'a>(&'a self, _owned_id: &'a str) -> PortFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 impl AgentRuntimePort for AgentRuntimeManager {
+    fn deliver_messages<'a>(&'a self, owned_id: &'a str) -> PortFuture<'a, ()> {
+        Box::pin(async move { self.deliver_if_idle(owned_id).await; Ok(()) })
+    }
     fn dispatch<'a>(
         &'a self,
         request: AgentDispatchRequest,
@@ -2973,6 +2980,7 @@ impl WorkflowEngine {
         run.updated_at_ms = self.clock.now_ms();
         run.phase = derive_phase(run);
         let node = node_id.and_then(|id| run.nodes.iter().find(|node| node.node_id == id));
+        let before = self.store.workflow_run_state(&run.id).map_err(|error| WorkflowError::Ledger(error.to_string()))?;
         let event = json!({
             "id": format!("workflow:{}:{}", run.id, run.last_sequence.saturating_add(1)),
             "schemaVersion": 1, "runId": run.id, "timestamp": run.updated_at_ms.to_string(), "kind": kind,
@@ -2995,6 +3003,29 @@ impl WorkflowEngine {
             .get("sequence")
             .and_then(Value::as_u64)
             .unwrap_or(run.last_sequence);
+        self.tell_starter(run, before.as_deref())
+    }
+
+    /// The session that started a run hears once each time the run starts waiting for the owner or ends.
+    fn tell_starter(&self, run: &WorkflowRunRecord, before: Option<&str>) -> Result<(), WorkflowError> {
+        let Some(starter) = run.input_snapshot["started_by"].as_str() else { return Ok(()) };
+        let state = serde_json::to_value(run.state).ok().and_then(|state| state.as_str().map(str::to_owned)).unwrap_or_default();
+        let reported = matches!(run.state, WorkflowRunState::WaitingApproval | WorkflowRunState::WaitingInput
+            | WorkflowRunState::Completed | WorkflowRunState::Failed | WorkflowRunState::Cancelled);
+        if !reported || before == Some(state.as_str()) { return Ok(()); }
+        let step = run.nodes.iter().find(|node| matches!(node.state,
+            WorkflowNodeState::WaitingApproval | WorkflowNodeState::WaitingInput | WorkflowNodeState::Failed));
+        let task = run.input_snapshot["task"]["key"].as_str().unwrap_or(&run.id);
+        let mut body = format!("[{task} {state}]");
+        if let Some(step) = step {
+            body += &format!(" {}", step.node_id);
+            if let Some(failure) = &step.failure { body += &format!(": {}", failure.message); }
+        }
+        self.store.append_message_as("", &format!("workflow:{}", run.id), starter, mcb_core::broker::MessageKind::Message,
+            &body, Some(&format!("workflow · {}", run.definition.name)))
+            .map_err(|error| WorkflowError::Ledger(error.to_string()))?;
+        let (runtime, starter) = (self.runtime.clone(), starter.to_owned());
+        tauri::async_runtime::spawn(async move { let _ = runtime.deliver_messages(&starter).await; });
         Ok(())
     }
 }
@@ -3782,6 +3813,157 @@ mod tests {
 
     fn findings(count: usize) -> Value {
         json!({"verdict":"fail","findings":(0..count).map(|number| format!("finding {number}")).collect::<Vec<_>>()})
+    }
+
+    use crate::agent_conversation::messaging::MessagingEndpoint;
+    const AGENT_FLOW: &str = ".assembly/workflows/loop.yml";
+
+    /// Assembly's MCP tools on `engine`, and the review loop workflow in `root`.
+    fn agent_endpoint(engine: &WorkflowEngine, root: &Path) -> Arc<MessagingEndpoint> {
+        std::fs::create_dir_all(root.join(".assembly/workflows/prompts")).unwrap();
+        std::fs::write(root.join(".assembly/workflows/prompts/p.md"), "Do the work").unwrap();
+        std::fs::write(root.join(AGENT_FLOW), format!("name: Loop\nsteps:\n{LOOP_REVIEW}")).unwrap();
+        let endpoint = MessagingEndpoint::start().unwrap();
+        endpoint.set_workflow(engine.clone());
+        endpoint
+    }
+    /// A session in `root` and its token for the endpoint.
+    fn agent(engine: &WorkflowEngine, endpoint: &MessagingEndpoint, owned_id: &str, root: &Path) -> String {
+        engine.store.upsert_session(&SessionRow { owned_id:owned_id.into(), native_session_id:None,
+            provider:"codex".into(), model:None, effort:None, cwd:root.display().to_string(), worktree:None,
+            branch:None, title:Some(owned_id.into()), title_source:None, project:None, project_id:None, state:"ready".into(),
+            suspended:false, created_at_ms:1, last_activity_at_ms:1, extra_json:"{}".into() }).unwrap();
+        let token = endpoint.issue(owned_id).token;
+        endpoint.bind_store(&token, &engine.store, None);
+        token
+    }
+    fn tool(endpoint: &MessagingEndpoint, token: &str, name: &str, arguments: Value) -> Result<Value, String> {
+        let result = tauri::async_runtime::block_on(endpoint.handle(token, json!({"name":name,"arguments":arguments})))?;
+        Ok(serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap())
+    }
+    fn start_args(key: &str) -> Value {
+        json!({"path":AGENT_FLOW,"task":{"key":key,"title":"Task title","body":"Task body"}})
+    }
+    /// Two review rounds that each find 2 problems, so the run waits for the owner.
+    fn stop_the_loop(engine: &WorkflowEngine, run_id: &str) -> WorkflowRunRecord {
+        let mut run = engine.get_run(run_id).unwrap();
+        for _ in 0..2 {
+            end_turn(engine, run_id, "build", &[]);
+            run = end_turn(engine, run_id, "review", &[findings(2)]);
+        }
+        assert_eq!(run.state, WorkflowRunState::WaitingInput);
+        run
+    }
+
+    #[test]
+    fn agent_start_workflow_uses_callers_project_and_records_starter() {
+        let repo = RunRepo::new();
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = run_engine(runtime.clone());
+        let endpoint = agent_endpoint(&engine, &repo.0);
+        let token = agent(&engine, &endpoint, "starter", &repo.0);
+        // A project named in the arguments is ignored; the caller's own folder is used.
+        let mut args = start_args("TSK-1");
+        args["cwd"] = json!("/var/tmp");
+        let started = tool(&endpoint, &token, "start_workflow", args.clone()).unwrap();
+        assert_eq!(started["state"], "running");
+        let run = engine.get_run(started["run_id"].as_str().unwrap()).unwrap();
+        assert_eq!(run.input_snapshot["started_by"], "starter");
+        // The run works in its own worktree of the caller's repository.
+        let worktrees = repo.0.canonicalize().unwrap().parent().unwrap().join("worktrees/repo");
+        assert!(Path::new(run.input_snapshot["cwd"].as_str().unwrap()).starts_with(&worktrees), "{}", run.input_snapshot["cwd"]);
+        assert_eq!(runtime.dispatched.lock().unwrap().len(), 1);
+        // Starting the same task again returns the same run.
+        assert_eq!(tool(&endpoint, &token, "start_workflow", args).unwrap()["run_id"], started["run_id"]);
+        let listed = tool(&endpoint, &token, "list_workflow_runs", json!({})).unwrap();
+        assert_eq!(listed, json!([{"run_id":run.id,"name":"Loop","task_key":"TSK-1","state":"running",
+            "phase":"implementing","current_step":"build","started_by":"starter"}]));
+    }
+
+    #[test]
+    fn fourth_unfinished_run_is_refused() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let endpoint = agent_endpoint(&engine, &repo.0);
+        let token = agent(&engine, &endpoint, "starter", &repo.0);
+        let first = tool(&endpoint, &token, "start_workflow", start_args("TSK-1")).unwrap();
+        for key in ["TSK-2", "TSK-3"] { tool(&endpoint, &token, "start_workflow", start_args(key)).unwrap(); }
+        assert_eq!(tool(&endpoint, &token, "start_workflow", start_args("TSK-4")).unwrap_err(), "at most 3 unfinished runs");
+        // Another session's runs do not count against this one.
+        let other = agent(&engine, &endpoint, "other", &repo.0);
+        tool(&endpoint, &other, "start_workflow", start_args("TSK-5")).unwrap();
+        tool(&endpoint, &token, "stop_workflow_run", json!({"run_id":first["run_id"]})).unwrap();
+        tool(&endpoint, &token, "start_workflow", start_args("TSK-4")).unwrap();
+    }
+
+    #[test]
+    fn agent_can_stop_only_runs_it_started() {
+        let repo = RunRepo::new();
+        let runtime = Arc::new(FakeRuntime::default());
+        let engine = run_engine(runtime.clone());
+        let endpoint = agent_endpoint(&engine, &repo.0);
+        let (starter, other) = (agent(&engine, &endpoint, "starter", &repo.0), agent(&engine, &endpoint, "other", &repo.0));
+        let run_id = tool(&endpoint, &starter, "start_workflow", start_args("TSK-1")).unwrap()["run_id"].clone();
+        assert_eq!(tool(&endpoint, &other, "stop_workflow_run", json!({"run_id":run_id})).unwrap_err(),
+            "only the session that started this run, or the owner, can stop it");
+        assert_eq!(runtime.cancelled.load(Ordering::SeqCst), 0);
+        assert_eq!(tool(&endpoint, &starter, "stop_workflow_run", json!({"run_id":run_id})).unwrap()["state"], "cancelled");
+        assert_eq!(runtime.cancelled.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn starter_hears_waiting_and_done_once() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let endpoint = agent_endpoint(&engine, &repo.0);
+        let token = agent(&engine, &endpoint, "starter", &repo.0);
+        let run_id = tool(&endpoint, &token, "start_workflow", start_args("TSK-1")).unwrap()["run_id"].as_str().unwrap().to_owned();
+        let mut run = stop_the_loop(&engine, &run_id);
+        // Another write while the run still waits is not reported again.
+        engine.append(&mut run, "workflow.test.again", "again", None).unwrap();
+        let done = tauri::async_runtime::block_on(engine.answer_pause(&run_id, "review", "accept", None, "owner", "accept")).unwrap();
+        assert_eq!(done.state, WorkflowRunState::Completed);
+        let mut heard = Vec::new();
+        while let Some(message) = engine.store.pending_for("starter").unwrap() {
+            assert_eq!(message.sender_name, "workflow · Loop");
+            engine.store.set_receipt(&message.id, mcb_core::broker::Receipt::Delivered).unwrap();
+            heard.push(message.body);
+        }
+        assert_eq!(heard.len(), 2, "{heard:?}");
+        assert!(heard[0].starts_with("[TSK-1 waiting-input] review: "), "{}", heard[0]);
+        assert_eq!(heard[1], "[TSK-1 completed]");
+    }
+
+    #[test]
+    fn get_workflow_run_returns_engine_facts_not_prompts() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let endpoint = agent_endpoint(&engine, &repo.0);
+        let token = agent(&engine, &endpoint, "starter", &repo.0);
+        let run_id = tool(&endpoint, &token, "start_workflow", start_args("TSK-1")).unwrap()["run_id"].as_str().unwrap().to_owned();
+        stop_the_loop(&engine, &run_id);
+        let facts = tool(&endpoint, &token, "get_workflow_run", json!({"run_id":run_id})).unwrap();
+        assert_eq!((facts["task_key"].clone(), facts["state"].clone(), facts["started_by"].clone()),
+            (json!("TSK-1"), json!("waiting-input"), json!("starter")));
+        let steps = facts["steps"].as_array().unwrap();
+        let review = steps.iter().find(|step| step["id"] == "review").unwrap();
+        assert_eq!((review["verdict"].clone(), review["findings"].clone()), (json!("fail"), json!(["finding 0", "finding 1"])));
+        assert!(review["failure"].as_str().is_some() && review["worker"].as_str().is_some(), "{review}");
+        assert_eq!(steps.iter().find(|step| step["id"] == "build").unwrap()["attempt"], 2);
+        let text = facts.to_string();
+        assert!(!text.contains("Do the work") && !text.contains("definition") && !text.contains("prompt"), "{text}");
+    }
+
+    #[test]
+    fn agents_still_cannot_answer_pauses() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let endpoint = agent_endpoint(&engine, &repo.0);
+        let token = agent(&engine, &endpoint, "starter", &repo.0);
+        for name in ["answer_workflow_pause", "approve_workflow_gate", "retry_workflow_step", "skip_workflow_step",
+            "redirect_workflow_step", "pause_workflow_run", "resume_workflow_run"] {
+            assert_eq!(tool(&endpoint, &token, name, json!({})).unwrap_err(), "Tool not allowed", "{name}");
+        }
     }
 
     #[test]
