@@ -58,6 +58,7 @@
   let transcriptState = $state<'loading' | 'unavailable' | 'ready' | 'error'>('unavailable');
   let transcriptError = $state('');
   let fileError = $state('');
+  let lookupError = $state('');
   let reader: AbortController | null = null;
   /** The child whose transcript this panel last opened; a different selection opens it. */
   let openedChildId: string | null = null;
@@ -129,6 +130,7 @@
     transcriptState = 'unavailable';
     transcriptError = '';
     fileError = '';
+    lookupError = '';
     selection += 1;
   }
 
@@ -155,6 +157,7 @@
     // machine; open it. Native sub-agents come from a tool call.
     const helper = !conversation.children.find((entry) => entry.childId === childId)?.parentToolCallId;
     if (helper) {
+      lookupError = '';
       const helperParentId = ownedId;
       const adopted = await adoptSession(childId);
       if (attempt !== selection || ownedId !== helperParentId || !conversation || !visible || view !== 'session') return;
@@ -163,6 +166,9 @@
         await sessionRowJump(childId, 'session');
         return;
       }
+      // A helper is a session of its own, never a native sub-agent; a later click looks again.
+      lookupError = 'This helper’s session was not found yet. Try again in a moment.';
+      return;
     }
     const parentId = ownedId;
     release(parentId);
@@ -279,6 +285,7 @@
       {#snippet icon()}<Bot />{/snippet}
     </EmptyState>
   {:else}
+    {#if lookupError}<p role="alert" class="px-2 pb-2 text-sm text-muted-foreground">{lookupError}</p>{/if}
     <ScrollArea class="min-h-0 flex-1">
       <ul class="flex flex-col gap-1 p-2">
         {#each rows as row (row.childId)}
