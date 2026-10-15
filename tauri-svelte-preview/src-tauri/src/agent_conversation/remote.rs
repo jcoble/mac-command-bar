@@ -444,6 +444,9 @@ pub struct RemoteConnectionManager {
     terminal_output: Arc<Mutex<Option<ProjectionStreams>>>,
     /// This desktop's own sessions, which messages from other machines reach.
     message_host: Arc<Mutex<Option<AgentRuntimeManager>>>,
+    /// Held while the owner's orchestrator choice is changed or put back on a machine, so a
+    /// restore that read the old choice cannot clear a newer one.
+    orchestrator_choice: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Default)]
@@ -655,6 +658,7 @@ impl RemoteConnectionManager {
             next_attempt_token: Arc::new(AtomicU64::new(1)),
             terminal_output: Arc::new(Mutex::new(None)),
             message_host: Arc::new(Mutex::new(None)),
+            orchestrator_choice: Arc::new(tokio::sync::Mutex::new(())),
         };
         let Some(url) = std::env::var("ASSEMBLY_REMOTE_WS_URL").ok() else {
             return Ok(manager);
@@ -1315,6 +1319,7 @@ impl RemoteConnectionManager {
     /// mark on every other reachable machine; `None` clears it everywhere. The choice is
     /// kept on this desktop, and a machine that could not be reached gets it when it connects.
     pub async fn set_main_orchestrator(&self, machine: &str, owned_id: Option<&str>) -> Result<(), String> {
+        let _choosing = self.orchestrator_choice.lock().await;
         if owned_id.is_some() {
             self.message_machine(machine, "designate", serde_json::json!({"owned_id": owned_id}), None).await?;
         }
@@ -1349,6 +1354,7 @@ impl RemoteConnectionManager {
     /// Puts the owner's latest orchestrator choice on `machine`, which has just connected:
     /// its session is marked if the owner chose one there, and any older mark is cleared otherwise.
     pub(crate) async fn restore_orchestrator_choice(&self, machine: &str) {
+        let _choosing = self.orchestrator_choice.lock().await;
         let Some(host) = self.message_host.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() else { return };
         let Ok(Some(choice)) = host.store().get_app_setting(ORCHESTRATOR_CHOICE) else { return };
         let Ok(choice) = serde_json::from_str::<serde_json::Value>(&choice) else { return };
@@ -4108,6 +4114,13 @@ mod connection_tests {
         assert!(desktop.store().main_orchestrator().unwrap().is_none());
         remote.store().set_main_orchestrator(None).unwrap();
         connections.restore_orchestrator_choice("workbox-test").await;
+        assert_eq!(remote.store().main_orchestrator().unwrap().map(|(id, _)| id).as_deref(), Some("there"));
+        // A restore that runs while the owner picks a session there cannot undo the pick.
+        connections.set_main_orchestrator(LOCAL_MACHINE, Some("here")).await.unwrap();
+        let (chosen, ()) = tokio::join!(
+            connections.set_main_orchestrator("workbox-test", Some("there")),
+            connections.restore_orchestrator_choice("workbox-test"));
+        chosen.unwrap();
         assert_eq!(remote.store().main_orchestrator().unwrap().map(|(id, _)| id).as_deref(), Some("there"));
 
         connections.client.lock().unwrap().clients.clear();

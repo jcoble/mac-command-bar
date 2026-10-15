@@ -77,7 +77,7 @@ fn forges_label(text: &str) -> bool {
 }
 
 /// Any character that can start a new line on screen counts as a line break.
-fn starts_a_line(c: char) -> bool {
+pub(crate) fn starts_a_line(c: char) -> bool {
     matches!(c, '\n' | '\r' | '\u{0b}' | '\u{0c}' | '\u{85}' | '\u{2028}' | '\u{2029}')
 }
 
