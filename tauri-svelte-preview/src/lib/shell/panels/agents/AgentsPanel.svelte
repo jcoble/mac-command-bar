@@ -46,6 +46,8 @@
 
   import AgentRow from './AgentRow.svelte';
   import { AGENT_STATUS_TONE, AGENT_STATUS_WORD, agentActivityRows } from './agentActivityModel.ts';
+  import AgentMessages from './AgentMessages.svelte';
+  import OwnerInbox from './OwnerInbox.svelte';
   import WorkflowRuns from './WorkflowRuns.svelte';
 
   interface Props {
@@ -54,7 +56,10 @@
     ownedId: string | null;
   }
   let { visible, root, ownedId }: Props = $props();
-  let view = $state<'session' | 'workflows'>('session');
+  let view = $state<'session' | 'workflows' | 'messages' | 'inbox'>('session');
+  /** The workflow run whose messages the Messages view shows; null shows all of them. */
+  let messageRunId = $state<string | null>(null);
+  let inboxStepCount = $state(0);
   let transcriptState = $state<'loading' | 'unavailable' | 'ready' | 'error'>('unavailable');
   let transcriptError = $state('');
   let fileError = $state('');
@@ -63,10 +68,17 @@
   /** The child whose transcript this panel last opened; a different selection opens it. */
   let openedChildId: string | null = null;
 
-  const VIEW_OPTIONS = [
+  // Sessions waiting on the owner, by the same rule as the rail's "needs you".
+  const waitingSessions = $derived(rail.owned.filter((session) =>
+    session.pendingPermission === true || session.pendingInput === true
+      || session.runtimeState === 'waiting-approval' || session.runtimeState === 'waiting-input'));
+  const inboxCount = $derived(inboxStepCount + waitingSessions.length);
+  const VIEW_OPTIONS = $derived([
     { value: 'session', label: 'Session' },
-    { value: 'workflows', label: 'Workflows' }
-  ] as const;
+    { value: 'workflows', label: 'Workflows' },
+    { value: 'messages', label: 'Messages' },
+    { value: 'inbox', label: inboxCount > 0 ? `Inbox ${inboxCount}` : 'Inbox' }
+  ]);
   const conversation = $derived(ownedId ? getConversationSession(ownedId) : null);
   // A remote project's workflows run on that machine's own engine, at its own path.
   const remoteRoot = $derived(parseRemoteWorkspacePath(root));
@@ -224,7 +236,16 @@
   </div>
 
   {#if view === 'workflows'}
-    <WorkflowRuns visible={visible} root={workflowRoot} {machine} />
+    <WorkflowRuns
+      visible={visible}
+      root={workflowRoot}
+      {machine}
+      onShowMessages={(runId) => { messageRunId = runId; view = 'messages'; }}
+    />
+  {:else if view === 'messages'}
+    <AgentMessages visible={visible && view === 'messages'} runId={messageRunId} onClearRun={() => (messageRunId = null)} />
+  {:else if view === 'inbox'}
+    <OwnerInbox visible={visible && view === 'inbox'} sessions={waitingSessions} bind:stepCount={inboxStepCount} />
   {:else if visible && selectedRow && ownedId}
     <div class="flex min-w-0 items-center gap-2 px-2 pb-2" data-testid="agent-transcript-header">
       <Button variant="ghost" size="sm" iconPosition="start" onclick={() => ownedId && release(ownedId)}>
