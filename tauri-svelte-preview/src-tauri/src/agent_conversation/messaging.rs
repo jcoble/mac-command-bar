@@ -410,15 +410,25 @@ impl MessagingEndpoint {
                 let task: crate::workflow::TaskSnapshot = serde_json::from_value(args["task"].clone())
                     .map_err(|_| "task must have a key, a title and a body")?;
                 let project = project_of(&store, &owned_id)?;
-                // Starting a task again returns its run, so that run does not count.
-                let key = format!("agent:{owned_id}:{}", task.key);
+                // Reuse an unfinished run; follow finished runs to a new run. This task does not count toward the limit.
+                let base = format!("agent:{owned_id}:{}", task.key);
+                let mut key = base.clone();
                 let run = {
                     let _counting = self.run_starts.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     if store.unfinished_workflow_runs_started_by(&owned_id, &task.key).map_err(|error| error.to_string())? >= 3 {
                         return Err("at most 3 unfinished runs".into());
                     }
-                    engine.create_run_from_file(std::path::Path::new(&project), std::path::Path::new(path), task,
-                        json!({"started_by":owned_id}), key.clone()).map_err(workflow_error)?
+                    loop {
+                        let run = engine.create_run_from_file(std::path::Path::new(&project), std::path::Path::new(path), task.clone(),
+                            json!({"started_by":owned_id}), key.clone()).map_err(workflow_error)?;
+                        // A repeated key returns the run as it was created; its state now is what counts.
+                        let run = engine.get_run(&run.id).map_err(workflow_error)?;
+                        if !matches!(run.state, crate::workflow::WorkflowRunState::Completed
+                            | crate::workflow::WorkflowRunState::Failed | crate::workflow::WorkflowRunState::Cancelled) {
+                            break run;
+                        }
+                        key = format!("{base}:after:{}", run.id);
+                    }
                 };
                 let run = engine.start(&run.id, &format!("{key}:start")).await.map_err(workflow_error)?;
                 Ok(text_json(json!({"run_id":run.id,"state":run.state})))
