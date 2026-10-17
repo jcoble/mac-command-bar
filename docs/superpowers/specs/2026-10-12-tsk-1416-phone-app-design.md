@@ -28,7 +28,8 @@ The owner can leave the Mac closed and still do three things from an Android pho
    and agent permission requests (§6.4) — and get a phone notification when a new one appears.
 
 Not in this version (YAGNI, matches parent §8 "Later"): starting runs from the phone, messaging
-arbitrary sessions, the full live run timeline, file/diff viewing, images in chat, iPhone builds,
+arbitrary sessions, answering an agent's input or form requests (they stay on the desktop), reply notes
+on inbox answers, the full live run timeline, file/diff viewing, images in chat, iPhone builds,
 Play Store release, more than one owner.
 
 ## 2. Where the app lives and what it is called
@@ -120,7 +121,7 @@ as a chip; tapping it opens the machine picker. Dark theme only, as Rental Comma
    is highlighted; tapping a step opens a bottom sheet with its latest attempt summary, failing
    command output tail or review findings. "Recent activity": last 20 timeline lines.
 4. **Inbox** (`mobile/lib/features/inbox/inbox_screen.dart`). Pending items, newest first, one
-   card each: kind label, run/task and step, what happened, evidence lines, an optional reply box,
+   card each: kind label, run/task and step, what happened, evidence lines,
    and the **buttons the backend sends** (the phone has no decision logic of its own). Permission
    requests show the session name, provider, tool and command, and the provider's own option
    labels ("Allow once", "Reject"). A "Loop stalled" card shows the round counts. After an
@@ -225,8 +226,8 @@ desktop route already calls, so the phone gets no second implementation of any r
 | `GET /runs` | → `{active:[RunRow], recent:[RunRow]}` | engine `list_runs` (`backend/workflow.rs:2739`, op `list`) returns all runs with no limit, so the endpoint does not use it. Task 28 adds a store query in `core/src/session_store.rs` that selects all active runs plus the 20 newest finished runs in one SQL statement, before any run is deserialized |
 | `GET /runs/{id}` | → `RunDetail` (steps, attempts, last 20 timeline lines, pending item id) | engine `get_run` (`backend/workflow.rs:2590`, op `get`); there is no run-history or timeline API today, so the 20 timeline lines are new work in Task 28 |
 | `POST /runs/{id}/pause`, `/resume`, `/stop` | → `RunRow` | engine `pause` (`backend/workflow.rs:1619`), `resume` (`1641`) and `cancel` (`1664`), ops `pause`, `resume`, `cancel`; stopping a run is the engine's `cancel` |
-| `GET /inbox` | → `{items:[InboxItem]}` pending only | `waiting_workflow_steps` (`core/src/session_store.rs:2640`, returns `WaitingStep`, `session_store.rs:794`), op `inbox` (`backend/workflow.rs:3506`); permission requests: Task 28 adds one read accessor in `backend/agent_conversation/manager.rs` over the manager's existing `permission_requests` and `user_input_requests` maps (`manager.rs:202-203`, `PendingPermission` at `manager.rs:113`, `PendingUserInput` at `manager.rs:131`), returning request id, session, command or title, and the provider's options. No new queue |
-| `POST /inbox/{id}/answer` | `{optionId, reply?, version}` → 204, or 409 `{error:"stale"}` | run pauses: `answer_pause(run_id, node_id, decision, reply, origin, idempotency_key)` (`backend/workflow.rs:2550`, op `answer`; `origin` must be `"owner"`); gates: `approve_gate` (`backend/workflow.rs:1817`, op `approveGate`); permission items: `RemoteCommand::RespondPermission` (`remote.rs:3936`) into `manager.respond_permission_option` (`manager.rs:2769`) |
+| `GET /inbox` | → `{items:[InboxItem]}` pending only | `waiting_workflow_steps` (`core/src/session_store.rs:2640`, returns `WaitingStep`, `session_store.rs:794`), op `inbox` (`backend/workflow.rs:3506`); permission requests: Task 28 adds one read accessor in `backend/agent_conversation/manager.rs` over the manager's existing `permission_requests` map (`manager.rs:202`, `PendingPermission` at `manager.rs:113`), returning request id, session, the request's title and command, and the provider's options with their labels. `PendingPermission` keeps only option ids and kinds and a summary today (`permission_options`, `manager.rs:7468`), so Task 28 also keeps each option's `name` and the request's tool-call title and command when the request arrives. No new queue. Input requests (`user_input_requests`) are not shown on the phone |
+| `POST /inbox/{id}/answer` | `{optionId, version}` → 204, or 409 `{error:"stale"}` | run pauses: `answer_pause(run_id, node_id, decision, reply, origin, idempotency_key)` (`backend/workflow.rs:2550`, op `answer`; `origin` must be `"owner"`; the phone passes no reply); gates: `approve_gate` (`backend/workflow.rs:1817`, op `approveGate`); permission items: `RemoteCommand::RespondPermission` (`remote.rs:3936`) into `manager.respond_permission_option` (`manager.rs:2769`) |
 | `GET /live` (WebSocket) | server → phone frames, below | `ServerState.events` broadcast (subscribed at `remote.rs:3345`) plus run and inbox change signals, which do not exist yet and are Task 28 work |
 
 Shapes (field names final; extra fields allowed later only when a screen needs them):
@@ -237,7 +238,7 @@ RunRow     {id, taskKey, taskTitle, workflow, state, currentStep, round, started
 RunDetail  RunRow + {branch, steps:[{id, kind, state, attempts:[{n, state, startedAt, endedAt?, summary?, findings?:[string], failingCommands?:[{command, exit, tail}]}]}], timeline:[{at, text}]}
 InboxItem  {id, kind: loop_stalled|round_limit|invalid_review|timeout|gate|restart|permission,
             runId?, taskKey?, stepId?, sessionName?, title, detail, evidence:[{label, text?, url?}],
-            options:[{id, label, style: primary|neutral|danger}], allowsReply, createdAt, version}
+            options:[{id, label, style: primary|neutral|danger}], createdAt, version}
 ```
 
 Chat reduction (server side, so the phone never parses the provider event stream): from
