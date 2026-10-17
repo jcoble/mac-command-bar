@@ -132,7 +132,10 @@ as a chip; tapping it opens the machine picker. Dark theme only, as Rental Comma
    lets the owner select one, pair another, or remove one from the phone. "Remove machine" calls
    `DELETE /me` first, then deletes the local record. If the machine is unreachable the phone hides
    the machine, keeps its token marked "removing", and retries `DELETE /me` on each app start until
-   it succeeds; only then does it delete the record.
+   it gets 204 or 401; only then does it delete the record. A 401 on a retry means an earlier call
+   already revoked the token and only its answer was lost.
+   Pairing a machine the phone already holds (same machine id) replaces the record, then revokes the
+   old token with `DELETE /me` under the same "removing" rule.
 
 ## 5. Backend API for the phone
 
@@ -219,7 +222,7 @@ desktop route already calls, so the phone gets no second implementation of any r
 |---|---|---|
 | `POST /pair` | `{code, deviceName}` → `{deviceId, deviceToken, machine}` | new (§5.2) |
 | `GET /me` | → `{deviceId, machine:{id,name}, hostsOrchestrator}`; also updates `last_seen_at` | `hostsOrchestrator` = `broker.main_orchestrator()` returns a session (`core/src/broker.rs:211`, the owner's mark from Task 17) |
-| `POST /push-token` | `{fcmToken}` → 204 | new |
+| `POST /push-token` | `{fcmToken}` → 204; the same SQL statement clears that FCM token from every other device row, so one phone is never notified twice (for example after it lost its storage and paired again; the abandoned row stays in the desktop's phone list for **Remove**) | new |
 | `DELETE /me` | → 204; the device revokes itself: sets its `revoked_at` and clears its FCM token | new (same revoke query as `phoneRevoke`, §5.2) |
 | `GET /chat?after=<seq>` | → `{items:[ChatItem], cursor, turn:"idle"|"running", ownerItems:[InboxItem]}`; no `after` = latest 100 items | `manager.list_events_before` / `list_events_after` (`remote.rs:3780`, `3787`) on the owned id from `broker.main_orchestrator()` |
 | `POST /chat` | `{text}` → `{itemId}` | `RemoteCommand::Send` handler (`remote.rs:3877`) on the owned id from `broker.main_orchestrator()`, after `manager.ensure_async` (`manager.rs:1595`) loads that stored session (needed after a backend restart, when the manager holds no sessions in memory) and supplies its current generation; with no orchestrator marked it returns 404 and the phone shows the empty state (§4) |
@@ -247,7 +250,10 @@ Chat reduction (server side, so the phone never parses the provider event stream
 appears only in that text prefix (`manager.rs:1261`, `manager.rs:1414`; the label can be
 `<handle> · <name>`); no sender field exists, so the phone parses the prefix to show the label,
 `AssistantMessage` (→ `agent`), `Tool` (→ `tool`, `summary` or name only), `Error` (→ `error`),
-and `Turn` (→ the `turn` field). Everything else is dropped.
+and `Turn` (→ the `turn` field). `AssistantDelta` events whose `item_id` has no `AssistantMessage`
+yet are folded into one `agent` item with that id, the deltas joined in order, `done:false`, and
+`seq` of the last delta; so a reconnect in the middle of a response restores the open bubble and
+later `chatDelta` frames append to it. Everything else is dropped.
 
 Live frames on `GET /live` (the phone reconnects with Rental Command's delays and refetches on
 reconnect; nothing is lost because every list is refetchable):
@@ -371,6 +377,7 @@ pending-requests read accessor. No other new file. **Lane:** backend logic.
 no rule is reimplemented. `GET /chat` reduction as §5.3.
 
 - [ ] **Red tests:** `phone_chat_keeps_owner_agent_relayed_tool_and_drops_the_rest` (event list in, ChatItems out),
+  `phone_chat_folds_unfinished_deltas_into_open_agent_item`,
   `phone_answer_uses_owner_origin_once`, `phone_answer_with_unknown_option_or_stale_version_is_rejected`,
   `session_mcp_token_cannot_call_phone_routes`, `phone_run_controls_match_desktop_engine_calls`,
   `phone_live_sends_changed_inbox_when_item_created`,
@@ -394,6 +401,7 @@ trigger hook); `Cargo.toml` adds `jsonwebtoken`. **Lane:** backend logic.
 
 - [ ] **Red tests:** `inbox_push_body_has_kind_and_task_key_but_no_agent_text`,
   `one_push_per_device_with_token`, `unregistered_response_clears_token`,
+  `push_token_moves_off_other_device_rows`,
   `missing_service_account_skips_without_error` (fake HTTP server via a test base URL constant).
 - [ ] **Verify failure:** `cargo test inbox_push` fails before the module exists.
 - [ ] **Minimum edit:** one function, one cached token, no retry queue, no topics.
@@ -434,7 +442,8 @@ non-https URLs); `MachineStore` read/write/select/remove; `machineClientProvider
 with bearer header; router redirect to `/pair` when no machine.
 
 - [ ] **Red tests:** `pairing_payload_parses_v1_and_rejects_others`, `machine_store_round_trips_and_selects`,
-  `machine_client_sends_device_token`, `no_machine_redirects_to_pair`.
+  `machine_client_sends_device_token`, `no_machine_redirects_to_pair`,
+  `removing_machine_treats_401_as_already_revoked`, `pairing_same_machine_again_revokes_old_token`.
 - [ ] **Verify failure:** `cd mobile && ~/develop/flutter/bin/flutter test` fails before the code exists.
 - [ ] **Minimum edit:** copy, rename, trim. No flavors, no iOS, no login screens.
   The Android build applies the Google Services Gradle plugin only when `android/app/google-services.json`
