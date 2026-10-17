@@ -129,8 +129,9 @@ as a chip; tapping it opens the machine picker. Dark theme only, as Rental Comma
    `machines_screen.dart`). First launch opens pairing: camera view for the QR code and a fallback
    "Enter code" form (URL + code). The machines screen lists paired machines (home machine marked),
    lets the owner select one, pair another, or remove one from the phone. "Remove machine" calls
-   `DELETE /me` first, then deletes the local record; if the machine is unreachable it deletes locally
-   and shows "Also remove this phone in the desktop app".
+   `DELETE /me` first, then deletes the local record. If the machine is unreachable the phone hides
+   the machine, keeps its token marked "removing", and retries `DELETE /me` on each app start until
+   it succeeds; only then does it delete the record.
 
 ## 5. Backend API for the phone
 
@@ -176,8 +177,10 @@ control (terminals, workspace commands), so it must never reach a phone.
 1. Desktop: Settings → Connections → a connected remote machine → **Pair phone**
    (`tauri-svelte-preview/src/lib/shell/components/RemoteConnections.svelte`). The desktop sends
    new `phonePairing` operation over the existing authenticated socket. **Decision: new string
-   operations of `execute_operation(engine, op, args)` (`backend/workflow.rs:3501`), reached through the
-   existing `RemoteCommand::Workflow` (`remote.rs:179`, dispatched at `remote.rs:3692`), not new
+   operations reached through the existing `RemoteCommand::Workflow` (`remote.rs:179`), handled in
+   its branch of `execute_remote_command` (`remote.rs:3692`) before the call to
+   `execute_operation` (`backend/workflow.rs:3501`), because they need `ServerState`'s pairing code
+   and database; every other operation still goes to `execute_operation` unchanged. Not new
    `RemoteCommand` variants (enum at `remote.rs:84-187`), so `PROTOCOL_VERSION` (`remote.rs:54`, 17)
    does not bump.**
 2. The backend creates a **pairing code**: 10 random base32 characters, single use, valid 10
@@ -218,7 +221,7 @@ desktop route already calls, so the phone gets no second implementation of any r
 | `POST /push-token` | `{fcmToken}` → 204 | new |
 | `DELETE /me` | → 204; the device revokes itself: sets its `revoked_at` and clears its FCM token | new (same revoke query as `phoneRevoke`, §5.2) |
 | `GET /chat?after=<seq>` | → `{items:[ChatItem], cursor, turn:"idle"|"running", ownerItems:[InboxItem]}`; no `after` = latest 100 items | `manager.list_events_before` / `list_events_after` (`remote.rs:3780`, `3787`) on the owned id from `broker.main_orchestrator()` |
-| `POST /chat` | `{text}` → `{itemId}` | `RemoteCommand::Send` handler (`remote.rs:3877`) on the owned id from `broker.main_orchestrator()`; with no orchestrator marked it returns 404 and the phone shows the empty state (§4); server fills the current generation |
+| `POST /chat` | `{text}` → `{itemId}` | `RemoteCommand::Send` handler (`remote.rs:3877`) on the owned id from `broker.main_orchestrator()`, after `manager.ensure_async` (`manager.rs:1595`) loads that stored session (needed after a backend restart, when the manager holds no sessions in memory) and supplies its current generation; with no orchestrator marked it returns 404 and the phone shows the empty state (§4) |
 | `GET /runs` | → `{active:[RunRow], recent:[RunRow]}` | engine `list_runs` (`backend/workflow.rs:2739`, op `list`) returns all runs with no limit, so the endpoint does not use it. Task 28 adds a store query in `core/src/session_store.rs` that selects all active runs plus the 20 newest finished runs in one SQL statement, before any run is deserialized |
 | `GET /runs/{id}` | → `RunDetail` (steps, attempts, last 20 timeline lines, pending item id) | engine `get_run` (`backend/workflow.rs:2590`, op `get`); there is no run-history or timeline API today, so the 20 timeline lines are new work in Task 28 |
 | `POST /runs/{id}/pause`, `/resume`, `/stop` | → `RunRow` | engine `pause` (`backend/workflow.rs:1619`), `resume` (`1641`) and `cancel` (`1664`), ops `pause`, `resume`, `cancel`; stopping a run is the engine's `cancel` |
@@ -249,16 +252,18 @@ Live frames on `GET /live` (the phone reconnects with Rental Command's delays an
 reconnect; nothing is lost because every list is refetchable):
 
 ```text
-{type:"chat", item: ChatItem}                 orchestrator item added or completed
-{type:"chatDelta", itemId, delta}             streaming text for an agent bubble
-{type:"turn", state:"idle"|"running"}
+{type:"chat", seq, item: ChatItem}            orchestrator item added or completed
+{type:"chatDelta", seq, itemId, delta}        streaming text for an agent bubble
+{type:"turn", seq, state:"idle"|"running"}
 {type:"changed", entity:"runs"|"run"|"inbox", id?}   phone invalidates and refetches (Rental Command's EntityUpdated pattern)
 ```
 
 Providers send `AssistantDelta` before `AssistantMessage` and never send an item-start event
 (`backend/agent_conversation/provider.rs:197` then `:219`, and `:406` then `:440`). So on the phone the
 first `chatDelta` for an unknown `itemId` creates the agent item, later deltas append to it, and the
-`chat` frame (the completed message) replaces it.
+`chat` frame (the completed message) replaces it. Every chat, delta and turn frame carries `seq`, the
+underlying `AgentConversationEvent.sequence`, so after a reconnect the phone drops frames it has
+already applied.
 
 ### 5.4 Push notifications
 
@@ -332,8 +337,8 @@ Task 28's endpoints (they can be built against a fake repository first). Order:
 **Files:** create `backend/agent_conversation/phone_api.rs` (router, pairing, auth; declare in
 `agent_conversation/mod.rs`); modify `remote.rs` `run_server_from_environment` (3209) to start the
 second listener when `ASSEMBLY_PHONE_BIND` is set; `backend/workflow.rs` `execute_operation` (3501)
-for the operations `phonePairing`, `phoneDevices`, `phoneRevoke` (reached through
-`RemoteCommand::Workflow`, `remote.rs:179`/`3692`; no new `RemoteCommand` variant, no
+is unchanged; the operations `phonePairing`, `phoneDevices`, `phoneRevoke` are handled in the
+`RemoteCommand::Workflow` branch (`remote.rs:3692`), where `ServerState` is available (no new `RemoteCommand` variant, no
 `PROTOCOL_VERSION` bump); `core/src/session_store.rs` `phone_devices` and `phone_machine` tables and their queries;
 `tauri-svelte-preview/scripts/remoteBackendPackage.ts:68` optional `phone.env` line (+ its test).
 **Lane:** backend logic.
@@ -458,8 +463,8 @@ with bearer header; router redirect to `/pair` when no machine.
 **Files:** `mobile/lib/features/runs/{runs_screen,run_screen,runs_repository}.dart`. **Lane:** **visible UI: Opus lane**.
 **Dependencies:** Tasks 28, 31.
 
-- [ ] **Red tests:** `runs_split_active_and_recent`, `run_controls_show_pause_or_resume_by_state`,
-  `stop_requires_confirmation`, `changed_run_notice_refetches_only_that_run`.
+- [ ] **Red tests:** `runs_split_active_and_recent`, `run_actions_offer_pause_or_resume_by_state`,
+  `stop_action_requires_confirmation`, `changed_run_notice_refetches_only_that_run` (repository and notifier logic, no widget assertions).
 - [ ] **Verify failure / Green:** `flutter test test/runs_*` red then green; `flutter analyze` clean.
 
 **Done means:** runs can be seen, opened, paused, resumed and stopped from the phone. **Expected diff:** 400-550 lines including tests.
@@ -471,7 +476,9 @@ with bearer header; router redirect to `/pair` when no machine.
 `AndroidManifest.xml` channel and POST_NOTIFICATIONS. **Lane:** **visible UI: Opus lane** for the
 screen; push plumbing may be split. **Dependencies:** Tasks 28, 29, 31; `google-services.json` from the workbox (§5.4).
 
-- [ ] **Red tests:** `inbox_renders_backend_options_only`, `stale_answer_shows_already_answered`,
+- [ ] **Red tests:** `inbox_notifier_keeps_backend_options_only`, `inbox_notifier_marks_stale_answer` (notifier and
+  repository logic, no widget assertions; the screens are proved by screenshots, per the repository's
+  no-UI-tests rule),
   `notification_tap_opens_item_on_its_machine`, `push_init_fails_soft_without_firebase`.
 - [ ] **Verify failure / Green:** `flutter test test/inbox_* test/push_*` red then green; `flutter analyze` clean; `flutter build apk --debug`.
 
