@@ -1259,12 +1259,11 @@ impl AgentRuntimeManager {
         }
         self.show_helper_to_parent(parent, &owned_id, name, "running")?;
         let prompt = AgentPrompt { text: format!("[message from {sender}]\n{prompt}"), images: Vec::new(), attachment_ids: Vec::new() };
-        // A helper gets its parent's permission mode. Modes are named per provider, so a helper
-        // on another provider keeps that provider's default mode.
+        // A helper works at its parent's permission level, on either provider.
         let approval_policy = {
             let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            sessions.get(parent).filter(|session| session.provider == provider)
-                .and_then(|session| session.config.approval_policy.clone())
+            sessions.get(parent).and_then(|session|
+                helper_mode(session.config.approval_policy.as_deref(), session.provider, provider))
         };
         if let Err(error) = self.send_message(&owned_id, connection.generation, prompt, model, approval_policy).await {
             if let Err(show_error) = self.show_helper_to_parent(parent, &owned_id, name, "failed") {
@@ -8520,6 +8519,24 @@ fn projected_background_work(session: &ManagedAgentSession) -> Vec<BackgroundWor
     work
 }
 
+/// The permission mode a helper on `to` starts in, given its parent's `mode` on `from`. The same
+/// provider keeps the mode; across providers the owner's levels match: Claude Auto is Codex
+/// "Approve for me", Bypass Permissions is "Full access", and anything else asks.
+fn helper_mode(mode: Option<&str>, from: AgentConversationProvider, to: AgentConversationProvider) -> Option<String> {
+    let mode = mode?;
+    if from == to { return Some(mode.to_string()); }
+    let matched = match (to, mode) {
+        (AgentConversationProvider::Codex, "auto") => "agent",
+        (AgentConversationProvider::Codex, "bypassPermissions") => "agent-full-access",
+        (AgentConversationProvider::Codex, _) => "read-only",
+        (AgentConversationProvider::Claude, "agent") => "auto",
+        (AgentConversationProvider::Claude, "agent-full-access") => "bypassPermissions",
+        (AgentConversationProvider::Claude, _) => "default",
+        _ => return None,
+    };
+    Some(matched.to_string())
+}
+
 /// Claude Code wakes the agent that owned finished background work — a shell,
 /// or a sub-agent — to report it, even after it reported idle. Until its next
 /// idle the session still has work in hand.
@@ -12846,6 +12863,21 @@ mod tests {
             .await
             .unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn a_helper_on_another_provider_gets_its_parents_level() {
+        use AgentConversationProvider::{Claude, Codex};
+        let mode = |parent, from, to| helper_mode(Some(parent), from, to);
+        assert_eq!(mode("auto", Claude, Codex).as_deref(), Some("agent"));
+        assert_eq!(mode("bypassPermissions", Claude, Codex).as_deref(), Some("agent-full-access"));
+        assert_eq!(mode("plan", Claude, Codex).as_deref(), Some("read-only"));
+        assert_eq!(mode("agent", Codex, Claude).as_deref(), Some("auto"));
+        assert_eq!(mode("agent-full-access", Codex, Claude).as_deref(), Some("bypassPermissions"));
+        assert_eq!(mode("read-only", Codex, Claude).as_deref(), Some("default"));
+        // The same provider keeps the parent's own mode; a parent with none sets none.
+        assert_eq!(mode("acceptEdits", Claude, Claude).as_deref(), Some("acceptEdits"));
+        assert_eq!(helper_mode(None, Claude, Codex), None);
     }
 
     #[tokio::test(flavor = "current_thread")]
