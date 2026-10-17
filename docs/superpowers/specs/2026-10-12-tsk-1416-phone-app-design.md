@@ -8,13 +8,15 @@ Task: TSK-1416 (Workflows and orchestration) — https://app.notion.com/p/3f5394
 Parent spec: `docs/superpowers/specs/2026-10-10-workflows-orchestration-design.md` (latest on
 branch `tsk-1416-authoring-docs`), especially D10, D11, D13, §4.5, §6.3, §6.4 and §8.
 Desktop plan this builds on: `docs/superpowers/plans/2026-10-11-tsk-1416-workflows-slices-3-4.md`
-(branch `tsk-1416-slices-3-4-plan`), Tasks 12, 17, 18, 21, 23. Task numbers here continue at 27.
+(branch `tsk-1416-slices-3-4-plan`), Tasks 17 (orchestrator mark), 19 (messages), 20 (inbox). Task numbers here
+continue at 27.
 Visual mockup: `2026-10-12-tsk-1416-phone-app-mockup.html` beside this file; screenshot
 `~/Workbox/screenshots/tsk-1416-phone-mockup.png`.
 
 `RC/` below means `~/dev/work/rental-management/mobile/` (Rental Command's Flutter app, read only).
 `backend/` means `tauri-svelte-preview/src-tauri/src/`. Line numbers were read on 2026-10-12 at
-Assembly `db7930054` and Rental Command's current working tree; re-find symbols before editing.
+Assembly `db7930054` and Rental Command's current working tree. The Assembly backend line numbers were
+re-read on 2026-10-17 at `origin/main` `ef3362fc4`; re-find symbols before editing.
 
 ## 1. Goal and scope
 
@@ -22,7 +24,7 @@ The owner can leave the Mac closed and still do three things from an Android pho
 
 1. **Chat** with the main orchestrator on the home machine (default the workbox, §4.5).
 2. **Runs**: see every run on a paired machine, open one, and pause, resume or stop it (§6.3).
-3. **Inbox**: answer everything waiting for the owner — run pauses, gates, `ask_owner` confirms
+3. **Inbox**: answer everything waiting for the owner — run pauses, gates
    and agent permission requests (§6.4) — and get a phone notification when a new one appears.
 
 Not in this version (YAGNI, matches parent §8 "Later"): starting runs from the phone, messaging
@@ -57,7 +59,7 @@ storage, SignalR change notices, FCM push, an M3 Expressive dark theme (`RC/pubs
 
 | Rental Command source | Assembly destination | How |
 |---|---|---|
-| `RC/lib/core/theme/app_tokens.dart` (colors `M3Colors` 29-122, `M3Shape` 205-223, `M3Motion`, `AppTokens`) | `mobile/lib/core/theme/app_tokens.dart` | Copy whole. |
+| `RC/lib/core/theme/app_tokens.dart` (colors `M3Colors` 23-201, `M3Shape` 204-224, `M3Motion`, `AppTokens`) | `mobile/lib/core/theme/app_tokens.dart` | Copy whole. |
 | `RC/lib/core/theme/app_theme.dart` (`AppTheme.light/dark`, button/card/chip/nav themes 66-265) | `mobile/lib/core/theme/app_theme.dart` | Copy whole. |
 | `RC/lib/core/theme/app_typography.dart` (`M3Type`, Funnel Display / Funnel Sans via google_fonts) | `mobile/lib/core/theme/app_typography.dart` | Copy whole. |
 | `RC/lib/core/theme/app_recipes.dart` `M3TonalFamily` (19), `M3TonalCard` (223), `M3MorphNavItem` (270) | `mobile/lib/core/theme/app_recipes.dart` | Copy these three only. Drop `M3ArtSurface` / `M3ArtBand` (they need `assets/patterns/`). |
@@ -68,7 +70,7 @@ storage, SignalR change notices, FCM push, an M3 Expressive dark theme (`RC/pubs
 | `RC/lib/core/realtime/realtime_providers.dart` `realtimeWatcherProvider` (64) invalidate-on-notice pattern | `mobile/lib/core/live/live_providers.dart` | Same pattern: a notice invalidates the matching provider, which refetches. |
 | `RC/lib/core/realtime/signalr_service.dart` `RealtimeEvent` shape and reconnect delays 0/2/5/10/30/60 s | `mobile/lib/core/live/live_socket.dart` | Replace SignalR with a plain WebSocket (`web_socket_channel`, already in `RC/pubspec.lock:1344` as a transitive dependency). The Rust backend speaks no SignalR. |
 | `RC/lib/core/push/push_service.dart` (`PushService.init` 75, local channel 114-146, handlers 148-177, `_registerDevice` 218) | `mobile/lib/core/push/push_service.dart` | Adapt: channel id `assembly_inbox`, register with `POST /phone/v1/push-token` per machine, tap opens `/inbox/<id>`. Keep its fail-soft Firebase init. |
-| `RC/lib/features/messages/message_detail_screen.dart` `_MessageThread` (375), `_MessageBubble` (416), `_ComposeBar` (512), `_SendButton` (632) | `mobile/lib/features/chat/chat_widgets.dart` | Copy and trim: drop channel chips and `SendingChannelsLine`; bubble "mine" = owner. Add a relayed-message variant and a confirm card. |
+| `RC/lib/features/messages/message_detail_screen.dart` `_MessageThread` (375), `_MessageBubble` (416), `_ComposeBar` (512), `_SendButton` (632) | `mobile/lib/features/chat/chat_widgets.dart` | Copy and trim: drop channel chips and `SendingChannelsLine`; bubble "mine" = owner. Add a relayed-message variant. |
 | `RC/lib/features/messages/messages_repository.dart` `conversationProvider` (291, Notifier with `refresh()` / `sendMessage()`) | `mobile/lib/features/chat/chat_repository.dart` | Same Notifier pattern over the phone chat endpoints. |
 | `RC/lib/features/home/home_shell.dart` `_MorphNavBar` (1118) | `mobile/lib/app_shell.dart` | Copy the nav bar only (3 tabs, no FAB gap). Do not copy `HomeShell` (3,431 lines of landlord logic). |
 | `RC/lib/core/router/app_router.dart` redirect guard (103-148) | `mobile/lib/core/router.dart` | Same shape, one rule: no paired machine → `/pair`. |
@@ -103,9 +105,7 @@ as a chip; tapping it opens the machine picker. Dark theme only, as Rental Comma
    selected machine. Owner bubbles right (primary), orchestrator bubbles left
    (surfaceContainerHighest), copied from `_MessageBubble`. A message another session sent to the
    orchestrator shows as a labelled card "Message from `tsk-1412/build`" (`M3TonalCard`, sky).
-   Orchestrator tool calls show as one grey line ("start_run — 2 runs started"). Pending
-   `ask_owner` items show inline at their time as a **confirm card** (`M3TonalCard`, amber) with the
-   item's option buttons; tapping one answers the inbox item (§6). A thin "Working…" line shows
+   Orchestrator tool calls show as one grey line ("start_run — 2 runs started"). A thin "Working…" line shows
    while the orchestrator's turn runs. Composer copied from `_ComposeBar`. If the selected machine
    does not host the orchestrator: empty state "The orchestrator lives on <home machine>" with a
    button to switch.
@@ -135,17 +135,18 @@ as a chip; tapping it opens the machine picker. Dark theme only, as Rental Comma
 ### 5.1 Transport and network
 
 Today the remote backend is one axum server with one route, `GET /assembly`, a WebSocket guarded
-by a single bearer token (`backend/agent_conversation/remote.rs:2985-3002`
-`upgrade_remote_socket`), bound to `127.0.0.1:7777` (`run_server_from_environment`,
-`remote.rs:2900-2976`, `ASSEMBLY_SERVER_BIND`). The desktop reaches it only through an SSH
-tunnel (`open_remote_tunnel`, `remote.rs:2500-2569`) and reads the token over SSH from
-`~/.config/assembly/server.env` (`read_remote_token`, `remote.rs:2578-2587`). That token gives full
+by a single bearer token (`backend/agent_conversation/remote.rs:3282`
+`upgrade_remote_socket`, route at `remote.rs:3247`), bound to `127.0.0.1:7777`
+(`run_server_from_environment`, `remote.rs:3209`, `ASSEMBLY_SERVER_BIND`). The desktop reaches it only
+through an SSH tunnel (`open_remote_tunnel`, `remote.rs:2793`) and reads the token over SSH from
+`~/.config/assembly/server.env` (`read_remote_token`, `remote.rs:2871`). That token gives full
 control (terminals, workspace commands), so it must never reach a phone.
 
 - **Decision: a second, phone-only listener in the same server process.** When
   `ASSEMBLY_PHONE_BIND` is set, `run_server_from_environment` also serves a separate
   `Router` with only the `/phone/v1/*` routes below, sharing `ServerState` (the same
-  `AgentRuntimeManager`, store and `events` broadcast, `remote.rs:229-239`). The phone listener
+  `AgentRuntimeManager`, store, `events` broadcast and the machine's `workflow` engine, `ServerState`,
+`remote.rs:241-251`). The phone listener
   never serves `/assembly`, and the desktop listener never serves `/phone`. Unset means no phone
   API (the default).
 - **Decision: reach it through `tailscale serve`**, which gives a tailnet-only HTTPS URL with a
@@ -172,8 +173,11 @@ control (terminals, workspace commands), so it must never reach a phone.
 
 1. Desktop: Settings → Connections → a connected remote machine → **Pair phone**
    (`tauri-svelte-preview/src/lib/shell/components/RemoteConnections.svelte`). The desktop sends
-   new `RemoteCommand::CreatePhonePairing` over the existing authenticated socket (enum at
-   `remote.rs:80-165`; bump `PROTOCOL_VERSION`, `remote.rs:54`).
+   new `phonePairing` operation over the existing authenticated socket. **Decision: new string
+   operations of `execute_operation(engine, op, args)` (`backend/workflow.rs:3501`), reached through the
+   existing `RemoteCommand::Workflow` (`remote.rs:179`, dispatched at `remote.rs:3692`), not new
+   `RemoteCommand` variants (enum at `remote.rs:84-187`), so `PROTOCOL_VERSION` (`remote.rs:54`, 17)
+   does not bump.**
 2. The backend creates a **pairing code**: 10 random base32 characters, single use, valid 10
    minutes, held in memory only, 5 wrong tries kill it. It returns
    `{url: ASSEMBLY_PHONE_URL, machineName, code, expiresAt}`; with `ASSEMBLY_PHONE_URL` unset it
@@ -188,8 +192,8 @@ control (terminals, workspace commands), so it must never reach a phone.
 5. Every other `/phone/v1` call needs `Authorization: Bearer <deviceToken>`; the server
    checks the hash against non-revoked rows in one SQL lookup. A missing, unknown or revoked token
    returns 401 and the phone shows "This phone was removed — pair again".
-6. The same desktop card lists paired phones (`RemoteCommand::ListPhoneDevices`) with **Remove**
-   (`RemoteCommand::RevokePhoneDevice`). Removing sets `revoked_at` and closes that device's live
+6. The same desktop card lists paired phones (operation `phoneDevices`) with **Remove**
+   (operation `phoneRevoke`). Removing sets `revoked_at` and closes that device's live
    socket.
 
 The machine id in pairing is the backend's own stable id (the `phone_devices` table lives in that
@@ -203,32 +207,33 @@ desktop route already calls, so the phone gets no second implementation of any r
 | Method and path | Request → response | Same path as |
 |---|---|---|
 | `POST /pair` | `{code, deviceName}` → `{deviceId, deviceToken, machine}` | new (§5.2) |
-| `GET /me` | → `{deviceId, machine:{id,name}, hostsOrchestrator}`; also updates `last_seen_at` | Task 21 orchestrator designation |
+| `GET /me` | → `{deviceId, machine:{id,name}, hostsOrchestrator}`; also updates `last_seen_at` | `hostsOrchestrator` = `broker.main_orchestrator()` returns a session (`core/src/broker.rs:211`, the owner's mark from Task 17) |
 | `POST /push-token` | `{fcmToken}` → 204 | new |
-| `GET /chat?after=<seq>` | → `{items:[ChatItem], cursor, turn:"idle"|"running", ownerItems:[InboxItem]}`; no `after` = latest 100 items | `manager.list_events_before` / `list_events_after` (`remote.rs:3459-3472`) on the designated orchestrator's owned id |
-| `POST /chat` | `{text}` → `{itemId}` | `RemoteCommand::Send` handler (`remote.rs:3561`) after Task 21's ensure/resume of the orchestrator; server fills the current generation |
-| `GET /runs` | → `{active:[RunRow], recent:[RunRow]}` | Task 12 `list_runs` / Task 17 bounded SQL list |
-| `GET /runs/{id}` | → `RunDetail` (steps, attempts, last 20 timeline lines, pending item id) | Task 12 `get_run` + Task 17 `get_run_history(limit 20)` |
-| `POST /runs/{id}/pause`, `/resume`, `/stop` | → `RunRow` | the engine pause/resume/stop the desktop uses (Task 12) |
-| `GET /inbox` | → `{items:[InboxItem]}` pending only | Task 18 `list_owner_inbox` (includes Task 23 permission requests) |
-| `POST /inbox/{id}/answer` | `{optionId, reply?, version}` → 204, or 409 `{error:"stale"}` | Task 18 `answer_owner_item`; permission items go through Task 23's single owner permission path, which ends in `respond_permission_option` (`remote.rs:3620`) |
-| `GET /live` (WebSocket) | server → phone frames, below | `ServerState.events` broadcast (`remote.rs:3046`) plus the run/inbox change signal Tasks 12/17/18 add |
+| `GET /chat?after=<seq>` | → `{items:[ChatItem], cursor, turn:"idle"|"running", ownerItems:[InboxItem]}`; no `after` = latest 100 items | `manager.list_events_before` / `list_events_after` (`remote.rs:3780`, `3787`) on the owned id from `broker.main_orchestrator()` |
+| `POST /chat` | `{text}` → `{itemId}` | `RemoteCommand::Send` handler (`remote.rs:3877`) on the owned id from `broker.main_orchestrator()`; with no orchestrator marked it returns 404 and the phone shows the empty state (§4); server fills the current generation |
+| `GET /runs` | → `{active:[RunRow], recent:[RunRow]}` | engine `list_runs` (`backend/workflow.rs:2739`, op `list`) returns all runs with no limit; the active/recent split and the "last 20 recent" cut are new work in Task 28 |
+| `GET /runs/{id}` | → `RunDetail` (steps, attempts, last 20 timeline lines, pending item id) | engine `get_run` (`backend/workflow.rs:2590`, op `get`); there is no run-history or timeline API today, so the 20 timeline lines are new work in Task 28 |
+| `POST /runs/{id}/pause`, `/resume`, `/stop` | → `RunRow` | engine `pause` (`backend/workflow.rs:1619`), `resume` (`1641`) and `cancel` (`1664`), ops `pause`, `resume`, `cancel`; stopping a run is the engine's `cancel` |
+| `GET /inbox` | → `{items:[InboxItem]}` pending only | `waiting_workflow_steps` (`core/src/session_store.rs:2640`, returns `WaitingStep`, `session_store.rs:794`), op `inbox` (`backend/workflow.rs:3506`); permission requests come from Task 20's `pending_owner_sessions` in `manager.rs` |
+| `POST /inbox/{id}/answer` | `{optionId, reply?, version}` → 204, or 409 `{error:"stale"}` | run pauses: `answer_pause(run_id, node_id, decision, reply, origin, idempotency_key)` (`backend/workflow.rs:2550`, op `answer`; `origin` must be `"owner"`); gates: `approve_gate` (`backend/workflow.rs:1817`, op `approveGate`); permission items: `RemoteCommand::RespondPermission` (`remote.rs:3936`) into `manager.respond_permission_option` (`manager.rs:2769`) |
+| `GET /live` (WebSocket) | server → phone frames, below | `ServerState.events` broadcast (subscribed at `remote.rs:3345`) plus run and inbox change signals, which do not exist yet and are Task 28 work |
 
 Shapes (field names final; extra fields allowed later only when a screen needs them):
 
 ```text
-ChatItem   {id, seq, kind: owner|agent|relayed|tool|error, from?, text, at, done}
+ChatItem   {id, seq, kind: owner|agent|relayed|tool|error, text, at, done}
 RunRow     {id, taskKey, taskTitle, workflow, state, currentStep, round, startedAt, updatedAt, iMerge, prUrl?, waitingItemId?}
 RunDetail  RunRow + {branch, steps:[{id, kind, state, attempts:[{n, state, startedAt, endedAt?, summary?, findings?:[string], failingCommands?:[{command, exit, tail}]}]}], timeline:[{at, text}]}
-InboxItem  {id, kind: loop_stalled|round_limit|invalid_review|timeout|gate|ask_owner|restart|permission,
+InboxItem  {id, kind: loop_stalled|round_limit|invalid_review|timeout|gate|restart|permission,
             runId?, taskKey?, stepId?, sessionName?, title, detail, evidence:[{label, text?, url?}],
             options:[{id, label, style: primary|neutral|danger}], allowsReply, createdAt, version}
 ```
 
 Chat reduction (server side, so the phone never parses the provider event stream): from
 `AgentConversationPayload` (`backend/agent_conversation/protocol.rs:453-575`) keep
-`UserMessage` (→ `owner`, or `relayed` with `from` when it is a delivered message — use the sender
-field slice 1 Task 4 stores; fall back to the `[message from <name>]` prefix),
+`UserMessage` (→ `owner`, or `relayed` when the text starts with `[message from `). The sender
+appears only in that text prefix (`manager.rs:1261`, `manager.rs:1414`; the label can be
+`<handle> · <name>`); no sender field exists, so the phone parses the prefix to show the label,
 `AssistantMessage` (→ `agent`), `Tool` (→ `tool`, `summary` or name only), `Error` (→ `error`),
 and `Turn` (→ the `turn` field). Everything else is dropped.
 
@@ -248,17 +253,20 @@ reconnect; nothing is lost because every list is refetchable):
   server `~/dev/work/rental-management/RentalCommand.Engine/Services/FcmPushSender.cs`, HTTP v1).
   It is the only path that wakes a closed Android app without a battery-draining background
   connection, and the client code is already written.
-- **Decision: a new Firebase project "assembly"** (free), not the existing `rental-command` project
-  (its `google-services.json` declares only `com.rentalcommand.rental_command`). Needs the
-  owner, see §9 Q1: create the project, add Android app `dev.blackcolours.assembly_phone`, put
-  `google-services.json` in `mobile/android/app/`, and create a service-account key (role
-  "Firebase Cloud Messaging API Admin") saved on each backend machine at
-  `~/.config/assembly/fcm-service-account.json` (mode 600), named by `ASSEMBLY_FCM_SERVICE_ACCOUNT`.
+- **Decision: a new Firebase project, not the existing `rental-command` project** (its
+  `google-services.json` declares only `com.rentalcommand.rental_command`). It already exists:
+  Firebase project **`assembly-511916`** ("Assembly", an existing Google Cloud project; Firebase added
+  2026-10-17) with Android app `dev.blackcolours.assembly_phone`, app id
+  `1:699839553480:android:542a07d5c7ccc52f522afd`. Its `google-services.json` is kept on the workbox at
+  `~/.config/assembly-phone/google-services.json`, is copied into `mobile/android/app/` for builds and
+  is never committed. Still to do: a service-account key (role "Firebase Cloud Messaging API Admin")
+  saved on each backend machine at `~/.config/assembly/fcm-service-account.json` (mode 600), named by
+  `ASSEMBLY_FCM_SERVICE_ACCOUNT`.
 - Backend sender: new `backend/agent_conversation/phone_push.rs`. It signs a service-account JWT
   (RS256, new crate `jsonwebtoken`), exchanges it at Google's token endpoint, caches the access
   token until it expires, and POSTs `https://fcm.googleapis.com/v1/projects/<id>/messages:send`
-  with the existing `reqwest` (`tauri-svelte-preview/src-tauri/Cargo.toml:27`).
-- Trigger: once per new inbox item (the same signal that sends `changed: inbox`), one message per
+  with the existing `reqwest` (`tauri-svelte-preview/src-tauri/Cargo.toml:28`).
+- Trigger: once per new inbox item (the same Task 28 signal that sends `changed: inbox`), one message per
   device with an `fcm_token`. No retry; failures are logged. An `UNREGISTERED` answer clears that
   token.
 - **Decision: no agent text in the notification.** Title "Assembly — <machine>", body is the item
@@ -276,13 +284,16 @@ reconnect; nothing is lost because every list is refetchable):
   stores on different listeners; neither is accepted where the other belongs. Tests below prove
   both directions.
 - The phone sends the item id, the chosen **option id from the backend's own list**, and the
-  item `version`; the backend rejects unknown options and stale versions (409). The answer is
-  recorded through Task 18's path with provenance `{by:"owner", via:"phone", deviceId}`.
-- Chat text is never an answer. Typing "yes" sends text to the orchestrator; only the confirm
-  card's buttons, which call the inbox endpoint, answer an `ask_owner` item. A relayed message
+  item `version`; the backend rejects unknown options and stale answers (409; for run pauses the
+  engine's own "That step is not waiting for the owner" check). Run pauses and gates are answered
+  with `answer_pause` / `approve_gate` and `origin: "owner"`, which only the phone listener's
+  authenticated handler and the desktop commands pass (`backend/workflow.rs:2550`, `1817`).
+- Chat text is never an answer. Typing "yes" sends text to the orchestrator; only the
+  Inbox buttons, which call the inbox endpoint, answer anything. A relayed message
   from an agent is shown as a labelled message, never as a button.
 - The notification has no approve action; the owner opens the app and taps.
-- The orchestrator has no tool that answers inbox items (slices 3-4 plan Task 22).
+- The orchestrator has no tool that answers inbox items: `answer_workflow_pause` and
+  `approve_workflow_gate` stay owner-only (slices 3-4 plan Task 16).
 
 ## 7. Build tasks
 
@@ -296,22 +307,24 @@ trailer, body `Task: TSK-1416 <url>`. Backend architecture changes update
 `~/develop/flutter/bin/flutter` from `mobile/`.
 
 Dependencies: Tasks 27, 30 and 31 can start as soon as this spec is approved (they need only
-today's code). Tasks 28-29 need slices 3-4 Tasks 12, 17, 18, 21 and 23 merged. Tasks 32-34 need
+today's code). Tasks 28-29 need slices 3-4 Task 17 (orchestrator mark) and Task 20 (inbox, including
+`pending_owner_sessions`) merged; the run reads and controls already exist on `main`. Tasks 32-34 need
 Task 28's endpoints (they can be built against a fake repository first). Order:
 **27 → 31 → 30 → 28 → 29 → 32 → 33 → 34 → 35**.
 
 ### Task 27: Phone listener, pairing and device tokens
 
 **Files:** create `backend/agent_conversation/phone_api.rs` (router, pairing, auth; declare in
-`agent_conversation/mod.rs`); modify `remote.rs` `run_server_from_environment` (2900) to start the
-second listener when `ASSEMBLY_PHONE_BIND` is set, `RemoteCommand` (80) + dispatcher
-(`execute_remote_command`, 3389) for `CreatePhonePairing`, `ListPhoneDevices`, `RevokePhoneDevice`,
-`PROTOCOL_VERSION` (54); `core/src/session_store.rs` `phone_devices` table and three queries;
+`agent_conversation/mod.rs`); modify `remote.rs` `run_server_from_environment` (3209) to start the
+second listener when `ASSEMBLY_PHONE_BIND` is set; `backend/workflow.rs` `execute_operation` (3501)
+for the operations `phonePairing`, `phoneDevices`, `phoneRevoke` (reached through
+`RemoteCommand::Workflow`, `remote.rs:179`/`3692`; no new `RemoteCommand` variant, no
+`PROTOCOL_VERSION` bump); `core/src/session_store.rs` `phone_devices` table and three queries;
 `tauri-svelte-preview/scripts/remoteBackendPackage.ts:68` optional `phone.env` line (+ its test).
 **Lane:** backend logic.
 
 **Interface:** §5.2 exactly. `POST /phone/v1/pair`, `GET /phone/v1/me`. Pairing codes in a
-`Mutex<HashMap>` on `ServerState`; tokens hashed with the existing `sha2` crate (`Cargo.toml:35`).
+`Mutex<HashMap>` on `ServerState`; tokens hashed with the existing `sha2` crate (`Cargo.toml:36`).
 
 - [ ] **Red tests** (in `phone_api.rs`): `pairing_code_is_single_use_and_expires`,
   `pairing_code_dies_after_five_wrong_tries`, `phone_routes_reject_missing_unknown_and_revoked_tokens`,
@@ -319,7 +332,7 @@ second listener when `ASSEMBLY_PHONE_BIND` is set, `RemoteCommand` (80) + dispat
   `desktop_server_token_is_not_a_phone_token`. Extend `remoteBackendPackage.test.ts` for the
   optional `EnvironmentFile=-` line.
 - [ ] **Verify failure:** `cd tauri-svelte-preview/src-tauri && CARGO_BUILD_JOBS=3 ~/.cargo/bin/cargo test phone_` fails to compile/assert before the module exists.
-- [ ] **Minimum edit:** one router, one table, three remote commands. No refresh tokens, no
+- [ ] **Minimum edit:** one router, one table, three operations. No refresh tokens, no
   device permissions model, no rate limiter beyond the five-tries rule.
 - [ ] **Green:** same command passes; `cd core && ~/.cargo/bin/cargo test`; `cd tauri-svelte-preview && node --experimental-strip-types scripts/remoteBackendPackage.test.ts`. Manual: on Workbox Test with `phone.env` set, `curl -s -X POST https://agent-workbox.chimp-map.ts.net:8778/phone/v1/pair -d '{"code":"<code>","deviceName":"curl"}' -H 'content-type: application/json'` returns a token; `curl -H "Authorization: Bearer <token>" …/phone/v1/me` returns the machine.
 
@@ -327,20 +340,21 @@ second listener when `ASSEMBLY_PHONE_BIND` is set, `RemoteCommand` (80) + dispat
 
 ### Task 28: Phone chat, runs, inbox endpoints and live socket
 
-**Files:** `phone_api.rs` (handlers); `remote.rs` only if the run/inbox change signal is not
-already reachable from `ServerState`. No other new file. **Lane:** backend logic.
-**Dependencies:** slices 3-4 Tasks 12, 17, 18, 21, 23 merged; re-read their final symbols first.
+**Files:** `phone_api.rs` (handlers); `remote.rs` and `backend/workflow.rs` for the run and inbox
+change signals (none exist yet), the recent-runs cut and the 20-line run history (neither exists yet).
+No other new file. **Lane:** backend logic.
+**Dependencies:** slices 3-4 Tasks 17 and 20 merged; re-read their final symbols first.
 
 **Interface:** §5.3 table and shapes. Every handler calls the function the desktop route calls;
 no rule is reimplemented. `GET /chat` reduction as §5.3.
 
 - [ ] **Red tests:** `phone_chat_keeps_owner_agent_relayed_tool_and_drops_the_rest` (event list in, ChatItems out),
-  `phone_answer_records_owner_device_provenance_once`, `phone_answer_with_unknown_option_or_stale_version_is_rejected`,
+  `phone_answer_uses_owner_origin_once`, `phone_answer_with_unknown_option_or_stale_version_is_rejected`,
   `session_mcp_token_cannot_call_phone_routes`, `phone_run_controls_match_desktop_engine_calls`,
   `phone_live_sends_changed_inbox_when_item_created`.
 - [ ] **Verify failure:** `cargo test phone_` (same directory as Task 27) fails on the new tests.
 - [ ] **Minimum edit:** handlers plus the chat reducer. Inbox and run lists come from the
-  existing single-SQL queries (Tasks 17/18); no per-row lookups. No pagination beyond "latest 100
+  existing queries (`waiting_workflow_steps` is one SQL statement); no per-row lookups. No pagination beyond "latest 100
   chat items" and "last 20 recent runs".
 - [ ] **Green:** `cargo test phone_` and backend gates. Manual with curl on Workbox Test: send a chat
   message, list a run, pause and resume it, answer a demo pause; the desktop shows the same state.
@@ -351,7 +365,7 @@ no rule is reimplemented. `GET /chat` reduction as §5.3.
 
 **Files:** create `backend/agent_conversation/phone_push.rs`; `phone_api.rs` (`POST /push-token`,
 trigger hook); `Cargo.toml` adds `jsonwebtoken`. **Lane:** backend logic.
-**Dependencies:** Task 28; owner's Firebase project and key (§9 Q1) for the real send only.
+**Dependencies:** Task 28; the service-account key (§5.4) for the real send only.
 
 **Interface:** `send_inbox_push(devices, item)`; message JSON per §5.4; token cache in memory.
 
@@ -411,15 +425,14 @@ with bearer header; router redirect to `/pair` when no machine.
 **Dependencies:** Tasks 28, 31.
 
 **Interface:** `ChatNotifier` (Rental Command `conversationProvider` pattern) with `load()`,
-`send(text)`, live `chat` / `chatDelta` / `turn` frames applied in order by `seq`; owner items
-rendered as confirm cards that call the inbox answer.
+`send(text)`, live `chat` / `chatDelta` / `turn` frames applied in order by `seq`.
 
 - [ ] **Red tests:** `chat_applies_live_items_in_seq_order_and_ignores_duplicates`,
-  `chat_delta_appends_to_open_agent_item_only`, `confirm_card_answers_inbox_not_chat`,
+  `chat_delta_appends_to_open_agent_item_only`, `typing_yes_in_chat_sends_text_not_an_answer`,
   `typed_yes_sends_chat_text_and_answers_nothing`, `reconnect_refetches_after_cursor`.
 - [ ] **Verify failure / Green:** `cd mobile && ~/develop/flutter/bin/flutter test test/chat_*` red then green; `flutter analyze` clean.
 
-**Done means:** the owner can chat with the orchestrator and confirm its `ask_owner` items. **Expected diff:** 400-550 lines including tests.
+**Done means:** the owner can chat with the orchestrator and see relayed messages and tool lines. **Expected diff:** 400-550 lines including tests.
 
 ### Task 33: Runs list and run detail
 
@@ -437,7 +450,7 @@ rendered as confirm cards that call the inbox answer.
 **Files:** `mobile/lib/features/inbox/{inbox_screen,inbox_repository}.dart`,
 `mobile/lib/core/push/push_service.dart` (adapted copy), `mobile/android/` Firebase plugin lines,
 `AndroidManifest.xml` channel and POST_NOTIFICATIONS. **Lane:** **visible UI: Opus lane** for the
-screen; push plumbing may be split. **Dependencies:** Tasks 28, 29, 31; owner's `google-services.json`.
+screen; push plumbing may be split. **Dependencies:** Tasks 28, 29, 31; `google-services.json` from the workbox (§5.4).
 
 - [ ] **Red tests:** `inbox_renders_backend_options_only`, `stale_answer_shows_already_answered`,
   `notification_tap_opens_item_on_its_machine`, `push_init_fails_soft_without_firebase`.
@@ -482,11 +495,12 @@ the test device from the paired list afterwards.
 
 The owner accepted every recommendation below on 2026-10-17. Each is now binding.
 
-1. **Firebase project for push.** Create a new free Firebase project "assembly" with Android app
-   `dev.blackcolours.assembly_phone`, or add that app to the existing `rental-command` project?
-   **Recommended: new project.** Then drop `google-services.json` and the service-account key
-   into `~/Workbox/to-box/` (about 10 minutes in the Firebase console). Until then everything
-   except the real push works.
+1. **Firebase project for push.** A new project rather than the existing `rental-command` one.
+   **Accepted and done:** Firebase project `assembly-511916` ("Assembly", existing Google Cloud
+   project, Firebase added 2026-10-17), Android app `dev.blackcolours.assembly_phone`, app id
+   `1:699839553480:android:542a07d5c7ccc52f522afd`; `google-services.json` kept on the workbox at
+   `~/.config/assembly-phone/google-services.json`, never committed. Until the service-account key
+   (§5.4) exists, everything except the real push works.
 2. **Extra check before approving from the phone** (fingerprint prompt, as Rental Command's
    `local_auth`)? **Recommended: no for now.** The phone's own lock screen plus revocable device
    tokens are enough; add a fingerprint prompt for permission requests later if wanted.
