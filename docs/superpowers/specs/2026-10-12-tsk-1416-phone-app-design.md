@@ -1,8 +1,8 @@
 # Assembly phone app — design and build plan (TSK-1416 slice 5)
 
-Date: 2026-10-12. Status: **draft for owner review**. Written overnight from the owner's standing
-direction; every choice the owner did not make is marked **Decision** with its reason, and the
-five that most need the owner are in §9.
+Date: 2026-10-12. Status: **approved by the owner 2026-10-17** (all five §9 recommendations accepted). Written
+overnight from the owner's standing direction; every choice the owner did not make is marked
+**Decision** with its reason, and the five the owner decided are in §9.
 Task: TSK-1416 (Workflows and orchestration) — https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8
 
 Parent spec: `docs/superpowers/specs/2026-10-10-workflows-orchestration-design.md` (latest on
@@ -478,7 +478,9 @@ the test device from the paired list afterwards.
 - **Decision: no Play Store release in this slice.** Sideloaded APK only; Play internal testing
   (Rental Command's `Docs/legal/play-store-internal-testing-steps.md`) can follow later.
 
-## 9. Open questions for the owner (each has a recommended answer)
+## 9. Owner decisions (2026-10-17: "Yes to all recom")
+
+The owner accepted every recommendation below on 2026-10-17. Each is now binding.
 
 1. **Firebase project for push.** Create a new free Firebase project "assembly" with Android app
    `dev.blackcolours.assembly_phone`, or add that app to the existing `rental-command` project?
