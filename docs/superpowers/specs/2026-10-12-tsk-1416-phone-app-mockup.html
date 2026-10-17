@@ -217,13 +217,7 @@
           <div class="label">MESSAGE FROM tsk-1412/build</div>
           <p>The migration has to drop the old usage_cache table. Please check with the owner.</p>
         </div>
-        <div class="bubble theirs">Build wants to drop <b>usage_cache</b>. It only holds cached totals and is rebuilt on start.</div>
-        <div class="tonal amber">
-          <div class="label">CONFIRM · TSK-1412</div>
-          <p>Allow tsk-1412/build to drop the usage_cache table?</p>
-          <div class="btns"><span class="btn filled">Allow</span><span class="btn outlined">Don't allow</span></div>
-          <div class="fine">Only your tap counts. Typing "yes" in chat does not answer this.</div>
-        </div>
+        <div class="bubble theirs">Build wants to drop <b>usage_cache</b>. It only holds cached totals and is rebuilt on start. If it asks for permission, that request waits in your Inbox.</div>
         <div class="working"><span class="pulse"></span>Orchestrator is working…</div>
       </div>
       <div class="compose"><div class="field"><span class="ph">Message the orchestrator…</span><span class="send"><svg><use href="#i-send"/></svg></span></div></div>
@@ -235,7 +229,7 @@
     </div>
     <figcaption><b>1 · Orchestrator chat</b>
       Bubbles and composer: <code>_MessageBubble</code>, <code>_ComposeBar</code>, <code>_SendButton</code> (<code>RC/lib/features/messages/message_detail_screen.dart:416,512,632</code>), channel chips removed.
-      Relayed message and confirm card: <code>M3TonalCard</code> sky / amber (<code>app_recipes.dart:223</code>). The confirm buttons answer the inbox item (D13). Nav: <code>_MorphNavBar</code> + <code>M3MorphNavItem</code>.</figcaption>
+      Relayed message: <code>M3TonalCard</code> sky (<code>app_recipes.dart:223</code>). Chat has no approval buttons; requests are answered from the Inbox (D13). Nav: <code>_MorphNavBar</code> + <code>M3MorphNavItem</code>.</figcaption>
   </figure>
 
   <!-- 2. Runs list -->
@@ -348,7 +342,7 @@
       </div>
     </div>
     <figcaption><b>4 · Inbox</b>
-      Cards: <code>M3TonalCard</code> rose (permission) and amber (loop stalled). Buttons come from the backend's option list; the phone has no decision logic. Reply box: RC filled input (<code>app_theme.dart:126-153</code>). Push taps land here (<code>RC/lib/core/push/push_service.dart</code> pattern).</figcaption>
+      Cards: <code>M3TonalCard</code> rose (permission) and amber (loop stalled). Buttons come from the backend's option list; the phone has no decision logic. Push taps land here (<code>RC/lib/core/push/push_service.dart</code> pattern).</figcaption>
   </figure>
 
   <!-- 5. Pairing -->
@@ -398,7 +392,7 @@
       <tr><td>Colors, radii, buttons, cards, chips, inputs</td><td><code>lib/core/theme/app_tokens.dart</code>, <code>app_theme.dart</code>, <code>app_typography.dart</code></td><td>copied whole</td></tr>
       <tr><td>Bottom nav (3 tabs)</td><td><code>_MorphNavBar</code> <code>home_shell.dart:1118</code>, <code>M3MorphNavItem</code> <code>app_recipes.dart:270</code></td><td>copied, FAB gap removed</td></tr>
       <tr><td>Chat bubbles, composer, send</td><td><code>message_detail_screen.dart:375-672</code></td><td>copied, channel chips removed</td></tr>
-      <tr><td>Relayed message, confirm, inbox cards</td><td><code>M3TonalCard</code> / <code>M3TonalFamily</code> <code>app_recipes.dart:19,223</code></td><td>copied</td></tr>
+      <tr><td>Relayed message, inbox cards</td><td><code>M3TonalCard</code> / <code>M3TonalFamily</code> <code>app_recipes.dart:19,223</code></td><td>copied</td></tr>
       <tr><td>Runs, steps, machines lists</td><td><code>MobileM3ListItem</code> <code>lib/core/widgets/mobile_m3_list.dart</code></td><td>copied</td></tr>
       <tr><td>Live updates</td><td><code>realtimeWatcherProvider</code> <code>realtime_providers.dart:64</code> (SignalR notices → invalidate)</td><td>same pattern over a plain WebSocket</td></tr>
       <tr><td>Push</td><td><code>PushService</code> <code>lib/core/push/push_service.dart</code> (FCM + local notifications)</td><td>adapted, new channel <code>assembly_inbox</code></td></tr>
