@@ -1140,6 +1140,11 @@ async function reacquireSelectedChildHistory(
   }
   const read = childConversationRead;
   if (!read || read.workspaceOwnedId === read.ownedId || read.abortController.signal.aborted) return;
+  const helper = rail.owned.find((session) => session.ownedId === read.ownedId);
+  if (helper) {
+    if (helper.remoteProfileId === profileId) requestSelectedConversationReload(read);
+    return;
+  }
   const owned = rail.owned.find((session) => session.ownedId === read.workspaceOwnedId);
   if (owned?.remoteProfileId !== profileId) return;
   const current = getConversationSession(read.workspaceOwnedId);

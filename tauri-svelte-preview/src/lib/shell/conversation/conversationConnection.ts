@@ -46,6 +46,7 @@ import type {
   ConversationAttachment
 } from './conversationTypes.ts';
 import { extendAgentConversationImportFromTauri } from '../../tauriSource.ts';
+import { rail } from '../stores/sessionRailStore.svelte.ts';
 import { usageDropIsCompaction } from './conversationReducer.ts';
 
 const PAGE_BYTES = 512 * 1024;
@@ -713,7 +714,9 @@ export function selectConversationChat(
     disposeChildConversationChat();
     const parent = getConversationSession(workspaceOwnedId);
     if (!parent) throw new Error('The parent conversation is not selected.');
-    ensureConversationSession(historyOwnedId, parent.provider);
+    // A helper is its own session on either provider; a native child shares its parent's.
+    const agent = rail.owned.find((session) => session.ownedId === historyOwnedId)?.agent;
+    ensureConversationSession(historyOwnedId, agent === 'claude' || agent === 'codex' ? agent : parent.provider);
     parent.selectedChildHistoryOwnedId = historyOwnedId;
   } else {
     disposeSelectedConversationChat();
@@ -795,7 +798,13 @@ export function disposeChildConversationChat(workspaceOwnedId?: string): void {
   const parent = getConversationSession(selection.workspaceOwnedId);
   if (parent?.selectedChildHistoryOwnedId === selection.historyOwnedId) parent.selectedChildHistoryOwnedId = null;
   disposeConversationChat(selection);
-  evictConversationSession(selection.historyOwnedId);
+  if (rail.owned.some((session) => session.ownedId === selection.historyOwnedId)) {
+    // The helper owns its draft and send; only its displayed turn facts leave with the reader.
+    const helper = getConversationSession(selection.historyOwnedId);
+    if (helper) helper.selectedTurns = [];
+  } else {
+    evictConversationSession(selection.historyOwnedId);
+  }
 }
 
 export function disposeSelectedConversationChat(workspaceOwnedId?: string): void {

@@ -98,13 +98,15 @@ assert.equal(legacy.topTabs, undefined);
   const current = source.slice(source.indexOf('function isCurrent('), source.indexOf('function messageBytes('));
   const bind = source.slice(source.indexOf('function resetReady('), source.indexOf('async function restorePageAttachments('));
   const selection = source.slice(source.indexOf('export function selectConversationChat('), source.indexOf('export async function sendSelectedConversationMessage(')).replaceAll('export ', '');
-  const states = new Map<string, { provider: string; generation: number; selectedChildHistoryOwnedId: string | null }>();
+  const states = new Map<string, { provider: string; generation: number; selectedChildHistoryOwnedId: string | null; draft?: string; selectedTurns?: unknown[] }>();
+  const rail = { owned: [] as Array<{ ownedId: string; agent: string; remoteProfileId?: string }> };
   const clearedAttachments: string[] = [];
   const disposed: string[] = [];
   const dependencies = {
+    rail,
     getConversationSession: (id: string) => states.get(id),
     ensureConversationSession: (id: string, provider: string) => {
-      if (!states.has(id)) states.set(id, { provider, generation: 1, selectedChildHistoryOwnedId: null });
+      if (states.get(id)?.provider !== provider) states.set(id, { provider, generation: 1, selectedChildHistoryOwnedId: null });
       return states.get(id);
     },
     evictConversationSession: (id: string) => states.delete(id),
@@ -121,7 +123,7 @@ assert.equal(legacy.topTabs, undefined);
     ${current}${bind}${selection}
   `, { mode: 'strip' }) + `
     return { selectConversationChat, selectedConversationChat, disposeChildConversationChat,
-      disposeSelectedConversationChat, parent: () => active };
+      disposeSelectedConversationChat, parent: () => active, child: () => childActive };
   `)(...Object.values(dependencies));
   dependencies.ensureConversationSession('parent-a', 'codex');
   const parentOwner = new AbortController();
@@ -154,6 +156,138 @@ assert.equal(legacy.topTabs, undefined);
   assert.equal(api.selectedConversationChat('parent-a', 'history-c'), null);
   assert.equal(states.has('history-c'), false);
   assert.deepEqual(disposed, ['history-a', 'history-b', 'history-c', 'parent-a']);
+
+  const panelSource = readFileSync(new URL('../src/lib/shell/panels/agents/AgentsPanel.svelte', import.meta.url), 'utf8');
+  const panelSelect = panelSource.slice(panelSource.indexOf('  async function select('), panelSource.indexOf('  function openFile('));
+  const serviceSource = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const reconnect = serviceSource.slice(serviceSource.indexOf('async function reacquireSelectedChildHistory('), serviceSource.indexOf('async function handleConversationStreamEnvelope('));
+  const readers = serviceSource.slice(serviceSource.indexOf('function selectedEventUsesControlCursor('), serviceSource.indexOf('export async function readOlderSelectedConversationItems(')).replaceAll('export ', '');
+
+  for (const parentProvider of ['claude', 'codex']) {
+    for (const provider of ['claude', 'codex']) {
+      for (const remote of [false, true]) {
+        const label = `${parentProvider} parent / ${provider} helper / ${remote ? 'remote' : 'local'}`;
+        const parentId = `parent-${label}`;
+        const helperId = `helper-${label}`;
+        const profileId = remote ? 'workbox-test' : undefined;
+        rail.owned = [
+          { ownedId: parentId, agent: parentProvider, remoteProfileId: profileId },
+          { ownedId: helperId, agent: provider, remoteProfileId: profileId }
+        ];
+        const parentState = dependencies.ensureConversationSession(parentId, parentProvider)!;
+        Object.assign(parentState, {
+          selectedChildId: null,
+          children: [{ childId: helperId, parentToolCallId: '', transcriptAvailable: true }]
+        });
+        const parentChat = api.selectConversationChat(parentId);
+        const imported: string[] = [];
+        const navigated: string[] = [];
+        const panelDependencies = {
+          getConversationSession: dependencies.getConversationSession,
+          adoptSession: async (id: string, signal: AbortSignal) => !signal.aborted && rail.owned.some((row) => row.ownedId === id),
+          setConversationSelectedChild: (_id: string, childId: string | null) => { Object.assign(parentState, { selectedChildId: childId }); },
+          selectConversationChat: api.selectConversationChat,
+          selectedConversationChatReady: async () => {},
+          readChildConversationHistory: async ({ childSessionId }: { childSessionId: string }) => {
+            imported.push(childSessionId);
+            return { historyOwnedId: 'native-history' };
+          },
+          sessionRowJump: async (id: string) => { navigated.push(id); }
+        };
+        const panel = Function(...Object.keys(panelDependencies), stripTypeScriptTypes(`
+          let ownedId = ${JSON.stringify(parentId)};
+          let conversation = getConversationSession(ownedId);
+          let visible = true, view = 'session', openedChildId = null;
+          let reader = null;
+          let transcriptState = 'unavailable', transcriptError = '';
+          function release(parentId) {
+            reader?.abort();
+            setConversationSelectedChild(parentId, null);
+          }
+          ${panelSelect}
+        `, { mode: 'strip' }) + `return { select, status: () => transcriptState, signal: () => reader.signal, back: () => release(ownedId) };`)(...Object.values(panelDependencies));
+        await panel.select(helperId);
+        assert.equal(api.selectedConversationChat(parentId), parentChat, label);
+        assert.deepEqual(navigated, [], `helper child opens in the child reader: ${label}`);
+        assert.deepEqual(imported, [], label);
+        assert.equal(panel.status(), 'ready', label);
+        assert.ok(api.selectedConversationChat(parentId, helperId), label);
+        assert.equal(states.get(helperId)?.provider, provider, `helper uses its own provider: ${label}`);
+
+        const helperState = states.get(helperId)!;
+        const pendingSend = { owner: helperId };
+        Object.assign(helperState, { draft: 'unfinished', sending: true, selectedTurns: [{ turnId: 'displayed-turn' }] });
+        api.child().pendingSend = pendingSend;
+        const snapshots: string[] = [];
+        const displayed: number[] = [];
+        const serviceDependencies = {
+          rail,
+          getConversationSession: dependencies.getConversationSession,
+          readChildConversationHistory: panelDependencies.readChildConversationHistory,
+          startConversationEvents: async () => {},
+          readAgentConversationSelectionFromTauri: async (id: string) => {
+            snapshots.push(id);
+            return { connection: { generation: 1 }, page: { watermark: 1 }, pendingSequence: 1 };
+          },
+          ACTIVE_EVENT_WINDOW_EVENTS: 20000,
+          ACTIVE_EVENT_WINDOW_BYTES: 4 * 1024 * 1024
+        };
+        const service = Function(...Object.keys(serviceDependencies), stripTypeScriptTypes(`
+          let selectedConversationRead = null, childConversationRead = null;
+          let conversationEventsDisposed = false, conversationEventsGeneration = 1;
+          function isCurrentConversationRead(read) {
+            return selectedConversationRead === read || childConversationRead === read;
+          }
+          ${readers}${reconnect}
+        `, { mode: 'strip' }) + `return { subscribeSelectedConversation, admitSelectedConversationEvent,
+            reconnect: reacquireSelectedChildHistory };`)(...Object.values(serviceDependencies));
+        const stop = await service.subscribeSelectedConversation({
+          workspaceOwnedId: parentId, ownedId: helperId, maxBytes: 512 * 1024, signal: panel.signal(),
+          onSnapshot: () => { displayed.length = 0; displayed.push(1); },
+          onEvent: (event: { sequence: number }) => displayed.push(event.sequence),
+          onError: (error: unknown) => { throw error; }
+        });
+        const event = { ownedId: helperId, generation: 1, sequence: 2, payload: { kind: 'message' } };
+        service.admitSelectedConversationEvent(event);
+        service.admitSelectedConversationEvent(event);
+        assert.deepEqual(displayed, [1, 2], `helper child stays live: ${label}`);
+        if (remote) {
+          await service.reconnect(profileId, 1);
+          assert.deepEqual(snapshots, [helperId, helperId], `helper child reconnect reloads by owned id: ${label}`);
+          assert.deepEqual(imported, [], label);
+        }
+        const beforeAbort = [...displayed];
+        const childSelection = api.child();
+        panel.back();
+        service.admitSelectedConversationEvent({ ...event, sequence: 3 });
+        stop();
+        api.disposeChildConversationChat(parentId);
+        assert.deepEqual(displayed, beforeAbort, `late updates stop: ${label}`);
+        assert.equal(api.selectedConversationChat(parentId, helperId), null, label);
+        assert.equal(states.get(helperId), helperState, `Back preserves helper state: ${label}`);
+        assert.equal(states.get(helperId)?.draft, 'unfinished', label);
+        assert.equal(childSelection.pendingSend, pendingSend, label);
+        assert.deepEqual(helperState.selectedTurns, [], `Back releases displayed facts: ${label}`);
+        if (remote) {
+          Object.assign(parentState, { selectedChildId: 'native-child', children: [{ childId: 'native-child', parentToolCallId: 'tool', transcriptAvailable: true, transcriptId: 'native-transcript' }] });
+          const nativeOwner = new AbortController();
+          const stopNative = await service.subscribeSelectedConversation({
+            workspaceOwnedId: parentId, ownedId: 'native-history', maxBytes: 512 * 1024,
+            signal: nativeOwner.signal, onSnapshot: () => {}, onEvent: () => {},
+            onError: (error: unknown) => { throw error; }
+          });
+          await service.reconnect(profileId, 1);
+          assert.deepEqual(imported, ['native-transcript'], 'native child reconnect uses transcriptId');
+          assert.deepEqual(snapshots.slice(-2), ['native-history', 'native-history'], 'native reader reloads after import');
+          nativeOwner.abort();
+          stopNative();
+        }
+        api.disposeSelectedConversationChat(parentId);
+        console.log(`helper child selection, live release, and reconnect passed: ${label}`);
+      }
+    }
+  }
+
 }
 
 console.log('conversation session isolation tests passed');
