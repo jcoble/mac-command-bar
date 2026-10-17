@@ -618,6 +618,7 @@ pub(crate) struct AgentDispatchRequest {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub permission: Option<String>,
+    pub starter: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -635,6 +636,24 @@ pub(crate) trait AgentRuntimePort: Send + Sync {
     fn deliver_messages<'a>(&'a self, _owned_id: &'a str) -> PortFuture<'a, ()> {
         Box::pin(async { Ok(()) })
     }
+}
+
+fn worker_permission(provider: AgentConversationProvider, chosen: Option<String>) -> Option<String> {
+    chosen.or_else(|| match provider {
+        AgentConversationProvider::Claude => Some("auto".into()),
+        AgentConversationProvider::Codex => Some("agent".into()),
+        _ => None,
+    })
+}
+
+fn capped_permission(
+    chosen: Option<String>, starter_mode: Option<Option<&str>>, provider: AgentConversationProvider,
+) -> Option<String> {
+    let chosen = if matches!(chosen.as_deref(), Some("bypassPermissions" | "agent-full-access"))
+        && starter_mode.is_some()
+        && !matches!(starter_mode.flatten(), Some("bypassPermissions" | "agent-full-access"))
+    { None } else { chosen };
+    worker_permission(provider, chosen)
 }
 
 impl AgentRuntimePort for AgentRuntimeManager {
@@ -701,11 +720,19 @@ impl AgentRuntimePort for AgentRuntimeManager {
                     model: request.model.clone(), reasoning_effort: None, approval_policy: None,
                 }, false).await.map_err(WorkflowError::Runtime)?;
             }
+            // The default Auto applies only where the provider offers a mode; a mode the owner chose must exist.
+            let offers_mode = capabilities.config_options.iter().any(|option|
+                ["mode", "permission", "permissions"].iter().any(|category| option.category.eq_ignore_ascii_case(category)));
+            let permission = if offers_mode {
+                let starter_mode = request.starter.as_deref().map(|id|
+                    self.conversation_config(id).ok().and_then(|config| config.approval_policy));
+                capped_permission(request.permission.clone(), starter_mode.as_ref().map(|mode| mode.as_deref()), provider)
+            } else { request.permission.clone() };
             for (categories, selected) in [
                 (&["thought_level", "effort"][..], request.effort.as_deref()),
                 (
                     &["mode", "permission", "permissions"][..],
-                    request.permission.as_deref(),
+                    permission.as_deref(),
                 ),
             ] {
                 if provider == AgentConversationProvider::Claude
@@ -1502,6 +1529,7 @@ impl WorkflowEngine {
             let agent = if review { &step["review"]["agent"] } else { &step["agent"] };
             let provider = agent["provider"].as_str().unwrap_or_default().to_string();
             let model = agent.get("model").cloned().unwrap_or(Value::Null);
+            let permission = agent.get("permission").cloned().unwrap_or(Value::Null);
             if step.get("agent").is_some() || review {
                 let prompt = if review { &mut step["review"]["prompt"] } else { &mut step["prompt"] };
                 let relative = prompt.as_str().ok_or_else(|| invalid_yaml("Agent prompt file is required"))?;
@@ -1509,7 +1537,7 @@ impl WorkflowEngine {
                 *prompt = json!(std::fs::read_to_string(prompt_path).map_err(invalid_yaml)?);
             }
             roles.push(json!({"id":id,"name":id,"providerPolicy":{"provider":provider},
-                "modelPolicy":{"value":model},"promptTemplateId":if review { step["review"]["prompt"].as_str().unwrap_or_default() } else { step["prompt"].as_str().unwrap_or_default() },
+                "modelPolicy":{"value":model},"permissionPolicy":{"value":permission},"promptTemplateId":if review { step["review"]["prompt"].as_str().unwrap_or_default() } else { step["prompt"].as_str().unwrap_or_default() },
                 "outputContract":if review {"ReviewReceipt"} else {"ImplementationReceipt"}}));
             nodes.push(json!({"id":id,"title":id,"roleId":id,"dependsOn":step.get("needs").cloned().unwrap_or(json!([])),
                 "condition":step["if"],"timeoutSeconds":timeout,"step":step}));
@@ -2406,6 +2434,7 @@ impl WorkflowEngine {
                     model: role.model_policy.value,
                     effort: role.effort_policy.value,
                     permission: role.permission_policy.value,
+                    starter: run.input_snapshot["started_by"].as_str().map(str::to_owned),
                 })
                 .await;
             let mut run = self.require_run(run_id)?;
@@ -4399,6 +4428,40 @@ mod tests {
             Arc::new(InMemoryWorktreeLeasePort::default()), Arc::new(FakeClock(AtomicU64::new(1))),
             Arc::new(FakeIds(AtomicU64::new(1))), Arc::new(SessionStore::open_in_memory().unwrap()));
         (root, engine)
+    }
+
+    #[test]
+    fn elevated_yaml_mode_needs_an_owner_or_elevated_starter() {
+        use AgentConversationProvider::{Claude, Codex};
+        let cap = |mode: &str, starter, provider| capped_permission(Some(mode.into()), starter, provider);
+        assert_eq!(cap("bypassPermissions", None, Claude).as_deref(), Some("bypassPermissions"));
+        assert_eq!(cap("bypassPermissions", Some(Some("auto")), Claude).as_deref(), Some("auto"));
+        assert_eq!(cap("agent-full-access", Some(Some("bypassPermissions")), Codex).as_deref(), Some("agent-full-access"));
+        assert_eq!(cap("acceptEdits", Some(Some("auto")), Claude).as_deref(), Some("acceptEdits"));
+        assert_eq!(cap("bypassPermissions", Some(Some("agent-full-access")), Claude).as_deref(), Some("bypassPermissions"));
+        assert_eq!(cap("agent-full-access", Some(None), Codex).as_deref(), Some("agent"));
+    }
+
+    #[test]
+    fn workflow_worker_defaults_to_auto_and_keeps_an_explicit_mode() {
+        use AgentConversationProvider::{Antigravity, Claude, Codex};
+        assert_eq!(worker_permission(Claude, None).as_deref(), Some("auto"));
+        assert_eq!(worker_permission(Codex, None).as_deref(), Some("agent"));
+        assert_eq!(worker_permission(Codex, Some("agent-full-access".into())).as_deref(), Some("agent-full-access"));
+        assert_eq!(worker_permission(Claude, Some("bypassPermissions".into())).as_deref(), Some("bypassPermissions"));
+        assert_eq!(worker_permission(Antigravity, None), None);
+    }
+
+    #[test]
+    fn yaml_agent_permission_reaches_the_role() {
+        let (root, _) = yaml_fixture("agent-permission");
+        let path = Path::new(".assembly/workflows/demo.yml");
+        std::fs::write(root.join(path), "name: Permissions\nsteps:\n  explicit:\n    agent: { provider: claude, permission: bypassPermissions }\n    prompt: prompts/build.md\n  omitted:\n    agent: { provider: claude }\n    prompt: prompts/build.md\n").unwrap();
+        let definition = WorkflowEngine::validate_file(&root, path).unwrap();
+        let role = |id: &str| definition.roles.iter().find(|role| role.id == id).unwrap();
+        assert_eq!(role("explicit").permission_policy.value.as_deref(), Some("bypassPermissions"));
+        assert_eq!(role("omitted").permission_policy.value, None);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

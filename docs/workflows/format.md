@@ -80,6 +80,7 @@ Each step has exactly one of `agent`, `run`, `review`, `gate`.
 |---|---|---|---|
 | `agent.provider` | string | Required; missing/non-string provider is rejected | Selects the provider; use `codex` or `claude`. |
 | `agent.model` | string | Optional; no selection (`null` internally) | Selects an advertised provider model when given; omission keeps provider selection. |
+| `agent.permission` | string | Optional; Auto / "Approve for me" | Selects the provider's mode ID for a worker or reviewer; an explicit value is kept. |
 | `review.of` | step ID string | Required; missing `of` is rejected | Findings redo this step. It must be a direct or transitive dependency. |
 | `review.agent` | mapping with `provider`, optional `model` | Required; `provider` must be a string | Selects the reviewer provider/model. |
 | `review.prompt` | relative file path string | Required; no default | Reads the review prompt beside the YAML and snapshots its contents. |
