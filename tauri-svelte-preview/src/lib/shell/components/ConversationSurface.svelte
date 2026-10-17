@@ -122,6 +122,8 @@
   const presence = $derived(activeOwnedId ? $sessionPresenceHistory[activeOwnedId] : null);
   const activeTurnId = $derived(presence ? presence.activeTurnId : (conversation?.activeTurnId ?? active?.activeTurnId ?? null));
   const turnActive = $derived(Boolean(conversation?.sending || activeTurnId || active?.runtimeState === 'working'));
+  // A real turn, not background work outliving one: only a real turn is steered.
+  const turnRunning = $derived(Boolean(conversation?.sending || activeTurnId));
   const origin = $derived(activeOrigin ?? active?.origin ?? 'external');
   const appOwned = $derived(origin === 'app');
   function isStructuredAgent(agent: string | undefined): boolean {
@@ -484,7 +486,7 @@
       if (activeOwnedId !== ownedId || !conversation || conversation.attachmentError) return;
     }
     if (!conversation.draft.trim() && conversation.attachments.length === 0) return;
-    const steering = turnActive;
+    const steering = turnRunning;
     const text = conversation.draft;
     const deliveredIds = new Set(conversation.attachments.map((attachment) => attachment.id));
     const retainedIds = conversation.attachmentIds.filter((id) => !deliveredIds.has(id));
@@ -786,6 +788,7 @@
           attachments={conversation.attachments}
           pendingImageCount={pendingImageCounts[active.ownedId] ?? 0}
           sending={turnActive}
+          {turnRunning}
           supportsSteering={Boolean(activeTurnId) && conversation.capabilities?.session.steering === true}
           configState={conversation.agentConfig}
           pendingConfig={conversation.pendingAgentConfig}

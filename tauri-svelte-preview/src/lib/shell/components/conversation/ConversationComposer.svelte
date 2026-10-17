@@ -35,6 +35,8 @@
     attachments: readonly ComposerAttachment[];
     pendingImageCount?: number;
     sending: boolean;
+    /** A real turn is running, not only background work; defaults to `sending`. */
+    turnRunning?: boolean;
     supportsSteering?: boolean;
     configState: AgentConversationConfigState;
     pendingConfig: Partial<Record<AgentConversationConfigField, string>>;
@@ -90,6 +92,7 @@
     attachments,
     pendingImageCount = 0,
     sending,
+    turnRunning,
     supportsSteering = false,
     configState,
     pendingConfig,
@@ -198,6 +201,8 @@
   );
   const composerLocked = $derived(Boolean(pendingApproval || pendingInputs.length));
   const hasSendableContent = $derived(Boolean(inputDraft.trim() || attachments.length));
+  /* Typed text joins a running turn; with only background work it starts a new one. */
+  const steerable = $derived(turnRunning ?? sending);
   /* Five seconds into a turn the empty box goes back to its capsule so the
      reply has the room. Keyed to `sending` alone, so streamed output and
      steering keystrokes never restart the count. */
@@ -553,10 +558,10 @@
             <!-- The mic and send keep their places in every state; send waits
                  disabled until there is something to send. -->
             <Button variant="ghost" size="icon-sm" class="ml-auto" disabled title="Voice input is not available yet" aria-label="Voice input, not available yet"><Mic /></Button>
-            {#if sending && (!hasSendableContent || !supportsSteering)}
+            {#if sending && (!hasSendableContent || (steerable && !supportsSteering))}
               <button class="round-control send stop" data-testid="conversation-stop" type="button" aria-label="Stop generation" disabled={sendDisabled} onclick={() => void onStop?.()}><Square size={13} fill="currentColor" /></button>
             {:else}
-              <button class="round-control send" data-testid="conversation-send" type="submit" disabled={!hasSendableContent || sendDisabled} aria-label={sending ? 'Steer current turn' : 'Send message'}><ArrowUp size={17} strokeWidth={2.2} /></button>
+              <button class="round-control send" data-testid="conversation-send" type="submit" disabled={!hasSendableContent || sendDisabled} aria-label={steerable ? 'Steer current turn' : 'Send message'}><ArrowUp size={17} strokeWidth={2.2} /></button>
             {/if}
           </div>
         </div>
