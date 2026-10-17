@@ -22,6 +22,7 @@
     setSelectedConversationViewState
   } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import {
+    adoptSession,
     readChildConversationHistory,
     stopChildConversationHistory
   } from '$lib/shell/conversation/conversationService.ts';
@@ -57,6 +58,7 @@
   let transcriptState = $state<'loading' | 'unavailable' | 'ready' | 'error'>('unavailable');
   let transcriptError = $state('');
   let fileError = $state('');
+  let lookupError = $state('');
   let reader: AbortController | null = null;
   /** The child whose transcript this panel last opened; a different selection opens it. */
   let openedChildId: string | null = null;
@@ -128,6 +130,10 @@
     transcriptState = 'unavailable';
     transcriptError = '';
     fileError = '';
+    lookupError = '';
+    helperLookup?.abort();
+    helperLookup = null;
+    selection += 1;
   }
 
   $effect(() => {
@@ -143,12 +149,34 @@
     if (childId && visible && view === 'session') untrack(() => void select(childId));
   });
 
+  // Each click or release counts up, so a slow helper lookup never overrides a newer choice.
+  let selection = 0;
+  // A release stops the helper lookup in flight.
+  let helperLookup: AbortController | null = null;
+
   async function select(childId: string): Promise<void> {
     if (!ownedId || !conversation || !visible || view !== 'session' || openedChildId === childId) return;
-    // A helper started with `start_session` is a session of its own; open it.
-    if (rail.owned.some((session) => session.ownedId === childId)) {
-      setConversationSelectedChild(ownedId, null);
-      await sessionRowJump(childId, 'session');
+    selection += 1;
+    // A helper started with `start_session` is a session of its own, on any
+    // machine; open it. Native sub-agents come from a tool call.
+    const helper = !conversation.children.find((entry) => entry.childId === childId)?.parentToolCallId;
+    if (helper) {
+      const helperParentId = ownedId;
+      // An open sub-agent transcript is not this helper's; drop it while the helper is looked up.
+      release(helperParentId);
+      const current = selection;
+      const lookup = new AbortController();
+      helperLookup = lookup;
+      const adopted = await adoptSession(childId, lookup.signal);
+      if (current !== selection || ownedId !== helperParentId || !conversation || !visible || view !== 'session') return;
+      if (adopted) {
+        setConversationSelectedChild(helperParentId, null);
+        await sessionRowJump(childId, 'session');
+        return;
+      }
+      // A helper is a session of its own, never a native sub-agent; back in the list, a later click looks again.
+      setConversationSelectedChild(helperParentId, null);
+      lookupError = 'This helper’s session was not found yet. Try again in a moment.';
       return;
     }
     const parentId = ownedId;
@@ -266,6 +294,7 @@
       {#snippet icon()}<Bot />{/snippet}
     </EmptyState>
   {:else}
+    {#if lookupError}<p role="alert" class="px-2 pb-2 text-sm text-muted-foreground">{lookupError}</p>{/if}
     <ScrollArea class="min-h-0 flex-1">
       <ul class="flex flex-col gap-1 p-2">
         {#each rows as row (row.childId)}

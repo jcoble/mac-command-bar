@@ -14,9 +14,7 @@
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
   import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
-  import { listAgentConversationSessionsFromTauri } from '$lib/tauriSource';
-  import { ownedSessionFromBackend } from '$lib/shell/ownedSessions.ts';
-  import { addOwnedSession, rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
+  import { adoptSession } from '$lib/shell/conversation/conversationService.ts';
   import {
     answerWorkflowPause,
     approveWorkflowGate,
@@ -140,6 +138,8 @@
       controller.abort();
       actionController?.abort();
       actionController = null;
+      stageLookup?.abort();
+      stageLookup = null;
       stop();
       loadGeneration += 1;
       resetWorkflowStore();
@@ -302,17 +302,32 @@
     }
   }
 
+  // A newer click, another run, or the view going away makes a slow lookup's answer stale.
+  let stageOpen = 0;
+  let stageLookup: AbortController | null = null;
+  // Choosing another run stops a stage lookup for the old one.
+  $effect(() => {
+    void workflowState.selectedWorkflowRunId;
+    untrack(() => stageLookup?.abort());
+  });
+
   async function openStage(ownedId: string | null): Promise<void> {
     if (!ownedId) return;
+    stageLookup?.abort();
+    const lookup = new AbortController();
+    stageLookup = lookup;
+    const attempt = ++stageOpen;
+    const generation = loadGeneration;
+    const runId = workflowState.selectedWorkflowRunId;
+    const current = (): boolean => !lookup.signal.aborted && attempt === stageOpen && generation === loadGeneration
+      && runId === workflowState.selectedWorkflowRunId;
     try {
-      if (!rail.owned.some((session) => session.ownedId === ownedId)) {
-        const record = (await listAgentConversationSessionsFromTauri())?.find((session) => session.ownedId === ownedId);
-        if (!record) throw new Error('Agent conversation is not available yet.');
-        if (!rail.owned.some((session) => session.ownedId === ownedId)) addOwnedSession(ownedSessionFromBackend(record));
-      }
+      const adopted = await adoptSession(ownedId, lookup.signal);
+      if (!current()) return;
+      if (!adopted) throw new Error('Agent conversation is not available yet.');
       await sessionRowJump(ownedId, 'session');
     } catch (error) {
-      workflowState.error = `Could not open agent: ${message(error)}`;
+      if (current()) workflowState.error = `Could not open agent: ${message(error)}`;
     }
   }
 </script>

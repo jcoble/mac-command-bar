@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TSK-1416 — slices 3 and 4 plan, version 2</title>
+<style>
+:root{color-scheme:dark;--bg:#141517;--card:#202329;--text:#e2e4e7;--quiet:#adb3bd;--accent:#9bdac6}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,sans-serif}main{max-width:1140px;margin:auto;padding:40px 28px}h1{font-size:28px;line-height:1.3}h2{font-size:21px;margin-top:32px}p{max-width:90ch}a{color:var(--accent)}.card{background:var(--card);padding:20px 24px;border-radius:16px;margin:16px 0}.muted{color:var(--quiet)}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:12px;vertical-align:top;border-bottom:1px solid #363b43}th{color:var(--accent)}code{font-size:13px}ol{padding-left:24px}li{margin:12px 0}.scroll{overflow:auto}strong{font-weight:650}
+</style>
+</head>
+<body><main>
+<h1>Talk to one orchestrator; see every agent, every message and every decision.</h1>
+<p>Version 2 (2026-10-15). Messaging, helper sessions, handles, cross-machine relay, the workflow engine and the YAML picker have merged (PR #249, backend 0.1.53, desktop 0.1.6). This plan fixes today's helper bug first, then lets agents start and watch workflows, marks a main orchestrator, adds the message view and the inbox, and ends with one real task delivered to a merged PR and a dead-code cleanup.</p>
+<p><a href="2026-10-11-tsk-1416-workflows-slices-3-4.md">Read the full task-by-task plan</a> · <a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></p>
+<div class="card"><strong>This is a reading companion.</strong> It changes no product code. Every code claim in the Markdown plan carries a file and line on <code>main</code> at <code>cce1069c1</code>.</div>
+
+<h2>Owner answers (2026-10-15)</h2>
+<ol>
+<li><strong>One kind of session: yes.</strong> Rights come from the backend's stored facts (who started a session, which run named it, the owner's orchestrator mark), never from how the rail shows it.</li>
+<li><strong>A hierarchy.</strong> Workers message only their own run and its lead; helpers only their parent and their own runs; top-level sessions reach each other only through the main orchestrator. Pause answers and gates stay owner-only. Enforced in the backend (Task 15).</li>
+<li><strong>The owner marks the main orchestrator: yes.</strong></li>
+<li><strong>Limits: yes.</strong> No helpers starting helpers; at most 3 unfinished helpers and 3 unfinished runs per session.</li>
+<li><strong>Helper permissions:</strong> a helper takes its parent's permission mode, never more.</li>
+</ol>
+<p>Order: 14, 17, 16, 15, then 18 to 23.</p>
+
+<h2>Today's bug, fixed first (Task 14)</h2>
+<p>On Agent Workbox, two helpers started with <code>start_session</code> never reached the rail, opened as an empty transcript, and hung 40 minutes on a permission request nobody could see. One cause: the rail learns about a new session only from a rename signal the remote server never sends, and only looks in the local list. The fix adds a session the rail does not know as soon as its first event arrives, from whichever machine has it. Opening it then shows its transcript, and its permission request shows on its rail row.</p>
+
+<h2>Slice 3: every agent visible and supervisable</h2>
+<div class="scroll"><table>
+<thead><tr><th>Task</th><th>Outcome</th><th>Expected lines</th></tr></thead>
+<tbody>
+<tr><td>14 · Started sessions in the rail</td><td>Helpers and remote workers appear in the rail on every machine, open with their transcript, and show permission requests.</td><td>60–120</td></tr>
+<tr><td>15 · Guardrails</td><td>Owner authority stated to every agent; forged <code>[message from …]</code> lines refused; helper first prompts labelled with the parent; helpers cannot start helpers; at most 3 per parent.</td><td>80–140</td></tr>
+<tr><td>16 · Workflow tools for agents</td><td><code>start_workflow</code>, <code>list_workflow_runs</code>, <code>get_workflow_run</code>, <code>stop_workflow_run</code> on the caller's machine; the starter is messaged when its run waits or ends; at most 3 unfinished runs per session.</td><td>220–320</td></tr>
+<tr><td>17 · Main orchestrator</td><td>Owner marks a session; one settings row on its machine; pinned at the top; renaming cannot claim it. Visible part: Opus.</td><td>150–230</td></tr>
+<tr><td>18 · Grouping</td><td>Helpers under their parent, workers under their run; a child waiting on the owner marks its group. Visible part: Opus.</td><td>120–200</td></tr>
+<tr><td>19 · Message view</td><td>All agent-to-agent traffic: time, sender, receiver, machine, text, status; filter by machine, session, run; one SQL query per machine. Visible part: Opus.</td><td>200–300</td></tr>
+<tr><td>20 · Inbox</td><td>Waiting workflow steps with their existing buttons, plus sessions waiting on permission (opens their chat). Visible part: Opus.</td><td>200–300</td></tr>
+<tr><td>21 · Sub-agents</td><td>Codex native sub-agents count as background work in the rail, like Claude's.</td><td>20–60</td></tr>
+<tr><td>22 · Workflows view</td><td>Step facts (exit codes, findings, PR link) from the loaded run; link to its messages; remove template-only controls.</td><td>60–150</td></tr>
+<tr><td>23 · Proof</td><td>Four chat cases plus helper, workflow, pin, messages and inbox walked in the real app.</td><td>0–30</td></tr>
+</tbody></table></div>
+
+<h2>Slice 4: the orchestrator delivers a real task</h2>
+<div class="scroll"><table>
+<thead><tr><th>Task</th><th>Outcome</th><th>Expected lines</th></tr></thead>
+<tbody>
+<tr><td>24 · Dev pipeline</td><td><code>dev-pipeline.yml</code> and seven prompts; merge runs <code>gh pr checks --required --watch</code> then <code>gh pr merge --match-head-commit</code>.</td><td>150–250</td></tr>
+<tr><td>25 · Real task</td><td>The owner asks the orchestrator; the task reaches a merged PR with receipts; an I'll merge run stops at the open PR.</td><td>0–30</td></tr>
+<tr><td>26 · Dead-code cleanup</td><td>Test-only code under <code>#[cfg(test)]</code>, unused code deleted, no release warnings in workflow and orchestration files.</td><td>net negative</td></tr>
+</tbody></table></div>
+
+<h2>Removed from the old plan</h2>
+<p>The full desktop mockup, the YAML catalog with Open file, the multi-task Notion dialog, the full run timeline and history API, a separate inbox ledger, the Settings home machine, seven orchestrator-only tools, <code>ask_owner</code>, a second permission answer path, and the proof-publication and merge-guard script. The orchestrator, the message view, the inbox query and two <code>gh</code> commands cover each of them with less code.</p>
+
+<div class="card"><strong>One authority for each job.</strong><p>The owner's own chat and inbox carry the owner's authority; no message does. The engine runs checks and applies rules. Sender labels are written by Assembly. Every agent is an ordinary session the owner can open.</p></div>
+<p class="muted">Not in this plan: the phone app (slice 5, separate design). It gets two hooks: the inbox operation and the message list operation.</p>
+</main></body></html>

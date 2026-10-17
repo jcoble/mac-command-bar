@@ -29,7 +29,7 @@ import { sessionTitleFromPrompt } from '../sessionStrip.ts';
 import { publishWorkspaceFileChange } from '../workspaceFileChangeBus.ts';
 import { agentItemFromEvent, displayItemFromAgentItem } from './conversationTimeline.ts';
 import { addOwnedSession, rail, setRemoteConnection, updateOwnedSession } from '../stores/sessionRailStore.svelte';
-import { ownedSessionFromBackend } from '../ownedSessions.ts';
+import { findSessionRecord, ownedSessionFromBackend } from '../ownedSessions.ts';
 import type { RemoteConnectionState } from '../stores/sessionRailStore.svelte';
 import {
   decideConversationActivation,
@@ -940,7 +940,7 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
   try {
     const stopTitleEvents = await listen<{ ownedId: string; title: string }>(
       'session-title-changed',
-      ({ payload }) => void showNamedSession(payload.ownedId, payload.title, streamGeneration)
+      ({ payload }) => showNamedSession(payload.ownedId, payload.title, streamGeneration)
     );
     stopTitles = trackTauriListener(stopTitleEvents);
     const stopRemoteConnectionEvents = await listen<{
@@ -1021,21 +1021,94 @@ async function refreshRemoteSessionActivity(streamGeneration: number): Promise<v
   }
 }
 
-// A helper session an agent starts with `start_session` is first heard of
-// through its name, so a name for a session the rail lacks adds that session.
-async function showNamedSession(ownedId: string, title: string, streamGeneration: number): Promise<void> {
-  if (rail.owned.some((session) => session.ownedId === ownedId)) {
-    updateOwnedSession(ownedId, { title });
-    return;
-  }
+// A session an agent started (a helper, a workflow worker) may live on any
+// machine. The rail adds it the first time an event, its name or a click
+// names it. A new session's first events can come before its row is stored, and
+// a helper waiting on a permission sends nothing more, so a miss is looked up
+// again twice, five seconds apart. After that the session is not looked up for
+// five seconds.
+const SESSION_LOOKUP_RETRY_MS = 5_000;
+const SESSION_LOOKUPS = 3;
+let adoptController = new AbortController();
+const adoptingSessions = new Map<string, Promise<boolean>>();
+const sessionsNotFound = new Map<string, number>();
+
+/**
+ * Adds a session the rail lacks from whichever machine has it; true when the rail has it.
+ * A panel passes its own `signal` and gets a lookup of its own that stops when the panel does.
+ */
+export async function adoptSession(ownedId: string, signal?: AbortSignal): Promise<boolean> {
+  if (rail.owned.some((session) => session.ownedId === ownedId)) return true;
+  if (Date.now() - (sessionsNotFound.get(ownedId) ?? -Infinity) < SESSION_LOOKUP_RETRY_MS) return false;
+  if (signal) return lookUpSession(ownedId, AbortSignal.any([adoptController.signal, signal]));
+  const pending = adoptingSessions.get(ownedId);
+  if (pending) return pending;
+  const lookup = lookUpSession(ownedId, adoptController.signal);
+  adoptingSessions.set(ownedId, lookup);
   try {
-    const record = (await listAgentConversationSessionsFromTauri())?.find((session) => session.ownedId === ownedId);
-    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || !record) return;
-    if (!rail.owned.some((session) => session.ownedId === ownedId)) addOwnedSession(ownedSessionFromBackend(record));
-  } catch (error) {
-    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
-    rail.error = `Could not show a new session: ${error instanceof Error ? error.message : String(error)}`;
+    return await lookup;
+  } finally {
+    adoptingSessions.delete(ownedId);
   }
+}
+
+const SESSION_READERS = {
+  local: listAgentConversationSessionsFromTauri,
+  remote: listRemoteAgentConversationSessionsFromTauri
+};
+
+async function lookUpSession(ownedId: string, signal: AbortSignal): Promise<boolean> {
+  for (let lookup = 1; ; lookup += 1) {
+    try {
+      const seen = railActivityEvents.get(ownedId);
+      const record = await findSessionRecord(ownedId, SESSION_READERS, signal);
+      if (signal.aborted) return false;
+      if (record) {
+        sessionsNotFound.delete(ownedId);
+        if (!rail.owned.some((session) => session.ownedId === ownedId)) addOwnedSession(ownedSessionFromBackend(record));
+        // An event that came during the read found no row and changed nothing; read the state again.
+        if (railActivityEvents.get(ownedId) !== seen) await refreshAdoptedSession(ownedId, signal);
+        return true;
+      }
+    } catch (error) {
+      if (signal.aborted) return false;
+      rail.error = `Could not show a new session: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    if (lookup === SESSION_LOOKUPS) {
+      sessionsNotFound.set(ownedId, Date.now());
+      return false;
+    }
+    await waitFor(SESSION_LOOKUP_RETRY_MS, signal);
+    if (signal.aborted) return false;
+    if (rail.owned.some((session) => session.ownedId === ownedId)) return true;
+  }
+}
+
+/** Reads an adopted session's live state once more, unless an event during the read is newer. */
+async function refreshAdoptedSession(ownedId: string, signal: AbortSignal): Promise<void> {
+  const seen = railActivityEvents.get(ownedId);
+  try {
+    const record = await findSessionRecord(ownedId, SESSION_READERS, signal);
+    if (signal.aborted || !record || railActivityEvents.get(ownedId) !== seen) return;
+    const fresh = ownedSessionFromBackend(record);
+    updateOwnedSession(ownedId, {
+      state: fresh.state,
+      runtimeState: fresh.runtimeState,
+      activeTurnId: fresh.activeTurnId,
+      pendingPermission: fresh.pendingPermission,
+      pendingInput: fresh.pendingInput,
+      backgroundWork: fresh.backgroundWork
+    });
+  } catch (error) {
+    if (!signal.aborted) rail.error = `Could not refresh a new session: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+function showNamedSession(ownedId: string, title: string, streamGeneration: number): void {
+  // A name heard after teardown, or from an older stream, starts nothing.
+  if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
+  if (rail.owned.some((session) => session.ownedId === ownedId)) updateOwnedSession(ownedId, { title });
+  else void adoptSession(ownedId);
 }
 
 function updateBackgroundWork(
@@ -1114,6 +1187,10 @@ async function handleConversationStreamEnvelope(
     || (payload.payload.kind === 'turn' && payload.payload.turnId !== activeTurnId)
   )) return;
   railActivityEvents.set(payload.ownedId, { generation: payload.generation, sequence: payload.sequence });
+  // The lookup reads the session's current state, a pending permission included.
+  // An open sub-agent transcript has a private id that is never in the rail.
+  if (childConversationRead?.ownedId !== payload.ownedId
+    && !rail.owned.some((session) => session.ownedId === payload.ownedId)) void adoptSession(payload.ownedId);
   const item = agentItemFromEvent(displayEvent);
   const row = item ? displayItemFromAgentItem(item, displayEvent.timestampMs) : null;
   if (row?.kind === 'tool' && row.state === 'completed' && row.path && row.diff) {
@@ -1205,6 +1282,9 @@ export function stopConversationEvents(): void {
   childConversationRead?.abortController.abort();
   childConversationRead = null;
   railActivityEvents.clear();
+  adoptController.abort();
+  adoptController = new AbortController();
+  sessionsNotFound.clear();
   void conversationStream?.unregister();
   conversationStream = null;
   unlistenTitles?.();
@@ -1334,15 +1414,15 @@ export async function changeStructuredConversationCheckout(
 
 const preparingSends = new Map<string, AbortController>();
 
-/** Waits out the send's scroll glide; Stop ends the wait at once. */
-async function waitForSendGlide(signal: AbortSignal): Promise<void> {
+/** Waits the given time; aborting the signal ends the wait at once. */
+async function waitFor(ms: number, signal: AbortSignal): Promise<void> {
   await new Promise<void>((resolve) => {
     const finish = (): void => {
       clearTimeout(timer);
       signal.removeEventListener('abort', finish);
       resolve();
     };
-    const timer = setTimeout(finish, 300);
+    const timer = setTimeout(finish, ms);
     signal.addEventListener('abort', finish, { once: true });
     if (signal.aborted) finish();
   });
@@ -1473,7 +1553,7 @@ export async function sendStructuredMessage(
       // Image bytes cross the IPC as a JSON number array, which holds the main
       // thread (~80 ms per 600 KB measured). Wait out the send's scroll glide
       // (~250 ms in WebKit) so the message lands smoothly before that work.
-      await waitForSendGlide(preparation.signal);
+      await waitFor(300, preparation.signal);
       if (preparation.signal.aborted) {
         if (!turnWasAlreadyActive) await invoke('stop_agent_conversation_turn', {
           request: { ownedId, generation: state.generation }

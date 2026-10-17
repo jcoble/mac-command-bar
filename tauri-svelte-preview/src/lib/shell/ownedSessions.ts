@@ -294,6 +294,32 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
+/** The session lists `findSessionRecord` reads: this machine, then every connected one. */
+export interface SessionRecordReaders {
+  local: () => Promise<AgentConversationSessionRecord[] | null>;
+  remote: (signal: AbortSignal) => Promise<AgentConversationSessionRecord[] | null>;
+}
+
+/** A session the rail has not seen yet (a helper or workflow worker), on any machine. */
+export async function findSessionRecord(
+  ownedId: string,
+  readers: SessionRecordReaders,
+  signal: AbortSignal
+): Promise<AgentConversationSessionRecord | null> {
+  const local = (await readers.local())?.find((record) => record.ownedId === ownedId);
+  if (signal.aborted) return null;
+  // A cached remote row may be stale (a pending permission, say); its machine has the live one.
+  if (local && !local.remoteProfileId) return local;
+  let remote: AgentConversationSessionRecord | undefined;
+  try {
+    remote = (await readers.remote(signal))?.find((record) => record.ownedId === ownedId);
+  } catch (error) {
+    // With no machine answering, the cached row is still the session.
+    if (!local || signal.aborted) throw error;
+  }
+  return signal.aborted ? null : remote ?? local ?? null;
+}
+
 export function ownedSessionFromBackend(record: AgentConversationSessionRecord): OwnedSession {
   const { agent, viaCmux: providerViaCmux } = normalizeProvider(record.provider);
   const terminalOwned = record.origin === 'external' && record.ptySessionId !== null;
