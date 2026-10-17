@@ -12800,7 +12800,7 @@ mod tests {
             owned_id: "owned-step".into(), provider: "codex".into(),
             cwd: worktree.to_string_lossy().into_owned(), title: "Build · build".into(),
             prompt: "Build it".into(), role_id: "build".into(), model: None, effort: None,
-            permission: None,
+            permission: None, starter: None,
         }).await.expect("dispatch");
         let row = store.get_session("owned-step").unwrap().unwrap();
         assert_eq!(row.project_id.as_deref(), Some("project-demo"));
