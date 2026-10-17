@@ -221,7 +221,7 @@ desktop route already calls, so the phone gets no second implementation of any r
 | Method and path | Request → response | Same path as |
 |---|---|---|
 | `POST /pair` | `{code, deviceName}` → `{deviceId, deviceToken, machine}` | new (§5.2) |
-| `GET /me` | → `{deviceId, machine:{id,name}, hostsOrchestrator}`; also updates `last_seen_at` | `hostsOrchestrator` = `broker.main_orchestrator()` returns a session (`core/src/broker.rs:211`, the owner's mark from Task 17) |
+| `GET /me` | → `{deviceId, machine:{id,name}, hostsOrchestrator, orchestratorMarkedAt?}`; also updates `last_seen_at` | `hostsOrchestrator` = `broker.main_orchestrator()` returns a session (`core/src/broker.rs:211`, the owner's mark from Task 17); `orchestratorMarkedAt` is that row's `updated_at` (ms), returned by the same call. A machine that was unreachable when the owner moved the orchestrator keeps its old mark until the desktop reconnects to it (`restore_orchestrator_choice`, `agent_conversation/remote.rs:1357`), so when more than one paired machine reports `hostsOrchestrator`, the phone treats the newest `orchestratorMarkedAt` as the home machine and shows the others as not hosting it |
 | `POST /push-token` | `{fcmToken}` → 204; the same SQL statement clears that FCM token from every other device row, so one phone is never notified twice (for example after it lost its storage and paired again; the abandoned row stays in the desktop's phone list for **Remove**) | new |
 | `DELETE /me` | → 204; the device revokes itself: sets its `revoked_at` and clears its FCM token | new (same revoke query as `phoneRevoke`, §5.2) |
 | `GET /chat?after=<seq>` | → `{items:[ChatItem], cursor, turn:"idle"|"running", ownerItems:[InboxItem]}`; no `after` = latest 100 items | `manager.list_events_before` / `list_events_after` (`remote.rs:3780`, `3787`) on the owned id from `broker.main_orchestrator()` |
@@ -334,6 +334,13 @@ or a staged update to `main-architecture-explained.html` (repo `AGENTS.md:10-18`
 changes always take the update. Everything Flutter runs as
 `~/develop/flutter/bin/flutter` from `mobile/`.
 
+Every visible-UI dispatch (Tasks 30-34) tells the lane, per repo `AGENTS.md:56-69`, to: `notion-fetch`
+TSK-1416 (https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8) and read the phone sections
+verbatim; `Read` `~/Workbox/screenshots/tsk-1416-phone-mockup.png` and this spec's mockup
+(`docs/superpowers/specs/2026-10-12-tsk-1416-phone-app-mockup.html`, absolute path in the worktree)
+before touching a file; and reply with a requirement-by-requirement checklist (`already done` /
+`will fix` / `blocked`) before editing.
+
 Dependencies: Tasks 27, 30 and 31 can start as soon as this spec is approved (they need only
 today's code). Tasks 28-29 need slices 3-4 Task 17 (orchestrator mark) and Task 20 (inbox) merged; the run reads and controls already exist on `main`. Tasks 32-34 need
 Task 28's endpoints (they can be built against a fake repository first). Order:
@@ -443,7 +450,8 @@ with bearer header; router redirect to `/pair` when no machine.
 
 - [ ] **Red tests:** `pairing_payload_parses_v1_and_rejects_others`, `machine_store_round_trips_and_selects`,
   `machine_client_sends_device_token`, `no_machine_redirects_to_pair`,
-  `removing_machine_treats_401_as_already_revoked`, `pairing_same_machine_again_revokes_old_token`.
+  `removing_machine_treats_401_as_already_revoked`, `pairing_same_machine_again_revokes_old_token`,
+  `home_machine_is_the_newest_orchestrator_mark`.
 - [ ] **Verify failure:** `cd mobile && ~/develop/flutter/bin/flutter test` fails before the code exists.
 - [ ] **Minimum edit:** copy, rename, trim. No flavors, no iOS, no login screens.
   The Android build applies the Google Services Gradle plugin only when `android/app/google-services.json`
