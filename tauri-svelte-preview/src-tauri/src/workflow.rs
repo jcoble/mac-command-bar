@@ -618,6 +618,7 @@ pub(crate) struct AgentDispatchRequest {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub permission: Option<String>,
+    pub starter: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -643,6 +644,16 @@ fn worker_permission(provider: AgentConversationProvider, chosen: Option<String>
         AgentConversationProvider::Codex => Some("agent".into()),
         _ => None,
     })
+}
+
+fn capped_permission(
+    chosen: Option<String>, starter_mode: Option<Option<&str>>, provider: AgentConversationProvider,
+) -> Option<String> {
+    let chosen = if matches!(chosen.as_deref(), Some("bypassPermissions" | "agent-full-access"))
+        && starter_mode.is_some()
+        && !matches!(starter_mode.flatten(), Some("bypassPermissions" | "agent-full-access"))
+    { None } else { chosen };
+    worker_permission(provider, chosen)
 }
 
 impl AgentRuntimePort for AgentRuntimeManager {
@@ -712,7 +723,11 @@ impl AgentRuntimePort for AgentRuntimeManager {
             // The default Auto applies only where the provider offers a mode; a mode the owner chose must exist.
             let offers_mode = capabilities.config_options.iter().any(|option|
                 ["mode", "permission", "permissions"].iter().any(|category| option.category.eq_ignore_ascii_case(category)));
-            let permission = if offers_mode { worker_permission(provider, request.permission.clone()) } else { request.permission.clone() };
+            let permission = if offers_mode {
+                let starter_mode = request.starter.as_deref().map(|id|
+                    self.conversation_config(id).ok().and_then(|config| config.approval_policy));
+                capped_permission(request.permission.clone(), starter_mode.as_ref().map(|mode| mode.as_deref()), provider)
+            } else { request.permission.clone() };
             for (categories, selected) in [
                 (&["thought_level", "effort"][..], request.effort.as_deref()),
                 (
@@ -2419,6 +2434,7 @@ impl WorkflowEngine {
                     model: role.model_policy.value,
                     effort: role.effort_policy.value,
                     permission: role.permission_policy.value,
+                    starter: run.input_snapshot["started_by"].as_str().map(str::to_owned),
                 })
                 .await;
             let mut run = self.require_run(run_id)?;
@@ -4371,6 +4387,18 @@ mod tests {
             Arc::new(InMemoryWorktreeLeasePort::default()), Arc::new(FakeClock(AtomicU64::new(1))),
             Arc::new(FakeIds(AtomicU64::new(1))), Arc::new(SessionStore::open_in_memory().unwrap()));
         (root, engine)
+    }
+
+    #[test]
+    fn elevated_yaml_mode_needs_an_owner_or_elevated_starter() {
+        use AgentConversationProvider::{Claude, Codex};
+        let cap = |mode: &str, starter, provider| capped_permission(Some(mode.into()), starter, provider);
+        assert_eq!(cap("bypassPermissions", None, Claude).as_deref(), Some("bypassPermissions"));
+        assert_eq!(cap("bypassPermissions", Some(Some("auto")), Claude).as_deref(), Some("auto"));
+        assert_eq!(cap("agent-full-access", Some(Some("bypassPermissions")), Codex).as_deref(), Some("agent-full-access"));
+        assert_eq!(cap("acceptEdits", Some(Some("auto")), Claude).as_deref(), Some("acceptEdits"));
+        assert_eq!(cap("bypassPermissions", Some(Some("agent-full-access")), Claude).as_deref(), Some("bypassPermissions"));
+        assert_eq!(cap("agent-full-access", Some(None), Codex).as_deref(), Some("agent"));
     }
 
     #[test]
