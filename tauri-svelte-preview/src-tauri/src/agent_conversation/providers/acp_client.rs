@@ -1716,7 +1716,7 @@ while IFS= read -r line; do
       if [ "$fixture" = "multiplex" ]; then
         session_count=$((session_count + 1))
         session_id="session-$session_count"
-        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"%s","availableCommands":[{{"name":"initial-%s"}}]}}}}\n' "$id" "$session_id" "$session_count"
+        printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"%s","availableCommands":[{{"name":"initial-%s"}}],"_meta":{{"approvalPolicy":"on-request","availableApprovalPolicies":["untrusted","on-request","never"]}}}}}}\n' "$id" "$session_id" "$session_count"
       elif [ "$fixture" = "agy" ] || [ "$fixture" = "agy_ignored_cancel" ]; then
         printf '{{"jsonrpc":"2.0","id":%s,"result":{{"configOptions":[{{"category":"model","currentValue":"Gemini 3.7 Flash (High)","id":"model","name":"Model","options":[{{"name":"Gemini 3.7 Flash (High)","value":"Gemini 3.7 Flash (High)"}}],"type":"select"}}],"models":{{"availableModels":[{{"modelId":"Gemini 3.7 Flash (High)","name":"Gemini 3.7 Flash (High)"}}],"currentModelId":"Gemini 3.7 Flash (High)"}},"sessionId":"agy-session"}}}}\n' "$id"
       elif [ "$fixture" = "command_capture" ]; then

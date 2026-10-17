@@ -38,6 +38,30 @@ pub(crate) async fn get_workflow_run(
     engine.get_run(&run_id).map_err(|error| error.to_string())
 }
 
+/// Workflow steps waiting on the owner on this Mac and every connected machine, each tagged
+/// with its machine. A machine that cannot be reached is left out.
+#[tauri::command]
+pub(crate) async fn list_owner_inbox(
+    engine: tauri::State<'_, WorkflowEngine>,
+    remote: tauri::State<'_, crate::agent_conversation::remote::RemoteConnectionManager>,
+    request_id: u64,
+) -> Result<Vec<serde_json::Value>, String> {
+    let work = async {
+        let mut steps = Vec::new();
+        for machine in remote.message_machines("") {
+            let page = if machine == crate::agent_conversation::remote::LOCAL_MACHINE {
+                crate::workflow::execute_operation(&engine, "inbox", serde_json::Value::Null).await
+            } else {
+                remote.workflow_operation(&machine, "inbox".into(), serde_json::Value::Null, Some(request_id)).await
+            };
+            let Ok(serde_json::Value::Array(page)) = page else { continue };
+            steps.extend(page.into_iter().map(|mut step| { step["machine"] = serde_json::json!(machine); step }));
+        }
+        steps
+    };
+    Ok(remote.unless_cancelled(request_id, work).await.unwrap_or_default())
+}
+
 /// The repository's workflow files, as paths relative to `repo_root`.
 #[tauri::command]
 pub(crate) async fn list_workflow_files(repo_root: String) -> Result<Vec<String>, String> {
@@ -138,38 +162,6 @@ pub(crate) async fn retry_workflow_node(
 }
 
 #[tauri::command]
-pub(crate) async fn redirect_workflow_node(
-    app: tauri::AppHandle,
-    engine: tauri::State<'_, WorkflowEngine>,
-    run_id: String,
-    node_id: String,
-    provider: String,
-    idempotency_key: String,
-) -> Result<WorkflowRunRecord, String> {
-    let run = engine
-        .redirect_node(&run_id, &node_id, &provider, &idempotency_key)
-        .map_err(|error| error.to_string())?;
-    emit_workflow_run_updated(&app, &run);
-    Ok(run)
-}
-
-#[tauri::command]
-pub(crate) async fn skip_workflow_node(
-    app: tauri::AppHandle,
-    engine: tauri::State<'_, WorkflowEngine>,
-    run_id: String,
-    node_id: String,
-    idempotency_key: String,
-) -> Result<WorkflowRunRecord, String> {
-    let run = engine
-        .skip_node(&run_id, &node_id, &idempotency_key)
-        .await
-        .map_err(|error| error.to_string())?;
-    emit_workflow_run_updated(&app, &run);
-    Ok(run)
-}
-
-#[tauri::command]
 pub(crate) async fn approve_workflow_gate(
     app: tauri::AppHandle,
     engine: tauri::State<'_, WorkflowEngine>,
@@ -180,23 +172,6 @@ pub(crate) async fn approve_workflow_gate(
 ) -> Result<WorkflowRunRecord, String> {
     let run = engine
         .approve_gate(&run_id, &node_id, approval, "owner", &idempotency_key)
-        .await
-        .map_err(|error| error.to_string())?;
-    emit_workflow_run_updated(&app, &run);
-    Ok(run)
-}
-
-#[tauri::command]
-pub(crate) async fn submit_workflow_result(
-    app: tauri::AppHandle,
-    engine: tauri::State<'_, WorkflowEngine>,
-    run_id: String,
-    node_id: String,
-    result: serde_json::Value,
-    idempotency_key: String,
-) -> Result<WorkflowRunRecord, String> {
-    let run = engine
-        .submit_result(&run_id, &node_id, result, &idempotency_key)
         .await
         .map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);

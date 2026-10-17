@@ -16,13 +16,10 @@ import {
   listWorkflowFilesFromTauri,
   listWorkflowRunsFromTauri,
   pauseWorkflowRunFromTauri,
-  redirectWorkflowNodeFromTauri,
   remoteWorkflowFromTauri,
   resumeWorkflowRunFromTauri,
   retryWorkflowNodeFromTauri,
-  skipWorkflowNodeFromTauri,
-  startWorkflowRunFromTauri,
-  submitWorkflowResultFromTauri
+  startWorkflowRunFromTauri
 } from '$lib/tauriSource';
 import {
   trackTauriListener,
@@ -34,12 +31,9 @@ import type {
   CancelWorkflowRunDto,
   CreateWorkflowRunDto,
   PauseWorkflowRunDto,
-  RedirectWorkflowNodeDto,
   ResumeWorkflowRunDto,
   RetryWorkflowNodeDto,
-  SkipWorkflowNodeDto,
   StartWorkflowRunDto,
-  SubmitWorkflowResultDto,
   WorkflowRunRecord
 } from './workflowTypes';
 
@@ -112,23 +106,6 @@ export async function retryWorkflowNode(
   return retryWorkflowNodeFromTauri(input.runId, input.nodeId, input.idempotencyKey);
 }
 
-export async function redirectWorkflowNode(
-  input: RedirectWorkflowNodeDto
-): Promise<WorkflowRunRecord | null> {
-  return redirectWorkflowNodeFromTauri(
-    input.runId,
-    input.nodeId,
-    input.provider,
-    input.idempotencyKey
-  );
-}
-
-export async function skipWorkflowNode(
-  input: SkipWorkflowNodeDto
-): Promise<WorkflowRunRecord | null> {
-  return skipWorkflowNodeFromTauri(input.runId, input.nodeId, input.idempotencyKey);
-}
-
 export async function approveWorkflowGate(
   input: ApproveWorkflowGateDto,
   machine: string | null = null
@@ -138,17 +115,6 @@ export async function approveWorkflowGate(
     input.runId,
     input.nodeId,
     input.approval,
-    input.idempotencyKey
-  );
-}
-
-export async function submitWorkflowResult(
-  input: SubmitWorkflowResultDto
-): Promise<WorkflowRunRecord | null> {
-  return submitWorkflowResultFromTauri(
-    input.runId,
-    input.nodeId,
-    input.result,
     input.idempotencyKey
   );
 }

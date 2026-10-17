@@ -25,7 +25,7 @@ pub(super) fn discover_path(id: &str) -> Option<PathBuf> {
 
 pub(super) fn discover_child_path(parent_id: &str, child_id: &str) -> Option<PathBuf> {
     let path = discover_path(child_id)?;
-    child_rollout_from_first_line(&path, parent_id, SystemTime::UNIX_EPOCH)
+    child_rollout_from_first_line(&path, parent_id)
         .filter(|child| child.child_id == child_id)
         .map(|_| path)
 }
@@ -43,7 +43,6 @@ pub(super) fn child_watch_directory(parent_id: &str, child_id: &str) -> Result<P
 pub(super) fn scan_child_rollouts(
     parent_path: &Path,
     parent_id: &str,
-    active_after: SystemTime,
 ) -> Result<Vec<CodexChildRollout>, String> {
     let parent_directory = parent_path
         .parent()
@@ -72,7 +71,7 @@ pub(super) fn scan_child_rollouts(
             Err(error) => return Err(format!("Could not scan child transcripts: {error}")),
         };
         for child in entries.flatten().filter_map(|entry| {
-            child_rollout_from_first_line(&entry.path(), parent_id, active_after)
+            child_rollout_from_first_line(&entry.path(), parent_id)
         }) {
             children.insert(child.child_id.clone(), child);
         }
@@ -83,13 +82,10 @@ pub(super) fn scan_child_rollouts(
 fn child_rollout_from_first_line(
     path: &Path,
     parent_id: &str,
-    active_after: SystemTime,
 ) -> Option<CodexChildRollout> {
     if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
         return None;
     }
-    let metadata = path.metadata().ok()?;
-    let modified = metadata.modified().ok()?;
     let mut first_line = String::new();
     BufReader::new(File::open(path).ok()?)
         .read_line(&mut first_line)
@@ -124,13 +120,47 @@ fn child_rollout_from_first_line(
         })
         .unwrap_or("Sub-agent");
     let label = role.map_or_else(|| name.to_string(), |role| format!("{name} ({role})"));
-    let running = modified >= active_after;
+    let running = !last_turn_ended(path) && !silent_too_long(path);
     Some(CodexChildRollout {
         child_id,
         label,
         state: if running { "running" } else { "finished" }.to_string(),
         latest_activity: if running { "Running" } else { "Finished" }.to_string(),
     })
+}
+
+/// How long a child may write nothing before it counts as gone. A child that crashed or was
+/// killed never writes its closing record; without this its session could never suspend.
+pub(crate) const CHILD_SILENCE_LIMIT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+fn silent_too_long(path: &Path) -> bool {
+    path.metadata().and_then(|metadata| metadata.modified()).ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|silence| silence > CHILD_SILENCE_LIMIT)
+}
+
+/// How much of a child transcript's end is read to find its newest turn record.
+const TURN_RECORD_TAIL_BYTES: u64 = 64 * 1024;
+
+/// Whether the transcript's newest turn record says the turn ended (`task_complete` or
+/// `turn_aborted`) rather than started. A short quiet time proves nothing: a long command
+/// writes nothing until it returns. Only the end of the file is read.
+fn last_turn_ended(path: &Path) -> bool {
+    let Ok(len) = path.metadata().map(|metadata| metadata.len()) else { return false };
+    let start = len.saturating_sub(TURN_RECORD_TAIL_BYTES);
+    let Ok(bytes) = super::read_range(path, start, TURN_RECORD_TAIL_BYTES) else { return false };
+    let (lines, _) = super::complete_lines(&bytes, start > 0);
+    lines.iter().rev().find_map(|line| {
+        let value: Value = serde_json::from_slice(line).ok()?;
+        if value.get("type").and_then(Value::as_str) != Some("event_msg") {
+            return None;
+        }
+        match value.pointer("/payload/type").and_then(Value::as_str)? {
+            "task_complete" | "turn_aborted" => Some(true),
+            "task_started" => Some(false),
+            _ => None,
+        }
+    }).unwrap_or(false)
 }
 
 fn find(root: &Path, id: &str) -> Option<PathBuf> {

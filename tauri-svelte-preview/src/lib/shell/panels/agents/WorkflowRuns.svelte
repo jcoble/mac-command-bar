@@ -2,6 +2,7 @@
   import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { untrack } from 'svelte';
   import Check from '@lucide/svelte/icons/check';
+  import MessagesSquare from '@lucide/svelte/icons/messages-square';
   import CircleStop from '@lucide/svelte/icons/circle-stop';
   import Pause from '@lucide/svelte/icons/pause';
   import Play from '@lucide/svelte/icons/play';
@@ -15,6 +16,7 @@
   import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
   import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
   import { adoptSession } from '$lib/shell/conversation/conversationService.ts';
+  import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
   import {
     answerWorkflowPause,
     approveWorkflowGate,
@@ -23,7 +25,6 @@
     listWorkflowFiles,
     listWorkflowRuns,
     pauseWorkflowRun,
-    redirectWorkflowNode,
     resumeWorkflowRun,
     retryWorkflowNode,
     startWorkflowRun,
@@ -40,10 +41,11 @@
     upsertWorkflowSnapshot,
     workflowState
   } from '$lib/shell/workflows/workflowStore.svelte.ts';
-  import type {
-    WorkflowNodeRunRecord,
-    WorkflowNodeState,
-    WorkflowRunRecord
+  import {
+    workflowStepFacts,
+    type WorkflowNodeRunRecord,
+    type WorkflowNodeState,
+    type WorkflowRunRecord
   } from '$lib/shell/workflows/workflowTypes.ts';
 
   interface Props {
@@ -51,9 +53,11 @@
     root: string;
     /** The remote profile whose engine runs this project's workflows; null for this Mac. */
     machine: string | null;
+    /** Show the agent messages sent during this run, named as in the run list. */
+    onShowMessages: (runId: string, label: string) => void;
   }
 
-  let { visible, root, machine }: Props = $props();
+  let { visible, root, machine, onShowMessages }: Props = $props();
   let composing = $state(false);
   let taskKey = $state('');
   let taskTitle = $state('');
@@ -72,11 +76,6 @@
   const pausedNode = $derived(selected?.nodes.find((node) => node.state === 'waiting-input') ?? null);
   const failedNode = $derived(selected?.nodes.find((node) => node.state === 'failed') ?? null);
   const runningNode = $derived(selected?.nodes.find((node) => node.state === 'running') ?? null);
-  const nextNode = $derived(
-    waitingNode
-      ? selected?.nodes.find((node) => node.state === 'blocked' || node.state === 'ready') ?? null
-      : null
-  );
   const runningDefinition = $derived(
     runningNode ? selected?.definition.nodes.find((node) => node.id === runningNode.nodeId) ?? null : null
   );
@@ -419,6 +418,7 @@
 
             <ol class="flex list-none flex-col gap-1.5">
               {#each orderedNodes as node, index (node.id)}
+                {@const facts = workflowStepFacts(node)}
                 <li>
                   <button
                     type="button"
@@ -441,6 +441,33 @@
                   {#if node.failure}
                     <p class="mx-2 rounded-lg bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{node.failure.message}</p>
                   {/if}
+                  {#if facts.commands.length || facts.verdict || facts.findings.length || facts.prUrl}
+                    <div class="mx-2 flex min-w-0 flex-col gap-1.5 pb-1 text-sm" data-testid="workflow-step-facts">
+                      {#each facts.commands as command, commandIndex (commandIndex)}
+                        <div class="flex min-w-0 flex-col gap-1">
+                          <span class="flex min-w-0 items-center gap-2">
+                            <code class="min-w-0 flex-1 truncate" title={command.command}>{command.command}</code>
+                            {#if command.exitCode !== null}
+                              <Chip tone={command.exitCode === 0 ? 'good' : 'bad'}>exit {command.exitCode}</Chip>
+                            {/if}
+                          </span>
+                          {#if command.lastLines}
+                            <pre class="overflow-x-auto rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">{command.lastLines}</pre>
+                          {/if}
+                        </div>
+                      {/each}
+                      {#if facts.verdict}<span><Chip tone="neutral">{facts.verdict}</Chip></span>{/if}
+                      {#if facts.findings.length}
+                        <ul class="list-disc pl-4 text-muted-foreground">
+                          {#each facts.findings as finding, findingIndex (findingIndex)}<li>{finding}</li>{/each}
+                        </ul>
+                      {/if}
+                      {#if facts.prUrl}
+                        {@const prUrl = facts.prUrl}
+                        <button type="button" class="w-fit truncate text-left text-primary underline underline-offset-2" onclick={() => void openUrlInBrowser({ url: prUrl })}>{prUrl}</button>
+                      {/if}
+                    </div>
+                  {/if}
                 </li>
               {/each}
             </ol>
@@ -453,6 +480,7 @@
             {/if}
 
             <div class="mt-3 flex flex-wrap gap-2 border-t border-border pt-3">
+              <Button size="sm" variant="ghost" onclick={() => onShowMessages(selected.id, (selected.inputSnapshot as { task?: { title?: string } }).task?.title ?? selected.definition.name)}><MessagesSquare />Messages</Button>
               {#if selected.state === 'draft' || selected.state === 'queued'}
                 <Button size="sm" disabled={busy !== null} onclick={() => void control('Start', () => startWorkflowRun({ runId: selected.id, idempotencyKey: key('start') }, machine))}><Play />Start</Button>
               {:else if selected.state === 'paused'}
@@ -462,22 +490,6 @@
               {/if}
               {#if waitingNode}
                 <Button size="sm" disabled={busy !== null} onclick={() => void control('Approve', () => approveWorkflowGate({ runId: selected.id, nodeId: waitingNode.nodeId, approval: { approved: true }, idempotencyKey: key('approve') }, machine))}><Check />Approve handoff</Button>
-                <!-- Redirect is a template-run control this Mac's engine owns. -->
-                {#if nextNode && !machine}
-                  <label class="flex h-8 items-center gap-2 rounded-lg border border-input bg-background px-2 text-xs text-muted-foreground">
-                    Next
-                    <select
-                      value={nextNode.provider}
-                      disabled={busy !== null}
-                      onchange={(event) => void control('Redirect', () => redirectWorkflowNode({ runId: selected.id, nodeId: nextNode.nodeId, provider: event.currentTarget.value, idempotencyKey: key('redirect') }))}
-                      class="bg-transparent text-sm text-foreground outline-none"
-                    >
-                      <option value="codex">Codex</option>
-                      <option value="claude">Claude</option>
-                      <option value="antigravity">Agy</option>
-                    </select>
-                  </label>
-                {/if}
               {/if}
               {#if pausedNode}
                 <Button size="sm" disabled={busy !== null} onclick={() => void control('Another round', () => answerWorkflowPause({ runId: selected.id, nodeId: pausedNode.nodeId, decision: 'another-round', reply: null, idempotencyKey: key('answer') }, machine))}><RotateCcw />Run another round</Button>

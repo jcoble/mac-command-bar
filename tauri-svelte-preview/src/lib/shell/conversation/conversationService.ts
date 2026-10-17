@@ -1196,7 +1196,8 @@ async function handleConversationStreamEnvelope(
   if (row?.kind === 'tool' && row.state === 'completed' && row.path && row.diff) {
     publishWorkspaceFileChange({ ownedId: payload.ownedId, path: row.path });
   }
-  if (payload.provider === 'claude' && payload.payload.kind === 'childUpdate') {
+  // A sub-agent of any provider, or a helper, is background work of its parent.
+  if (payload.payload.kind === 'childUpdate') {
     const owned = rail.owned.find((session) => session.ownedId === payload.ownedId);
     if (owned) {
       const terminalChild = ['finished', 'failed', 'cancelled', 'disconnected'].includes(payload.payload.state);
