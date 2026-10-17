@@ -3841,6 +3841,28 @@ mod tests {
     }
 
     #[test]
+    fn start_workflow_after_a_finished_run_creates_a_new_run() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let endpoint = agent_endpoint(&engine, &repo.0);
+        let token = agent(&engine, &endpoint, "starter", &repo.0);
+        let args = start_args("TSK-1416");
+        let first = tool(&endpoint, &token, "start_workflow", args.clone()).unwrap();
+        assert_eq!(first["state"], "running");
+        let again = tool(&endpoint, &token, "start_workflow", args.clone()).unwrap();
+        assert_eq!(again["run_id"], first["run_id"]);
+        tauri::async_runtime::block_on(engine.cancel(first["run_id"].as_str().unwrap(), "cancel-a")).unwrap();
+        let second = tool(&endpoint, &token, "start_workflow", args.clone()).unwrap();
+        assert_ne!(second["run_id"], first["run_id"]);
+        assert_eq!(second["state"], "running");
+        tauri::async_runtime::block_on(engine.cancel(second["run_id"].as_str().unwrap(), "cancel-b")).unwrap();
+        let third = tool(&endpoint, &token, "start_workflow", args).unwrap();
+        assert_ne!(third["run_id"], first["run_id"]);
+        assert_ne!(third["run_id"], second["run_id"]);
+        assert_eq!(third["state"], "running");
+    }
+
+    #[test]
     fn parallel_starts_cannot_pass_the_run_limit() {
         let repo = RunRepo::new();
         let engine = run_engine(Arc::new(FakeRuntime::default()));
@@ -4504,7 +4526,7 @@ mod tests {
         assert!(summary.starts_with("ok") && !summary.contains("warning"), "{summary}");
         let prompts = definition.nodes.iter().filter_map(|node| node.step["prompt"].as_str().or(node.step["review"]["prompt"].as_str()))
             .filter(|prompt| !prompt.trim().is_empty()).count();
-        assert_eq!(prompts, 7);
+        assert_eq!(prompts, 9);
         // The PR gets the body written after the final review, whether or not the run merges.
         let node = |id: &str| definition.nodes.iter().find(|node| node.id == id).unwrap();
         assert_eq!(node("pr-body").depends_on, ["final-review"]);
