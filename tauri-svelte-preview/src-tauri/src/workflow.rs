@@ -2509,30 +2509,35 @@ impl WorkflowEngine {
         Ok(run)
     }
 
-    /// Records a review or check that found `count` problems. The first round,
-    /// and each later round with fewer problems than the one before, sends
-    /// `target` back with every step after it; otherwise the owner decides.
+    /// Records every round's findings and redo input, including a stopping round.
+    /// New findings send `target` back with every step after it; a trimmed exact
+    /// repeat, a REPEAT: marker, or the redo round ceiling pauses for the owner.
     async fn finish_with_findings(&self, run_id: &str, node_id: &str, target: &str, output: Value, count: usize, key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
         let run = self.require_run(run_id)?;
         if !run.nodes.iter().any(|node| node.node_id == node_id && node.state == WorkflowNodeState::Running) { return Ok(run); }
         let rounds = run.input_snapshot["rounds"][node_id].as_array().cloned().unwrap_or_default();
         let max_rounds = run.definition.limits["max_rounds"].as_u64().unwrap_or(5) as usize;
-        let previous = rounds.last().and_then(Value::as_u64);
+        let findings = output["findings"].as_array().cloned().unwrap_or_default();
+        let previous = rounds.last().and_then(Value::as_array);
+        let repeated = findings.iter().filter_map(Value::as_str).filter(|finding| {
+            finding.starts_with("REPEAT:") || previous.is_some_and(|previous| previous.iter()
+                .filter_map(Value::as_str).any(|text| text.trim() == finding.trim()))
+        }).count();
         let stop = if rounds.len() >= max_rounds {
             Some(format!("Stopped after {max_rounds} rounds with {count} still found"))
         } else {
-            previous.filter(|previous| count as u64 >= *previous)
-                .map(|previous| format!("Found {count} after {previous} last round, so the work is not converging"))
+            (repeated > 0).then(|| format!("{repeated} finding(s) repeated from last round, so the work is not converging"))
         };
-        if let Some(message) = stop {
-            return self.wait_for_owner(run_id, node_id, "loop-stopped", &message, Some(output), key);
-        }
         let mut run = run;
         let snapshot = run.input_snapshot.as_object_mut().ok_or_else(|| invalid_yaml("Workflow input must be an object"))?;
         let mut all_rounds = snapshot.get("rounds").cloned().unwrap_or_else(|| json!({}));
-        all_rounds[node_id] = Value::Array(rounds.into_iter().chain([json!(count)]).collect());
+        all_rounds[node_id] = Value::Array(rounds.into_iter().chain([json!(findings)]).collect());
         snapshot.insert("rounds".into(), all_rounds);
-        snapshot.insert("redo".into(), json!({"findings":output["findings"].as_array().cloned().unwrap_or_default(),"output":output["summary"]}));
+        snapshot.insert("redo".into(), json!({"findings":findings,"output":output["summary"]}));
+        if let Some(message) = stop {
+            self.append(&mut run, "workflow.node.findings", &format!("findings:{key}"), Some(node_id))?;
+            return self.wait_for_owner(run_id, node_id, "loop-stopped", &message, Some(output), key);
+        }
         let live_turns = self.reset_for_redo(&mut run, node_id, target)?;
         self.append(&mut run, "workflow.node.redo", key, Some(node_id))?;
         for owned_id in live_turns { self.runtime.cancel(&owned_id).await?; }
@@ -2739,11 +2744,13 @@ impl WorkflowEngine {
             self.append(&mut run, "workflow.node.command-recorded", &format!("command:{}:{}", attempt_id, number), Some(node_id))?;
             if timed_out { self.timeout_step(run_id, node_id).await?; return Ok(()); }
         }
-        let count = results.iter().filter(|result| result["exitCode"] != 0).count();
+        let findings: Vec<_> = results.iter().filter(|result| result["exitCode"] != 0)
+            .map(|result| result["command"].clone()).collect();
+        let count = findings.len();
         let summary = results.iter().filter_map(|result| result["output"].as_str()).collect::<Vec<_>>().join("\n");
         let summary = summary.lines().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
         let _dispatch = self.dispatch_lock.lock().await;
-        let output = json!({"commands":results,"findingCount":count,"summary":summary,"files":[]});
+        let output = json!({"commands":results,"findings":findings,"findingCount":count,"summary":summary,"files":[]});
         match definition.step["on_fail"].as_str() {
             Some(target) if count > 0 => self.finish_with_findings(run_id, node_id, target, output, count, &format!("result:{attempt_id}")).await?,
             _ => self.finish_step(run_id, node_id, output, count == 0, &format!("result:{attempt_id}"))?,
@@ -3988,22 +3995,37 @@ mod tests {
     }
 
     #[test]
-    fn loop_stops_on_equal_count_or_fifth_round() {
-        for (counts, rounds) in [(vec![2, 2], 1), (vec![9, 8, 7, 6, 5, 4], 5)] {
+    fn loop_continues_on_new_findings_and_stops_on_a_repeat_or_fifth_round() {
+        let cases = [
+            (vec![vec!["first", "second"], vec!["third", "fourth"]], 2, false),
+            (vec![vec!["first", "second"], vec![" first ", "third"]], 1, true),
+            (vec![vec!["first", "second"], vec!["REPEAT: same problem", "third"]], 1, true),
+            (vec![vec!["one"], vec!["two"], vec!["three"], vec!["four"], vec!["five"], vec!["six"]], 5, true),
+        ];
+        for (reports, rounds, stopped) in cases {
             let repo = RunRepo::new();
             let engine = run_engine(Arc::new(FakeRuntime::default()));
             let mut run = loop_run(&engine, &repo.0, LOOP_REVIEW);
-            for count in &counts {
+            for texts in &reports {
                 end_turn(&engine, &run.id, "build", &[]);
-                run = end_turn(&engine, &run.id, "review", &[findings(*count)]);
+                run = end_turn(&engine, &run.id, "review", &[json!({"verdict":"fail","findings":texts})]);
             }
             assert_eq!(step_of(&run, "build").attempt, rounds + 1);
-            assert_eq!(step_of(&run, "review").state, WorkflowNodeState::WaitingInput);
-            assert_eq!(step_of(&run, "review").failure.as_ref().unwrap().code, "loop-stopped");
-            assert_eq!(step_of(&run, "review").structured_output.as_ref().unwrap()["findingCount"], *counts.last().unwrap());
-            assert_eq!(run.state, WorkflowRunState::WaitingInput);
+            assert_eq!(run.input_snapshot["rounds"]["review"], json!(reports));
+            if stopped {
+                assert_eq!(step_of(&run, "review").state, WorkflowNodeState::WaitingInput);
+                let failure = step_of(&run, "review").failure.as_ref().unwrap();
+                assert_eq!(failure.code, "loop-stopped");
+                if rounds < 5 {
+                    assert_eq!(failure.message, "1 finding(s) repeated from last round, so the work is not converging");
+                }
+                assert_eq!(run.state, WorkflowRunState::WaitingInput);
+            } else {
+                assert_eq!(step_of(&run, "build").state, WorkflowNodeState::Running);
+                assert_ne!(step_of(&run, "review").state, WorkflowNodeState::WaitingInput);
+            }
         }
-        // A failing check sends its on_fail step back the same way.
+        // A failing check sends its on_fail step back, then stops if the same command fails again.
         let repo = RunRepo::new();
         let engine = run_engine(Arc::new(FakeRuntime::default()));
         let run = loop_run(&engine, &repo.0, "  build: { agent: { provider: codex }, prompt: prompts/p.md }\n  checks: { needs: [build], run: [\"exit 1\", \"true\"], on_fail: build }\n");
@@ -4011,7 +4033,11 @@ mod tests {
         settle(&engine, &run.id);
         let run = engine.require_run(&run.id).unwrap();
         assert_eq!(step_of(&run, "build").attempt, 2);
-        assert_eq!(run.input_snapshot["rounds"]["checks"], json!([1]));
+        assert_eq!(run.input_snapshot["rounds"]["checks"], json!([["exit 1"]]));
+        end_turn(&engine, &run.id, "build", &[]);
+        let run = settle(&engine, &run.id);
+        assert_eq!(step_of(&run, "checks").state, WorkflowNodeState::WaitingInput);
+        assert_eq!(step_of(&run, "checks").failure.as_ref().unwrap().code, "loop-stopped");
     }
 
     #[test]
@@ -4135,6 +4161,21 @@ mod tests {
         let error = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "build", "accept", None, "owner", "answer")).unwrap_err();
         assert!(matches!(error, WorkflowError::InvalidTransition(_)));
         assert_eq!(engine.get_run(&run.id).unwrap().state, WorkflowRunState::WaitingInput);
+    }
+
+    #[test]
+    fn another_round_after_a_loop_stop_redoes_with_the_stopping_rounds_findings() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let mut run = loop_run(&engine, &repo.0, LOOP_REVIEW);
+        for texts in [vec!["a"], vec!["a", "b"]] {
+            end_turn(&engine, &run.id, "build", &[]);
+            run = end_turn(&engine, &run.id, "review", &[json!({"verdict":"fail","findings":texts})]);
+        }
+        assert_eq!(step_of(&run, "review").failure.as_ref().unwrap().code, "loop-stopped");
+        let answered = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", "another-round", None, "owner", "answer")).unwrap();
+        assert_eq!(answered.input_snapshot["redo"]["findings"], json!(["a", "b"]));
+        assert_eq!(step_of(&answered, "build").state, WorkflowNodeState::Running);
     }
 
     #[test]

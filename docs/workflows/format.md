@@ -110,10 +110,13 @@ These values come from the engine; do not invent values or evaluate arbitrary co
 
 ## Loop rules
 
-The first findings allow a redo. Later rounds continue only while the finding
-count strictly decreases; equal/increased counts or the five-round ceiling pause
-for the owner. Commands count failures per command; reviews count reported
-findings. Redo reuses the original worker session, creates fresh reviewers, and
+New findings allow another round. A finding pauses the run for the owner if its
+trimmed text exactly equals a finding from the previous round of the same step,
+or it starts with `REPEAT:`. The five-round ceiling still pauses after at most
+five redo rounds. Failed commands use their command text as findings; reviews
+use their reported findings. The stopping round's findings are saved so an
+owner's request for another round sends back the findings they were shown.
+Redo reuses the original worker session, creates fresh reviewers, and
 invalidates every direct/transitive dependent so checks, reviews and proof run
 again. Another reviewer is another `review` step with the same `of`; never add a
 `reviewers` list. Findings from either reviewer redo the shared target.
@@ -163,12 +166,12 @@ inputs:
   i_merge: { description: "I'll merge", default: false }
 limits: { max_sessions: 3, step_timeout_minutes: 60, max_rounds: 5 }
 steps:
-  recon: { agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/recon.md }
+  recon: { agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/recon.md }
   spec: { needs: [recon], agent: { provider: claude, model: opus }, prompt: prompts/spec.md }
   spec-review:
     needs: [spec]
-    review: { of: spec, agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/spec-review.md }
-  build: { needs: [spec-review], agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/build.md }
+    review: { of: spec, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/spec-review.md }
+  build: { needs: [spec-review], agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
   checks:
     needs: [build]
     run:
@@ -179,7 +182,7 @@ steps:
     on_fail: build
   code-review:
     needs: [checks]
-    review: { of: build, agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/code-review.md }
+    review: { of: build, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/code-review.md }
   proof:
     needs: [code-review]
     agent: { provider: claude, model: opus }
@@ -192,7 +195,7 @@ steps:
       - gh pr create --fill --body-file "${{ run.pr_body }}"
   final-review:
     needs: [pr]
-    review: { of: build, agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/final-review.md }
+    review: { of: build, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/final-review.md }
   merge:
     needs: [final-review]
     if: "${{ !inputs.i_merge }}"
@@ -226,12 +229,12 @@ inputs:
   i_merge: { description: "I'll merge", default: false }
 limits: { max_sessions: 3, step_timeout_minutes: 60, max_rounds: 5 }
 steps:
-  recon: { agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/recon.md }
+  recon: { agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/recon.md }
   spec: { needs: [recon], agent: { provider: claude, model: opus }, prompt: prompts/spec.md }
   spec-review:
     needs: [spec]
-    review: { of: spec, agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/spec-review.md }
-  build: { needs: [spec-review], agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/build.md }
+    review: { of: spec, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/spec-review.md }
+  build: { needs: [spec-review], agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
   checks:
     needs: [build]
     run:
@@ -242,7 +245,7 @@ steps:
     on_fail: build
   code-review:
     needs: [checks]
-    review: { of: build, agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/code-review.md }
+    review: { of: build, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/code-review.md }
   code-review-2:
     needs: [code-review]
     review: { of: build, agent: { provider: claude, model: opus }, prompt: prompts/code-review-2.md }
@@ -258,7 +261,7 @@ steps:
       - gh pr create --fill --body-file "${{ run.pr_body }}"
   final-review:
     needs: [pr]
-    review: { of: build, agent: { provider: codex, model: gpt-6-sol }, prompt: prompts/final-review.md }
+    review: { of: build, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/final-review.md }
   merge:
     needs: [final-review]
     if: "${{ !inputs.i_merge }}"

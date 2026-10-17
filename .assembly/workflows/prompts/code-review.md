@@ -9,4 +9,9 @@ ${{ steps.spec.summary }}
 
 Review this branch's diff against the default branch (`git diff origin/main...HEAD`) for correctness, the spec, and the repository rules (CLAUDE.md, AGENTS.md). Overengineering fails review. Do not raise far-fetched hypotheticals or add scope.
 
+Last round's findings, if this is a later round: ${{ redo.findings }}
+If one of your findings is the same problem as one of those and it is still not fixed, start it with `REPEAT:`. A repeated finding stops the run for the owner; a new finding sends the work back for another round.
+
+The run works without the owner. Settle how the code behaves by reading it, never by asking. Small choices the task leaves open belong to the author; flag a choice only when it is wrong, and say what is right. Every finding must be a fix the author can make alone. Never write a finding that asks the owner to decide.
+
 Call report_review exactly once: PASS with no findings, or a list of actionable findings, each with `path:line` and the fix.
