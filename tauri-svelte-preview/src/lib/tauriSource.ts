@@ -11,9 +11,9 @@ import {
   type SessionWorkspaceSnapshot
 } from './shell/sessionWorkspaces.ts';
 import type {
-  WorkflowDefinitionV1,
-  WorkflowResultReceipt,
-  WorkflowRunRecord
+  WorkflowPauseDecision,
+  WorkflowRunRecord,
+  WorkflowTaskSnapshot
 } from './shell/workflows/workflowTypes.ts';
 import type {
   ProjectRoot,
@@ -545,9 +545,18 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   backgroundWork: BackgroundWorkItem[];
   nativeSessionId: string | null;
   projectId: string | null;
+  /** The session's permanent handle (`brisk-heron`) other sessions message it by; renaming never changes it. */
+  handle?: string | null;
   /** The session's project group, computed in SQL on this Mac: `repo:<key>`, `project:<id>` or `none`. */
   projectGroupKey: string;
   projectGroupLabel: string;
+  /** When the owner marked this session as the main orchestrator; absent otherwise. */
+  orchestratorMarkedAtMs?: number | null;
+  /** The session that started this helper; absent for any other session. */
+  helperOf?: string | null;
+  /** The workflow run this worker belongs to, and its `<task key> · <workflow name>`. */
+  runId?: string | null;
+  runLabel?: string | null;
 };
 
 export type ExecutionEnvironment = 'local' | 'remote';
@@ -2138,6 +2147,88 @@ export async function listAgentConversationSessionsFromTauri(): Promise<AgentCon
   return invoke<AgentConversationSessionRecord[]>('list_agent_conversation_sessions');
 }
 
+/** Marks a session as the owner's main orchestrator on its machine and clears the mark elsewhere; `null` clears it everywhere. */
+export async function setMainOrchestratorFromTauri(ownedId: string | null, remoteProfileId: string | null): Promise<void> {
+  if (!isTauriRuntime()) return;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  await invoke<void>('set_main_orchestrator', { ownedId, remoteProfileId });
+}
+
+/** One agent-to-agent message in the owner's traffic view; `machine` is where it is stored (its receiver's machine). */
+export type AgentMessage = {
+  id: string;
+  createdAtMs: number;
+  senderName: string;
+  fromOwnedId: string;
+  toOwnedId: string;
+  receiver: string;
+  body: string;
+  receipt: 'queued' | 'delivered' | 'failed' | 'expired';
+  runId: string | null;
+  kind: string;
+  machine: string;
+};
+
+export type AgentMessageFilter = {
+  machine?: string | null;
+  runId?: string | null;
+  session?: string | null;
+  /** The oldest message already shown; the page continues after it. */
+  before?: Pick<AgentMessage, 'createdAtMs' | 'id'> | null;
+  limit: number;
+};
+
+/** A page of agent-to-agent messages, newest first, from one machine or every reachable one. */
+export async function listAgentMessagesFromTauri(filter: AgentMessageFilter, signal: AbortSignal): Promise<AgentMessage[] | null> {
+  return invokeCancellable<AgentMessage[]>('list_agent_messages', {
+    machine: filter.machine ?? null,
+    runId: filter.runId ?? null,
+    session: filter.session ?? null,
+    beforeMs: filter.before?.createdAtMs ?? null,
+    beforeId: filter.before?.id ?? null,
+    limit: filter.limit
+  }, signal);
+}
+
+/** A workflow step waiting on the owner: a pause to answer (`waiting-input`) or a gate to approve (`waiting-approval`). */
+export type OwnerInboxStep = {
+  runId: string;
+  taskKey: string | null;
+  workflowName: string | null;
+  nodeId: string;
+  state: 'waiting-input' | 'waiting-approval';
+  reason: string | null;
+  ownedId: string | null;
+  updatedAtMs: number;
+  /** `mac` for this Mac, otherwise the remote profile id that owns the run. */
+  machine: string;
+};
+
+/** Workflow steps waiting on the owner on this Mac and every connected machine. */
+export async function listOwnerInboxFromTauri(signal: AbortSignal): Promise<OwnerInboxStep[] | null> {
+  return invokeCancellable<OwnerInboxStep[]>('list_owner_inbox', {}, signal);
+}
+
+/** Invokes a command that reads other machines; aborting `signal` cancels it there and returns null. */
+async function invokeCancellable<T>(command: string, args: Record<string, unknown>, signal: AbortSignal): Promise<T | null> {
+  if (!isTauriRuntime() || signal.aborted) return null;
+  const requestId = createAgentConversationRequestId();
+  const { invoke } = await import('./workspaceInvoke.ts');
+  const cancel = (): void => {
+    void cancelAgentConversationRequestFromTauri(requestId);
+  };
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal.aborted) return null;
+    return await invoke<T>(command, { ...args, requestId });
+  } catch (error) {
+    if (signal.aborted) return null;
+    throw error;
+  } finally {
+    signal.removeEventListener('abort', cancel);
+  }
+}
+
 export async function listRemoteAgentConversationSessionsFromTauri(
   signal?: AbortSignal
 ): Promise<AgentConversationSessionRecord[] | null> {
@@ -2683,13 +2774,44 @@ export async function listWorkflowRunsFromTauri(): Promise<WorkflowRunRecord[] |
 }
 
 export async function createWorkflowRunFromTauri(
-  definition: WorkflowDefinitionV1,
+  repoRoot: string,
+  workflowPath: string,
+  task: WorkflowTaskSnapshot,
   input: Record<string, unknown>,
   idempotencyKey: string
 ): Promise<WorkflowRunRecord | null> {
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<WorkflowRunRecord>('create_workflow_run', { definition, input, idempotencyKey });
+  return invoke<WorkflowRunRecord>('create_workflow_run', { repoRoot, workflowPath, task, input, idempotencyKey });
+}
+
+/** One workflow operation on a remote machine's own engine (`remote_workflow`). */
+export async function remoteWorkflowFromTauri<T>(
+  profileId: string,
+  operation: string,
+  args: object
+): Promise<T | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  return invoke<T>('remote_workflow', { profileId, operation, args });
+}
+
+export async function listWorkflowFilesFromTauri(repoRoot: string): Promise<string[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  return invoke<string[]>('list_workflow_files', { repoRoot });
+}
+
+export async function answerWorkflowPauseFromTauri(
+  runId: string,
+  nodeId: string,
+  decision: WorkflowPauseDecision,
+  reply: string | null,
+  idempotencyKey: string
+): Promise<WorkflowRunRecord | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  return invoke<WorkflowRunRecord>('answer_workflow_pause', { runId, nodeId, decision, reply, idempotencyKey });
 }
 
 export async function startWorkflowRunFromTauri(runId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
@@ -2722,23 +2844,6 @@ export async function retryWorkflowNodeFromTauri(runId: string, nodeId: string, 
   return invoke<WorkflowRunRecord>('retry_workflow_node', { runId, nodeId, idempotencyKey });
 }
 
-export async function redirectWorkflowNodeFromTauri(
-  runId: string,
-  nodeId: string,
-  provider: string,
-  idempotencyKey: string
-): Promise<WorkflowRunRecord | null> {
-  if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<WorkflowRunRecord>('redirect_workflow_node', { runId, nodeId, provider, idempotencyKey });
-}
-
-export async function skipWorkflowNodeFromTauri(runId: string, nodeId: string, idempotencyKey: string): Promise<WorkflowRunRecord | null> {
-  if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<WorkflowRunRecord>('skip_workflow_node', { runId, nodeId, idempotencyKey });
-}
-
 export async function approveWorkflowGateFromTauri(
   runId: string,
   nodeId: string,
@@ -2748,17 +2853,6 @@ export async function approveWorkflowGateFromTauri(
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkflowRunRecord>('approve_workflow_gate', { runId, nodeId, approval, idempotencyKey });
-}
-
-export async function submitWorkflowResultFromTauri(
-  runId: string,
-  nodeId: string,
-  result: WorkflowResultReceipt,
-  idempotencyKey: string
-): Promise<WorkflowRunRecord | null> {
-  if (!isTauriRuntime()) return null;
-  const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<WorkflowRunRecord>('submit_workflow_result', { runId, nodeId, result, idempotencyKey });
 }
 
 export async function searchSourceFilesFromTauri(

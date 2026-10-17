@@ -58,6 +58,8 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
   viaCmux: boolean;
   source: 'scanned' | 'fresh';
   title: string;
+  /** The permanent handle (`brisk-heron`) other sessions message this one by. */
+  handle?: string | null;
   /** Model reported by the session scanner, when one was available. */
   model?: string | null;
   /** The registry project the session was started in; null for older sessions and "No project". */
@@ -93,6 +95,13 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
   settledAt: string | null;
   /** When the user pinned this session to the top of the rail; absent or `null` when unpinned. */
   pinnedAt?: string | null;
+  /** When the owner marked this session as the main orchestrator; absent or `null` otherwise. */
+  orchestratorMarkedAtMs?: number | null;
+  /** The session that started this helper; the rail draws it under that parent. */
+  helperOf?: string | null;
+  /** The workflow run this worker belongs to; the rail groups a run's workers under its label. */
+  runId?: string | null;
+  runLabel?: string | null;
   /**
    * What the scanner worked out about the session — the branch it is on, the
    * task it belongs to, the pull request it opened. Copied off the scanned
@@ -292,6 +301,32 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
+/** The session lists `findSessionRecord` reads: this machine, then every connected one. */
+export interface SessionRecordReaders {
+  local: () => Promise<AgentConversationSessionRecord[] | null>;
+  remote: (signal: AbortSignal) => Promise<AgentConversationSessionRecord[] | null>;
+}
+
+/** A session the rail has not seen yet (a helper or workflow worker), on any machine. */
+export async function findSessionRecord(
+  ownedId: string,
+  readers: SessionRecordReaders,
+  signal: AbortSignal
+): Promise<AgentConversationSessionRecord | null> {
+  const local = (await readers.local())?.find((record) => record.ownedId === ownedId);
+  if (signal.aborted) return null;
+  // A cached remote row may be stale (a pending permission, say); its machine has the live one.
+  if (local && !local.remoteProfileId) return local;
+  let remote: AgentConversationSessionRecord | undefined;
+  try {
+    remote = (await readers.remote(signal))?.find((record) => record.ownedId === ownedId);
+  } catch (error) {
+    // With no machine answering, the cached row is still the session.
+    if (!local || signal.aborted) throw error;
+  }
+  return signal.aborted ? null : remote ?? local ?? null;
+}
+
 export function ownedSessionFromBackend(record: AgentConversationSessionRecord): OwnedSession {
   const { agent, viaCmux: providerViaCmux } = normalizeProvider(record.provider);
   const terminalOwned = record.origin === 'external' && record.ptySessionId !== null;
@@ -304,6 +339,7 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
     viaCmux: record.viaCmux || providerViaCmux,
     source: record.source ?? 'fresh',
     title: record.title ?? '',
+    handle: record.handle ?? null,
     model: record.model,
     projectId: record.projectId ?? null,
     // Both are left out of the record when empty, which only happens for a record that skipped the
@@ -328,6 +364,10 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
     completedAt: record.completedAt,
     settledAt: record.settledAt,
     pinnedAt: record.pinnedAt ?? null,
+    orchestratorMarkedAtMs: record.orchestratorMarkedAtMs ?? null,
+    helperOf: record.helperOf ?? null,
+    runId: record.runId ?? null,
+    runLabel: record.runLabel ?? null,
     // The rail prints the branch straight into the row, so anything that is not
     // a name has to stop here rather than reach the row as "[object Object]".
     // The two constructors below already read it this way.

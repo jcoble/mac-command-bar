@@ -68,7 +68,7 @@
 	import { ownedSessionStatusPatch, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
 	import type { CenterTabId } from "$lib/shell/workbenchNavigation";
 	import { clearWorkbenchNavigation, openIncomingLink, registerWorkbenchNavigation } from "$lib/shell/workbenchNavigation";
-	import { isTauriRuntime, updateAgentConversationSessionMetaFromTauri } from "$lib/tauriSource";
+	import { isTauriRuntime, setMainOrchestratorFromTauri, updateAgentConversationSessionMetaFromTauri } from "$lib/tauriSource";
 
 	const selection = new SessionSelectionController();
 	const workbench = new WorkbenchController();
@@ -167,6 +167,23 @@
 			await write;
 		} finally {
 			if (sessionSaves.get(ownedId) === write) sessionSaves.delete(ownedId);
+		}
+	}
+
+	/** The owner's main orchestrator: one session across every machine, or none. */
+	async function markOrchestrator(ownedId: string, marked: boolean): Promise<void> {
+		const session = selection.railOwned.find((candidate) => candidate.ownedId === ownedId);
+		if (!session) return;
+		try {
+			await setMainOrchestratorFromTauri(marked ? ownedId : null, session.remoteProfileId ?? null);
+		} catch (error) {
+			console.error("Could not mark the main orchestrator", error);
+			return;
+		}
+		const markedAt = Date.now();
+		for (const other of selection.railOwned) {
+			const value = marked && other.ownedId === ownedId ? markedAt : null;
+			if ((other.orchestratorMarkedAtMs ?? null) !== value) updateOwnedSession(other.ownedId, { orchestratorMarkedAtMs: value });
 		}
 	}
 
@@ -577,6 +594,7 @@
 				onUnsettle={(ownedId) => void changeSessionStatus(ownedId, "done")}
 				onPin={(ownedId, pinned) =>
 					void saveSessionChange(ownedId, { pinnedAt: pinned ? new Date().toISOString() : null })}
+				onMarkOrchestrator={(ownedId, marked) => void markOrchestrator(ownedId, marked)}
 				onRename={(ownedId, title) => void saveSessionChange(ownedId, { title })}
 				onConnect={(ownedId) => void connectSessionRow(ownedId)}
 			/>

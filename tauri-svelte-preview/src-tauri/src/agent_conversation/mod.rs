@@ -6,6 +6,7 @@ pub mod capabilities;
 pub mod handoff;
 mod legacy_import;
 pub mod manager;
+pub mod messaging;
 pub mod prompt_content;
 pub mod protocol;
 pub mod providers;
@@ -861,6 +862,34 @@ pub async fn cancel_agent_conversation_request(
     manager.cancel_child_history_request(request_id);
     remote.cancel_request(request_id).await;
     Ok(())
+}
+
+#[tauri::command]
+/// Marks a session as the owner's main orchestrator on its machine and clears the
+/// mark everywhere else; with no session, clears it everywhere.
+pub async fn set_main_orchestrator(
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    owned_id: Option<String>,
+    remote_profile_id: Option<String>,
+) -> CommandResult<()> {
+    let machine = remote_profile_id.unwrap_or_else(|| remote::LOCAL_MACHINE.to_string());
+    command_result(remote.set_main_orchestrator(&machine, owned_id.as_deref()).await)
+}
+
+#[tauri::command]
+/// One page of agent-to-agent messages, newest first, from one machine or all reachable ones.
+pub async fn list_agent_messages(
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    machine: Option<String>,
+    run_id: Option<String>,
+    session: Option<String>,
+    before_ms: Option<i64>,
+    before_id: Option<String>,
+    limit: i64,
+    request_id: u64,
+) -> CommandResult<Vec<serde_json::Value>> {
+    let args = serde_json::json!({"run_id": run_id, "session": session, "before_ms": before_ms, "before_id": before_id, "limit": limit});
+    Ok(remote.unless_cancelled(request_id, remote.list_messages(machine.as_deref(), args, request_id)).await.unwrap_or_default())
 }
 
 #[tauri::command]

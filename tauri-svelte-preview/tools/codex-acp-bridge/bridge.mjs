@@ -1039,9 +1039,18 @@ function appServerVersion(initializeResult) {
   return match?.[1] || "unknown";
 }
 
+function mcpConfig(params) {
+  if (!params?.mcpServers?.length) return {};
+  return { config: { mcp_servers: Object.fromEntries(params.mcpServers.map((server) => [server.name, {
+    command: server.command,
+    args: server.args,
+    env: Object.fromEntries((server.env ?? []).map(({ name, value }) => [name, value])),
+  }])) } };
+}
+
 async function newSession(params) {
   const cwd = typeof params?.cwd === "string" && params.cwd ? params.cwd : process.cwd();
-  const opened = await appRequest("thread/start", { cwd, sandbox: "workspace-write" });
+  const opened = await appRequest("thread/start", { cwd, sandbox: "workspace-write", ...mcpConfig(params) });
   const sessionId = requireString(opened?.thread?.id, "thread/start result.thread.id");
   const session = await sessionFromOpened(opened, cwd);
   sessions.set(sessionId, session);
@@ -1053,6 +1062,7 @@ async function resumeSession(params) {
   const existing = sessions.get(requestedSessionId);
   const request = {
     threadId: requestedSessionId,
+    ...mcpConfig(params),
     ...(typeof params?.cwd === "string" && params.cwd ? { cwd: params.cwd } : {}),
     ...(existing?.model ? { model: existing.model } : {}),
     ...(existing?.approvalPolicy ? { approvalPolicy: existing.approvalPolicy } : {}),

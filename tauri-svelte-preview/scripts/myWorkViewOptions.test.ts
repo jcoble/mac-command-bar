@@ -9,6 +9,7 @@ import {
   buildMyWorkGroups,
   DEFAULT_MY_WORK_VIEW_OPTIONS,
   matchesMyWorkFilters,
+  myWorkGroupSessions,
   myWorkProject,
   normalizeMyWorkFilters,
   normalizeMyWorkViewOptions,
@@ -184,6 +185,99 @@ function shape(groups: MyWorkGroup[]): unknown[] {
     ['pinned', 'Pinned', ['pinned-done', 'pinned-working']],
     ['all', '', ['working']]
   ]);
+}
+
+// designated_orchestrator_is_pinned_first: the session the owner marked sits alone
+// above everything, Pinned included. If two machines still carry a mark, the
+// newest wins and the older one stays in its own group.
+{
+  const rows = [
+    session('working', { title: 'a' }),
+    session('pinned', { title: 'b', pinnedAt: '2026-10-07T10:00:00.000Z' }),
+    session('old-mark', { title: 'c', orchestratorMarkedAtMs: 1 }),
+    session('main', { title: 'd', pinnedAt: '2026-10-07T11:00:00.000Z', orchestratorMarkedAtMs: 2 })
+  ];
+  assert.deepEqual(shape(buildMyWorkGroups(rows, { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc' })), [
+    ['orchestrator', 'Main orchestrator', ['main']],
+    ['pinned', 'Pinned', ['pinned']],
+    ['repo:github.com/me/mac-command-bar', 'mac-command-bar', ['working', 'old-mark']]
+  ]);
+}
+
+// helpers_group_under_parent_once: a helper is drawn under its parent's row and
+// nowhere else, the orchestrator's helpers included. A helper whose parent is not
+// in the list stays an ordinary row.
+{
+  const rows = [
+    session('parent', { title: 'a' }),
+    session('helper', { title: 'b', helperOf: 'parent' }),
+    session('main', { title: 'c', orchestratorMarkedAtMs: 1 }),
+    session('main-helper', { title: 'd', helperOf: 'main' }),
+    session('orphan', { title: 'e', helperOf: 'gone' })
+  ];
+  const groups = buildMyWorkGroups(rows, { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc' });
+  assert.deepEqual(shape(groups), [
+    ['orchestrator', 'Main orchestrator', ['main']],
+    ['repo:github.com/me/mac-command-bar', 'mac-command-bar', ['parent', 'orphan']]
+  ]);
+  assert.deepEqual(groups[0].helpers?.main?.map((row) => row.ownedId), ['main-helper']);
+  assert.deepEqual(groups[1].helpers?.parent?.map((row) => row.ownedId), ['helper']);
+  assert.deepEqual(groups.flatMap(myWorkGroupSessions).map((row) => row.ownedId).sort(),
+    ['helper', 'main', 'main-helper', 'orphan', 'parent']);
+}
+
+// workers_group_under_machine_and_run_once: each run's workers form one section,
+// named for the run, after the project sections; a worker is in no other section.
+{
+  const rows = [
+    session('lane', { title: 'a' }),
+    session('build', { title: 'b', runId: 'run-1', runLabel: 'TSK-9 · Fix and review' }),
+    session('review', { title: 'c', runId: 'run-1', runLabel: 'TSK-9 · Fix and review' }),
+    session('remote-build', { title: 'd', runId: 'run-2', runLabel: 'TSK-10 · Ship',
+      executionEnvironment: 'remote', remoteProfileId: 'workbox-test' })
+  ];
+  assert.deepEqual(shape(buildMyWorkGroups(rows, { ...DEFAULT_MY_WORK_VIEW_OPTIONS, sortBy: 'name', sortDirection: 'asc' })), [
+    ['repo:github.com/me/mac-command-bar', 'mac-command-bar', ['lane']],
+    ['run:run-1', 'TSK-9 · Fix and review', ['build', 'review']],
+    ['run:run-2', 'TSK-10 · Ship', ['remote-build']]
+  ]);
+}
+
+// pinned_worker_sits_in_pinned: pinning a workflow worker moves it out of its run's section.
+{
+  const rows = [
+    session('build', { title: 'b', runId: 'run-1', runLabel: 'TSK-9 · Fix and review' }),
+    session('review', { title: 'c', runId: 'run-1', runLabel: 'TSK-9 · Fix and review', pinnedAt: 5 })
+  ];
+  assert.deepEqual(shape(buildMyWorkGroups(rows, DEFAULT_MY_WORK_VIEW_OPTIONS)), [
+    ['pinned', 'Pinned', ['review']],
+    ['run:run-1', 'TSK-9 · Fix and review', ['build']]
+  ]);
+}
+
+// pinned_helper_sits_in_pinned: pinning a helper moves it out from under its parent.
+{
+  const rows = [session('parent', { title: 'p' }), session('helper', { title: 'h', helperOf: 'parent', pinnedAt: 5 })];
+  assert.deepEqual(shape(buildMyWorkGroups(rows, DEFAULT_MY_WORK_VIEW_OPTIONS)), [
+    ['pinned', 'Pinned', ['helper']],
+    ['repo:github.com/me/mac-command-bar', 'mac-command-bar', ['parent']]
+  ]);
+}
+
+// child_needing_owner_marks_group: a helper waiting on the owner counts in its
+// parent's section, so the section's "needs you" mark lifts.
+{
+  const rows = [session('parent'), session('helper', { helperOf: 'parent', pendingPermission: true })];
+  const [group] = buildMyWorkGroups(rows, DEFAULT_MY_WORK_VIEW_OPTIONS);
+  assert.deepEqual(myWorkGroupSessions(group).filter((row) => (row as unknown as { pendingPermission?: boolean }).pendingPermission)
+    .map((row) => row.ownedId), ['helper']);
+}
+
+// renamed_session_is_not_pinned: a title never makes an orchestrator.
+{
+  const rows = [session('named', { title: 'orchestrator' })];
+  assert.deepEqual(shape(buildMyWorkGroups(rows, DEFAULT_MY_WORK_VIEW_OPTIONS)).map((group) => (group as unknown[])[0]),
+    ['repo:github.com/me/mac-command-bar']);
 }
 
 // Custom order follows the saved order inside each group; a session with no

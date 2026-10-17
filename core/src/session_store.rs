@@ -1,6 +1,6 @@
 use std::fmt;
 use std::ops::{Deref, DerefMut};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
@@ -12,7 +12,7 @@ use serde::Serialize;
 
 mod evidence;
 
-const SCHEMA_VERSION: i64 = 20;
+const SCHEMA_VERSION: i64 = 21;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
 static SESSION_STORE_ACTIVE_READS: AtomicUsize = AtomicUsize::new(0);
@@ -624,9 +624,11 @@ const BROKER_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS workflow_groups (
 );
 CREATE TABLE IF NOT EXISTS workflow_messages (
     id TEXT PRIMARY KEY,
-    group_id TEXT NOT NULL REFERENCES workflow_groups(id),
-    from_agent TEXT NOT NULL,
-    to_agent TEXT NOT NULL,
+    group_id TEXT REFERENCES workflow_groups(id),
+    from_owned_id TEXT NOT NULL,
+    to_owned_id TEXT NOT NULL,
+    sender_name TEXT NOT NULL,
+    run_id TEXT,
     kind TEXT NOT NULL,
     body TEXT NOT NULL,
     receipt TEXT NOT NULL,
@@ -634,7 +636,47 @@ CREATE TABLE IF NOT EXISTS workflow_messages (
     updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_messages_group
-    ON workflow_messages(group_id, created_at_ms);";
+    ON workflow_messages(group_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_workflow_messages_target
+    ON workflow_messages(to_owned_id, receipt, created_at_ms, id);
+CREATE INDEX IF NOT EXISTS idx_workflow_messages_created
+    ON workflow_messages(created_at_ms, id);
+DROP VIEW IF EXISTS session_directory;
+CREATE VIEW session_directory AS
+WITH names AS (
+    SELECT s.owned_id, s.handle, s.provider, COALESCE(p.title, s.project) AS project, s.created_at,
+           CASE WHEN s.state IN ('starting','working','interrupting') THEN 'running'
+                WHEN s.state IN ('waiting-approval','waiting-input') THEN 'waiting'
+                WHEN s.state IN ('closed','failed') THEN 'stopped' ELSE 'idle' END AS state,
+           e.run_id, json_extract(e.payload_json,'$.nodeId') AS step_id, e.sequence AS member_sequence,
+           COALESCE(json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.task.key') || '/'
+                        || json_extract(e.payload_json,'$.nodeId'),
+                    NULLIF(s.title,''), 'Untitled') AS base_name,
+           CASE WHEN json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.task.key') IS NOT NULL THEN 'worker'
+                ELSE 'title' END AS kind,
+           -- The owner marks the main orchestrator; a title never makes one.
+           s.owned_id IS (SELECT json_extract(value_json,'$') FROM app_settings
+                          WHERE setting_key='orchestrator.main') AS orchestrator,
+           -- Who may message whom: the helper's parent, and the session that started a worker's run
+           -- (NULL when the owner started it).
+           json_extract(s.extra,'$.helperOf') AS helper_of,
+           json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.started_by') AS run_lead
+    FROM sessions s
+    LEFT JOIN projects p ON p.id = s.project_id
+    -- Each session's latest workflow event, found through orchestration_events_owned_idx.
+    LEFT JOIN orchestration_events e ON e.rowid = (
+        SELECT rowid FROM orchestration_events
+        WHERE json_extract(payload_json,'$.ownedId') = s.owned_id
+        ORDER BY sequence DESC LIMIT 1)
+    WHERE s.cached_remote_profile_id IS NULL AND s.parent_owned_id IS NULL
+)
+-- A retried step or a new review round gets a new session under the same worker name: the newest
+-- one keeps the plain name and older ones get their id added. Other duplicate titles all get ids.
+SELECT CASE WHEN kind = 'worker' AND ROW_NUMBER() OVER (PARTITION BY base_name, kind
+                ORDER BY member_sequence DESC, created_at DESC, owned_id) = 1 THEN base_name
+            WHEN kind = 'title' AND COUNT(*) OVER (PARTITION BY base_name, kind) = 1 THEN base_name
+            ELSE base_name || ' [' || owned_id || ']' END AS name,
+       owned_id, handle, provider, project, state, run_id, step_id, orchestrator, helper_of, run_lead FROM names;";
 
 const ORCHESTRATION_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS orchestration_events (
     id TEXT PRIMARY KEY,
@@ -650,6 +692,12 @@ CREATE INDEX IF NOT EXISTS orchestration_events_run_idx
     ON orchestration_events(run_id);
 CREATE INDEX IF NOT EXISTS orchestration_events_workflow_idx
     ON orchestration_events(workflow_id, kind);
+CREATE INDEX IF NOT EXISTS orchestration_events_run_sequence_idx
+    ON orchestration_events(run_id, sequence DESC);
+CREATE INDEX IF NOT EXISTS orchestration_events_workflow_idempotency_idx
+    ON orchestration_events(workflow_id, idempotency_key);
+CREATE INDEX IF NOT EXISTS orchestration_events_owned_idx
+    ON orchestration_events(json_extract(payload_json,'$.ownedId'), sequence);
 CREATE UNIQUE INDEX IF NOT EXISTS orchestration_events_idempotency_idx
     ON orchestration_events(run_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;";
@@ -738,6 +786,33 @@ impl std::error::Error for StoreError {
             .as_ref()
             .map(|source| source as &(dyn std::error::Error + 'static))
     }
+}
+
+/// A workflow step waiting on the owner: a pause to answer or a gate to approve.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitingStep {
+    pub run_id: String,
+    pub task_key: Option<String>,
+    pub workflow_name: Option<String>,
+    pub node_id: String,
+    /// `waiting-input` (a pause) or `waiting-approval` (a gate).
+    pub state: String,
+    pub reason: Option<String>,
+    pub owned_id: Option<String>,
+    pub updated_at_ms: i64,
+}
+
+/// A row of the session list: the session, its handle, and where it came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedSession {
+    pub row: SessionRow,
+    pub handle: Option<String>,
+    /// The session that started this helper with `start_session`.
+    pub helper_of: Option<String>,
+    /// The workflow run this worker belongs to, and its `<task key> · <workflow name>`.
+    pub run_id: Option<String>,
+    pub run_label: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1839,7 +1914,7 @@ impl SessionStore {
                 transaction.commit()
                     .map_err(|error| StoreError::sqlite("could not finish the project upgrade", error))?;
             }
-            SCHEMA_VERSION => {}
+            20 | SCHEMA_VERSION => {}
             _ => {
                 return Err(StoreError::message(
                     "the session database schema version is not supported",
@@ -1856,6 +1931,8 @@ impl SessionStore {
         add_remote_history_column(&connection)?;
         add_child_session_schema(&connection)?;
         add_project_schema(&connection)?;
+        add_session_handle(&connection)?;
+        upgrade_broker_queue(&mut connection)?;
 
         let interrupt_handle = connection.get_interrupt_handle();
         SESSION_STORE_OPEN_HANDLES.fetch_add(1, Ordering::Relaxed);
@@ -1946,19 +2023,41 @@ impl SessionStore {
     }
 
     pub fn list_sessions(&self) -> Result<Vec<SessionRow>> {
+        Ok(self.list_sessions_with_handles()?.into_iter().map(|listed| listed.row).collect())
+    }
+
+    /// The session list with each session's permanent handle (`brisk-heron`) and where it came
+    /// from: the session that started a helper, and the workflow run a worker belongs to.
+    pub fn list_sessions_with_handles(&self) -> Result<Vec<ListedSession>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
-                "SELECT owned_id, native_session_id, provider, model, effort, cwd, worktree,
-                        branch, title, project, state, suspended, created_at, last_activity_at,
-                        extra, title_source, project_id
-                 FROM sessions
-                 WHERE cached_remote_profile_id IS NULL AND parent_owned_id IS NULL
-                 ORDER BY last_activity_at DESC, owned_id ASC",
+                "SELECT s.owned_id, s.native_session_id, s.provider, s.model, s.effort, s.cwd, s.worktree,
+                        s.branch, s.title, s.project, s.state, s.suspended, s.created_at, s.last_activity_at,
+                        s.extra, s.title_source, s.project_id, s.handle,
+                        json_extract(s.extra,'$.helperOf'),
+                        CASE WHEN json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.task.key')
+                             IS NOT NULL THEN e.run_id END,
+                        json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.task.key') || ' · '
+                            || json_extract(e.payload_json,'$.workflowPayload.run.definition.name')
+                 FROM sessions s
+                 -- Each session's latest workflow event, as in session_directory.
+                 LEFT JOIN orchestration_events e ON e.rowid = (
+                     SELECT rowid FROM orchestration_events
+                     WHERE json_extract(payload_json,'$.ownedId') = s.owned_id
+                     ORDER BY sequence DESC LIMIT 1)
+                 WHERE s.cached_remote_profile_id IS NULL AND s.parent_owned_id IS NULL
+                 ORDER BY s.last_activity_at DESC, s.owned_id ASC",
             )
             .map_err(|error| StoreError::sqlite("could not prepare the session list", error))?;
         let rows = statement
-            .query_map([], session_from_row)
+            .query_map([], |row| Ok(ListedSession {
+                row: session_from_row(row)?,
+                handle: row.get(17)?,
+                helper_of: row.get(18)?,
+                run_id: row.get(19)?,
+                run_label: row.get(20)?,
+            }))
             .map_err(|error| StoreError::sqlite("could not list sessions", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read the session list", error))
@@ -1976,8 +2075,21 @@ impl SessionStore {
 
     pub fn delete_session(&self, owned_id: &str) -> Result<()> {
         let connection = self.lock_write()?;
-        connection
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|error| StoreError::sqlite("could not delete the session", error))?;
+        transaction
             .execute("DELETE FROM sessions WHERE owned_id = ?", [owned_id])
+            .map_err(|error| StoreError::sqlite("could not delete the session", error))?;
+        // A deleted main orchestrator leaves no mark behind.
+        transaction
+            .execute(
+                "DELETE FROM app_settings WHERE setting_key = 'orchestrator.main' AND json_extract(value_json,'$') = ?",
+                [owned_id],
+            )
+            .map_err(|error| StoreError::sqlite("could not clear the orchestrator mark", error))?;
+        transaction
+            .commit()
             .map_err(|error| StoreError::sqlite("could not delete the session", error))?;
         Ok(())
     }
@@ -2505,6 +2617,233 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not list workflow events", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read workflow events", error))
+    }
+
+    pub fn list_latest_workflow_events(&self) -> Result<Vec<OrchestrationEventRow>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT e.id, e.run_id, e.kind, e.timestamp, e.sequence, e.workflow_id, e.idempotency_key, e.payload_json
+             FROM orchestration_events e
+             WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%'
+               AND e.rowid = (SELECT rowid FROM orchestration_events
+                   WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                   ORDER BY sequence DESC LIMIT 1)
+             ORDER BY e.run_id"
+        ).map_err(|error| StoreError::sqlite("could not prepare latest workflow runs", error))?;
+        let rows = statement.query_map([], orchestration_event_from_row)
+            .map_err(|error| StoreError::sqlite("could not query latest workflow runs", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read latest workflow runs", error))
+    }
+
+    /// Workflow steps waiting on the owner, read from each run's latest event, oldest wait first.
+    pub fn waiting_workflow_steps(&self) -> Result<Vec<WaitingStep>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT e.run_id,
+                    json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.task.key'),
+                    json_extract(e.payload_json,'$.workflowPayload.run.definition.name'),
+                    json_extract(n.value,'$.nodeId'), json_extract(n.value,'$.state'),
+                    json_extract(n.value,'$.failure.message'), json_extract(n.value,'$.ownedId'),
+                    COALESCE(json_extract(e.payload_json,'$.workflowPayload.run.updatedAtMs'), 0)
+             FROM orchestration_events e, json_each(e.payload_json,'$.workflowPayload.run.nodes') n
+             WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%'
+               AND e.rowid = (SELECT rowid FROM orchestration_events
+                   WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                   ORDER BY sequence DESC LIMIT 1)
+               AND json_extract(n.value,'$.state') IN ('waiting-input','waiting-approval')
+             ORDER BY 8, e.run_id, 4"
+        ).map_err(|error| StoreError::sqlite("could not prepare waiting workflow steps", error))?;
+        let rows = statement.query_map([], |row| Ok(WaitingStep {
+            run_id: row.get(0)?, task_key: row.get(1)?, workflow_name: row.get(2)?, node_id: row.get(3)?,
+            state: row.get(4)?, reason: row.get(5)?, owned_id: row.get(6)?, updated_at_ms: row.get(7)?,
+        })).map_err(|error| StoreError::sqlite("could not query waiting workflow steps", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read waiting workflow steps", error))
+    }
+
+    /// Counts only agent steps from the latest snapshot of each run, including paused turns.
+    pub fn workflow_active_agent_counts(&self, run_id: &str, provider: &str) -> Result<(usize, usize, usize, usize)> {
+        let connection = self.lock()?;
+        connection.query_row(
+            "WITH latest AS (
+                SELECT json_extract(e.payload_json, '$.workflowPayload.run') AS run
+                FROM orchestration_events e
+                WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%'
+                  AND e.rowid = (SELECT rowid FROM orchestration_events
+                    WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                    ORDER BY sequence DESC LIMIT 1)
+             ), active AS (
+                SELECT json_extract(run, '$.id') AS run_id, json_extract(n.value, '$.provider') AS provider
+                FROM latest, json_each(run, '$.nodes') n
+                JOIN json_each(run, '$.definition.nodes') d
+                  ON json_extract(d.value, '$.id') = json_extract(n.value, '$.nodeId')
+                WHERE json_extract(n.value, '$.state') IN ('starting', 'running')
+                  AND (json_type(d.value, '$.step') IS NULL OR json_type(d.value, '$.step') = 'null'
+                    OR json_type(d.value, '$.step.agent') IS NOT NULL OR json_type(d.value, '$.step.review') IS NOT NULL)
+             ) SELECT COUNT(*), COALESCE(SUM(run_id = ?1), 0), COALESCE(SUM(provider = ?2), 0),
+                COALESCE((SELECT MIN(MIN(json_extract(run, '$.definition.concurrency.global'),
+                    json_extract(run, '$.definition.budgets.maximumActiveAgents'))) FROM latest
+                    WHERE json_extract(run, '$.state') IN ('running', 'paused', 'waiting-approval', 'waiting-input')), 2147483647)
+             FROM active",
+            params![run_id, provider], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).map_err(|error| StoreError::sqlite("could not count active workflow agents", error))
+    }
+
+    /// The database file's path; None for an in-memory store.
+    pub fn database_path(&self) -> Result<Option<PathBuf>> {
+        Ok(self.lock()?.path().filter(|path| !path.is_empty()).map(PathBuf::from))
+    }
+
+    /// Lease holders from the latest snapshot of each run: (run id, node run id, workspace policy JSON, run cwd).
+    pub fn workflow_active_leases(&self) -> Result<Vec<(String, String, String, String)>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "WITH latest AS (
+                SELECT json_extract(e.payload_json, '$.workflowPayload.run') AS run
+                FROM orchestration_events e
+                WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%'
+                  AND e.rowid = (SELECT rowid FROM orchestration_events
+                    WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                    ORDER BY sequence DESC LIMIT 1)
+             )
+             SELECT json_extract(run, '$.id'), json_extract(n.value, '$.id'),
+                json_extract(r.value, '$.workspacePolicy'), COALESCE(json_extract(run, '$.inputSnapshot.cwd'), '')
+             FROM latest, json_each(run, '$.nodes') n
+             JOIN json_each(run, '$.definition.roles') r
+               ON json_extract(r.value, '$.id') = json_extract(n.value, '$.roleId')
+             WHERE json_extract(n.value, '$.leaseId') IS NOT NULL
+               AND json_extract(n.value, '$.state') IN ('starting', 'running', 'waiting-approval', 'waiting-input')",
+        ).map_err(|error| StoreError::sqlite("could not prepare workflow lease query", error))?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .map_err(|error| StoreError::sqlite("could not read workflow leases", error))?;
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(|error| StoreError::sqlite("could not read workflow lease row", error))
+    }
+
+    /// The run and attempt of the workflow review step `owned_id` is running now.
+    pub fn workflow_running_review(&self, owned_id: &str) -> Result<Option<(String, String)>> {
+        use rusqlite::OptionalExtension;
+        let connection = self.lock()?;
+        connection.query_row(
+            "WITH latest AS (
+                SELECT json_extract(e.payload_json, '$.workflowPayload.run') AS run
+                FROM orchestration_events e
+                WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%'
+                  AND e.rowid = (SELECT rowid FROM orchestration_events
+                    WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                    ORDER BY sequence DESC LIMIT 1)
+             )
+             SELECT json_extract(run, '$.id'), json_extract(n.value, '$.id')
+             FROM latest, json_each(run, '$.nodes') n
+             JOIN json_each(run, '$.definition.nodes') d
+               ON json_extract(d.value, '$.id') = json_extract(n.value, '$.nodeId')
+             WHERE json_extract(n.value, '$.ownedId') = ?1
+               AND json_extract(n.value, '$.state') = 'running'
+               AND json_type(d.value, '$.step.review') IS NOT NULL
+             LIMIT 1",
+            [owned_id], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().map_err(|error| StoreError::sqlite("could not find the running review", error))
+    }
+
+    /// The state in a run's latest snapshot, read before the engine stores the next one.
+    pub fn workflow_run_state(&self, run_id: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        let connection = self.lock()?;
+        connection.query_row(
+            "SELECT json_extract(payload_json, '$.workflowPayload.run.state') FROM orchestration_events
+             WHERE run_id = ?1 AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+             ORDER BY sequence DESC LIMIT 1",
+            [run_id], |row| row.get(0),
+        ).optional().map_err(|error| StoreError::sqlite("could not read the run state", error))
+    }
+
+    /// Runs `owned_id` started, other than its run of `task_key`, whose latest snapshot is not
+    /// completed, failed or cancelled.
+    pub fn unfinished_workflow_runs_started_by(&self, owned_id: &str, task_key: &str) -> Result<i64> {
+        let connection = self.lock()?;
+        connection.query_row(
+            "WITH latest AS (
+                SELECT json_extract(e.payload_json, '$.workflowPayload.run') AS run
+                FROM orchestration_events e
+                WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%'
+                  AND e.rowid = (SELECT rowid FROM orchestration_events
+                    WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                    ORDER BY sequence DESC LIMIT 1)
+             )
+             SELECT COUNT(*) FROM latest
+             WHERE json_extract(run, '$.inputSnapshot.started_by') = ?1
+               AND json_extract(run, '$.inputSnapshot.task.key') IS NOT ?2
+               AND json_extract(run, '$.state') NOT IN ('completed', 'failed', 'cancelled')",
+            [owned_id, task_key], |row| row.get(0),
+        ).map_err(|error| StoreError::sqlite("could not count unfinished runs", error))
+    }
+
+    /// Runs whose latest snapshot still shows a step starting or running; read once at startup.
+    pub fn workflow_runs_with_interrupted_steps(&self) -> Result<Vec<String>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "WITH latest AS (
+                SELECT e.run_id, json_extract(e.payload_json, '$.workflowPayload.run') AS run
+                FROM orchestration_events e
+                WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%'
+                  AND e.rowid = (SELECT rowid FROM orchestration_events
+                    WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                    ORDER BY sequence DESC LIMIT 1)
+             )
+             SELECT run_id FROM latest
+             WHERE EXISTS (SELECT 1 FROM json_each(run, '$.nodes') n
+                WHERE json_extract(n.value, '$.state') IN ('starting', 'running'))
+             ORDER BY run_id",
+        ).map_err(|error| StoreError::sqlite("could not prepare interrupted workflow query", error))?;
+        let rows = statement.query_map([], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not read interrupted workflow runs", error))?;
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(|error| StoreError::sqlite("could not read interrupted workflow run", error))
+    }
+
+    /// Other running runs whose latest snapshot has a step ready to start; used when agent capacity frees up.
+    pub fn workflow_runs_ready_for_dispatch(&self, except_run_id: &str) -> Result<Vec<String>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "WITH latest AS (
+                SELECT e.run_id, json_extract(e.payload_json, '$.workflowPayload.run') AS run
+                FROM orchestration_events e
+                WHERE e.workflow_id IS NOT NULL AND e.kind LIKE 'workflow.%' AND e.run_id <> ?1
+                  AND e.rowid = (SELECT rowid FROM orchestration_events
+                    WHERE run_id = e.run_id AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+                    ORDER BY sequence DESC LIMIT 1)
+             )
+             SELECT run_id FROM latest
+             WHERE json_extract(run, '$.state') = 'running'
+               AND EXISTS (SELECT 1 FROM json_each(run, '$.nodes') n WHERE json_extract(n.value, '$.state') = 'ready')
+             ORDER BY run_id",
+        ).map_err(|error| StoreError::sqlite("could not prepare ready workflow query", error))?;
+        let rows = statement.query_map([except_run_id], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not read ready workflow runs", error))?;
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(|error| StoreError::sqlite("could not read ready workflow run", error))
+    }
+
+    pub fn latest_workflow_orchestration_event(&self, run_id: &str) -> Result<Option<OrchestrationEventRow>> {
+        let connection = self.lock()?;
+        connection.query_row(
+            "SELECT id, run_id, kind, timestamp, sequence, workflow_id, idempotency_key, payload_json
+             FROM orchestration_events
+             WHERE run_id = ? AND workflow_id IS NOT NULL AND kind LIKE 'workflow.%'
+             ORDER BY sequence DESC LIMIT 1",
+            [run_id], orchestration_event_from_row,
+        ).optional().map_err(|error| StoreError::sqlite("could not read latest workflow run", error))
+    }
+
+    pub fn find_workflow_event_by_idempotency_key(&self, workflow_id: &str, key: &str) -> Result<Option<OrchestrationEventRow>> {
+        let connection = self.lock()?;
+        connection.query_row(
+            "SELECT id, run_id, kind, timestamp, sequence, workflow_id, idempotency_key, payload_json
+             FROM orchestration_events WHERE workflow_id = ? AND idempotency_key = ?
+             ORDER BY rowid ASC LIMIT 1",
+            params![workflow_id, key], orchestration_event_from_row,
+        ).optional().map_err(|error| StoreError::sqlite("could not read idempotent workflow run", error))
     }
 
     pub fn find_orchestration_event_by_idempotency_key(
@@ -4034,6 +4373,73 @@ fn add_child_session_schema(connection: &Connection) -> Result<()> {
         .map_err(|error| StoreError::sqlite("could not index child session ownership", error))
 }
 
+/// Every session gets a permanent, memorable handle such as `brisk-heron`, picked at random
+/// when the row is inserted. Renaming a session changes its title, never its handle, so
+/// messages and people can keep using it. A handle another session already has gets the
+/// first eight characters of the owned id added.
+fn add_session_handle(connection: &Connection) -> Result<()> {
+    const PICK: &str = "json_extract('[\"amber\",\"bold\",\"brisk\",\"calm\",\"clever\",\"cosy\",\"crisp\",\"dapper\",\"eager\",\"fancy\",\"fleet\",\"fond\",\"gentle\",\"glad\",\"golden\",\"grand\",\"happy\",\"hardy\",\"humble\",\"jolly\",\"keen\",\"kind\",\"lively\",\"lucky\",\"merry\",\"mighty\",\"misty\",\"modest\",\"neat\",\"nimble\",\"noble\",\"plucky\",\"polite\",\"proud\",\"quick\",\"quiet\",\"rapid\",\"ready\",\"rosy\",\"rustic\",\"sage\",\"shiny\",\"silver\",\"sleek\",\"smart\",\"snowy\",\"solid\",\"spry\",\"steady\",\"stout\",\"sunny\",\"swift\",\"tidy\",\"true\",\"vivid\",\"warm\",\"wise\",\"witty\",\"young\",\"zesty\",\"breezy\",\"cheery\",\"dusky\",\"frosty\"]','$['||(abs(random())%64)||']') || '-' || json_extract('[\"badger\",\"beacon\",\"bison\",\"canyon\",\"cedar\",\"comet\",\"condor\",\"coral\",\"crane\",\"delta\",\"dolphin\",\"ember\",\"falcon\",\"fern\",\"finch\",\"fjord\",\"fox\",\"gecko\",\"glacier\",\"harbor\",\"hare\",\"hawk\",\"heron\",\"ibis\",\"jaguar\",\"kestrel\",\"koala\",\"lagoon\",\"lark\",\"lemur\",\"lynx\",\"maple\",\"marmot\",\"meadow\",\"mesa\",\"moose\",\"newt\",\"orca\",\"osprey\",\"otter\",\"owl\",\"panda\",\"pebble\",\"pine\",\"puffin\",\"quail\",\"raven\",\"reef\",\"ridge\",\"robin\",\"salmon\",\"sparrow\",\"spruce\",\"stoat\",\"summit\",\"swan\",\"tern\",\"thistle\",\"tiger\",\"trout\",\"tundra\",\"walrus\",\"willow\",\"wren\"]','$['||(abs(random())%64)||']')";
+    let exists: bool = connection
+        .query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'handle')", [], |row| row.get(0))
+        .map_err(|error| StoreError::sqlite("could not inspect the session handle column", error))?;
+    if !exists {
+        connection
+            .execute_batch(&format!(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE sessions ADD COLUMN handle TEXT;
+                 UPDATE sessions SET handle = {PICK};
+                 UPDATE sessions SET handle = handle || '-' || substr(owned_id, 1, 8)
+                 WHERE rowid NOT IN (SELECT MIN(rowid) FROM sessions GROUP BY handle);
+                 COMMIT;"
+            ))
+            .map_err(|error| StoreError::sqlite("could not add the session handle column", error))?;
+    }
+    connection
+        .execute_batch(&format!(
+            "CREATE INDEX IF NOT EXISTS sessions_handle_idx ON sessions(handle);
+             CREATE TRIGGER IF NOT EXISTS sessions_handle_pick AFTER INSERT ON sessions
+             WHEN NEW.handle IS NULL BEGIN
+                UPDATE sessions SET handle = {PICK} WHERE owned_id = NEW.owned_id;
+                UPDATE sessions SET handle = handle || '-' || substr(owned_id, 1, 8)
+                WHERE owned_id = NEW.owned_id
+                  AND (SELECT COUNT(*) FROM sessions other WHERE other.handle = sessions.handle) > 1;
+             END;"
+        ))
+        .map_err(|error| StoreError::sqlite("could not set up session handles", error))
+}
+
+fn upgrade_broker_queue(connection: &mut Connection) -> Result<()> {
+    let old: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('workflow_messages') WHERE name='to_agent')",
+        [], |row| row.get(0),
+    ).map_err(|error| StoreError::sqlite("could not inspect broker schema", error))?;
+    if old {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| StoreError::sqlite("could not begin broker upgrade", error))?;
+        transaction.execute_batch("ALTER TABLE workflow_messages RENAME TO workflow_messages_upgrade;
+            DROP INDEX IF EXISTS idx_workflow_messages_group;")
+            .map_err(|error| StoreError::sqlite("could not rename broker queue", error))?;
+        transaction.execute_batch(BROKER_SCHEMA)
+            .map_err(|error| StoreError::sqlite("could not create owned-ID queue", error))?;
+        transaction.execute_batch("INSERT INTO workflow_messages
+            (id,group_id,from_owned_id,to_owned_id,sender_name,run_id,kind,body,receipt,created_at_ms,updated_at_ms)
+            SELECT m.id,m.group_id,m.from_agent,m.to_agent,COALESCE(d.name,m.from_agent),d.run_id,
+                   m.kind,m.body,m.receipt,m.created_at_ms,m.updated_at_ms
+            FROM workflow_messages_upgrade m LEFT JOIN session_directory d ON d.owned_id=m.from_agent;
+            DROP TABLE workflow_messages_upgrade;")
+            .map_err(|error| StoreError::sqlite("could not migrate broker rows", error))?;
+        transaction.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|error| StoreError::sqlite("could not record broker upgrade", error))?;
+        transaction.commit().map_err(|error| StoreError::sqlite("could not finish broker upgrade", error))?;
+    } else {
+        connection.execute_batch(BROKER_SCHEMA)
+            .map_err(|error| StoreError::sqlite("could not create broker directory", error))?;
+        connection.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|error| StoreError::sqlite("could not record broker schema", error))?;
+    }
+    Ok(())
+}
+
 /// Adds the column that records where a session's name came from, unless the
 /// database already has it. Older schemas upgrade directly to the current one.
 fn add_title_source_column(connection: &Connection) -> Result<()> {
@@ -4249,6 +4655,55 @@ mod tests {
         EvidenceRunDiskUsage, NotionTaskProjection, ProjectRow, RepresentedTurnFacts, SessionRow,
         SessionStore,
     };
+
+    #[test]
+    fn waiting_steps_are_selected_in_sql() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let event = |id: &str, run: &str, sequence: i64, nodes: &str, updated: i64| format!(
+            "('{id}','{run}','workflow.node.updated','1',{sequence},'flow',
+              '{{\"workflowPayload\":{{\"run\":{{\"updatedAtMs\":{updated},\"definition\":{{\"name\":\"Flow\"}},\"inputSnapshot\":{{\"task\":{{\"key\":\"T-{run}\"}}}},\"nodes\":[{nodes}]}}}}}}')");
+        let node = |id: &str, state: &str| format!(
+            "{{\"nodeId\":\"{id}\",\"state\":\"{state}\",\"ownedId\":\"s-{id}\",\"failure\":{{\"message\":\"why {id}\"}}}}");
+        let rows = [
+            // run-1 waited on review, but its latest event has moved on.
+            event("a", "run-1", 1, &node("review", "waiting-input"), 1),
+            event("b", "run-1", 2, &node("review", "running"), 2),
+            event("c", "run-2", 1, &[node("build", "completed"), node("review", "waiting-input")].join(","), 5),
+            event("d", "run-3", 1, &node("merge", "waiting-approval"), 3),
+        ].join(",");
+        store.lock_write().unwrap().execute_batch(&format!("INSERT INTO orchestration_events
+            (id,run_id,kind,timestamp,sequence,workflow_id,payload_json) VALUES {rows};")).unwrap();
+        let waiting = store.waiting_workflow_steps().unwrap();
+        assert_eq!(waiting.iter().map(|step| (step.run_id.as_str(), step.node_id.as_str(), step.state.as_str()))
+            .collect::<Vec<_>>(), [("run-3", "merge", "waiting-approval"), ("run-2", "review", "waiting-input")]);
+        assert_eq!(waiting[1].reason.as_deref(), Some("why review"));
+        assert_eq!(waiting[1].task_key.as_deref(), Some("T-run-2"));
+        assert_eq!(waiting[1].workflow_name.as_deref(), Some("Flow"));
+        assert_eq!(waiting[1].owned_id.as_deref(), Some("s-review"));
+    }
+
+    #[test]
+    fn workflow_active_agent_counts_uses_latest_snapshots_and_paused_turns() {
+        let store = SessionStore::open_in_memory().unwrap();
+        for (id, sequence, state, provider, step) in [
+            ("one", 1, "running", "codex", serde_json::json!({"agent":{}})),
+            ("one", 2, "completed", "codex", serde_json::json!({"agent":{}})),
+            ("two", 1, "starting", "claude", serde_json::json!({"review":{}})),
+            ("shell", 1, "running", "codex", serde_json::json!({"run":["test"]})),
+        ] {
+            let payload = serde_json::json!({"workflowPayload":{"run":{"id":id,"state":"paused",
+                "definition":{"concurrency":{"global":1},"budgets":{"maximumActiveAgents":2},
+                    "nodes":[{"id":"step","step":step}]},
+                "nodes":[{"nodeId":"step","state":state,"provider":provider}]}}});
+            store.append_orchestration_event(&super::OrchestrationEventRow {
+                id: format!("{id}-{sequence}"), run_id: id.into(), kind: "workflow.test".into(),
+                timestamp: "1".into(), sequence: Some(sequence), workflow_id: Some("workflow".into()),
+                idempotency_key: None, payload_json: payload.to_string(),
+            }).unwrap();
+        }
+        assert_eq!(store.workflow_active_agent_counts("two", "claude").unwrap(), (1, 1, 1, 1));
+        assert_eq!(store.workflow_active_agent_counts("one", "codex").unwrap(), (1, 0, 0, 1));
+    }
 
     fn fixture_session(owned_id: &str, activity_ms: i64) -> SessionRow {
         SessionRow {
@@ -4652,6 +5107,18 @@ mod tests {
     }
 
     #[test]
+    fn deleting_the_main_orchestrator_clears_its_mark() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&fixture_session("main", 1)).unwrap();
+        store.upsert_session(&fixture_session("other", 2)).unwrap();
+        store.set_main_orchestrator(Some("main")).unwrap();
+        store.delete_session("other").unwrap();
+        assert_eq!(store.main_orchestrator().unwrap().map(|(id, _)| id).as_deref(), Some("main"));
+        store.delete_session("main").unwrap();
+        assert!(store.main_orchestrator().unwrap().is_none());
+    }
+
+    #[test]
     fn child_session_requires_unchanged_parent_and_remote_source() {
         let store = SessionStore::open_in_memory().unwrap();
         let parent = fixture_session("remote-parent", 1);
@@ -4728,6 +5195,7 @@ mod tests {
         let connection = Connection::open(&path).unwrap();
         connection.execute_batch(
             "DROP INDEX sessions_parent_owned_idx;
+             DROP VIEW session_directory;
              ALTER TABLE sessions DROP COLUMN parent_owned_id;
              DROP INDEX events_replay_page_idx;
              CREATE INDEX events_replay_page_idx ON events(owned_id,seq) WHERE item_id IS NOT NULL;
@@ -4774,6 +5242,7 @@ mod tests {
         let connection = Connection::open(&path).unwrap();
         connection.execute_batch(
             "DROP INDEX sessions_project_idx;
+             DROP VIEW session_directory;
              ALTER TABLE sessions DROP COLUMN project_id;
              DROP TABLE projects;
              PRAGMA user_version = 19;",
@@ -4795,7 +5264,7 @@ mod tests {
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'project_id')",
             [], |row| row.get(0),
         ).unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, super::SCHEMA_VERSION);
         assert_eq!(project_columns, ["id", "machine", "root_path", "title", "repo_key", "created_at", "pinned_at"]);
         assert!(column_exists);
     }
@@ -5030,7 +5499,8 @@ mod tests {
         store.set_draft("local", "existing").unwrap();
         drop(store);
         let connection = Connection::open(&path).unwrap();
-        connection.execute_batch("DROP INDEX sessions_cached_remote_idx;
+        connection.execute_batch("DROP VIEW session_directory;
+            DROP INDEX sessions_cached_remote_idx;
             ALTER TABLE sessions DROP COLUMN cached_remote_profile_id;
             PRAGMA user_version = 13;").unwrap();
         drop(connection);
@@ -6490,6 +6960,34 @@ mod tests {
             )
             .expect("read the session columns");
         assert_eq!(columns, 1);
+    }
+
+    #[test]
+    fn owned_queue_migration_preserves_existing_database() {
+        let dir = TempDir::new_in("/var/tmp").unwrap();
+        let path = dir.path().join("sessions.db");
+        let store = SessionStore::open(&path).unwrap();
+        store.upsert_session(&fixture_session("sender", 1)).unwrap();
+        store.lock_write().unwrap().execute_batch("DROP VIEW session_directory;
+            DROP TABLE workflow_messages;
+            CREATE TABLE workflow_messages (id TEXT PRIMARY KEY,group_id TEXT NOT NULL REFERENCES workflow_groups(id),
+                from_agent TEXT NOT NULL,to_agent TEXT NOT NULL,kind TEXT NOT NULL,body TEXT NOT NULL,
+                receipt TEXT NOT NULL,created_at_ms INTEGER NOT NULL,updated_at_ms INTEGER NOT NULL);
+            CREATE INDEX idx_workflow_messages_group ON workflow_messages(group_id,created_at_ms);
+            INSERT INTO workflow_groups VALUES ('g','Run',NULL,1,NULL);
+            INSERT INTO workflow_messages VALUES ('old','g','sender','target','message','hello','queued',1,1);
+            PRAGMA user_version=20;").unwrap();
+        drop(store);
+        let store = SessionStore::open(&path).unwrap();
+        let old = store.pending_for("target").unwrap().unwrap();
+        assert_eq!((old.id.as_str(),old.body.as_str(),old.sender_name.as_str()), ("old","hello","Session sender"));
+        assert_eq!(old.group_id, "g");
+        store.append_message("", "sender", "target", crate::broker::MessageKind::Message, "outside group").unwrap();
+        store.set_receipt("old", crate::broker::Receipt::Delivered).unwrap();
+        assert_eq!(store.pending_for("target").unwrap().unwrap().body, "outside group");
+        let remaining: i64 = store.lock().unwrap().query_row("SELECT COUNT(*) FROM sqlite_master
+            WHERE name='workflow_messages_upgrade'", [], |row| row.get(0)).unwrap();
+        assert_eq!(remaining, 0);
     }
 
     #[test]

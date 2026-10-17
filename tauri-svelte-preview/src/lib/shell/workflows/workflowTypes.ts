@@ -281,15 +281,6 @@ export interface PullRequestMergeReceipt {
   mergeCommitSha: string;
 }
 
-export type WorkflowResultReceipt =
-  | ImplementationReceipt
-  | PullRequestReceipt
-  | PullRequestMergeReceipt
-  | ReviewReceipt
-  | SpecComplianceReceipt
-  | VerificationReceipt
-  | PlanReceipt;
-
 /* -------------------------------------------------------------------------- */
 /* Presentation views                                                         */
 /* -------------------------------------------------------------------------- */
@@ -433,9 +424,30 @@ export function providerNativeAgentView(input: {
 /* Tauri command DTOs                                                          */
 /* -------------------------------------------------------------------------- */
 
+/** The Notion task a run works on, snapshotted when the run is created. */
+export interface WorkflowTaskSnapshot {
+  key: string;
+  title: string;
+  body: string;
+}
+
 export interface CreateWorkflowRunDto {
-  definition: WorkflowDefinitionV1;
+  repoRoot: string;
+  /** A `.assembly/workflows/*.yml` path relative to `repoRoot`. */
+  workflowPath: string;
+  task: WorkflowTaskSnapshot;
   input: Record<string, unknown>;
+  idempotencyKey: string;
+}
+
+/** The owner's answer to a step waiting for them. */
+export type WorkflowPauseDecision = 'another-round' | 'accept' | 'stop';
+
+export interface AnswerWorkflowPauseDto {
+  runId: string;
+  nodeId: string;
+  decision: WorkflowPauseDecision;
+  reply: string | null;
   idempotencyKey: string;
 }
 
@@ -452,20 +464,11 @@ export interface ApproveWorkflowGateDto extends WorkflowNodeIdempotencyDto {
   approval: { approved: boolean; [key: string]: unknown };
 }
 
-export interface RedirectWorkflowNodeDto extends WorkflowNodeIdempotencyDto {
-  provider: string;
-}
-
-export interface SubmitWorkflowResultDto extends WorkflowNodeIdempotencyDto {
-  result: WorkflowResultReceipt;
-}
-
 export type StartWorkflowRunDto = WorkflowRunIdempotencyDto;
 export type PauseWorkflowRunDto = WorkflowRunIdempotencyDto;
 export type ResumeWorkflowRunDto = WorkflowRunIdempotencyDto;
 export type CancelWorkflowRunDto = WorkflowRunIdempotencyDto;
 export type RetryWorkflowNodeDto = WorkflowNodeIdempotencyDto;
-export type SkipWorkflowNodeDto = WorkflowNodeIdempotencyDto;
 
 /** Useful for callers that want to describe one control action without IO. */
 export type WorkflowCommandDto =
@@ -474,9 +477,36 @@ export type WorkflowCommandDto =
   | { kind: 'resume'; input: ResumeWorkflowRunDto }
   | { kind: 'cancel'; input: CancelWorkflowRunDto }
   | { kind: 'retry-node'; input: RetryWorkflowNodeDto }
-  | { kind: 'redirect-node'; input: RedirectWorkflowNodeDto }
-  | { kind: 'skip-node'; input: SkipWorkflowNodeDto }
-  | { kind: 'approve-gate'; input: ApproveWorkflowGateDto }
-  | { kind: 'submit-result'; input: SubmitWorkflowResultDto };
+  | { kind: 'approve-gate'; input: ApproveWorkflowGateDto };
 
 export type WorkflowFilter = 'all' | 'active' | 'waiting' | 'failed' | 'completed';
+
+/** What a step did, read from its structured output: what the owner sees under a step. */
+export interface WorkflowStepFacts {
+  commands: { command: string; exitCode: number | null; lastLines: string }[];
+  verdict: string | null;
+  findings: string[];
+  prUrl: string | null;
+}
+
+/** A step's commands with their exit codes and last 5 output lines, its review verdict and findings, and its PR. */
+export function workflowStepFacts(node: Pick<WorkflowNodeRunRecord, 'structuredOutput'>): WorkflowStepFacts {
+  const output = (node.structuredOutput ?? {}) as Record<string, unknown>;
+  const commands = Array.isArray(output.commands) ? output.commands as Record<string, unknown>[] : [];
+  return {
+    commands: commands.map((command) => ({
+      command: String(command.command ?? ''),
+      exitCode: typeof command.exitCode === 'number' ? command.exitCode : null,
+      lastLines: String(command.output ?? '').split('\n').filter((line, index, lines) =>
+        index < lines.length - 1 || line !== '').slice(-5).join('\n')
+    })),
+    verdict: typeof output.verdict === 'string' ? output.verdict : null,
+    findings: Array.isArray(output.findings) ? output.findings.map(String) : [],
+    prUrl: typeof output.url === 'string' && output.url ? output.url : null
+  };
+}
+
+/** The machine a workflow command goes to: null for this Mac, else the remote profile id. */
+export function workflowMachine(machine: string): string | null {
+  return machine === 'mac' ? null : machine;
+}

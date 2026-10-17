@@ -8,114 +8,113 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 import {
+  answerWorkflowPauseFromTauri,
   approveWorkflowGateFromTauri,
   cancelWorkflowRunFromTauri,
   createWorkflowRunFromTauri,
   isNativeTauriRuntime,
+  listWorkflowFilesFromTauri,
   listWorkflowRunsFromTauri,
   pauseWorkflowRunFromTauri,
-  redirectWorkflowNodeFromTauri,
+  remoteWorkflowFromTauri,
   resumeWorkflowRunFromTauri,
   retryWorkflowNodeFromTauri,
-  skipWorkflowNodeFromTauri,
-  startWorkflowRunFromTauri,
-  submitWorkflowResultFromTauri
+  startWorkflowRunFromTauri
 } from '$lib/tauriSource';
 import {
   trackTauriListener,
   trackTauriSubscriber
 } from '$lib/shell/resourceDiagnostics.svelte';
 import type {
+  AnswerWorkflowPauseDto,
   ApproveWorkflowGateDto,
   CancelWorkflowRunDto,
   CreateWorkflowRunDto,
   PauseWorkflowRunDto,
-  RedirectWorkflowNodeDto,
   ResumeWorkflowRunDto,
   RetryWorkflowNodeDto,
-  SkipWorkflowNodeDto,
   StartWorkflowRunDto,
-  SubmitWorkflowResultDto,
   WorkflowRunRecord
 } from './workflowTypes';
 
 export const workflowSnapshotEvent = 'workflow-run-updated';
 
-export async function listWorkflowRuns(): Promise<WorkflowRunRecord[] | null> {
-  return listWorkflowRunsFromTauri();
+// `machine` is a remote profile id: that machine's own engine runs the command.
+// Null means this Mac.
+
+export async function listWorkflowRuns(machine: string | null = null): Promise<WorkflowRunRecord[] | null> {
+  return machine ? remoteWorkflowFromTauri(machine, 'list', {}) : listWorkflowRunsFromTauri();
 }
 
 export async function createWorkflowRun(
-  input: CreateWorkflowRunDto
+  input: CreateWorkflowRunDto,
+  machine: string | null = null
 ): Promise<WorkflowRunRecord | null> {
-  return createWorkflowRunFromTauri(input.definition, input.input, input.idempotencyKey);
+  if (machine) return remoteWorkflowFromTauri(machine, 'create', input);
+  return createWorkflowRunFromTauri(input.repoRoot, input.workflowPath, input.task, input.input, input.idempotencyKey);
+}
+
+export async function listWorkflowFiles(repoRoot: string, machine: string | null = null): Promise<string[] | null> {
+  return machine ? remoteWorkflowFromTauri(machine, 'listFiles', { repoRoot }) : listWorkflowFilesFromTauri(repoRoot);
+}
+
+export async function answerWorkflowPause(
+  input: AnswerWorkflowPauseDto,
+  machine: string | null = null
+): Promise<WorkflowRunRecord | null> {
+  if (machine) return remoteWorkflowFromTauri(machine, 'answer', input);
+  return answerWorkflowPauseFromTauri(input.runId, input.nodeId, input.decision, input.reply, input.idempotencyKey);
 }
 
 export async function startWorkflowRun(
-  input: StartWorkflowRunDto
+  input: StartWorkflowRunDto,
+  machine: string | null = null
 ): Promise<WorkflowRunRecord | null> {
+  if (machine) return remoteWorkflowFromTauri(machine, 'start', input);
   return startWorkflowRunFromTauri(input.runId, input.idempotencyKey);
 }
 
 export async function pauseWorkflowRun(
-  input: PauseWorkflowRunDto
+  input: PauseWorkflowRunDto,
+  machine: string | null = null
 ): Promise<WorkflowRunRecord | null> {
+  if (machine) return remoteWorkflowFromTauri(machine, 'pause', input);
   return pauseWorkflowRunFromTauri(input.runId, input.idempotencyKey);
 }
 
 export async function resumeWorkflowRun(
-  input: ResumeWorkflowRunDto
+  input: ResumeWorkflowRunDto,
+  machine: string | null = null
 ): Promise<WorkflowRunRecord | null> {
+  if (machine) return remoteWorkflowFromTauri(machine, 'resume', input);
   return resumeWorkflowRunFromTauri(input.runId, input.idempotencyKey);
 }
 
 export async function cancelWorkflowRun(
-  input: CancelWorkflowRunDto
+  input: CancelWorkflowRunDto,
+  machine: string | null = null
 ): Promise<WorkflowRunRecord | null> {
+  if (machine) return remoteWorkflowFromTauri(machine, 'cancel', input);
   return cancelWorkflowRunFromTauri(input.runId, input.idempotencyKey);
 }
 
 export async function retryWorkflowNode(
-  input: RetryWorkflowNodeDto
+  input: RetryWorkflowNodeDto,
+  machine: string | null = null
 ): Promise<WorkflowRunRecord | null> {
+  if (machine) return remoteWorkflowFromTauri(machine, 'retry', input);
   return retryWorkflowNodeFromTauri(input.runId, input.nodeId, input.idempotencyKey);
 }
 
-export async function redirectWorkflowNode(
-  input: RedirectWorkflowNodeDto
-): Promise<WorkflowRunRecord | null> {
-  return redirectWorkflowNodeFromTauri(
-    input.runId,
-    input.nodeId,
-    input.provider,
-    input.idempotencyKey
-  );
-}
-
-export async function skipWorkflowNode(
-  input: SkipWorkflowNodeDto
-): Promise<WorkflowRunRecord | null> {
-  return skipWorkflowNodeFromTauri(input.runId, input.nodeId, input.idempotencyKey);
-}
-
 export async function approveWorkflowGate(
-  input: ApproveWorkflowGateDto
+  input: ApproveWorkflowGateDto,
+  machine: string | null = null
 ): Promise<WorkflowRunRecord | null> {
+  if (machine) return remoteWorkflowFromTauri(machine, 'approveGate', input);
   return approveWorkflowGateFromTauri(
     input.runId,
     input.nodeId,
     input.approval,
-    input.idempotencyKey
-  );
-}
-
-export async function submitWorkflowResult(
-  input: SubmitWorkflowResultDto
-): Promise<WorkflowRunRecord | null> {
-  return submitWorkflowResultFromTauri(
-    input.runId,
-    input.nodeId,
-    input.result,
     input.idempotencyKey
   );
 }

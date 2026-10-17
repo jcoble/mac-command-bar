@@ -5331,6 +5331,10 @@ fn shutdown_agent_runtimes_on_exit(manager: &agent_conversation::manager::AgentR
 
 fn main() {
     install_panic_hook();
+    if let Err(error) = agent_conversation::messaging::endpoint() {
+        crate::debug_log::stderr_log!("Assembly messaging endpoint failed: {error}");
+        std::process::exit(1);
+    }
     if std::env::args().any(|argument| argument == "--assembly-server") {
         if let Err(error) = agent_conversation::remote::run_server_from_environment() {
             crate::debug_log::stderr_log!("Assembly remote server failed: {error}");
@@ -5422,7 +5426,15 @@ fn main() {
             let workflow_store = agent_runtime.store_handle();
             let remote_session_store = Arc::clone(&workflow_store);
             let workflow_engine = WorkflowEngine::managed(agent_runtime.clone(), workflow_store);
-            workflow_engine.fail_interrupted_stages().map_err(|error| error.to_string())?;
+            let recovered_runs = workflow_engine.recover_after_restart().map_err(|error| error.to_string())?;
+            let recovery_engine = workflow_engine.clone();
+            tauri::async_runtime::spawn(async move {
+                for run_id in recovered_runs {
+                    if let Err(error) = recovery_engine.dispatch_ready(&run_id).await {
+                        eprintln!("workflow run {run_id} could not restart: {error}");
+                    }
+                }
+            });
             let live_session_ids = agent_runtime
                 .resource_roots()
                 .into_iter()
@@ -5444,6 +5456,11 @@ fn main() {
                     remote_session_store,
                 )?;
             remote_connection.set_terminal_output(projection_streams.clone());
+            // Sessions on this desktop and on connected machines message each other through it.
+            remote_connection.set_message_host(agent_runtime.clone());
+            agent_conversation::messaging::endpoint()?
+                .set_relay(remote_connection.message_relay(agent_conversation::remote::LOCAL_MACHINE));
+            agent_conversation::messaging::endpoint()?.set_workflow(workflow_engine.clone());
             if !remote_connection.is_configured() {
                 if let Some(profiles) = agent_runtime.read_app_setting(
                     agent_conversation::remote::REMOTE_ASSEMBLY_PROFILES_SETTING_KEY,
@@ -5677,15 +5694,16 @@ fn main() {
             record_orchestration_event,
             list_workflow_runs,
             create_workflow_run,
+            get_workflow_run,
+            list_workflow_files,
+            list_owner_inbox,
+            answer_workflow_pause,
             start_workflow_run,
             pause_workflow_run,
             resume_workflow_run,
             cancel_workflow_run,
             retry_workflow_node,
-            redirect_workflow_node,
-            skip_workflow_node,
             approve_workflow_gate,
-            submit_workflow_result,
             agent_conversation::ensure_agent_conversation,
             agent_conversation::remote::read_remote_assembly_environment,
             agent_conversation::remote::connect_remote_assembly,
@@ -5697,6 +5715,7 @@ fn main() {
             agent_conversation::remote::cancel_remote_connection,
             agent_conversation::remote::disconnect_remote_assembly,
             agent_conversation::remote::remote_workspace,
+            agent_conversation::remote::remote_workflow,
             agent_conversation::remote::check_remote_provider_updates,
             agent_conversation::remote::install_remote_provider_updates,
             agent_conversation::remote::restart_remote_for_provider_updates,
@@ -5705,6 +5724,8 @@ fn main() {
             agent_conversation::agent_conversation_set_session_draft,
             agent_conversation::agent_conversation_get_session_draft,
             agent_conversation::agent_conversation_clear_session_draft,
+            agent_conversation::set_main_orchestrator,
+            agent_conversation::list_agent_messages,
             agent_conversation::write_agent_conversation_workspace,
             agent_conversation::read_agent_conversation_workspace,
             agent_conversation::read_agent_conversation_workspace_expanded_paths,

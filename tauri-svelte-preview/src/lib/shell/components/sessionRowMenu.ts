@@ -14,6 +14,8 @@ export type SessionRowMenuAction =
   | 'move-to-project'
   | 'pin'
   | 'unpin'
+  | 'mark-orchestrator'
+  | 'unmark-orchestrator'
   | 'mark-done'
   | 'reopen'
   | 'archive'
@@ -53,6 +55,10 @@ export interface SessionRowMenuInput {
   worktreePath: string | null;
   /** Whether the session is pinned to the top of the rail. */
   pinned: boolean;
+  /** Whether the owner marked this session as the main orchestrator. */
+  orchestrator: boolean;
+  /** False for a helper or a workflow worker, which cannot be the main orchestrator. */
+  topLevel: boolean;
 }
 
 const NO_BACKEND = 'Not available yet';
@@ -64,7 +70,22 @@ export function sessionRowMenuItems(input: SessionRowMenuInput): SessionRowMenuI
     { id: 'move-to-project', label: 'Move to project', enabled: false, disabledReason: NO_BACKEND },
     input.pinned
       ? { id: 'unpin', label: 'Unpin', enabled: true }
-      : { id: 'pin', label: 'Pin to top', enabled: true }
+      : { id: 'pin', label: 'Pin to top', enabled: true },
+    input.orchestrator
+      ? { id: 'unmark-orchestrator', label: 'Unmark main orchestrator', enabled: true }
+      : input.topLevel
+        ? {
+            id: 'mark-orchestrator',
+            label: 'Make main orchestrator',
+            enabled: true,
+            hint: 'The session you mostly talk to; it can reach every other top-level session'
+          }
+        : {
+            id: 'mark-orchestrator',
+            label: 'Make main orchestrator',
+            enabled: false,
+            disabledReason: 'Only a top-level session can be the main orchestrator'
+          }
   ];
 
   // The lifecycle moves the rail already performs, in the order a session

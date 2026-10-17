@@ -184,6 +184,9 @@ pub struct ManagedAgentSession {
     pub generation: u64,
     /// The registry project this session was started in, kept across generations.
     pub project_id: Option<String>,
+    /// The session that started this one with `start_session`; each turn this
+    /// session finishes is reported back to it as a message.
+    helper_of: Option<String>,
     pub owner: AgentExecutionOwner,
     pub state: AgentRuntimeState,
     pub capabilities: AgentCapabilities,
@@ -374,6 +377,9 @@ impl ChildHistoryWatcher {
     }
 }
 
+/// The most of a helper's final reply that is sent back to its parent.
+const HELPER_REPLY_LIMIT: usize = 4000;
+
 #[derive(Clone)]
 pub struct AgentRuntimeManager {
     /// Live process and request overlay. Durable identity, lifecycle state, and
@@ -384,6 +390,9 @@ pub struct AgentRuntimeManager {
     emitter: Arc<Mutex<Option<ConversationEmitter>>>,
     broker_emitter: Arc<Mutex<Option<BrokerEmitter>>>,
     broker_statuses: Arc<Mutex<HashMap<String, AgentWorkStatus>>>,
+    /// Sessions a queued message is being sent to, so a turn ending and a new
+    /// message arriving cannot send the same message twice.
+    delivering: Arc<Mutex<HashMap<String, bool>>>,
     namer: Arc<Mutex<Option<SessionNamer>>>,
     renamed_listener: Arc<Mutex<Option<SessionRenamedListener>>>,
     activation_locks: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
@@ -452,6 +461,7 @@ impl AgentRuntimeManager {
             emitter: Arc::new(Mutex::new(None)),
             broker_emitter: Arc::new(Mutex::new(None)),
             broker_statuses: Arc::new(Mutex::new(HashMap::new())),
+            delivering: Arc::new(Mutex::new(HashMap::new())),
             namer: Arc::new(Mutex::new(None)),
             renamed_listener: Arc::new(Mutex::new(None)),
             activation_locks: Arc::new(Mutex::new(HashMap::new())),
@@ -1031,7 +1041,7 @@ impl AgentRuntimeManager {
             );
             let result = async {
                 adapter.initialize(InitializeAgentInput { provider }).await?;
-                let started = adapter.new_session(NewAgentSession { cwd }).await?;
+                let started = adapter.new_session(NewAgentSession { cwd, mcp_servers: vec![] }).await?;
                 let mut config = started.config;
                 // A model's default effort is only reported while it is the
                 // session's model, so each other model is selected once here.
@@ -1153,21 +1163,17 @@ impl AgentRuntimeManager {
                 session.state == AgentRuntimeState::Closed,
             )
         };
-        let Some((group_id, _, orchestrator, _)) = self
+        let Some((group_id, orchestrator)) = self
             .store
-            .list_open_groups()
+            .open_group_for(owned_id)
             .map_err(|error| error.to_string())?
-            .into_iter()
-            .find(|(_, _, _, members)| members.iter().any(|member| member == owned_id))
         else {
             return Ok(());
         };
         let decision_pending = self
             .store
-            .pending_for(&group_id, owned_id)
-            .map_err(|error| error.to_string())?
-            .iter()
-            .any(|envelope| envelope.kind == mcb_core::broker::MessageKind::DecisionRequest);
+            .decision_pending_for(owned_id)
+            .map_err(|error| error.to_string())?;
         let status = status_for(
             turn_active,
             awaiting_permission_or_input,
@@ -1207,41 +1213,206 @@ impl AgentRuntimeManager {
         Ok(())
     }
 
+    /// Starts a helper session for `parent` in the parent's folder and project,
+    /// lists it among the parent's agents, and sends it `prompt` as its first
+    /// turn. Returns the helper's owned id.
+    pub(super) async fn start_helper(
+        &self,
+        parent: &str,
+        provider: AgentConversationProvider,
+        model: Option<String>,
+        name: &str,
+        prompt: &str,
+    ) -> Result<String, String> {
+        let parent_row = self.store.get_session(parent).map_err(|error| error.to_string())?
+            .ok_or_else(|| "The calling session was not found".to_string())?;
+        // The helper hears its instructions as its parent's message, never as the owner's.
+        let sender = self.store.directory_name(parent).map_err(|error| error.to_string())?
+            .map_or_else(|| parent.to_string(), |(handle, title)| format!("{handle} · {title}"));
+        self.providers.manifest(provider)?;
+        let owned_id = uuid::Uuid::new_v4().to_string();
+        let connection = self.ensure_async(EnsureAgentConversationRequest {
+            owned_id: owned_id.clone(),
+            provider,
+            cwd: parent_row.cwd.clone(),
+            native_session_id: None,
+            execution_environment: ExecutionEnvironment::Local,
+            remote_profile_id: None,
+            native_session_mode: AgentNativeSessionMode::Resume,
+            reasoning_effort: None,
+            project_id: parent_row.project_id.clone(),
+        }).await?;
+        self.hydrate_overlay_from_store(&owned_id)?;
+        {
+            let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let session = current_session_mut(&mut sessions, &owned_id, connection.generation)?;
+            session.helper_of = Some(parent.to_string());
+            session.rail_meta.title = Some(name.to_string());
+            session.rail_meta.project = parent_row.project.clone();
+            session.title_source = Some(TITLE_SOURCE_USER.to_string());
+            persist_session(session)?;
+        }
+        // The rail adds a session it has not seen when it hears its name.
+        let listener = self.renamed_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if let Some(listener) = listener {
+            listener(&owned_id, name);
+        }
+        self.show_helper_to_parent(parent, &owned_id, name, "running")?;
+        let prompt = AgentPrompt { text: format!("[message from {sender}]\n{prompt}"), images: Vec::new(), attachment_ids: Vec::new() };
+        // A helper works at its parent's permission level, on either provider.
+        let approval_policy = {
+            let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            sessions.get(parent).and_then(|session|
+                helper_mode(session.config.approval_policy.as_deref(), session.provider, provider))
+        };
+        if let Err(error) = self.send_message(&owned_id, connection.generation, prompt, model, approval_policy).await {
+            if let Err(show_error) = self.show_helper_to_parent(parent, &owned_id, name, "failed") {
+                crate::debug_log::stderr_log!("Could not mark the helper failed: {show_error}");
+            }
+            return Err(error);
+        }
+        Ok(owned_id)
+    }
+
+    /// Updates the helper's row in its parent's agents list.
+    fn show_helper_to_parent(&self, parent: &str, helper: &str, name: &str, state: &str) -> Result<(), String> {
+        self.hydrate_overlay_from_store(parent)?;
+        let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(session) = sessions.get_mut(parent) else { return Ok(()) };
+        record_payload_for_session_and_dispatch(session, &self.emitter, AgentConversationPayload::ChildUpdate {
+            child_id: helper.to_string(),
+            parent_tool_call_id: String::new(),
+            parent_id: Some(parent.to_string()),
+            transcript_id: None,
+            label: Some(name.to_string()),
+            state: state.to_string(),
+            latest_activity: None,
+        }).map(|_| ())
+    }
+
+    /// Queues a helper's final reply for the session that started it and
+    /// wakes that session. Sessions that are not helpers report nothing.
+    fn report_helper_turn(&self, owned_id: &str, turn_id: &str, outcome: &str) -> Result<(), String> {
+        let (parent, name) = {
+            let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(session) = sessions.get(owned_id) else { return Ok(()) };
+            let Some(parent) = session.helper_of.clone() else { return Ok(()) };
+            (parent, session.rail_meta.title.clone().unwrap_or_else(|| owned_id.to_string()))
+        };
+        let reply = self.store.latest_assistant_text_for_turn(owned_id, turn_id)
+            .map_err(|error| error.to_string())?.unwrap_or_default();
+        // The reply is the helper's own text, so it may not pass as another sender's label.
+        let reply = super::messaging::quote_labels(&reply.chars().take(HELPER_REPLY_LIMIT).collect::<String>());
+        self.store.append_message("", owned_id, &parent, mcb_core::broker::MessageKind::Message,
+            &format!("[{name} {outcome}]\n{reply}")).map_err(|error| error.to_string())?;
+        let state = match outcome { "finished" => "finished", "failed" => "failed", _ => "cancelled" };
+        self.show_helper_to_parent(&parent, owned_id, &name, state)?;
+        let manager = self.clone();
+        tauri::async_runtime::spawn(async move { manager.deliver_if_idle(&parent).await });
+        Ok(())
+    }
+
+    /// Sends a newly queued message at once when its target is between turns.
+    /// A busy target receives it when its turn ends.
+    /// Boxed because activation hands this to the messaging endpoint, and the
+    /// send below activates again.
+    pub(crate) fn deliver_if_idle<'a>(&'a self, owned_id: &'a str)
+        -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+        let generation = match self.hydrate_overlay_from_store(owned_id) {
+            Ok(true) => self.idle_generation(owned_id),
+            Ok(false) => None,
+            Err(error) => {
+                crate::debug_log::stderr_log!("Could not load message target {owned_id}: {error}");
+                None
+            }
+        };
+        let Some(generation) = generation else { return };
+        if let Err(error) = self
+            .drain_broker_message_at(owned_id, generation, store_timestamp(timestamp_millis()))
+            .await
+        {
+            crate::debug_log::stderr_log!("Could not deliver broker message: {error}");
+        }
+        })
+    }
+
+    /// The session's generation when it can take a message now: no turn of
+    /// any kind running and nothing waiting on the person.
+    fn idle_generation(&self, owned_id: &str) -> Option<u64> {
+        let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        sessions.get(owned_id).filter(|session| {
+            session.active_turn_id.is_none()
+                && !session.autonomous_turn_started
+                && !session.prompt_once_active
+                && session.permission_requests.is_empty()
+                && session.user_input_requests.is_empty()
+                && session.state != AgentRuntimeState::Closed
+        }).map(|session| session.generation)
+    }
+
     async fn drain_broker_message_at(
         &self,
         owned_id: &str,
         generation: u64,
         now_ms: i64,
     ) -> Result<bool, String> {
-        let Some((group_id, _, _, _)) = self
-            .store
-            .list_open_groups()
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .find(|(_, _, _, members)| members.iter().any(|member| member == owned_id))
-        else {
-            return Ok(false);
-        };
-        let Some(message) = self
-            .store
-            .pending_for(&group_id, owned_id)
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .next()
-        else {
-            return Ok(false);
-        };
-        if now_ms.saturating_sub(message.created_at_ms) > BROKER_MESSAGE_TTL_MS {
+        // A second caller while one is sending marks the session to be read
+        // again, so a message queued meanwhile is not left behind.
+        {
+            let mut delivering = self.delivering.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(again) = delivering.get_mut(owned_id) {
+                *again = true;
+                return Ok(false);
+            }
+            delivering.insert(owned_id.to_string(), false);
+        }
+        loop {
+            let delivered = self.drain_next_message(owned_id, generation, now_ms).await;
+            let mut delivering = self.delivering.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A sent prompt starts a turn, and that turn's end reads the queue.
+            if matches!(delivered, Ok(true)) || delivering.get(owned_id) != Some(&true) {
+                delivering.remove(owned_id);
+                return delivered;
+            }
+            delivering.insert(owned_id.to_string(), false);
+        }
+    }
+
+    async fn drain_next_message(
+        &self,
+        owned_id: &str,
+        generation: u64,
+        now_ms: i64,
+    ) -> Result<bool, String> {
+        // Expired messages fail in order, so the first live one is sent.
+        let message = loop {
+            let Some(message) = self
+                .store
+                .pending_for(owned_id)
+                .map_err(|error| error.to_string())?
+            else {
+                return Ok(false);
+            };
+            if now_ms.saturating_sub(message.created_at_ms) <= BROKER_MESSAGE_TTL_MS {
+                break message;
+            }
             self.store
-                .set_receipt(&message.id, mcb_core::broker::Receipt::Expired)
+                .set_receipt(&message.id, mcb_core::broker::Receipt::Failed)
                 .map_err(|error| error.to_string())?;
+        };
+
+        // A turn the person started since the caller looked takes the message
+        // when it ends, not as a steer in the middle of it.
+        if self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(owned_id)
+            && self.idle_generation(owned_id).is_none()
+        {
             return Ok(false);
         }
-
         let prompt = AgentPrompt {
             text: format!(
-                "[workflow message from {}]\n{}",
-                message.from_agent, message.body
+                "[message from {}]\n{}",
+                message.sender_name, message.body
             ),
             images: Vec::new(),
             attachment_ids: Vec::new(),
@@ -1249,6 +1420,13 @@ impl AgentRuntimeManager {
         let result = self
             .send_message(owned_id, generation, prompt, None, None)
             .await;
+        // A turn that began while this was being sent refuses it; the message
+        // stays queued for that turn's end instead of failing.
+        let busy = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(owned_id) && self.idle_generation(owned_id).is_none();
+        if result.is_err() && busy {
+            return Ok(false);
+        }
         self.store
             .set_receipt(
                 &message.id,
@@ -1747,6 +1925,7 @@ impl AgentRuntimeManager {
                     .as_ref()
                     .and_then(|session| session.project_id.clone())
                     .or(request.project_id.clone()),
+                helper_of: prior.as_ref().and_then(|session| session.helper_of.clone()),
                 owner: AgentExecutionOwner::Stopped,
                 state: AgentRuntimeState::Starting,
                 capabilities: empty_capabilities(request.provider),
@@ -1894,6 +2073,10 @@ impl AgentRuntimeManager {
                     never_had_a_turn || !provider_holds_session(provider, native_session_id)
                 })
         };
+        let endpoint = super::messaging::endpoint()?;
+        let credential = endpoint.issue(owned_id);
+        endpoint.bind_store(&credential.token, &self.store, Some(self.clone()));
+        let mcp_servers = vec![credential.server()];
         let shared_key = AdapterPoolKey::Shared(provider);
         let mut pools = self.adapter_pools.lock().await;
         let (capabilities, started_result, runtime, transport, inbound, pool_key, started_fresh) =
@@ -1905,20 +2088,20 @@ impl AgentRuntimeManager {
                     let attempted = match native_session_id.as_deref() {
                         Some(native_session_id) => match native_session_mode {
                             AgentNativeSessionMode::Resume => {
-                                runtime.resume_session_multi(&cwd, native_session_id).await
+                                runtime.resume_session_multi(&cwd, native_session_id, mcp_servers.clone()).await
                             }
                             AgentNativeSessionMode::Load => {
-                                runtime.load_session_multi(&cwd, native_session_id).await
+                                runtime.load_session_multi(&cwd, native_session_id, mcp_servers.clone()).await
                             }
                         },
-                        None => runtime.new_session_multi(&cwd).await,
+                        None => runtime.new_session_multi(&cwd, mcp_servers.clone()).await,
                     };
                     if attempted.is_err() && can_start_fresh() {
                         crate::debug_log::stderr_log!(
                             "{owned_id}: stored native session holds nothing to resume; starting fresh"
                         );
                         started_fresh = true;
-                        runtime.new_session_multi(&cwd).await
+                        runtime.new_session_multi(&cwd, mcp_servers.clone()).await
                     } else {
                         attempted
                     }
@@ -1953,6 +2136,7 @@ impl AgentRuntimeManager {
                         let input = LoadAgentSession {
                             cwd: cwd.clone(),
                             native_session_id: native_session_id.clone(),
+                            mcp_servers: mcp_servers.clone(),
                         };
                         match native_session_mode {
                             AgentNativeSessionMode::Resume => adapter.resume_session(input).await,
@@ -1961,7 +2145,7 @@ impl AgentRuntimeManager {
                     }
                     None => {
                         adapter
-                            .new_session(NewAgentSession { cwd: cwd.clone() })
+                            .new_session(NewAgentSession { cwd: cwd.clone(), mcp_servers: mcp_servers.clone() })
                             .await
                     }
                 };
@@ -1971,7 +2155,7 @@ impl AgentRuntimeManager {
                     );
                     (
                         adapter
-                            .new_session(NewAgentSession { cwd: cwd.clone() })
+                            .new_session(NewAgentSession { cwd: cwd.clone(), mcp_servers: mcp_servers.clone() })
                             .await,
                         true,
                     )
@@ -2460,12 +2644,10 @@ impl AgentRuntimeManager {
             .native_session_id
             .clone()
             .ok_or_else(|| "Structured provider session has not started".to_string())?;
-        let sessions = Arc::downgrade(&self.sessions);
-        let emitter = Arc::clone(&self.emitter);
+        let manager = self.clone();
         let owned_id = owned_id.to_string();
         session.child_rollout_scan = Some(tokio::spawn(async move {
-            run_child_rollout_scan(sessions, emitter, owned_id, generation, native_session_id)
-                .await;
+            run_child_rollout_scan(manager, owned_id, generation, native_session_id).await;
         }));
         Ok(())
     }
@@ -2910,7 +3092,7 @@ impl AgentRuntimeManager {
         Ok(config)
     }
 
-    async fn apply_conversation_config(
+    pub(crate) async fn apply_conversation_config(
         &self,
         request: SetAgentConversationConfigRequest,
         suspend_on_error: bool,
@@ -3465,14 +3647,16 @@ impl AgentRuntimeManager {
     pub fn list_sessions(&self) -> Result<Vec<AgentConversationSessionRecord>, String> {
         let rows = self
             .store
-            .list_sessions()
+            .list_sessions_with_handles()
             .map_err(|error| error.to_string())?;
+        let main_orchestrator = self.store.main_orchestrator().map_err(|error| error.to_string())?;
         let sessions = self
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         rows.into_iter()
-            .map(|row| {
+            .map(|listed| {
+                let mcb_core::session_store::ListedSession { row, handle, helper_of, run_id, run_label } = listed;
                 let live = sessions.get(&row.owned_id);
                 let (
                     provider,
@@ -3511,6 +3695,8 @@ impl AgentRuntimeManager {
                 meta.branch.clone_from(&row.branch);
                 meta.title.clone_from(&row.title);
                 meta.project.clone_from(&row.project);
+                let orchestrator_marked_at_ms = main_orchestrator.as_ref()
+                    .filter(|(owned_id, _)| *owned_id == row.owned_id).map(|(_, marked_at)| *marked_at);
                 Ok(AgentConversationSessionRecord {
                     owned_id: row.owned_id,
                     execution_environment: ExecutionEnvironment::Local,
@@ -3529,9 +3715,14 @@ impl AgentRuntimeManager {
                     background_work,
                     native_session_id,
                     project_id: row.project_id,
+                    handle,
                     // Filled by the list command, in one SQL statement for the whole list.
                     project_group_key: String::new(),
                     project_group_label: String::new(),
+                    orchestrator_marked_at_ms,
+                    helper_of,
+                    run_id,
+                    run_label,
                     meta,
                 })
             })
@@ -3721,20 +3912,29 @@ impl AgentRuntimeManager {
     pub fn set_workflow_session_title(&self, owned_id: &str, title: &str) -> Result<(), String> {
         let set_title = |session: &mut ManagedAgentSession| {
             if !session_title_is_empty(session.rail_meta.title.as_deref()) {
-                return Ok(());
+                return Ok(false);
             }
             session.rail_meta.title = Some(title.to_string());
             session.title_source = Some(TITLE_SOURCE_USER.to_string());
-            persist_session(session)
+            persist_session(session).map(|()| true)
         };
-        let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(session) = sessions.get_mut(owned_id) {
-            return set_title(session);
+        let live = {
+            let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            sessions.get_mut(owned_id).map(|session| set_title(session))
+        };
+        let named = if let Some(named) = live {
+            named?
+        } else {
+            let row = self.store.get_session(owned_id).map_err(|error| error.to_string())?
+                .ok_or_else(|| "Workflow agent session was not found".to_string())?;
+            set_title(&mut recovered_session_from_row(&self.store, row)?)?
+        };
+        // The rail adds a session it has not seen when it hears its name.
+        let listener = self.renamed_listener.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if let (true, Some(listener)) = (named, listener) {
+            listener(owned_id, title);
         }
-        drop(sessions);
-        let row = self.store.get_session(owned_id).map_err(|error| error.to_string())?
-            .ok_or_else(|| "Workflow agent session was not found".to_string())?;
-        set_title(&mut recovered_session_from_row(&self.store, row)?)
+        Ok(())
     }
 
     /// Replaces the provisional name of a session with one the helper model
@@ -4305,6 +4505,7 @@ impl AgentRuntimeManager {
         self.store
             .delete_session(&owned_id)
             .map_err(|error| error.to_string())?;
+        super::messaging::endpoint()?.revoke(&owned_id);
         Ok(true)
     }
 
@@ -4750,6 +4951,8 @@ struct StoredSessionExtra {
     rail_meta: AgentConversationSessionMeta,
     #[serde(default)]
     claude_children: HashMap<String, ClaudeChildSession>,
+    #[serde(default)]
+    helper_of: Option<String>,
 }
 
 /// The stored metadata an imported conversation starts life with.
@@ -4771,6 +4974,7 @@ pub(super) fn imported_session_extra(
         capabilities: empty_capabilities(provider),
         rail_meta: AgentConversationSessionMeta::default(),
         claude_children: HashMap::new(),
+        helper_of: None,
     })
     .map_err(|error| format!("Could not encode imported session metadata: {error}"))
 }
@@ -4794,6 +4998,7 @@ fn persisted_session_row_for_candidate(
         capabilities: candidate.capabilities.clone(),
         rail_meta: session.rail_meta.clone(),
         claude_children: session.claude_children.clone(),
+        helper_of: session.helper_of.clone(),
     };
     Ok(SessionRow {
         owned_id: session.owned_id.clone(),
@@ -4917,6 +5122,7 @@ fn recovered_session_from_row(
         native_session_mode: stored.native_session_mode,
         generation: stored.generation,
         project_id: row.project_id,
+        helper_of: stored.helper_of.clone(),
         owner: stored.owner,
         state,
         capabilities: stored.capabilities,
@@ -5952,6 +6158,12 @@ async fn pump_inbound(
                     crate::debug_log::stderr_log!("Could not publish broker status: {error}");
                 }
                 if reached_quiescence {
+                    if let Err(error) = manager
+                        .drain_broker_message_at(&owned_id, generation, store_timestamp(timestamp_millis()))
+                        .await
+                    {
+                        crate::debug_log::stderr_log!("Could not drain broker message: {error}");
+                    }
                     if let Err(error) = manager.suspend_if_quiescent(&owned_id, generation).await {
                         crate::debug_log::stderr_log!(
                             "Could not tear down quiescent runtime: {error}"
@@ -6126,6 +6338,7 @@ async fn settle_closed_transport(
     reason: &str,
 ) {
     let emitter = Arc::clone(&manager.emitter);
+    let mut failed_turns = Vec::new();
     {
         let mut sessions = manager
             .sessions
@@ -6197,6 +6410,7 @@ async fn settle_closed_transport(
             );
             session.claude_reports_state = false;
             if let Some(turn_id) = session.active_turn_id.take() {
+                failed_turns.push((session.owned_id.clone(), turn_id.clone()));
                 let _ = record_payload_for_session_and_dispatch(
                     session,
                     &emitter,
@@ -6230,6 +6444,11 @@ async fn settle_closed_transport(
                     recoverable: true,
                 },
             );
+        }
+    }
+    for (owned_id, turn_id) in failed_turns {
+        if let Err(error) = manager.report_helper_turn(&owned_id, &turn_id, "failed") {
+            crate::debug_log::stderr_log!("Could not report the helper's turn: {error}");
         }
     }
     manager
@@ -6795,17 +7014,17 @@ fn raw_update_failed(params: &Value) -> bool {
 }
 
 async fn run_child_rollout_scan(
-    sessions: Weak<Mutex<HashMap<String, ManagedAgentSession>>>,
-    emitter: Arc<Mutex<Option<ConversationEmitter>>>,
+    manager: AgentRuntimeManager,
     owned_id: String,
     generation: u64,
     native_session_id: String,
 ) {
+    let sessions = Arc::downgrade(&manager.sessions);
     let mut parent_path = None;
     loop {
         let Some(outcome) = scan_codex_children_once(
             &sessions,
-            &emitter,
+            &manager.emitter,
             &owned_id,
             generation,
             &native_session_id,
@@ -6818,6 +7037,18 @@ async fn run_child_rollout_scan(
         parent_path = Some(outcome.parent_path);
         // After the turn ends, keep polling only while a child is still working.
         if !outcome.keep_scanning {
+            // The last child finished after the turn did, so the idle process
+            // may stop now. Detach this task first so stopping does not abort it.
+            if let Ok(session) = current_session_mut(
+                &mut manager.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+                &owned_id,
+                generation,
+            ) {
+                session.child_rollout_scan.take();
+            }
+            if let Err(error) = manager.suspend_if_quiescent(&owned_id, generation).await {
+                crate::debug_log::stderr_log!("Could not tear down quiescent runtime: {error}");
+            }
             return;
         }
         tokio::time::sleep(CHILD_ROLLOUT_SCAN_INTERVAL).await;
@@ -6850,10 +7081,7 @@ async fn scan_codex_children_once(
                     .canonical_path
             }
         };
-        let active_after = SystemTime::now()
-            .checked_sub(CHILD_ROLLOUT_SCAN_INTERVAL.saturating_mul(2))
-            .unwrap_or(UNIX_EPOCH);
-        transcript::scan_codex_child_rollouts(&path, &scan_parent_id, active_after)
+        transcript::scan_codex_child_rollouts(&path, &scan_parent_id)
             .ok()
             .map(|children| (path, children))
     })
@@ -7175,6 +7403,10 @@ async fn handle_ordered_session_event(
             }
             if turn_completed {
                 manager.name_session_after_turn(owned_id, generation, &turn_id);
+            }
+            let outcome = if cancelled { "stopped" } else if runtime_error { "failed" } else { "finished" };
+            if let Err(error) = manager.report_helper_turn(owned_id, &turn_id, outcome) {
+                crate::debug_log::stderr_log!("Could not report the helper's turn: {error}");
             }
             if let Err(error) = manager
                 .drain_broker_message_at(owned_id, generation, store_timestamp(timestamp_millis()))
@@ -8287,6 +8519,24 @@ fn projected_background_work(session: &ManagedAgentSession) -> Vec<BackgroundWor
     work
 }
 
+/// The permission mode a helper on `to` starts in, given its parent's `mode` on `from`. The same
+/// provider keeps the mode; across providers the owner's levels match: Claude Auto is Codex
+/// "Approve for me", Bypass Permissions is "Full access", and anything else asks.
+fn helper_mode(mode: Option<&str>, from: AgentConversationProvider, to: AgentConversationProvider) -> Option<String> {
+    let mode = mode?;
+    if from == to { return Some(mode.to_string()); }
+    let matched = match (to, mode) {
+        (AgentConversationProvider::Codex, "auto") => "agent",
+        (AgentConversationProvider::Codex, "bypassPermissions") => "agent-full-access",
+        (AgentConversationProvider::Codex, _) => "read-only",
+        (AgentConversationProvider::Claude, "agent") => "auto",
+        (AgentConversationProvider::Claude, "agent-full-access") => "bypassPermissions",
+        (AgentConversationProvider::Claude, _) => "default",
+        _ => return None,
+    };
+    Some(matched.to_string())
+}
+
 /// Claude Code wakes the agent that owned finished background work — a shell,
 /// or a sub-agent — to report it, even after it reported idle. Until its next
 /// idle the session still has work in hand.
@@ -8324,6 +8574,8 @@ fn session_is_quiescent(session: &ManagedAgentSession) -> bool {
         && session.writer_lease_transition.is_none()
         && session.live_tool_calls.is_empty()
         && session.background_work.is_empty()
+        // Stopping the process would stop a Codex sub-agent still at work.
+        && !session.codex_children.values().any(|child| child.state == "running")
 }
 
 fn abort_cancel_deadline(session: &mut ManagedAgentSession) {
@@ -8694,9 +8946,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let active_after = UNIX_EPOCH;
-        let children =
-            transcript::scan_codex_child_rollouts(&parent, "parent", active_after).unwrap();
+        let children = transcript::scan_codex_child_rollouts(&parent, "parent").unwrap();
         let mut known = HashMap::new();
 
         assert_eq!(
@@ -8712,6 +8962,27 @@ mod tests {
             }]
         );
         assert!(changed_child_updates("parent", &mut known, children).is_empty());
+        // The child's own transcript says when its turn ends, however long it was quiet before.
+        let child = today_directory.join("rollout-child.jsonl");
+        let append = |line: &str| {
+            use std::io::Write;
+            writeln!(fs::OpenOptions::new().append(true).open(&child).unwrap(), "{line}").unwrap();
+        };
+        let state = || transcript::scan_codex_child_rollouts(&parent, "parent").unwrap()[0].state.clone();
+        append(r#"{"type":"event_msg","payload":{"type":"task_started"}}"#);
+        assert_eq!(state(), "running");
+        append(r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#);
+        assert_eq!(state(), "finished");
+        append(r#"{"type":"event_msg","payload":{"type":"task_started"}}"#);
+        assert_eq!(state(), "running");
+        append(r#"{"type":"event_msg","payload":{"type":"turn_aborted"}}"#);
+        assert_eq!(state(), "finished");
+        // A child that died without its closing record stops counting once it has been silent too long.
+        append(r#"{"type":"event_msg","payload":{"type":"task_started"}}"#);
+        assert_eq!(state(), "running");
+        let silent_since = std::time::SystemTime::now() - transcript::CHILD_SILENCE_LIMIT - Duration::from_secs(60);
+        fs::OpenOptions::new().append(true).open(&child).unwrap().set_modified(silent_since).unwrap();
+        assert_eq!(state(), "finished");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -9912,6 +10183,23 @@ mod tests {
         assert!(!suspended(&fixture));
         feed(&fixture, &[claude_state("idle")]);
         wait_until(|| suspended(&fixture)).await;
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_running_codex_sub_agent_blocks_suspend() {
+        let (fixture, _) = feed_fixture("suspend_codex_child", AgentConversationProvider::Codex).await;
+        fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
+            .codex_children.insert("child-1".into(), CodexChildRollout {
+                child_id: "child-1".into(), label: "probe".into(),
+                state: "running".into(), latest_activity: "Running".into(),
+            });
+        assert!(!fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap());
+        assert!(!suspended(&fixture));
         finish(fixture).await;
     }
 
@@ -12436,60 +12724,52 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn queued_message_delivers_when_session_goes_quiescent() {
-        let fixture = fixture_manager_with_acp_session("queued_message_delivery").await;
-        let group_id = fixture
-            .manager
-            .store
-            .create_group(
-                "workflow",
-                Some("orchestrator"),
-                &[fixture.owned_id.clone()],
-            )
-            .expect("create workflow group");
+        let fixture = fixture_manager_with_acp_session("queued_message_feed").await;
         let message = fixture
             .manager
             .store
             .append_message(
-                &group_id,
+                "",
                 "worker-a",
                 &fixture.owned_id,
                 mcb_core::broker::MessageKind::Message,
                 "Review the patch",
             )
-            .expect("queue workflow message");
+            .expect("queue message");
+        let prompts = || {
+            fs::read_to_string(fixture.root.join("queued_message_feed.jsonl"))
+                .unwrap()
+                .matches(r#""method":"session/prompt""#)
+                .count()
+        };
+        let receipt = || {
+            fixture.manager.store.pending_for(&fixture.owned_id).unwrap().map(|pending| pending.id)
+        };
 
         fixture
             .manager
-            .prompt(
-                &fixture.owned_id,
-                fixture.generation,
-                test_prompt("finish current turn"),
-            )
+            .prompt(&fixture.owned_id, fixture.generation, test_prompt("finish current turn"))
             .await
             .expect("prompt starts");
-        wait_until(|| {
-            fixture
-                .manager
-                .store
-                .events_for(&group_id, None)
-                .expect("read workflow events")
-                .iter()
-                .any(|event| {
-                    event.id == message.id && event.receipt == mcb_core::broker::Receipt::Delivered
-                })
-        })
-        .await;
+        let end_first_turn = prompt_result(&fixture).await;
+        fixture.manager.deliver_if_idle(&fixture.owned_id).await;
+        assert_eq!(receipt(), Some(message.id.clone()), "a busy session keeps the message queued");
+        assert_eq!(prompts(), 1);
 
-        let expected = "[workflow message from worker-a]\nReview the patch";
+        feed(&fixture, &[end_first_turn]);
+        wait_until(|| prompts() == 2).await;
+        wait_until(|| receipt().is_none()).await;
+        assert_eq!(fixture.manager.store.message_status(&message.id, "worker-a").unwrap(), "delivered");
+        let expected = "[message from worker-a]\nReview the patch";
         let snapshot = fixture
             .manager
             .snapshot(&fixture.owned_id)
             .expect("read snapshot")
             .expect("session exists");
-        assert!(snapshot.events.iter().any(|event| matches!(
+        assert_eq!(snapshot.events.iter().filter(|event| matches!(
             &event.payload,
             AgentConversationPayload::UserMessage { text, .. } if text == expected
-        )));
+        )).count(), 1);
 
         fixture
             .manager
@@ -12500,7 +12780,211 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn stale_message_expires_instead_of_delivering() {
+    async fn workflow_step_session_joins_its_project_and_is_announced() {
+        let fixture = fixture_manager_with_acp_session("multiplex").await;
+        let store = Arc::clone(&fixture.manager.store);
+        store.insert_or_get_project(&mcb_core::session_store::ProjectRow {
+            id: "project-demo".into(), machine: "local".into(),
+            root_path: fixture.root.to_string_lossy().into_owned(), title: "demo".into(),
+            repo_key: String::new(), created_at_ms: 1, group_key: String::new(),
+            pinned_at_ms: None, last_used_ms: None,
+        }).unwrap();
+        let announced = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let heard = Arc::clone(&announced);
+        fixture.manager.set_session_renamed_listener(Arc::new(move |owned_id, title| {
+            heard.lock().unwrap().push((owned_id.to_string(), title.to_string()));
+        }));
+        let worktree = fixture.root.join("step-worktree");
+        std::fs::create_dir_all(&worktree).unwrap();
+        crate::workflow::AgentRuntimePort::dispatch(&fixture.manager, crate::workflow::AgentDispatchRequest {
+            owned_id: "owned-step".into(), provider: "codex".into(),
+            cwd: worktree.to_string_lossy().into_owned(), title: "Build · build".into(),
+            prompt: "Build it".into(), role_id: "build".into(), model: None, effort: None,
+            permission: None,
+        }).await.expect("dispatch");
+        let row = store.get_session("owned-step").unwrap().unwrap();
+        assert_eq!(row.project_id.as_deref(), Some("project-demo"));
+        assert_eq!(*announced.lock().unwrap(), [("owned-step".to_string(), "Build · build".to_string())]);
+        // The worker's chat shows the task as written, not a JSON wrapper.
+        let events = fixture.manager.snapshot("owned-step").unwrap().unwrap().events;
+        assert!(events.iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::UserMessage { text, .. } if text == "Build it")), "{events:?}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn start_session_creates_named_child_in_callers_project() {
+        let fixture = fixture_manager_with_acp_session("multiplex").await;
+        let store = Arc::clone(&fixture.manager.store);
+        let endpoint = super::super::messaging::MessagingEndpoint::start().unwrap();
+        let caller = endpoint.issue(&fixture.owned_id);
+        endpoint.bind_store(&caller.token, &store, Some(fixture.manager.clone()));
+        let result = endpoint
+            .handle(&caller.token, json!({"name":"start_session","arguments":{
+                "provider":"codex","name":"Reviewer","prompt":"Check the patch"}}))
+            .await
+            .expect("start helper");
+        let started: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(started["name"], "Reviewer");
+        assert!(started["handle"].as_str().unwrap().contains('-'), "{started}");
+        let helper = started["owned_id"].as_str().unwrap().to_string();
+        let parent_row = store.get_session(&fixture.owned_id).unwrap().unwrap();
+        let helper_row = store.get_session(&helper).unwrap().unwrap();
+        assert_eq!(helper_row.cwd, parent_row.cwd);
+        assert_eq!(helper_row.project_id, parent_row.project_id);
+        assert_eq!(store.resolve_session_name("Reviewer").unwrap(), helper);
+        let parent_events = || {
+            fixture.manager.snapshot(&fixture.owned_id).unwrap().unwrap().events
+        };
+        assert!(parent_events().iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::ChildUpdate { child_id, label, state, .. }
+                if *child_id == helper && label.as_deref() == Some("Reviewer") && state == "running")));
+
+        // The helper's finished turn is reported to the parent and wakes it.
+        let expected = format!("[message from {} · Reviewer]\n[Reviewer finished]\nBRAVO", started["handle"].as_str().unwrap());
+        wait_until(|| parent_events().iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::UserMessage { text, .. } if *text == expected))).await;
+        assert!(parent_events().iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::ChildUpdate { child_id, state, .. }
+                if *child_id == helper && state == "finished")));
+        // The parent is not a helper, so its own turn reports to no one.
+        wait_until(|| fixture.manager.sessions.lock().unwrap()
+            .get(&fixture.owned_id).is_none_or(|session| session.active_turn_id.is_none())).await;
+        assert!(store.pending_for(&helper).unwrap().is_none());
+
+        let helper_generation = fixture.manager.sessions.lock().unwrap()
+            .get(&helper).map(|session| session.generation);
+        if let Some(generation) = helper_generation {
+            fixture.manager.close(&helper, generation).await.unwrap();
+        }
+        endpoint.revoke(&fixture.owned_id);
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[test]
+    fn a_helper_on_another_provider_gets_its_parents_level() {
+        use AgentConversationProvider::{Claude, Codex};
+        let mode = |parent, from, to| helper_mode(Some(parent), from, to);
+        assert_eq!(mode("auto", Claude, Codex).as_deref(), Some("agent"));
+        assert_eq!(mode("bypassPermissions", Claude, Codex).as_deref(), Some("agent-full-access"));
+        assert_eq!(mode("plan", Claude, Codex).as_deref(), Some("read-only"));
+        assert_eq!(mode("agent", Codex, Claude).as_deref(), Some("auto"));
+        assert_eq!(mode("agent-full-access", Codex, Claude).as_deref(), Some("bypassPermissions"));
+        assert_eq!(mode("read-only", Codex, Claude).as_deref(), Some("default"));
+        // The same provider keeps the parent's own mode; a parent with none sets none.
+        assert_eq!(mode("acceptEdits", Claude, Claude).as_deref(), Some("acceptEdits"));
+        assert_eq!(helper_mode(None, Claude, Codex), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn helper_first_prompt_is_labelled_with_parent_and_takes_its_mode() {
+        let fixture = fixture_manager_with_acp_session("multiplex").await;
+        let store = Arc::clone(&fixture.manager.store);
+        // A mode the parent is on that no request has asked the adapter for yet.
+        fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
+            .config.approval_policy = Some("untrusted".into());
+        let endpoint = super::super::messaging::MessagingEndpoint::start().unwrap();
+        let caller = endpoint.issue(&fixture.owned_id);
+        endpoint.bind_store(&caller.token, &store, Some(fixture.manager.clone()));
+        let result = endpoint
+            .handle(&caller.token, json!({"name":"start_session","arguments":{
+                "provider":"codex","name":"Labelled","prompt":"Check the patch"}}))
+            .await
+            .expect("start helper");
+        let started: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        let helper = started["owned_id"].as_str().unwrap().to_string();
+        let (handle, name) = store.directory_name(&fixture.owned_id).unwrap().unwrap();
+        let expected = format!("[message from {handle} · {name}]\nCheck the patch");
+        let helper_events = fixture.manager.snapshot(&helper).unwrap().unwrap().events;
+        assert!(helper_events.iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::UserMessage { text, .. } if *text == expected)), "{expected}");
+        let log = fs::read_to_string(fixture.root.join("multiplex.jsonl")).unwrap();
+        assert!(log.contains(r#""approvalPolicy":"untrusted""#), "{log}");
+        let helper_generation = fixture.manager.sessions.lock().unwrap()
+            .get(&helper).map(|session| session.generation);
+        if let Some(generation) = helper_generation {
+            fixture.manager.close(&helper, generation).await.unwrap();
+        }
+        endpoint.revoke(&fixture.owned_id);
+        fixture.manager.close(&fixture.owned_id, fixture.generation).await.unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn helper_whose_adapter_dies_reports_failure_to_parent() {
+        let fixture = fixture_manager_with_acp_session("dies_midturn").await;
+        let store = Arc::clone(&fixture.manager.store);
+        let endpoint = super::super::messaging::MessagingEndpoint::start().unwrap();
+        let caller = endpoint.issue(&fixture.owned_id);
+        endpoint.bind_store(&caller.token, &store, Some(fixture.manager.clone()));
+        let result = endpoint
+            .handle(&caller.token, json!({"name":"start_session","arguments":{
+                "provider":"codex","name":"Fragile","prompt":"Go"}}))
+            .await;
+        let parent_events = || {
+            fixture.manager.snapshot(&fixture.owned_id).unwrap().unwrap().events
+        };
+        wait_until(|| parent_events().iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::ChildUpdate { label, state, .. }
+                if label.as_deref() == Some("Fragile") && state == "failed"))).await;
+        if let Ok(result) = result {
+            let started: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+            let helper = started["owned_id"].as_str().unwrap().to_string();
+            wait_until(|| parent_events().iter().any(|event| matches!(&event.payload,
+                AgentConversationPayload::UserMessage { text, .. }
+                    if text.starts_with(&format!("[message from {} · Fragile]\n[Fragile failed]", started["handle"].as_str().unwrap()))))).await;
+            assert!(store.pending_for(&helper).unwrap().is_none());
+        }
+        endpoint.revoke(&fixture.owned_id);
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn idle_session_receives_a_message_without_waiting_for_a_turn() {
+        let fixture = fixture_manager_with_acp_session("idle_message_delivery").await;
+        let message = fixture
+            .manager
+            .store
+            .append_message(
+                "",
+                "worker-a",
+                &fixture.owned_id,
+                mcb_core::broker::MessageKind::Message,
+                "Are you free?",
+            )
+            .expect("queue message");
+        // Work the session started on its own counts as busy.
+        fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
+            .autonomous_turn_started = true;
+        fixture.manager.deliver_if_idle(&fixture.owned_id).await;
+        assert_eq!(fixture.manager.store.message_status(&message.id, "worker-a").unwrap(), "queued");
+        fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
+            .autonomous_turn_started = false;
+        fixture.manager.deliver_if_idle(&fixture.owned_id).await;
+        assert_eq!(fixture.manager.store.message_status(&message.id, "worker-a").unwrap(), "delivered");
+        let snapshot = fixture
+            .manager
+            .snapshot(&fixture.owned_id)
+            .expect("read snapshot")
+            .expect("session exists");
+        assert!(snapshot.events.iter().any(|event| matches!(
+            &event.payload,
+            AgentConversationPayload::UserMessage { text, .. } if text == "[message from worker-a]\nAre you free?"
+        )));
+        fixture
+            .manager
+            .close(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stale_message_fails_instead_of_delivering() {
         let fixture = fixture_manager_with_acp_session("stale_message_expiry").await;
         let group_id = fixture
             .manager
@@ -12541,7 +13025,7 @@ mod tests {
             .into_iter()
             .find(|event| event.id == message.id)
             .expect("queued message remains stored");
-        assert_eq!(stored.receipt, mcb_core::broker::Receipt::Expired);
+        assert_eq!(stored.receipt, mcb_core::broker::Receipt::Failed);
         let log = fs::read_to_string(fixture.root.join("stale_message_expiry.jsonl"))
             .expect("read fixture log");
         assert!(!log.contains("Too old to deliver"));
@@ -15000,7 +15484,8 @@ mod tests {
             .await
             .expect("a valid send after a refused one");
 
-        fs::remove_dir_all(fixture.root).unwrap();
+        // Close first: the restarted adapter still writes in the folder.
+        finish(fixture).await;
     }
 
     #[tokio::test(flavor = "current_thread")]

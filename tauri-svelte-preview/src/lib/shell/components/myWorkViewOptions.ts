@@ -22,6 +22,8 @@ export interface MyWorkGroup {
   sessions: OwnedSession[];
   /** Project sections inside a status, when both groupings are on. */
   subgroups?: MyWorkGroup[];
+  /** Helpers drawn under a row of this group, by the parent's owned id. */
+  helpers?: Record<string, OwnedSession[]>;
 }
 
 /** Selected option values per filter group id; an empty list filters nothing. */
@@ -195,12 +197,60 @@ export function buildMyWorkGroups(
   options: MyWorkViewOptions,
   manualOrder: readonly string[] = []
 ): MyWorkGroup[] {
-  const sorted = prepareMyWorkSessions(sessions, options, manualOrder);
+  const prepared = prepareMyWorkSessions(sessions, options, manualOrder);
+  // A helper sits under its parent's row, and a workflow run's workers in a
+  // section of their own; a pinned one sits in Pinned instead. Each appears
+  // once. A helper whose parent is not listed stays an ordinary row.
+  const listed = new Set(prepared.map((session) => session.ownedId));
+  const helpers = new Map<string, OwnedSession[]>();
+  const runs = new Map<string, MyWorkGroup>();
+  const all: OwnedSession[] = [];
+  for (const session of prepared) {
+    if (session.pinnedAt) {
+      all.push(session);
+    } else if (session.helperOf && listed.has(session.helperOf)) {
+      helpers.set(session.helperOf, [...(helpers.get(session.helperOf) ?? []), session]);
+    } else if (session.runId) {
+      const key = `run:${session.runId}`;
+      const run = runs.get(key) ?? { key, label: session.runLabel ?? 'Workflow run', sessions: [] };
+      run.sessions.push(session);
+      runs.set(key, run);
+    } else {
+      all.push(session);
+    }
+  }
+  // The owner's main orchestrator sits alone above everything. A machine that
+  // could not be reached may still carry an older mark; the newest one wins.
+  const orchestrator = all.reduce<OwnedSession | null>((newest, session) =>
+    (session.orchestratorMarkedAtMs ?? 0) > (newest?.orchestratorMarkedAtMs ?? 0) ? session : newest, null);
+  const sorted = orchestrator ? all.filter((session) => session !== orchestrator) : all;
   // Pinned sessions sit in their own section at the top, whatever their status.
   const pinned = sorted.filter((session) => session.pinnedAt);
-  const prepared = pinned.length ? sorted.filter((session) => !session.pinnedAt) : sorted;
-  const groups = groupUnpinned(prepared, options);
-  return pinned.length ? [{ key: 'pinned', label: 'Pinned', sessions: pinned }, ...groups] : groups;
+  const unpinned = pinned.length ? sorted.filter((session) => !session.pinnedAt) : sorted;
+  const groups: MyWorkGroup[] = [
+    ...(orchestrator ? [{ key: 'orchestrator', label: 'Main orchestrator', sessions: [orchestrator] }] : []),
+    ...(pinned.length ? [{ key: 'pinned', label: 'Pinned', sessions: pinned }] : []),
+    ...groupUnpinned(unpinned, options),
+    ...runs.values()
+  ];
+  return helpers.size ? groups.map((group) => withHelpers(group, helpers)) : groups;
+}
+
+function withHelpers(group: MyWorkGroup, helpers: Map<string, OwnedSession[]>): MyWorkGroup {
+  const own = group.sessions.flatMap((session) => {
+    const children = helpers.get(session.ownedId);
+    return children ? [[session.ownedId, children] as const] : [];
+  });
+  return {
+    ...group,
+    ...(own.length ? { helpers: Object.fromEntries(own) } : {}),
+    ...(group.subgroups ? { subgroups: group.subgroups.map((subgroup) => withHelpers(subgroup, helpers)) } : {})
+  };
+}
+
+/** A group's rows and the helpers drawn under them: what its count and "needs you" mark cover. */
+export function myWorkGroupSessions(group: MyWorkGroup): OwnedSession[] {
+  return group.sessions.flatMap((session) => [session, ...(group.helpers?.[session.ownedId] ?? [])]);
 }
 
 function groupUnpinned(prepared: OwnedSession[], options: MyWorkViewOptions): MyWorkGroup[] {

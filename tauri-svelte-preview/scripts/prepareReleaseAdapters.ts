@@ -97,7 +97,7 @@ async function main() {
   ]);
   await run('bun', [
     'build',
-    'node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js',
+    'scripts/claudeAcpLauncher.ts',
     '--minify',
     '--compile',
     `--target=${bunTarget()}`,

@@ -14,6 +14,7 @@
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import ConversationTimeline from '$lib/shell/components/conversation/ConversationTimeline.svelte';
+  import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
   import {
     getConversationSession,
     setConversationSelectedChild,
@@ -21,6 +22,7 @@
     setSelectedConversationViewState
   } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import {
+    adoptSession,
     readChildConversationHistory,
     stopChildConversationHistory
   } from '$lib/shell/conversation/conversationService.ts';
@@ -40,9 +42,13 @@
   import type { ConversationDisplayItem, ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
   import { requestOpenConversationFile } from '$lib/shell/openFileBus.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
+  import { parseRemoteWorkspacePath } from '$lib/workspacePaths.ts';
+  import { listOwnerInboxFromTauri } from '$lib/tauriSource.ts';
 
   import AgentRow from './AgentRow.svelte';
   import { AGENT_STATUS_TONE, AGENT_STATUS_WORD, agentActivityRows } from './agentActivityModel.ts';
+  import AgentMessages from './AgentMessages.svelte';
+  import OwnerInbox from './OwnerInbox.svelte';
   import WorkflowRuns from './WorkflowRuns.svelte';
 
   interface Props {
@@ -51,22 +57,53 @@
     ownedId: string | null;
   }
   let { visible, root, ownedId }: Props = $props();
-  let view = $state<'session' | 'workflows'>('session');
+  let view = $state<'session' | 'workflows' | 'messages' | 'inbox'>('session');
+  /** The workflow run whose messages the Messages view shows; null shows all of them. */
+  let messageRun = $state<{ id: string; label: string } | null>(null);
+  let inboxStepCount = $state(0);
   let transcriptState = $state<'loading' | 'unavailable' | 'ready' | 'error'>('unavailable');
   let transcriptError = $state('');
   let fileError = $state('');
+  let lookupError = $state('');
   let reader: AbortController | null = null;
   /** The child whose transcript this panel last opened; a different selection opens it. */
   let openedChildId: string | null = null;
 
-  const VIEW_OPTIONS = [
+  // Sessions waiting on the owner, by the same rule as the rail's "needs you".
+  const waitingSessions = $derived(rail.owned.filter((session) =>
+    session.pendingPermission === true || session.pendingInput === true
+      || session.runtimeState === 'waiting-approval' || session.runtimeState === 'waiting-input'));
+  const inboxCount = $derived(inboxStepCount + waitingSessions.length);
+  // The count covers waiting steps before the Inbox is opened: read once each time the panel shows.
+  $effect(() => {
+    if (!visible) return;
+    const controller = new AbortController();
+    void countInboxSteps(controller.signal);
+    return () => controller.abort();
+  });
+  async function countInboxSteps(signal: AbortSignal): Promise<void> {
+    try {
+      const steps = await listOwnerInboxFromTauri(signal);
+      if (!signal.aborted && steps) inboxStepCount = steps.length;
+    } catch {
+      // The Inbox view reports a failed read when it is opened.
+    }
+  }
+  const VIEW_OPTIONS = $derived([
     { value: 'session', label: 'Session' },
-    { value: 'workflows', label: 'Workflows' }
-  ] as const;
+    { value: 'workflows', label: 'Workflows' },
+    { value: 'messages', label: 'Messages' },
+    { value: 'inbox', label: inboxCount > 0 ? `Inbox ${inboxCount}` : 'Inbox' }
+  ]);
   const conversation = $derived(ownedId ? getConversationSession(ownedId) : null);
+  // A remote project's workflows run on that machine's own engine, at its own path.
+  const remoteRoot = $derived(parseRemoteWorkspacePath(root));
+  const machine = $derived(remoteRoot?.profileId ?? null);
+  const workflowRoot = $derived(remoteRoot?.path ?? root);
   const selectedChildId = $derived(conversation?.selectedChildId ?? null);
   // List rows use metadata; returning to the list releases the child body.
-  const rows = $derived(agentActivityRows(conversation?.children ?? [], {}));
+  const waitingIds = $derived(new Set(waitingSessions.map((session) => session.ownedId)));
+  const rows = $derived(agentActivityRows(conversation?.children ?? [], {}, waitingIds));
   const selectedRow = $derived(rows.find((row) => row.childId === selectedChildId) ?? null);
   const historyOwnedId = $derived(conversation?.selectedChildHistoryOwnedId ?? null);
   const childConversation = $derived(historyOwnedId ? getConversationSession(historyOwnedId) : null);
@@ -122,6 +159,10 @@
     transcriptState = 'unavailable';
     transcriptError = '';
     fileError = '';
+    lookupError = '';
+    helperLookup?.abort();
+    helperLookup = null;
+    selection += 1;
   }
 
   $effect(() => {
@@ -137,8 +178,36 @@
     if (childId && visible && view === 'session') untrack(() => void select(childId));
   });
 
+  // Each click or release counts up, so a slow helper lookup never overrides a newer choice.
+  let selection = 0;
+  // A release stops the helper lookup in flight.
+  let helperLookup: AbortController | null = null;
+
   async function select(childId: string): Promise<void> {
     if (!ownedId || !conversation || !visible || view !== 'session' || openedChildId === childId) return;
+    selection += 1;
+    // A helper started with `start_session` is a session of its own, on any
+    // machine; open it. Native sub-agents come from a tool call.
+    const helper = !conversation.children.find((entry) => entry.childId === childId)?.parentToolCallId;
+    if (helper) {
+      const helperParentId = ownedId;
+      // An open sub-agent transcript is not this helper's; drop it while the helper is looked up.
+      release(helperParentId);
+      const current = selection;
+      const lookup = new AbortController();
+      helperLookup = lookup;
+      const adopted = await adoptSession(childId, lookup.signal);
+      if (current !== selection || ownedId !== helperParentId || !conversation || !visible || view !== 'session') return;
+      if (adopted) {
+        setConversationSelectedChild(helperParentId, null);
+        await sessionRowJump(childId, 'session');
+        return;
+      }
+      // A helper is a session of its own, never a native sub-agent; back in the list, a later click looks again.
+      setConversationSelectedChild(helperParentId, null);
+      lookupError = 'This helper’s session was not found yet. Try again in a moment.';
+      return;
+    }
     const parentId = ownedId;
     release(parentId);
     openedChildId = childId;
@@ -193,7 +262,16 @@
   </div>
 
   {#if view === 'workflows'}
-    <WorkflowRuns visible={visible} {root} />
+    <WorkflowRuns
+      visible={visible}
+      root={workflowRoot}
+      {machine}
+      onShowMessages={(id, label) => { messageRun = { id, label }; view = 'messages'; }}
+    />
+  {:else if view === 'messages'}
+    <AgentMessages visible={visible && view === 'messages'} runId={messageRun?.id ?? null} runLabel={messageRun?.label ?? ''} onClearRun={() => (messageRun = null)} />
+  {:else if view === 'inbox'}
+    <OwnerInbox visible={visible && view === 'inbox'} sessions={waitingSessions} bind:stepCount={inboxStepCount} />
   {:else if visible && selectedRow && ownedId}
     <div class="flex min-w-0 items-center gap-2 px-2 pb-2" data-testid="agent-transcript-header">
       <Button variant="ghost" size="sm" iconPosition="start" onclick={() => ownedId && release(ownedId)}>
@@ -254,6 +332,7 @@
       {#snippet icon()}<Bot />{/snippet}
     </EmptyState>
   {:else}
+    {#if lookupError}<p role="alert" class="px-2 pb-2 text-sm text-muted-foreground">{lookupError}</p>{/if}
     <ScrollArea class="min-h-0 flex-1">
       <ul class="flex flex-col gap-1 p-2">
         {#each rows as row (row.childId)}
