@@ -168,10 +168,17 @@ limits: { max_sessions: 3, step_timeout_minutes: 60, max_rounds: 5 }
 steps:
   recon: { agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/recon.md }
   spec: { needs: [recon], agent: { provider: claude, model: opus }, prompt: prompts/spec.md }
+  # Three reviewers check the spec at once; findings from any of them send it back.
   spec-review:
     needs: [spec]
     review: { of: spec, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/spec-review.md }
-  build: { needs: [spec-review], agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
+  spec-ui-review:
+    needs: [spec]
+    review: { of: spec, agent: { provider: claude, model: opus }, prompt: prompts/spec-ui-review.md }
+  spec-adversarial-review:
+    needs: [spec]
+    review: { of: spec, agent: { provider: claude, model: sonnet }, prompt: prompts/spec-adversarial-review.md }
+  build: { needs: [spec-review, spec-ui-review, spec-adversarial-review], agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
   checks:
     needs: [build]
     run:
@@ -231,10 +238,17 @@ limits: { max_sessions: 3, step_timeout_minutes: 60, max_rounds: 5 }
 steps:
   recon: { agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/recon.md }
   spec: { needs: [recon], agent: { provider: claude, model: opus }, prompt: prompts/spec.md }
+  # Three reviewers check the spec at once; findings from any of them send it back.
   spec-review:
     needs: [spec]
     review: { of: spec, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/spec-review.md }
-  build: { needs: [spec-review], agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
+  spec-ui-review:
+    needs: [spec]
+    review: { of: spec, agent: { provider: claude, model: opus }, prompt: prompts/spec-ui-review.md }
+  spec-adversarial-review:
+    needs: [spec]
+    review: { of: spec, agent: { provider: claude, model: sonnet }, prompt: prompts/spec-adversarial-review.md }
+  build: { needs: [spec-review, spec-ui-review, spec-adversarial-review], agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
   checks:
     needs: [build]
     run:
