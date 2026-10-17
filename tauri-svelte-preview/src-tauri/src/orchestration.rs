@@ -346,6 +346,7 @@ pub(crate) fn read_workflow_run_values(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn read_workflow_event_values(
     store: &SessionStore,
 ) -> Result<Vec<serde_json::Value>, String> {

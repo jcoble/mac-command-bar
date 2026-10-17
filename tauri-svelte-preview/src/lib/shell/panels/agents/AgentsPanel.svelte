@@ -43,9 +43,12 @@
   import { requestOpenConversationFile } from '$lib/shell/openFileBus.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { parseRemoteWorkspacePath } from '$lib/workspacePaths.ts';
+  import { listOwnerInboxFromTauri } from '$lib/tauriSource.ts';
 
   import AgentRow from './AgentRow.svelte';
   import { AGENT_STATUS_TONE, AGENT_STATUS_WORD, agentActivityRows } from './agentActivityModel.ts';
+  import AgentMessages from './AgentMessages.svelte';
+  import OwnerInbox from './OwnerInbox.svelte';
   import WorkflowRuns from './WorkflowRuns.svelte';
 
   interface Props {
@@ -54,7 +57,10 @@
     ownedId: string | null;
   }
   let { visible, root, ownedId }: Props = $props();
-  let view = $state<'session' | 'workflows'>('session');
+  let view = $state<'session' | 'workflows' | 'messages' | 'inbox'>('session');
+  /** The workflow run whose messages the Messages view shows; null shows all of them. */
+  let messageRun = $state<{ id: string; label: string } | null>(null);
+  let inboxStepCount = $state(0);
   let transcriptState = $state<'loading' | 'unavailable' | 'ready' | 'error'>('unavailable');
   let transcriptError = $state('');
   let fileError = $state('');
@@ -63,10 +69,32 @@
   /** The child whose transcript this panel last opened; a different selection opens it. */
   let openedChildId: string | null = null;
 
-  const VIEW_OPTIONS = [
+  // Sessions waiting on the owner, by the same rule as the rail's "needs you".
+  const waitingSessions = $derived(rail.owned.filter((session) =>
+    session.pendingPermission === true || session.pendingInput === true
+      || session.runtimeState === 'waiting-approval' || session.runtimeState === 'waiting-input'));
+  const inboxCount = $derived(inboxStepCount + waitingSessions.length);
+  // The count covers waiting steps before the Inbox is opened: read once each time the panel shows.
+  $effect(() => {
+    if (!visible) return;
+    const controller = new AbortController();
+    void countInboxSteps(controller.signal);
+    return () => controller.abort();
+  });
+  async function countInboxSteps(signal: AbortSignal): Promise<void> {
+    try {
+      const steps = await listOwnerInboxFromTauri(signal);
+      if (!signal.aborted && steps) inboxStepCount = steps.length;
+    } catch {
+      // The Inbox view reports a failed read when it is opened.
+    }
+  }
+  const VIEW_OPTIONS = $derived([
     { value: 'session', label: 'Session' },
-    { value: 'workflows', label: 'Workflows' }
-  ] as const;
+    { value: 'workflows', label: 'Workflows' },
+    { value: 'messages', label: 'Messages' },
+    { value: 'inbox', label: inboxCount > 0 ? `Inbox ${inboxCount}` : 'Inbox' }
+  ]);
   const conversation = $derived(ownedId ? getConversationSession(ownedId) : null);
   // A remote project's workflows run on that machine's own engine, at its own path.
   const remoteRoot = $derived(parseRemoteWorkspacePath(root));
@@ -74,7 +102,8 @@
   const workflowRoot = $derived(remoteRoot?.path ?? root);
   const selectedChildId = $derived(conversation?.selectedChildId ?? null);
   // List rows use metadata; returning to the list releases the child body.
-  const rows = $derived(agentActivityRows(conversation?.children ?? [], {}));
+  const waitingIds = $derived(new Set(waitingSessions.map((session) => session.ownedId)));
+  const rows = $derived(agentActivityRows(conversation?.children ?? [], {}, waitingIds));
   const selectedRow = $derived(rows.find((row) => row.childId === selectedChildId) ?? null);
   const historyOwnedId = $derived(conversation?.selectedChildHistoryOwnedId ?? null);
   const childConversation = $derived(historyOwnedId ? getConversationSession(historyOwnedId) : null);
@@ -233,7 +262,16 @@
   </div>
 
   {#if view === 'workflows'}
-    <WorkflowRuns visible={visible} root={workflowRoot} {machine} />
+    <WorkflowRuns
+      visible={visible}
+      root={workflowRoot}
+      {machine}
+      onShowMessages={(id, label) => { messageRun = { id, label }; view = 'messages'; }}
+    />
+  {:else if view === 'messages'}
+    <AgentMessages visible={visible && view === 'messages'} runId={messageRun?.id ?? null} runLabel={messageRun?.label ?? ''} onClearRun={() => (messageRun = null)} />
+  {:else if view === 'inbox'}
+    <OwnerInbox visible={visible && view === 'inbox'} sessions={waitingSessions} bind:stepCount={inboxStepCount} />
   {:else if visible && selectedRow && ownedId}
     <div class="flex min-w-0 items-center gap-2 px-2 pb-2" data-testid="agent-transcript-header">
       <Button variant="ghost" size="sm" iconPosition="start" onclick={() => ownedId && release(ownedId)}>

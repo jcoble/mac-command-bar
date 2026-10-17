@@ -42,7 +42,7 @@ use super::protocol::{
     AgentConversationChildHistorySelection, AgentConversationConnection, AgentConversationEvent,
     AgentConversationEventPage, AgentConversationItemPage, AgentConversationProvider, AgentConversationSelectionSnapshot,
     AgentConversationSendReceipt, AgentConversationSessionRecord, AgentConversationSnapshot,
-    BackgroundWorkItem, BackgroundWorkKind, ChangeAgentConversationCheckoutRequest,
+    ChangeAgentConversationCheckoutRequest,
     EnsureAgentConversationRequest, ExecutionEnvironment,
     RespondAgentConversationApprovalRequest, RespondAgentConversationInputRequest,
     RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest,
@@ -411,6 +411,9 @@ enum ClientRequest {
     },
 }
 
+/// This desktop's record of the owner's latest main orchestrator choice: `{machine, owned_id}`.
+const ORCHESTRATOR_CHOICE: &str = "orchestrator.choice";
+
 /// Owns the remote socket, SSH tunnels, and compact routing data needed to reconnect.
 #[derive(Clone)]
 pub struct RemoteConnectionManager {
@@ -441,6 +444,9 @@ pub struct RemoteConnectionManager {
     terminal_output: Arc<Mutex<Option<ProjectionStreams>>>,
     /// This desktop's own sessions, which messages from other machines reach.
     message_host: Arc<Mutex<Option<AgentRuntimeManager>>>,
+    /// Held while the owner's orchestrator choice is changed or put back on a machine, so a
+    /// restore that read the old choice cannot clear a newer one.
+    orchestrator_choice: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Default)]
@@ -589,6 +595,16 @@ impl Drop for ConnectionEnd {
     }
 }
 
+/// Machines' message pages as one page, newest first, each message tagged with its machine.
+fn merge_message_pages(pages: Vec<(String, Vec<serde_json::Value>)>, limit: usize) -> Vec<serde_json::Value> {
+    let mut messages: Vec<_> = pages.into_iter().flat_map(|(machine, page)| page.into_iter()
+        .map(move |mut message| { message["machine"] = serde_json::json!(machine); message })).collect();
+    messages.sort_by_key(|message| std::cmp::Reverse((message["createdAtMs"].as_i64().unwrap_or_default(),
+        message["id"].as_str().unwrap_or_default().to_string())));
+    messages.truncate(limit);
+    messages
+}
+
 fn read_cached_sessions(store: &SessionStore) -> Result<Vec<AgentConversationSessionRecord>, String> {
     let Some(json) = store
         .get_app_setting(REMOTE_SESSION_PROJECTIONS_SETTING_KEY)
@@ -642,6 +658,7 @@ impl RemoteConnectionManager {
             next_attempt_token: Arc::new(AtomicU64::new(1)),
             terminal_output: Arc::new(Mutex::new(None)),
             message_host: Arc::new(Mutex::new(None)),
+            orchestrator_choice: Arc::new(tokio::sync::Mutex::new(())),
         };
         let Some(url) = std::env::var("ASSEMBLY_REMOTE_WS_URL").ok() else {
             return Ok(manager);
@@ -863,10 +880,12 @@ impl RemoteConnectionManager {
     }
 
     fn publish_status(&self, profile_id: &str) {
-        (self.status_sink)(RemoteConnectionStatus {
-            profile_id: profile_id.to_string(),
-            state: self.connection_state(profile_id),
-        });
+        let state = self.connection_state(profile_id);
+        if state == RemoteConnectionState::Connected {
+            let (manager, machine) = (self.clone(), profile_id.to_string());
+            tauri::async_runtime::spawn(async move { manager.restore_orchestrator_choice(&machine).await });
+        }
+        (self.status_sink)(RemoteConnectionStatus { profile_id: profile_id.to_string(), state });
     }
 
     pub fn shutdown(&self) {
@@ -1256,7 +1275,7 @@ impl RemoteConnectionManager {
             "directory" => {
                 let mut entries = Vec::new();
                 for machine in self.message_machines(source) {
-                    let Ok(serde_json::Value::Array(list)) = self.message_machine(&machine, "directory", json!({})).await else { continue };
+                    let Ok(serde_json::Value::Array(list)) = self.message_machine(&machine, "directory", json!({"role": args["role"]}), None).await else { continue };
                     entries.extend(list.into_iter().map(|mut entry| { entry["machine"] = json!(machine); entry }));
                 }
                 Ok(json!({"machine": source, "entries": entries}))
@@ -1270,7 +1289,7 @@ impl RemoteConnectionManager {
                     None => {
                         let mut found = Vec::new();
                         for machine in self.message_machines(source) {
-                            if self.message_machine(&machine, "resolve", json!({"to": name})).await.is_ok() { found.push(machine); }
+                            if self.message_machine(&machine, "resolve", json!({"to": name, "role": args["role"]}), None).await.is_ok() { found.push(machine); }
                         }
                         match found.len() {
                             0 => return Err("Unknown session name".into()),
@@ -1285,30 +1304,104 @@ impl RemoteConnectionManager {
                     None => format!("{sender}@{source}"),
                 };
                 let id = self.message_machine(&machine, "enqueue",
-                    json!({"to": name, "text": args["text"], "from": args["from"], "sender": sender})).await?;
+                    json!({"to": name, "text": args["text"], "from": args["from"], "sender": sender, "role": args["role"]}), None).await?;
                 Ok(json!(format!("{machine}:{}", id.as_str().unwrap_or_default())))
             }
             "status" => {
                 let (machine, id) = args["id"].as_str().and_then(|id| id.split_once(':')).ok_or("Unknown message")?;
-                self.message_machine(machine, "status", json!({"id": id, "from": args["from"]})).await
+                self.message_machine(machine, "status", json!({"id": id, "from": args["from"]}), None).await
             }
             _ => Err(format!("Unknown messaging operation {op}")),
         }
     }
 
+    /// Marks `owned_id` on `machine` as the owner's main orchestrator, then clears the
+    /// mark on every other reachable machine; `None` clears it everywhere. The choice is
+    /// kept on this desktop, and a machine that is away gets it when it connects.
+    pub async fn set_main_orchestrator(&self, machine: &str, owned_id: Option<&str>) -> Result<(), String> {
+        let _choosing = self.orchestrator_choice.lock().await;
+        let away = !self.message_machines("").iter().any(|connected| connected == machine);
+        if owned_id.is_some() && !away {
+            self.message_machine(machine, "designate", serde_json::json!({"owned_id": owned_id}), None).await?;
+        }
+        if let Some(host) = self.message_host.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() {
+            host.store().upsert_app_setting(ORCHESTRATOR_CHOICE,
+                &serde_json::json!({"machine": machine, "owned_id": owned_id}).to_string()).map_err(|error| error.to_string())?;
+        }
+        self.remember_cached_orchestrator(machine, owned_id)?;
+        for other in self.message_machines(if owned_id.is_some() { machine } else { "" }) {
+            if let Err(error) = self.message_machine(&other, "designate", serde_json::json!({"owned_id": null}), None).await {
+                crate::debug_log::stderr_log!("Could not clear the orchestrator mark on {other}: {error}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Rows kept for machines that are away show the owner's choice too, also after a restart.
+    fn remember_cached_orchestrator(&self, machine: &str, owned_id: Option<&str>) -> Result<(), String> {
+        let cached = self.cached_sessions();
+        let chosen = |row: &AgentConversationSessionRecord|
+            row.remote_profile_id.as_deref() == Some(machine) && Some(row.owned_id.as_str()) == owned_id;
+        if cached.iter().any(|row| row.orchestrator_marked_at_ms.is_some() != chosen(row)) {
+            let now = chrono::Utc::now().timestamp_millis();
+            self.save_cached_sessions(cached.into_iter().map(|mut row| {
+                row.orchestrator_marked_at_ms = if chosen(&row) { row.orchestrator_marked_at_ms.or(Some(now)) } else { None };
+                row
+            }).collect())?;
+        }
+        Ok(())
+    }
+
+    /// Puts the owner's latest orchestrator choice on `machine`, which has just connected:
+    /// its session is marked if the owner chose one there, and any older mark is cleared otherwise.
+    pub(crate) async fn restore_orchestrator_choice(&self, machine: &str) {
+        let _choosing = self.orchestrator_choice.lock().await;
+        let Some(host) = self.message_host.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() else { return };
+        let Ok(Some(choice)) = host.store().get_app_setting(ORCHESTRATOR_CHOICE) else { return };
+        let Ok(choice) = serde_json::from_str::<serde_json::Value>(&choice) else { return };
+        let owned_id = if choice["machine"].as_str() == Some(machine) { choice["owned_id"].clone() } else { serde_json::Value::Null };
+        if let Err(error) = self.message_machine(machine, "designate", serde_json::json!({"owned_id": owned_id}), None).await {
+            crate::debug_log::stderr_log!("Could not restore the orchestrator mark on {machine}: {error}");
+        }
+    }
+
+    /// One page of agent-to-agent messages, newest first, from `machine` or from this desktop and
+    /// every connected machine. Each message is stored once, on its receiver's machine, so the
+    /// pages merge by time; a machine that cannot be reached is left out.
+    pub async fn list_messages(&self, machine: Option<&str>, args: serde_json::Value, request_id: u64) -> Vec<serde_json::Value> {
+        let machines = machine.map_or_else(|| self.message_machines(""), |machine| vec![machine.to_string()]);
+        let mut pages = Vec::new();
+        for machine in machines {
+            let Ok(serde_json::Value::Array(page)) = self.message_machine(&machine, "messages", args.clone(), Some(request_id)).await else { continue };
+            pages.push((machine, page));
+        }
+        merge_message_pages(pages, args["limit"].as_u64().unwrap_or(100) as usize)
+    }
+
+    /// Runs `work` until it ends or the desktop cancels `request_id`; a cancelled call gives `None`.
+    pub(crate) async fn unless_cancelled<T>(&self, request_id: u64, work: impl std::future::Future<Output = T>) -> Option<T> {
+        let mut cancellations = self.cancelled_requests.subscribe();
+        tokio::select! {
+            value = work => Some(value),
+            _ = wait_for_cancel(&mut cancellations, request_id) => None,
+        }
+    }
+
     /// This desktop and every connected machine, except `source`.
-    fn message_machines(&self, source: &str) -> Vec<String> {
+    pub(crate) fn message_machines(&self, source: &str) -> Vec<String> {
         std::iter::once(LOCAL_MACHINE.to_string()).chain(self.environment().ready_profile_ids)
             .filter(|machine| machine != source).collect()
     }
 
-    async fn message_machine(&self, machine: &str, op: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+    /// A frontend `request_id` is the wire id, so cancelling it stops the read on the server.
+    async fn message_machine(&self, machine: &str, op: &str, args: serde_json::Value, request_id: Option<u64>) -> Result<serde_json::Value, String> {
         if machine == LOCAL_MACHINE {
             let host = self.message_host.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
                 .ok_or("target machine not reachable: this desktop's sessions are not open yet")?;
             return super::messaging::answer(host.store(), Some(&host), op, &args);
         }
-        match self.request_for_profile(machine, RemoteCommand::Messaging { op: op.into(), args }).await
+        let id = request_id.unwrap_or_else(|| self.next_request_id.fetch_add(1, Ordering::Relaxed));
+        match self.request_with_id(machine, id, RemoteCommand::Messaging { op: op.into(), args }, None).await
             .map_err(|error| format!("target machine not reachable: {error}"))? {
             RemoteResponse::Messaging(value) => Ok(value),
             _ => Err("The remote backend does not relay messages; update its backend first".into()),
@@ -1393,8 +1486,10 @@ impl RemoteConnectionManager {
     }
 
     /// Runs one workflow operation on the remote machine's own engine.
-    pub async fn workflow_operation(&self, profile_id: &str, operation: String, args: serde_json::Value) -> Result<serde_json::Value, String> {
-        match self.request_for_profile(profile_id, RemoteCommand::Workflow { operation, args }).await? {
+    /// A frontend `request_id` is the wire id, so cancelling it stops the operation on the server.
+    pub async fn workflow_operation(&self, profile_id: &str, operation: String, args: serde_json::Value, request_id: Option<u64>) -> Result<serde_json::Value, String> {
+        let id = request_id.unwrap_or_else(|| self.next_request_id.fetch_add(1, Ordering::Relaxed));
+        match self.request_with_id(profile_id, id, RemoteCommand::Workflow { operation, args }, None).await? {
             RemoteResponse::Workflow(value) => Ok(value),
             _ => Err("The remote backend does not run workflows; update its backend first".into()),
         }
@@ -3144,6 +3239,7 @@ pub fn run_server_from_environment() -> Result<(), String> {
         let state = server_state(manager, data_dir.clone(), Arc::from(token))?;
         // This machine's sessions reach other machines through a connected desktop.
         super::messaging::endpoint()?.set_relay(state.relay.relay());
+        super::messaging::endpoint()?.set_workflow(state.workflow.clone());
         let restart_requested = state.restart_requested.clone();
         let restart_flushed = state.restart_flushed.clone();
         let restart_manager = state.manager.clone();
@@ -3912,6 +4008,7 @@ fn workspace_wait_seconds(operation: &str) -> u64 {
 #[cfg(test)]
 mod connection_tests {
     use super::*;
+    use super::super::protocol::{BackgroundWorkItem, BackgroundWorkKind};
 
     fn add_session(manager: &AgentRuntimeManager, owned_id: &str, title: &str) {
         manager.store().upsert_session(&mcb_core::session_store::SessionRow {
@@ -3956,6 +4053,8 @@ mod connection_tests {
         // The desktop and its session, connected to that machine as `workbox-test`.
         let desktop = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("desktop.db")).unwrap();
         add_session(&desktop, "here", "Here");
+        // Top-level sessions reach each other only through the main orchestrator.
+        desktop.store().set_main_orchestrator(Some("here")).unwrap();
         let connections = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), desktop.store_handle()).unwrap();
         connections.set_message_host(desktop.clone());
         let (requests, mut receiver) = mpsc::channel(8);
@@ -3978,7 +4077,7 @@ mod connection_tests {
         let listing = tool(&there, &there_token, json!({"name":"list_sessions"})).await;
         let machine_of = |owned_id: &str| listing.as_array().unwrap().iter()
             .find(|entry| entry["ownedId"] == owned_id).map(|entry| entry["machine"].clone());
-        assert_eq!(machine_of("there"), Some(json!("workbox-test")), "{listing}");
+        assert_eq!(machine_of("there"), None, "a session does not list itself: {listing}");
         assert_eq!(machine_of("here"), Some(json!("mac")), "{listing}");
         let sent = tool(&there, &there_token, json!({"name":"send_message","arguments":{"to":"Here","text":"hello from there"}})).await;
         let id = sent["id"].as_str().unwrap();
@@ -4006,11 +4105,42 @@ mod connection_tests {
         let status = tool(&here, &here_token, json!({"name":"message_status","arguments":{"id":reply_id}})).await;
         assert!(["queued", "delivered", "failed"].contains(&status["status"].as_str().unwrap()), "{status}");
 
+        // A machine that was away while the owner chose an orchestrator keeps its older mark
+        // until it connects; then the owner's latest choice is put back there.
+        connections.set_main_orchestrator(LOCAL_MACHINE, Some("here")).await.unwrap();
+        remote.store().set_main_orchestrator(Some("there")).unwrap();
+        connections.restore_orchestrator_choice("workbox-test").await;
+        assert!(remote.store().main_orchestrator().unwrap().is_none());
+        connections.set_main_orchestrator("workbox-test", Some("there")).await.unwrap();
+        assert!(desktop.store().main_orchestrator().unwrap().is_none());
+        remote.store().set_main_orchestrator(None).unwrap();
+        connections.restore_orchestrator_choice("workbox-test").await;
+        assert_eq!(remote.store().main_orchestrator().unwrap().map(|(id, _)| id).as_deref(), Some("there"));
+        // A restore that runs while the owner picks a session there cannot undo the pick.
+        connections.set_main_orchestrator(LOCAL_MACHINE, Some("here")).await.unwrap();
+        let (chosen, ()) = tokio::join!(
+            connections.set_main_orchestrator("workbox-test", Some("there")),
+            connections.restore_orchestrator_choice("workbox-test"));
+        chosen.unwrap();
+        assert_eq!(remote.store().main_orchestrator().unwrap().map(|(id, _)| id).as_deref(), Some("there"));
+
         connections.client.lock().unwrap().clients.clear();
         actor.await.unwrap();
         server.abort();
         let _ = server.await;
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn machine_pages_merge_by_time() {
+        use serde_json::json;
+        let message = |id: &str, at: i64| json!({"id": id, "createdAtMs": at});
+        let merged = super::merge_message_pages(vec![
+            ("mac".into(), vec![message("m3", 30), message("m1", 10)]),
+            ("workbox-test".into(), vec![message("r2", 20), message("r1", 10)]),
+        ], 3);
+        assert_eq!(merged.iter().map(|m| (m["id"].as_str().unwrap(), m["machine"].as_str().unwrap())).collect::<Vec<_>>(),
+            [("m3", "mac"), ("r2", "workbox-test"), ("r1", "workbox-test")]);
     }
 
     #[tokio::test]
@@ -4256,6 +4386,33 @@ mod connection_tests {
         assert_eq!(id, 77);
         drop(reply);
         assert!(call.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn message_and_inbox_reads_are_cancelled_by_the_frontend_request_id() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+        let mut requests = connect(&manager);
+        let caller = manager.clone();
+        let messages = tokio::spawn(async move { caller.list_messages(Some("cache-test"), serde_json::json!({}), 78).await });
+        let caller = manager.clone();
+        let inbox = tokio::spawn(async move {
+            caller.workflow_operation("cache-test", "inbox".into(), serde_json::Value::Null, Some(79)).await
+        });
+        let mut ids = Vec::new();
+        let mut replies = Vec::new();
+        for _ in 0..2 {
+            let ClientRequest::Execute { id, reply, .. } = requests.recv().await.unwrap() else { panic!("expected a read"); };
+            ids.push(id);
+            replies.push(reply);
+        }
+        ids.sort();
+        assert_eq!(ids, [78, 79], "each read must go out under the id its view cancels");
+        manager.cancel_request(78).await;
+        let ClientRequest::Cancel { id } = requests.recv().await.unwrap() else { panic!("expected the cancel"); };
+        assert_eq!(id, 78);
+        drop(replies);
+        assert!(messages.await.unwrap().is_empty());
+        assert!(inbox.await.unwrap().is_err());
     }
 
     #[tokio::test]
@@ -4591,6 +4748,10 @@ mod connection_tests {
             handle: None,
             project_group_key: String::new(),
             project_group_label: String::new(),
+            orchestrator_marked_at_ms: None,
+            helper_of: None,
+            run_id: None,
+            run_label: None,
             meta: super::super::protocol::AgentConversationSessionMeta {
                 title: Some(format!("Session {owned_id}")),
                 ..Default::default()
@@ -4675,6 +4836,35 @@ mod connection_tests {
         assert_eq!(manager.store().get_project("p").unwrap(), None);
         drop((manager, remote));
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_new_orchestrator_choice_clears_an_offline_machines_cached_mark() {
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), shared.clone()).unwrap();
+        let mut marked = session("remote-1", "workbox", 10);
+        marked.orchestrator_marked_at_ms = Some(5);
+        manager.replace_cached_profile_sessions("workbox", &[marked, session("remote-2", "workbox", 9)]).unwrap();
+        // The owner clears the mark while that machine is away; a restart must not bring it back.
+        manager.set_main_orchestrator("", None).await.unwrap();
+        let restarted = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
+        assert!(restarted.cached_sessions().iter().all(|row| row.orchestrator_marked_at_ms.is_none()));
+    }
+
+    #[tokio::test]
+    async fn a_chosen_remote_orchestrator_stays_marked_in_the_offline_cache() {
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), shared.clone()).unwrap();
+        let mut marked = session("remote-1", "workbox", 10);
+        marked.orchestrator_marked_at_ms = Some(5);
+        manager.replace_cached_profile_sessions("workbox", &[marked, session("remote-2", "workbox", 9)]).unwrap();
+        // The owner picks a session on a machine that is away; it is marked there when it connects.
+        manager.set_main_orchestrator("workbox", Some("remote-2")).await.unwrap();
+        // After a restart, with that machine still away, the rail shows the new choice.
+        let restarted = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
+        let marked: Vec<_> = restarted.cached_sessions().into_iter()
+            .filter(|row| row.orchestrator_marked_at_ms.is_some()).map(|row| row.owned_id).collect();
+        assert_eq!(marked, ["remote-2"]);
     }
 
     #[test]
@@ -5335,7 +5525,7 @@ pub async fn remote_workflow(
     operation: String,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    remote.workflow_operation(&profile_id, operation, args).await
+    remote.workflow_operation(&profile_id, operation, args, None).await
 }
 
 #[tauri::command]

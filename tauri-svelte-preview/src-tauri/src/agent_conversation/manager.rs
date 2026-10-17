@@ -1226,6 +1226,9 @@ impl AgentRuntimeManager {
     ) -> Result<String, String> {
         let parent_row = self.store.get_session(parent).map_err(|error| error.to_string())?
             .ok_or_else(|| "The calling session was not found".to_string())?;
+        // The helper hears its instructions as its parent's message, never as the owner's.
+        let sender = self.store.directory_name(parent).map_err(|error| error.to_string())?
+            .map_or_else(|| parent.to_string(), |(handle, title)| format!("{handle} · {title}"));
         self.providers.manifest(provider)?;
         let owned_id = uuid::Uuid::new_v4().to_string();
         let connection = self.ensure_async(EnsureAgentConversationRequest {
@@ -1255,8 +1258,15 @@ impl AgentRuntimeManager {
             listener(&owned_id, name);
         }
         self.show_helper_to_parent(parent, &owned_id, name, "running")?;
-        let prompt = AgentPrompt { text: prompt.to_string(), images: Vec::new(), attachment_ids: Vec::new() };
-        if let Err(error) = self.send_message(&owned_id, connection.generation, prompt, model, None).await {
+        let prompt = AgentPrompt { text: format!("[message from {sender}]\n{prompt}"), images: Vec::new(), attachment_ids: Vec::new() };
+        // A helper gets its parent's permission mode. Modes are named per provider, so a helper
+        // on another provider keeps that provider's default mode.
+        let approval_policy = {
+            let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            sessions.get(parent).filter(|session| session.provider == provider)
+                .and_then(|session| session.config.approval_policy.clone())
+        };
+        if let Err(error) = self.send_message(&owned_id, connection.generation, prompt, model, approval_policy).await {
             if let Err(show_error) = self.show_helper_to_parent(parent, &owned_id, name, "failed") {
                 crate::debug_log::stderr_log!("Could not mark the helper failed: {show_error}");
             }
@@ -1292,9 +1302,10 @@ impl AgentRuntimeManager {
         };
         let reply = self.store.latest_assistant_text_for_turn(owned_id, turn_id)
             .map_err(|error| error.to_string())?.unwrap_or_default();
-        let reply: String = reply.chars().take(HELPER_REPLY_LIMIT).collect();
+        // The reply is the helper's own text, so it may not pass as another sender's label.
+        let reply = super::messaging::quote_labels(&reply.chars().take(HELPER_REPLY_LIMIT).collect::<String>());
         self.store.append_message("", owned_id, &parent, mcb_core::broker::MessageKind::Message,
-            &format!("[{name} {outcome}] {reply}")).map_err(|error| error.to_string())?;
+            &format!("[{name} {outcome}]\n{reply}")).map_err(|error| error.to_string())?;
         let state = match outcome { "finished" => "finished", "failed" => "failed", _ => "cancelled" };
         self.show_helper_to_parent(&parent, owned_id, &name, state)?;
         let manager = self.clone();
@@ -1306,7 +1317,7 @@ impl AgentRuntimeManager {
     /// A busy target receives it when its turn ends.
     /// Boxed because activation hands this to the messaging endpoint, and the
     /// send below activates again.
-    pub(super) fn deliver_if_idle<'a>(&'a self, owned_id: &'a str)
+    pub(crate) fn deliver_if_idle<'a>(&'a self, owned_id: &'a str)
         -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
         let generation = match self.hydrate_overlay_from_store(owned_id) {
@@ -2634,12 +2645,10 @@ impl AgentRuntimeManager {
             .native_session_id
             .clone()
             .ok_or_else(|| "Structured provider session has not started".to_string())?;
-        let sessions = Arc::downgrade(&self.sessions);
-        let emitter = Arc::clone(&self.emitter);
+        let manager = self.clone();
         let owned_id = owned_id.to_string();
         session.child_rollout_scan = Some(tokio::spawn(async move {
-            run_child_rollout_scan(sessions, emitter, owned_id, generation, native_session_id)
-                .await;
+            run_child_rollout_scan(manager, owned_id, generation, native_session_id).await;
         }));
         Ok(())
     }
@@ -3641,12 +3650,14 @@ impl AgentRuntimeManager {
             .store
             .list_sessions_with_handles()
             .map_err(|error| error.to_string())?;
+        let main_orchestrator = self.store.main_orchestrator().map_err(|error| error.to_string())?;
         let sessions = self
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         rows.into_iter()
-            .map(|(row, handle)| {
+            .map(|listed| {
+                let mcb_core::session_store::ListedSession { row, handle, helper_of, run_id, run_label } = listed;
                 let live = sessions.get(&row.owned_id);
                 let (
                     provider,
@@ -3685,6 +3696,8 @@ impl AgentRuntimeManager {
                 meta.branch.clone_from(&row.branch);
                 meta.title.clone_from(&row.title);
                 meta.project.clone_from(&row.project);
+                let orchestrator_marked_at_ms = main_orchestrator.as_ref()
+                    .filter(|(owned_id, _)| *owned_id == row.owned_id).map(|(_, marked_at)| *marked_at);
                 Ok(AgentConversationSessionRecord {
                     owned_id: row.owned_id,
                     execution_environment: ExecutionEnvironment::Local,
@@ -3707,6 +3720,10 @@ impl AgentRuntimeManager {
                     // Filled by the list command, in one SQL statement for the whole list.
                     project_group_key: String::new(),
                     project_group_label: String::new(),
+                    orchestrator_marked_at_ms,
+                    helper_of,
+                    run_id,
+                    run_label,
                     meta,
                 })
             })
@@ -6998,17 +7015,17 @@ fn raw_update_failed(params: &Value) -> bool {
 }
 
 async fn run_child_rollout_scan(
-    sessions: Weak<Mutex<HashMap<String, ManagedAgentSession>>>,
-    emitter: Arc<Mutex<Option<ConversationEmitter>>>,
+    manager: AgentRuntimeManager,
     owned_id: String,
     generation: u64,
     native_session_id: String,
 ) {
+    let sessions = Arc::downgrade(&manager.sessions);
     let mut parent_path = None;
     loop {
         let Some(outcome) = scan_codex_children_once(
             &sessions,
-            &emitter,
+            &manager.emitter,
             &owned_id,
             generation,
             &native_session_id,
@@ -7021,6 +7038,18 @@ async fn run_child_rollout_scan(
         parent_path = Some(outcome.parent_path);
         // After the turn ends, keep polling only while a child is still working.
         if !outcome.keep_scanning {
+            // The last child finished after the turn did, so the idle process
+            // may stop now. Detach this task first so stopping does not abort it.
+            if let Ok(session) = current_session_mut(
+                &mut manager.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+                &owned_id,
+                generation,
+            ) {
+                session.child_rollout_scan.take();
+            }
+            if let Err(error) = manager.suspend_if_quiescent(&owned_id, generation).await {
+                crate::debug_log::stderr_log!("Could not tear down quiescent runtime: {error}");
+            }
             return;
         }
         tokio::time::sleep(CHILD_ROLLOUT_SCAN_INTERVAL).await;
@@ -7053,10 +7082,7 @@ async fn scan_codex_children_once(
                     .canonical_path
             }
         };
-        let active_after = SystemTime::now()
-            .checked_sub(CHILD_ROLLOUT_SCAN_INTERVAL.saturating_mul(2))
-            .unwrap_or(UNIX_EPOCH);
-        transcript::scan_codex_child_rollouts(&path, &scan_parent_id, active_after)
+        transcript::scan_codex_child_rollouts(&path, &scan_parent_id)
             .ok()
             .map(|children| (path, children))
     })
@@ -8531,6 +8557,8 @@ fn session_is_quiescent(session: &ManagedAgentSession) -> bool {
         && session.writer_lease_transition.is_none()
         && session.live_tool_calls.is_empty()
         && session.background_work.is_empty()
+        // Stopping the process would stop a Codex sub-agent still at work.
+        && !session.codex_children.values().any(|child| child.state == "running")
 }
 
 fn abort_cancel_deadline(session: &mut ManagedAgentSession) {
@@ -8901,9 +8929,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let active_after = UNIX_EPOCH;
-        let children =
-            transcript::scan_codex_child_rollouts(&parent, "parent", active_after).unwrap();
+        let children = transcript::scan_codex_child_rollouts(&parent, "parent").unwrap();
         let mut known = HashMap::new();
 
         assert_eq!(
@@ -8919,6 +8945,27 @@ mod tests {
             }]
         );
         assert!(changed_child_updates("parent", &mut known, children).is_empty());
+        // The child's own transcript says when its turn ends, however long it was quiet before.
+        let child = today_directory.join("rollout-child.jsonl");
+        let append = |line: &str| {
+            use std::io::Write;
+            writeln!(fs::OpenOptions::new().append(true).open(&child).unwrap(), "{line}").unwrap();
+        };
+        let state = || transcript::scan_codex_child_rollouts(&parent, "parent").unwrap()[0].state.clone();
+        append(r#"{"type":"event_msg","payload":{"type":"task_started"}}"#);
+        assert_eq!(state(), "running");
+        append(r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#);
+        assert_eq!(state(), "finished");
+        append(r#"{"type":"event_msg","payload":{"type":"task_started"}}"#);
+        assert_eq!(state(), "running");
+        append(r#"{"type":"event_msg","payload":{"type":"turn_aborted"}}"#);
+        assert_eq!(state(), "finished");
+        // A child that died without its closing record stops counting once it has been silent too long.
+        append(r#"{"type":"event_msg","payload":{"type":"task_started"}}"#);
+        assert_eq!(state(), "running");
+        let silent_since = std::time::SystemTime::now() - transcript::CHILD_SILENCE_LIMIT - Duration::from_secs(60);
+        fs::OpenOptions::new().append(true).open(&child).unwrap().set_modified(silent_since).unwrap();
+        assert_eq!(state(), "finished");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -10119,6 +10166,23 @@ mod tests {
         assert!(!suspended(&fixture));
         feed(&fixture, &[claude_state("idle")]);
         wait_until(|| suspended(&fixture)).await;
+        finish(fixture).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_running_codex_sub_agent_blocks_suspend() {
+        let (fixture, _) = feed_fixture("suspend_codex_child", AgentConversationProvider::Codex).await;
+        fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
+            .codex_children.insert("child-1".into(), CodexChildRollout {
+                child_id: "child-1".into(), label: "probe".into(),
+                state: "running".into(), latest_activity: "Running".into(),
+            });
+        assert!(!fixture
+            .manager
+            .suspend_if_quiescent(&fixture.owned_id, fixture.generation)
+            .await
+            .unwrap());
+        assert!(!suspended(&fixture));
         finish(fixture).await;
     }
 
@@ -12719,11 +12783,15 @@ mod tests {
             owned_id: "owned-step".into(), provider: "codex".into(),
             cwd: worktree.to_string_lossy().into_owned(), title: "Build · build".into(),
             prompt: "Build it".into(), role_id: "build".into(), model: None, effort: None,
-            permission: None, output_contract: crate::workflow::WorkflowOutputContract::ImplementationReceipt,
+            permission: None,
         }).await.expect("dispatch");
         let row = store.get_session("owned-step").unwrap().unwrap();
         assert_eq!(row.project_id.as_deref(), Some("project-demo"));
         assert_eq!(*announced.lock().unwrap(), [("owned-step".to_string(), "Build · build".to_string())]);
+        // The worker's chat shows the task as written, not a JSON wrapper.
+        let events = fixture.manager.snapshot("owned-step").unwrap().unwrap().events;
+        assert!(events.iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::UserMessage { text, .. } if text == "Build it")), "{events:?}");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -12755,7 +12823,7 @@ mod tests {
                 if *child_id == helper && label.as_deref() == Some("Reviewer") && state == "running")));
 
         // The helper's finished turn is reported to the parent and wakes it.
-        let expected = format!("[message from {} · Reviewer]\n[Reviewer finished] BRAVO", started["handle"].as_str().unwrap());
+        let expected = format!("[message from {} · Reviewer]\n[Reviewer finished]\nBRAVO", started["handle"].as_str().unwrap());
         wait_until(|| parent_events().iter().any(|event| matches!(&event.payload,
             AgentConversationPayload::UserMessage { text, .. } if *text == expected))).await;
         assert!(parent_events().iter().any(|event| matches!(&event.payload,
@@ -12777,6 +12845,40 @@ mod tests {
             .close(&fixture.owned_id, fixture.generation)
             .await
             .unwrap();
+        fs::remove_dir_all(fixture.root).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn helper_first_prompt_is_labelled_with_parent_and_takes_its_mode() {
+        let fixture = fixture_manager_with_acp_session("multiplex").await;
+        let store = Arc::clone(&fixture.manager.store);
+        // A mode the parent is on that no request has asked the adapter for yet.
+        fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
+            .config.approval_policy = Some("untrusted".into());
+        let endpoint = super::super::messaging::MessagingEndpoint::start().unwrap();
+        let caller = endpoint.issue(&fixture.owned_id);
+        endpoint.bind_store(&caller.token, &store, Some(fixture.manager.clone()));
+        let result = endpoint
+            .handle(&caller.token, json!({"name":"start_session","arguments":{
+                "provider":"codex","name":"Labelled","prompt":"Check the patch"}}))
+            .await
+            .expect("start helper");
+        let started: Value = serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        let helper = started["owned_id"].as_str().unwrap().to_string();
+        let (handle, name) = store.directory_name(&fixture.owned_id).unwrap().unwrap();
+        let expected = format!("[message from {handle} · {name}]\nCheck the patch");
+        let helper_events = fixture.manager.snapshot(&helper).unwrap().unwrap().events;
+        assert!(helper_events.iter().any(|event| matches!(&event.payload,
+            AgentConversationPayload::UserMessage { text, .. } if *text == expected)), "{expected}");
+        let log = fs::read_to_string(fixture.root.join("multiplex.jsonl")).unwrap();
+        assert!(log.contains(r#""approvalPolicy":"untrusted""#), "{log}");
+        let helper_generation = fixture.manager.sessions.lock().unwrap()
+            .get(&helper).map(|session| session.generation);
+        if let Some(generation) = helper_generation {
+            fixture.manager.close(&helper, generation).await.unwrap();
+        }
+        endpoint.revoke(&fixture.owned_id);
+        fixture.manager.close(&fixture.owned_id, fixture.generation).await.unwrap();
         fs::remove_dir_all(fixture.root).unwrap();
     }
 
@@ -15350,7 +15452,8 @@ mod tests {
             .await
             .expect("a valid send after a refused one");
 
-        fs::remove_dir_all(fixture.root).unwrap();
+        // Close first: the restarted adapter still writes in the folder.
+        finish(fixture).await;
     }
 
     #[tokio::test(flavor = "current_thread")]

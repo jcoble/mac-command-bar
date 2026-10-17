@@ -95,6 +95,13 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
   settledAt: string | null;
   /** When the user pinned this session to the top of the rail; absent or `null` when unpinned. */
   pinnedAt?: string | null;
+  /** When the owner marked this session as the main orchestrator; absent or `null` otherwise. */
+  orchestratorMarkedAtMs?: number | null;
+  /** The session that started this helper; the rail draws it under that parent. */
+  helperOf?: string | null;
+  /** The workflow run this worker belongs to; the rail groups a run's workers under its label. */
+  runId?: string | null;
+  runLabel?: string | null;
   /**
    * What the scanner worked out about the session — the branch it is on, the
    * task it belongs to, the pull request it opened. Copied off the scanned
@@ -357,6 +364,10 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
     completedAt: record.completedAt,
     settledAt: record.settledAt,
     pinnedAt: record.pinnedAt ?? null,
+    orchestratorMarkedAtMs: record.orchestratorMarkedAtMs ?? null,
+    helperOf: record.helperOf ?? null,
+    runId: record.runId ?? null,
+    runLabel: record.runLabel ?? null,
     // The rail prints the branch straight into the row, so anything that is not
     // a name has to stop here rather than reach the row as "[object Object]".
     // The two constructors below already read it this way.

@@ -5460,6 +5460,7 @@ fn main() {
             remote_connection.set_message_host(agent_runtime.clone());
             agent_conversation::messaging::endpoint()?
                 .set_relay(remote_connection.message_relay(agent_conversation::remote::LOCAL_MACHINE));
+            agent_conversation::messaging::endpoint()?.set_workflow(workflow_engine.clone());
             if !remote_connection.is_configured() {
                 if let Some(profiles) = agent_runtime.read_app_setting(
                     agent_conversation::remote::REMOTE_ASSEMBLY_PROFILES_SETTING_KEY,
@@ -5695,16 +5696,14 @@ fn main() {
             create_workflow_run,
             get_workflow_run,
             list_workflow_files,
+            list_owner_inbox,
             answer_workflow_pause,
             start_workflow_run,
             pause_workflow_run,
             resume_workflow_run,
             cancel_workflow_run,
             retry_workflow_node,
-            redirect_workflow_node,
-            skip_workflow_node,
             approve_workflow_gate,
-            submit_workflow_result,
             agent_conversation::ensure_agent_conversation,
             agent_conversation::remote::read_remote_assembly_environment,
             agent_conversation::remote::connect_remote_assembly,
@@ -5725,6 +5724,8 @@ fn main() {
             agent_conversation::agent_conversation_set_session_draft,
             agent_conversation::agent_conversation_get_session_draft,
             agent_conversation::agent_conversation_clear_session_draft,
+            agent_conversation::set_main_orchestrator,
+            agent_conversation::list_agent_messages,
             agent_conversation::write_agent_conversation_workspace,
             agent_conversation::read_agent_conversation_workspace,
             agent_conversation::read_agent_conversation_workspace_expanded_paths,
