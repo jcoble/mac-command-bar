@@ -168,10 +168,17 @@ limits: { max_sessions: 3, step_timeout_minutes: 60, max_rounds: 5 }
 steps:
   recon: { agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/recon.md }
   spec: { needs: [recon], agent: { provider: claude, model: opus }, prompt: prompts/spec.md }
+  # Three reviewers check the spec at once; findings from any of them send it back.
   spec-review:
     needs: [spec]
     review: { of: spec, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/spec-review.md }
-  build: { needs: [spec-review], agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
+  spec-ui-review:
+    needs: [spec]
+    review: { of: spec, agent: { provider: claude, model: opus }, prompt: prompts/spec-ui-review.md }
+  spec-adversarial-review:
+    needs: [spec]
+    review: { of: spec, agent: { provider: claude, model: sonnet }, prompt: prompts/spec-adversarial-review.md }
+  build: { needs: [spec-review, spec-ui-review, spec-adversarial-review], agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
   checks:
     needs: [build]
     run:
@@ -210,6 +217,8 @@ adapt their content to the project and its rules before using the workflow:
 | `recon.md` | Read ${{ task.body }} and the project rules. Locate relevant files and report their responsibilities. |
 | `spec.md` | Use ${{ steps.recon.summary }} to write a small implementation spec for ${{ task.body }}. |
 | `spec-review.md` | Review ${{ steps.spec.summary }} against ${{ task.body }}. Call report_review exactly once with PASS and no findings, or actionable findings. |
+| `spec-ui-review.md` | Review only the visible UI planned in ${{ steps.spec.summary }} against ${{ task.body }} and the project's design rules; PASS at once when it plans no visible UI. Call report_review exactly once with PASS and no findings, or actionable findings. |
+| `spec-adversarial-review.md` | Try to break ${{ steps.spec.summary }}: name concrete cases from the code where the plan fails, each with its fix. Call report_review exactly once with PASS and no findings, or actionable findings. |
 | `build.md` | Implement the reviewed spec for ${{ task.body }}. Fix ${{ redo.findings }} and ${{ redo.output }} on redo. Commit only your changes on the run branch. |
 | `code-review.md` | Review the build diff against ${{ task.body }} and the reviewed spec. Call report_review exactly once with PASS and no findings, or actionable findings. |
 | `proof.md` | Verify the completed change in the running app. Save direct proof in ${{ run.proof_dir }}, register and publish media with the existing evidence tool, and summarize what it shows. For nonvisual work, attach readable command receipts to the PR. |
@@ -217,7 +226,7 @@ adapt their content to the project and its rules before using the workflow:
 
 ## Example 3: dev pipeline with two code reviewers
 
-Write `.assembly/workflows/dev-pipeline-two-reviewers.yml`; use all seven prompt
+Write `.assembly/workflows/dev-pipeline-two-reviewers.yml`; use all nine prompt
 files above plus `prompts/code-review-2.md` containing: “Independently review the
 build diff against ${{ task.body }}. Call report_review exactly once with PASS
 and zero findings, or actionable findings.” Both reviewers must pass before proof.
@@ -231,10 +240,17 @@ limits: { max_sessions: 3, step_timeout_minutes: 60, max_rounds: 5 }
 steps:
   recon: { agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/recon.md }
   spec: { needs: [recon], agent: { provider: claude, model: opus }, prompt: prompts/spec.md }
+  # Three reviewers check the spec at once; findings from any of them send it back.
   spec-review:
     needs: [spec]
     review: { of: spec, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/spec-review.md }
-  build: { needs: [spec-review], agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
+  spec-ui-review:
+    needs: [spec]
+    review: { of: spec, agent: { provider: claude, model: opus }, prompt: prompts/spec-ui-review.md }
+  spec-adversarial-review:
+    needs: [spec]
+    review: { of: spec, agent: { provider: claude, model: sonnet }, prompt: prompts/spec-adversarial-review.md }
+  build: { needs: [spec-review, spec-ui-review, spec-adversarial-review], agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/build.md }
   checks:
     needs: [build]
     run:
