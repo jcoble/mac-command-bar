@@ -109,10 +109,13 @@ These values come from the engine; do not invent values or evaluate arbitrary co
 
 ## Loop rules
 
-The first findings allow a redo. Later rounds continue only while the finding
-count strictly decreases; equal/increased counts or the five-round ceiling pause
-for the owner. Commands count failures per command; reviews count reported
-findings. Redo reuses the original worker session, creates fresh reviewers, and
+New findings allow another round. A finding pauses the run for the owner if its
+trimmed text exactly equals a finding from the previous round of the same step,
+or it starts with `REPEAT:`. The five-round ceiling still pauses after at most
+five redo rounds. Failed commands use their command text as findings; reviews
+use their reported findings. The stopping round's findings are saved so an
+owner's request for another round sends back the findings they were shown.
+Redo reuses the original worker session, creates fresh reviewers, and
 invalidates every direct/transitive dependent so checks, reviews and proof run
 again. Another reviewer is another `review` step with the same `of`; never add a
 `reviewers` list. Findings from either reviewer redo the shared target.

@@ -9,4 +9,9 @@ ${{ steps.spec.summary }}
 
 Check it against the task and the repository rules (CLAUDE.md, AGENTS.md). Its opening checklist must cover every requirement in the task and its screenshots, each marked `already done`, `will fix` or `blocked`; a missing or misread requirement is a finding. Check that its file and line claims are true by reading them. Flag added scope or complexity the task does not need. Do not raise far-fetched hypotheticals.
 
+Last round's findings, if this is a later round: ${{ redo.findings }}
+If one of your findings is the same problem as one of those and it is still not fixed, start it with `REPEAT:`. A repeated finding stops the run for the owner; a new finding sends the work back for another round.
+
+The run works without the owner. Settle how the code behaves by reading it, never by asking. Small choices the task leaves open belong to the author; flag a choice only when it is wrong, and say what is right. Every finding must be a fix the author can make alone. Never write a finding that asks the owner to decide.
+
 Call report_review exactly once: PASS with no findings, or a list of actionable findings, each naming the file and the fix.
