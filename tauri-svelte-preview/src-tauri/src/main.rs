@@ -1456,7 +1456,11 @@ fn write_source_file_sync(
     ));
 
     std::fs::write(&temp_path, content.as_bytes())
-        .map_err(|error| format!("Could not write source temp file: {error}"))?;
+        .and_then(|()| std::fs::set_permissions(&temp_path, std::fs::metadata(path_ref)?.permissions()))
+        .map_err(|error| {
+            let _ = std::fs::remove_file(&temp_path);
+            format!("Could not write source temp file: {error}")
+        })?;
     let latest = match read_source_file_sync(path.clone()) {
         Ok(preview) => preview,
         Err(error) => {
