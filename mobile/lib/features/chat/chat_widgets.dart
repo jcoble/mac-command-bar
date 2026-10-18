@@ -469,7 +469,7 @@ class _ToolSheetState extends State<_ToolSheet> {
             onBack: _single ? null : () => setState(() => _detail = null),
             itemCount: head.length + (lines.isEmpty ? 0 : 1),
             itemBuilder: (context, i) =>
-                i < head.length ? head[i] : _DiffBlock(lines),
+                i < head.length ? head[i] : DiffBlock(lines),
           );
         },
       ),
@@ -641,8 +641,8 @@ class _CutNote extends StatelessWidget {
 
 /// A unified diff as one block that scrolls sideways as a whole: lines never
 /// wrap, and every row is as wide as the longest so the colours line up.
-class _DiffBlock extends StatelessWidget {
-  const _DiffBlock(this.lines);
+class DiffBlock extends StatelessWidget {
+  const DiffBlock(this.lines, {super.key});
 
   final List<String> lines;
 
@@ -964,8 +964,7 @@ void _showFileDiff(
       },
       initialSize: 0.7,
       itemCount: head.length + (lines.isEmpty ? 0 : 1),
-      itemBuilder: (context, i) =>
-          i < head.length ? head[i] : _DiffBlock(lines),
+      itemBuilder: (context, i) => i < head.length ? head[i] : DiffBlock(lines),
     ),
   );
 }

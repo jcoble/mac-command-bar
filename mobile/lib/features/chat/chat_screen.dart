@@ -9,6 +9,8 @@ import '../../core/live/live_providers.dart';
 import '../../core/machines/machine_store.dart';
 import '../files/files_repository.dart';
 import '../files/files_screen.dart';
+import '../source_control/source_control_repository.dart';
+import '../source_control/source_control_sheet.dart';
 import 'chat_repository.dart';
 import 'chat_widgets.dart';
 import 'sessions_repository.dart';
@@ -122,6 +124,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   title: folderName(session?.project) ?? session?.name,
                 ),
               ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Source Control',
+            icon: const Icon(Symbols.fork_right_rounded),
+            onPressed: () => showSourceControlSheet(
+              context,
+              SourceControlRepository(
+                ref.read(machineClientProvider(machine.id)),
+                widget.ownedId,
+              ),
+              title: folderName(session?.project) ?? session?.name,
             ),
           ),
           IconButton(
