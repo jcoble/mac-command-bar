@@ -51,7 +51,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 18;
+pub(super) const PROTOCOL_VERSION: u16 = 19;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -224,6 +224,8 @@ pub(super) enum RemoteResponse {
 enum ServerFrame {
     Ready { protocol_version: u16 },
     MessagesChanged,
+    ReplayStart { owned_id: String },
+    ReplayComplete { owned_id: String, head: i64, #[serde(deserialize_with = "deserialize_wire_payload")] snapshot: AgentConversationSnapshot },
     Response { id: u64, response: RemoteResponse },
     Error { id: u64, message: String },
     ProviderDownloadProgress { id: u64, progress: super::providers::updates::ProviderDownloadProgress },
@@ -686,7 +688,7 @@ impl RemoteConnectionManager {
             return Err("ASSEMBLY_REMOTE_DEFAULT_CWD must be an absolute path".to_string());
         }
         let (request_tx, mut request_rx) = mpsc::channel(32);
-        let event_sink = manager.history_event_sink("environment");
+        let event_sink = manager.history_event_sink("environment", true);
         let ready = Arc::new(AtomicBool::new(false));
         let actor_ready = ready.clone();
         manager
@@ -704,11 +706,12 @@ impl RemoteConnectionManager {
                     ready,
                 },
             );
+        let history_client = manager.clone();
         tauri::async_runtime::spawn(async move {
             // The development environment client has no saved profile, so no rail
             // row maps to it and its transitions have nobody to tell.
             let status: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
-            client_loop(url, token, &mut request_rx, event_sink, None, None, actor_ready, &mut None, status, None)
+            client_loop(url, token, &mut request_rx, event_sink, None, None, actor_ready, &mut None, status, None, (history_client, "environment".into()))
                 .await;
         });
         Ok(manager)
@@ -1070,9 +1073,9 @@ impl RemoteConnectionManager {
             let reported_id = profile.id.clone();
             let report: Arc<dyn Fn() + Send + Sync> =
                 Arc::new(move || manager.publish_status(&reported_id));
-            let task = tokio::spawn(profile_client_loop(profile.clone(), receiver, self.history_event_sink(&profile.id),
+            let task = tokio::spawn(profile_client_loop(profile.clone(), receiver, self.history_event_sink(&profile.id, true),
                 self.terminal_sink(&profile.id), self.tunnel_processes.clone(), ready.clone(), Some(ready_tx), report,
-                self.message_relay(&profile.id)));
+                self.message_relay(&profile.id), self.clone()));
             // Dropping a failed/cancelled candidate aborts only its own actor and tunnel.
             let candidate = RemoteClient { requests: Some(requests), profile: Some(profile.clone()),
                 target_key: Some(target_key), task: Some(task.abort_handle()), ready };
@@ -1152,7 +1155,41 @@ impl RemoteConnectionManager {
         Ok(())
     }
 
-    fn history_event_sink(&self, profile_id: &str) -> RemoteEventSink {
+    fn saved_cursors(&self, profile: &str) -> Result<BTreeMap<String, i64>, String> {
+        self.store.remote_saved_maxima(profile).map_err(|e| e.to_string())
+    }
+
+    /// Returns true when the caller must fetch the newest page after a replacement.
+    fn complete_replay(&self, profile: &str, snapshot: AgentConversationSnapshot,
+        newest: Option<AgentConversationEvent>, saved: Option<i64>) -> Result<bool, String> {
+        if self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            .forget_if_shrunk(profile, &snapshot.connection.owned_id, snapshot.last_sequence, saved)? {
+            return Ok(true);
+        }
+        let newest = match newest {
+            Some(event) => Some(event),
+            None => self.store.newest_remote_event(&RemoteHistory::key(profile, &snapshot.connection.owned_id))
+                .map_err(|e| e.to_string())?
+                .map(|row| serde_json::from_str::<AgentConversationEvent>(&row.payload_json))
+                .transpose().map_err(|e| e.to_string())?,
+        };
+        self.save_replay_snapshot(profile, snapshot, newest)?;
+        Ok(false)
+    }
+
+    fn save_replay_snapshot(&self, profile: &str, mut snapshot: AgentConversationSnapshot,
+        newest: Option<AgentConversationEvent>) -> Result<(), String> {
+        {
+            let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let previous = history.through(profile, &snapshot.connection.owned_id)?;
+            history.snapshot(profile, history.epoch(profile), previous, &mut snapshot)?;
+        }
+        self.history_copied.notify_waiters();
+        if let Some(event) = newest { self.history_event_sink(profile, true)(vec![event])?; }
+        Ok(())
+    }
+
+    fn history_event_sink(&self, profile_id: &str, publish: bool) -> RemoteEventSink {
         let history = self.history.clone();
         let profile = profile_id.to_string();
         let epoch = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).epoch(&profile);
@@ -1187,7 +1224,7 @@ impl RemoteConnectionManager {
             }
             let cache_ms = started.elapsed().as_millis();
             let count = events.len();
-            for event in events { sink(event); }
+            if publish { for event in events { sink(event); } }
             if cache_ms > 16 {
                 eprintln!("Remote event batch: {count} events, cache {cache_ms} ms, publish {} ms", started.elapsed().as_millis().saturating_sub(cache_ms));
             }
@@ -1895,6 +1932,7 @@ impl RemoteConnectionManager {
         };
         let mut newest = None;
         loop {
+            let saved = self.store.latest_seq(&RemoteHistory::key(profile, owned_id)).map_err(|e| e.to_string())?;
             let RemoteResponse::Snapshot(snapshot) = self.request_with_id(profile, request_id,
                 RemoteCommand::Snapshot { owned_id: owned_id.into(), request_id, after_sequence: after }, None).await?
             else { return Err("Remote Assembly returned the wrong snapshot response".into()); };
@@ -1905,10 +1943,10 @@ impl RemoteConnectionManager {
             let end = {
                 let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 history.check(profile, epoch)?;
-                if after.is_some_and(|after| after > snapshot.last_sequence) {
+                if history.forget_if_shrunk(profile, owned_id, snapshot.last_sequence, Some(saved))? {
                     // An authoritative journal was replaced/truncated, rather than
                     // appended. Its previous cache is no longer the same history.
-                    history.forget(profile, owned_id)?;
+                    newest = None;
                     after = None;
                     continue;
                 }
@@ -2776,6 +2814,7 @@ async fn profile_client_loop(
     mut initial_ready: Option<oneshot::Sender<Result<Vec<AgentConversationSessionRecord>, String>>>,
     status: Arc<dyn Fn() + Send + Sync>,
     relay: super::messaging::Relay,
+    history_client: RemoteConnectionManager,
 ) {
     while !requests.is_closed() {
         let target = profile.ssh_target.clone();
@@ -2792,7 +2831,7 @@ async fn profile_client_loop(
         let url = format!("ws://127.0.0.1:{}/assembly", tunnel.local_port);
         let token = tunnel.token.clone();
         client_loop(url, token, &mut requests, event_sink.clone(), Some(terminal_sink.clone()), Some(4), ready.clone(),
-            &mut initial_ready, status.clone(), Some(relay.clone())).await;
+            &mut initial_ready, status.clone(), Some(relay.clone()), (history_client.clone(), profile.id.clone())).await;
         drop(tunnel);
     }
 }
@@ -2936,6 +2975,7 @@ async fn client_loop(
     initial_ready: &mut Option<oneshot::Sender<Result<Vec<AgentConversationSessionRecord>, String>>>,
     status: Arc<dyn Fn() + Send + Sync>,
     relay: Option<super::messaging::Relay>,
+    history_client: (RemoteConnectionManager, String),
 ) {
     let _end = ConnectionEnd { ready: ready.clone(), status: status.clone() };
     let cursors = Arc::new(Mutex::new(BTreeMap::<String, i64>::new()));
@@ -2990,16 +3030,24 @@ async fn client_loop(
             fail_queued_requests(requests, error);
             return;
         }
-        let resume = ClientFrame::Resume {
-            cursors: cursors
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
+        let saved = match history_client.0.saved_cursors(&history_client.1) {
+            Ok(saved) => saved,
+            Err(error) => {
+                if let Some(reply) = initial_ready.take() { let _ = reply.send(Err(error.clone())); }
+                fail_queued_requests(requests, error);
+                return;
+            }
         };
+        *cursors.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = saved.clone();
+        let mut resume_cursors = saved.clone();
+        let resume = ClientFrame::Resume { cursors: saved };
         if send_client_frame(&mut socket, &resume).await.is_err() {
             continue;
         }
         if send_client_frame(&mut socket, &ClientFrame::Request { id: READINESS_REQUEST_ID, command: RemoteCommand::ListSessions }).await.is_err() { return; }
+        let mut replaying = BTreeMap::<String, (Option<i64>, Option<AgentConversationEvent>)>::new();
+        let quiet_sink = history_client.0.history_event_sink(&history_client.1, false);
+        let mut replacements = HashSet::<u64>::new();
         let mut pending = HashMap::<u64, ClientReply>::new();
         let mut pending_progress = HashMap::<u64, mpsc::UnboundedSender<super::providers::updates::ProviderDownloadProgress>>::new();
         let mut interruption = "The Remote Assembly connection was interrupted".to_string();
@@ -3105,7 +3153,13 @@ async fn client_loop(
                             }
                         }
                         let count = events.len();
-                        if apply_event_batch(events, &event_sink, &cursors).is_err() { break 'connected; }
+                        let (quiet, live): (Vec<_>, Vec<_>) = events.into_iter()
+                            .partition(|event| replaying.contains_key(&event.owned_id));
+                        for event in &quiet {
+                            replaying.get_mut(&event.owned_id).unwrap().1 = Some(event.clone());
+                        }
+                        if apply_event_batch(quiet, &quiet_sink, &cursors).is_err()
+                            || apply_event_batch(live, &event_sink, &cursors).is_err() { break 'connected; }
                         if received.elapsed().as_millis() > 32 {
                             eprintln!("Remote socket receive: {count} events in {} ms", received.elapsed().as_millis());
                         }
@@ -3114,6 +3168,27 @@ async fn client_loop(
                         frame = other;
                     }
                     match frame {
+                        ServerFrame::ReplayStart { owned_id } => {
+                            let saved = resume_cursors.remove(&owned_id).or_else(||
+                                cursors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&owned_id).copied());
+                            replaying.insert(owned_id, (saved, None));
+                        }
+                        ServerFrame::ReplayComplete { owned_id, head, snapshot } => {
+                            debug_assert_eq!(head, snapshot.last_sequence);
+                            let (saved, newest) = replaying.remove(&owned_id).unwrap_or_default();
+                            match history_client.0.complete_replay(&history_client.1, snapshot, newest, saved) {
+                                Ok(true) => {
+                                    cursors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&owned_id);
+                                    let id = history_client.0.next_request_id.fetch_add(1, Ordering::Relaxed);
+                                    replacements.insert(id);
+                                    if send_client_frame(&mut socket, &ClientFrame::Request { id,
+                                        command: RemoteCommand::Snapshot { owned_id, request_id: id, after_sequence: None },
+                                    }).await.is_err() { break 'connected; }
+                                }
+                                Ok(false) => {}
+                                Err(error) => { interruption = error; break 'connected; }
+                            }
+                        }
                         ServerFrame::Ready { protocol_version } if protocol_version != PROTOCOL_VERSION => {
                             for (_, reply) in pending.drain() {
                                 let _ = reply.send(Err(format!("Unsupported remote protocol {protocol_version}")));
@@ -3133,6 +3208,20 @@ async fn client_loop(
                             if let Some(reply) = initial_ready.take() { let _ = reply.send(Ok(sessions)); }
                         }
                         ServerFrame::Response { id, response } => {
+                            if replacements.remove(&id) {
+                                if let RemoteResponse::Snapshot(Some(snapshot)) = response {
+                                    let newest = snapshot.events.last().cloned();
+                                    let owned_id = snapshot.connection.owned_id.clone();
+                                    let head = snapshot.last_sequence;
+                                    if history_client.0.save_replay_snapshot(&history_client.1, snapshot, newest).is_err() {
+                                        break 'connected;
+                                    }
+                                    let mut cursors = cursors.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                    let cursor = cursors.entry(owned_id).or_insert(head);
+                                    *cursor = (*cursor).max(head);
+                                }
+                                continue;
+                            }
                             pending_progress.remove(&id);
                             if let Some(reply) = pending.remove(&id) {
                                 let _ = reply.send(Ok(response));
@@ -3144,6 +3233,7 @@ async fn client_loop(
                             return;
                         }
                         ServerFrame::Error { id, message } => {
+                            if replacements.remove(&id) { interruption = message; break 'connected; }
                             pending_progress.remove(&id);
                             if let Some(reply) = pending.remove(&id) {
                                 let _ = reply.send(Err(message));
@@ -3565,6 +3655,8 @@ async fn replay_session(
     queued: &mut BTreeMap<String, i64>,
     owned_id: &str,
 ) -> Result<(), String> {
+    let Some(snapshot) = state.manager.snapshot_since(owned_id, Some(i64::MAX))? else { return Ok(()); };
+    outbound.send(ServerFrame::ReplayStart { owned_id: owned_id.into() }).await.map_err(|e| e.to_string())?;
     let mut sequence = *queued.get(owned_id).unwrap_or(&i64::MIN);
     loop {
         let page = state.manager.list_events_after(owned_id, sequence, REPLAY_PAGE_BYTES)?;
@@ -3577,6 +3669,10 @@ async fn replay_session(
         }
         if !has_more { break; }
     }
+    let head = snapshot.last_sequence;
+    queued.insert(owned_id.into(), sequence.min(head));
+    outbound.send(ServerFrame::ReplayComplete { owned_id: owned_id.into(), head, snapshot })
+        .await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -4121,7 +4217,7 @@ mod connection_tests {
         let (actor_ready, relay) = (ready.clone(), connections.message_relay("workbox-test"));
         let actor = tokio::spawn(async move {
             client_loop(format!("ws://{address}/assembly"), "test-token".into(), &mut receiver, Arc::new(|_| Ok(())), None,
-                Some(1), actor_ready, &mut Some(ready_reply), Arc::new(|| {}), Some(relay)).await;
+                Some(1), actor_ready, &mut Some(ready_reply), Arc::new(|| {}), Some(relay), client_history()).await;
         });
         ready_answer.await.unwrap().unwrap();
         connections.client.lock().unwrap().clients.insert("workbox-test".into(), RemoteClient {
@@ -4299,7 +4395,7 @@ mod connection_tests {
         event.payload = AgentConversationPayload::AssistantMessage {
             item_id: "a".into(), text: "**hello**".into(), completed: true, blocks: None,
         };
-        manager.history_event_sink("cache-test")(vec![event]).unwrap();
+        manager.history_event_sink("cache-test", true)(vec![event]).unwrap();
         // Catch-up has already cached this event before its live delivery arrives.
         let mut cached = history_event(2);
         cached.payload = AgentConversationPayload::AssistantMessage {
@@ -4311,8 +4407,8 @@ mod connection_tests {
             *blocks = None;
         }
         // Include a new suffix to exercise both skipped and written events in one batch.
-        manager.history_event_sink("cache-test")(vec![cached.clone(), history_event(3)]).unwrap();
-        manager.history_event_sink("cache-test")(vec![cached]).unwrap();
+        manager.history_event_sink("cache-test", true)(vec![cached.clone(), history_event(3)]).unwrap();
+        manager.history_event_sink("cache-test", true)(vec![cached]).unwrap();
         let delivered = delivered.lock().unwrap();
         let rows = store.list_events(&RemoteHistory::key("cache-test", "large-history"), 2, 100).unwrap();
         let cached: AgentConversationEvent = serde_json::from_str(&rows[0].payload_json).unwrap();
@@ -4345,7 +4441,7 @@ mod connection_tests {
             Arc::new(|_| {}),
             store,
         ).unwrap();
-        let sink = manager.history_event_sink("cache-test");
+        let sink = manager.history_event_sink("cache-test", true);
         let event = large_history_event(32);
 
         assert!(sink(vec![event.clone()]).is_ok(), "a cache write failure must not drop the connection");
@@ -4391,7 +4487,7 @@ mod connection_tests {
         // An earlier run saved 2..=3; live event 5 then arrived after a missed 4.
         manager.history.lock().unwrap()
             .snapshot("cache-test", 0, None, &mut history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
-        manager.history_event_sink("cache-test")(vec![history_event(5)]).unwrap();
+        manager.history_event_sink("cache-test", true)(vec![history_event(5)]).unwrap();
         published.lock().unwrap().clear();
 
         // Offline: the confirmed copy opens and pages; the gap row stays out.
@@ -4437,7 +4533,7 @@ mod connection_tests {
         manager.client.lock().unwrap().clients.remove("cache-test");
         assert_eq!(sequences(&manager.snapshot("large-history".into(), 3).await.unwrap().unwrap().events), (1..=6).collect::<Vec<_>>());
         assert_eq!(sequences(&manager.events_before("large-history".into(), 4, 1 << 20).await.unwrap().events), vec![1, 2, 3]);
-        let late_sink = manager.history_event_sink("cache-test");
+        let late_sink = manager.history_event_sink("cache-test", true);
         manager.disconnect_profile("cache-test").unwrap();
         assert!(late_sink(vec![large_history_event(32)]).is_err());
         assert_eq!(manager.history.lock().unwrap().through("cache-test", "large-history").unwrap(), Some(6));
@@ -4812,6 +4908,10 @@ mod connection_tests {
         std::fs::remove_dir(&directory).unwrap();
     }
 
+    fn client_history() -> (RemoteConnectionManager, String) {
+        (RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap(), "test".into())
+    }
+
     fn store() -> Arc<SessionStore> {
         Arc::new(SessionStore::open_in_memory().unwrap())
     }
@@ -4902,7 +5002,7 @@ mod connection_tests {
         assert!(manager.history.lock().unwrap().read_selection_snapshot("workbox", "large-history", 1024).unwrap().is_none(),
             "an event-less row still opens from the server");
 
-        manager.history_event_sink("workbox")(vec![history_event(5)]).unwrap();
+        manager.history_event_sink("workbox", true)(vec![history_event(5)]).unwrap();
         assert_eq!(shared.get_session(&key).unwrap().unwrap().project_id.as_deref(), Some("p1"), "live events keep the project");
     }
 
@@ -5198,7 +5298,7 @@ mod connection_tests {
         manager.history.lock().unwrap().snapshot(
             "saved", 0, None, &mut history_snapshot(vec![history_event(1)], 1),
         ).unwrap();
-        let stale_history_sink = manager.history_event_sink("saved");
+        let stale_history_sink = manager.history_event_sink("saved", true);
         let attempt = ConnectingAttempt::start(&manager, "saved");
         assert_eq!(manager.connection_state("saved"), RemoteConnectionState::Reconnecting);
 
@@ -5328,7 +5428,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn readiness_requires_protocol_and_session_response() {
-        assert_eq!(PROTOCOL_VERSION, 18);
+        assert_eq!(PROTOCOL_VERSION, 19);
         for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
@@ -5352,7 +5452,7 @@ mod connection_tests {
             let (reply, mut result) = oneshot::channel();
             let ready = Arc::new(AtomicBool::new(false));
             let actor_ready = ready.clone();
-            let actor = tokio::spawn(async move { client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver, Arc::new(|_| Ok(())), None, Some(1), actor_ready, &mut Some(reply), Arc::new(|| {}), None).await });
+            let actor = tokio::spawn(async move { client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver, Arc::new(|_| Ok(())), None, Some(1), actor_ready, &mut Some(reply), Arc::new(|| {}), None, client_history()).await });
             if version == PROTOCOL_VERSION {
                 probe_rx.await.unwrap();
                 assert!(!ready.load(Ordering::Acquire));
@@ -5400,7 +5500,7 @@ mod connection_tests {
         let actor = tokio::spawn(async move {
             client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver,
                 Arc::new(|_| Ok(())), None, Some(1), Arc::new(AtomicBool::new(false)),
-                &mut Some(ready_reply), Arc::new(|| {}), None).await;
+                &mut Some(ready_reply), Arc::new(|| {}), None, client_history()).await;
         });
         let (reply, answer) = oneshot::channel();
         requests.send(ClientRequest::Execute {
@@ -5452,18 +5552,239 @@ mod connection_tests {
         });
         let delivered = Arc::new(Mutex::new(Vec::new()));
         let captured = delivered.clone();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(move |event| captured.lock().unwrap().push(event)), Arc::new(|_| {}), store()).unwrap();
+        let sink = manager.history_event_sink("test", true);
         let (requests, mut receiver) = mpsc::channel(1);
         let (ready_reply, ready_answer) = oneshot::channel();
         let actor = tokio::spawn(async move {
             client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver,
-                Arc::new(move |events| { captured.lock().unwrap().extend(events); Ok(()) }), None,
-                Some(2), Arc::new(AtomicBool::new(false)), &mut Some(ready_reply), Arc::new(|| {}), None).await;
+                sink, None,
+                Some(2), Arc::new(AtomicBool::new(false)), &mut Some(ready_reply), Arc::new(|| {}), None, (manager, "test".into())).await;
         });
         ready_answer.await.unwrap().unwrap();
         server.await.unwrap();
         let sequences: Vec<_> = delivered.lock().unwrap().iter()
             .map(|event: &AgentConversationEvent| (event.owned_id.clone(), event.sequence)).collect();
         assert_eq!(sequences, vec![("large-history".into(), 1), ("other-history".into(), 1), ("large-history".into(), 2)]);
+        drop(requests);
+        actor.abort();
+        let _ = actor.await;
+    }
+
+    #[test]
+    fn replay_completion_decodes_pending_snapshot_metadata() {
+        let mut snapshot = history_snapshot(vec![], 3);
+        snapshot.pending_events.push(history_event(3));
+        snapshot.active_turn_id = Some("active".into());
+        let frame = ServerFrame::ReplayComplete { owned_id: "large-history".into(), head: 3, snapshot };
+        let decoded = parse_server_frame(TungsteniteMessage::Text(encode_server_frame(&frame).unwrap().into())).unwrap();
+        let Some(ServerFrame::ReplayComplete { snapshot, .. }) = decoded else { panic!("expected completion"); };
+        assert_eq!(snapshot.pending_events.len(), 1);
+        assert_eq!(snapshot.active_turn_id.as_deref(), Some("active"));
+        assert!(snapshot.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rework_deleted_session_does_not_abort_resume() {
+        let directory = std::env::temp_dir().join(format!("assembly-deleted-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("sessions.db")).unwrap();
+        let (events, _) = broadcast::channel(2);
+        let state = ServerState {
+            workflow: crate::workflow::WorkflowEngine::managed(manager.clone(), manager.store_handle()),
+            manager, data_dir: directory.clone(), token: Arc::from("test"),
+            maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
+            restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events,
+            terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
+        };
+        let (outbound, mut received) = mpsc::channel(8);
+        let mut queued = BTreeMap::from([("deleted".into(), 10)]);
+        replay_session(&state, &outbound, &mut queued, "deleted").await.unwrap();
+        assert!(received.try_recv().is_err(), "an absent session must not open a replay window");
+        drop(state);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rework_reconnect_before_completion_publishes_saved_newest_once() {
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let captured = published.clone();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(move |event| captured.lock().unwrap().push(event)), Arc::new(|_| {}), store()).unwrap();
+        manager.history_event_sink("box", false)(vec![history_event(10)]).unwrap();
+        // The first connection ended before completion. Resume at 10 supplies no events.
+        assert!(!manager.complete_replay("box", history_snapshot(vec![], 10), None, Some(10)).unwrap());
+        assert_eq!(sequences(&published.lock().unwrap()), vec![10]);
+    }
+
+    #[tokio::test]
+    async fn rework_snapshot_head_before_live_event_keeps_saved_rows() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+        manager.history.lock().unwrap().snapshot("cache-test", 0, None,
+            &mut history_snapshot(vec![history_event(10)], 10)).unwrap();
+        let mut requests = connect(&manager);
+        let client = manager.clone();
+        let server = tokio::spawn(async move {
+            let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected snapshot"); };
+            client.history_event_sink("cache-test", false)(vec![history_event(11)]).unwrap();
+            reply.send(Ok(RemoteResponse::Snapshot(Some(history_snapshot(vec![], 10))))).unwrap();
+        });
+        assert!(manager.save_newer("cache-test", "large-history", 1, false, None).await.unwrap());
+        server.await.unwrap();
+        assert_eq!(manager.saved_cursors("cache-test").unwrap()["large-history"], 11);
+        assert!(!manager.complete_replay("cache-test", history_snapshot(vec![], 10), None, Some(10)).unwrap());
+        assert_eq!(manager.saved_cursors("cache-test").unwrap()["large-history"], 11);
+        let rows = manager.store.list_events(&RemoteHistory::key("cache-test", "large-history"), i64::MIN, 10).unwrap();
+        assert_eq!(rows.iter().map(|row| row.seq).collect::<Vec<_>>(), vec![10, 11]);
+    }
+
+    #[test]
+    fn resume_uses_saved_maxima_even_past_coverage() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+        let mut base = history_snapshot(vec![history_event(-5)], -5);
+        manager.history.lock().unwrap().snapshot("box", 0, None, &mut base).unwrap();
+        manager.history_event_sink("box", true)(vec![history_event(7)]).unwrap();
+        assert_eq!(manager.saved_cursors("box").unwrap(), BTreeMap::from([("large-history".into(), 7)]));
+    }
+
+    fn quiet_replay_300() {
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let captured = published.clone();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(move |event| captured.lock().unwrap().push(event)), Arc::new(|_| {}), store()).unwrap();
+        let mut base = history_snapshot(vec![history_event(0)], 0);
+        base.active_turn_id = Some("finished".into());
+        manager.history.lock().unwrap().snapshot("box", 0, None, &mut base).unwrap();
+        let mut events: Vec<_> = (1..=300).map(history_event).collect();
+        events[0].payload = super::super::protocol::AgentConversationPayload::Turn {
+            turn_id: "finished".into(), state: super::super::protocol::TurnState::Started,
+        };
+        // Completion metadata is authoritative even when the last event isn't a turn event.
+        let newest = events.last().cloned();
+        manager.history_event_sink("box", false)(events).unwrap();
+        assert!(published.lock().unwrap().is_empty());
+        assert!(!manager.complete_replay("box", history_snapshot(vec![], 300), newest, Some(0)).unwrap());
+        assert_eq!(sequences(&published.lock().unwrap()), vec![300]);
+        let saved = manager.history.lock().unwrap().read_snapshot("box", 0, "large-history").unwrap();
+        assert_eq!(saved.events.len(), 301);
+        assert!(saved.active_turn_id.is_none());
+        assert!(saved.pending_events.is_empty());
+    }
+
+    #[test]
+    fn resume_replay_300_is_saved_and_published_only_on_completion() { quiet_replay_300(); }
+
+    #[test]
+    fn lag_replay_300_is_saved_and_published_only_on_completion() { quiet_replay_300(); }
+
+    #[tokio::test]
+    async fn client_saves_300_replay_events_before_resume_and_lag_completion() {
+        for lag in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let published = Arc::new(Mutex::new(Vec::new()));
+            let captured = published.clone();
+            let manager = RemoteConnectionManager::from_environment(
+                Arc::new(move |event| captured.lock().unwrap().push(event)), Arc::new(|_| {}), store()).unwrap();
+            manager.history.lock().unwrap().snapshot("box", 0, None,
+                &mut history_snapshot(vec![history_event(0)], 0)).unwrap();
+            let saved = manager.clone();
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+                socket.send(TungsteniteMessage::Text(encode_server_frame(&ServerFrame::Ready {
+                    protocol_version: PROTOCOL_VERSION }).unwrap().into())).await.unwrap();
+                let resume: ClientFrame = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+                assert!(matches!(resume, ClientFrame::Resume { cursors } if cursors == BTreeMap::from([("large-history".into(), 0)])));
+                let _readiness = socket.next().await.unwrap().unwrap();
+                let ready = ServerFrame::Response { id: READINESS_REQUEST_ID, response: RemoteResponse::Sessions(vec![]) };
+                if lag { socket.send(TungsteniteMessage::Text(encode_server_frame(&ready).unwrap().into())).await.unwrap(); }
+                socket.send(TungsteniteMessage::Text(encode_server_frame(&ServerFrame::ReplayStart { owned_id: "large-history".into() }).unwrap().into())).await.unwrap();
+                for sequence in 1..=300 {
+                    socket.send(TungsteniteMessage::Text(encode_server_frame(&ServerFrame::Event { event: history_event(sequence) }).unwrap().into())).await.unwrap();
+                }
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while saved.saved_cursors("box").unwrap().get("large-history") != Some(&300) { tokio::task::yield_now().await; }
+                }).await.unwrap();
+                assert!(published.lock().unwrap().is_empty());
+                let complete = ServerFrame::ReplayComplete { owned_id: "large-history".into(), head: 300,
+                    snapshot: history_snapshot(vec![], 300) };
+                socket.send(TungsteniteMessage::Text(encode_server_frame(&complete).unwrap().into())).await.unwrap();
+                if !lag { socket.send(TungsteniteMessage::Text(encode_server_frame(&ready).unwrap().into())).await.unwrap(); }
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while published.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
+                }).await.unwrap();
+                assert_eq!(sequences(&published.lock().unwrap()), vec![300]);
+            });
+            let (requests, mut receiver) = mpsc::channel(2);
+            let sink = manager.history_event_sink("box", true);
+            let actor = tokio::spawn(async move {
+                client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver, sink, None, Some(1),
+                    Arc::new(AtomicBool::new(false)), &mut None, Arc::new(|| {}), None, (manager, "box".into())).await;
+            });
+            server.await.unwrap();
+            drop(requests);
+            actor.abort();
+            let _ = actor.await;
+        }
+    }
+
+    #[test]
+    fn shrunk_replay_metadata_forgets_before_top_up() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+        let mut base = history_snapshot(vec![history_event(10)], 10);
+        manager.history.lock().unwrap().snapshot("box", 0, None, &mut base).unwrap();
+        assert!(manager.complete_replay("box", history_snapshot(vec![], 3), None, Some(10)).unwrap());
+        assert!(manager.saved_cursors("box").unwrap().is_empty());
+    }
+
+    #[test]
+    fn replacement_page_preserves_events_pushed_after_its_head() {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+        manager.history_event_sink("box", true)(vec![history_event(4)]).unwrap();
+        manager.save_replay_snapshot("box", history_snapshot(vec![history_event(3)], 3), Some(history_event(3))).unwrap();
+        assert_eq!(manager.saved_cursors("box").unwrap()["large-history"], 4);
+    }
+
+    #[tokio::test]
+    async fn replay_complete_shrunk_head_forgets_and_requests_newest_page() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+        manager.history.lock().unwrap().snapshot("box", 0, None,
+            &mut history_snapshot(vec![history_event(10)], 10)).unwrap();
+        let saved = manager.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket.send(TungsteniteMessage::Text(encode_server_frame(&ServerFrame::Ready {
+                protocol_version: PROTOCOL_VERSION }).unwrap().into())).await.unwrap();
+            let resume: ClientFrame = serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            assert!(matches!(resume, ClientFrame::Resume { cursors } if cursors.get("large-history") == Some(&10)));
+            let _readiness = socket.next().await.unwrap().unwrap();
+            for frame in [ServerFrame::ReplayStart { owned_id: "large-history".into() },
+                ServerFrame::ReplayComplete { owned_id: "large-history".into(), head: 3, snapshot: history_snapshot(vec![], 3) }] {
+                socket.send(TungsteniteMessage::Text(encode_server_frame(&frame).unwrap().into())).await.unwrap();
+            }
+            let request = tokio::time::timeout(Duration::from_secs(5), socket.next()).await.unwrap().unwrap().unwrap();
+            let ClientFrame::Request { id, command: RemoteCommand::Snapshot { after_sequence, .. } } =
+                serde_json::from_str(request.to_text().unwrap()).unwrap() else { panic!("expected newest page request"); };
+            assert_eq!(after_sequence, None);
+            assert!(saved.saved_cursors("box").unwrap().is_empty());
+            let response = ServerFrame::Response { id, response: RemoteResponse::Snapshot(Some(history_snapshot(vec![history_event(3)], 3))) };
+            socket.send(TungsteniteMessage::Text(encode_server_frame(&response).unwrap().into())).await.unwrap();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while saved.saved_cursors("box").unwrap().get("large-history") != Some(&3) { tokio::task::yield_now().await; }
+            }).await.unwrap();
+        });
+        let (requests, mut receiver) = mpsc::channel(2);
+        let sink = manager.history_event_sink("box", true);
+        let actor = tokio::spawn(async move {
+            client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver, sink, None, Some(1),
+                Arc::new(AtomicBool::new(false)), &mut None, Arc::new(|| {}), None, (manager, "box".into())).await;
+        });
+        server.await.unwrap();
         drop(requests);
         actor.abort();
         let _ = actor.await;
@@ -5479,10 +5800,10 @@ mod connection_tests {
         store.upsert_session(&mcb_core::session_store::SessionRow {
             owned_id: "large-history".into(), native_session_id: None, provider: "codex".into(),
             model: None, effort: None, cwd: String::new(), worktree: None, branch: None,
-            title: None, title_source: None, project: None, project_id: None, state: "idle".into(),
-            suspended: false, created_at_ms: 0, last_activity_at_ms: 0, extra_json: "{}".into(),
+            title: None, title_source: None, project: None, project_id: None, state: "ready".into(),
+            suspended: false, created_at_ms: 0, last_activity_at_ms: 0, extra_json: super::super::manager::imported_session_extra(AgentConversationProvider::Codex).unwrap(),
         }).unwrap();
-        for sequence in 1..=4 {
+        for sequence in 1..=301 {
             let mut event = large_history_event(32);
             event.sequence = sequence;
             store.append_event(&mcb_core::session_store::EventRow {
@@ -5499,24 +5820,37 @@ mod connection_tests {
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events,
             terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
         };
-        let (outbound, mut received) = mpsc::channel(8);
+        let (outbound, mut received) = mpsc::channel(512);
         let mut queued = BTreeMap::from([("large-history".to_string(), 1)]);
         replay_session(&state, &outbound, &mut queued, "large-history").await.unwrap();
-        assert_eq!(queued["large-history"], 4);
+        assert_eq!(queued["large-history"], 301);
+        let start = received.try_recv().unwrap();
+        assert_eq!(serde_json::to_value(start).unwrap()["type"], "replayStart");
         let mut sequences = Vec::new();
-        while let Ok(ServerFrame::Event { event }) = received.try_recv() { sequences.push(event.sequence); }
-        assert_eq!(sequences, vec![2, 3, 4]);
+        for _ in 0..300 {
+            let ServerFrame::Event { event } = received.try_recv().unwrap() else { panic!("expected replayed event"); };
+            sequences.push(event.sequence);
+        }
+        assert_eq!(sequences, (2..=301).collect::<Vec<_>>());
+        let complete = serde_json::to_value(received.try_recv().unwrap()).unwrap();
+        assert_eq!(complete["type"], "replayComplete");
+        assert_eq!(complete["head"], 301);
+        assert!(complete["snapshot"]["activeTurnId"].is_null());
         let mut new_event = large_history_event(32);
-        new_event.sequence = 5;
+        new_event.sequence = 302;
         state.manager.store().append_event(&mcb_core::session_store::EventRow {
-            owned_id: new_event.owned_id.clone(), seq: 5, turn_id: None,
+            owned_id: new_event.owned_id.clone(), seq: 302, turn_id: None,
             kind: "test".into(), payload_json: serde_json::to_string(&new_event).unwrap(),
             created_at_ms: 0,
         }).unwrap();
         replay_session(&state, &outbound, &mut queued, "large-history").await.unwrap();
-        assert!(matches!(received.try_recv(), Ok(ServerFrame::Event { event }) if event.sequence == 5));
-        assert_eq!(queued["large-history"], 5);
+        assert_eq!(serde_json::to_value(received.try_recv().unwrap()).unwrap()["type"], "replayStart");
+        assert!(matches!(received.try_recv(), Ok(ServerFrame::Event { event }) if event.sequence == 302));
+        assert_eq!(serde_json::to_value(received.try_recv().unwrap()).unwrap()["type"], "replayComplete");
+        assert_eq!(queued["large-history"], 302);
         replay_session(&state, &outbound, &mut queued, "large-history").await.unwrap();
+        assert_eq!(serde_json::to_value(received.try_recv().unwrap()).unwrap()["type"], "replayStart");
+        assert_eq!(serde_json::to_value(received.try_recv().unwrap()).unwrap()["type"], "replayComplete");
         assert!(received.try_recv().is_err());
         rusqlite::Connection::open(&database).unwrap().execute("DROP TABLE events", []).unwrap();
         assert!(replay_session(&state, &outbound, &mut queued, "large-history").await.is_err());
@@ -5554,7 +5888,7 @@ mod connection_tests {
             }).unwrap();
             event
         };
-        for sequence in 1..=12 { append(sequence); }
+        for sequence in 1..=300 { append(sequence); }
         let mut unknown = large_history_event(32);
         unknown.owned_id = "unknown-history".into();
         unknown.sequence = 1;
@@ -5580,23 +5914,31 @@ mod connection_tests {
         assert!(matches!(parse_server_frame(socket.next().await.unwrap().unwrap()).unwrap(), Some(ServerFrame::Ready { .. })));
         send_client_frame(&mut socket, &ClientFrame::Resume { cursors: BTreeMap::from([("large-history".into(), 0)]) }).await.unwrap();
         let first = parse_server_frame(socket.next().await.unwrap().unwrap()).unwrap().unwrap();
+        assert!(matches!(first, ServerFrame::ReplayStart { .. }));
+        let first = parse_server_frame(socket.next().await.unwrap().unwrap()).unwrap().unwrap();
         assert!(matches!(first, ServerFrame::Event { event } if event.sequence == 1));
 
         // The current-thread runtime cannot poll the server while this burst is sent.
         // Its two-slot receiver must report Lagged after the in-progress replay.
-        for sequence in 13..=17 { events.send(append(sequence)).unwrap(); }
+        for sequence in 301..=600 { events.send(append(sequence)).unwrap(); }
         let mut sequences = vec![1];
-        while sequences.len() < 17 {
+        while sequences.len() < 600 {
             let frame = tokio::time::timeout(Duration::from_secs(5), socket.next()).await.unwrap().unwrap().unwrap();
             if let Some(ServerFrame::Event { event }) = parse_server_frame(frame).unwrap() {
                 assert_eq!(event.owned_id, "large-history", "unknown session must not replay from the start");
                 sequences.push(event.sequence);
             }
         }
-        assert_eq!(sequences, (1..=17).collect::<Vec<_>>());
+        assert_eq!(sequences, (1..=600).collect::<Vec<_>>());
         send_client_frame(&mut socket, &ClientFrame::Request { id: 7, command: RemoteCommand::ListSessions }).await.unwrap();
-        let response = tokio::time::timeout(Duration::from_secs(5), socket.next()).await.unwrap().unwrap().unwrap();
-        assert!(matches!(parse_server_frame(response).unwrap(), Some(ServerFrame::Response { id: 7, response: RemoteResponse::Sessions(_) })));
+        loop {
+            let response = tokio::time::timeout(Duration::from_secs(5), socket.next()).await.unwrap().unwrap().unwrap();
+            match parse_server_frame(response).unwrap() {
+                Some(ServerFrame::ReplayComplete { .. }) => continue,
+                Some(ServerFrame::Response { id: 7, response: RemoteResponse::Sessions(_) }) => break,
+                other => panic!("unexpected frame: {other:?}"),
+            }
+        }
         socket.close(None).await.unwrap();
         server.abort();
         let _ = server.await;
@@ -5634,7 +5976,7 @@ mod connection_tests {
         let actor = tokio::spawn(async move {
             client_loop(format!("ws://{address}"), "test-token".into(), &mut receiver,
                 Arc::new(|_| Ok(())), None, Some(1), Arc::new(AtomicBool::new(false)),
-                &mut Some(ready_reply), Arc::new(|| {}), None).await;
+                &mut Some(ready_reply), Arc::new(|| {}), None, client_history()).await;
         });
         ready_answer.await.unwrap().unwrap();
         let (reply, answer) = oneshot::channel();

@@ -3977,6 +3977,29 @@ impl SessionStore {
         })
     }
 
+    /// One saved maximum per remote session; empty sessions have no cursor.
+    pub fn remote_saved_maxima(&self, profile_id: &str) -> Result<std::collections::BTreeMap<String, i64>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT json_extract(s.owned_id, '$[1]'), MAX(e.seq)
+             FROM sessions s JOIN events e ON e.owned_id = s.owned_id
+             WHERE s.cached_remote_profile_id = ?1 AND e.kind = 'remote.cached'
+             GROUP BY s.owned_id",
+        ).map_err(|error| StoreError::sqlite("could not prepare saved remote cursors", error))?;
+        let rows = statement.query_map([profile_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|error| StoreError::sqlite("could not read saved remote cursors", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not decode saved remote cursors", error))
+    }
+
+    pub fn newest_remote_event(&self, owned_id: &str) -> Result<Option<EventRow>> {
+        self.lock()?.query_row(
+            "SELECT owned_id, seq, turn_id, kind, payload, created_at FROM events
+             WHERE owned_id = ? AND kind = 'remote.cached' ORDER BY seq DESC LIMIT 1",
+            [owned_id], event_from_row,
+        ).optional().map_err(|error| StoreError::sqlite("could not read newest saved remote event", error))
+    }
+
     pub fn latest_seq(&self, owned_id: &str) -> Result<i64> {
         let connection = self.lock()?;
         connection
@@ -7204,6 +7227,24 @@ mod tests {
                 .len(),
             4
         );
+    }
+
+    #[test]
+    fn grouped_remote_saved_max_includes_negative_sequences() {
+        let (_directory, _path, store) = open_temp_store();
+        for (owned, profile, seqs) in [
+            ("[\"box\",\"a\"]", "box", vec![-9, -2]),
+            ("[\"box\",\"b\"]", "box", vec![1, 7]),
+            ("[\"other\",\"a\"]", "other", vec![99]),
+            ("[\"box\",\"empty\"]", "box", vec![]),
+        ] {
+            let rows: Vec<_> = seqs.into_iter().map(|seq|
+                fixture_event_of_kind(owned, seq, "remote.cached")).collect();
+            store.cache_remote_events(profile, &fixture_session(owned, 1), &rows).unwrap();
+        }
+        store.append_event(&fixture_event_of_kind("[\"box\",\"b\"]", 100, "test")).unwrap();
+        assert_eq!(store.remote_saved_maxima("box").unwrap(),
+            std::collections::BTreeMap::from([("a".into(), -2), ("b".into(), 7)]));
     }
 
     #[test]
