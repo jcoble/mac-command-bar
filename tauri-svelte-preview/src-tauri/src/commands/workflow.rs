@@ -79,7 +79,7 @@ pub(crate) async fn answer_workflow_pause(
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
     let run = engine
-        .answer_pause(&run_id, &node_id, &decision, reply, "owner", &idempotency_key)
+        .answer_pause(&run_id, &node_id, &decision, reply, "owner", &idempotency_key, None)
         .await
         .map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);
@@ -171,7 +171,7 @@ pub(crate) async fn approve_workflow_gate(
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
     let run = engine
-        .approve_gate(&run_id, &node_id, approval, "owner", &idempotency_key)
+        .approve_gate(&run_id, &node_id, approval, "owner", &idempotency_key, None)
         .await
         .map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);

@@ -474,9 +474,9 @@ async fn answer(State(state): State<ServerState>, Path(id): Path<String>, body: 
             owned_id: session.unwrap_or_default(), generation: request.version as u64, request_id: id, option_id: request.option_id,
         }),
         Some("gate") => RemoteCommand::Workflow { operation: "approveGate".into(), args: json!({
-            "runId": item["runId"], "nodeId": item["stepId"], "approval": { "approved": true }, "idempotencyKey": key }) },
+            "runId": item["runId"], "nodeId": item["stepId"], "approval": { "approved": true }, "expectedAttempt": request.version, "idempotencyKey": key }) },
         _ => RemoteCommand::Workflow { operation: "answer".into(), args: json!({
-            "runId": item["runId"], "nodeId": item["stepId"], "decision": request.option_id, "idempotencyKey": key }) },
+            "runId": item["runId"], "nodeId": item["stepId"], "decision": request.option_id, "expectedAttempt": request.version, "idempotencyKey": key }) },
     };
     match execute_phone_command(&state, command).await {
         Ok(_) => Ok(StatusCode::NO_CONTENT.into_response()),
@@ -660,7 +660,7 @@ mod tests {
     use super::super::manager::AgentRuntimeManager;
     use super::super::providers::ProviderRegistry;
     use super::super::remote::{bind_listeners, server_state, ServerState};
-    use super::{new_pairing_code, operation, redeem_pairing_code, reduce_chat, router, start_listener, PAIRING_CODE_LIFETIME_MS};
+    use super::{answered_elsewhere, execute_phone_command, new_pairing_code, operation, redeem_pairing_code, reduce_chat, router, start_listener, RemoteCommand, PAIRING_CODE_LIFETIME_MS};
     use super::super::protocol::{AgentConversationEvent, AgentConversationPayload as Payload, AgentConversationProvider, ToolState, TurnState};
     use futures_util::StreamExt;
     use serde_json::{json, Value};
@@ -953,6 +953,35 @@ mod tests {
         }
         assert_eq!(inbox_item(&base, &token, &run_id).await, item, "nothing was answered");
         assert!(state.workflow.get_run(&run_id).unwrap().input_snapshot.get("answers").is_none());
+    }
+
+    #[tokio::test]
+    async fn answer_with_old_attempt_is_stale_after_another_round() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let run_id = start_run(&state, LOOP_STOPS).await;
+        let old = inbox_item(&base, &token, &run_id).await;
+        // The desktop sends another round, and the step stops again as a newer attempt.
+        crate::workflow::execute_operation(&state.workflow, "answer", json!({"runId": run_id, "nodeId": "checks",
+            "decision": "another-round", "idempotencyKey": "desktop:round"})).await.unwrap();
+        let mut item = inbox_item(&base, &token, &run_id).await;
+        for _ in 0..200 {
+            if item["version"] != old["version"] { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            item = inbox_item(&base, &token, &run_id).await;
+        }
+        assert!(item["version"].as_i64() > old["version"].as_i64(), "the step is waiting again as a newer attempt");
+
+        // The phone's own version check refuses it ...
+        let refused = client(reqwest::Method::POST, &base, &format!("/inbox/{}/answer", old["id"].as_str().unwrap()), &token)
+            .json(&json!({"optionId": "accept", "version": old["version"]})).send().await.unwrap();
+        assert_eq!(refused.status(), reqwest::StatusCode::CONFLICT);
+        // ... and so does the engine, for an answer that passed that check before the round.
+        let late = execute_phone_command(&state, RemoteCommand::Workflow { operation: "answer".into(), args: json!({
+            "runId": run_id, "nodeId": "checks", "decision": "accept", "expectedAttempt": old["version"], "idempotencyKey": "phone:late" }) }).await;
+        assert!(answered_elsewhere(&late.err().expect("an answer to an older attempt is refused")));
+        assert_eq!(inbox_item(&base, &token, &run_id).await["version"], item["version"], "the newer attempt still waits");
+        assert_eq!(serde_json::to_value(state.workflow.get_run(&run_id).unwrap().state).unwrap(), "waiting-input");
     }
 
     #[tokio::test]
