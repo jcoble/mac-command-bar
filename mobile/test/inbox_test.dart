@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:typed_data';
+
 import 'package:assembly_phone/core/api/api_exception.dart';
 import 'package:assembly_phone/core/api/machine_client.dart';
 import 'package:assembly_phone/core/live/live_providers.dart';
@@ -53,10 +56,33 @@ List<String> sent(FakeAdapter adapter) => [
   for (final r in adapter.requests) '${r.method} ${r.path}',
 ];
 
+/// Answers like [FakeAdapter], but holds the response to the next request
+/// until [gate] completes (the answer is chosen when the request arrives).
+class GatedAdapter extends FakeAdapter {
+  GatedAdapter(super.handler);
+
+  Completer<void>? gate;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    final response = await super.fetch(options, requestStream, cancelFuture);
+    final held = gate;
+    gate = null;
+    if (held != null) await held.future;
+    return response;
+  }
+}
+
 Future<(ProviderContainer, FakeAdapter, FakeLiveSocket)> inboxWith(
-  (int, Object?) Function(RequestOptions request) handler,
-) async {
-  final adapter = FakeAdapter(handler);
+  (int, Object?) Function(RequestOptions request) handler, {
+  FakeAdapter Function((int, Object?) Function(RequestOptions)) makeAdapter =
+      FakeAdapter.new,
+}) async {
+  final adapter = makeAdapter(handler);
   final dio = Dio(BaseOptions(baseUrl: 'https://m.example/phone/v1/'))
     ..httpClientAdapter = adapter;
   final socket = FakeLiveSocket();
@@ -229,5 +255,39 @@ void main() {
       sent(adapter),
       unorderedEquals(['GET inbox', 'GET runs', 'GET runs/a']),
     );
+  });
+
+  test('older_inbox_fetch_does_not_restore_answered_card', () async {
+    var answered = false;
+    final (c, adapter, _) = await inboxWith(
+      (r) => switch ('${r.method} ${r.path}') {
+        'GET inbox' => (
+          200,
+          {
+            'items': [if (!answered) pause('r1', 2000)],
+          },
+        ),
+        'POST inbox/step%3Ar1%3Achecks/answer' => () {
+          answered = true;
+          return (204, null);
+        }(),
+        _ => (500, {'error': 'Server error'}),
+      },
+      makeAdapter: GatedAdapter.new,
+    );
+    final notifier = c.read(inboxProvider(machineId).notifier);
+    final r1 = c.read(inboxProvider(machineId)).requireValue.items.single;
+
+    // A fetch starts while the card is still listed, and finishes late.
+    final gate = (adapter as GatedAdapter).gate = Completer<void>();
+    final slow = notifier.refresh();
+    await pumpEventQueue();
+    await notifier.answer(r1, 'accept');
+    expect(c.read(inboxProvider(machineId)).requireValue.items, isEmpty);
+
+    gate.complete();
+    await slow;
+
+    expect(c.read(inboxProvider(machineId)).requireValue.items, isEmpty);
   });
 }

@@ -111,6 +111,11 @@ class InboxNotifier extends AsyncNotifier<Inbox> {
 
   final String _machineId;
 
+  /// Bumped when a refresh starts and when an answer is taken. A fetch that
+  /// finishes after a later bump is older than what the screen shows, so its
+  /// result is dropped.
+  int _generation = 0;
+
   InboxRepository get _repo =>
       InboxRepository(ref.read(machineClientProvider(_machineId)));
 
@@ -144,8 +149,9 @@ class InboxNotifier extends AsyncNotifier<Inbox> {
 
   /// Refetches the inbox. Called by pull to refresh and live notices.
   Future<void> refresh() async {
+    final generation = ++_generation;
     final next = await AsyncValue.guard(() async => Inbox(await _repo.list()));
-    if (ref.mounted) state = next;
+    if (ref.mounted && generation == _generation) state = next;
   }
 
   /// Sends the owner's choice of one of [item]'s own options. A taken answer
@@ -153,6 +159,7 @@ class InboxNotifier extends AsyncNotifier<Inbox> {
   /// refetches. Other refusals throw [ApiException] and keep the card.
   Future<void> answer(InboxItem item, String optionId) async {
     if (await _repo.answer(item, optionId)) {
+      _generation++;
       final current = state.value;
       if (ref.mounted && current != null) {
         state = AsyncData(
