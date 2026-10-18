@@ -65,6 +65,11 @@ class PushService {
           }),
         );
       _ref.listen(machinesProvider, _onMachinesChanged);
+      // Android shows its dialog only while the owner has not decided, so
+      // asking on every start is safe and covers a phone paired before push.
+      if (_ref.read(machinesProvider).value?.visible.isNotEmpty ?? false) {
+        unawaited(messaging.requestPermission());
+      }
 
       final initial = await messaging.getInitialMessage();
       if (initial != null) unawaited(openFromData(initial.data));
