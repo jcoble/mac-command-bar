@@ -659,7 +659,7 @@ mod tests {
 
     use super::super::manager::AgentRuntimeManager;
     use super::super::providers::ProviderRegistry;
-    use super::super::remote::{server_state, ServerState};
+    use super::super::remote::{bind_listeners, server_state, ServerState};
     use super::{new_pairing_code, operation, redeem_pairing_code, reduce_chat, router, start_listener, PAIRING_CODE_LIFETIME_MS};
     use super::super::protocol::{AgentConversationEvent, AgentConversationPayload as Payload, AgentConversationProvider, ToolState, TurnState};
     use futures_util::StreamExt;
@@ -783,6 +783,18 @@ mod tests {
             assert!(!start_listener(bind, state.clone()).await, "{bind:?} starts no phone listener and is not an error");
         }
         assert!(start_listener(Some("127.0.0.1:0"), state).await);
+    }
+
+    #[tokio::test]
+    async fn phone_listener_overlapping_desktop_address_does_not_stop_desktop() {
+        let (state, _) = phone_server().await;
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = free.local_addr().unwrap().to_string();
+        drop(free);
+        // The phone address is the desktop address: the desktop must still bind it.
+        let desktop = bind_listeners(&address, Some(&address), &state).await
+            .expect("the desktop listener binds even when the phone address overlaps it");
+        assert_eq!(desktop.local_addr().unwrap().to_string(), address);
     }
 
     #[tokio::test]

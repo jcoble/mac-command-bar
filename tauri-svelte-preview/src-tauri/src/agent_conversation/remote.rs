@@ -3277,14 +3277,10 @@ pub fn run_server_from_environment() -> Result<(), String> {
         let restart_requested = state.restart_requested.clone();
         let restart_flushed = state.restart_flushed.clone();
         let restart_manager = state.manager.clone();
-        // The phone-only listener (`phone.env`): `/phone/v1` routes only, never `/assembly`.
-        super::phone_api::start_listener(std::env::var("ASSEMBLY_PHONE_BIND").ok().as_deref(), state.clone()).await;
+        let listener = bind_listeners(&bind, std::env::var("ASSEMBLY_PHONE_BIND").ok().as_deref(), &state).await?;
         let app = Router::new()
             .route("/assembly", get(upgrade_remote_socket))
             .with_state(state);
-        let listener = tokio::net::TcpListener::bind(&bind)
-            .await
-            .map_err(|error| error.to_string())?;
         println!("Assembly remote server listening on {bind}");
         use axum::serve::ListenerExt;
         tokio::select! {
@@ -3306,6 +3302,15 @@ pub fn run_server_from_environment() -> Result<(), String> {
             }
         }
     })
+}
+
+/// Binds the desktop listener, then starts the optional phone listener (`phone.env`:
+/// `/phone/v1` routes only, never `/assembly`). The desktop binds first so a phone
+/// address that overlaps it is the one that is skipped, never the desktop.
+pub(super) async fn bind_listeners(bind: &str, phone_bind: Option<&str>, state: &ServerState) -> Result<tokio::net::TcpListener, String> {
+    let listener = tokio::net::TcpListener::bind(bind).await.map_err(|error| error.to_string())?;
+    super::phone_api::start_listener(phone_bind, state.clone()).await;
+    Ok(listener)
 }
 
 async fn wait_for_provider_restart(requested: &tokio::sync::Notify, flushed: &tokio::sync::Notify) {
