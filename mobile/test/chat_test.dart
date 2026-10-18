@@ -564,4 +564,12 @@ void main() {
     expect(toolGroupLabel(rows[1]), 'Ran 3 commands');
     expect(toolGroupLabel(rows[3]), 'Ran Check the build');
   });
+
+  test('scroll_pin_state_follows_distance_from_bottom', () {
+    expect(scrollPinned(0), isTrue);
+    expect(scrollPinned(-20), isTrue); // bouncing past the bottom
+    expect(scrollPinned(48), isTrue);
+    expect(scrollPinned(49), isFalse);
+    expect(scrollPinned(600), isFalse);
+  });
 }
