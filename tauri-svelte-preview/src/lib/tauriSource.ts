@@ -557,6 +557,8 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   /** The workflow run this worker belongs to, and its `<task key> · <workflow name>`. */
   runId?: string | null;
   runLabel?: string | null;
+  /** The session that started this worker's run; absent when the owner started it. */
+  runLead?: string | null;
 };
 
 export type ExecutionEnvironment = 'local' | 'remote';

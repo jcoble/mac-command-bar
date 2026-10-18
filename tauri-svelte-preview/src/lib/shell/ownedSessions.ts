@@ -102,6 +102,8 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
   /** The workflow run this worker belongs to; the rail groups a run's workers under its label. */
   runId?: string | null;
   runLabel?: string | null;
+  /** The session that started this worker's run; the rail counts the run on that session's row. */
+  runLead?: string | null;
   /**
    * What the scanner worked out about the session — the branch it is on, the
    * task it belongs to, the pull request it opened. Copied off the scanned
@@ -368,6 +370,7 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
     helperOf: record.helperOf ?? null,
     runId: record.runId ?? null,
     runLabel: record.runLabel ?? null,
+    runLead: record.runLead ?? null,
     // The rail prints the branch straight into the row, so anything that is not
     // a name has to stop here rather than reach the row as "[object Object]".
     // The two constructors below already read it this way.
