@@ -186,6 +186,16 @@ class _AgentReply extends StatelessWidget {
           // Full width, so code blocks span the screen.
           fitContent: false,
           syntaxHighlighter: _PlainCode(mono),
+          // Never load images: agent text must not make the phone fetch
+          // arbitrary URLs. Show the alt text (or the URL) instead.
+          imageBuilder: (uri, title, alt) => Text(
+            alt != null && alt.isNotEmpty ? alt : uri.toString(),
+            style: body.copyWith(
+              fontSize: 14,
+              color: scheme.onSurfaceVariant,
+              decoration: TextDecoration.underline,
+            ),
+          ),
           styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
             p: body,
             a: body.copyWith(
