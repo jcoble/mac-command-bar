@@ -1716,6 +1716,12 @@ export async function listGitBranchesFromTauri(root: string, signal?: AbortSigna
   return invoke<GitBranchList>('list_git_branches', { root }, undefined, signal);
 }
 
+/** Make the folder a repository. `path` stays machine-qualified for a remote folder. */
+export async function initGitRepositoryFromTauri(path: string, signal: AbortSignal): Promise<void> {
+  const { invoke } = await import('./workspaceInvoke.ts');
+  await invoke<null>('workspace_git_init', { path }, undefined, signal);
+}
+
 export async function createGitBranchFromTauri(
   root: string,
   name: string,

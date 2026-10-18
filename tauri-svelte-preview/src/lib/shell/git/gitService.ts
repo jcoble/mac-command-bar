@@ -40,6 +40,7 @@ import {
   discardAllGitChangesFromTauri,
   discardGitPathsFromTauri,
   fetchGitRepositoryFromTauri,
+  initGitRepositoryFromTauri,
   listGitBranchesFromTauri,
   listGitStashesFromTauri,
   popGitStashFromTauri,
@@ -113,6 +114,8 @@ export interface GitBackend {
   pull(root: string): Promise<GitActionResult | null>;
   push(root: string): Promise<GitActionResult | null>;
   publish(root: string, expectedBranch: string, remote: string): Promise<GitActionResult | null>;
+  /** Make a folder with no repository one. */
+  initRepository(root: string, signal: AbortSignal): Promise<void>;
 }
 
 /**
@@ -196,6 +199,10 @@ export function tauriGitBackend(count: (command: string) => void = countInvoke):
     publish(root, expectedBranch, remote) {
       count('publish_git_repository');
       return publishGitRepositoryFromTauri(root, expectedBranch, remote);
+    },
+    initRepository(root, signal) {
+      count('workspace_git_init');
+      return initGitRepositoryFromTauri(root, signal);
     }
   };
 }
@@ -302,6 +309,8 @@ export interface GitService {
   listStashes(): Promise<GitStashEntry[] | null>;
   runRemoteAction(action: 'fetch' | 'pull' | 'push'): Promise<void>;
   publishBranch(expectedRoot: string, expectedBranch: string, remote: string): Promise<void>;
+  /** Make the folder on screen a repository, then show it. */
+  initRepository(signal: AbortSignal): Promise<void>;
 }
 
 export interface GitServiceOptions {
@@ -813,6 +822,25 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
         return;
       }
       await runAction('publish', (root) => backend.publish(root, expectedBranch, remote), { reloadHistory: true });
+    },
+
+    async initRepository(signal: AbortSignal): Promise<void> {
+      const root = state.root;
+      if (!root || state.actionBusy !== '') return;
+      state.actionBusy = 'init';
+      state.actionStatus = '';
+      state.actionError = '';
+      try {
+        await backend.initRepository(root, signal);
+        if (signal.aborted || state.root !== root) return;
+        // Status and history both still hold "not a git repository".
+        await refresh();
+      } catch (error) {
+        if (signal.aborted || state.root !== root) return;
+        state.actionError = describeError(error, 'Git could not set up the folder.');
+      } finally {
+        if (state.actionBusy === 'init') state.actionBusy = '';
+      }
     }
   };
 }
