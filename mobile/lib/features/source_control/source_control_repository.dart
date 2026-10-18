@@ -16,6 +16,7 @@ class GitStatus {
             path: f['path'] as String,
             status: f['status'] as String,
             staged: f['staged'] == true,
+            unstaged: f['unstaged'] == true,
           ),
       ];
 
@@ -25,8 +26,9 @@ class GitStatus {
   final int ahead;
   final int behind;
 
-  /// [status] is git's letter: M, A, D, R, C, U, or ? for a new file.
-  final List<({String path, String status, bool staged})> files;
+  /// [status] is git's letter: M, A, D, R, C, U, or ? for a new file. A
+  /// partly staged file is both [staged] and [unstaged].
+  final List<({String path, String status, bool staged, bool unstaged})> files;
 }
 
 /// One open pull request, from `GET sessions/{id}/git/prs`.

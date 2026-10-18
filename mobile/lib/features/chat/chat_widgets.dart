@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -186,6 +188,16 @@ class _AgentReply extends StatelessWidget {
           // Full width, so code blocks span the screen.
           fitContent: false,
           syntaxHighlighter: _PlainCode(mono),
+          // Never load images: agent text must not make the phone fetch
+          // arbitrary URLs. Show the alt text (or the URL) instead.
+          imageBuilder: (uri, title, alt) => Text(
+            alt != null && alt.isNotEmpty ? alt : uri.toString(),
+            style: body.copyWith(
+              fontSize: 14,
+              color: scheme.onSurfaceVariant,
+              decoration: TextDecoration.underline,
+            ),
+          ),
           styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
             p: body,
             a: body.copyWith(
@@ -640,53 +652,80 @@ class _CutNote extends StatelessWidget {
 }
 
 /// A unified diff as one block that scrolls sideways as a whole: lines never
-/// wrap, and every row is as wide as the longest so the colours line up.
+/// wrap, and every row is as wide as the longest so the colours line up. Only
+/// the lines on screen are built; a long diff scrolls inside its own box.
 class DiffBlock extends StatelessWidget {
   const DiffBlock(this.lines, {super.key});
 
   final List<String> lines;
 
   @override
-  Widget build(BuildContext context) => ClipRRect(
-    borderRadius: M3Shape.radiusMedium,
-    child: ColoredBox(
-      color: Theme.of(context).colorScheme.surfaceContainerLowest,
-      child: LayoutBuilder(
-        builder: (context, box) => SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minWidth: box.maxWidth),
-            child: IntrinsicWidth(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  for (final (i, line) in lines.indexed)
-                    _DiffLine(line, first: i == 0, last: i == lines.length - 1),
-                ],
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final style = _diffStyle(theme);
+    // Monospace, so one measured glyph gives every line's width and height.
+    final painter = TextPainter(
+      text: TextSpan(text: 'M' * 10, style: style),
+      textDirection: TextDirection.ltr,
+      textScaler: MediaQuery.textScalerOf(context),
+    )..layout();
+    final charWidth = painter.width / 10;
+    final lineExtent = painter.height + 2;
+    painter.dispose();
+    var longest = 0;
+    for (final line in lines) {
+      if (line.length > longest) longest = line.length;
+    }
+    const padding = EdgeInsets.symmetric(vertical: 9);
+    final height = math.min(
+      lines.length * lineExtent + padding.vertical,
+      MediaQuery.sizeOf(context).height * 0.7,
+    );
+    return ClipRRect(
+      borderRadius: M3Shape.radiusMedium,
+      child: ColoredBox(
+        color: theme.colorScheme.surfaceContainerLowest,
+        child: SizedBox(
+          height: height,
+          child: LayoutBuilder(
+            builder: (context, box) => SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: math.max(longest * charWidth + 32, box.maxWidth),
+                child: ListView.builder(
+                  padding: padding,
+                  itemExtent: lineExtent,
+                  itemCount: lines.length,
+                  itemBuilder: (context, i) => _DiffLine(lines[i], style),
+                ),
               ),
             ),
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
+
+TextStyle _diffStyle(ThemeData theme) => theme.textTheme.bodySmall!.copyWith(
+  fontFamily: 'monospace',
+  fontSize: 13,
+  height: 1.4,
+);
 
 /// One unified-diff line: added green, removed red, hunks muted, headers bold.
 class _DiffLine extends StatelessWidget {
-  const _DiffLine(this.line, {required this.first, required this.last});
+  const _DiffLine(this.line, this.style);
 
   final String line;
-  final bool first;
-  final bool last;
+  final TextStyle style;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
+    final scheme = Theme.of(context).colorScheme;
     final kind = diffLineKind(line);
     return Container(
-      padding: EdgeInsets.fromLTRB(12, first ? 10 : 1, 12, last ? 10 : 1),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 1),
       color: switch (kind) {
         DiffLineKind.added => context.tokens.success.withValues(alpha: 0.16),
         DiffLineKind.removed => scheme.error.withValues(alpha: 0.16),
@@ -695,10 +734,8 @@ class _DiffLine extends StatelessWidget {
       child: Text(
         line,
         softWrap: false,
-        style: theme.textTheme.bodySmall?.copyWith(
-          fontFamily: 'monospace',
-          fontSize: 13,
-          height: 1.4,
+        maxLines: 1,
+        style: style.copyWith(
           fontWeight: kind == DiffLineKind.header ? FontWeight.w700 : null,
           color: kind == DiffLineKind.hunk ? scheme.onSurfaceVariant : null,
         ),
