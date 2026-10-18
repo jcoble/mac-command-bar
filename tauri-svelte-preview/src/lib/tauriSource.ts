@@ -2837,11 +2837,25 @@ export async function createWorkflowRunFromTauri(
 export async function remoteWorkflowFromTauri<T>(
   profileId: string,
   operation: string,
-  args: object
+  args: object,
+  signal?: AbortSignal
 ): Promise<T | null> {
-  if (!isTauriRuntime()) return null;
+  if (!isTauriRuntime() || signal?.aborted) return null;
+  const requestId = signal ? createAgentConversationRequestId() : null;
   const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<T>('remote_workflow', { profileId, operation, args });
+  const cancel = (): void => {
+    if (requestId !== null) void cancelAgentConversationRequestInBackground(requestId);
+  };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    const result = await invoke<T>('remote_workflow', { profileId, operation, args, requestId });
+    return signal?.aborted ? null : result;
+  } catch (error) {
+    if (signal?.aborted) return null;
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
 }
 
 export async function listWorkflowFilesFromTauri(repoRoot: string): Promise<string[] | null> {
