@@ -66,6 +66,7 @@ After=network.target
 [Service]
 Type=simple
 EnvironmentFile=$HOME/.config/assembly/server.env
+EnvironmentFile=-$HOME/.config/assembly/phone.env
 ExecStart=$HOME/.local/bin/assembly-remote-server --assembly-server
 Restart=on-failure
 RestartSec=2

@@ -61,6 +61,8 @@ test('builds a deterministic remote backend package contract', async () => {
     assert.equal(await readFile(path.join(extracted, 'install.sh'), 'utf8'), REMOTE_BACKEND_INSTALL_SCRIPT);
     assert.match(REMOTE_BACKEND_INSTALL_SCRIPT, /sha256sum -c SHA256SUMS/);
     assert.match(REMOTE_BACKEND_INSTALL_SCRIPT, /ASSEMBLY_SERVER_BIND=127\.0\.0\.1:7777/);
+    // The phone listener's settings are optional and survive reinstalls.
+    assert.match(REMOTE_BACKEND_INSTALL_SCRIPT, /\nEnvironmentFile=-\$HOME\/\.config\/assembly\/phone\.env\n/);
     assert.match(REMOTE_BACKEND_INSTALL_SCRIPT, /systemctl --user restart assembly-remote\.service/);
     assert.match(REMOTE_BACKEND_INSTALL_SCRIPT, /systemctl --user stop assembly-remote\.service/);
     assert.match(REMOTE_BACKEND_INSTALL_SCRIPT, /backend-manifest\.json/);

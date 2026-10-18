@@ -242,10 +242,10 @@ where D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned {
 }
 
 #[derive(Clone)]
-struct ServerState {
-    manager: AgentRuntimeManager,
+pub(super) struct ServerState {
+    pub(super) manager: AgentRuntimeManager,
     data_dir: PathBuf,
-    token: Arc<str>,
+    pub(super) token: Arc<str>,
     maintenance: Arc<tokio::sync::RwLock<()>>,
     restarting: Arc<AtomicBool>,
     restart_requested: Arc<tokio::sync::Notify>,
@@ -255,6 +255,8 @@ struct ServerState {
     workflow: crate::workflow::WorkflowEngine,
     terminals: RemoteTerminals,
     relay: Arc<RelayLink>,
+    /// The one phone pairing code that works right now (`phone_api`).
+    pub(super) pairing: Arc<Mutex<Option<super::phone_api::PairingCode>>>,
 }
 
 /// The desktops connected to this server, through which its sessions message other machines.
@@ -295,7 +297,7 @@ impl RelayLink {
 /// The server's state over `manager`: its events go to the sockets, and a
 /// finished turn also advances the workflow run that owns the session. Runs
 /// interrupted by the last shutdown are recovered before any request is served.
-fn server_state(manager: AgentRuntimeManager, data_dir: PathBuf, token: Arc<str>) -> Result<ServerState, String> {
+pub(super) fn server_state(manager: AgentRuntimeManager, data_dir: PathBuf, token: Arc<str>) -> Result<ServerState, String> {
     let (events, _) = broadcast::channel(256);
     let workflow = crate::workflow::WorkflowEngine::managed(manager.clone(), manager.store_handle());
     let event_sender = events.clone();
@@ -337,6 +339,7 @@ fn server_state(manager: AgentRuntimeManager, data_dir: PathBuf, token: Arc<str>
         workflow,
         terminals: RemoteTerminals::new(),
         relay: Arc::default(),
+        pairing: Arc::default(),
     })
 }
 
@@ -1161,13 +1164,17 @@ impl RemoteConnectionManager {
                 // A replaced connection must stop; a failed cache write must not.
                 // Snapshot catch-up refills any row the cache missed.
                 history.check(&profile, epoch)?;
-                let mut by_session = BTreeMap::<String, Vec<AgentConversationEvent>>::new();
-                for event in &events {
-                    by_session.entry(event.owned_id.clone()).or_default().push(event.clone());
+                let mut by_session = BTreeMap::<String, Vec<usize>>::new();
+                for (index, event) in events.iter().enumerate() {
+                    by_session.entry(event.owned_id.clone()).or_default().push(index);
                 }
-                for (owned_id, batch) in by_session {
-                    if let Err(error) = history.live_batch(&profile, epoch, &batch) {
+                for (owned_id, indices) in by_session {
+                    let mut batch: Vec<_> = indices.iter().map(|&index| events[index].clone()).collect();
+                    if let Err(error) = history.live_batch(&profile, epoch, &mut batch) {
                         eprintln!("Remote history cache write failed for {owned_id}: {error}");
+                    }
+                    for (index, prepared) in indices.into_iter().zip(batch) {
+                        events[index] = prepared;
                     }
                 }
                 for event in &mut events {
@@ -1905,7 +1912,7 @@ impl RemoteConnectionManager {
                     after = None;
                     continue;
                 }
-                history.snapshot(profile, epoch, after, &snapshot)?
+                history.snapshot(profile, epoch, after, &mut snapshot)?
             };
             self.history_copied.notify_waiters();
             let head = snapshot.last_sequence;
@@ -1956,13 +1963,13 @@ impl RemoteConnectionManager {
                 (history.epoch(profile), history.unsaved_older(profile, owned_id)?)
             };
             let Some(before) = before else { return Ok(()); };
-            let RemoteResponse::EventPage(page) = self.request_with_id(profile, request_id, RemoteCommand::EventsBefore {
+            let RemoteResponse::EventPage(mut page) = self.request_with_id(profile, request_id, RemoteCommand::EventsBefore {
                 owned_id: owned_id.into(), before_sequence: before, max_bytes: HISTORY_COPY_PAGE_BYTES,
             }, None).await?
             else { return Err("Remote Assembly returned the wrong event-page response".into()); };
             if page.events.is_empty() && page.has_more { return Err("Remote history copy made no progress".into()); }
             self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                .page(profile, epoch, owned_id, before, true, &page)?;
+                .page(profile, epoch, owned_id, before, true, &mut page)?;
             self.history_copied.notify_waiters();
         }
     }
@@ -3270,6 +3277,8 @@ pub fn run_server_from_environment() -> Result<(), String> {
         let restart_requested = state.restart_requested.clone();
         let restart_flushed = state.restart_flushed.clone();
         let restart_manager = state.manager.clone();
+        // The phone-only listener (`phone.env`): `/phone/v1` routes only, never `/assembly`.
+        super::phone_api::start_listener(std::env::var("ASSEMBLY_PHONE_BIND").ok().as_deref(), state.clone()).await;
         let app = Router::new()
             .route("/assembly", get(upgrade_remote_socket))
             .with_state(state);
@@ -3723,6 +3732,10 @@ async fn execute_server_command(state: &ServerState, upload: &Arc<Mutex<Option<P
         return Err("The remote server is restarting; reconnect before continuing".into());
     }
     if let RemoteCommand::Workflow { operation, args } = command {
+        // Phone pairing needs this server's pairing code and database, not the engine.
+        if let Some(answer) = super::phone_api::operation(state, &operation, &args) {
+            return answer.map(RemoteResponse::Workflow);
+        }
         // A dropped socket or a client cancel aborts this request's task; the engine
         // call runs on its own task so a run is never left half-started.
         let workflow = state.workflow.clone();
@@ -4078,7 +4091,7 @@ mod connection_tests {
             manager: remote.clone(), data_dir: directory.clone(), token: Arc::from("test-token"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
-            events: broadcast::channel(2).0, terminals: RemoteTerminals::new(), relay: Arc::default(),
+            events: broadcast::channel(2).0, terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -4261,6 +4274,47 @@ mod connection_tests {
     }
 
     #[test]
+    fn desktop_markdown_remote_save_publishes_prepared_event() {
+        use super::super::protocol::AgentConversationPayload;
+        let store = store();
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let captured = delivered.clone();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(move |event| captured.lock().unwrap().push(event)),
+            Arc::new(|_| {}), store.clone(),
+        ).unwrap();
+        let mut event = history_event(1);
+        event.payload = AgentConversationPayload::AssistantMessage {
+            item_id: "a".into(), text: "**hello**".into(), completed: true, blocks: None,
+        };
+        manager.history_event_sink("cache-test")(vec![event]).unwrap();
+        // Catch-up has already cached this event before its live delivery arrives.
+        let mut cached = history_event(2);
+        cached.payload = AgentConversationPayload::AssistantMessage {
+            item_id: "cached".into(), text: "**cached**".into(), completed: true,
+            blocks: Some(Vec::new()),
+        };
+        manager.history.lock().unwrap().live_batch("cache-test", 0, &mut [cached.clone()]).unwrap();
+        if let AgentConversationPayload::AssistantMessage { blocks, .. } = &mut cached.payload {
+            *blocks = None;
+        }
+        // Include a new suffix to exercise both skipped and written events in one batch.
+        manager.history_event_sink("cache-test")(vec![cached.clone(), history_event(3)]).unwrap();
+        manager.history_event_sink("cache-test")(vec![cached]).unwrap();
+        let delivered = delivered.lock().unwrap();
+        let rows = store.list_events(&RemoteHistory::key("cache-test", "large-history"), 2, 100).unwrap();
+        let cached: AgentConversationEvent = serde_json::from_str(&rows[0].payload_json).unwrap();
+        assert_eq!(delivered[1], cached);
+        assert_eq!(delivered[3], cached);
+        let expected = super::super::safe_markdown::parse_safe_markdown("**hello**");
+        assert!(matches!(&delivered[0].payload,
+            AgentConversationPayload::AssistantMessage { blocks: Some(blocks), .. } if blocks == &expected));
+        let saved = store.list_events(&RemoteHistory::key("cache-test", "large-history"), 0, 100).unwrap();
+        let saved: AgentConversationEvent = serde_json::from_str(&saved[0].payload_json).unwrap();
+        assert_eq!(saved, delivered[0]);
+    }
+
+    #[test]
     fn history_event_sink_delivers_the_event_when_the_cache_write_fails() {
         let store = store();
         // A local session under the cache key makes the remote cache write fail.
@@ -4324,7 +4378,7 @@ mod connection_tests {
         ).unwrap();
         // An earlier run saved 2..=3; live event 5 then arrived after a missed 4.
         manager.history.lock().unwrap()
-            .snapshot("cache-test", 0, None, &history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
+            .snapshot("cache-test", 0, None, &mut history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
         manager.history_event_sink("cache-test")(vec![history_event(5)]).unwrap();
         published.lock().unwrap().clear();
 
@@ -4473,7 +4527,7 @@ mod connection_tests {
         ).unwrap();
         manager.remember("large-history", "cache-test");
         manager.history.lock().unwrap()
-            .snapshot("cache-test", 0, None, &history_snapshot(vec![history_event(1)], 1)).unwrap();
+            .snapshot("cache-test", 0, None, &mut history_snapshot(vec![history_event(1)], 1)).unwrap();
         let child_owned = super::super::transcript_import::child_owned_id("large-history", "child-empty").unwrap();
         let history_owned = RemoteHistory::key("cache-test", &child_owned);
         let mut requests = connect(&manager);
@@ -4531,7 +4585,7 @@ mod connection_tests {
         ).unwrap();
         manager.remember("large-history", "cache-test");
         manager.history.lock().unwrap()
-            .snapshot("cache-test", 0, None, &history_snapshot(vec![history_event(1)], 1)).unwrap();
+            .snapshot("cache-test", 0, None, &mut history_snapshot(vec![history_event(1)], 1)).unwrap();
         let mut requests = connect(&manager);
         let turn = |sequence: i64, turn_id: &str, state: TurnState| AgentConversationEvent {
             turn_id: Some(turn_id.into()),
@@ -4571,7 +4625,7 @@ mod connection_tests {
         let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
         manager.remember("large-history", "cache-test");
         manager.history.lock().unwrap()
-            .snapshot("cache-test", 0, None, &history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
+            .snapshot("cache-test", 0, None, &mut history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
         let mut requests = connect(&manager);
         manager.snapshot("large-history".into(), 1).await.unwrap().unwrap();
         let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected top-up"); };
@@ -4607,7 +4661,7 @@ mod connection_tests {
         {
             let history = manager.history.lock().unwrap();
             let epoch = history.epoch("cache-test");
-            history.snapshot("cache-test", epoch, None, &AgentConversationSnapshot {
+            history.snapshot("cache-test", epoch, None, &mut AgentConversationSnapshot {
                 connection: AgentConversationConnection {
                     owned_id: event.owned_id.clone(), provider: event.provider, generation: 1,
                     native_session_id: None, state: super::super::protocol::ConversationConnectionState::Disconnected,
@@ -4618,7 +4672,7 @@ mod connection_tests {
                 pending_events: Vec::new(), active_turn_id: None,
             }).unwrap();
             history.page("cache-test", epoch, &event.owned_id, event.sequence, true,
-                &AgentConversationEventPage { events: vec![], has_more: false }).unwrap();
+                &mut AgentConversationEventPage { events: vec![], has_more: false }).unwrap();
         }
         let server = tokio::spawn(async move {
             let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected import request"); };
@@ -5130,7 +5184,7 @@ mod connection_tests {
         .unwrap();
         manager.register_profile(profile("saved")).unwrap();
         manager.history.lock().unwrap().snapshot(
-            "saved", 0, None, &history_snapshot(vec![history_event(1)], 1),
+            "saved", 0, None, &mut history_snapshot(vec![history_event(1)], 1),
         ).unwrap();
         let stale_history_sink = manager.history_event_sink("saved");
         let attempt = ConnectingAttempt::start(&manager, "saved");
@@ -5224,7 +5278,7 @@ mod connection_tests {
             manager, data_dir: directory.clone(), token: Arc::from("test-token"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
-            events: broadcast::channel(64).0, terminals: RemoteTerminals::new(), relay: Arc::default(),
+            events: broadcast::channel(64).0, terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -5431,7 +5485,7 @@ mod connection_tests {
             manager, data_dir: directory.clone(), token: Arc::from("test"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events,
-            terminals: RemoteTerminals::new(), relay: Arc::default(),
+            terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
         };
         let (outbound, mut received) = mpsc::channel(8);
         let mut queued = BTreeMap::from([("large-history".to_string(), 1)]);
@@ -5503,7 +5557,7 @@ mod connection_tests {
             manager: manager.clone(), data_dir: directory.clone(), token: Arc::from("test-token"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events: events.clone(),
-            terminals: RemoteTerminals::new(), relay: Arc::default(),
+            terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -5763,7 +5817,7 @@ mod provider_restart_tests {
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
             events: broadcast::channel(2).0,
-            terminals: RemoteTerminals::new(), relay: Arc::default(),
+            terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
         };
         let response = execute_server_command(&state, &Arc::new(Mutex::new(None)),
             RemoteCommand::RestartForProviderUpdates, Arc::new(|_| {})).await;
@@ -5832,7 +5886,7 @@ mod terminal_tests {
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
             events: broadcast::channel(2).0,
-            terminals: RemoteTerminals::new(), relay: Arc::default(),
+            terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
         }
     }
 
