@@ -1,6 +1,8 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
 import '../../core/api/api_exception.dart';
@@ -33,27 +35,111 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _thread = GlobalKey<ChatThreadState>();
   var _sending = false;
 
+  /// Images picked for the next message, at most 8.
+  final _images = <PendingImage>[];
+
   @override
   void dispose() {
     _text.dispose();
     super.dispose();
   }
 
+  /// The "+" sheet, then the picker. Large images are scaled down on the
+  /// phone so they cost less mobile data.
+  Future<void> _attach() async {
+    final source = await showAttachSheet(context);
+    if (source == null) return;
+    final picker = ImagePicker();
+    const maxEdge = 2048.0;
+    final List<XFile> picked;
+    try {
+      picked = source == ImageSource.camera
+          ? [
+              ?await picker.pickImage(
+                source: source,
+                maxWidth: maxEdge,
+                maxHeight: maxEdge,
+                imageQuality: 85,
+              ),
+            ]
+          : await picker.pickMultiImage(
+              maxWidth: maxEdge,
+              maxHeight: maxEdge,
+              imageQuality: 85,
+            );
+    } on PlatformException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.message ?? "Couldn't open the picker.")),
+        );
+      }
+      return;
+    }
+    if (!mounted || picked.isEmpty) return;
+    setState(
+      () => _images.addAll(
+        picked.take(8 - _images.length).map((f) => PendingImage(f.path)),
+      ),
+    );
+  }
+
+  /// Uploads each picked image not yet uploaded, showing progress on its
+  /// thumbnail; false if any failed, with the error on that thumbnail.
+  Future<bool> _upload(ChatNotifier chat) async {
+    for (final image in _images.where((i) => i.attachmentId == null)) {
+      setState(() {
+        image.error = null;
+        image.progress = 0;
+      });
+      try {
+        image.attachmentId = await chat.uploadImage(
+          image.path,
+          onProgress: (p) {
+            if (mounted) setState(() => image.progress = p);
+          },
+        );
+      } on ApiException catch (e) {
+        image.error = e.message;
+      }
+      if (!mounted) return false;
+      setState(() => image.progress = null);
+      if (image.error case final error?) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error)));
+        return false;
+      }
+    }
+    return true;
+  }
+
   Future<void> _send(String machineId) async {
     final text = _text.text.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty && _images.isEmpty) return;
+    final chat = ref.read(chatProvider((machineId, widget.ownedId)).notifier);
+    setState(() => _sending = true);
+    // The text stays in the box until the images are up.
+    if (!await _upload(chat)) {
+      if (mounted) setState(() => _sending = false);
+      return;
+    }
+    final images = [..._images];
     // Clear first so anything typed while the send is pending is kept.
     _text.clear();
+    setState(_images.clear);
     _thread.currentState?.jumpToLatest();
     setState(() => _sending = true);
     try {
-      await ref
-          .read(chatProvider((machineId, widget.ownedId)).notifier)
-          .send(text);
+      await chat.send(
+        text,
+        attachmentIds: [for (final i in images) i.attachmentId!],
+        localImages: [for (final i in images) i.path],
+      );
     } on DioException catch (e) {
       if (mounted) {
         // Give the failed message back, unless the owner has typed since.
         if (_text.text.isEmpty) _text.text = text;
+        if (_images.isEmpty) _images.addAll(images);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(ApiException.fromDioException(e).message)),
         );
@@ -201,6 +287,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               controller: _text,
               sending: _sending,
               onSend: () => _send(machine.id),
+              onAttach: _attach,
+              images: _images,
+              onRemoveImage: (image) => setState(() => _images.remove(image)),
               leading: ModelChip(session: (machine.id, widget.ownedId)),
             ),
           ],

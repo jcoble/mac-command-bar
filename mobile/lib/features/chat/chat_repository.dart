@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,6 +17,8 @@ class ChatItem {
     required this.at,
     required this.done,
     this.hasDetail = false,
+    this.images = 0,
+    this.localImages = const [],
   });
 
   factory ChatItem.fromJson(Map<String, dynamic> json) => ChatItem(
@@ -25,6 +28,7 @@ class ChatItem {
     at: json['at'] as int,
     done: json['done'] as bool,
     hasDetail: json['hasDetail'] == true,
+    images: json['images'] as int? ?? 0,
   );
 
   final String id;
@@ -37,7 +41,24 @@ class ChatItem {
 
   /// A tool call with output, a path or a diff to open.
   final bool hasDetail;
+
+  /// How many images an owner message carries.
+  final int images;
+
+  /// The files of the images this phone sent with the message, shown as thumbnails.
+  final List<String> localImages;
 }
+
+/// The `Content-Type` the machine accepts for an image at [path], from its
+/// extension; null for anything else.
+String? imageMimeType(String path) =>
+    switch (path.split('.').last.toLowerCase()) {
+      'png' => 'image/png',
+      'jpg' || 'jpeg' => 'image/jpeg',
+      'webp' => 'image/webp',
+      'gif' => 'image/gif',
+      _ => null,
+    };
 
 /// `GET sessions/{id}/items/{itemId}`: one tool call whole, output and diff capped.
 class ToolItem {
@@ -373,30 +394,71 @@ class ChatNotifier extends Notifier<AsyncValue<ChatState>> {
     }
   }
 
-  /// `POST sessions/{id}/chat`. Shows the owner's bubble at once; the live
-  /// `chat` frame for the same item replaces it. Plain chat text never answers
-  /// an inbox item (D13).
-  Future<void> send(String text) async {
+  /// `POST sessions/{id}/attachments` with the image at [path] → its id, for
+  /// [send]. Throws an [ApiException], before sending anything for a file that
+  /// is not an image.
+  Future<String> uploadImage(
+    String path, {
+    void Function(double)? onProgress,
+  }) async {
+    final mimeType = imageMimeType(path);
+    if (mimeType == null) {
+      throw const ApiException(
+        statusCode: 415,
+        message: 'Only PNG, JPEG, WebP and GIF images can be attached',
+      );
+    }
+    try {
+      final response = await _dio.post<Map<String, dynamic>>(
+        'sessions/${Uri.encodeComponent(_session.$2)}/attachments',
+        data: await File(path).readAsBytes(),
+        options: Options(contentType: mimeType),
+        onSendProgress: onProgress == null
+            ? null
+            : (sent, total) => onProgress(total > 0 ? sent / total : 0),
+      );
+      return response.data!['attachmentId'] as String;
+    } on DioException catch (e) {
+      throw ApiException.fromDioException(e);
+    }
+  }
+
+  /// `POST sessions/{id}/chat`, with the ids of images already uploaded. Shows
+  /// the owner's bubble at once, with [localImages] as its thumbnails; the live
+  /// `chat` frame for the same item replaces it and keeps them. Plain chat text
+  /// never answers an inbox item (D13).
+  Future<void> send(
+    String text, {
+    List<String> attachmentIds = const [],
+    List<String> localImages = const [],
+  }) async {
     final response = await _dio.post<Map<String, dynamic>>(
       _path,
-      data: {'text': text},
+      data: {
+        'text': text,
+        if (attachmentIds.isNotEmpty) 'attachmentIds': attachmentIds,
+      },
     );
     final id = response.data!['itemId'] as String;
     _enqueue(() async {
       final current = state.value;
-      if (current == null || current.items.any((i) => i.id == id)) return;
+      if (current == null) return;
+      // The live frame may have brought the item first; it still gets the thumbnails.
+      final live = current.items.where((i) => i.id == id).firstOrNull;
+      if (live != null && localImages.isEmpty) return;
       state = AsyncValue.data(
         ChatState(
-          items: [
-            ...current.items,
+          items: _merge(current.items, [
             ChatItem(
               id: id,
               kind: 'owner',
-              text: text,
-              at: DateTime.now().millisecondsSinceEpoch,
+              text: live?.text ?? text,
+              at: live?.at ?? DateTime.now().millisecondsSinceEpoch,
               done: true,
+              images: live?.images ?? attachmentIds.length,
+              localImages: localImages,
             ),
-          ],
+          ]),
           cursor: current.cursor,
           working: current.working,
           contextLeft: current.contextLeft,
@@ -421,6 +483,7 @@ class ChatNotifier extends Notifier<AsyncValue<ChatState>> {
 }
 
 /// [items] with each of [updates] replacing the item with its id, or appended.
+/// A replaced item keeps the local image files this phone sent it with.
 List<ChatItem> _merge(List<ChatItem> items, List<ChatItem> updates) {
   final merged = [...items];
   for (final update in updates) {
@@ -428,7 +491,19 @@ List<ChatItem> _merge(List<ChatItem> items, List<ChatItem> updates) {
     if (at < 0) {
       merged.add(update);
     } else {
-      merged[at] = update;
+      final old = merged[at];
+      merged[at] = old.localImages.isEmpty
+          ? update
+          : ChatItem(
+              id: update.id,
+              kind: update.kind,
+              text: update.text,
+              at: update.at,
+              done: update.done,
+              hasDetail: update.hasDetail,
+              images: update.images,
+              localImages: old.localImages,
+            );
     }
   }
   return merged;

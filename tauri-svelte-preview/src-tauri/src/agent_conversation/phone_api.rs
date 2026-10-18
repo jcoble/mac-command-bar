@@ -63,6 +63,9 @@ const MAX_FILE_BYTES: usize = 1024 * 1024;
 /// (`\u00XX` for a control byte; a newline is two and non-ASCII text is sent as is), so a 1 MiB text
 /// always fits in six times that, plus room for the path and version. `save_file` checks the text.
 const MAX_SAVE_BODY_BYTES: usize = 6 * MAX_FILE_BYTES + MAX_BODY_BYTES;
+/// An image sent from the phone, which downscales it first: at most 10 MiB, and at most 8 to a message.
+const MAX_ATTACHMENT_BODY_BYTES: usize = 10 * 1024 * 1024;
+const MAX_MESSAGE_ATTACHMENTS: usize = 8;
 /// A terminal page that opens replays at most the last 1 MiB of its shell's scrollback (the desktop's 8,000-line
 /// view holds about that much), so a phone never receives the full 16 MB ring.
 const MAX_TERMINAL_REPLAY_BYTES: usize = 1024 * 1024;
@@ -87,6 +90,7 @@ pub(super) fn router(state: ServerState) -> Router {
         .route("/phone/v1/me", get(me).delete(forget_me))
         .route("/phone/v1/sessions", get(sessions))
         .route("/phone/v1/sessions/{id}/chat", get(session_chat).post(send_session_chat))
+        .route("/phone/v1/sessions/{id}/attachments", post(upload_attachment).layer(DefaultBodyLimit::max(MAX_ATTACHMENT_BODY_BYTES)))
         .route("/phone/v1/sessions/{id}/items/{item}", get(tool_item))
         .route("/phone/v1/sessions/{id}/changes", get(changes))
         .route("/phone/v1/sessions/{id}/files", get(list_files))
@@ -790,9 +794,29 @@ fn capped(text: Option<&str>, max: usize) -> (Option<&str>, bool) {
 #[derive(Deserialize)]
 struct ChatRequest {
     text: String,
+    #[serde(default, rename = "attachmentIds")]
+    attachment_ids: Vec<String>,
 }
 
-/// `POST /phone/v1/sessions/{id}/chat {text}` → `{itemId}`: a message to that session.
+/// `POST /phone/v1/sessions/{id}/attachments`, the image's bytes as the body and its type as
+/// `Content-Type` → `{attachmentId}`: saved in the session's attachment vault by the same save as the
+/// desktop's screenshots, for a later chat send to name. PNG, JPEG, WebP and GIF only (415 otherwise).
+async fn upload_attachment(State(state): State<ServerState>, Path(owned_id): Path<String>, headers: HeaderMap, body: Bytes) -> Reply {
+    known_session(&state, &owned_id)?;
+    let mime_type = headers.get(axum::http::header::CONTENT_TYPE).and_then(|value| value.to_str().ok())
+        .filter(|mime_type| ["image/png", "image/jpeg", "image/webp", "image/gif"].contains(mime_type))
+        .ok_or_else(|| refuse(StatusCode::UNSUPPORTED_MEDIA_TYPE, "Only PNG, JPEG, WebP and GIF images can be attached"))?
+        .to_owned();
+    let vault = state.data_dir.join("conversation-attachments");
+    let store = state.manager.store_handle();
+    let saved = tokio::task::spawn_blocking(move || super::attachments::save_at(&vault, &store, &owned_id, &mime_type, &body))
+        .await.map_err(|error| server_error(&error))?;
+    let saved = saved.map_err(|error| refuse(StatusCode::BAD_REQUEST, &error))?;
+    Ok(Json(json!({ "attachmentId": saved.id })).into_response())
+}
+
+/// `POST /phone/v1/sessions/{id}/chat {text, attachmentIds?}` → `{itemId}`: a message to that session,
+/// with up to 8 uploaded images.
 async fn send_session_chat(State(state): State<ServerState>, Path(owned_id): Path<String>, body: Bytes) -> Reply {
     known_session(&state, &owned_id)?;
     send_to(&state, owned_id, &body).await
@@ -803,13 +827,16 @@ async fn send_session_chat(State(state): State<ServerState>, Path(owned_id): Pat
 async fn send_to(state: &ServerState, owned_id: String, body: &[u8]) -> Reply {
     let request: ChatRequest = parse(body)?;
     let text = request.text.trim();
-    if text.is_empty() || text.chars().count() > MAX_CHAT_CHARS {
+    if (text.is_empty() && request.attachment_ids.is_empty()) || text.chars().count() > MAX_CHAT_CHARS {
         return Err(refuse(StatusCode::BAD_REQUEST, "A message must be 1 to 10,000 characters"));
+    }
+    if request.attachment_ids.len() > MAX_MESSAGE_ATTACHMENTS {
+        return Err(refuse(StatusCode::BAD_REQUEST, "A message carries at most 8 images"));
     }
     let generation = ensure(state, &owned_id).await?;
     let send = RemoteCommand::Send(SendAgentConversationMessageRequest {
         owned_id, generation, text: text.into(), content: Vec::new(),
-        attachment_ids: Vec::new(), model: None, approval_policy: None,
+        attachment_ids: request.attachment_ids, model: None, approval_policy: None,
     });
     let RemoteResponse::SendReceipt(receipt) = execute_phone_command(state, send).await
         .map_err(|error| server_error(&error))? else { return Err(server_error(&"send gave the wrong response")) };
@@ -1198,6 +1225,9 @@ struct ChatItem {
     /// A tool call with output, a path or a diff the phone can open; the row itself carries none of them.
     #[serde(rename = "hasDetail", skip_serializing_if = "std::ops::Not::not")]
     has_detail: bool,
+    /// How many images an owner message carries; the phone shows a chip for each.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    images: Option<usize>,
 }
 
 /// The phone's chat from a session's events (§5.3): owner, relayed, agent, tool and error items,
@@ -1236,7 +1266,11 @@ fn reduce_chat(events: &[AgentConversationEvent]) -> Vec<ChatItem> {
             _ => continue,
         };
         let has_detail = kind == "tool" && tools.get(id.as_str()).is_some_and(ToolCall::has_detail);
-        let item = ChatItem { id, seq: event.sequence, kind, text, at: event.timestamp_ms as i64, done, has_detail };
+        let images = match &event.payload {
+            Payload::UserMessage { attachment_ids, .. } if !attachment_ids.is_empty() => Some(attachment_ids.len()),
+            _ => None,
+        };
+        let item = ChatItem { id, seq: event.sequence, kind, text, at: event.timestamp_ms as i64, done, has_detail, images };
         match index.get(&item.id) {
             Some(&at) => items[at] = item,
             None => {
@@ -1644,7 +1678,7 @@ mod tests {
         for (method, path) in [(Method::GET, "/me"), (Method::DELETE, "/me"),
             (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::POST, "/runs/r/steps/s/retry"), (Method::GET, "/inbox"),
             (Method::POST, "/inbox/i/answer"), (Method::GET, "/live"), (Method::GET, "/sessions"),
-            (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat"), (Method::GET, "/sessions/s/items/i"),
+            (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat"), (Method::POST, "/sessions/s/attachments"), (Method::GET, "/sessions/s/items/i"),
             (Method::GET, "/sessions/s/changes"), (Method::GET, "/sessions/s/config"), (Method::POST, "/sessions/s/config"),
             (Method::GET, "/sessions/s/files"), (Method::GET, "/sessions/s/file"), (Method::PUT, "/sessions/s/file"),
             (Method::GET, "/sessions/s/git"), (Method::GET, "/sessions/s/git/diff"), (Method::POST, "/sessions/s/git/stage-all"),
@@ -2033,6 +2067,80 @@ mod tests {
             let unknown = client(method.clone(), &base, "/sessions/nobody/chat", &token).json(&json!({"text": "hi"})).send().await.unwrap();
             assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND, "{method}");
         }
+        state.manager.shutdown().await;
+    }
+
+    /// A codex session `lane` on a phone server whose agent is the ACP fixture logging to `acp.jsonl`.
+    async fn attachment_server() -> (ServerState, String, String, std::path::PathBuf) {
+        let (state, base) = phone_server_with(|directory| {
+            let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&directory.join("acp.jsonl"), "default");
+            ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)]).unwrap()
+        }).await;
+        let token = paired(&state, &base).await;
+        state.manager.ensure_async(EnsureAgentConversationRequest { owned_id: "lane".into(),
+            execution_environment: ExecutionEnvironment::Local, remote_profile_id: None, provider: AgentConversationProvider::Codex,
+            cwd: std::env::temp_dir().to_string_lossy().into_owned(), native_session_id: None,
+            native_session_mode: AgentNativeSessionMode::Resume, reasoning_effort: None, project_id: None }).await.unwrap();
+        let log = state.data_dir.join("acp.jsonl");
+        (state, base, token, log)
+    }
+
+    fn png() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::RgbaImage::new(2, 2).write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
+        bytes
+    }
+
+    fn upload(base: &str, token: &str, owned_id: &str, mime_type: Option<&str>, bytes: Vec<u8>) -> reqwest::RequestBuilder {
+        let request = client(reqwest::Method::POST, base, &format!("/sessions/{owned_id}/attachments"), token).body(bytes);
+        match mime_type { Some(mime_type) => request.header("content-type", mime_type), None => request }
+    }
+
+    #[tokio::test]
+    async fn phone_attachment_upload_saves_an_image_and_send_carries_it() {
+        let (state, base, token, log) = attachment_server().await;
+        let response = upload(&base, &token, "lane", Some("image/png"), png()).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let id = response.json::<Value>().await.unwrap()["attachmentId"].as_str().unwrap().to_string();
+        assert_eq!(state.manager.store().get_attachments("lane", &[id.clone()]).unwrap().len(), 1, "saved in the session's vault");
+
+        let sent = client(reqwest::Method::POST, &base, "/sessions/lane/chat", &token)
+            .json(&json!({"text": "", "attachmentIds": [id]})).send().await.unwrap();
+        assert_eq!(sent.status(), reqwest::StatusCode::OK, "an image alone is a message");
+        let mut chat = Value::Null;
+        for _ in 0..200 {
+            chat = client(reqwest::Method::GET, &base, "/sessions/lane/chat", &token).send().await.unwrap().json().await.unwrap();
+            if chat["items"].as_array().unwrap().iter().any(|item| item["kind"] == "agent" && item["done"] == true) { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(chat["items"][0]["kind"], "owner", "{chat}");
+        assert_eq!(chat["items"][0]["images"], 1, "{chat}");
+        assert!(std::fs::read_to_string(&log).unwrap().contains("\"type\":\"image\""), "the agent's prompt carries the image");
+
+        let unknown = upload(&base, &token, "nobody", Some("image/png"), png()).send().await.unwrap();
+        assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
+        state.manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn phone_attachment_rejects_other_types_and_oversize() {
+        let (state, base, token, _) = attachment_server().await;
+        for mime_type in [Some("text/plain"), Some("image/svg+xml"), None] {
+            let response = upload(&base, &token, "lane", mime_type, png()).send().await.unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE, "{mime_type:?}");
+        }
+        let mismatched = upload(&base, &token, "lane", Some("image/jpeg"), png()).send().await.unwrap();
+        assert_eq!(mismatched.status(), reqwest::StatusCode::BAD_REQUEST, "bytes that are not the declared type");
+        let mut big = png();
+        big.resize(super::MAX_ATTACHMENT_BODY_BYTES + 1, 0);
+        let oversize = upload(&base, &token, "lane", Some("image/png"), big).send().await.unwrap();
+        assert_eq!(oversize.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(!state.data_dir.join("conversation-attachments/lane").exists(), "nothing was saved");
+
+        let send = |body: Value| client(reqwest::Method::POST, &base, "/sessions/lane/chat", &token).json(&body).send();
+        let nine: Vec<String> = (0..9).map(|n| format!("a{n}")).collect();
+        assert_eq!(send(json!({"text": "hi", "attachmentIds": nine})).await.unwrap().status(), reqwest::StatusCode::BAD_REQUEST, "at most 8 images");
+        assert_eq!(send(json!({"text": " ", "attachmentIds": []})).await.unwrap().status(), reqwest::StatusCode::BAD_REQUEST, "no text and no image");
         state.manager.shutdown().await;
     }
 
