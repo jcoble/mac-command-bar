@@ -6,9 +6,14 @@
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
+  import Bot from '@lucide/svelte/icons/bot';
+  import MessageSquare from '@lucide/svelte/icons/message-square';
+  import Search from '@lucide/svelte/icons/search';
+  import Workflow from '@lucide/svelte/icons/workflow';
   import X from '@lucide/svelte/icons/x';
 
   import { Button } from '$lib/components/ui/button/index.js';
+  import * as Card from '$lib/components/ui/card/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
   import type { ChipTone } from '$lib/components/ui/chip/variants.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
@@ -68,7 +73,10 @@
     { value: 'failed', label: 'Failed' },
     { value: 'expired', label: 'Expired' }
   ];
-  const time = new Intl.DateTimeFormat(undefined, { dateStyle: 'short', timeStyle: 'short' });
+  const time = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  const clock = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' });
+  const stamp = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const day = new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
 
   let messages = $state<AgentMessage[]>([]);
   let selected = $state<AgentMessage | null>(null);
@@ -206,6 +214,29 @@
     return `Run ${id.replace(/^workflow-run-/, '').slice(0, 8)}`;
   }
 
+  /** The list reads as sections: one per day, or one per name when sorted by name. */
+  const groups = $derived.by(() => {
+    const today = new Date().setHours(0, 0, 0, 0);
+    const out: { key: string; label: string; items: AgentMessage[] }[] = [];
+    for (const item of messages) {
+      const label = layout === 'screen' && sort === 'sender' ? senderName(item.senderName)
+        : layout === 'screen' && sort === 'receiver' ? item.receiver
+        : item.createdAtMs >= today ? 'Today'
+        : item.createdAtMs >= today - 86_400_000 ? 'Yesterday'
+        : day.format(item.createdAtMs);
+      const last = out.at(-1);
+      if (last?.label === label) last.items.push(item);
+      else out.push({ key: `${out.length}:${label}`, label, items: [item] });
+    }
+    return out;
+  });
+
+  /** A leading `[TSK-12 failed]` reads as a tag beside the text rather than as part of it. */
+  function tagged(text: string): { tag: string; text: string } {
+    const match = /^\[([^\]]+)\]\s*/.exec(text);
+    return match ? { tag: match[1], text: text.slice(match[0].length) } : { tag: '', text };
+  }
+
   async function open(ownedId: string): Promise<void> {
     openLookup?.abort();
     const lookup = new AbortController();
@@ -222,32 +253,83 @@
   }
 </script>
 
+{#snippet avatar(item: AgentMessage, size: string)}
+  <span class={['flex shrink-0 items-center justify-center rounded-full bg-foreground/10 text-[var(--color-text-2)]', size]} aria-hidden="true">
+    {#if item.fromOwnedId.startsWith('workflow:')}<Workflow />{:else}<Bot />{/if}
+  </span>
+{/snippet}
+
+{#snippet tag(text: string)}
+  <span class="inline-flex h-5 shrink-0 items-center rounded-md bg-foreground/10 px-1.5 text-sm leading-none font-medium text-[var(--color-text-2)]">{text}</span>
+{/snippet}
+
+<!-- One line under the names: a status that needs a look, then the tag, then the text. -->
+{#snippet preview(item: AgentMessage)}
+  {@const body = tagged(item.body)}
+  <span class="flex min-w-0 items-center gap-1.5">
+    {#if item.receipt !== 'delivered'}<Chip tone={RECEIPT_TONE[item.receipt]}>{item.receipt}</Chip>{/if}
+    {#if body.tag}{@render tag(body.tag)}{/if}
+    <span class="min-w-0 truncate text-[13px] text-[var(--color-text-2)]">{body.text}</span>
+  </span>
+{/snippet}
+
+{#snippet detail(label: string, value: string, action?: { text: string; run: () => void })}
+  <div class="flex min-h-9 min-w-0 items-center gap-3 rounded-lg px-2 py-1">
+    <span class={['shrink-0 text-sm text-[var(--color-text-2)]', layout === 'screen' ? 'w-16' : 'w-10']}>{label}</span>
+    <span class="line-clamp-2 min-w-0 flex-1 text-[13px] [overflow-wrap:anywhere]" title={value}>{value}</span>
+    {#if action}<Button size="sm" variant="ghost" onclick={action.run}>{action.text}</Button>{/if}
+  </div>
+{/snippet}
+
 {#snippet reader(item: AgentMessage)}
-  <div class="flex min-w-0 flex-col gap-2 p-3" data-testid="agent-message-reader">
-    <div class="flex min-w-0 flex-wrap items-center gap-2">
-      <span class="min-w-0 truncate text-[13px] font-medium" title={item.senderName}>{senderName(item.senderName)}</span>
-      <span class="min-w-0 truncate text-sm text-muted-foreground">to {item.receiver}</span>
-      <Chip tone={RECEIPT_TONE[item.receipt]}>{item.receipt}</Chip>
-      {#if item.runId}
-        {@const run = item.runId}
-        <Button size="xs" variant="ghost" onclick={() => onShowRun(run, runName(run))}>{runName(run)}</Button>
-      {/if}
-    </div>
-    <p class="text-sm text-muted-foreground">{time.format(item.createdAtMs)} · {machineName(item.machine)}</p>
-    <p class="text-[13px] break-words whitespace-pre-wrap">{item.body}</p>
-    <div class="flex flex-wrap gap-1">
-      <Button size="sm" variant="ghost" onclick={() => void open(item.toOwnedId)}>Open receiver</Button>
-      {#if !item.fromOwnedId.startsWith('workflow:')}
-        <Button size="sm" variant="ghost" onclick={() => void open(item.fromOwnedId)}>Open sender</Button>
-      {/if}
-    </div>
+  {@const body = tagged(item.body)}
+  {@const surface = layout === 'screen' ? 'bg-card' : 'bg-foreground/8'}
+  <div class={['flex min-w-0 flex-col', layout === 'screen' ? 'gap-4' : 'gap-2 px-2 pb-2']} data-testid="agent-message-reader">
+    <Card.Root size={layout === 'screen' ? 'default' : 'sm'} class={surface}>
+      <Card.Header>
+        <div class="flex min-w-0 items-start gap-3">
+          {@render avatar(item, layout === 'screen' ? 'size-10 [&>svg]:size-5' : 'size-8 [&>svg]:size-4')}
+          <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+            <h3 class={['leading-snug font-semibold [overflow-wrap:anywhere]', layout === 'screen' ? 'text-(length:--text-heading)' : 'text-(length:--text-body)']} title={item.senderName}>{senderName(item.senderName)}</h3>
+            <p class="line-clamp-2 text-(length:--text-quiet) text-[var(--color-text-2)] [overflow-wrap:anywhere]">to {item.receiver}</p>
+          </div>
+        </div>
+      </Card.Header>
+      <Card.Content class="flex min-w-0 flex-col gap-3">
+        <div class="flex min-w-0 flex-wrap items-center gap-1.5">
+          <Chip tone={RECEIPT_TONE[item.receipt]}>{item.receipt}</Chip>
+          {#if body.tag}{@render tag(body.tag)}{/if}
+        </div>
+        {#if body.text}
+          <p class="text-(length:--text-body) leading-relaxed [overflow-wrap:anywhere] whitespace-pre-wrap">{body.text}</p>
+        {/if}
+      </Card.Content>
+    </Card.Root>
+
+    <!-- Who and where, each with the action that leads there. -->
+    <Card.Root size="sm" class={['gap-1', surface]}>
+      <Card.Header><h4 class="text-[13px] leading-tight font-semibold">Details</h4></Card.Header>
+      <Card.Content class="flex flex-col px-1">
+        {@render detail('From', senderName(item.senderName), item.fromOwnedId.startsWith('workflow:') ? undefined
+          : { text: 'Open chat', run: () => void open(item.fromOwnedId) })}
+        {@render detail('To', item.receiver, { text: 'Open chat', run: () => void open(item.toOwnedId) })}
+        {#if item.runId}
+          {@const run = item.runId}
+          {@render detail('Run', runName(run), { text: 'Show run', run: () => onShowRun(run, runName(run)) })}
+        {/if}
+        {@render detail('Sent', `${time.format(item.createdAtMs)} · ${machineName(item.machine)}`)}
+      </Card.Content>
+    </Card.Root>
   </div>
 {/snippet}
 
 <div class="flex h-full min-h-0 flex-col" data-testid="agent-messages">
   {#if layout === 'screen'}
-    <div class="flex min-w-0 flex-wrap items-center gap-2 pb-3">
-      <Input class="w-72" placeholder="Search sender, receiver or text" aria-label="Search messages" bind:value={search} />
+    <div class="flex min-w-0 flex-wrap items-center gap-2 pb-4">
+      <div class="relative">
+        <Search class="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-[var(--color-text-3)]" aria-hidden="true" />
+        <Input class="w-80 pl-8" placeholder="Search sender, receiver or text" aria-label="Search messages" bind:value={search} />
+      </div>
       <Select.Root type="single" value={sort} onValueChange={(value) => (sort = value as Sort)}>
         <Select.Trigger size="sm" aria-label="Sort">{SORTS.find((item) => item.value === sort)?.label}</Select.Trigger>
         <Select.Content>
@@ -275,11 +357,14 @@
         </Select.Content>
       </Select.Root>
       {#if runId}
-        <span class="flex min-w-0 items-center gap-1">
-          <Chip tone="neutral">{runLabel}</Chip>
+        <span class="flex min-w-0 items-center gap-0.5 rounded-full bg-secondary py-0.5 pr-0.5 pl-2.5 text-sm">
+          <span class="truncate">{runLabel}</span>
           <IconButton label="Show messages from every run" size="xs" onclick={() => onClearRun?.()}><X /></IconButton>
         </span>
       {/if}
+      <span class="ml-auto text-sm text-[var(--color-text-2)] tabular-nums">
+        {messages.length}{hasOlder ? '+' : ''} {messages.length === 1 ? 'message' : 'messages'}
+      </span>
     </div>
   {/if}
   {#if error}<p role="alert" class="px-3 py-2 text-sm text-destructive">{error}</p>{/if}
@@ -288,55 +373,76 @@
     <EmptyState title="Select a session" body="Its messages, and those in runs it started, appear here." />
   {:else}
     <div class={layout === 'screen'
-      ? 'grid min-h-0 flex-1 grid-cols-[minmax(0,420px)_minmax(0,1fr)] gap-4'
+      ? 'grid min-h-0 flex-1 grid-cols-[minmax(0,412px)_minmax(0,1fr)] gap-3'
       : 'flex min-h-0 flex-1 flex-col'}>
-      <div class={['flex min-h-0 flex-1 flex-col', layout === 'screen' && 'rounded-xl bg-card']}>
+      <div class="flex min-h-0 flex-1 flex-col">
         {#if messages.length === 0}
-          <EmptyState title={loading ? 'Loading messages' : 'No messages yet.'} />
+          <EmptyState title={loading ? 'Loading messages' : 'No messages yet.'}>
+            {#snippet icon()}<MessageSquare />{/snippet}
+          </EmptyState>
         {:else}
           <ScrollArea class="min-h-0 flex-1">
-            <ul class="flex flex-col gap-1 p-2">
-              {#each messages as item (keyOf(item))}
-                <!-- Rows off screen skip layout and paint, so many loaded pages stay cheap. -->
-                <li class="[contain-intrinsic-size:auto_76px] [content-visibility:auto]">
-                  <button
-                    type="button"
-                    class={['flex w-full min-w-0 flex-col gap-0.5 rounded-lg px-2 py-2 text-left hover:bg-accent/60 focus-visible:ring-3 focus-visible:ring-ring/50',
-                      selected && keyOf(selected) === keyOf(item) && 'bg-secondary']}
-                    aria-pressed={selected !== null && keyOf(selected) === keyOf(item)}
-                    onclick={() => (selected = item)}
-                  >
-                    <span class="flex w-full min-w-0 items-center gap-2 text-sm">
-                      <span class="min-w-0 flex-1 truncate font-medium">{senderName(item.senderName)} → {item.receiver}</span>
-                      <Chip tone={RECEIPT_TONE[item.receipt]}>{item.receipt}</Chip>
-                    </span>
-                    <span class="text-sm text-muted-foreground">
-                      {time.format(item.createdAtMs)}{layout === 'screen' || item.machine !== 'mac' ? ` · ${machineName(item.machine)}` : ''}
-                    </span>
-                    <span class="truncate text-[13px]">{item.body}</span>
-                  </button>
-                </li>
+            <div class={['flex min-w-0 flex-col', layout === 'screen' ? 'gap-4 pr-3 pb-1' : 'gap-3 px-2 pb-2']}>
+              {#each groups as group (group.key)}
+                <Card.Root size="sm" class={['gap-1 pb-0.5', layout === 'screen' ? 'bg-card' : 'bg-foreground/8']}>
+                  <Card.Header>
+                    <div class="flex min-w-0 items-center gap-2">
+                      <h3 class="min-w-0 flex-1 truncate text-[13px] leading-tight font-semibold">{group.label}</h3>
+                      <Chip tone="count">{group.items.length}</Chip>
+                    </div>
+                  </Card.Header>
+                  <ul class="flex flex-col gap-0.5 px-1">
+                    {#each group.items as item (keyOf(item))}
+                      <!-- Rows off screen skip layout and paint, so many loaded pages stay cheap. -->
+                      <li class="[contain-intrinsic-size:auto_68px] [content-visibility:auto]">
+                        <button
+                          type="button"
+                          class={['flex w-full min-w-0 items-start gap-3 rounded-lg px-2 py-2 text-left outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50',
+                            selected && keyOf(selected) === keyOf(item) ? 'bg-secondary' : 'hover:bg-accent/60']}
+                          aria-pressed={selected !== null && keyOf(selected) === keyOf(item)}
+                          onclick={() => (selected = item)}
+                        >
+                          {@render avatar(item, 'mt-0.5 size-8 [&>svg]:size-4')}
+                          <span class="flex min-w-0 flex-1 flex-col gap-0.5">
+                            <span class="flex min-w-0 items-baseline gap-2">
+                              <span class="min-w-0 flex-1 truncate text-[13px] font-semibold" title={item.senderName}>{senderName(item.senderName)}</span>
+                              <span class="shrink-0 text-sm text-[var(--color-text-2)] tabular-nums">
+                                {(layout === 'drawer' || sort === 'time' ? clock : stamp).format(item.createdAtMs)}
+                              </span>
+                            </span>
+                            <span class="truncate text-sm text-[var(--color-text-2)]">
+                              to {item.receiver}{layout === 'screen' || item.machine !== 'mac' ? ` · ${machineName(item.machine)}` : ''}
+                            </span>
+                            <span class="pt-1">{@render preview(item)}</span>
+                          </span>
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                </Card.Root>
               {/each}
-            </ul>
-            {#if hasOlder}
-              <div class="px-2 pb-2">
+              {#if hasOlder}
                 <Button class="w-full" size="sm" variant="ghost" disabled={loading} onclick={() => start('older', criteria())}>Load older</Button>
-              </div>
-            {/if}
+              {/if}
+            </div>
           </ScrollArea>
         {/if}
       </div>
       {#if layout === 'screen'}
-        <div class="min-h-0 rounded-xl bg-card">
+        <div class="min-h-0">
           {#if selected}
-            <ScrollArea class="h-full">{@render reader(selected)}</ScrollArea>
+            <ScrollArea class="h-full"><div class="pb-1">{@render reader(selected)}</div></ScrollArea>
           {:else}
-            <EmptyState title="Select a message" body="Its full text appears here." />
+            <div class="flex h-full items-center justify-center rounded-xl bg-card">
+              <EmptyState title="Select a message" body="Its full text, who sent it, and where it went appear here.">
+                {#snippet icon()}<MessageSquare />{/snippet}
+              </EmptyState>
+            </div>
           {/if}
         </div>
       {:else if selected}
         <!-- A fixed height: the scroll viewport fills its box, so the box needs a size. -->
-        <ScrollArea class="h-56 flex-none border-t border-border">{@render reader(selected)}</ScrollArea>
+        <ScrollArea class="h-72 flex-none border-t border-border pt-2">{@render reader(selected)}</ScrollArea>
       {/if}
     </div>
   {/if}

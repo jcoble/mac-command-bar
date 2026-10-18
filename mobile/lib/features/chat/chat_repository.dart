@@ -165,6 +165,9 @@ class ChatNotifier extends Notifier<AsyncValue<ChatState>> {
 
   Future<void> _apply(Map<String, dynamic> frame) async {
     if (frame['type'] == 'open') return _fetch();
+    // A frame sent before the machine saw the phone switch chats belongs to
+    // the chat it left.
+    if (frame['ownedId'] != _session.$2) return;
     final current = state.value;
     final seq = frame['seq'];
     if (current == null || seq is! int || seq <= current.cursor) return;

@@ -131,27 +131,32 @@ void main() {
     socket.controller
       ..add({
         'type': 'chat',
+        'ownedId': 'lane-1',
         'seq': 5,
         'item': item('t1', 5, 'tool', 'start_run', done: false),
       })
       ..add({
         'type': 'chat',
+        'ownedId': 'lane-1',
         'seq': 6,
         'item': item('t1', 6, 'tool', '2 runs started'),
       })
       ..add({
         'type': 'chat',
+        'ownedId': 'lane-1',
         'seq': 6,
         'item': item('t1', 6, 'tool', 'duplicate'),
       })
       ..add({
         'type': 'chat',
+        'ownedId': 'lane-1',
         'seq': 4,
         'item': item('old', 4, 'agent', 'already loaded'),
       })
-      ..add({'type': 'turn', 'seq': 7, 'state': 'running'})
+      ..add({'type': 'turn', 'ownedId': 'lane-1', 'seq': 7, 'state': 'running'})
       ..add({
         'type': 'chat',
+        'ownedId': 'lane-1',
         'seq': 8,
         'item': item('a1', 8, 'agent', 'On it.'),
       });
@@ -167,6 +172,46 @@ void main() {
     expect(state.working, isTrue);
   });
 
+  test('chat_ignores_frames_for_another_session', () async {
+    final (c, _, socket) = await chatWith(
+      (_) => (
+        200,
+        {
+          'items': [item('u1', 1, 'owner', 'Start the build')],
+          'cursor': 1,
+          'turn': 'idle',
+          'ownerItems': [],
+        },
+      ),
+    );
+    socket.controller
+      ..add({
+        'type': 'chat',
+        'ownedId': 'other',
+        'seq': 2,
+        'item': item('x1', 2, 'agent', 'for another chat'),
+      })
+      ..add({
+        'type': 'chatDelta',
+        'ownedId': 'other',
+        'seq': 3,
+        'itemId': 'x2',
+        'delta': 'also another',
+      })
+      ..add({'type': 'turn', 'ownedId': 'other', 'seq': 4, 'state': 'running'})
+      ..add({
+        'type': 'chat',
+        'ownedId': 'lane-1',
+        'seq': 5,
+        'item': item('a1', 5, 'agent', 'mine'),
+      });
+    await pumpEventQueue();
+
+    expect(texts(c), [('u1', 'Start the build'), ('a1', 'mine')]);
+    final state = c.read(chatProvider(session)).requireValue;
+    expect((state.cursor, state.working), (5, false));
+  });
+
   test('chat_first_delta_creates_agent_item_then_appends', () async {
     final (c, _, socket) = await chatWith(
       (_) => (
@@ -175,8 +220,8 @@ void main() {
       ),
     );
     socket.controller
-      ..add({'type': 'chatDelta', 'seq': 2, 'itemId': 'a2', 'delta': 'Hel'})
-      ..add({'type': 'chatDelta', 'seq': 3, 'itemId': 'a2', 'delta': 'lo'});
+      ..add({'type': 'chatDelta', 'ownedId': 'lane-1', 'seq': 2, 'itemId': 'a2', 'delta': 'Hel'})
+      ..add({'type': 'chatDelta', 'ownedId': 'lane-1', 'seq': 3, 'itemId': 'a2', 'delta': 'lo'});
     await pumpEventQueue();
     final open = c.read(chatProvider(session)).requireValue.items.single;
     expect(
@@ -187,10 +232,11 @@ void main() {
     socket.controller
       ..add({
         'type': 'chat',
+        'ownedId': 'lane-1',
         'seq': 4,
         'item': item('a2', 4, 'agent', 'Hello there'),
       })
-      ..add({'type': 'chatDelta', 'seq': 5, 'itemId': 'a2', 'delta': ' late'});
+      ..add({'type': 'chatDelta', 'ownedId': 'lane-1', 'seq': 5, 'itemId': 'a2', 'delta': ' late'});
     await pumpEventQueue();
     expect(texts(c), [('a2', 'Hello there')]);
   });
