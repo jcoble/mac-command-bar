@@ -36,6 +36,8 @@ dependencies:
   url_launcher: ^6.3.3
   # The session terminal page: ghostty-web, as on the desktop, in a WebView.
   webview_flutter: ^4.14.1
+  # Its WebView id lets the terminal's Keyboard key show the keyboard.
+  webview_flutter_android: ^4.13.0
   # Attaches a photo or screenshot to a chat message (gallery or camera).
   image_picker: ^1.2.4
 

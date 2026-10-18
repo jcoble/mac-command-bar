@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_symbols_icons/symbols.dart';
 import 'package:webview_flutter/webview_flutter.dart';
+import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import '../../core/api/api_exception.dart';
 import '../../core/api/machine_client.dart';
@@ -20,6 +21,9 @@ const _bar = Color(0xFF21222C);
 const _key = Color(0xFF343746);
 const _text = Color(0xFFF8F8F2);
 const _accent = Color(0xFFBD93F9);
+
+/// MainActivity's channel that shows the keyboard for the WebView.
+const _keyboardChannel = MethodChannel('assembly/terminal');
 
 /// A session's shell, full screen: ghostty-web in a WebView draws it, and a key
 /// bar sits above the keyboard. The WebView lives only while this page is open;
@@ -108,6 +112,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     // Through the page, so the shell gets bracketed paste when it asked for it.
     if (text != null && text.isNotEmpty && mounted) {
       await _web.runJavaScript('termPaste(${jsonEncode(text)})');
+    }
+  }
+
+  /// Focuses the terminal's input, then has MainActivity show the keyboard:
+  /// the page alone can't before the first tap inside the WebView.
+  Future<void> _showKeyboard() async {
+    await _web.runJavaScript('termFocus()');
+    if (_web.platform case final AndroidWebViewController android) {
+      await _keyboardChannel.invokeMethod<bool>(
+        'showKeyboard',
+        android.webViewIdentifier,
+      );
     }
   }
 
@@ -221,6 +237,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
                     _KeyCap(
                       icon: Symbols.content_paste_rounded,
                       onPress: _paste,
+                    ),
+                    _KeyCap(
+                      icon: Symbols.keyboard_rounded,
+                      onPress: () => unawaited(_showKeyboard()),
                     ),
                     _KeyCap(
                       icon: Symbols.keyboard_hide_rounded,

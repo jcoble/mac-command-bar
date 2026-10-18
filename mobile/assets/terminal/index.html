@@ -14,7 +14,7 @@
 <body>
 <div id="terminal"></div>
 <script>
-// The page only draws. Dart owns the socket: it calls termWrite, termReplay, termPaste and termBlur,
+// The page only draws. Dart owns the socket: it calls termWrite, termReplay, termPaste, termBlur and termFocus,
 // and the page posts the stream's own frames, {"input": text} and {"resize": {cols, rows}}, to TerminalBridge.
 // Look and size are the desktop terminal's defaults (settingsStore.svelte.ts, themeRegistry.ts DRACULA_TERMINAL).
 const post = (frame) => TerminalBridge.postMessage(JSON.stringify(frame));
@@ -42,6 +42,8 @@ async function start() {
   textarea = host.querySelector('textarea');
   textarea.setAttribute('autocomplete', 'off');
   textarea.focus();
+  // ghostty focuses the container on mousedown (a tap's mouse events); hand focus back to the textarea.
+  host.addEventListener('focus', () => textarea.focus());
   attachImeInput(host, textarea, (data) => post({ input: data }));
   attachTouchScroll(host, () => textarea.focus());
   term.onData((data) => post({ input: data }));
@@ -55,6 +57,8 @@ window.termWrite = (data) => term.write(data);
 window.termReplay = (data) => { term.reset(); term.write(data); };
 window.termPaste = (text) => term.paste(text);
 window.termBlur = () => textarea.blur();
+// The Keyboard key: re-focusing is what brings the keyboard back after Hide.
+window.termFocus = () => { textarea.blur(); textarea.focus(); };
 start().catch((error) => post({ error: String(error) }));
 </script>
 </body>
