@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TSK-1476 Messages mockup</title>
+<style>
+  :root { --bg:#0f1012; --surface:#17181b; --raised:#1f2024; --line:#2a2b30; --text:#e8e8ea; --muted:#9a9ba3; --mint:#5ee0b0; --bad:#f07070; --live:#e8c45e; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:32px; background:var(--bg); color:var(--text); font:13px/1.45 -apple-system, system-ui, sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; } h2 { font-size:15px; margin:32px 0 8px; }
+  p.note { color:var(--muted); margin:0 0 12px; max-width:760px; }
+  .frame { border:1px solid var(--line); border-radius:16px; background:var(--surface); overflow:hidden; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .chip { display:inline-block; padding:0 8px; border-radius:999px; font-size:11px; background:var(--raised); color:var(--muted); }
+  .chip.good { color:var(--mint); } .chip.live { color:var(--live); } .chip.bad { color:var(--bad); }
+  .badge { display:inline-grid; place-items:center; min-width:16px; height:16px; padding:0 4px; border-radius:999px; background:var(--mint); color:#062; font-size:10px; font-weight:600; }
+  .btn { border:0; border-radius:12px; padding:4px 10px; background:transparent; color:var(--text); font:inherit; }
+  .btn:hover { background:var(--raised); }
+  .field { border:1px solid var(--line); border-radius:12px; padding:5px 10px; background:var(--bg); color:var(--text); min-width:220px; }
+  .select { border:1px solid var(--line); border-radius:12px; padding:5px 10px; color:var(--text); }
+  .list { display:flex; flex-direction:column; gap:2px; padding:8px; }
+  .item { padding:8px; border-radius:12px; }
+  .item.sel { background:var(--raised); }
+  .item .who { font-weight:600; flex:1; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  .item .meta { color:var(--muted); font-size:12px; }
+  .item .preview { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+  .reader { padding:16px; display:flex; flex-direction:column; gap:8px; }
+  .reader pre { margin:0; white-space:pre-wrap; font:inherit; }
+  .tabs { display:flex; gap:2px; padding:3px; border-radius:999px; background:var(--raised); width:max-content; }
+  .tab { position:relative; width:28px; height:24px; border-radius:999px; display:grid; place-items:center; color:var(--muted); }
+  .tab.on { background:#ffffff29; color:var(--text); }
+  .tab .badge { position:absolute; top:-5px; right:-5px; }
+  .seg { display:flex; gap:2px; padding:3px; border-radius:999px; background:var(--raised); }
+  .seg span { flex:1; text-align:center; padding:2px 0; border-radius:999px; color:var(--muted); }
+  .seg span.on { background:var(--surface); color:var(--text); }
+  .home { display:flex; align-items:center; gap:2px; }
+  .home .dot { width:26px; height:26px; border-radius:50%; display:grid; place-items:center; background:var(--raised); }
+  .home .dot.green { background:var(--mint); color:#062; }
+</style>
+</head>
+<body>
+<h1>TSK-1476 — Messages: drawer list + reader, full screen, unread badges</h1>
+<p class="note">Stock shadcn-svelte parts only: Input, Select, Button, IconButton, Chip, Badge, ScrollArea, EmptyState. Every list is one SQL query with keyset paging on the backend. Rows update live from the backend's "messages changed" event; there is no Refresh button.</p>
+
+<h2>1. Window chrome — Messages beside Projects</h2>
+<div class="home">
+  <span class="dot green">⌂</span><span class="dot" title="Projects">▦</span><span class="dot" title="Messages">✉</span>
+</div>
+
+<h2>2. Right drawer tab strip — unread count on the Agents robot</h2>
+<div class="tabs">
+  <span class="tab">▤</span><span class="tab">⎇</span><span class="tab">🤖<span class="badge">3</span></span><span class="tab">☑</span>
+</div>
+<p class="note">Unread = messages to, from, or inside a run started by the selected session since the owner last looked at its Messages tab. Opening that tab clears it. Switching sessions shows the other session's own count.</p>
+
+<h2>3. Drawer → Agents → Messages (selected session only)</h2>
+<div class="frame" style="width:360px">
+  <div style="padding:8px"><div class="seg"><span>Session</span><span>Workflows</span><span class="on">Messages 3</span><span>Inbox</span></div></div>
+  <div class="list" style="border-top:1px solid var(--line)">
+    <div class="item sel"><div class="row"><span class="who">reviewer → builder</span><span class="chip good">delivered</span></div><div class="meta">10/17, 2:14 PM</div><div class="preview">The diff misses the receipt update on retry…</div></div>
+    <div class="item"><div class="row"><span class="who">workflow → builder</span><span class="chip live">queued</span></div><div class="meta">10/17, 2:10 PM · workbox-test</div><div class="preview">Stage 2 started.</div></div>
+    <div class="item"><div class="row"><span class="who">builder → reviewer</span><span class="chip bad">failed</span></div><div class="meta">10/17, 2:02 PM</div><div class="preview">Ready for review.</div></div>
+  </div>
+  <div class="reader" style="border-top:1px solid var(--line); max-height:180px">
+    <div class="row"><b>reviewer</b><span class="chip">to builder</span><span class="chip">Run 3f9a1c</span></div>
+    <pre>The diff misses the receipt update on retry. Please add the set_receipt call after the second send and rerun the broker tests.</pre>
+    <div class="row"><button class="btn">Open receiver</button><button class="btn">Open sender</button></div>
+  </div>
+</div>
+<p class="note">No selected session: the tab loads nothing and shows "Select a session". Open sender is hidden for workflow notices (sender <code>workflow:&lt;run&gt;</code>). The run chip opens the full screen filtered to that run.</p>
+
+<h2>4. Full Messages screen (all messages, every machine)</h2>
+<div class="frame">
+  <div class="row" style="padding:12px 24px"><button class="btn">← Back</button><b style="font-size:16px">Messages</b></div>
+  <div class="row" style="padding:0 24px 12px; flex-wrap:wrap">
+    <span class="field">Search sender, receiver or text…</span>
+    <span class="select">Newest first ▾</span>
+    <span class="select">All machines ▾</span>
+    <span class="select">Any status ▾</span>
+    <span class="chip">Run 3f9a1c ✕</span>
+  </div>
+  <div style="display:grid; grid-template-columns:minmax(0,420px) minmax(0,1fr); gap:16px; padding:0 24px 24px">
+    <div class="frame" style="background:var(--bg)">
+      <div class="list">
+        <div class="item sel"><div class="row"><span class="who">reviewer → builder</span><span class="chip good">delivered</span></div><div class="meta">10/17, 2:14 PM · This Mac</div><div class="preview">The diff misses the receipt update on retry…</div></div>
+        <div class="item"><div class="row"><span class="who">planner → orchestrator</span><span class="chip">expired</span></div><div class="meta">10/17, 1:58 PM · Workbox Test</div><div class="preview">Plan v2 attached.</div></div>
+        <div class="item"><div class="btn" style="text-align:center; color:var(--muted)">Load older</div></div>
+      </div>
+    </div>
+    <div class="frame reader" style="background:var(--bg); min-height:240px">
+      <div class="row"><b style="font-size:16px">reviewer</b><span class="chip">to builder</span><span class="chip good">delivered</span><span class="chip">Run 3f9a1c</span></div>
+      <div class="meta" style="color:var(--muted)">10/17/26, 2:14 PM · This Mac</div>
+      <pre>The diff misses the receipt update on retry. Please add the set_receipt call after the second send and rerun the broker tests.</pre>
+      <div class="row"><button class="btn">Open receiver</button><button class="btn">Open sender</button></div>
+    </div>
+  </div>
+</div>
+<p class="note">Search runs on every keystroke and cancels the previous query. Sort: newest, sender A–Z (newest within), receiver A–Z. Changing search, sort or a filter drops the selection only if the new results no longer contain it; a live update keeps it. Open receiver/sender closes the screen only when the chat actually opened; no unread count here.</p>
+</body>
+</html>

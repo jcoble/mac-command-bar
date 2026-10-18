@@ -984,6 +984,8 @@ const BACKEND_CAPABILITIES: [&str; 29] = [
 const SOURCE_LSP_STATUS_CHANGED_EVENT: &str = "source-lsp-status-changed";
 const SESSION_TITLE_CHANGED_EVENT: &str = "session-title-changed";
 
+const AGENT_MESSAGES_CHANGED_EVENT: &str = "agent-messages-changed";
+
 /// The event the app sends when one saved remote machine's transport connects,
 /// starts attempting, or stops. The rail's remote rows read nothing else.
 const REMOTE_CONNECTION_CHANGED_EVENT: &str = "remote-connection-changed";
@@ -5456,6 +5458,10 @@ fn main() {
                     remote_session_store,
                 )?;
             remote_connection.set_terminal_output(projection_streams.clone());
+            let messages_handle = app.handle().clone();
+            mcb_core::broker::on_messages_changed(move || { let _ = messages_handle.emit(AGENT_MESSAGES_CHANGED_EVENT, ()); });
+            let messages_handle = app.handle().clone();
+            remote_connection.set_messages_changed(Arc::new(move || { let _ = messages_handle.emit(AGENT_MESSAGES_CHANGED_EVENT, ()); }));
             // Sessions on this desktop and on connected machines message each other through it.
             remote_connection.set_message_host(agent_runtime.clone());
             agent_conversation::messaging::endpoint()?
@@ -5727,6 +5733,7 @@ fn main() {
             agent_conversation::agent_conversation_clear_session_draft,
             agent_conversation::set_main_orchestrator,
             agent_conversation::list_agent_messages,
+            agent_conversation::count_agent_messages,
             agent_conversation::write_agent_conversation_workspace,
             agent_conversation::read_agent_conversation_workspace,
             agent_conversation::read_agent_conversation_workspace_expanded_paths,
