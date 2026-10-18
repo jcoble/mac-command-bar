@@ -117,4 +117,37 @@ function node(nodeId: string, structuredOutput: unknown, finishedAtMs: number) {
   assert.deepEqual(items.find((item) => item.kind === 'proof')?.files, ['/repo/proof/a.png']);
 }
 
+{ // command step redo after on_fail shows failed commands, not a review round
+  // Rows shaped like a real run of a command step with `on_fail`: a `command-recorded` row after each
+  // command (each carries the commands so far), then `workflow.node.redo` or `workflow.node.findings`.
+  // No `commands-finished` row is written for a failed attempt.
+  const lint = { command: 'pnpm lint', exitCode: 0 };
+  const test = { command: 'pnpm test', exitCode: 1 };
+  const history: WorkflowHistoryRow[] = [
+    row(1, 1, 'workflow.node.running', 'checks'),
+    row(2, 2, 'workflow.node.command-recorded', 'checks', { commands: [lint] }),
+    row(3, 3, 'workflow.node.command-recorded', 'checks', { commands: [lint, test] }),
+    row(4, 4, 'workflow.node.redo', 'checks', { attempt: 2 }),
+    row(5, 5, 'workflow.node.running', 'checks', { attempt: 2 }),
+    row(6, 6, 'workflow.node.command-recorded', 'checks', { attempt: 2, commands: [lint] }),
+    row(7, 7, 'workflow.node.command-recorded', 'checks', { attempt: 2, commands: [lint, test] }),
+    row(8, 8, 'workflow.node.findings', 'checks', { attempt: 2, findingCount: 1, commands: [lint, test] })
+  ];
+  const run = {
+    id: RUN,
+    definition: { nodes: [{ id: 'checks', title: 'checks', step: { run: ['pnpm lint', 'pnpm test'], on_fail: 'build' } }] },
+    inputSnapshot: { rounds: { checks: [['pnpm test'], ['pnpm test']] } },
+    nodes: []
+  } as unknown as WorkflowRunRecord;
+
+  const items = buildWorkflowTimeline(history, [], run);
+  assert.deepEqual(items.map((item) => item.title), [
+    'checks started', 'checks: 1 of 2 failed', 'checks started', 'checks: 1 of 2 failed'
+  ]);
+  assert.ok(items.every((item) => item.kind !== 'review'), 'a command step has no review round');
+  const failed = items.filter((item) => item.kind === 'checks');
+  assert.deepEqual(failed.map((item) => [item.attempt, item.verdict, item.tone, item.detail]),
+    [[1, 'fail', 'bad', 'pnpm test'], [2, 'fail', 'bad', 'pnpm test']]);
+}
+
 console.log('workflowTimeline tests passed');

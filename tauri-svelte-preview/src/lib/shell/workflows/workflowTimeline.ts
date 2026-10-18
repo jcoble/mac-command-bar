@@ -66,6 +66,20 @@ export function buildWorkflowTimeline(
   // A review round that found something is kept only in the snapshot: `rounds[step][round - 1]` is its findings.
   const rounds = ((run.inputSnapshot as { rounds?: Record<string, unknown[][]> } | null)?.rounds ?? {});
   const checked = new Set(history.filter((entry) => entry.kind === 'workflow.node.commands-finished').map((entry) => `${entry.nodeId}:${entry.attempt}`));
+  // A command step is told from the run definition, as the engine does: its `step.run` is present.
+  const isCommandStep = (nodeId: string): boolean =>
+    Boolean((run.definition.nodes.find((item) => item.id === nodeId) as { step?: { run?: unknown } } | undefined)?.step?.run);
+  // A command step with `on_fail` writes no `commands-finished` row for a failed attempt; its last
+  // `command-recorded` row holds that attempt's commands so far, which are all of them.
+  const recorded = new Map<string, WorkflowHistoryRow['commands']>();
+  for (const entry of history) if (entry.kind === 'workflow.node.command-recorded') recorded.set(`${entry.nodeId}:${entry.attempt}`, entry.commands);
+  const commandsResult = (step: string, commands: WorkflowHistoryRow['commands'], findingCount: number | null) => {
+    const failed = commands.filter((command) => command.exitCode !== 0);
+    const total = commands.length;
+    return { kind: 'checks' as const, tone: failed.length ? 'bad' as const : 'good' as const,
+      title: failed.length ? `${step}: ${failed.length} of ${total} failed` : `${step}: ${total} of ${total} passed`,
+      detail: failed[0]?.command ?? '', verdict: failed.length ? 'fail' : 'pass', findingCount };
+  };
   const failedRound = (nodeId: string, round: number) => {
     const found = rounds[nodeId]?.[round - 1]?.length ?? 0;
     return { kind: 'review' as const, tone: 'bad' as const, attempt: round, title: `${title(nodeId)} round ${round}: fail`,
@@ -92,14 +106,9 @@ export function buildWorkflowTimeline(
           add({ ...base, kind: 'finish', tone: 'good', title: `${step} finished`, detail: entry.files.length ? plural(entry.files.length, 'file') : '' });
         }
         break;
-      case 'workflow.node.commands-finished': {
-        const failed = entry.commands.filter((command) => command.exitCode !== 0);
-        const total = entry.commands.length;
-        add({ ...base, kind: 'checks', tone: failed.length ? 'bad' : 'good',
-          title: failed.length ? `${step}: ${failed.length} of ${total} failed` : `${step}: ${total} of ${total} passed`,
-          detail: failed[0]?.command ?? '', verdict: failed.length ? 'fail' : 'pass', findingCount: entry.findingCount });
+      case 'workflow.node.commands-finished':
+        add({ ...base, ...commandsResult(step, entry.commands, entry.findingCount) });
         break;
-      }
       case 'workflow.node.failed':
         add({ ...base, kind: 'failed', tone: 'bad', title: `${step} failed` });
         break;
@@ -123,13 +132,17 @@ export function buildWorkflowTimeline(
         break;
       case 'workflow.node.findings':
         // The round that found something and stopped for the owner.
-        add({ ...base, ...failedRound(entry.nodeId, entry.attempt ?? 1) });
+        if (isCommandStep(entry.nodeId)) add({ ...base, ...commandsResult(step, entry.commands, entry.findingCount) });
+        else add({ ...base, ...failedRound(entry.nodeId, entry.attempt ?? 1) });
         break;
       case 'workflow.node.redo': {
         // The step was reset to its next attempt; the round that sent the work back is the one before.
         const round = (entry.attempt ?? 2) - 1;
         if (checked.has(`${entry.nodeId}:${round}`)) add({ ...base, kind: 'redo', title: `${step} sent the work back` });
-        else add({ ...base, ...failedRound(entry.nodeId, round) });
+        else if (isCommandStep(entry.nodeId)) {
+          const commands = recorded.get(`${entry.nodeId}:${round}`) ?? [];
+          add({ ...base, attempt: round, ...commandsResult(step, commands, commands.filter((command) => command.exitCode !== 0).length) });
+        } else add({ ...base, ...failedRound(entry.nodeId, round) });
         break;
       }
     }
