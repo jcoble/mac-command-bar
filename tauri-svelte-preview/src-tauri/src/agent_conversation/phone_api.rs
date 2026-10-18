@@ -588,12 +588,14 @@ async fn git_files(root: &str) -> Result<crate::ProjectGitStatus, Response> {
     crate::commands::source_control::project_git_status(root.into()).await.map_err(git_refused)
 }
 
-/// `GET /phone/v1/sessions/{id}/git` → `{branch, hasUpstream, ahead, behind, files: [{path, status, staged}]}`:
+/// `GET /phone/v1/sessions/{id}/git` → `{branch, hasUpstream, ahead, behind, files: [{path, status, staged, unstaged}]}`:
 /// the desktop Source Control panel's status (at most 1,000 files); `status` is its letter, such as M, A, D or ?.
+/// A partly staged file has both flags; `unstaged` is what Stage All would stage.
 async fn git_status(State(state): State<ServerState>, Path(owned_id): Path<String>) -> Reply {
     let status = git_files(&session_root(&state, &owned_id)?).await?;
     let files: Vec<Value> = status.files.iter().map(|file| json!({ "path": file.relative_path, "status": file.badge,
-        "staged": !matches!(file.index_status.as_str(), "" | "untracked") })).collect();
+        "staged": !matches!(file.index_status.as_str(), "" | "untracked"),
+        "unstaged": !file.worktree_status.is_empty() || file.badge == "?" })).collect();
     Ok(Json(json!({ "branch": status.branch, "hasUpstream": status.has_upstream, "ahead": status.ahead,
         "behind": status.behind, "files": files })).into_response())
 }
@@ -2159,10 +2161,25 @@ mod tests {
         let (status, body) = get_json(&base, "/sessions/lane/git", &token).await;
         assert_eq!(status, reqwest::StatusCode::OK, "{body}");
         assert_eq!(body, json!({"branch": "main", "hasUpstream": true, "ahead": 0, "behind": 0, "files": [
-            {"path": "notes.txt", "status": "M", "staged": false},
-            {"path": "staged.txt", "status": "A", "staged": true},
-            {"path": "new.txt", "status": "?", "staged": false}]}));
+            {"path": "notes.txt", "status": "M", "staged": false, "unstaged": true},
+            {"path": "staged.txt", "status": "A", "staged": true, "unstaged": false},
+            {"path": "new.txt", "status": "?", "staged": false, "unstaged": true}]}));
         assert_eq!(get_json(&base, "/sessions/nobody/git", &token).await.0, reqwest::StatusCode::NOT_FOUND);
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_git_status_flags_partly_staged_files() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let scratch = session_with_origin(&state, "lane");
+        let work = scratch.join("work");
+        std::fs::write(work.join("notes.txt"), "two\n").unwrap();
+        git_in(&work, &["add", "notes.txt"]);
+        std::fs::write(work.join("notes.txt"), "three\n").unwrap();
+        let (status, body) = get_json(&base, "/sessions/lane/git", &token).await;
+        assert_eq!(status, reqwest::StatusCode::OK, "{body}");
+        assert_eq!(body["files"], json!([{"path": "notes.txt", "status": "M", "staged": true, "unstaged": true}]));
         std::fs::remove_dir_all(scratch).unwrap();
     }
 

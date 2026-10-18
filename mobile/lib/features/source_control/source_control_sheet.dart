@@ -296,7 +296,7 @@ class _SourceControlSheetState extends State<_SourceControlSheet> {
 
   Widget _commitBox(BuildContext context, GitStatus status) {
     final theme = Theme.of(context);
-    final unstaged = status.files.any((file) => !file.staged);
+    final unstaged = status.files.any((file) => file.unstaged);
     return Container(
       margin: const EdgeInsets.only(top: 20),
       padding: const EdgeInsets.all(12),
@@ -471,7 +471,7 @@ class _FileRow extends StatelessWidget {
     required this.onTap,
   });
 
-  final ({String path, String status, bool staged}) file;
+  final ({String path, String status, bool staged, bool unstaged}) file;
   final int index;
   final int count;
   final VoidCallback onTap;
@@ -516,7 +516,7 @@ class _FileRow extends StatelessWidget {
               Text(
                 [
                   if (slash > 0) file.path.substring(0, slash),
-                  if (file.staged) 'Staged',
+                  if (file.staged) file.unstaged ? 'Partly staged' : 'Staged',
                 ].join(' · '),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,

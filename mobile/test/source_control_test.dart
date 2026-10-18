@@ -21,8 +21,24 @@ void main() {
           'ahead': 2,
           'behind': 1,
           'files': [
-            {'path': 'src/main.rs', 'status': 'M', 'staged': true},
-            {'path': 'notes.txt', 'status': '?', 'staged': false},
+            {
+              'path': 'src/main.rs',
+              'status': 'M',
+              'staged': true,
+              'unstaged': true,
+            },
+            {
+              'path': 'notes.txt',
+              'status': '?',
+              'staged': false,
+              'unstaged': true,
+            },
+            {
+              'path': 'done.txt',
+              'status': 'A',
+              'staged': true,
+              'unstaged': false,
+            },
           ],
         },
       ),
@@ -34,8 +50,12 @@ void main() {
       ('tsk-7-fix', true, 2, 1),
     );
     expect(
-      [for (final f in status.files) (f.path, f.status, f.staged)],
-      [('src/main.rs', 'M', true), ('notes.txt', '?', false)],
+      [for (final f in status.files) (f.path, f.status, f.staged, f.unstaged)],
+      [
+        ('src/main.rs', 'M', true, true),
+        ('notes.txt', '?', false, true),
+        ('done.txt', 'A', true, false),
+      ],
     );
   });
 
