@@ -49,6 +49,8 @@ const MAX_PUSH_TOKEN_CHARS: usize = 4096;
 /// A tool call opened on the phone sends at most this much output and diff.
 const MAX_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
 const MAX_TOOL_DIFF_BYTES: usize = 64 * 1024;
+/// A session's changes send at most this much diff; the file list is always whole.
+const MAX_CHANGES_DIFF_BYTES: usize = 256 * 1024;
 
 /// Bumped whenever a phone is removed, so each open live socket checks its own token and closes if it went.
 static DEVICE_REMOVED: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::channel(0).0);
@@ -71,6 +73,7 @@ pub(super) fn router(state: ServerState) -> Router {
         .route("/phone/v1/sessions", get(sessions))
         .route("/phone/v1/sessions/{id}/chat", get(session_chat).post(send_session_chat))
         .route("/phone/v1/sessions/{id}/items/{item}", get(tool_item))
+        .route("/phone/v1/sessions/{id}/changes", get(changes))
         .route("/phone/v1/runs", get(runs))
         .route("/phone/v1/runs/{id}", get(run_detail))
         .route("/phone/v1/runs/{id}/{action}", post(control_run))
@@ -366,6 +369,39 @@ async fn tool_item(State(state): State<ServerState>, Path((owned_id, item_id)): 
     let (diff, diff_truncated) = capped(diff.as_deref(), MAX_TOOL_DIFF_BYTES);
     Ok(Json(json!({ "name": name, "state": tool_state, "summary": summary, "path": path, "output": output,
         "outputTruncated": output_truncated, "diff": diff, "diffTruncated": diff_truncated })).into_response())
+}
+
+/// `GET /phone/v1/sessions/{id}/changes`: what the session's branch changed since the default branch,
+/// the desktop Changes tab's branch diff. The folder is the session's worktree, else its cwd, from the
+/// store, never from the request. A git refusal, such as no `origin/HEAD`, is a 409 with git's message.
+async fn changes(State(state): State<ServerState>, Path(owned_id): Path<String>) -> Reply {
+    known_session(&state, &owned_id)?;
+    let session = state.manager.store().get_session(&owned_id).map_err(|error| server_error(&error))?
+        .ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))?;
+    let root = session.worktree.filter(|worktree| !worktree.is_empty()).unwrap_or(session.cwd);
+    let branch = crate::commands::source_control::read_git_branch_diff(root).await
+        .map_err(|error| refuse(StatusCode::CONFLICT, &error))?;
+    let (diff, diff_truncated) = capped(Some(&branch.diff), MAX_CHANGES_DIFF_BYTES);
+    Ok(Json(json!({ "base": branch.base, "files": changed_files(&branch.diff), "diff": diff,
+        "diffTruncated": diff_truncated })).into_response())
+}
+
+/// Each file in a `git diff` text, in order, with its added and removed lines. The path is the `b/`
+/// side of the `diff --git` header; only lines inside a hunk count, so `---`/`+++` headers do not.
+fn changed_files(diff: &str) -> Vec<Value> {
+    let mut files: Vec<(&str, u32, u32)> = Vec::new();
+    let mut in_hunk = false;
+    for line in diff.lines() {
+        if let Some(header) = line.strip_prefix("diff --git ") {
+            files.push((header.rsplit_once(" b/").map_or(header, |(_, path)| path), 0, 0));
+            in_hunk = false;
+        } else if line.starts_with("@@") {
+            in_hunk = true;
+        } else if let (true, Some(file)) = (in_hunk, files.last_mut()) {
+            if line.starts_with('+') { file.1 += 1 } else if line.starts_with('-') { file.2 += 1 }
+        }
+    }
+    files.into_iter().map(|(path, added, removed)| json!({ "path": path, "added": added, "removed": removed })).collect()
 }
 
 /// `text` cut to at most `max` bytes on a char boundary, and whether it was cut.
@@ -1056,7 +1092,8 @@ mod tests {
         for (method, path) in [(Method::GET, "/me"), (Method::DELETE, "/me"), (Method::GET, "/chat"), (Method::POST, "/chat"),
             (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::GET, "/inbox"),
             (Method::POST, "/inbox/i/answer"), (Method::GET, "/live"), (Method::GET, "/sessions"),
-            (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat"), (Method::GET, "/sessions/s/items/i")] {
+            (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat"), (Method::GET, "/sessions/s/items/i"),
+            (Method::GET, "/sessions/s/changes")] {
             let response = client(method.clone(), &base, path, &session.token).json(&json!({"text": "hi"})).send().await.unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED, "{method} {path}");
             assert_eq!(response.json::<Value>().await.unwrap(), json!({"error": "This phone was removed — pair again"}));
@@ -1455,6 +1492,59 @@ mod tests {
             assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND, "{path}");
             assert_eq!(response.json::<Value>().await.unwrap(), json!({"error": error}), "{path}");
         }
+    }
+
+    /// A git repository with `docs/notes.txt` committed on `main`, then changed in the working tree;
+    /// with `origin/HEAD` pointing at `main` when `origin_head` is set. Files session `owned_id` with it as its worktree.
+    fn session_in_repo(state: &ServerState, owned_id: &str, origin_head: bool) -> std::path::PathBuf {
+        let repo = std::path::PathBuf::from("/var/tmp").join(format!("assembly-phone-changes-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(repo.join("docs")).unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&repo)
+            .args(["-c", "user.name=T", "-c", "user.email=t@example.invalid"]).args(args).status().unwrap().success(), "git {args:?}");
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("docs/notes.txt"), "one\ntwo\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        if origin_head {
+            git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+            git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        }
+        std::fs::write(repo.join("docs/notes.txt"), "one\nthree\nfour\n").unwrap();
+        file_session(state, owned_id, vec![]);
+        let store = state.manager.store();
+        let row = store.get_session(owned_id).unwrap().unwrap();
+        store.upsert_session(&mcb_core::session_store::SessionRow { worktree: Some(repo.to_string_lossy().into()), ..row }).unwrap();
+        repo
+    }
+
+    #[tokio::test]
+    async fn phone_changes_lists_files_with_counts_and_diff() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let repo = session_in_repo(&state, "lane", true);
+        let response = client(reqwest::Method::GET, &base, "/sessions/lane/changes", &token).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["base"], "origin/main");
+        assert_eq!(body["files"], json!([{"path": "docs/notes.txt", "added": 2, "removed": 1}]));
+        let diff = body["diff"].as_str().unwrap();
+        assert!(diff.starts_with("diff --git a/docs/notes.txt b/docs/notes.txt") && diff.contains("+three\n+four\n"), "{diff}");
+        assert_eq!(body["diffTruncated"], false);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_changes_without_origin_head_is_409_with_message() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let repo = session_in_repo(&state, "lane", false);
+        let response = client(reqwest::Method::GET, &base, "/sessions/lane/changes", &token).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(response.json::<Value>().await.unwrap(),
+            json!({"error": "This repository has no origin/HEAD, so there is no default branch to compare with."}));
+        let response = client(reqwest::Method::GET, &base, "/sessions/nobody/changes", &token).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        std::fs::remove_dir_all(repo).unwrap();
     }
 
     type LiveClient = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;

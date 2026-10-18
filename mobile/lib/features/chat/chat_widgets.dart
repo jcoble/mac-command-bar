@@ -4,6 +4,7 @@ import 'package:material_symbols_icons/symbols.dart';
 import '../../core/api/api_exception.dart';
 import '../../core/theme/app_recipes.dart';
 import '../../core/theme/app_tokens.dart';
+import '../../core/widgets/mobile_m3_list.dart';
 import '../runs/runs_screen.dart';
 import 'chat_repository.dart';
 
@@ -399,6 +400,303 @@ class _DiffLine extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The files a session's branch changed, from the chat's Changes button.
+/// [load] reads them; pull down to read again.
+class ChangesScreen extends StatefulWidget {
+  const ChangesScreen({super.key, this.title, required this.load});
+
+  /// The session's name, under "Changes".
+  final String? title;
+  final Future<BranchChanges> Function() load;
+
+  @override
+  State<ChangesScreen> createState() => _ChangesScreenState();
+}
+
+class _ChangesScreenState extends State<ChangesScreen> {
+  late Future<BranchChanges> _changes = widget.load();
+
+  Future<void> _reload() async {
+    final next = widget.load();
+    setState(() => _changes = next);
+    try {
+      await next;
+    } on Object {
+      // The FutureBuilder shows the error.
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Changes'),
+            if (widget.title case final title?)
+              Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+          ],
+        ),
+      ),
+      body: RefreshIndicator(
+        onRefresh: _reload,
+        child: FutureBuilder<BranchChanges>(
+          future: _changes,
+          builder: (context, snapshot) {
+            final changes = snapshot.data;
+            final error = snapshot.error;
+            Widget notice(IconData icon, String title, String message) =>
+                CustomScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  slivers: [
+                    SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: ChatNotice(
+                        icon: icon,
+                        title: title,
+                        message: message,
+                      ),
+                    ),
+                  ],
+                );
+            if (snapshot.connectionState != ConnectionState.done &&
+                changes == null) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (error != null) {
+              return notice(
+                Symbols.difference_rounded,
+                "Can't show changes",
+                error is ApiException
+                    ? error.message
+                    : 'Something went wrong reading the changes.',
+              );
+            }
+            if (changes!.files.isEmpty) {
+              return notice(
+                Symbols.check_circle_rounded,
+                'No changes on this branch',
+                'Nothing here differs from ${changes.base}.',
+              );
+            }
+            final files = changes.files;
+            return ListView.builder(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+              itemCount: files.length + 1,
+              itemBuilder: (context, i) {
+                if (i == 0) return _ChangesTotal(changes);
+                final file = files[i - 1];
+                final position = MobileM3ListItemPositionForIndex.forIndex(
+                  i - 1,
+                  files.length,
+                );
+                return Column(
+                  children: [
+                    if (i > 1) const MobileM3ListDivider(indent: 16),
+                    MobileM3ListItem(
+                      position: position,
+                      title: Text(
+                        _fileName(file.path),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      supporting: [
+                        if (_folder(file.path) case final folder?)
+                          Text(
+                            folder,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                      ],
+                      trailing: _Counts(file.added, file.removed),
+                      onTap: () => _showFileDiff(
+                        context,
+                        file,
+                        changes.diffs.elementAtOrNull(i - 1),
+                        cut:
+                            changes.diffTruncated &&
+                            i - 1 >= changes.diffs.length - 1,
+                      ),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+String _fileName(String path) => path.substring(path.lastIndexOf('/') + 1);
+
+String? _folder(String path) {
+  final slash = path.lastIndexOf('/');
+  return slash < 0 ? null : path.substring(0, slash);
+}
+
+/// "4 files · +120 −37", compared with the base branch.
+class _ChangesTotal extends StatelessWidget {
+  const _ChangesTotal(this.changes);
+
+  final BranchChanges changes;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final count = changes.files.length;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 8, 4, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                '$count ${count == 1 ? 'file' : 'files'}  ·  ',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              _Counts(changes.added, changes.removed, large: true),
+            ],
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Compared with ${changes.base}',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// "+N" in green and "−M" in red, in monospace. A file row leaves out a zero;
+/// the [large] totals and sheet head show both.
+class _Counts extends StatelessWidget {
+  const _Counts(this.added, this.removed, {this.large = false});
+
+  final int added;
+  final int removed;
+  final bool large;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final style =
+        (large ? theme.textTheme.titleSmall : theme.textTheme.labelMedium)
+            ?.copyWith(fontFamily: 'monospace', fontWeight: FontWeight.w600);
+    return Wrap(
+      spacing: 8,
+      children: [
+        if (added > 0 || large)
+          Text(
+            '+$added',
+            style: style?.copyWith(color: context.tokens.success),
+          ),
+        if (removed > 0 || large)
+          Text(
+            '\u2212$removed',
+            style: style?.copyWith(color: theme.colorScheme.error),
+          ),
+      ],
+    );
+  }
+}
+
+/// One changed file's part of the branch diff in a bottom sheet, from its
+/// first hunk. [diff] is null when the file is past the cut.
+void _showFileDiff(
+  BuildContext context,
+  ({String path, int added, int removed}) file,
+  String? diff, {
+  required bool cut,
+}) {
+  final all = diff == null ? <String>[] : diff.split('\n');
+  if (all.isNotEmpty && all.last.isEmpty) all.removeLast();
+  final hunk = all.indexWhere((line) => line.startsWith('@@'));
+  final lines = hunk < 0 ? all : all.sublist(hunk);
+  showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (_) => DraggableScrollableSheet(
+      expand: false,
+      initialChildSize: 0.7,
+      minChildSize: 0.3,
+      maxChildSize: 0.9,
+      builder: (context, controller) {
+        final theme = Theme.of(context);
+        final head = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _fileName(file.path),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                _Counts(file.added, file.removed, large: true),
+              ],
+            ),
+            if (_folder(file.path) case final folder?) ...[
+              const SizedBox(height: 4),
+              Text(
+                _middleEllipsis(folder, 48),
+                maxLines: 1,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontFamily: 'monospace',
+                  fontSize: 11.5,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+            const SectionLabel('Diff'),
+            if (diff == null)
+              const _CutNote('This file is past the 256 KB the phone loads.')
+            else if (cut)
+              const _CutNote('Diff cut at 256 KB'),
+          ],
+        );
+        return ListView.builder(
+          controller: controller,
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
+          itemCount: 1 + lines.length,
+          itemBuilder: (context, i) => i == 0
+              ? head
+              : _DiffLine(lines[i - 1], first: i == 1, last: i == lines.length),
+        );
+      },
+    ),
+  );
 }
 
 /// The thin "working" line while the session's turn runs. A still dot:
