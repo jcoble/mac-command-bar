@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import { EventType, StreamProcessor } from '@tanstack/ai/client';
 
 import {
   createConversationState,
   reduceConversationEvent
 } from '../src/lib/shell/conversation/conversationReducer.ts';
-import { conversationDisplayItems, conversationMessagesFromEvents } from '../src/lib/shell/conversation/conversationMessages.ts';
+import { conversationChunksFromEvent, conversationDisplayItems, conversationMessagesAfterCustom, conversationMessagesFromEvents } from '../src/lib/shell/conversation/conversationMessages.ts';
 import type { AgentConversationEvent } from '../src/lib/shell/conversation/conversationTypes.ts';
 import { configOptionPlacement } from '../src/lib/shell/conversation/conversationTypes.ts';
 import { decideConversationActivation } from '../src/lib/shell/conversation/conversationActivation.ts';
@@ -77,6 +78,37 @@ const event = (overrides: Partial<AgentConversationEvent> = {}): AgentConversati
     completed: true,
     timestampMs: 1_000
   });
+}
+
+// An admitted prompt uses native time so it follows every row of the previous turn.
+{
+  const messages = conversationMessagesFromEvents([event({
+    sequence: 1, timestampMs: 100,
+    payload: { kind: 'assistantMessage', itemId: 'assistant-a1', turnId: 'turn-a', text: 'First', completed: true }
+  }), event({
+    sequence: 2, timestampMs: 200,
+    payload: { kind: 'assistantMessage', itemId: 'assistant-a2', turnId: 'turn-a', text: 'Second', completed: true }
+  })]);
+  messages.push({
+    id: 'user-b', role: 'user', parts: [{ type: 'text', content: 'next' }],
+    metadata: { itemType: 'user-message', startedAtMs: 150 }
+  });
+  const processor = new StreamProcessor();
+  processor.setMessages(messages);
+  const chunks = conversationChunksFromEvent(messages, event({
+    sequence: 3, timestampMs: 300,
+    payload: { kind: 'userMessage', itemId: 'user-b', turnId: 'turn-b', text: 'next', completed: true }
+  }));
+  for (const chunk of chunks) {
+    if (chunk.type === EventType.CUSTOM) {
+      processor.setMessages(conversationMessagesAfterCustom(processor.getMessages(), chunk.name, chunk.value));
+    } else {
+      processor.processChunk(chunk);
+    }
+  }
+  assert.deepEqual(conversationDisplayItems(processor.getMessages()).map((item) => [item.turnId, item.itemId]), [
+    ['turn-a', 'assistant-a1'], ['turn-a', 'assistant-a2'], ['turn-b', 'user-b']
+  ]);
 }
 
 // Plan payloads replace the current generation's plan without losing ordering.
