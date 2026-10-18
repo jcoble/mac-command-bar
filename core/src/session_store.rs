@@ -831,6 +831,35 @@ pub struct WaitingStep {
     pub updated_at_ms: i64,
 }
 
+/// One command a workflow step ran; its output text stays out of the history.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowHistoryCommand {
+    pub command: String,
+    pub exit_code: Option<i64>,
+}
+
+/// One ledger row of a workflow run, for the run timeline.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowHistoryRow {
+    pub sequence: i64,
+    pub timestamp_ms: i64,
+    pub kind: String,
+    pub node_id: Option<String>,
+    pub attempt: Option<i64>,
+    pub owned_id: Option<String>,
+    /// The state of the step after this change.
+    pub status: Option<String>,
+    pub commands: Vec<WorkflowHistoryCommand>,
+    pub finding_count: Option<i64>,
+    pub verdict: Option<String>,
+    pub files: Vec<String>,
+    /// The owner's latest answer `{step, decision, reply}`, only on `workflow.node.owner-answered`.
+    pub answer: Option<serde_json::Value>,
+    pub gate_approved: Option<bool>,
+}
+
 /// A row of the session list: the session, its handle, and where it came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListedSession {
@@ -2927,6 +2956,50 @@ impl SessionStore {
              ORDER BY sequence DESC LIMIT 1",
             [run_id], orchestration_event_from_row,
         ).optional().map_err(|error| StoreError::sqlite("could not read latest workflow run", error))
+    }
+
+    /// Every ledger row of one workflow run in order, so the timeline shows each attempt of each step.
+    /// The projection happens in this one statement; no full run snapshot is loaded.
+    pub fn list_workflow_run_history(&self, run_id: &str) -> Result<Vec<WorkflowHistoryRow>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT e.sequence, CAST(e.timestamp AS INTEGER), e.kind,
+                    json_extract(e.payload_json,'$.nodeId'), json_extract(e.payload_json,'$.attempt'),
+                    json_extract(e.payload_json,'$.ownedId'),
+                    (SELECT json_extract(n.value,'$.state') FROM json_each(e.payload_json,'$.workflowPayload.run.nodes') n
+                     WHERE json_extract(n.value,'$.nodeId') = json_extract(e.payload_json,'$.nodeId')),
+                    (SELECT json_group_array(json_object('command', json_extract(c.value,'$.command'),
+                                                         'exitCode', json_extract(c.value,'$.exitCode')))
+                     FROM json_each(e.payload_json,'$.workflowPayload.stepResult.commands') c),
+                    json_extract(e.payload_json,'$.workflowPayload.stepResult.findingCount'),
+                    json_extract(e.payload_json,'$.workflowPayload.stepResult.verdict'),
+                    json_extract(e.payload_json,'$.workflowPayload.stepResult.files'),
+                    CASE WHEN e.kind = 'workflow.node.owner-answered'
+                         THEN json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.answers[#-1]') END,
+                    CASE WHEN e.kind = 'workflow.gate.decided'
+                         THEN (SELECT json_extract(n.value,'$.gate.approved')
+                               FROM json_each(e.payload_json,'$.workflowPayload.run.nodes') n
+                               WHERE json_extract(n.value,'$.nodeId') = json_extract(e.payload_json,'$.nodeId')) END
+             FROM orchestration_events e
+             WHERE e.run_id = ?1 AND e.kind LIKE 'workflow.%'
+             ORDER BY e.sequence",
+        ).map_err(|error| StoreError::sqlite("could not prepare workflow run history", error))?;
+        let rows = statement.query_map([run_id], |row| {
+            // The SQL builds these three columns as JSON text; they are decoded here, not searched.
+            let decode = |index: usize| -> rusqlite::Result<Option<serde_json::Value>> {
+                Ok(row.get::<_, Option<String>>(index)?.and_then(|text| serde_json::from_str(&text).ok()))
+            };
+            Ok(WorkflowHistoryRow {
+                sequence: row.get(0)?, timestamp_ms: row.get(1)?, kind: row.get(2)?,
+                node_id: row.get(3)?, attempt: row.get(4)?, owned_id: row.get(5)?, status: row.get(6)?,
+                commands: decode(7)?.and_then(|value| serde_json::from_value(value).ok()).unwrap_or_default(),
+                finding_count: row.get(8)?, verdict: row.get(9)?,
+                files: decode(10)?.and_then(|value| serde_json::from_value(value).ok()).unwrap_or_default(),
+                answer: decode(11)?, gate_approved: row.get(12)?,
+            })
+        }).map_err(|error| StoreError::sqlite("could not query workflow run history", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read workflow run history", error))
     }
 
     pub fn find_workflow_event_by_idempotency_key(&self, workflow_id: &str, key: &str) -> Result<Option<OrchestrationEventRow>> {
