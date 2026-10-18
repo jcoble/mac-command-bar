@@ -34,6 +34,7 @@ import { countInvoke } from '../devInvokeCounter.svelte.ts';
 import { setGitSurfaceDiagnostics } from '../resourceDiagnostics.svelte.ts';
 import { parseRemoteWorkspacePath } from '../../workspacePaths.ts';
 import {
+  addGitRemoteFromTauri,
   amendGitCommitFromTauri,
   commitGitRepositoryFromTauri,
   createGitBranchFromTauri,
@@ -113,6 +114,7 @@ export interface GitBackend {
   fetch(root: string): Promise<GitActionResult | null>;
   pull(root: string): Promise<GitActionResult | null>;
   push(root: string): Promise<GitActionResult | null>;
+  addRemote(root: string, name: string, url: string): Promise<GitActionResult | null>;
   publish(root: string, expectedBranch: string, remote: string): Promise<GitActionResult | null>;
   /** Make a folder with no repository one. */
   initRepository(root: string, signal: AbortSignal): Promise<void>;
@@ -195,6 +197,10 @@ export function tauriGitBackend(count: (command: string) => void = countInvoke):
     push(root) {
       count('push_git_repository');
       return pushGitRepositoryFromTauri(root);
+    },
+    addRemote(root, name, url) {
+      count('add_git_remote');
+      return addGitRemoteFromTauri(root, name, url);
     },
     publish(root, expectedBranch, remote) {
       count('publish_git_repository');
@@ -308,6 +314,7 @@ export interface GitService {
   popStash(index: number | null): Promise<void>;
   listStashes(): Promise<GitStashEntry[] | null>;
   runRemoteAction(action: 'fetch' | 'pull' | 'push'): Promise<void>;
+  addRemote(expectedRoot: string, name: string, url: string): Promise<boolean>;
   publishBranch(expectedRoot: string, expectedBranch: string, remote: string): Promise<void>;
   /** Make the folder on screen a repository, then show it. */
   initRepository(signal: AbortSignal): Promise<void>;
@@ -644,9 +651,9 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
     kind: GitActionKind,
     run: (root: string) => Promise<GitActionResult | null>,
     options: { reloadHistory: boolean }
-  ): Promise<void> {
+  ): Promise<boolean> {
     const root = state.root;
-    if (!root || state.actionBusy !== '') return;
+    if (!root || state.actionBusy !== '') return false;
 
     state.actionBusy = kind;
     state.actionStatus = '';
@@ -654,11 +661,11 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
 
     try {
       const result = await run(root);
-      if (state.root !== root) return;
+      if (state.root !== root) return false;
       if (!result) {
         state.desktopOnly = true;
         state.actionStatus = DESKTOP_ONLY_MESSAGE;
-        return;
+        return false;
       }
       // The fresh status arrived with the result: take it, and make sure a
       // slower status read started earlier cannot overwrite it.
@@ -671,9 +678,11 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
       void publishSourceControl();
       refreshSelectedDiff();
       if (options.reloadHistory) void refreshHistory();
+      return true;
     } catch (error) {
-      if (state.root !== root) return;
+      if (state.root !== root) return false;
       state.actionError = describeError(error, 'The git command did not finish.');
+      return false;
     } finally {
       if (state.actionBusy === kind) state.actionBusy = '';
     }
@@ -809,6 +818,11 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
             ? (root: string) => backend.pull(root)
             : (root: string) => backend.push(root);
       await runAction(action, run, { reloadHistory: action !== 'fetch' });
+    },
+
+    async addRemote(expectedRoot: string, name: string, url: string): Promise<boolean> {
+      if (state.root !== expectedRoot) return false;
+      return await runAction('publish', (root) => backend.addRemote(root, name, url), { reloadHistory: true });
     },
 
     async publishBranch(expectedRoot: string, expectedBranch: string, remote: string): Promise<void> {

@@ -69,6 +69,7 @@
   import { gitService as defaultService, type GitService } from '$lib/shell/git/gitService';
   import BranchMenu from '$lib/shell/components/git/BranchMenu.svelte';
   import DiscardConfirmDialog from '$lib/shell/components/git/DiscardConfirmDialog.svelte';
+  import AddRemoteDialog from '$lib/shell/components/git/AddRemoteDialog.svelte';
   import {
     describeDiscardQuestion,
     type DiscardQuestion,
@@ -366,20 +367,8 @@
     void service.initRepository(initRun.signal);
   }
 
-  const remoteActions = $derived(
-    sourceControlRemoteActions(panel.status, folder, {
-      canWrite: canChange,
-      readOnlyReason: cannotChangeReason,
-      busy
-    })
-  );
-
-  function runRemote(id: SourceControlRemoteActionId): void {
-    void service.runRemoteAction(id);
-  }
-
-  /** The folder, branch and remotes a Publish targets, captured when the more-actions
-   * menu opens on a branch with no upstream. Null otherwise, which hides Publish.
+  /** The folder, branch and remotes captured when the more-actions menu opens
+   * without an upstream, also used by Fetch at detached HEAD. Null otherwise.
    * Raw: each update replaces the whole object. */
   type PublishTarget = { root: string; branch: string; remotes: string[] | null; error: string };
   let publishTarget = $state.raw<PublishTarget | null>(null);
@@ -387,14 +376,27 @@
   let remotesRead = new AbortController();
   $effect(() => () => remotesRead.abort());
 
+  const remoteActions = $derived(
+    sourceControlRemoteActions(panel.status, folder, {
+      canWrite: canChange,
+      readOnlyReason: cannotChangeReason,
+      busy,
+      remotes: publishTarget?.root === folder ? publishTarget.remotes : null
+    })
+  );
+
+  function runRemote(id: SourceControlRemoteActionId): void {
+    void service.runRemoteAction(id);
+  }
+
   function moreMenuOpenChange(open: boolean): void {
     remotesRead.abort();
     const branch = panel.status?.branch;
-    if (!open || !branch || panel.status?.hasUpstream) {
+    if (!open || panel.status?.hasUpstream) {
       publishTarget = null;
       return;
     }
-    const target = { root: folder, branch, remotes: null, error: '' };
+    const target = { root: folder, branch: branch ?? '', remotes: null, error: '' };
     publishTarget = target;
     remotesRead = new AbortController();
     void readPublishRemotes(target, remotesRead.signal);
@@ -413,7 +415,8 @@
     sourceControlPublishAction(panel.status, folder, {
       canWrite: canChange,
       readOnlyReason: cannotChangeReason,
-      busy
+      busy,
+      remotes: publishTarget?.root === folder ? publishTarget.remotes : null
     })
   );
   const publishReason = $derived.by(() => {
@@ -434,6 +437,25 @@
     const target = publishTarget;
     if (!target || publishReason !== null || !target.remotes?.includes(remote)) return;
     void service.publishBranch(target.root, target.branch, remote);
+  }
+
+  const canAddRemote = $derived(canChange && !busy);
+  let addRemoteOpen = $state(false);
+  /** The folder the open Add remote dialog adds to, captured when it opens. */
+  let addRemoteRoot = '';
+
+  function openAddRemote(): void {
+    if (!canAddRemote) return;
+    addRemoteRoot = folder;
+    addRemoteOpen = true;
+  }
+
+  async function addRemote(name: string, url: string): Promise<string | null> {
+    // A skipped add leaves the panel's error from some other action; say why here instead.
+    if (folder !== addRemoteRoot) return 'The folder changed. Close this dialog and add the remote again.';
+    if (busy) return 'Wait for the current source-control action to finish.';
+    if (await service.addRemote(addRemoteRoot, name, url)) return null;
+    return panel.actionError || 'The remote was not added. Refresh Source Control and try again.';
   }
 
   async function useSessionCheckout(): Promise<void> {
@@ -604,7 +626,7 @@
 >
   <PanelHeader title="Source control" count={diffstat.filesChanged} data-testid="source-control-header">
     {#snippet actions()}
-      <!-- Refresh, discard all, fetch, pull and push. Each item that cannot run
+      <!-- Refresh, discard all, fetch, pull, push, publish and add remote. Each item that cannot run
            carries the sentence saying why — usually a read-only folder or a
            branch with no upstream. -->
       <DropdownMenu.Root onOpenChange={moreMenuOpenChange}>
@@ -669,6 +691,19 @@
               </DropdownMenu.Item>
             {/if}
           {/if}
+          <DropdownMenu.Separator />
+          <DropdownMenu.Item
+            data-testid="source-control-add-remote"
+            disabled={!canAddRemote}
+            title={canAddRemote
+              ? undefined
+              : canChange
+                ? 'Wait for the current source-control action to finish.'
+                : cannotChangeReason}
+            onSelect={openAddRemote}
+          >
+            Add remote…
+          </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Root>
     {/snippet}
@@ -897,6 +932,8 @@
   }}
   onConfirm={confirmDiscard}
 />
+
+<AddRemoteDialog bind:open={addRemoteOpen} onAdd={addRemote} />
 
 <style>
   /* A first import or a generated-file commit puts thousands of changed files in

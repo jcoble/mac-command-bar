@@ -58,6 +58,7 @@ pub(super) async fn execute(operation: String, args: Value) -> Result<Value, Str
             let (url, folder): (String, PathBuf) = (arg(&args, "url")?, path(&args, "path")?);
             return json(tokio::task::spawn_blocking(move || crate::project_folders::git_clone(&url, &folder)).await.map_err(|e| e.to_string())??);
         }
+        "add_git_remote" => return json(git::add_git_remote(arg(&args, "root")?, arg(&args, "name")?, arg(&args, "url")?).await?),
         "publish_git_repository" => return json(git::publish_git_repository(arg(&args, "root")?, arg(&args, "expectedBranch")?, arg(&args, "remote")?).await?),
         "read_git_commit_history" => return json(git::read_git_commit_history(arg(&args, "root")?, arg(&args, "cursor")?, arg(&args, "relativePath")?).await?),
         "read_git_commit_files" => return json(git::read_git_commit_files(arg(&args, "root")?, arg(&args, "sha")?).await?),
