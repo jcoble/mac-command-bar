@@ -34,9 +34,17 @@ String toolGroupLabel(List<ChatItem> tools) => tools.length == 1
     ? 'Ran ${tools.single.text}'
     : 'Ran ${tools.length} commands';
 
+/// The thread follows new content while the owner is within 48 px of the
+/// bottom; further up it holds still.
+bool scrollPinned(double distanceFromBottom) => distanceFromBottom <= 48;
+
 /// Rental Command's `_MessageThread` (`message_detail_screen.dart`), newest at
-/// the bottom. Reversed so new items keep the view pinned to the bottom. A
-/// round button scrolls back down once the owner has scrolled up.
+/// the bottom. The rows already settled when the thread opened sit above the
+/// scroll anchor, laid out upward; the last of them and everything after sit
+/// below it, laid out downward. So text or rows arriving at the bottom grow
+/// away from what the owner is reading and never move it; while pinned to the
+/// bottom the view jumps down to follow. A round button scrolls back down
+/// once the owner has scrolled up, with a dot when something came since.
 class ChatThread extends StatefulWidget {
   const ChatThread({super.key, required this.items, required this.onOpenTools});
 
@@ -46,26 +54,91 @@ class ChatThread extends StatefulWidget {
   final void Function(List<ChatItem> tools) onOpenTools;
 
   @override
-  State<ChatThread> createState() => _ChatThreadState();
+  State<ChatThread> createState() => ChatThreadState();
 }
 
-class _ChatThreadState extends State<ChatThread> {
+class ChatThreadState extends State<ChatThread> {
   final _scroll = ScrollController();
-  var _scrolledUp = false;
+  final _anchor = UniqueKey();
+
+  /// How many rows sit above the anchor: those settled when the thread opened.
+  late final int _settled;
+  var _pinned = true;
+  var _unseen = false;
 
   @override
   void initState() {
     super.initState();
+    _settled = math.max(0, chatRows(widget.items).length - 1);
     _scroll.addListener(() {
-      final up = _scroll.offset > 400;
-      if (up != _scrolledUp) setState(() => _scrolledUp = up);
+      final p = _scroll.position;
+      final pinned = scrollPinned(p.maxScrollExtent - p.pixels);
+      if (pinned != _pinned) {
+        setState(() {
+          _pinned = pinned;
+          if (pinned) _unseen = false;
+        });
+      }
     });
+  }
+
+  @override
+  void didUpdateWidget(ChatThread oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_pinned && widget.items != oldWidget.items) _unseen = true;
   }
 
   @override
   void dispose() {
     _scroll.dispose();
     super.dispose();
+  }
+
+  /// Jumps to the bottom and follows from there (the owner just sent).
+  void jumpToLatest() {
+    if (!_scroll.hasClients) return;
+    _scroll.jumpTo(_scroll.position.maxScrollExtent);
+  }
+
+  Future<void> _scrollToLatest() async {
+    await _scroll.animateTo(
+      _scroll.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOutCubic,
+    );
+    // Rows laid out on the way down can make the bottom further than it was.
+    if (mounted) jumpToLatest();
+  }
+
+  /// The content changed size: follow it down while pinned.
+  bool _onMetrics(ScrollMetricsNotification n) {
+    if (n.depth == 0 &&
+        _pinned &&
+        !_scroll.position.isScrollingNotifier.value) {
+      jumpToLatest();
+    }
+    return false;
+  }
+
+  Widget _row(List<ChatItem> row) {
+    final item = row.first;
+    return Padding(
+      key: ValueKey(item.id),
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: switch (item.kind) {
+        'owner' => _OwnerBubble(item: item),
+        'agent' => _AgentReply(item: item),
+        'relayed' => _RelayedCard(item: item),
+        'tool' => _ToolGroupRow(
+          label: toolGroupLabel(row),
+          // A single call with no detail has nothing to open.
+          onTap: row.length == 1 && !item.hasDetail
+              ? null
+              : () => widget.onOpenTools(row),
+        ),
+        _ => _ErrorLine(item: item),
+      },
+    );
   }
 
   @override
@@ -75,33 +148,32 @@ class _ChatThreadState extends State<ChatThread> {
     return Stack(
       alignment: Alignment.bottomCenter,
       children: [
-        ListView.builder(
-          controller: _scroll,
-          reverse: true,
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
-          itemCount: rows.length,
-          itemBuilder: (context, i) {
-            final row = rows[rows.length - 1 - i];
-            final item = row.first;
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: switch (item.kind) {
-                'owner' => _OwnerBubble(item: item),
-                'agent' => _AgentReply(item: item),
-                'relayed' => _RelayedCard(item: item),
-                'tool' => _ToolGroupRow(
-                  label: toolGroupLabel(row),
-                  // A single call with no detail has nothing to open.
-                  onTap: row.length == 1 && !item.hasDetail
-                      ? null
-                      : () => widget.onOpenTools(row),
+        NotificationListener<ScrollMetricsNotification>(
+          onNotification: _onMetrics,
+          child: CustomScrollView(
+            controller: _scroll,
+            center: _anchor,
+            anchor: 1,
+            slivers: [
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                sliver: SliverList.builder(
+                  itemCount: _settled,
+                  itemBuilder: (context, i) => _row(rows[_settled - 1 - i]),
                 ),
-                _ => _ErrorLine(item: item),
-              },
-            );
-          },
+              ),
+              SliverPadding(
+                key: _anchor,
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                sliver: SliverList.builder(
+                  itemCount: rows.length - _settled,
+                  itemBuilder: (context, i) => _row(rows[_settled + i]),
+                ),
+              ),
+            ],
+          ),
         ),
-        if (_scrolledUp)
+        if (!_pinned)
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: IconButton(
@@ -110,12 +182,11 @@ class _ChatThreadState extends State<ChatThread> {
                 backgroundColor: scheme.surfaceContainerHighest,
                 side: BorderSide(color: scheme.outlineVariant),
               ),
-              icon: const Icon(Symbols.arrow_downward_rounded),
-              onPressed: () => _scroll.animateTo(
-                0,
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeOutCubic,
+              icon: Badge(
+                isLabelVisible: _unseen,
+                child: const Icon(Symbols.arrow_downward_rounded),
               ),
+              onPressed: _scrollToLatest,
             ),
           ),
       ],
