@@ -1852,6 +1852,7 @@ impl WorkflowEngine {
         approval: Value,
         origin: &str,
         idempotency_key: &str,
+        expected_attempt: Option<u32>,
     ) -> Result<WorkflowRunRecord, WorkflowError> {
         if origin != "owner" {
             return Err(WorkflowError::PolicyDenied("Only an owner command can decide a gate".into()));
@@ -1873,7 +1874,7 @@ impl WorkflowEngine {
             .iter_mut()
             .find(|node| node.node_id == node_id)
             .ok_or_else(|| WorkflowError::NotFound(node_id.into()))?;
-        if node.state != WorkflowNodeState::WaitingApproval {
+        if node.state != WorkflowNodeState::WaitingApproval || expected_attempt.is_some_and(|attempt| attempt != node.attempt) {
             return Err(WorkflowError::InvalidTransition(
                 "Node is not waiting for approval".into(),
             ));
@@ -2584,7 +2585,7 @@ impl WorkflowEngine {
 
     /// The owner's answer to a step waiting for them: `accept` completes it as it is,
     /// `another-round` redoes it (or, after a loop stop, the step it sends back), `stop` cancels the run.
-    pub async fn answer_pause(&self, run_id: &str, node_id: &str, decision: &str, reply: Option<String>, origin: &str, idempotency_key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
+    pub async fn answer_pause(&self, run_id: &str, node_id: &str, decision: &str, reply: Option<String>, origin: &str, idempotency_key: &str, expected_attempt: Option<u32>) -> Result<WorkflowRunRecord, WorkflowError> {
         if origin != "owner" {
             return Err(WorkflowError::PolicyDenied("Only the owner can answer a paused step".into()));
         }
@@ -2593,7 +2594,7 @@ impl WorkflowEngine {
         }
         let mut run = self.require_run(run_id)?;
         let node = run.nodes.iter().find(|node| node.node_id == node_id).ok_or_else(|| WorkflowError::NotFound(node_id.into()))?;
-        if node.state != WorkflowNodeState::WaitingInput {
+        if node.state != WorkflowNodeState::WaitingInput || expected_attempt.is_some_and(|attempt| attempt != node.attempt) {
             return Err(WorkflowError::InvalidTransition("That step is not waiting for the owner".into()));
         }
         let loop_stopped = node.failure.as_ref().is_some_and(|failure| failure.code == "loop-stopped");
@@ -3566,6 +3567,8 @@ pub(crate) fn workflow_files(repo_root: &Path) -> Vec<String> {
 /// authenticated connection reaches it, so answers are recorded as the owner's.
 pub(crate) async fn execute_operation(engine: &WorkflowEngine, operation: &str, args: Value) -> Result<Value, String> {
     let text = |key: &str| args[key].as_str().map(str::to_string).ok_or_else(|| format!("{key} is required"));
+    // The phone sends the attempt it saw; the desktop does not.
+    let expected_attempt = args["expectedAttempt"].as_u64().map(|attempt| attempt as u32);
     let run = match operation {
         "listFiles" => return Ok(json!(workflow_files(Path::new(&text("repoRoot")?)))),
         // The steps on this machine waiting on the owner, for the desktop's inbox.
@@ -3586,9 +3589,9 @@ pub(crate) async fn execute_operation(engine: &WorkflowEngine, operation: &str, 
         "cancel" => engine.cancel(&text("runId")?, &text("idempotencyKey")?).await,
         "retry" => engine.retry_node(&text("runId")?, &text("nodeId")?, &text("idempotencyKey")?).await,
         "approveGate" => engine.approve_gate(&text("runId")?, &text("nodeId")?, args["approval"].clone(),
-            "owner", &text("idempotencyKey")?).await,
+            "owner", &text("idempotencyKey")?, expected_attempt).await,
         "answer" => engine.answer_pause(&text("runId")?, &text("nodeId")?, &text("decision")?,
-            args["reply"].as_str().map(str::to_string), "owner", &text("idempotencyKey")?).await,
+            args["reply"].as_str().map(str::to_string), "owner", &text("idempotencyKey")?, expected_attempt).await,
         other => return Err(format!("Unknown workflow operation {other}")),
     };
     serde_json::to_value(run.map_err(|error| error.to_string())?).map_err(|error| error.to_string())
@@ -3981,7 +3984,7 @@ mod tests {
         let mut run = stop_the_loop(&engine, &run_id);
         // Another write while the run still waits is not reported again.
         engine.append(&mut run, "workflow.test.again", "again", None).unwrap();
-        let done = tauri::async_runtime::block_on(engine.answer_pause(&run_id, "review", "accept", None, "owner", "accept")).unwrap();
+        let done = tauri::async_runtime::block_on(engine.answer_pause(&run_id, "review", "accept", None, "owner", "accept", None)).unwrap();
         assert_eq!(done.state, WorkflowRunState::Completed);
         let mut heard = Vec::new();
         while let Some(message) = engine.store.pending_for("starter").unwrap() {
@@ -4235,9 +4238,9 @@ mod tests {
         let repo = RunRepo::new();
         let engine = run_engine(Arc::new(FakeRuntime::default()));
         let run = loop_stopped_run(&engine, &repo.0);
-        let error = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", "accept", None, "agent", "answer")).unwrap_err();
+        let error = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", "accept", None, "agent", "answer", None)).unwrap_err();
         assert!(matches!(error, WorkflowError::PolicyDenied(_)));
-        let error = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "build", "accept", None, "owner", "answer")).unwrap_err();
+        let error = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "build", "accept", None, "owner", "answer", None)).unwrap_err();
         assert!(matches!(error, WorkflowError::InvalidTransition(_)));
         assert_eq!(engine.get_run(&run.id).unwrap().state, WorkflowRunState::WaitingInput);
     }
@@ -4252,7 +4255,7 @@ mod tests {
             run = end_turn(&engine, &run.id, "review", &[json!({"verdict":"fail","findings":texts})]);
         }
         assert_eq!(step_of(&run, "review").failure.as_ref().unwrap().code, "loop-stopped");
-        let answered = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", "another-round", None, "owner", "answer")).unwrap();
+        let answered = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", "another-round", None, "owner", "answer", None)).unwrap();
         assert_eq!(answered.input_snapshot["redo"]["findings"], json!(["a", "b"]));
         assert_eq!(step_of(&answered, "build").state, WorkflowNodeState::Running);
     }
@@ -4264,7 +4267,7 @@ mod tests {
             let repo = RunRepo::new();
             let engine = run_engine(Arc::new(FakeRuntime::default()));
             let run = loop_stopped_run(&engine, &repo.0);
-            let answered = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", decision, Some("Try once more".into()), "owner", "answer")).unwrap();
+            let answered = tauri::async_runtime::block_on(engine.answer_pause(&run.id, "review", decision, Some("Try once more".into()), "owner", "answer", None)).unwrap();
             assert_eq!(answered.state, run_state, "{decision}");
             assert_eq!(step_of(&answered, "build").attempt, build_attempt, "{decision}");
             if decision != "stop" {
@@ -4324,9 +4327,9 @@ mod tests {
         let started = tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
         assert_eq!(started.state, WorkflowRunState::WaitingApproval);
         assert!(runtime.dispatched.lock().unwrap().is_empty());
-        assert!(tauri::async_runtime::block_on(engine.approve_gate(&run.id, "a", json!({"approved":true,"origin":"owner"}), "agent", "agent")).is_err());
+        assert!(tauri::async_runtime::block_on(engine.approve_gate(&run.id, "a", json!({"approved":true,"origin":"owner"}), "agent", "agent", None)).is_err());
         assert_eq!(engine.require_run(&run.id).unwrap().nodes[0].state, WorkflowNodeState::WaitingApproval);
-        let decided = tauri::async_runtime::block_on(engine.approve_gate(&run.id, "a", json!({"approved":true,"answer":"yes"}), "owner", "owner")).unwrap();
+        let decided = tauri::async_runtime::block_on(engine.approve_gate(&run.id, "a", json!({"approved":true,"answer":"yes"}), "owner", "owner", None)).unwrap();
         assert_eq!(decided.nodes[0].gate.as_ref().unwrap().structured_input.as_ref().unwrap()["answer"], "yes");
         assert_eq!(runtime.dispatched.lock().unwrap().len(), 1);
     }
@@ -4488,7 +4491,7 @@ mod tests {
             assert_eq!(finished.nodes[0].state, if gated { WorkflowNodeState::WaitingApproval } else { WorkflowNodeState::Completed });
             assert_eq!(finished.state, WorkflowRunState::Paused);
             if gated {
-                let approved = tauri::async_runtime::block_on(engine.approve_gate(&run.id, "a", json!({"approved": true}), "owner", "approve")).unwrap();
+                let approved = tauri::async_runtime::block_on(engine.approve_gate(&run.id, "a", json!({"approved": true}), "owner", "approve", None)).unwrap();
                 assert_eq!(approved.state, WorkflowRunState::Paused);
                 assert_eq!(approved.nodes[0].state, WorkflowNodeState::Completed);
                 assert_eq!(runtime.dispatched.lock().unwrap().len(), 1);
@@ -4884,7 +4887,7 @@ mod tests {
         )).unwrap();
         assert_eq!(waiting.state, WorkflowRunState::WaitingApproval);
         let approved = tauri::async_runtime::block_on(engine.approve_gate(
-            &created.id, "spec-review", json!({"approved":true}), "owner", "approve-spec"
+            &created.id, "spec-review", json!({"approved":true}), "owner", "approve-spec", None
         )).unwrap();
         assert_eq!(approved.nodes.iter().find(|node| node.node_id == "plan").unwrap().state, WorkflowNodeState::Running);
         let plan_prompt: Value = serde_json::from_str(&runtime.dispatched.lock().unwrap().last().unwrap().prompt).unwrap();
@@ -4942,7 +4945,7 @@ mod tests {
         let waiting = submit("plan-review", review(false), "overall-review");
         assert_eq!(waiting.state, WorkflowRunState::WaitingApproval);
         let approved = tauri::async_runtime::block_on(engine.approve_gate(
-            &created.id, "plan-review", json!({"approved":true}), "owner", "approve",
+            &created.id, "plan-review", json!({"approved":true}), "owner", "approve", None
         )).unwrap();
         assert_eq!(approved.nodes.iter().find(|node| node.node_id == "step-01-plan").unwrap().state, WorkflowNodeState::Running);
         submit("step-01-plan", step_plan.clone(), "step-plan-1");
@@ -5333,7 +5336,7 @@ mod tests {
         assert_eq!(waiting.nodes[0].state, WorkflowNodeState::WaitingApproval);
         assert_eq!(leases.leases.lock().unwrap().len(), 1);
         let approved = tauri::async_runtime::block_on(engine.approve_gate(
-            &created.id, "a", json!({"approved":true}), "owner", "approve",
+            &created.id, "a", json!({"approved":true}), "owner", "approve", None
         )).unwrap();
         assert_eq!(approved.state, WorkflowRunState::Completed);
         assert!(approved.nodes[0].lease_id.is_none());
