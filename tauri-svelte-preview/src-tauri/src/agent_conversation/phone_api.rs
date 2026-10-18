@@ -79,6 +79,7 @@ pub(super) fn router(state: ServerState) -> Router {
         .route("/phone/v1/runs", get(runs))
         .route("/phone/v1/runs/{id}", get(run_detail))
         .route("/phone/v1/runs/{id}/{action}", post(control_run))
+        .route("/phone/v1/runs/{id}/steps/{step}/retry", post(retry_step))
         .route("/phone/v1/inbox", get(inbox))
         .route("/phone/v1/inbox/{id}/answer", post(answer))
         .route("/phone/v1/live", get(live))
@@ -622,16 +623,36 @@ async fn control_run(State(state): State<ServerState>, Path((run_id, action)): P
         "stop" => "cancel",
         _ => return Err(refuse(StatusCode::NOT_FOUND, "Unknown run action")),
     };
-    let command = RemoteCommand::Workflow { operation: operation.into(),
-        args: json!({ "runId": run_id, "idempotencyKey": format!("phone:{}", uuid::Uuid::new_v4()) }) };
-    // The engine's own refusal, such as "Only a running workflow can be paused", is the phone's to
-    // show; anything else is an internal error and stays in the log.
-    let run = match execute_phone_command(&state, command).await {
+    run_operation(&state, operation, json!({ "runId": run_id }), format!("phone:{}", uuid::Uuid::new_v4()), "No such run").await
+}
+
+#[derive(serde::Deserialize)]
+struct RetryRequest {
+    attempt: u32,
+}
+
+/// `POST /phone/v1/runs/{id}/steps/{stepId}/retry {attempt}` → the run's row, through the engine's `retry`, as the
+/// desktop's Retry button. `attempt` is the attempt the phone saw fail; the idempotency key names it, so a repeat
+/// of the same request (its response lost) is recorded once, while a retry after a later failure has a new key.
+async fn retry_step(State(state): State<ServerState>, Path((run_id, step_id)): Path<(String, String)>, body: Bytes) -> Reply {
+    let request: RetryRequest = parse(&body)?;
+    let key = format!("phone:retry:{run_id}:{step_id}:{}", request.attempt);
+    run_operation(&state, "retry", json!({ "runId": run_id, "nodeId": step_id }), key, "No such run or step").await
+}
+
+/// Runs the engine `operation` on a run under the idempotency `key` and answers the run's row.
+async fn run_operation(state: &ServerState, operation: &str, mut args: Value, key: String, not_found: &str) -> Reply {
+    args["idempotencyKey"] = json!(key);
+    let command = RemoteCommand::Workflow { operation: operation.into(), args };
+    // The engine's own refusal, such as "Only a running workflow can be paused" or an exhausted
+    // attempt budget, is the phone's to show; anything else is an internal error and stays in the log.
+    let run = match execute_phone_command(state, command).await {
         Ok(RemoteResponse::Workflow(run)) => run,
         Ok(_) => return Err(server_error(&"run control gave the wrong response")),
         Err(error) => return Err(match serde_json::from_str::<WorkflowError>(&error) {
             Ok(WorkflowError::InvalidTransition(message) | WorkflowError::PolicyDenied(message)) => refuse(StatusCode::CONFLICT, &message),
-            Ok(WorkflowError::NotFound(_)) => refuse(StatusCode::NOT_FOUND, "No such run"),
+            Ok(WorkflowError::BudgetExhausted(failure)) => refuse(StatusCode::CONFLICT, &failure.message),
+            Ok(WorkflowError::NotFound(_)) => refuse(StatusCode::NOT_FOUND, not_found),
             _ => server_error(&error),
         }),
     };
@@ -1204,7 +1225,7 @@ mod tests {
         let session = endpoint.issue("orchestrator");
         use reqwest::Method;
         for (method, path) in [(Method::GET, "/me"), (Method::DELETE, "/me"),
-            (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::GET, "/inbox"),
+            (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::POST, "/runs/r/steps/s/retry"), (Method::GET, "/inbox"),
             (Method::POST, "/inbox/i/answer"), (Method::GET, "/live"), (Method::GET, "/sessions"),
             (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat"), (Method::GET, "/sessions/s/items/i"),
             (Method::GET, "/sessions/s/changes"), (Method::GET, "/sessions/s/config"), (Method::POST, "/sessions/s/config")] {
@@ -1322,6 +1343,64 @@ mod tests {
         assert_eq!(detail["steps"][0]["id"], "wait");
         assert_eq!(detail["steps"][0]["attempts"][0]["n"], 1);
         assert_eq!(detail["timeline"].as_array().unwrap().len(), lines(&phone).len());
+    }
+
+    /// The run once it reaches `state`.
+    async fn run_in_state(state: &ServerState, run_id: &str, wanted: &str) -> crate::workflow::WorkflowRunRecord {
+        for _ in 0..200 {
+            let run = state.workflow.get_run(run_id).unwrap();
+            if serde_json::to_value(run.state).unwrap() == wanted { return run; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("run {run_id} never became {wanted}");
+    }
+
+    #[tokio::test]
+    async fn phone_retry_failed_step_runs_it_again() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let run_id = start_run(&state, "  checks: { run: [\"exit 1\"] }\n").await;
+        assert_eq!(run_in_state(&state, &run_id, "failed").await.nodes[0].attempt, 1);
+        let response = client(reqwest::Method::POST, &base, &format!("/runs/{run_id}/steps/checks/retry"), &token).json(&json!({"attempt": 1})).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.json::<Value>().await.unwrap()["id"], run_id.as_str(), "the run's row");
+        assert_eq!(run_in_state(&state, &run_id, "failed").await.nodes[0].attempt, 2, "the step ran again");
+    }
+
+    #[tokio::test]
+    async fn phone_retry_refuses_a_step_that_did_not_fail() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let run_id = start_run(&state, "  wait: { run: [\"sleep 5\"] }\n").await;
+        let refused = client(reqwest::Method::POST, &base, &format!("/runs/{run_id}/steps/wait/retry"), &token).json(&json!({"attempt": 1})).send().await.unwrap();
+        assert_eq!(refused.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(refused.json::<Value>().await.unwrap(), json!({"error": "Only a failed or waiting node can be retried"}), "the engine's own words");
+        for path in [format!("/runs/{run_id}/steps/nope/retry"), "/runs/nope/steps/wait/retry".into()] {
+            let unknown = client(reqwest::Method::POST, &base, &path, &token).json(&json!({"attempt": 1})).send().await.unwrap();
+            assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND, "{path}");
+        }
+        for body in [json!({}), json!({"attempt": "one"})] {
+            let bad = client(reqwest::Method::POST, &base, &format!("/runs/{run_id}/steps/wait/retry"), &token).json(&body).send().await.unwrap();
+            assert_eq!(bad.status(), reqwest::StatusCode::BAD_REQUEST, "{body}");
+        }
+        client(reqwest::Method::POST, &base, &format!("/runs/{run_id}/stop"), &token).send().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_retry_repeat_for_same_attempt_starts_one_attempt() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let run_id = start_run(&state, "  checks: { run: [\"exit 1\"] }\n").await;
+        assert_eq!(run_in_state(&state, &run_id, "failed").await.nodes[0].attempt, 1);
+        let path = format!("/runs/{run_id}/steps/checks/retry");
+        for _ in 0..2 {
+            let response = client(reqwest::Method::POST, &base, &path, &token).json(&json!({"attempt": 1})).send().await.unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+        }
+        assert_eq!(run_in_state(&state, &run_id, "failed").await.nodes[0].attempt, 2, "the repeat did not start a third attempt");
+        let again = client(reqwest::Method::POST, &base, &path, &token).json(&json!({"attempt": 2})).send().await.unwrap();
+        assert_eq!(again.status(), reqwest::StatusCode::OK);
+        assert_eq!(run_in_state(&state, &run_id, "failed").await.nodes[0].attempt, 3, "a retry after the later failure runs again");
     }
 
     #[tokio::test]
