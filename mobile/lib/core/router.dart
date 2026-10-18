@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../app_shell.dart';
+import '../features/chat/chat_screen.dart';
 import '../features/machines/machines_screen.dart';
 import '../features/machines/pair_screen.dart';
 import 'machines/machine_store.dart';
@@ -25,7 +26,12 @@ final routerProvider = Provider<GoRouter>((ref) {
       StatefulShellRoute.indexedStack(
         builder: (context, state, shell) => AppShell(navigationShell: shell),
         branches: [
-          for (final path in ['/chat', '/runs', '/inbox'])
+          StatefulShellBranch(
+            routes: [
+              GoRoute(path: '/chat', builder: (_, _) => const ChatScreen()),
+            ],
+          ),
+          for (final path in ['/runs', '/inbox'])
             StatefulShellBranch(
               routes: [
                 GoRoute(path: path, builder: (_, _) => const EmptyTab()),
