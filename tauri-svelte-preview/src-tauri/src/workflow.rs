@@ -2684,9 +2684,10 @@ impl WorkflowEngine {
     fn begin_commands(&self, run: &mut WorkflowRunRecord, index: usize) -> Result<(), WorkflowError> {
         let proof = Path::new(run.input_snapshot["run"]["proof_dir"].as_str().unwrap()).to_path_buf();
         let task_key = run.input_snapshot["task"]["key"].as_str().unwrap_or_default();
-        let body = format!("Task: [{task_key}](https://www.notion.so/search?query={task_key})\n\n{}\n\n{}",
-            run.nodes.iter().filter_map(|node| node.structured_output.as_ref().map(|output| format!("{}: {}", node.node_id, output))).collect::<Vec<_>>().join("\n"),
-            run.nodes.iter().flat_map(|node| &node.artifacts).filter_map(|artifact| artifact.path.clone()).collect::<Vec<_>>().join("\n"));
+        let outputs: Vec<(String, String)> = run.nodes.iter()
+            .filter_map(|node| node.structured_output.as_ref().map(|output| (node.node_id.clone(), output.to_string()))).collect();
+        let artifacts: Vec<String> = run.nodes.iter().flat_map(|node| &node.artifacts).filter_map(|artifact| artifact.path.clone()).collect();
+        let body = pr_body(task_key, &outputs, &artifacts);
         std::fs::write(proof.join("pr-body.md"), body).map_err(|error| WorkflowError::Runtime(error.to_string()))?;
         run.nodes[index].state = WorkflowNodeState::Running;
         run.nodes[index].started_at_ms = Some(self.clock.now_ms());
@@ -3567,9 +3568,36 @@ pub(crate) async fn execute_operation(engine: &WorkflowEngine, operation: &str, 
     serde_json::to_value(run.map_err(|error| error.to_string())?).map_err(|error| error.to_string())
 }
 
+/// GitHub refuses a pull request body over 65,536 characters. Each step's
+/// output gets a share and the whole body stays under the limit; the full
+/// outputs stay in the run.
+const PR_BODY_STEP_CHARS: usize = 4_000;
+const PR_BODY_CHARS: usize = 60_000;
+
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max { return text.to_string(); }
+    format!("{}… (cut; the full output is in the run)", text.chars().take(max).collect::<String>())
+}
+
+fn pr_body(task_key: &str, outputs: &[(String, String)], artifacts: &[String]) -> String {
+    let steps = outputs.iter().map(|(id, output)| clip(&format!("{id}: {output}"), PR_BODY_STEP_CHARS)).collect::<Vec<_>>().join("\n");
+    clip(&format!("Task: [{task_key}](https://www.notion.so/search?query={task_key})\n\n{steps}\n\n{}", artifacts.join("\n")), PR_BODY_CHARS - 50)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pr_body_stays_under_the_github_limit_and_names_every_step() {
+        let outputs: Vec<(String, String)> = (0..14).map(|n| (format!("step-{n}"), "x".repeat(20_000))).collect();
+        let body = pr_body("TSK-1", &outputs, &["proof.png".into()]);
+        assert!(body.chars().count() <= PR_BODY_CHARS, "{}", body.chars().count());
+        for n in 0..14 { assert!(body.contains(&format!("step-{n}: ")), "step-{n} missing"); }
+        assert!(body.starts_with("Task: [TSK-1]"));
+        let short = pr_body("TSK-1", &[("build".into(), "done".into())], &[]);
+        assert!(short.contains("build: done") && !short.contains("cut;"));
+    }
     use mcb_core::session_store::{EventRow, SessionRow};
     use std::sync::atomic::{AtomicU64, Ordering};
 
