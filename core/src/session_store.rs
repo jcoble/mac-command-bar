@@ -698,6 +698,8 @@ CREATE INDEX IF NOT EXISTS orchestration_events_workflow_idempotency_idx
     ON orchestration_events(workflow_id, idempotency_key);
 CREATE INDEX IF NOT EXISTS orchestration_events_owned_idx
     ON orchestration_events(json_extract(payload_json,'$.ownedId'), sequence);
+CREATE INDEX IF NOT EXISTS orchestration_events_started_by_idx
+    ON orchestration_events(json_extract(payload_json,'$.workflowPayload.run.inputSnapshot.started_by'), run_id);
 CREATE UNIQUE INDEX IF NOT EXISTS orchestration_events_idempotency_idx
     ON orchestration_events(run_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;";

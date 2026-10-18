@@ -68,7 +68,15 @@
 	import { ownedSessionStatusPatch, updateOwnedSession } from "$lib/shell/stores/sessionRailStore.svelte";
 	import type { CenterTabId } from "$lib/shell/workbenchNavigation";
 	import { clearWorkbenchNavigation, openIncomingLink, registerWorkbenchNavigation } from "$lib/shell/workbenchNavigation";
-	import { isTauriRuntime, setMainOrchestratorFromTauri, updateAgentConversationSessionMetaFromTauri } from "$lib/tauriSource";
+	import {
+		countAgentMessagesFromTauri,
+		isTauriRuntime,
+		listenAgentMessagesChanged,
+		setMainOrchestratorFromTauri,
+		updateAgentConversationSessionMetaFromTauri
+	} from "$lib/tauriSource";
+	import { createUnreadTracker } from "$lib/shell/panels/agents/agentMessagesModel.svelte.ts";
+	import MessagesScreen from "$lib/shell/messages/MessagesScreen.svelte";
 
 	const selection = new SessionSelectionController();
 	const workbench = new WorkbenchController();
@@ -93,6 +101,35 @@
 	let openUtility = $state<UtilityId | null>(null);
 	/** The Projects screen covers the frame; everything under it stays as it was. */
 	let projectsOpen = $state(false);
+	/** The Messages screen covers the frame the same way; a run narrows it to that run. */
+	let messagesOpen = $state(false);
+	let messagesRun = $state<{ id: string; label: string } | null>(null);
+	/** New messages for the selected session since its Messages list was last open. */
+	const messagesUnread = createUnreadTracker(countAgentMessagesFromTauri);
+	$effect(() => {
+		const controller = new AbortController();
+		void followMessageChanges(controller.signal);
+		return () => {
+			controller.abort();
+			messagesUnread.dispose();
+		};
+	});
+	$effect(() => {
+		const ownedId = selection.activeOwnedId;
+		untrack(() => messagesUnread.select(ownedId));
+	});
+	async function followMessageChanges(signal: AbortSignal): Promise<void> {
+		try {
+			await listenAgentMessagesChanged(() => messagesUnread.changed(), signal);
+		} catch {
+			// Without the event the count still updates on each session selection.
+		}
+	}
+	function openMessages(run: { id: string; label: string } | null): void {
+		projectsOpen = false;
+		messagesRun = run;
+		messagesOpen = true;
+	}
 	let sessionsRailWidth = $state(326);
 	// Zero until the frame reports the pane's laid-out width: the browser may
 	// place its native view only once the pane really has a size.
@@ -549,6 +586,7 @@
 
 	function openNewSession(projectId: string | null = null): void {
 		projectsOpen = false;
+		messagesOpen = false;
 		selection.newSession.open(projectId);
 		selectCenterTab("session");
 	}
@@ -604,11 +642,14 @@
 
 {#snippet drawerArea()}
 	<RightPanel
-		visible={workbench.rightPanelOpen}
+		visible={workbench.rightPanelOpen && !messagesOpen && !projectsOpen}
 		activeId={workbench.rightTab}
 		root={selection.newSession.draftOpen ? "" : selection.durableSessionRoot}
 		rootAvailable={selection.activeRootAvailable}
 		ownedId={selection.activeOwnedId}
+		messagesUnread={messagesUnread.unread}
+		onMessagesSeen={() => messagesUnread.seen()}
+		onShowRunMessages={(id, label) => openMessages({ id, label })}
 		filesRoot={selection.filesProjectionRoot}
 		filesOwnedId={selection.filesProjectionOwnedId}
 		filesFilterFocusRequest={filesFilterFocus}
@@ -728,7 +769,8 @@
 					toolsRailWidth > 0 &&
 					!overlays?.settingsOpen() &&
 					!popupOpen &&
-					!projectsOpen}
+					!projectsOpen &&
+					!messagesOpen}
 				panelOpen={paneShowing}
 				root={browserRoot}
 				ownedId={selection.activeOwnedId}
@@ -780,7 +822,11 @@
 	<div class="window-chrome" data-tauri-drag-region>
 		<div class="window-sessions-cap" data-tauri-drag-region>
 			<HomeButton
-				onOpenProjects={() => (projectsOpen = true)}
+				onOpenProjects={() => {
+					messagesOpen = false;
+					projectsOpen = true;
+				}}
+				onOpenMessages={() => openMessages(null)}
 				onOpenSettings={() => overlays?.openSettings()}
 				onOpenUpdate={() => overlays?.openSettings("updates")}
 			/>
@@ -854,6 +900,7 @@
 				extraId={workbench.rightExtraTab}
 				onSelect={selectRightTab}
 				onClose={() => workbench.setRightPanelOpen(false)}
+				agentsUnread={messagesUnread.unread}
 			/>
 			<div class="right-drawer-body">
 				{@render drawerArea()}
@@ -861,6 +908,15 @@
 		</aside>
 		{#if projectsOpen}
 			<ProjectsScreen onBack={() => (projectsOpen = false)} onOpenProject={openNewSession} removeSession={(ownedId) => selection.removeSession(ownedId)} />
+		{/if}
+		{#if messagesOpen}
+			<MessagesScreen
+				runId={messagesRun?.id ?? null}
+				runLabel={messagesRun?.label ?? ""}
+				onBack={() => (messagesOpen = false)}
+				onClearRun={() => (messagesRun = null)}
+				onShowRun={(id, label) => (messagesRun = { id, label })}
+			/>
 		{/if}
 	</div>
 

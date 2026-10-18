@@ -51,13 +51,16 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 17;
+pub(super) const PROTOCOL_VERSION: u16 = 18;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
 const MAX_SERVER_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const ATTACHMENT_CHUNK_BYTES: usize = 128 * 1024;
 const OUTBOUND_FRAME_CAPACITY: usize = 8;
+static MESSAGE_CHANGES: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::channel(0).0);
+static MESSAGES_CHANGED_SINK: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 const REPLAY_PAGE_BYTES: u32 = 1024 * 1024;
 // The background history copy saves older pages the same size as an opening page.
 const HISTORY_COPY_PAGE_BYTES: u32 = 512 * 1024;
@@ -220,6 +223,7 @@ enum RemoteResponse {
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ServerFrame {
     Ready { protocol_version: u16 },
+    MessagesChanged,
     Response { id: u64, response: RemoteResponse },
     Error { id: u64, message: String },
     ProviderDownloadProgress { id: u64, progress: super::providers::updates::ProviderDownloadProgress },
@@ -320,6 +324,7 @@ fn server_state(manager: AgentRuntimeManager, data_dir: PathBuf, token: Arc<str>
             }
         });
     }
+    mcb_core::broker::on_messages_changed(|| MESSAGE_CHANGES.send_modify(|version| *version = version.wrapping_add(1)));
     Ok(ServerState {
         manager,
         data_dir,
@@ -595,13 +600,18 @@ impl Drop for ConnectionEnd {
     }
 }
 
-/// Machines' message pages as one page, newest first, each message tagged with its machine.
-fn merge_message_pages(pages: Vec<(String, Vec<serde_json::Value>)>, limit: usize) -> Vec<serde_json::Value> {
+/// Machines' SQL-ordered pages as one page, each message tagged with its machine.
+fn merge_message_pages(pages: Vec<(String, Vec<serde_json::Value>)>, limit: usize, sort: &str) -> Vec<serde_json::Value> {
     let mut messages: Vec<_> = pages.into_iter().flat_map(|(machine, page)| page.into_iter()
         .map(move |mut message| { message["machine"] = serde_json::json!(machine); message })).collect();
-    messages.sort_by_key(|message| std::cmp::Reverse((message["createdAtMs"].as_i64().unwrap_or_default(),
-        message["id"].as_str().unwrap_or_default().to_string())));
-    messages.truncate(limit);
+    let key = match sort { "sender" => Some("senderName"), "receiver" => Some("receiver"), _ => None };
+    messages.sort_by(|a, b| {
+        key.map(|key| a[key].as_str().unwrap_or_default().cmp(b[key].as_str().unwrap_or_default()))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b["createdAtMs"].as_i64().cmp(&a["createdAtMs"].as_i64()))
+            .then_with(|| b["id"].as_str().cmp(&a["id"].as_str()))
+    });
+    messages.truncate(limit.min(super::messaging::MAX_MESSAGE_PAGE as usize));
     messages
 }
 
@@ -1369,9 +1379,9 @@ impl RemoteConnectionManager {
         }
     }
 
-    /// One page of agent-to-agent messages, newest first, from `machine` or from this desktop and
+    /// One ordered page of agent-to-agent messages from `machine` or from this desktop and
     /// every connected machine. Each message is stored once, on its receiver's machine, so the
-    /// pages merge by time; a machine that cannot be reached is left out.
+    /// pages merge in the requested order; a machine that cannot be reached is left out.
     pub async fn list_messages(&self, machine: Option<&str>, args: serde_json::Value, request_id: u64) -> Vec<serde_json::Value> {
         let machines = machine.map_or_else(|| self.message_machines(""), |machine| vec![machine.to_string()]);
         let mut pages = Vec::new();
@@ -1379,7 +1389,17 @@ impl RemoteConnectionManager {
             let Ok(serde_json::Value::Array(page)) = self.message_machine(&machine, "messages", args.clone(), Some(request_id)).await else { continue };
             pages.push((machine, page));
         }
-        merge_message_pages(pages, args["limit"].as_u64().unwrap_or(100) as usize)
+        merge_message_pages(pages, args["limit"].as_i64().unwrap_or(100).clamp(1, super::messaging::MAX_MESSAGE_PAGE) as usize, args["sort"].as_str().unwrap_or("time"))
+    }
+
+    pub async fn count_messages(&self, session: &str, after_ms: i64, request_id: u64) -> i64 {
+        let mut count = 0;
+        for machine in self.message_machines("") {
+            if let Ok(value) = self.message_machine(&machine, "count", serde_json::json!({"session":session,"after_ms":after_ms}), Some(request_id)).await {
+                count += value.as_i64().unwrap_or_default();
+            }
+        }
+        count
     }
 
     /// Runs `work` until it ends or the desktop cancels `request_id`; a cancelled call gives `None`.
@@ -1410,6 +1430,10 @@ impl RemoteConnectionManager {
             RemoteResponse::Messaging(value) => Ok(value),
             _ => Err("The remote backend does not relay messages; update its backend first".into()),
         }
+    }
+
+    pub fn set_messages_changed(&self, sink: Arc<dyn Fn() + Send + Sync>) {
+        let _ = MESSAGES_CHANGED_SINK.set(sink);
     }
 
     pub fn set_terminal_output(&self, streams: ProjectionStreams) {
@@ -3123,6 +3147,9 @@ async fn client_loop(
                             }
                         }
                         ServerFrame::Event { .. } => unreachable!(),
+                        ServerFrame::MessagesChanged => {
+                            if let Some(sink) = MESSAGES_CHANGED_SINK.get() { sink(); }
+                        }
                         ServerFrame::TerminalOutput { frame } => {
                             if let Some(sink) = &terminal_sink { sink(frame); }
                         }
@@ -3347,6 +3374,8 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
     let socket_id = state.relay.next_id.fetch_add(1, Ordering::Relaxed);
     state.relay.desktops.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((socket_id, outbound.clone()));
     let mut live_events = state.events.subscribe();
+    let mut message_changes = MESSAGE_CHANGES.subscribe();
+    message_changes.mark_unchanged();
     let mut live_terminals = state.terminals.output.subscribe();
     let mut queued = BTreeMap::<String, i64>::new();
     let (completed, mut completions) = mpsc::channel::<(u64, Result<RemoteResponse, String>)>(32);
@@ -3365,6 +3394,10 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
             message = reader.next() => {
                 let Some(Ok(message)) = message else { break; };
                 Some(message)
+            }
+            Ok(()) = message_changes.changed() => {
+                if outbound.send(ServerFrame::MessagesChanged).await.is_err() { break; }
+                None
             }
             event = live_events.recv() => {
                 match event {
@@ -4142,7 +4175,7 @@ mod connection_tests {
         let merged = super::merge_message_pages(vec![
             ("mac".into(), vec![message("m3", 30), message("m1", 10)]),
             ("workbox-test".into(), vec![message("r2", 20), message("r1", 10)]),
-        ], 3);
+        ], 3, "time");
         assert_eq!(merged.iter().map(|m| (m["id"].as_str().unwrap(), m["machine"].as_str().unwrap())).collect::<Vec<_>>(),
             [("m3", "mac"), ("r2", "workbox-test"), ("r1", "workbox-test")]);
     }
@@ -5206,9 +5239,75 @@ mod connection_tests {
         assert!(ssh_target_key("hostname box\n").is_err());
     }
 
+    #[test]
+    fn merge_over_500_rows_matches_global_order() {
+        use serde_json::json;
+        for sort in ["time", "sender", "receiver"] {
+            let mut rows: Vec<_> = (0..1200).map(|i| json!({"id":format!("{i:04}"),
+                "createdAtMs":i,"senderName":format!("Sender {}", i % 7),"receiver":format!("Receiver {}", i % 11)})).collect();
+            rows.sort_by_key(|row| (
+                match sort { "sender" => row["senderName"].as_str().unwrap(), "receiver" => row["receiver"].as_str().unwrap(), _ => "" }.to_string(),
+                std::cmp::Reverse(row["createdAtMs"].as_i64().unwrap()),
+                std::cmp::Reverse(row["id"].as_str().unwrap().to_string())));
+            let pages = |offset: usize| (0..2).map(|machine| (machine.to_string(), rows.iter().skip(offset)
+                .filter(|r| r["createdAtMs"].as_i64().unwrap() % 2 == machine)
+                .take(500).cloned().collect())).collect();
+            let first = merge_message_pages(pages(0), 500, sort);
+            let next = merge_message_pages(pages(500), 500, sort);
+            let ids: Vec<_> = first.iter().chain(next.iter()).map(|r| r["id"].clone()).collect();
+            assert_eq!(ids, rows.iter().take(1000).map(|r| r["id"].clone()).collect::<Vec<_>>());
+        }
+    }
+
+    #[tokio::test]
+    async fn messages_changed_survives_a_full_outbound_queue() {
+        let directory = std::env::temp_dir().join(format!("assembly-message-pressure-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("sessions.db")).unwrap();
+        let state = ServerState {
+            workflow: crate::workflow::WorkflowEngine::managed(manager.clone(), manager.store_handle()),
+            manager, data_dir: directory.clone(), token: Arc::from("test-token"),
+            maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
+            restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
+            events: broadcast::channel(64).0, terminals: RemoteTerminals::new(), relay: Arc::default(),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(axum::serve(listener, Router::new().route("/assembly", get(upgrade_remote_socket)).with_state(state.clone())).into_future());
+        let mut request = format!("ws://{address}/assembly").into_client_request().unwrap();
+        request.headers_mut().insert("Authorization", "Bearer test-token".parse().unwrap());
+        let (mut client, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        client.next().await.unwrap().unwrap(); // Ready; socket subscriptions now exist.
+        for sequence in 1..=32 {
+            let mut event = large_history_event(4 * 1024 * 1024);
+            event.sequence = sequence;
+            state.events.send(event).unwrap();
+        }
+        // Stop reading until the writer and the bounded outbound queue cannot advance.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state.relay.desktops.lock().unwrap()[0].1.capacity() != 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("outbound queue must be full before change");
+        for _ in 0..20 { MESSAGE_CHANGES.send_modify(|version| *version += 1); }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = client.next().await.unwrap().unwrap();
+                if let TungsteniteMessage::Text(text) = frame {
+                    if matches!(serde_json::from_str::<ServerFrame>(&text).unwrap(), ServerFrame::MessagesChanged) { break; }
+                }
+            }
+        }).await.expect("message notification must survive outbound pressure");
+        drop(client);
+        server.abort();
+        let _ = server.await;
+        drop(state);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[tokio::test]
     async fn readiness_requires_protocol_and_session_response() {
-        assert_eq!(PROTOCOL_VERSION, 17);
+        assert_eq!(PROTOCOL_VERSION, 18);
         for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();

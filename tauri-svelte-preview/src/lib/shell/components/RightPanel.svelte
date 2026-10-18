@@ -60,6 +60,9 @@
     tasksView?: SessionTasksWorkspace;
     onTasksViewChange?(ownedId: string, view: SessionTasksWorkspace): void;
     onUseSessionCheckout?(root: string): void | Promise<void>;
+    messagesUnread: number;
+    onMessagesSeen(): void;
+    onShowRunMessages(runId: string, label: string): void;
   }
   let {
     visible,
@@ -83,7 +86,10 @@
     onSourceControlWorkspaceChange,
     tasksView,
     onTasksViewChange,
-    onUseSessionCheckout
+    onUseSessionCheckout,
+    messagesUnread,
+    onMessagesSeen,
+    onShowRunMessages
   }: Props = $props();
 </script>
 
@@ -136,7 +142,7 @@
     {:else if visible && activeId === 'context'}
       <div class="panel-body showing"><SessionContextPanel visible={true} {root} {ownedId} /></div>
     {:else if visible && activeId === 'agents'}
-      <div class="panel-body showing"><AgentsPanel visible={true} {root} {ownedId} /></div>
+      <div class="panel-body showing"><AgentsPanel visible={true} {root} {ownedId} {messagesUnread} {onMessagesSeen} {onShowRunMessages} /></div>
     {:else if visible && activeId === 'history'}
       <div class="panel-body showing">
         <HistoryPanel visible={true} {root} {ownedId} />

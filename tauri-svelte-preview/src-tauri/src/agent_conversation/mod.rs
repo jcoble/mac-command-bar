@@ -877,19 +877,33 @@ pub async fn set_main_orchestrator(
 }
 
 #[tauri::command]
-/// One page of agent-to-agent messages, newest first, from one machine or all reachable ones.
+/// One ordered page of agent-to-agent messages from one machine or all reachable ones.
 pub async fn list_agent_messages(
     remote: tauri::State<'_, RemoteConnectionManager>,
     machine: Option<String>,
     run_id: Option<String>,
     session: Option<String>,
+    status: Option<String>,
+    search: Option<String>,
+    sort: Option<String>,
+    before_key: Option<String>,
     before_ms: Option<i64>,
     before_id: Option<String>,
     limit: i64,
     request_id: u64,
 ) -> CommandResult<Vec<serde_json::Value>> {
-    let args = serde_json::json!({"run_id": run_id, "session": session, "before_ms": before_ms, "before_id": before_id, "limit": limit});
+    let args = serde_json::json!({"run_id": run_id, "session": session, "before_ms": before_ms, "before_id": before_id, "limit": limit, "status": status, "search": search, "sort": sort, "before_key": before_key});
     Ok(remote.unless_cancelled(request_id, remote.list_messages(machine.as_deref(), args, request_id)).await.unwrap_or_default())
+}
+
+#[tauri::command]
+pub async fn count_agent_messages(
+    remote: tauri::State<'_, RemoteConnectionManager>,
+    session: String,
+    after_ms: i64,
+    request_id: u64,
+) -> CommandResult<i64> {
+    Ok(remote.unless_cancelled(request_id, remote.count_messages(&session, after_ms, request_id)).await.unwrap_or_default())
 }
 
 #[tauri::command]
