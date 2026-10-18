@@ -178,6 +178,30 @@ void main() {
     expect(machine.requests, contains('POST runs/a/pause'));
   });
 
+  test('retry_offered_only_for_failed_step', () async {
+    RunStep step(String state) =>
+        RunStep.fromJson({'id': 'checks', 'state': state, 'attempts': []});
+    expect(canRetry(step('failed')), isTrue);
+    for (final state in ['running', 'completed', 'waiting-input', 'blocked']) {
+      expect(canRetry(step(state)), isFalse, reason: state);
+    }
+
+    final (container, machine) = phone({
+      'GET runs': {
+        'active': [],
+        'recent': [row('a', 'failed')],
+      },
+      'POST runs/a/steps/checks/retry': row('a', 'running'),
+    });
+    container.listen(runsProvider, (_, _) {});
+    await container.read(runsProvider.future);
+    machine.requests.clear();
+
+    await container.read(runsProvider.notifier).retryStep('a', 'checks');
+
+    expect(machine.requests, ['POST runs/a/steps/checks/retry', 'GET runs']);
+  });
+
   test('changed_run_notice_refetches_only_that_run', () async {
     final (container, machine) = phone({
       'GET runs': {

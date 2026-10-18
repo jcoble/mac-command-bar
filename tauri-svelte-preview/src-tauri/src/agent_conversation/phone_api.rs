@@ -66,6 +66,7 @@ pub(super) fn router(state: ServerState) -> Router {
         .route("/phone/v1/runs", get(runs))
         .route("/phone/v1/runs/{id}", get(run_detail))
         .route("/phone/v1/runs/{id}/{action}", post(control_run))
+        .route("/phone/v1/runs/{id}/steps/{step}/retry", post(retry_step))
         .route("/phone/v1/inbox", get(inbox))
         .route("/phone/v1/inbox/{id}/answer", post(answer))
         .route("/phone/v1/live", get(live))
@@ -406,16 +407,27 @@ async fn control_run(State(state): State<ServerState>, Path((run_id, action)): P
         "stop" => "cancel",
         _ => return Err(refuse(StatusCode::NOT_FOUND, "Unknown run action")),
     };
-    let command = RemoteCommand::Workflow { operation: operation.into(),
-        args: json!({ "runId": run_id, "idempotencyKey": format!("phone:{}", uuid::Uuid::new_v4()) }) };
-    // The engine's own refusal, such as "Only a running workflow can be paused", is the phone's to
-    // show; anything else is an internal error and stays in the log.
-    let run = match execute_phone_command(&state, command).await {
+    run_operation(&state, operation, json!({ "runId": run_id }), "No such run").await
+}
+
+/// `POST /phone/v1/runs/{id}/steps/{stepId}/retry` → the run's row, through the engine's `retry`, as the desktop's Retry button.
+async fn retry_step(State(state): State<ServerState>, Path((run_id, step_id)): Path<(String, String)>) -> Reply {
+    run_operation(&state, "retry", json!({ "runId": run_id, "nodeId": step_id }), "No such run or step").await
+}
+
+/// Runs the engine `operation` on a run with a fresh phone idempotency key and answers the run's row.
+async fn run_operation(state: &ServerState, operation: &str, mut args: Value, not_found: &str) -> Reply {
+    args["idempotencyKey"] = json!(format!("phone:{}", uuid::Uuid::new_v4()));
+    let command = RemoteCommand::Workflow { operation: operation.into(), args };
+    // The engine's own refusal, such as "Only a running workflow can be paused" or an exhausted
+    // attempt budget, is the phone's to show; anything else is an internal error and stays in the log.
+    let run = match execute_phone_command(state, command).await {
         Ok(RemoteResponse::Workflow(run)) => run,
         Ok(_) => return Err(server_error(&"run control gave the wrong response")),
         Err(error) => return Err(match serde_json::from_str::<WorkflowError>(&error) {
             Ok(WorkflowError::InvalidTransition(message) | WorkflowError::PolicyDenied(message)) => refuse(StatusCode::CONFLICT, &message),
-            Ok(WorkflowError::NotFound(_)) => refuse(StatusCode::NOT_FOUND, "No such run"),
+            Ok(WorkflowError::BudgetExhausted(failure)) => refuse(StatusCode::CONFLICT, &failure.message),
+            Ok(WorkflowError::NotFound(_)) => refuse(StatusCode::NOT_FOUND, not_found),
             _ => server_error(&error),
         }),
     };
@@ -959,7 +971,7 @@ mod tests {
         let session = endpoint.issue("orchestrator");
         use reqwest::Method;
         for (method, path) in [(Method::GET, "/me"), (Method::DELETE, "/me"), (Method::GET, "/chat"), (Method::POST, "/chat"),
-            (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::GET, "/inbox"),
+            (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::POST, "/runs/r/steps/s/retry"), (Method::GET, "/inbox"),
             (Method::POST, "/inbox/i/answer"), (Method::GET, "/live")] {
             let response = client(method.clone(), &base, path, &session.token).json(&json!({"text": "hi"})).send().await.unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED, "{method} {path}");
@@ -1075,6 +1087,43 @@ mod tests {
         assert_eq!(detail["steps"][0]["id"], "wait");
         assert_eq!(detail["steps"][0]["attempts"][0]["n"], 1);
         assert_eq!(detail["timeline"].as_array().unwrap().len(), lines(&phone).len());
+    }
+
+    /// The run once it reaches `state`.
+    async fn run_in_state(state: &ServerState, run_id: &str, wanted: &str) -> crate::workflow::WorkflowRunRecord {
+        for _ in 0..200 {
+            let run = state.workflow.get_run(run_id).unwrap();
+            if serde_json::to_value(run.state).unwrap() == wanted { return run; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("run {run_id} never became {wanted}");
+    }
+
+    #[tokio::test]
+    async fn phone_retry_failed_step_runs_it_again() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let run_id = start_run(&state, "  checks: { run: [\"exit 1\"] }\n").await;
+        assert_eq!(run_in_state(&state, &run_id, "failed").await.nodes[0].attempt, 1);
+        let response = client(reqwest::Method::POST, &base, &format!("/runs/{run_id}/steps/checks/retry"), &token).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.json::<Value>().await.unwrap()["id"], run_id.as_str(), "the run's row");
+        assert_eq!(run_in_state(&state, &run_id, "failed").await.nodes[0].attempt, 2, "the step ran again");
+    }
+
+    #[tokio::test]
+    async fn phone_retry_refuses_a_step_that_did_not_fail() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let run_id = start_run(&state, "  wait: { run: [\"sleep 5\"] }\n").await;
+        let refused = client(reqwest::Method::POST, &base, &format!("/runs/{run_id}/steps/wait/retry"), &token).send().await.unwrap();
+        assert_eq!(refused.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(refused.json::<Value>().await.unwrap(), json!({"error": "Only a failed or waiting node can be retried"}), "the engine's own words");
+        for path in [format!("/runs/{run_id}/steps/nope/retry"), "/runs/nope/steps/wait/retry".into()] {
+            let unknown = client(reqwest::Method::POST, &base, &path, &token).send().await.unwrap();
+            assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND, "{path}");
+        }
+        client(reqwest::Method::POST, &base, &format!("/runs/{run_id}/stop"), &token).send().await.unwrap();
     }
 
     #[tokio::test]
