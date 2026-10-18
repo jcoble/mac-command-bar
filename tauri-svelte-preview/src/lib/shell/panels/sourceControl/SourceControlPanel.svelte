@@ -68,6 +68,7 @@
   import { gitService as defaultService, type GitService } from '$lib/shell/git/gitService';
   import BranchMenu from '$lib/shell/components/git/BranchMenu.svelte';
   import DiscardConfirmDialog from '$lib/shell/components/git/DiscardConfirmDialog.svelte';
+  import AddRemoteDialog from '$lib/shell/components/git/AddRemoteDialog.svelte';
   import {
     describeDiscardQuestion,
     type DiscardQuestion,
@@ -422,6 +423,22 @@
     void service.publishBranch(target.root, target.branch, remote);
   }
 
+  const canAddRemote = $derived(canChange && !busy);
+  let addRemoteOpen = $state(false);
+  /** The folder the open Add remote dialog adds to, captured when it opens. */
+  let addRemoteRoot = '';
+
+  function openAddRemote(): void {
+    if (!canAddRemote) return;
+    addRemoteRoot = folder;
+    addRemoteOpen = true;
+  }
+
+  async function addRemote(name: string, url: string): Promise<string | null> {
+    if (await service.addRemote(addRemoteRoot, name, url)) return null;
+    return panel.actionError || 'The remote was not added. Refresh Source Control and try again.';
+  }
+
   async function useSessionCheckout(): Promise<void> {
     if (!canUseSessionCheckout || !onUseSessionCheckout) return;
     checkoutBusy = true;
@@ -590,7 +607,7 @@
 >
   <PanelHeader title="Source control" count={diffstat.filesChanged} data-testid="source-control-header">
     {#snippet actions()}
-      <!-- Refresh, discard all, fetch, pull and push. Each item that cannot run
+      <!-- Refresh, discard all, fetch, pull, push, publish and add remote. Each item that cannot run
            carries the sentence saying why — usually a read-only folder or a
            branch with no upstream. -->
       <DropdownMenu.Root onOpenChange={moreMenuOpenChange}>
@@ -655,6 +672,19 @@
               </DropdownMenu.Item>
             {/if}
           {/if}
+          <DropdownMenu.Separator />
+          <DropdownMenu.Item
+            data-testid="source-control-add-remote"
+            disabled={!canAddRemote}
+            title={canAddRemote
+              ? undefined
+              : canChange
+                ? 'Wait for the current source-control action to finish.'
+                : cannotChangeReason}
+            onSelect={openAddRemote}
+          >
+            Add remote…
+          </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Root>
     {/snippet}
@@ -872,6 +902,8 @@
   }}
   onConfirm={confirmDiscard}
 />
+
+<AddRemoteDialog bind:open={addRemoteOpen} onAdd={addRemote} />
 
 <style>
   /* A first import or a generated-file commit puts thousands of changed files in
