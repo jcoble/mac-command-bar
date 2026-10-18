@@ -63,7 +63,8 @@
     describeGitBranchTitle,
     hasStagedChanges,
     isGitFileUntracked,
-    isNotARepositoryError
+    isNotARepositoryError,
+    isPlainFolderError
   } from '$lib/shell/git/gitPanelStore.svelte';
   import { gitService as defaultService, type GitService } from '$lib/shell/git/gitService';
   import BranchMenu from '$lib/shell/components/git/BranchMenu.svelte';
@@ -349,6 +350,21 @@
         ? READ_ONLY_SCOPE_MESSAGE
         : READ_ONLY_IN_BROWSER_MESSAGE
   );
+
+  /** A plain folder (never a bare repository) the panel may change can be made a repository. */
+  const canInitRepository = $derived(canChange && isPlainFolderError(panel.statusError));
+  /** Owns one Initialize press; a new folder or unmount aborts it. */
+  let initRun = new AbortController();
+  $effect(() => {
+    panel.root;
+    return () => initRun.abort();
+  });
+
+  function initRepository(): void {
+    if (!canInitRepository || busy) return;
+    initRun = new AbortController();
+    void service.initRepository(initRun.signal);
+  }
 
   const remoteActions = $derived(
     sourceControlRemoteActions(panel.status, folder, {
@@ -677,9 +693,20 @@
       {#snippet icon()}<GitBranch />{/snippet}
     </EmptyState>
   {:else if notARepository}
+    {#snippet initRepositoryAction()}
+      <div class="flex flex-col items-center gap-2">
+        <Button size="sm" disabled={busy} onclick={initRepository}>
+          {panel.actionBusy === 'init' ? 'Initializing…' : 'Initialize repository'}
+        </Button>
+        {#if panel.actionError !== ''}
+          <p class="max-w-[42ch] text-sm text-[var(--color-bad)]">{panel.actionError}</p>
+        {/if}
+      </div>
+    {/snippet}
     <EmptyState
       title="This folder is not a git work tree"
       body="It is a plain folder or a bare repository, so there are no changes to show."
+      actions={canInitRepository ? initRepositoryAction : undefined}
     >
       {#snippet icon()}<GitBranch />{/snippet}
     </EmptyState>

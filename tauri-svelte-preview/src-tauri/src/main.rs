@@ -5743,6 +5743,7 @@ fn main() {
             agent_conversation::remove_project,
             project_folders::list_folders,
             project_folders::project_root_is_bare,
+            project_folders::workspace_git_init,
             agent_conversation::respond_agent_conversation_approval,
             agent_conversation::respond_agent_conversation_permission,
             agent_conversation::respond_agent_conversation_input,
