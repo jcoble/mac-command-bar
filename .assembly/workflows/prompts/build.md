@@ -15,3 +15,5 @@ Follow the repository rules (CLAUDE.md, AGENTS.md): test first, the smallest dif
 The run works without the owner. Answer questions about how the code works by reading it. For small decisions the task leaves open, make the best choice, state it in one line, and keep going. Mark something `blocked` only when you truly cannot do it without the owner.
 
 Report: the commit hash, files changed, and each command you ran with its result.
+
+Run commands with full paths or `git -C <dir>`; never start a command with `cd`, because that stops for approval.

@@ -141,6 +141,23 @@ impl SidecarProcess {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         environment.apply(&mut command);
+        if manifest.id == "codex-acp" {
+            let inherited = match environment.values.get("CODEX_CONFIG") {
+                Some(value) => value.clone(),
+                None => std::env::var("CODEX_CONFIG").ok(),
+            };
+            let mut config: serde_json::Map<String, serde_json::Value> = match inherited {
+                Some(value) => serde_json::from_str(&value)
+                    .map_err(|error| format!("Invalid Codex adapter CODEX_CONFIG: {error}"))?,
+                None => serde_json::Map::new(),
+            };
+            // The adapter keeps dotted overrides alongside the ACP-provided server entry.
+            config.insert(
+                "mcp_servers.assembly.default_tools_approval_mode".into(),
+                "approve".into(),
+            );
+            command.env("CODEX_CONFIG", serde_json::Value::Object(config).to_string());
+        }
         command
             .env(super::super::reaper::SESSION_MARKER_ENV, owned_id)
             .env(super::super::reaper::OWNER_INSTANCE_ENV, owner_marker);
@@ -319,6 +336,33 @@ mod tests {
             version: "1".into(),
             content_hash: "0000000000000000000000000000000000000000000000000000000000000000".into(),
             trusted_source: ProviderSource::Bundled,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_sessions_preapprove_assembly_tools() {
+        let original = serde_json::json!({
+            "model": "configured-model",
+            "mcp_servers.other.default_tools_approval_mode": "prompt"
+        });
+        let environment = SidecarEnvironment {
+            values: BTreeMap::from([("CODEX_CONFIG".into(), Some(original.to_string()))]),
+        };
+        for provider in ["codex-acp", "claude-agent-acp"] {
+            let manifest = fixture_manifest(provider, "printf '%s\\n' \"$CODEX_CONFIG\"".into());
+            let process = SidecarProcess::spawn_with_environment(
+                &manifest, &std::env::temp_dir(), "owned-preapprove", &environment,
+            ).unwrap();
+            let (mut reader, _writer, mut handle) = process.split();
+            let actual = reader.next_json().await.unwrap();
+            handle.stop().await;
+            if provider == "codex-acp" {
+                let mut expected = original.clone();
+                expected["mcp_servers.assembly.default_tools_approval_mode"] = "approve".into();
+                assert_eq!(actual, expected);
+            } else {
+                assert_eq!(actual, original);
+            }
         }
     }
 

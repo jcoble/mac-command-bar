@@ -504,7 +504,7 @@ impl MessagingEndpoint {
                  "inputSchema":{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"]}},
                 {"name":"stop_workflow_run","description":"Stop a workflow run you started.",
                  "inputSchema":{"type":"object","properties":{"run_id":{"type":"string"}},"required":["run_id"]}},
-                {"name":"report_review","description":"Workflow review steps only: report your verdict once. Use pass with no findings, or fail with each finding.",
+                {"name":"report_review","description":"Workflow review steps only: a verdict must be recorded once; retry a rejected or failed call. Use pass with no findings, or fail with each finding.",
                  "inputSchema":{"type":"object","properties":{"verdict":{"type":"string","enum":["pass","fail"]},
                      "findings":{"type":"array","items":{"type":"string"}}},"required":["verdict","findings"]}},
                 {"name":"message_status","description":"Read whether a message you sent is queued, delivered or failed.",
