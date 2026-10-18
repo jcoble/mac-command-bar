@@ -7,7 +7,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use mcb_core::session_store::SessionStore;
-use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -77,7 +76,7 @@ impl PushSender {
         Ok(granted.access_token)
     }
 
-    /// Sends `item` to every phone with a push token. A token Google no longer knows is forgotten;
+    /// Sends `item` to every phone with a push token. A token Google reports as UNREGISTERED is forgotten;
     /// any other failure is one log line, with no retry.
     pub(super) async fn send_inbox_push(&self, store: &SessionStore, machine: &(String, String), item: &Value) {
         let tokens = match store.phone_push_tokens() {
@@ -98,7 +97,10 @@ impl PushSender {
             let status = response.status();
             if status.is_success() { continue; }
             let body = response.text().await.unwrap_or_default();
-            if status == StatusCode::NOT_FOUND || body.contains("UNREGISTERED") {
+            // Only FCM's explicit UNREGISTERED error means the token is dead; a bare 404 is logged.
+            let unregistered = serde_json::from_str::<Value>(&body).is_ok_and(|body| body["error"]["details"].as_array()
+                .is_some_and(|details| details.iter().any(|detail| detail["errorCode"] == "UNREGISTERED")));
+            if unregistered {
                 if let Err(error) = store.clear_phone_push_token(&token) { eprintln!("Phone push could not clear a token: {error}"); }
             } else {
                 eprintln!("Phone push failed: {status} {body}");
@@ -226,10 +228,21 @@ pub(super) mod tests {
         let store = SessionStore::open_in_memory().unwrap();
         store.add_phone_device("a", "a", "hash-a", 1).unwrap();
         store.set_phone_push_token("a", "token-a").unwrap();
-        let fake = fake_fcm(404, r#"{"error":{"status":"NOT_FOUND","details":[{"errorCode":"UNREGISTERED"}]}}"#).await;
+        let fake = fake_fcm(404, r#"{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND","details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError","errorCode":"UNREGISTERED"}]}}"#).await;
         test_sender(&fake).send_inbox_push(&store, &machine(), &item("gate", None)).await;
         assert_eq!(fake.messages.lock().unwrap().len(), 1);
         assert!(store.phone_push_tokens().unwrap().is_empty(), "the dead token is gone");
+    }
+
+    #[tokio::test]
+    async fn inbox_push_generic_not_found_keeps_token() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.add_phone_device("a", "a", "hash-a", 1).unwrap();
+        store.set_phone_push_token("a", "token-a").unwrap();
+        let fake = fake_fcm(404, r#"{"error":{"code":404,"message":"Requested entity was not found.","status":"NOT_FOUND"}}"#).await;
+        test_sender(&fake).send_inbox_push(&store, &machine(), &item("gate", None)).await;
+        assert_eq!(fake.messages.lock().unwrap().len(), 1);
+        assert_eq!(store.phone_push_tokens().unwrap().len(), 1, "a 404 that does not say UNREGISTERED keeps the token");
     }
 
     #[tokio::test]
