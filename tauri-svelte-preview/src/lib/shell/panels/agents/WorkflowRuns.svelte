@@ -2,7 +2,10 @@
   import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import { untrack } from 'svelte';
   import Check from '@lucide/svelte/icons/check';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import ListChecks from '@lucide/svelte/icons/list-checks';
   import MessagesSquare from '@lucide/svelte/icons/messages-square';
+  import Workflow from '@lucide/svelte/icons/workflow';
   import CircleStop from '@lucide/svelte/icons/circle-stop';
   import Pause from '@lucide/svelte/icons/pause';
   import Play from '@lucide/svelte/icons/play';
@@ -11,7 +14,9 @@
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 
   import { Button } from '$lib/components/ui/button/index.js';
+  import * as Card from '$lib/components/ui/card/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
+  import * as Collapsible from '$lib/components/ui/collapsible/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
   import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
@@ -195,6 +200,28 @@
     const minutes = Math.floor(seconds / 60);
     if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`;
     return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
+  }
+
+  function runTitle(run: WorkflowRunRecord): string {
+    return (run.inputSnapshot as { task?: { title?: string } }).task?.title ?? run.definition.name;
+  }
+
+  function runTone(run: WorkflowRunRecord): 'live' | 'good' | 'bad' | 'attention' {
+    if (run.state === 'failed') return 'bad';
+    if (run.state === 'completed') return 'good';
+    return run.state === 'waiting-approval' ? 'attention' : 'live';
+  }
+
+  /** A command step has no provider; join only the parts that are there. */
+  function stepMeta(node: WorkflowNodeRunRecord): string {
+    return [node.provider, node.roleId, elapsed(node)].filter(Boolean).join(' · ');
+  }
+
+  /** A finding that opens with a path ("src/a.ts:12: …") shows the path on its own line. */
+  function findingParts(finding: string): { path: string | null; text: string } {
+    const match = /^(\S*[/.]\S*?)(: | \()/.exec(finding);
+    if (!match) return { path: null, text: finding };
+    return { path: match[1], text: finding.slice(match[1].length + (match[2] === ': ' ? 2 : 1)) };
   }
 
   const compactTokens = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
@@ -397,74 +424,108 @@
             onclick={() => selectWorkflowRun(run.id)}
           >
             <span class="flex w-full min-w-0 items-center gap-2">
-              <span class="min-w-0 flex-1 truncate text-sm font-semibold">{(run.inputSnapshot as { task?: { title?: string } }).task?.title ?? run.definition.name}</span>
-              <Chip tone={run.state === 'failed' ? 'bad' : run.state === 'completed' ? 'good' : run.state === 'waiting-approval' ? 'attention' : 'live'}>{run.state}</Chip>
+              <span class="min-w-0 flex-1 truncate text-sm font-semibold">{runTitle(run)}</span>
+              <Chip tone={runTone(run)}>{run.state}</Chip>
             </span>
             <span class="text-xs text-muted-foreground">{run.phase} · {run.nodes.filter((node) => ['completed', 'skipped'].includes(node.state)).length}/{run.nodes.length} stages</span>
           </button>
         {/each}
 
         {#if selected}
-          <section class="mt-1 rounded-2xl border border-border bg-card p-3">
-            <div class="mb-3 flex items-center gap-2">
-              <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+          <Card.Root size="sm" class="mt-2 gap-2 bg-foreground/8">
+            <Card.Header>
+              <div class="flex min-w-0 items-start gap-2">
+                <Workflow class="mt-px size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                <h3 class="min-w-0 flex-1 text-[13px] leading-tight font-semibold [overflow-wrap:anywhere]">{runTitle(selected)}</h3>
+                <Chip tone={runTone(selected)}>{selected.state}</Chip>
+              </div>
+            </Card.Header>
+            <Card.Content class="flex flex-col gap-2">
+              <div class="flex items-center gap-2 text-sm text-muted-foreground">
+                <span class="min-w-0 flex-1 [overflow-wrap:anywhere]">{selected.phase}</span>
+                <span class="shrink-0 tabular-nums">{completedCount}/{selected.nodes.length} stages</span>
+              </div>
+              <div class="h-1.5 overflow-hidden rounded-full bg-secondary">
                 <div
                   class="h-full rounded-full bg-primary transition-[width] duration-200"
                   style:width={`${(completedCount / selected.nodes.length) * 100}%`}
                 ></div>
               </div>
-              <span class="text-xs tabular-nums text-muted-foreground">{completedCount}/{selected.nodes.length}</span>
-            </div>
+            </Card.Content>
+          </Card.Root>
 
-            <ol class="flex list-none flex-col gap-1.5">
+          <Card.Root size="sm" class="gap-2 bg-foreground/8">
+            <Card.Header>
+              <div class="flex min-w-0 items-center gap-2">
+                <ListChecks class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                <h3 class="min-w-0 flex-1 text-[13px] leading-tight font-semibold">Steps</h3>
+                <Chip tone="count">{selected.nodes.length}</Chip>
+              </div>
+            </Card.Header>
+            <ol class="flex list-none flex-col gap-1 px-1">
               {#each orderedNodes as node, index (node.id)}
                 {@const facts = workflowStepFacts(node)}
-                <li>
+                <li class="flex min-w-0 flex-col gap-1.5">
                   <button
                     type="button"
-                    class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left hover:bg-muted"
+                    class="flex w-full min-w-0 items-start gap-2 rounded-lg px-2 py-1.5 text-left outline-none hover:bg-accent/60 focus-visible:ring-3 focus-visible:ring-ring/50"
                     onclick={() => void openStage(node.ownedId)}
                   >
-                    <span class="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold">{index + 1}</span>
+                    <span class="flex size-6 shrink-0 items-center justify-center rounded-full bg-secondary text-sm font-semibold">{index + 1}</span>
                     <span class="min-w-0 flex-1">
-                      <span class="block truncate text-sm font-medium">{selected.definition.nodes.find((item) => item.id === node.nodeId)?.title ?? node.nodeId}</span>
-                      <span class="flex min-w-0 gap-1 text-xs text-muted-foreground">
-                        <span class="truncate">{node.provider} · {node.roleId}</span>
-                        {#if elapsed(node)}<span class="shrink-0 tabular-nums">· {elapsed(node)}</span>{/if}
-                      </span>
+                      <span class="block text-[13px] leading-snug font-medium [overflow-wrap:anywhere]">{selected.definition.nodes.find((item) => item.id === node.nodeId)?.title ?? node.nodeId}</span>
+                      <span class="block text-sm tabular-nums text-muted-foreground [overflow-wrap:anywhere]">{stepMeta(node)}</span>
                       {#if node.startedAtMs}
-                        <span class="block truncate text-xs text-muted-foreground" title={usageSummary(node)}>{usageCompact(node)}</span>
+                        <span class="block truncate text-sm text-muted-foreground" title={usageSummary(node)}>{usageCompact(node)}</span>
                       {/if}
                     </span>
                     <Chip tone={stateTone[node.state]}>{node.state}</Chip>
                   </button>
                   {#if node.failure}
-                    <p class="mx-2 rounded-lg bg-destructive/10 px-2 py-1.5 text-xs text-destructive">{node.failure.message}</p>
+                    <p class="mx-2 rounded-lg bg-destructive/10 px-2 py-1.5 text-sm text-destructive [overflow-wrap:anywhere]">{node.failure.message}</p>
                   {/if}
                   {#if facts.commands.length || facts.verdict || facts.findings.length || facts.prUrl}
                     <div class="mx-2 flex min-w-0 flex-col gap-1.5 pb-1 text-sm" data-testid="workflow-step-facts">
                       {#each facts.commands as command, commandIndex (commandIndex)}
                         <div class="flex min-w-0 flex-col gap-1">
-                          <span class="flex min-w-0 items-center gap-2">
-                            <code class="min-w-0 flex-1 truncate" title={command.command}>{command.command}</code>
+                          <span class="flex min-w-0 items-start gap-2">
+                            <code class="min-w-0 flex-1 [overflow-wrap:anywhere]">{command.command}</code>
                             {#if command.exitCode !== null}
                               <Chip tone={command.exitCode === 0 ? 'good' : 'bad'}>exit {command.exitCode}</Chip>
                             {/if}
                           </span>
                           {#if command.lastLines}
-                            <pre class="overflow-x-auto rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">{command.lastLines}</pre>
+                            <pre class="rounded-md bg-background/60 px-2 py-1 text-sm whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">{command.lastLines}</pre>
                           {/if}
                         </div>
                       {/each}
-                      {#if facts.verdict}<span><Chip tone="neutral">{facts.verdict}</Chip></span>{/if}
-                      {#if facts.findings.length}
-                        <ul class="list-disc pl-4 text-muted-foreground">
-                          {#each facts.findings as finding, findingIndex (findingIndex)}<li>{finding}</li>{/each}
-                        </ul>
+                      {#if facts.verdict || facts.findings.length}
+                        <Collapsible.Root open={facts.findings.length <= 2} class="flex min-w-0 flex-col gap-1.5">
+                          <div class="flex min-w-0 items-center gap-2">
+                            {#if facts.verdict}<Chip tone="neutral">{facts.verdict}</Chip>{/if}
+                            {#if facts.findings.length}
+                              <Collapsible.Trigger class="group flex min-h-6 items-center gap-1 rounded-md px-1 text-sm text-muted-foreground outline-none hover:bg-accent/60 hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50">
+                                <ChevronRight class="size-3.5 shrink-0 transition-transform duration-150 group-data-open:rotate-90" aria-hidden="true" />
+                                {facts.findings.length} {facts.findings.length === 1 ? 'finding' : 'findings'}
+                              </Collapsible.Trigger>
+                            {/if}
+                          </div>
+                          <Collapsible.Content>
+                            <ul class="flex list-none flex-col gap-1 p-0">
+                              {#each facts.findings as finding, findingIndex (findingIndex)}
+                                {@const parts = findingParts(finding)}
+                                <li class="flex min-w-0 flex-col gap-0.5 rounded-lg bg-background/60 px-2 py-1.5">
+                                  {#if parts.path}<code class="text-sm text-muted-foreground [overflow-wrap:anywhere]">{parts.path}</code>{/if}
+                                  <span class="text-[13px] leading-snug [overflow-wrap:anywhere]">{parts.text}</span>
+                                </li>
+                              {/each}
+                            </ul>
+                          </Collapsible.Content>
+                        </Collapsible.Root>
                       {/if}
                       {#if facts.prUrl}
                         {@const prUrl = facts.prUrl}
-                        <button type="button" class="w-fit truncate text-left text-primary underline underline-offset-2" onclick={() => void openUrlInBrowser({ url: prUrl })}>{prUrl}</button>
+                        <button type="button" class="max-w-full text-left text-primary underline underline-offset-2 [overflow-wrap:anywhere]" onclick={() => void openUrlInBrowser({ url: prUrl })}>{prUrl}</button>
                       {/if}
                     </div>
                   {/if}
@@ -473,14 +534,14 @@
             </ol>
 
             {#if stale}
-              <p class="mt-3 flex items-start gap-2 rounded-lg border border-border bg-muted px-2.5 py-2 text-xs text-foreground">
+              <p class="mx-3 mt-1 flex items-start gap-2 rounded-lg bg-muted px-2.5 py-2 text-xs text-foreground">
                 <TriangleAlert class="mt-0.5 size-3.5 shrink-0" />
                 This stage has passed its expected time. It is still running; review or stop it when ready.
               </p>
             {/if}
 
-            <div class="mt-3 flex flex-wrap gap-2 border-t border-border pt-3">
-              <Button size="sm" variant="ghost" onclick={() => onShowMessages(selected.id, (selected.inputSnapshot as { task?: { title?: string } }).task?.title ?? selected.definition.name)}><MessagesSquare />Messages</Button>
+            <div class="mx-3 mt-1 flex flex-wrap gap-2 border-t pt-3">
+              <Button size="sm" variant="ghost" onclick={() => onShowMessages(selected.id, runTitle(selected))}><MessagesSquare />Messages</Button>
               {#if selected.state === 'draft' || selected.state === 'queued'}
                 <Button size="sm" disabled={busy !== null} onclick={() => void control('Start', () => startWorkflowRun({ runId: selected.id, idempotencyKey: key('start') }, machine))}><Play />Start</Button>
               {:else if selected.state === 'paused'}
@@ -502,7 +563,7 @@
                 <Button size="sm" variant="destructive" disabled={busy !== null} onclick={() => void control('Stop', () => cancelWorkflowRun({ runId: selected.id, idempotencyKey: key('cancel') }, machine))}><CircleStop />Stop</Button>
               {/if}
             </div>
-          </section>
+          </Card.Root>
         {/if}
       </div>
     </ScrollArea>
