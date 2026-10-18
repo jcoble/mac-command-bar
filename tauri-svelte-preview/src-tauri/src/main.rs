@@ -5702,6 +5702,7 @@ fn main() {
             list_workflow_runs,
             create_workflow_run,
             get_workflow_run,
+            workflow_history,
             list_workflow_files,
             list_owner_inbox,
             answer_workflow_pause,
