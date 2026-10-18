@@ -151,6 +151,8 @@
   function release(parentId: string): void {
     reader?.abort();
     reader = null;
+    helperOpen?.abort();
+    helperOpen = null;
     stopChildConversationHistory(parentId);
     disposeChildConversationChat(parentId);
     setConversationSelectedChild(parentId, null);
@@ -228,13 +230,23 @@
     }
   }
 
+  // Back or another selection stops a pending open, so its result never lands in the next sub-view.
+  let helperOpen: AbortController | null = null;
+
   async function openHelperChat(childId: string): Promise<void> {
+    helperOpen?.abort();
+    const controller = new AbortController();
+    helperOpen = controller;
     fileError = '';
+    let opened = false;
     try {
-      if (!(await sessionRowJump(childId, 'session'))) fileError = 'This helper’s chat could not be opened.';
+      opened = await sessionRowJump(childId, 'session');
     } catch {
-      fileError = 'This helper’s chat could not be opened.';
+      opened = false;
     }
+    if (controller.signal.aborted) return;
+    helperOpen = null;
+    if (!opened) fileError = 'This helper’s chat could not be opened.';
   }
 
   function openFile(reference: string, provenance?: ConversationFileLinkProvenance): void {
