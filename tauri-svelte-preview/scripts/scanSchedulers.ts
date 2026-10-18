@@ -77,9 +77,6 @@ const allowedHits = new Set([
   // image or formula never blinks back to pending; the reads behind them are named async functions.
   'src/lib/SourceMarkdownPreview.svelte:loadKatex:function loadKatex(): Promise<KatexComponent> {',
   'src/lib/SourceMarkdownPreview.svelte:localImageUrl:function localImageUrl(file: string): Promise<string> {',
-  // TSK-1424 C: the turn's one-second elapsed clock. It runs only while the turn runs and the label and
-  // window are visible; the effect cleanup clears it when the turn ends, it scrolls out of view or unmounts.
-  'src/lib/shell/components/conversation/ConversationTurnElapsed.svelte:setInterval:const timer = setInterval(() => { now = Date.now(); }, 1000);',
   // TSK-1424 C: waitFor, the 300 ms wait before a local image send reads its bytes and the wait between
   // lookups of a session the rail lacks. Its timer is cleared and its abort listener removed when it ends;
   // Stop aborts the send's signal and stopConversationEvents the lookups' signal, which ends it at once.
