@@ -90,6 +90,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ),
           ],
         ),
+        actions: [
+          IconButton(
+            tooltip: 'Changes',
+            icon: const Icon(Symbols.difference_rounded),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => ChangesScreen(
+                  title: session?.name,
+                  load: ref
+                      .read(chatProvider((machine.id, widget.ownedId)).notifier)
+                      .changes,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
       body: switch (chat) {
         AsyncData(:final value) => Column(

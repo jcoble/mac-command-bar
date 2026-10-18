@@ -418,4 +418,46 @@ void main() {
       ],
     );
   });
+
+  test('changes_parses_files_and_counts', () async {
+    const diff =
+        'diff --git a/a.txt b/a.txt\n@@ -1 +1,2 @@\n-one\n+two\n+three\n';
+    final (c, adapter, _) = await chatWith(
+      (r) => r.path.endsWith('/changes')
+          ? (
+              200,
+              {
+                'base': 'origin/main',
+                'files': [
+                  {'path': 'a.txt', 'added': 2, 'removed': 1},
+                  {'path': 'src/b.rs', 'added': 3, 'removed': 0},
+                ],
+                'diff': diff,
+                'diffTruncated': true,
+              },
+            )
+          : (200, {'items': [], 'cursor': 0, 'turn': 'idle', 'ownerItems': []}),
+    );
+    final changes = await c.read(chatProvider(session).notifier).changes();
+    expect(adapter.requests.last.path, 'sessions/lane-1/changes');
+    expect(
+      [for (final f in changes.files) (f.path, f.added, f.removed)],
+      [('a.txt', 2, 1), ('src/b.rs', 3, 0)],
+    );
+    expect(
+      (changes.base, changes.added, changes.removed, changes.diffTruncated),
+      ('origin/main', 5, 1, true),
+    );
+    expect(changes.diffs, [
+      diff,
+    ], reason: 'the cut diff holds only the first file');
+  });
+
+  test('changes_splits_diff_per_file', () {
+    const a =
+        'diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-x\n+diff --git y\n';
+    const b = 'diff --git a/b.txt b/b.txt\nBinary files differ\n';
+    expect(splitDiffFiles('$a$b'), [a, b]);
+    expect(splitDiffFiles(''), isEmpty);
+  });
 }

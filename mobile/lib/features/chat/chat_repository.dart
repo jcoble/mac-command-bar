@@ -63,6 +63,40 @@ class ToolItem {
   final bool diffTruncated;
 }
 
+/// `GET sessions/{id}/changes`: what the session's branch changed since [base].
+class BranchChanges {
+  BranchChanges.fromJson(Map<String, dynamic> json)
+    : base = json['base'] as String,
+      files = [
+        for (final f in json['files'] as List)
+          (
+            path: f['path'] as String,
+            added: f['added'] as int,
+            removed: f['removed'] as int,
+          ),
+      ],
+      diffs = splitDiffFiles(json['diff'] as String),
+      diffTruncated = json['diffTruncated'] == true;
+
+  /// The branch compared with, e.g. `origin/main`.
+  final String base;
+  final List<({String path, int added, int removed})> files;
+
+  /// Each file's part of the diff, in the order of [files]; fewer than
+  /// [files] when the diff was cut.
+  final List<String> diffs;
+  final bool diffTruncated;
+
+  int get added => files.fold(0, (sum, f) => sum + f.added);
+  int get removed => files.fold(0, (sum, f) => sum + f.removed);
+}
+
+/// [diff] split before each line that starts `diff --git `, one part per file.
+List<String> splitDiffFiles(String diff) => [
+  for (final part in diff.split(RegExp(r'^(?=diff --git )', multiLine: true)))
+    if (part.isNotEmpty) part,
+];
+
 class ChatState {
   const ChatState({
     required this.items,
@@ -219,6 +253,18 @@ class ChatNotifier extends Notifier<AsyncValue<ChatState>> {
         'sessions/${Uri.encodeComponent(_session.$2)}/items/${Uri.encodeComponent(itemId)}',
       );
       return ToolItem.fromJson(response.data!);
+    } on DioException catch (e) {
+      throw ApiException.fromDioException(e);
+    }
+  }
+
+  /// The session branch's changed files and diff, read when the owner opens them.
+  Future<BranchChanges> changes() async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>(
+        'sessions/${Uri.encodeComponent(_session.$2)}/changes',
+      );
+      return BranchChanges.fromJson(response.data!);
     } on DioException catch (e) {
       throw ApiException.fromDioException(e);
     }
