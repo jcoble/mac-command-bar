@@ -82,6 +82,36 @@ mod tests {
     }
 
     #[test]
+    fn desktop_markdown_snapshot_and_page_save_pieces_and_keep_received_pieces() {
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
+        let history = RemoteHistory::new(store.clone());
+        let mut initial = snapshot(2, 2);
+        if let AgentConversationPayload::AssistantMessage { blocks, .. } = &mut initial.events[0].payload {
+            *blocks = None;
+        }
+        history.snapshot("a", 0, None, &mut initial).unwrap();
+        assert!(matches!(&initial.events[0].payload,
+            AgentConversationPayload::AssistantMessage { blocks: Some(_), .. }));
+        let mut older = event(1);
+        if let AgentConversationPayload::AssistantMessage { blocks, .. } = &mut older.payload {
+            *blocks = None;
+        }
+        let mut page = AgentConversationEventPage { events: vec![older], has_more: false };
+        history.page("a", 0, "same-session-id", 2, true, &mut page).unwrap();
+        assert!(matches!(&page.events[0].payload,
+            AgentConversationPayload::AssistantMessage { blocks: Some(_), .. }));
+        let saved = history.read_snapshot("a", 0, "same-session-id").unwrap();
+        assert_eq!(saved.events, vec![page.events[0].clone(), initial.events[0].clone()]);
+        // An older backend's pieces remain authoritative even if they differ from this parser.
+        let mut received = event(3);
+        if let AgentConversationPayload::AssistantMessage { blocks, .. } = &mut received.payload {
+            *blocks = Some(Vec::new());
+        }
+        history.live_batch("a", 0, &mut [received.clone()]).unwrap();
+        assert_eq!(history.read_snapshot("a", 0, "same-session-id").unwrap().events.last(), Some(&received));
+    }
+
+    #[test]
     fn remote_history_reopens_with_prepared_markdown_and_isolated_sources() {
         let directory =
             std::env::temp_dir().join(format!("assembly-history-test-{}", uuid::Uuid::new_v4()));
@@ -89,10 +119,10 @@ mod tests {
         let path = directory.join("sessions.db");
         let store = Arc::new(SessionStore::open(&path).unwrap());
         let history = RemoteHistory::new(store.clone());
-        let expected = snapshot(-2, 5);
-        history.snapshot("a", 0, None, &expected).unwrap();
-        history.snapshot("a", 0, None, &expected).unwrap();
-        history.snapshot("b", 0, None, &snapshot(20, 22)).unwrap();
+        let mut expected = snapshot(-2, 5);
+        history.snapshot("a", 0, None, &mut expected).unwrap();
+        history.snapshot("a", 0, None, &mut expected).unwrap();
+        history.snapshot("b", 0, None, &mut snapshot(20, 22)).unwrap();
         assert_eq!(store.count_sessions().unwrap(), 0);
         drop(history);
         drop(store);
@@ -114,8 +144,8 @@ mod tests {
                 .len(),
             3
         );
-        assert!(history.live_batch("a", 0, &[event(6)]).is_err());
-        assert!(history.snapshot("a", 0, None, &expected).is_err());
+        assert!(history.live_batch("a", 0, &mut [event(6)]).is_err());
+        assert!(history.snapshot("a", 0, None, &mut expected).is_err());
         assert!(history
             .page(
                 "a",
@@ -123,7 +153,7 @@ mod tests {
                 "same-session-id",
                 6,
                 true,
-                &AgentConversationEventPage {
+                &mut AgentConversationEventPage {
                     events: vec![event(5)],
                     has_more: false
                 }
@@ -142,13 +172,13 @@ mod tests {
         let store = Arc::new(SessionStore::open(&path).unwrap());
         let history = RemoteHistory::new(store.clone());
         for profile in ["a", "b"] {
-            history.snapshot(profile, 0, None, &snapshot(1, 1)).unwrap();
+            history.snapshot(profile, 0, None, &mut snapshot(1, 1)).unwrap();
             let child_key = history
                 .bind_child(profile, "same-session-id", "same-child", "provider-child")
                 .unwrap();
             let mut child_event = event(1);
             child_event.owned_id = "same-child".into();
-            history.live_batch(profile, 0, &[child_event]).unwrap();
+            history.live_batch(profile, 0, &mut [child_event]).unwrap();
             let source = store
                 .private_remote_child_source(&child_key)
                 .unwrap()
@@ -178,14 +208,14 @@ mod tests {
     fn a_session_first_opened_empty_pages_its_live_events_locally() {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
         // A session created here opens before its first event, then streams 1..=3.
-        history.snapshot("a", 0, None, &snapshot(1, 0)).unwrap();
-        history.live_batch("a", 0, &[event(1), event(2), event(3)]).unwrap();
+        history.snapshot("a", 0, None, &mut snapshot(1, 0)).unwrap();
+        history.live_batch("a", 0, &mut [event(1), event(2), event(3)]).unwrap();
         let older = history.read_page("a", "same-session-id", 3, 1024, true).unwrap().unwrap();
         assert_eq!(older.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), vec![1, 2]);
         // The copy confirms the empty start once; then the top needs no request.
         assert_eq!(history.unsaved_older("a", "same-session-id").unwrap(), Some(1));
-        let start = AgentConversationEventPage { events: vec![], has_more: false };
-        history.page("a", 0, "same-session-id", 1, true, &start).unwrap();
+        let mut start = AgentConversationEventPage { events: vec![], has_more: false };
+        history.page("a", 0, "same-session-id", 1, true, &mut start).unwrap();
         assert_eq!(history.unsaved_older("a", "same-session-id").unwrap(), None);
         assert!(!history.read_page("a", "same-session-id", 3, 1024, true).unwrap().unwrap().has_more);
     }
@@ -193,8 +223,12 @@ mod tests {
     #[test]
     fn remote_history_fills_gaps_without_claiming_unfetched_events() {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
-        history.snapshot("a", 0, None, &snapshot(10, 12)).unwrap();
-        history.live_batch("a", 0, &[event(15)]).unwrap();
+        history.snapshot("a", 0, None, &mut snapshot(10, 12)).unwrap();
+        let mut saved_gap = event(15);
+        if let AgentConversationPayload::AssistantMessage { blocks, .. } = &mut saved_gap.payload {
+            *blocks = Some(Vec::new());
+        }
+        history.live_batch("a", 0, &mut [saved_gap.clone()]).unwrap();
         assert_eq!(history.through("a", "same-session-id").unwrap(), Some(12));
         // The saved row past the gap is not confirmed, so the Mac's copy ends at 12.
         for cursor in [11, 12] {
@@ -202,22 +236,25 @@ mod tests {
             assert_eq!(newer.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), (cursor + 1..=12).collect::<Vec<_>>());
             assert!(!newer.has_more);
         }
-        history
-            .snapshot("a", 0, Some(12), &snapshot(13, 15))
-            .unwrap();
+        let mut catch_up = snapshot(13, 15);
+        if let AgentConversationPayload::AssistantMessage { blocks, .. } = &mut catch_up.events[2].payload {
+            *blocks = None;
+        }
+        history.snapshot("a", 0, Some(12), &mut catch_up).unwrap();
+        assert_eq!(catch_up.events[2], saved_gap);
         assert_eq!(
             history
                 .read_snapshot("a", 0, "same-session-id")
                 .unwrap()
                 .events,
-            (10..=15).map(event).collect::<Vec<_>>()
+            (10..=14).map(event).chain([saved_gap]).collect::<Vec<_>>()
         );
-        let older = AgentConversationEventPage {
+        let mut older = AgentConversationEventPage {
             events: (5..10).map(event).collect(),
             has_more: true,
         };
         history
-            .page("a", 0, "same-session-id", 10, true, &older)
+            .page("a", 0, "same-session-id", 10, true, &mut older)
             .unwrap();
         assert_eq!(
             history
@@ -238,7 +275,7 @@ mod tests {
                 "same-session-id",
                 5,
                 true,
-                &AgentConversationEventPage {
+                &mut AgentConversationEventPage {
                     events: vec![event(4)],
                     has_more: false,
                 },
@@ -273,7 +310,7 @@ mod tests {
         let mut initial = snapshot(10, 15);
         initial.events = vec![event(10)];
         initial.pending_events = vec![requested.clone()];
-        history.snapshot("a", 0, None, &initial).unwrap();
+        history.snapshot("a", 0, None, &mut initial).unwrap();
         let raw = history.read_snapshot("a", 0, "same-session-id").unwrap();
         assert_eq!(raw.last_sequence, 10);
         assert_eq!(raw.pending_events, vec![requested.clone()]);
@@ -288,7 +325,7 @@ mod tests {
             .live_batch(
                 "a",
                 0,
-                &[
+                &mut [
                     control_event(
                         11,
                         AgentConversationPayload::Turn {
@@ -311,11 +348,11 @@ mod tests {
                 ],
             )
             .unwrap();
-        let older = AgentConversationEventPage {
+        let mut older = AgentConversationEventPage {
             events: vec![requested],
             has_more: false,
         };
-        history.page("a", 0, "same-session-id", 10, true, &older).unwrap();
+        history.page("a", 0, "same-session-id", 10, true, &mut older).unwrap();
         assert!(history.read_snapshot("a", 0, "same-session-id").unwrap().pending_events.is_empty());
     }
 
@@ -324,7 +361,7 @@ mod tests {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
         let mut empty = snapshot(1, 0);
         empty.has_earlier_transcript = true;
-        history.snapshot("a", 0, None, &empty).unwrap();
+        history.snapshot("a", 0, None, &mut empty).unwrap();
 
         let copying = history.read_selection_snapshot("a", "same-session-id", 1024)
             .unwrap().unwrap();
@@ -335,7 +372,7 @@ mod tests {
         assert!(copying.page.before_cursor.is_none());
 
         history.page("a", 0, "same-session-id", 1, true,
-            &AgentConversationEventPage { events: Vec::new(), has_more: false }).unwrap();
+            &mut AgentConversationEventPage { events: Vec::new(), has_more: false }).unwrap();
         let copied = history.read_selection_snapshot("a", "same-session-id", 1024)
             .unwrap().unwrap();
         assert!(!copied.page.has_before);
@@ -349,7 +386,7 @@ mod tests {
         history.write("a", "same-session-id", &Coverage {
             connection: Some(saved.connection), oldest: Some(100), through: Some(102),
             ..Default::default()
-        }, &[]).unwrap();
+        }, &mut [], 0).unwrap();
         for (sequence, first_sequence) in [(100, 10), (101, 10), (102, 80)] {
             let mut wire = serde_json::to_value(event(sequence)).unwrap();
             wire["payload"] = serde_json::json!({
@@ -381,7 +418,7 @@ mod tests {
             turn_id: "turn".into(), state: super::super::protocol::TurnState::Started,
         });
         history.forget("a", "same-session-id").unwrap();
-        history.snapshot("a", 0, None, &controls).unwrap();
+        history.snapshot("a", 0, None, &mut controls).unwrap();
         assert!(history.read_item_page("a", "same-session-id", 201, 1024, true)
             .unwrap().is_none());
     }
@@ -389,13 +426,13 @@ mod tests {
     #[test]
     fn newer_runtime_generation_preserves_the_contiguous_journal() {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
-        history.snapshot("a", 0, None, &snapshot(1, 3)).unwrap();
+        history.snapshot("a", 0, None, &mut snapshot(1, 3)).unwrap();
         let mut restarted = snapshot(1, 5);
         restarted.connection.generation = 2;
         for event in restarted.events.iter_mut().filter(|event| event.sequence > 3) {
             event.generation = 2;
         }
-        history.snapshot("a", 0, None, &restarted).unwrap();
+        history.snapshot("a", 0, None, &mut restarted).unwrap();
 
         let saved = history.read_snapshot("a", 0, "same-session-id").unwrap();
         assert_eq!(saved.connection.generation, 2);
@@ -410,8 +447,8 @@ mod tests {
         std::fs::create_dir(&directory).unwrap();
         let path = directory.join("sessions.db");
         let history = RemoteHistory::new(Arc::new(SessionStore::open(&path).unwrap()));
-        history.snapshot("a", 0, None, &snapshot(1, 1)).unwrap();
-        history.live_batch("a", 0, &[event(2), event(3), event(4)]).unwrap();
+        history.snapshot("a", 0, None, &mut snapshot(1, 1)).unwrap();
+        history.live_batch("a", 0, &mut [event(2), event(3), event(4)]).unwrap();
         drop(history);
         let history = RemoteHistory::new(Arc::new(SessionStore::open(&path).unwrap()));
         assert_eq!(history.through("a", "same-session-id").unwrap(), Some(4));
@@ -425,13 +462,13 @@ mod tests {
     fn live_skips_events_already_covered() {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
         for sequence in 1..=3 {
-            history.live_batch("a", 0, &[event(sequence)]).unwrap();
+            history.live_batch("a", 0, &mut [event(sequence)]).unwrap();
         }
-        history.snapshot("a", 0, Some(3), &snapshot(4, 3)).unwrap();
+        history.snapshot("a", 0, Some(3), &mut snapshot(4, 3)).unwrap();
         // A reconnect replays from the last applied cursor; the cache already has it.
         let mut replayed = event(2);
         replayed.timestamp_ms = 999;
-        history.live_batch("a", 0, &[replayed]).unwrap();
+        history.live_batch("a", 0, &mut [replayed]).unwrap();
         let cached = history.read_snapshot("a", 0, "same-session-id").unwrap();
         assert_eq!(cached.events[1].sequence, 2);
         assert_eq!(cached.events[1].timestamp_ms, 123);
@@ -441,10 +478,10 @@ mod tests {
     fn remote_history_caches_live_messages_before_a_snapshot_and_bounds_reads() {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
         for sequence in 1..=10 {
-            history.live_batch("a", 0, &[event(sequence)]).unwrap();
+            history.live_batch("a", 0, &mut [event(sequence)]).unwrap();
         }
         history
-            .snapshot("a", 0, Some(10), &snapshot(11, 10))
+            .snapshot("a", 0, Some(10), &mut snapshot(11, 10))
             .unwrap();
         assert_eq!(
             history
@@ -609,10 +646,33 @@ impl RemoteHistory {
         profile: &str,
         owned: &str,
         coverage: &Coverage,
-        events: &[AgentConversationEvent],
+        events: &mut [AgentConversationEvent],
+        write_from: usize,
     ) -> Result<(), String> {
         let key = Self::key(profile, owned);
-        let rows = events
+        let sequences: Vec<_> = events.iter().filter_map(|event| matches!(
+            event.payload, AgentConversationPayload::AssistantMessage { blocks: None, .. }
+        ).then_some(event.sequence)).collect();
+        let mut saved_blocks = HashMap::new();
+        if !sequences.is_empty() {
+            for row in self.store.get_events_by_sequences(&key, &sequences).map_err(|e| e.to_string())? {
+                let saved: AgentConversationEvent = serde_json::from_str(&row.payload_json).map_err(|e| e.to_string())?;
+                if let AgentConversationPayload::AssistantMessage { blocks: Some(blocks), .. } = saved.payload {
+                    saved_blocks.insert(row.seq, blocks);
+                }
+            }
+        }
+        for event in events.iter_mut() {
+            if let AgentConversationPayload::AssistantMessage { text, blocks, .. } = &mut event.payload {
+                if blocks.is_none() {
+                    *blocks = Some(saved_blocks.get(&event.sequence).cloned()
+                        .unwrap_or_else(|| super::safe_markdown::parse_safe_markdown(text)));
+                }
+            }
+        }
+        // Covered live events still need pieces for publication, but no cache write.
+        if write_from > 0 && write_from == events.len() { return Ok(()); }
+        let rows = events[write_from..]
             .iter()
             .map(|event| {
                 Ok(EventRow {
@@ -620,7 +680,7 @@ impl RemoteHistory {
                     seq: event.sequence,
                     turn_id: event.turn_id.clone(),
                     kind: "remote.cached".into(),
-                    // The server has already prepared safe Markdown in these payloads.
+                    // Prepare on the displaying desktop, then save and publish the same pieces.
                     payload_json: serde_json::to_string(event).map_err(|e| e.to_string())?,
                     created_at_ms: i64::try_from(event.timestamp_ms).unwrap_or(i64::MAX),
                 })
@@ -657,16 +717,18 @@ impl RemoteHistory {
         &self,
         profile: &str,
         epoch: u64,
-        events: &[AgentConversationEvent],
+        events: &mut [AgentConversationEvent],
     ) -> Result<(), String> {
         self.check(profile, epoch)?;
-        let Some(first) = events.first() else { return Ok(()); };
-        let mut coverage = self.coverage(profile, &first.owned_id)?;
+        let Some(owned) = events.first().map(|event| event.owned_id.clone()) else { return Ok(()); };
+        let mut coverage = self.coverage(profile, &owned)?;
         let control_start = coverage.pending_sequence.or(coverage.through).unwrap_or(i64::MIN);
         let start = events.iter().position(|event| !coverage.through.is_some_and(|through| event.sequence <= through));
-        let Some(start) = start else { return Ok(()); };
+        let Some(start) = start else {
+            return self.write(profile, &owned, &coverage, events, events.len());
+        };
         for event in &events[start..] {
-            if event.owned_id != first.owned_id {
+            if event.owned_id != owned {
                 return Err("remote history batch contains multiple sessions".into());
             }
             if coverage.through.is_none() {
@@ -688,7 +750,7 @@ impl RemoteHistory {
         coverage.pending_sequence.get_or_insert(confirmed);
         // A gap is stored, but never advertised as covered. Snapshot catch-up
         // fills it from the last confirmed sequence before reading it locally.
-        self.write(profile, &first.owned_id, &coverage, &events[start..])
+        self.write(profile, &owned, &coverage, events, start)
     }
 
     pub fn snapshot(
@@ -696,7 +758,7 @@ impl RemoteHistory {
         profile: &str,
         epoch: u64,
         previous: Option<i64>,
-        snapshot: &AgentConversationSnapshot,
+        snapshot: &mut AgentConversationSnapshot,
     ) -> Result<i64, String> {
         self.check(profile, epoch)?;
         let owned = &snapshot.connection.owned_id;
@@ -730,7 +792,7 @@ impl RemoteHistory {
         coverage.oldest.get_or_insert(end.saturating_add(1));
         // Only a page that reaches the advertised head may confirm the head.
         coverage.through = Some(coverage.through.map_or(end, |old| old.max(end)));
-        self.write(profile, owned, &coverage, &snapshot.events)?;
+        self.write(profile, owned, &coverage, &mut snapshot.events, 0)?;
         Ok(end)
     }
 
@@ -986,7 +1048,7 @@ impl RemoteHistory {
         self.check(profile, epoch)?;
         let mut coverage = self.coverage(profile, owned)?;
         coverage.start_complete = false;
-        self.write(profile, owned, &coverage, &[])
+        self.write(profile, owned, &coverage, &mut [], 0)
     }
 
     pub fn page(
@@ -996,7 +1058,7 @@ impl RemoteHistory {
         owned: &str,
         cursor: i64,
         before: bool,
-        page: &AgentConversationEventPage,
+        page: &mut AgentConversationEventPage,
     ) -> Result<(), String> {
         self.check(profile, epoch)?;
         let mut coverage = self.coverage(profile, owned)?;
@@ -1027,7 +1089,7 @@ impl RemoteHistory {
             }
             _ => {} // Store disjoint data without pretending its missing gap exists.
         }
-        self.write(profile, owned, &coverage, &page.events)
+        self.write(profile, owned, &coverage, &mut page.events, 0)
     }
 }
 

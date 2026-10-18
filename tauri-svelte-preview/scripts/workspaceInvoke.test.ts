@@ -10,13 +10,13 @@ const pending: Array<(value: unknown) => void> = [];
   __TAURI_INTERNALS__: {
     async invoke(command: string, args: Record<string, unknown>): Promise<unknown> {
       calls.push({ command, args });
-      if (command !== 'remote_workspace' && command !== 'start_terminal_session') return null;
+      if (command !== 'remote_workspace' && command !== 'start_terminal_session' && command !== 'remote_workflow') return null;
       return await new Promise((resolve) => { pending.push(resolve); });
     }
   }
 };
 const { invoke } = await import('../src/lib/workspaceInvoke.ts');
-const { startTerminalSessionFromTauri } = await import('../src/lib/tauriSource.ts');
+const { remoteWorkflowFromTauri, startTerminalSessionFromTauri } = await import('../src/lib/tauriSource.ts');
 const remoteArgs = { root: 'assembly-remote://box/repo', path: 'assembly-remote://box/repo/a.ts' };
 const release = (): void => { for (const resolve of pending.splice(0)) resolve({}); };
 const settle = async (): Promise<void> => { await setImmediate(); await setImmediate(); };
@@ -75,4 +75,22 @@ test('closing the tab while its terminal starts cancels the start with the id it
   assert.deepEqual(cancel?.args, { requestId: sent?.args.requestId });
   release();
   await start;
+});
+
+test('remote_workflow_abort_sends_cancel_with_request_id', async () => {
+  calls.length = 0;
+  const controller = new AbortController();
+  const read = remoteWorkflowFromTauri('box', 'history', { runId: 'run-1' }, controller.signal);
+  await settle();
+  const sent = calls.find((call) => call.command === 'remote_workflow');
+  assert.equal(typeof sent?.args.requestId, 'number');
+  controller.abort();
+  await settle();
+  const cancel = calls.find((call) => call.command === 'cancel_agent_conversation_request');
+  assert.deepEqual(cancel?.args, { requestId: sent?.args.requestId });
+  release();
+  assert.equal(await read, null);
+  calls.length = 0;
+  assert.equal(await remoteWorkflowFromTauri('box', 'history', {}, AbortSignal.abort()), null);
+  assert.equal(calls.length, 0);
 });

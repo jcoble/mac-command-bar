@@ -38,6 +38,15 @@ pub(crate) async fn get_workflow_run(
     engine.get_run(&run_id).map_err(|error| error.to_string())
 }
 
+/// Every ledger row of one run on this Mac, for the run timeline.
+#[tauri::command]
+pub(crate) async fn workflow_history(
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+) -> Result<serde_json::Value, String> {
+    crate::workflow::execute_operation(&engine, "history", serde_json::json!({ "runId": run_id })).await
+}
+
 /// Workflow steps waiting on the owner on this Mac and every connected machine, each tagged
 /// with its machine. A machine that cannot be reached is left out.
 #[tauri::command]
@@ -79,7 +88,7 @@ pub(crate) async fn answer_workflow_pause(
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
     let run = engine
-        .answer_pause(&run_id, &node_id, &decision, reply, "owner", &idempotency_key)
+        .answer_pause(&run_id, &node_id, &decision, reply, "owner", &idempotency_key, None)
         .await
         .map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);
@@ -171,7 +180,7 @@ pub(crate) async fn approve_workflow_gate(
     idempotency_key: String,
 ) -> Result<WorkflowRunRecord, String> {
     let run = engine
-        .approve_gate(&run_id, &node_id, approval, "owner", &idempotency_key)
+        .approve_gate(&run_id, &node_id, approval, "owner", &idempotency_key, None)
         .await
         .map_err(|error| error.to_string())?;
     emit_workflow_run_updated(&app, &run);

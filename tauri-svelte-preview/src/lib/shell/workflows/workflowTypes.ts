@@ -206,6 +206,25 @@ export interface WorkflowNodeRunRecord {
   usage: ConversationUsage | null;
 }
 
+/** One ledger row of a run (`workflow_history`): every attempt of every step, oldest first. */
+export interface WorkflowHistoryRow {
+  sequence: number;
+  timestampMs: number;
+  kind: string;
+  nodeId: string | null;
+  attempt: number | null;
+  ownedId: string | null;
+  /** The state of the step after this change. */
+  status: string | null;
+  commands: { command: string; exitCode: number | null }[];
+  findingCount: number | null;
+  verdict: string | null;
+  files: string[];
+  /** Only on `workflow.node.owner-answered`. */
+  answer: { step: string; decision: string; reply: string | null } | null;
+  gateApproved: boolean | null;
+}
+
 /** Exact serialized `WorkflowRunRecord`; this is what Tauri returns. */
 export interface WorkflowRunRecord {
   id: string;

@@ -18,6 +18,7 @@ comrak = "0.35"
 flate2 = "1"
 futures-util = "0.3"
 httpdate = "1"
+jsonwebtoken = "9.3"
 image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 libc = "0.2"
 mcb-core = { path = "../../core" }

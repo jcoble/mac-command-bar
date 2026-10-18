@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import PairPhonePanel from './PairPhonePanel.svelte';
   import ProviderCliUpdateControl from './ProviderCliUpdateControl.svelte';
   import ProviderUpdateControl from './ProviderUpdateControl.svelte';
   import WorkingSpinner from './conversation/WorkingSpinner.svelte';
@@ -38,6 +39,7 @@
   let backends = $state<Record<string, RemoteBackendProfileStatus>>({});
   let confirmingUninstallId = $state<string | null>(null);
   let transfer = $state<Transfer | null>(null);
+  let pairingPhone = $state<RemoteAssemblyProfile | null>(null);
   let mounted = false;
 
   const megabytes = (bytes: number) => `${Math.round(bytes / 1_000_000).toLocaleString()} MB`;
@@ -232,6 +234,7 @@
         <div class="connection-actions">
           {#if environment.readyProfileIds.includes(saved.id)}
             <Button variant="secondary" size="sm" disabled={busy} onclick={() => void changeConnection(saved)}>Disconnect</Button>
+            <Button variant="secondary" size="sm" disabled={busy} onclick={() => pairingPhone = saved}>Pair phone</Button>
           {:else}
             <Button variant="secondary" size="sm" disabled={busy} onclick={() => void runConnection(saved)}>Connect</Button>
           {/if}
@@ -284,6 +287,7 @@
     <div class="connection-actions"><Button size="sm" disabled={busy || !profile.name.trim() || !profile.sshTarget.trim()} onclick={() => void runConnection(profile, true, 'install')}>{busy && operationArea === 'install' ? 'Please wait…' : 'Install and connect'}</Button></div>
     {#if operationArea === 'install'}{@render operationStatus()}{/if}
   </section>
+  {#if pairingPhone}<PairPhonePanel profile={pairingPhone} onClose={() => pairingPhone = null} />{/if}
   <div class="connection-actions">
     {#if owner}<Button variant="ghost" size="sm" onclick={() => owner?.abort()}>Cancel current operation</Button>
     {:else if onClose}<Button variant="ghost" size="sm" onclick={onClose}>Done</Button>{/if}
@@ -299,7 +303,7 @@
   .connection-row, .connection-heading, .connection-actions { display: flex; align-items: center; gap: 8px; }
   .connection-row { flex-wrap: wrap; padding: 12px 0; border-bottom: 1px solid var(--color-border); }
   .connection-row > span { display: flex; flex: 1 1 240px; min-width: 0; flex-direction: column; }
-  .connection-row > .connection-actions { margin-left: auto; }
+  .connection-row > .connection-actions { flex-wrap: wrap; margin-left: auto; }
   small { overflow-wrap: anywhere; }
   .status-dot { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--color-text-3); }
   .status-dot.connected { background: var(--color-accent); }
