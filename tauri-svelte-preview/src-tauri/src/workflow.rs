@@ -723,7 +723,8 @@ impl AgentRuntimePort for AgentRuntimeManager {
                 self.apply_conversation_config(crate::agent_conversation::protocol::SetAgentConversationConfigRequest {
                     owned_id: connection.owned_id.clone(), generation: connection.generation,
                     model: request.model.clone(), reasoning_effort: None, approval_policy: permission.clone(),
-                }, false).await.map_err(|error| WorkflowError::Runtime(format!(
+                // A refused mode leaves an adapter with no turn to end it, so it is stopped here.
+                }, true).await.map_err(|error| WorkflowError::Runtime(format!(
                     "Provider {} could not start the worker on model {:?} and mode {:?}: {error}",
                     request.provider, request.model, permission)))?;
             }
