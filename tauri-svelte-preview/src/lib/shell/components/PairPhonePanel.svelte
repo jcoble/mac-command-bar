@@ -11,7 +11,8 @@
   let panel = $state<PhonePanel | null>(null);
   let error = $state('');
   let owner = new AbortController();
-  const run = (operation: string, args: object) => remoteWorkflowFromTauri(profile.id, operation, args);
+  // Each call is cancelled with the panel's current owner, so closing or a new code stops the SSH request.
+  const run = (operation: string, args: object) => remoteWorkflowFromTauri(profile.id, operation, args, owner.signal);
   const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   const day = (ms: number) => new Date(ms).toLocaleDateString([], { month: 'short', day: 'numeric' });
   const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
@@ -29,18 +30,28 @@
     owner.abort();
     owner = new AbortController();
     error = '';
+    // The backend has already dropped the old code, so stop showing it while the new one loads.
+    panel = null;
     void load(owner.signal);
   }
 
-  async function remove(deviceId: string, signal: AbortSignal) {
+  async function reloadDevices(signal: AbortSignal) {
     try {
-      await run('phoneRevoke', { deviceId });
-      if (signal.aborted) return;
       const devices = await loadPhoneDevices(run);
       if (!signal.aborted && panel) panel = { ...panel, devices };
     } catch (reason) {
       if (!signal.aborted) error = message(reason);
     }
+  }
+
+  async function remove(deviceId: string, signal: AbortSignal) {
+    try {
+      await run('phoneRevoke', { deviceId });
+    } catch (reason) {
+      if (!signal.aborted) error = message(reason);
+      return;
+    }
+    if (!signal.aborted) await reloadDevices(signal);
   }
 
   onMount(() => void load(owner.signal));
@@ -79,7 +90,10 @@
 
     {#if panel}
       <section class="flex flex-col gap-2 border-t pt-4">
-        <h3 class="text-xs font-medium tracking-wide text-muted-foreground uppercase">Paired phones</h3>
+        <div class="flex items-center justify-between">
+          <h3 class="text-xs font-medium tracking-wide text-muted-foreground uppercase">Paired phones</h3>
+          <Button variant="ghost" size="xs" onclick={() => { error = ''; void reloadDevices(owner.signal); }}>Refresh</Button>
+        </div>
         {#each panel.devices as device (device.id)}
           <div class="flex items-center gap-3">
             <span class="flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground"><SmartphoneIcon class="size-4" /></span>
