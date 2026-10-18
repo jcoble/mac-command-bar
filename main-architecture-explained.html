@@ -1184,6 +1184,11 @@
           <p><strong>The Workflow Engine reuses this same runtime and store.</strong> Startup gives it a clone of the ACP manager and the manager’s existing <code>Arc&lt;SessionStore&gt;</code>. Workflows are orchestration above the ACP manager, not a second hidden way of talking to agents or a second database connection.</p>
           <span class="source"><code>src-tauri/src/main.rs:5892-5904</code></span>
         </div>
+
+        <div class="callout current">
+          <p><strong>The phone app is a separate Flutter client in <code>mobile/</code>.</strong> It is an Android app (<code>dev.blackcolours.assembly_phone</code>, shown as "Assembly") with Rental Command's theme and widgets. It never uses the desktop socket: it pairs with a remote backend by a QR code, keeps each machine's URL and device token in Android secure storage under one key, and sends <code>Authorization: Bearer &lt;device token&gt;</code> on every <code>/phone/v1</code> call. Removing a machine calls <code>DELETE /me</code> first; an unreachable machine stays hidden with its token marked "removing" and is retried on each app start until it answers 204 or 401. The backend phone listener is not built yet (TSK-1416 Task 27), so today the app has been tested only against a fake client.</p>
+          <span class="source"><code>mobile/lib/core/machines/machine_store.dart</code>, <code>mobile/lib/core/api/machine_client.dart</code>, <code>mobile/lib/core/router.dart</code></span>
+        </div>
       </section>
 
       <section id="providers">
