@@ -1151,13 +1151,17 @@ impl RemoteConnectionManager {
                 // A replaced connection must stop; a failed cache write must not.
                 // Snapshot catch-up refills any row the cache missed.
                 history.check(&profile, epoch)?;
-                let mut by_session = BTreeMap::<String, Vec<AgentConversationEvent>>::new();
-                for event in &events {
-                    by_session.entry(event.owned_id.clone()).or_default().push(event.clone());
+                let mut by_session = BTreeMap::<String, Vec<usize>>::new();
+                for (index, event) in events.iter().enumerate() {
+                    by_session.entry(event.owned_id.clone()).or_default().push(index);
                 }
-                for (owned_id, batch) in by_session {
-                    if let Err(error) = history.live_batch(&profile, epoch, &batch) {
+                for (owned_id, indices) in by_session {
+                    let mut batch: Vec<_> = indices.iter().map(|&index| events[index].clone()).collect();
+                    if let Err(error) = history.live_batch(&profile, epoch, &mut batch) {
                         eprintln!("Remote history cache write failed for {owned_id}: {error}");
+                    }
+                    for (index, prepared) in indices.into_iter().zip(batch) {
+                        events[index] = prepared;
                     }
                 }
                 for event in &mut events {
@@ -1881,7 +1885,7 @@ impl RemoteConnectionManager {
                     after = None;
                     continue;
                 }
-                history.snapshot(profile, epoch, after, &snapshot)?
+                history.snapshot(profile, epoch, after, &mut snapshot)?
             };
             self.history_copied.notify_waiters();
             let head = snapshot.last_sequence;
@@ -1932,13 +1936,13 @@ impl RemoteConnectionManager {
                 (history.epoch(profile), history.unsaved_older(profile, owned_id)?)
             };
             let Some(before) = before else { return Ok(()); };
-            let RemoteResponse::EventPage(page) = self.request_with_id(profile, request_id, RemoteCommand::EventsBefore {
+            let RemoteResponse::EventPage(mut page) = self.request_with_id(profile, request_id, RemoteCommand::EventsBefore {
                 owned_id: owned_id.into(), before_sequence: before, max_bytes: HISTORY_COPY_PAGE_BYTES,
             }, None).await?
             else { return Err("Remote Assembly returned the wrong event-page response".into()); };
             if page.events.is_empty() && page.has_more { return Err("Remote history copy made no progress".into()); }
             self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                .page(profile, epoch, owned_id, before, true, &page)?;
+                .page(profile, epoch, owned_id, before, true, &mut page)?;
             self.history_copied.notify_waiters();
         }
     }
@@ -4228,6 +4232,47 @@ mod connection_tests {
     }
 
     #[test]
+    fn desktop_markdown_remote_save_publishes_prepared_event() {
+        use super::super::protocol::AgentConversationPayload;
+        let store = store();
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let captured = delivered.clone();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(move |event| captured.lock().unwrap().push(event)),
+            Arc::new(|_| {}), store.clone(),
+        ).unwrap();
+        let mut event = history_event(1);
+        event.payload = AgentConversationPayload::AssistantMessage {
+            item_id: "a".into(), text: "**hello**".into(), completed: true, blocks: None,
+        };
+        manager.history_event_sink("cache-test")(vec![event]).unwrap();
+        // Catch-up has already cached this event before its live delivery arrives.
+        let mut cached = history_event(2);
+        cached.payload = AgentConversationPayload::AssistantMessage {
+            item_id: "cached".into(), text: "**cached**".into(), completed: true,
+            blocks: Some(Vec::new()),
+        };
+        manager.history.lock().unwrap().live_batch("cache-test", 0, &mut [cached.clone()]).unwrap();
+        if let AgentConversationPayload::AssistantMessage { blocks, .. } = &mut cached.payload {
+            *blocks = None;
+        }
+        // Include a new suffix to exercise both skipped and written events in one batch.
+        manager.history_event_sink("cache-test")(vec![cached.clone(), history_event(3)]).unwrap();
+        manager.history_event_sink("cache-test")(vec![cached]).unwrap();
+        let delivered = delivered.lock().unwrap();
+        let rows = store.list_events(&RemoteHistory::key("cache-test", "large-history"), 2, 100).unwrap();
+        let cached: AgentConversationEvent = serde_json::from_str(&rows[0].payload_json).unwrap();
+        assert_eq!(delivered[1], cached);
+        assert_eq!(delivered[3], cached);
+        let expected = super::super::safe_markdown::parse_safe_markdown("**hello**");
+        assert!(matches!(&delivered[0].payload,
+            AgentConversationPayload::AssistantMessage { blocks: Some(blocks), .. } if blocks == &expected));
+        let saved = store.list_events(&RemoteHistory::key("cache-test", "large-history"), 0, 100).unwrap();
+        let saved: AgentConversationEvent = serde_json::from_str(&saved[0].payload_json).unwrap();
+        assert_eq!(saved, delivered[0]);
+    }
+
+    #[test]
     fn history_event_sink_delivers_the_event_when_the_cache_write_fails() {
         let store = store();
         // A local session under the cache key makes the remote cache write fail.
@@ -4291,7 +4336,7 @@ mod connection_tests {
         ).unwrap();
         // An earlier run saved 2..=3; live event 5 then arrived after a missed 4.
         manager.history.lock().unwrap()
-            .snapshot("cache-test", 0, None, &history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
+            .snapshot("cache-test", 0, None, &mut history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
         manager.history_event_sink("cache-test")(vec![history_event(5)]).unwrap();
         published.lock().unwrap().clear();
 
@@ -4440,7 +4485,7 @@ mod connection_tests {
         ).unwrap();
         manager.remember("large-history", "cache-test");
         manager.history.lock().unwrap()
-            .snapshot("cache-test", 0, None, &history_snapshot(vec![history_event(1)], 1)).unwrap();
+            .snapshot("cache-test", 0, None, &mut history_snapshot(vec![history_event(1)], 1)).unwrap();
         let child_owned = super::super::transcript_import::child_owned_id("large-history", "child-empty").unwrap();
         let history_owned = RemoteHistory::key("cache-test", &child_owned);
         let mut requests = connect(&manager);
@@ -4498,7 +4543,7 @@ mod connection_tests {
         ).unwrap();
         manager.remember("large-history", "cache-test");
         manager.history.lock().unwrap()
-            .snapshot("cache-test", 0, None, &history_snapshot(vec![history_event(1)], 1)).unwrap();
+            .snapshot("cache-test", 0, None, &mut history_snapshot(vec![history_event(1)], 1)).unwrap();
         let mut requests = connect(&manager);
         let turn = |sequence: i64, turn_id: &str, state: TurnState| AgentConversationEvent {
             turn_id: Some(turn_id.into()),
@@ -4538,7 +4583,7 @@ mod connection_tests {
         let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
         manager.remember("large-history", "cache-test");
         manager.history.lock().unwrap()
-            .snapshot("cache-test", 0, None, &history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
+            .snapshot("cache-test", 0, None, &mut history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
         let mut requests = connect(&manager);
         manager.snapshot("large-history".into(), 1).await.unwrap().unwrap();
         let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected top-up"); };
@@ -4574,7 +4619,7 @@ mod connection_tests {
         {
             let history = manager.history.lock().unwrap();
             let epoch = history.epoch("cache-test");
-            history.snapshot("cache-test", epoch, None, &AgentConversationSnapshot {
+            history.snapshot("cache-test", epoch, None, &mut AgentConversationSnapshot {
                 connection: AgentConversationConnection {
                     owned_id: event.owned_id.clone(), provider: event.provider, generation: 1,
                     native_session_id: None, state: super::super::protocol::ConversationConnectionState::Disconnected,
@@ -4585,7 +4630,7 @@ mod connection_tests {
                 pending_events: Vec::new(), active_turn_id: None,
             }).unwrap();
             history.page("cache-test", epoch, &event.owned_id, event.sequence, true,
-                &AgentConversationEventPage { events: vec![], has_more: false }).unwrap();
+                &mut AgentConversationEventPage { events: vec![], has_more: false }).unwrap();
         }
         let server = tokio::spawn(async move {
             let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected import request"); };
@@ -5097,7 +5142,7 @@ mod connection_tests {
         .unwrap();
         manager.register_profile(profile("saved")).unwrap();
         manager.history.lock().unwrap().snapshot(
-            "saved", 0, None, &history_snapshot(vec![history_event(1)], 1),
+            "saved", 0, None, &mut history_snapshot(vec![history_event(1)], 1),
         ).unwrap();
         let stale_history_sink = manager.history_event_sink("saved");
         let attempt = ConnectingAttempt::start(&manager, "saved");
