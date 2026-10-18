@@ -116,8 +116,8 @@ class _FileScreenState extends State<FileScreen> {
     }
   }
 
-  /// Back while editing leaves the editor, after asking when there are changes.
-  Future<void> _leaveEditor() async {
+  /// True when the editor has no changes or the owner agrees to drop them.
+  Future<bool> _mayDiscard() async {
     if (_editor!.text != _content!.text) {
       final discard = await showDialog<bool>(
         context: context,
@@ -135,9 +135,19 @@ class _FileScreenState extends State<FileScreen> {
           ],
         ),
       );
-      if (discard != true || !mounted) return;
+      if (discard != true || !mounted) return false;
     }
-    _stopEditing();
+    return true;
+  }
+
+  /// Back while editing leaves the editor, after asking when there are changes.
+  Future<void> _leaveEditor() async {
+    if (await _mayDiscard()) _stopEditing();
+  }
+
+  /// Reload after a conflict drops the edits, so it asks first too.
+  Future<void> _reloadAfterConflict() async {
+    if (await _mayDiscard()) await _reload();
   }
 
   @override
@@ -197,7 +207,7 @@ class _FileScreenState extends State<FileScreen> {
           _ when editor != null => Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (_conflict) _ConflictBanner(onReload: _reload),
+              if (_conflict) _ConflictBanner(onReload: _reloadAfterConflict),
               // Read-only while saving: the save sends the text as it was, then
               // reloads, so anything typed meanwhile would be lost.
               Expanded(child: _Editor(controller: editor, readOnly: _saving)),
