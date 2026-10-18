@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -150,6 +151,24 @@ final machinesProvider = AsyncNotifierProvider<MachinesNotifier, SavedMachines>(
 class MachinesNotifier extends AsyncNotifier<SavedMachines> {
   MachineStore get _store => ref.read(machineStoreProvider);
 
+  /// Ends when the last queued storage change has finished.
+  Future<void> _tail = Future.value();
+
+  /// Runs [action] after every earlier call has finished, so each
+  /// read-modify-write of the saved machines runs alone. Never call it from
+  /// inside [action]. Network calls stay outside it.
+  Future<T> _serial<T>(Future<T> Function() action) async {
+    final previous = _tail;
+    final done = Completer<void>();
+    _tail = done.future;
+    await previous;
+    try {
+      return await action();
+    } finally {
+      done.complete();
+    }
+  }
+
   @override
   Future<SavedMachines> build() => _store.read();
 
@@ -176,17 +195,20 @@ class MachinesNotifier extends AsyncNotifier<SavedMachines> {
       url: payload.url,
       deviceToken: body['deviceToken'] as String,
     );
-    final saved = await _store.read();
-    final old = [
-      for (final m in saved.visible)
-        if (m.id == machine.id) m.markedRemoving(),
-    ];
-    await _store.write([
-      for (final m in saved.all)
-        if (m.removing || m.id != machine.id) m,
-      ...old,
-      machine,
-    ]);
+    final old = await _serial(() async {
+      final saved = await _store.read();
+      final old = [
+        for (final m in saved.visible)
+          if (m.id == machine.id) m.markedRemoving(),
+      ];
+      await _store.write([
+        for (final m in saved.all)
+          if (m.removing || m.id != machine.id) m,
+        ...old,
+        machine,
+      ]);
+      return old;
+    });
     await select(machine.id);
     for (final m in old) {
       await _revoke(m);
@@ -195,11 +217,13 @@ class MachinesNotifier extends AsyncNotifier<SavedMachines> {
 
   /// Hides the machine at once, then revokes its token.
   Future<void> remove(Machine machine) async {
-    final saved = await _store.read();
-    await _store.write([
-      for (final m in saved.all)
-        m.deviceToken == machine.deviceToken ? m.markedRemoving() : m,
-    ]);
+    await _serial(() async {
+      final saved = await _store.read();
+      await _store.write([
+        for (final m in saved.all)
+          m.deviceToken == machine.deviceToken ? m.markedRemoving() : m,
+      ]);
+    });
     state = AsyncData(await _store.read());
     await _revoke(machine);
   }
@@ -219,7 +243,7 @@ class MachinesNotifier extends AsyncNotifier<SavedMachines> {
     } on DioException catch (e) {
       if (e.response?.statusCode != 401) return;
     }
-    await _store.remove(machine);
+    await _serial(() => _store.remove(machine));
     state = AsyncData(await _store.read());
   }
 }

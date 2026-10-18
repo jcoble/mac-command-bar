@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -42,6 +43,41 @@ class FakeAdapter implements HttpClientAdapter {
 
   @override
   void close({bool force = false}) {}
+}
+
+/// A store whose writes land 10 ms after they start, once [holdWrites] is set,
+/// so two unserialized read-modify-writes overlap.
+class SlowWriteStore extends MachineStore {
+  SlowWriteStore(super.storage);
+
+  bool holdWrites = false;
+  final writeStarted = Completer<void>();
+
+  @override
+  Future<void> write(List<Machine> machines) async {
+    if (holdWrites) {
+      if (!writeStarted.isCompleted) writeStarted.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    await super.write(machines);
+  }
+}
+
+/// Holds every DELETE until [releaseDelete] is completed.
+class GatedDeleteAdapter extends FakeAdapter {
+  GatedDeleteAdapter(super.handler);
+
+  final releaseDelete = Completer<void>();
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    if (options.method == 'DELETE') await releaseDelete.future;
+    return super.fetch(options, requestStream, cancelFuture);
+  }
 }
 
 const workbox = Machine(
@@ -189,6 +225,50 @@ void main() {
     final saved = container.read(machinesProvider).requireValue;
     expect(saved.all.single.deviceToken, 'new-token');
     expect(saved.selected?.id, workbox.id);
+  });
+
+  test('concurrent_pair_and_removal_retry_keep_both_changes', () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final store = SlowWriteStore(const FlutterSecureStorage());
+    await store.write([workbox.markedRemoving()]);
+    final adapter = GatedDeleteAdapter(
+      (r) => r.method == 'POST'
+          ? (
+              200,
+              {
+                'deviceId': 'd3',
+                'deviceToken': 'laptop-new-token',
+                'machine': {'id': laptop.id, 'name': 'Laptop'},
+              },
+            )
+          : (204, null),
+    );
+    final container = ProviderContainer(
+      overrides: [
+        machineStoreProvider.overrideWithValue(store),
+        dioProvider.overrideWithValue(Dio()..httpClientAdapter = adapter),
+      ],
+    );
+    addTearDown(container.dispose);
+    await container.read(machinesProvider.future);
+    final notifier = container.read(machinesProvider.notifier);
+    store.holdWrites = true;
+
+    // The retry's DELETE is waiting; pairing starts and begins saving; then the
+    // DELETE completes while the pairing save is still in flight.
+    final retry = notifier.retryRemovals();
+    final pair = notifier.pair(
+      PairingPayload.parse(
+        '{"v":1,"url":"${laptop.url}","machine":"Laptop","code":"K7QM4XTD9P"}',
+      ),
+    );
+    await store.writeStarted.future;
+    adapter.releaseDelete.complete();
+    await Future.wait([retry, pair]);
+
+    final saved = await store.read();
+    expect(saved.all.map((m) => m.deviceToken), ['laptop-new-token']);
+    expect(saved.selected?.id, laptop.id);
   });
 
   test('home_machine_is_the_newest_orchestrator_mark', () {

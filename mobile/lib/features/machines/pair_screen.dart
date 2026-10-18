@@ -41,14 +41,18 @@ class _PairScreenState extends ConsumerState<PairScreen> {
       _error = null;
     });
     try {
-      await ref
-          .read(machinesProvider.notifier)
-          .pair(PairingPayload.parse(text));
+      final payload = PairingPayload.parse(text);
+      // Keep the typed fields in step so a failed scan can be retried by hand.
+      _url.text = payload.url;
+      _code.text = payload.code;
+      await ref.read(machinesProvider.notifier).pair(payload);
       if (mounted) context.go('/chat');
     } on FormatException catch (e) {
       _error = e.message;
+      _lastScan = null;
     } on DioException catch (e) {
       _error = ApiException.fromDioException(e).message;
+      _lastScan = null;
     }
     if (mounted) setState(() => _busy = false);
   }
