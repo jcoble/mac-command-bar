@@ -2383,6 +2383,32 @@ impl SessionStore {
         rows.collect::<rusqlite::Result<_>>().map_err(|error| StoreError::sqlite("could not read a paired phone", error))
     }
 
+    /// Gives `fcm_token` to this phone alone: the one statement also clears it from every other row.
+    pub fn set_phone_push_token(&self, device_id: &str, fcm_token: &str) -> Result<()> {
+        self.lock_write()?.execute(
+            "UPDATE phone_devices SET fcm_token = CASE WHEN id = ?1 THEN ?2 ELSE NULL END WHERE id = ?1 OR fcm_token = ?2",
+            params![device_id, fcm_token],
+        ).map_err(|error| StoreError::sqlite("could not save the phone's push token", error))?;
+        Ok(())
+    }
+
+    /// The push tokens of phones that have not been removed.
+    pub fn phone_push_tokens(&self) -> Result<Vec<String>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare("SELECT fcm_token FROM phone_devices WHERE revoked_at IS NULL AND fcm_token IS NOT NULL")
+            .map_err(|error| StoreError::sqlite("could not list push tokens", error))?;
+        let rows = statement.query_map([], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not list push tokens", error))?;
+        rows.collect::<rusqlite::Result<_>>().map_err(|error| StoreError::sqlite("could not read a push token", error))
+    }
+
+    /// Forgets a push token that Google no longer accepts.
+    pub fn clear_phone_push_token(&self, fcm_token: &str) -> Result<()> {
+        self.lock_write()?.execute("UPDATE phone_devices SET fcm_token = NULL WHERE fcm_token = ?1", [fcm_token])
+            .map_err(|error| StoreError::sqlite("could not clear the push token", error))?;
+        Ok(())
+    }
+
     /// Removes a paired phone: its token stops working and it gets no more pushes.
     pub fn revoke_phone_device(&self, id: &str, now: i64) -> Result<bool> {
         let changed = self.lock_write()?.execute(

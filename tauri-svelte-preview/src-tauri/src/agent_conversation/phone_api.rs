@@ -26,6 +26,7 @@ use super::protocol::{
     AgentConversationEvent, AgentConversationPayload as Payload, AgentNativeSessionMode, EnsureAgentConversationRequest,
     ExecutionEnvironment, RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest, ToolState, TurnState,
 };
+use super::phone_push::PushSender;
 use super::remote::{execute_phone_command, RemoteCommand, RemoteResponse, ServerState};
 use crate::workflow::{WorkflowError, WorkflowNodeState, WorkflowOutputContract, WorkflowRunRecord, WorkflowRunState};
 
@@ -42,6 +43,7 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 /// `GET /chat` reads one desktop-sized page of events, and with no `after` keeps its newest 100 items.
 const CHAT_PAGE_BYTES: u32 = 1024 * 1024;
 const LATEST_CHAT_ITEMS: usize = 100;
+const MAX_PUSH_TOKEN_CHARS: usize = 4096;
 
 /// Bumped whenever a phone is removed, so each open live socket checks its own token and closes if it went.
 static DEVICE_REMOVED: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::channel(0).0);
@@ -67,6 +69,7 @@ pub(super) fn router(state: ServerState) -> Router {
         .route("/phone/v1/inbox", get(inbox))
         .route("/phone/v1/inbox/{id}/answer", post(answer))
         .route("/phone/v1/live", get(live))
+        .route("/phone/v1/push-token", post(push_token))
         .route_layer(from_fn_with_state(state.clone(), require_device));
     Router::new()
         .route("/phone/v1/pair", post(pair))
@@ -105,12 +108,53 @@ pub(super) async fn start_listener(bind: Option<&str>, state: ServerState) -> bo
         }
     };
     println!("Assembly phone listener on {bind}");
+    match std::env::var("ASSEMBLY_FCM_SERVICE_ACCOUNT").ok().filter(|path| !path.is_empty()) {
+        Some(path) => if let Some(sender) = PushSender::from_key_file(std::path::Path::new(&path)) { spawn_push(state.clone(), sender); },
+        None => println!("Phone push is off: ASSEMBLY_FCM_SERVICE_ACCOUNT is not set"),
+    }
     tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, router(state)).await {
             eprintln!("Phone listener stopped: {error}");
         }
     });
     true
+}
+
+/// Rings the phones once for each inbox item that appears. It wakes on any permission request or run
+/// change, recomputes the inbox, and sends for each `(id, version)` it has not seen. It starts from
+/// the items already waiting, so a restart does not ring for them again.
+fn spawn_push(state: ServerState, sender: PushSender) {
+    use tokio::sync::broadcast::error::RecvError;
+    tokio::spawn(async move {
+        let mut events = state.events.subscribe();
+        let mut runs = state.workflow.run_changes();
+        let mut seen: HashSet<(String, i64)> = inbox_items(&state).map(|items| item_keys(&items)).unwrap_or_default();
+        loop {
+            let closed = tokio::select! {
+                event = events.recv() => match event {
+                    Ok(event) if !matches!(event.payload, Payload::Approval { .. }) => continue,
+                    Err(RecvError::Closed) => true,
+                    _ => false,
+                },
+                change = runs.recv() => matches!(change, Err(RecvError::Closed)),
+            };
+            if closed { break; }
+            let Ok(items) = inbox_items(&state) else { continue };
+            let store = state.manager.store();
+            let machine = store.phone_machine().unwrap_or(None);
+            for (_, item) in &items {
+                let key = (item["id"].as_str().unwrap_or_default().to_string(), item["version"].as_i64().unwrap_or(0));
+                if let (false, Some(machine)) = (seen.contains(&key), &machine) {
+                    sender.send_inbox_push(store, machine, item).await;
+                }
+            }
+            seen = item_keys(&items);
+        }
+    });
+}
+
+fn item_keys(items: &[(Option<String>, Value)]) -> HashSet<(String, i64)> {
+    items.iter().map(|(_, item)| (item["id"].as_str().unwrap_or_default().to_string(), item["version"].as_i64().unwrap_or(0))).collect()
 }
 
 /// Answers the desktop's phone operations, sent as workflow operations over its
@@ -496,6 +540,22 @@ fn answered_elsewhere(error: &str) -> bool {
         Err(_) => ["Approval request is no longer pending", "Stale approval request", "Conversation connection changed"]
             .iter().any(|refusal| error.starts_with(refusal)),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PushTokenRequest {
+    fcm_token: String,
+}
+
+/// `POST /phone/v1/push-token {fcmToken}` → 204: this phone, and no other, gets the pushes for that token.
+async fn push_token(State(state): State<ServerState>, Extension(device): Extension<Device>, body: Bytes) -> Reply {
+    let request: PushTokenRequest = parse(&body)?;
+    if request.fcm_token.trim().is_empty() || request.fcm_token.chars().count() > MAX_PUSH_TOKEN_CHARS {
+        return Err(refuse(StatusCode::BAD_REQUEST, "The push token must be 1 to 4096 characters"));
+    }
+    state.manager.store().set_phone_push_token(&device.id, &request.fcm_token).map_err(|error| server_error(&error))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// `GET /phone/v1/live`: a WebSocket of `chat`, `chatDelta`, `turn` and `changed` frames (§5.3).
@@ -1043,5 +1103,61 @@ mod tests {
                 other => panic!("one answer must win and the other be stale, got {other:?} with the run {state_now}"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn push_token_moves_off_other_device_rows() {
+        let (state, base) = phone_server().await;
+        let (a, b) = (paired(&state, &base).await, paired(&state, &base).await);
+        let set = |token: &str, fcm: &str| client(reqwest::Method::POST, &base, "/push-token", token).json(&json!({"fcmToken": fcm})).send();
+        assert_eq!(set(&a, "fcm-1").await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(state.manager.store().phone_push_tokens().unwrap(), ["fcm-1"]);
+        assert_eq!(set(&b, "fcm-1").await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(state.manager.store().phone_push_tokens().unwrap(), ["fcm-1"], "one row holds it");
+        // Removing B must leave nothing: A no longer holds the token.
+        assert_eq!(client(reqwest::Method::DELETE, &base, "/me", &b).send().await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        assert!(state.manager.store().phone_push_tokens().unwrap().is_empty());
+        for bad in ["".to_string(), "  ".to_string(), "x".repeat(4097)] {
+            assert_eq!(set(&a, &bad).await.unwrap().status(), reqwest::StatusCode::BAD_REQUEST, "{} chars", bad.len());
+        }
+        assert_eq!(set(&a, &"x".repeat(4096)).await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        let stranger = reqwest::Client::new().post(format!("{base}/phone/v1/push-token")).json(&json!({"fcmToken": "x"})).send().await.unwrap();
+        assert_eq!(stranger.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn inbox_push_missing_service_account_skips_without_error() {
+        let (state, _) = phone_server().await;
+        std::env::set_var("ASSEMBLY_FCM_SERVICE_ACCOUNT", "/var/tmp/tsk-1416-no-such-service-account.json");
+        assert!(start_listener(Some("127.0.0.1:0"), state).await, "the phone listener starts without a key");
+        std::env::remove_var("ASSEMBLY_FCM_SERVICE_ACCOUNT");
+    }
+
+    #[tokio::test]
+    async fn inbox_push_rings_once_per_new_item() {
+        use super::super::phone_push::tests::{fake_fcm, test_sender};
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let set = client(reqwest::Method::POST, &base, "/push-token", &token).json(&json!({"fcmToken": "fcm-1"})).send().await.unwrap();
+        assert_eq!(set.status(), reqwest::StatusCode::NO_CONTENT);
+        let fake = fake_fcm(200, "{}").await;
+        super::spawn_push(state.clone(), test_sender(&fake));
+        let run_id = start_run(&state, LOOP_STOPS).await;
+        let item = inbox_item(&base, &token, &run_id).await;
+        for _ in 0..200 {
+            if !fake.messages.lock().unwrap().is_empty() { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // Further run changes (a second run that finishes) must not ring for the first item again.
+        let other = start_run(&state, "  ok: { run: [\"true\"] }\n").await;
+        for _ in 0..200 {
+            if serde_json::to_value(state.workflow.get_run(&other).unwrap().state).unwrap() == "completed" { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let messages = fake.messages.lock().unwrap();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert_eq!(messages[0]["message"]["data"]["itemId"], item["id"]);
+        assert_eq!(messages[0]["message"]["token"], "fcm-1");
     }
 }
