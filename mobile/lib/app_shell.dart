@@ -15,7 +15,7 @@ class AppShell extends ConsumerWidget {
   final StatefulNavigationShell navigationShell;
 
   static const _tabs = [
-    _TabItem(label: 'Chat', title: 'Orchestrator', icon: Symbols.chat_rounded),
+    _TabItem(label: 'Sessions', title: 'Sessions', icon: Symbols.chat_rounded),
     _TabItem(label: 'Runs', title: 'Runs', icon: Symbols.list_rounded),
     _TabItem(label: 'Inbox', title: 'Inbox', icon: Symbols.inbox_rounded),
   ];

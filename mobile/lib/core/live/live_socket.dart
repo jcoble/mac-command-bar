@@ -23,6 +23,8 @@ class LiveSocket {
   final _frames = StreamController<Map<String, dynamic>>.broadcast();
   late final AppLifecycleListener _lifecycle;
   IOWebSocketChannel? _channel;
+  var _ready = false;
+  String? _watched;
   Timer? _retry;
   var _attempt = 0;
   var _closed = false;
@@ -49,6 +51,9 @@ class LiveSocket {
     }
     if (_channel != channel) return;
     _attempt = 0;
+    _ready = true;
+    // A new connection knows nothing of the last one's watch.
+    if (_watched != null) _sendWatch();
     _frames.add(const {'type': 'open'});
     channel.stream.listen(
       (data) {
@@ -62,8 +67,19 @@ class LiveSocket {
     );
   }
 
+  /// Asks the machine for [ownedId]'s chat frames, now and after every
+  /// reconnect; null goes back to the orchestrator's.
+  void watch(String? ownedId) {
+    _watched = ownedId;
+    if (_ready) _sendWatch();
+  }
+
+  void _sendWatch() =>
+      _channel?.sink.add(jsonEncode({'type': 'watch', 'ownedId': _watched}));
+
   void _dropAndRetry() {
     _channel = null;
+    _ready = false;
     if (_closed) return;
     final delay = _delays[_attempt.clamp(0, _delays.length - 1)];
     _attempt++;
@@ -75,6 +91,7 @@ class LiveSocket {
   void _disconnect() {
     final channel = _channel;
     _channel = null;
+    _ready = false;
     _retry?.cancel();
     _attempt = 0;
     channel?.sink.close();

@@ -42,8 +42,14 @@ class FakeAdapter implements HttpClientAdapter {
 class FakeLiveSocket implements LiveSocket {
   final controller = StreamController<Map<String, dynamic>>.broadcast();
 
+  /// Every session the chat asked the socket to watch, in order.
+  final watched = <String?>[];
+
   @override
   Stream<Map<String, dynamic>> get frames => controller.stream;
+
+  @override
+  void watch(String? ownedId) => watched.add(ownedId);
 
   @override
   void close() => controller.close();
@@ -80,6 +86,9 @@ const ownerItem = {
 
 const machineId = 'm-workbox';
 
+/// A session that is not the orchestrator.
+const session = (machineId, 'lane-1');
+
 Future<(ProviderContainer, FakeAdapter, FakeLiveSocket)> chatWith(
   (int, Object?) Function(RequestOptions request) handler,
 ) async {
@@ -95,13 +104,13 @@ Future<(ProviderContainer, FakeAdapter, FakeLiveSocket)> chatWith(
     ],
   );
   addTearDown(container.dispose);
-  container.listen(chatProvider(machineId), (_, _) {});
+  container.listen(chatProvider(session), (_, _) {});
   await pumpEventQueue();
   return (container, adapter, socket);
 }
 
 List<(String, String)> texts(ProviderContainer c) => [
-  for (final i in c.read(chatProvider(machineId)).requireValue.items)
+  for (final i in c.read(chatProvider(session)).requireValue.items)
     (i.id, i.text),
 ];
 
@@ -152,7 +161,7 @@ void main() {
       ('t1', '2 runs started'),
       ('a1', 'On it.'),
     ]);
-    final state = c.read(chatProvider(machineId)).requireValue;
+    final state = c.read(chatProvider(session)).requireValue;
     expect(state.cursor, 8);
     expect(state.working, isTrue);
   });
@@ -168,7 +177,7 @@ void main() {
       ..add({'type': 'chatDelta', 'seq': 2, 'itemId': 'a2', 'delta': 'Hel'})
       ..add({'type': 'chatDelta', 'seq': 3, 'itemId': 'a2', 'delta': 'lo'});
     await pumpEventQueue();
-    final open = c.read(chatProvider(machineId)).requireValue.items.single;
+    final open = c.read(chatProvider(session)).requireValue.items.single;
     expect(
       (open.id, open.kind, open.text, open.done),
       ('a2', 'agent', 'Hello', false),
@@ -200,12 +209,12 @@ void main() {
   test('typing_yes_in_chat_sends_text_not_an_answer', () async {
     final (c, adapter, _) = await chatWith(withPendingRequest);
 
-    await c.read(chatProvider(machineId).notifier).send('yes');
+    await c.read(chatProvider(session).notifier).send('yes');
 
     final post = adapter.requests.singleWhere((r) => r.method == 'POST');
-    expect(post.path, 'chat');
+    expect(post.path, 'sessions/lane-1/chat');
     expect(post.data, {'text': 'yes'});
-    final sent = c.read(chatProvider(machineId)).requireValue.items.single;
+    final sent = c.read(chatProvider(session)).requireValue.items.single;
     expect((sent.id, sent.kind, sent.text), ('u9', 'owner', 'yes'));
   });
 
@@ -213,7 +222,7 @@ void main() {
     final (c, adapter, _) = await chatWith(withPendingRequest);
 
     for (final text in ['yes', 'Yes', 'y', 'allow', 'Allow once', '1']) {
-      await c.read(chatProvider(machineId).notifier).send(text);
+      await c.read(chatProvider(session).notifier).send(text);
     }
 
     expect(adapter.requests.where((r) => r.path.contains('inbox')), isEmpty);
@@ -227,6 +236,33 @@ void main() {
           {'text': text},
       ],
     );
+  });
+
+  test('chat_for_session_uses_its_endpoints', () async {
+    final (c, adapter, _) = await chatWith(
+      (r) => r.method == 'POST'
+          ? (200, {'itemId': 'u1'})
+          : (200, {'items': [], 'cursor': 1, 'turn': 'idle', 'ownerItems': []}),
+    );
+
+    await c.read(chatProvider(session).notifier).send('Reply with pong');
+
+    expect(
+      [for (final r in adapter.requests) (r.method, r.path)],
+      [('GET', 'sessions/lane-1/chat'), ('POST', 'sessions/lane-1/chat')],
+    );
+  });
+
+  test('opening_a_session_sends_watch_frame', () async {
+    final (c, _, socket) = await chatWith(
+      (_) =>
+          (200, {'items': [], 'cursor': 1, 'turn': 'idle', 'ownerItems': []}),
+    );
+    expect(socket.watched, ['lane-1']);
+
+    // Closing the chat stops watching it.
+    c.dispose();
+    expect(socket.watched, ['lane-1', null]);
   });
 
   test('reconnect_refetches_after_cursor', () async {
@@ -260,7 +296,7 @@ void main() {
 
     expect(adapter.requests.last.queryParameters, {'after': 12});
     expect(texts(c), [('u1', 'Hi'), ('a1', 'Hello')]);
-    final state = c.read(chatProvider(machineId)).requireValue;
+    final state = c.read(chatProvider(session)).requireValue;
     expect((state.cursor, state.working), (15, false));
   });
 }
