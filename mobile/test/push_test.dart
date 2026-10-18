@@ -43,6 +43,15 @@ void main() {
       isNull,
     );
     expect(await push.routeForTap({'machineId': workbox.id}), isNull);
+    // A finished reply opens that session's chat.
+    expect(
+      await push.routeForTap({
+        'machineId': laptop.id,
+        'sessionId': 's-1',
+        'kind': 'turn',
+      }),
+      '/chat/s-1',
+    );
     expect(
       container.read(machinesProvider).requireValue.selected?.id,
       laptop.id,
