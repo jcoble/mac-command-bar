@@ -1,98 +1,243 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
 import '../../core/api/api_exception.dart';
 import '../../core/theme/app_recipes.dart';
 import '../../core/theme/app_tokens.dart';
+import '../../core/widgets/app_sheet.dart';
 import '../../core/widgets/mobile_m3_list.dart';
 import '../runs/runs_screen.dart';
 import 'chat_repository.dart';
 
+/// The thread's rows: each run of consecutive tool calls is one row, and
+/// every other item is a row of its own.
+List<List<ChatItem>> chatRows(List<ChatItem> items) {
+  final rows = <List<ChatItem>>[];
+  for (final item in items) {
+    if (item.kind == 'tool' && rows.lastOrNull?.last.kind == 'tool') {
+      rows.last.add(item);
+    } else {
+      rows.add([item]);
+    }
+  }
+  return rows;
+}
+
+/// "Ran 3 commands", or "Ran" and the summary for one tool call.
+String toolGroupLabel(List<ChatItem> tools) => tools.length == 1
+    ? 'Ran ${tools.single.text}'
+    : 'Ran ${tools.length} commands';
+
 /// Rental Command's `_MessageThread` (`message_detail_screen.dart`), newest at
-/// the bottom. Reversed so new items keep the view pinned to the bottom.
-class ChatThread extends StatelessWidget {
-  const ChatThread({
-    super.key,
-    required this.items,
-    required this.working,
-    required this.onOpenTool,
-  });
+/// the bottom. Reversed so new items keep the view pinned to the bottom. A
+/// round button scrolls back down once the owner has scrolled up.
+class ChatThread extends StatefulWidget {
+  const ChatThread({super.key, required this.items, required this.onOpenTools});
 
   final List<ChatItem> items;
-  final bool working;
 
-  /// Opens a tool line that has detail.
-  final void Function(ChatItem item) onOpenTool;
+  /// Opens a run of tool calls in the tool sheet.
+  final void Function(List<ChatItem> tools) onOpenTools;
+
+  @override
+  State<ChatThread> createState() => _ChatThreadState();
+}
+
+class _ChatThreadState extends State<ChatThread> {
+  final _scroll = ScrollController();
+  var _scrolledUp = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scroll.addListener(() {
+      final up = _scroll.offset > 400;
+      if (up != _scrolledUp) setState(() => _scrolledUp = up);
+    });
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final count = items.length + (working ? 1 : 0);
-    return ListView.builder(
-      reverse: true,
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-      itemCount: count,
-      itemBuilder: (context, i) {
-        if (working && i == 0) return const _WorkingLine();
-        final item = items[count - 1 - i];
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: switch (item.kind) {
-            'owner' || 'agent' => _MessageBubble(item: item),
-            'relayed' => _RelayedCard(item: item),
-            _ => _ToolLine(
-              item: item,
-              onTap: item.kind == 'tool' && item.hasDetail
-                  ? () => onOpenTool(item)
-                  : null,
-            ),
+    final scheme = Theme.of(context).colorScheme;
+    final rows = chatRows(widget.items);
+    return Stack(
+      alignment: Alignment.bottomCenter,
+      children: [
+        ListView.builder(
+          controller: _scroll,
+          reverse: true,
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+          itemCount: rows.length,
+          itemBuilder: (context, i) {
+            final row = rows[rows.length - 1 - i];
+            final item = row.first;
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: switch (item.kind) {
+                'owner' => _OwnerBubble(item: item),
+                'agent' => _AgentReply(item: item),
+                'relayed' => _RelayedCard(item: item),
+                'tool' => _ToolGroupRow(
+                  label: toolGroupLabel(row),
+                  // A single call with no detail has nothing to open.
+                  onTap: row.length == 1 && !item.hasDetail
+                      ? null
+                      : () => widget.onOpenTools(row),
+                ),
+                _ => _ErrorLine(item: item),
+              },
+            );
           },
-        );
-      },
+        ),
+        if (_scrolledUp)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: IconButton(
+              tooltip: 'Scroll to the latest',
+              style: IconButton.styleFrom(
+                backgroundColor: scheme.surfaceContainerHighest,
+                side: BorderSide(color: scheme.outlineVariant),
+              ),
+              icon: const Icon(Symbols.arrow_downward_rounded),
+              onPressed: () => _scroll.animateTo(
+                0,
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeOutCubic,
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
 
-/// `_MessageBubble`: the owner on the right in primary, the session on the
-/// left in surfaceContainerHighest.
-class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.item});
+/// Chat text: 17 with room between lines, for owner and agent alike.
+TextStyle? _chatText(ThemeData theme) =>
+    theme.textTheme.bodyLarge?.copyWith(fontSize: 17, height: 1.45);
+
+/// The owner's message, a rounded bubble on the right.
+class _OwnerBubble extends StatelessWidget {
+  const _OwnerBubble({required this.item});
 
   final ChatItem item;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final mine = item.kind == 'owner';
     return Align(
-      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+      alignment: Alignment.centerRight,
       child: ConstrainedBox(
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.sizeOf(context).width * 0.78,
+          maxWidth: MediaQuery.sizeOf(context).width * 0.8,
         ),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
-            color: mine ? scheme.primary : scheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(16),
-              topRight: const Radius.circular(16),
-              bottomLeft: Radius.circular(mine ? 16 : 4),
-              bottomRight: Radius.circular(mine ? 4 : 16),
-            ),
+            color: theme.colorScheme.surfaceContainerHigh,
+            borderRadius: M3Shape.radiusLargeIncreased,
           ),
-          child: Text(
-            item.text,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: mine ? scheme.onPrimary : scheme.onSurface,
-              height: 1.4,
-            ),
-          ),
+          child: Text(item.text, style: _chatText(theme)),
         ),
       ),
     );
   }
+}
+
+/// The session's reply: markdown on the background, full width, with a copy
+/// button once it is finished.
+class _AgentReply extends StatelessWidget {
+  const _AgentReply({required this.item});
+
+  final ChatItem item;
+
+  Future<void> _copy(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    await Clipboard.setData(ClipboardData(text: item.text));
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(content: Text('Copied')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final body = _chatText(theme)!;
+    final mono = body.copyWith(
+      fontFamily: 'monospace',
+      fontFamilyFallback: const ['monospace'],
+      fontSize: 14.5,
+      height: 1.5,
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        MarkdownBody(
+          data: item.text,
+          // Full width, so code blocks span the screen.
+          fitContent: false,
+          syntaxHighlighter: _PlainCode(mono),
+          styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+            p: body,
+            a: body.copyWith(
+              color: scheme.primary,
+              decoration: TextDecoration.underline,
+            ),
+            code: mono.copyWith(
+              fontSize: 15.5,
+              color: scheme.primary,
+              backgroundColor: scheme.surfaceContainerHigh,
+            ),
+            h1: body.copyWith(fontSize: 22, fontWeight: FontWeight.w700),
+            h2: body.copyWith(fontSize: 20, fontWeight: FontWeight.w700),
+            h3: body.copyWith(fontSize: 18, fontWeight: FontWeight.w700),
+            blockSpacing: 8,
+            listBullet: body,
+            tableHead: body.copyWith(fontWeight: FontWeight.w700),
+            tableBody: body,
+            codeblockPadding: const EdgeInsets.all(14),
+            codeblockDecoration: BoxDecoration(
+              color: scheme.surfaceContainerLowest,
+              borderRadius: M3Shape.radiusMedium,
+              border: Border.all(color: scheme.outlineVariant),
+            ),
+          ),
+        ),
+        if (item.done)
+          IconButton(
+            tooltip: 'Copy',
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            alignment: Alignment.centerLeft,
+            icon: Icon(
+              Symbols.content_copy_rounded,
+              size: 20,
+              color: scheme.onSurfaceVariant,
+            ),
+            onPressed: () => _copy(context),
+          ),
+      ],
+    );
+  }
+}
+
+/// Code blocks in plain monospace, without the inline-code tint.
+class _PlainCode extends SyntaxHighlighter {
+  _PlainCode(this.style);
+
+  final TextStyle style;
+
+  @override
+  TextSpan format(String source) => TextSpan(text: source, style: style);
 }
 
 /// A message another session sent this one: `[message from <label>]\n<text>`.
@@ -123,66 +268,75 @@ class _RelayedCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 4),
-          Text(
-            item.text.substring(match?.end ?? 0),
-            style: theme.textTheme.bodyMedium?.copyWith(height: 1.4),
-          ),
+          Text(item.text.substring(match?.end ?? 0), style: _chatText(theme)),
         ],
       ),
     );
   }
 }
 
-/// One grey line per tool call ("2 runs started"), or an error in red. A
-/// tool call with detail opens on tap.
-class _ToolLine extends StatelessWidget {
-  const _ToolLine({required this.item, this.onTap});
+/// A run of tool calls as one muted line, "Ran 3 commands ›".
+class _ToolGroupRow extends StatelessWidget {
+  const _ToolGroupRow({required this.label, this.onTap});
 
-  final ChatItem item;
+  final String label;
   final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final error = item.kind == 'error';
-    final color = error
-        ? theme.colorScheme.error
-        : theme.colorScheme.onSurfaceVariant;
+    final color = theme.colorScheme.onSurfaceVariant;
     return InkWell(
       onTap: onTap,
       borderRadius: M3Shape.radiusSmall,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        padding: const EdgeInsets.symmetric(vertical: 6),
         child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(
-              error
-                  ? Symbols.error_rounded
-                  : item.done
-                  ? Symbols.check_rounded
-                  : Symbols.more_horiz_rounded,
-              size: 16,
-              color: error || !item.done ? color : theme.colorScheme.secondary,
-            ),
-            const SizedBox(width: 8),
-            Expanded(
+            Flexible(
               child: Text(
-                item.text,
-                maxLines: error ? null : 2,
-                overflow: error ? null : TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: color,
-                  fontFamily: error ? null : 'monospace',
-                  fontSize: error ? null : 11.5,
-                ),
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyLarge?.copyWith(color: color),
               ),
             ),
-            if (onTap != null)
-              Icon(Symbols.chevron_right_rounded, size: 16, color: color),
+            if (onTap != null) ...[
+              const SizedBox(width: 4),
+              Icon(Symbols.chevron_right_rounded, size: 20, color: color),
+            ],
           ],
         ),
       ),
+    );
+  }
+}
+
+/// A session error, in red.
+class _ErrorLine extends StatelessWidget {
+  const _ErrorLine({required this.item});
+
+  final ChatItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = theme.colorScheme.error;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Icon(Symbols.error_rounded, size: 18, color: color),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            item.text,
+            style: theme.textTheme.bodyMedium?.copyWith(color: color),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -204,134 +358,262 @@ DiffLineKind diffLineKind(String line) {
   return DiffLineKind.context;
 }
 
-/// Opens [item]'s detail in a bottom sheet; [detail] is its fetch, started on tap.
+/// Opens a run of tool calls in a sheet: the list, then one call's detail
+/// with a back arrow. A single call with detail opens on its detail.
+/// [load] reads a call's detail when it is opened.
 void showToolSheet(
   BuildContext context,
-  ChatItem item,
-  Future<ToolItem> detail,
-) => showModalBottomSheet<void>(
-  context: context,
-  showDragHandle: true,
-  isScrollControlled: true,
-  builder: (_) => DraggableScrollableSheet(
-    expand: false,
-    initialChildSize: 0.6,
-    minChildSize: 0.3,
-    maxChildSize: 0.9,
-    builder: (context, controller) => FutureBuilder<ToolItem>(
-      future: detail,
-      builder: (context, snapshot) {
-        final diff = snapshot.data?.diff ?? '';
-        final lines = diff.isEmpty ? const <String>[] : diff.split('\n');
-        if (lines.isNotEmpty && lines.last.isEmpty) lines.removeLast();
-        return ListView.builder(
-          controller: controller,
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
-          itemCount: 1 + lines.length,
-          itemBuilder: (context, i) => i == 0
-              ? _ToolHead(item: item, snapshot: snapshot)
-              : _DiffLine(lines[i - 1], first: i == 1, last: i == lines.length),
-        );
-      },
-    ),
-  ),
-);
+  List<ChatItem> tools,
+  Future<ToolItem> Function(String itemId) load,
+) => showAppSheet<void>(context, (_) => _ToolSheet(tools: tools, load: load));
 
-/// The sheet above the diff: name, state, path, command, output.
-class _ToolHead extends StatelessWidget {
-  const _ToolHead({required this.item, required this.snapshot});
+class _ToolSheet extends StatefulWidget {
+  const _ToolSheet({required this.tools, required this.load});
+
+  final List<ChatItem> tools;
+  final Future<ToolItem> Function(String itemId) load;
+
+  @override
+  State<_ToolSheet> createState() => _ToolSheetState();
+}
+
+class _ToolSheetState extends State<_ToolSheet> {
+  late final _single =
+      widget.tools.length == 1 && widget.tools.single.hasDetail;
+  Future<ToolItem>? _detail;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_single) _detail = widget.load(widget.tools.single.id);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final detail = _detail;
+    if (detail == null) {
+      return AppSheet(
+        title: toolGroupLabel(widget.tools),
+        itemCount: widget.tools.length,
+        itemBuilder: (context, i) {
+          final item = widget.tools[i];
+          return _ToolListRow(
+            item: item,
+            onTap: item.hasDetail
+                // A block body: setState must not be handed the Future.
+                ? () => setState(() {
+                    _detail = widget.load(item.id);
+                  })
+                : null,
+          );
+        },
+      );
+    }
+    // The system back gesture returns to the list, as the arrow does.
+    return PopScope(
+      canPop: _single,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) setState(() => _detail = null);
+      },
+      child: FutureBuilder<ToolItem>(
+        future: detail,
+        builder: (context, snapshot) {
+          final tool = snapshot.data;
+          final error = snapshot.error;
+          final head = <Widget>[
+            if (snapshot.connectionState != ConnectionState.done)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 32),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            else if (error != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Text(
+                  error is ApiException
+                      ? error.message
+                      : "Couldn't load this tool call.",
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
+              ),
+            if (tool?.summary case final summary?
+                when summary.isNotEmpty && summary != tool?.path)
+              _ToolField(
+                label: tool!.name == 'Bash' ? 'Command' : 'Summary',
+                text: summary,
+              ),
+            if (tool?.path case final path?)
+              _ToolField(label: 'Path', text: path, copy: false),
+            if (tool?.output case final output? when output.isNotEmpty) ...[
+              _ToolField(label: 'Output', text: output),
+              if (tool!.outputTruncated) const _CutNote('Output cut at 32 KB'),
+            ],
+            if (tool?.diff case final diff? when diff.isNotEmpty) ...[
+              const _FieldLabel('Diff'),
+              if (tool!.diffTruncated) const _CutNote('Diff cut at 64 KB'),
+            ],
+          ];
+          final diff = tool?.diff ?? '';
+          final lines = diff.isEmpty ? <String>[] : diff.split('\n');
+          if (lines.isNotEmpty && lines.last.isEmpty) lines.removeLast();
+          return AppSheet(
+            title: tool?.name ?? 'Tool call',
+            subtitle: switch (tool?.state) {
+              null => null,
+              'completed' => 'Completed',
+              'failed' => 'Failed',
+              _ => 'Running',
+            },
+            onBack: _single ? null : () => setState(() => _detail = null),
+            itemCount: head.length + lines.length,
+            itemBuilder: (context, i) => i < head.length
+                ? head[i]
+                : _DiffLine(
+                    lines[i - head.length],
+                    first: i == head.length,
+                    last: i == head.length + lines.length - 1,
+                  ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// One tool call in the sheet's list: icon, "Ran", its summary.
+class _ToolListRow extends StatelessWidget {
+  const _ToolListRow({required this.item, this.onTap});
 
   final ChatItem item;
-  final AsyncSnapshot<ToolItem> snapshot;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurfaceVariant;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: M3Shape.radiusSmall,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
+        child: Row(
+          children: [
+            Icon(Symbols.terminal_rounded, size: 20, color: muted),
+            const SizedBox(width: 12),
+            Text('Ran', style: theme.textTheme.bodyLarge),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                item.text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyLarge?.copyWith(color: muted),
+              ),
+            ),
+            if (onTap != null)
+              Icon(Symbols.chevron_right_rounded, size: 20, color: muted),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FieldLabel extends StatelessWidget {
+  const _FieldLabel(this.text, {this.trailing});
+
+  final String text;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(top: 16, bottom: 6),
+      child: SizedBox(
+        height: 36,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                text,
+                style: theme.textTheme.bodyLarge?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            ?trailing,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A labelled monospace box in the tool detail, with a copy button.
+class _ToolField extends StatefulWidget {
+  const _ToolField({required this.label, required this.text, this.copy = true});
+
+  final String label;
+  final String text;
+  final bool copy;
+
+  @override
+  State<_ToolField> createState() => _ToolFieldState();
+}
+
+class _ToolFieldState extends State<_ToolField> {
+  var _copied = false;
+
+  Future<void> _copy() async {
+    await Clipboard.setData(ClipboardData(text: widget.text));
+    if (mounted) setState(() => _copied = true);
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final mono = theme.textTheme.bodySmall?.copyWith(
-      fontFamily: 'monospace',
-      fontSize: 11.5,
-      height: 1.4,
-    );
-    final tool = snapshot.data;
-    final error = snapshot.error;
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            Expanded(
-              child: Text(
-                tool?.name ?? item.text,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-            if (tool != null)
-              StateChip(
-                RunLook.of(context, switch (tool.state) {
-                  'completed' || 'failed' => tool.state,
-                  _ => 'running',
-                }),
-              ),
-          ],
+        _FieldLabel(
+          widget.label,
+          trailing: widget.copy
+              ? IconButton(
+                  tooltip: _copied ? 'Copied' : 'Copy',
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(
+                    _copied
+                        ? Symbols.check_rounded
+                        : Symbols.content_copy_rounded,
+                    size: 20,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  onPressed: _copy,
+                )
+              : null,
         ),
-        if (tool?.path case final path?) ...[
-          const SizedBox(height: 4),
-          Text(
-            _middleEllipsis(path, 48),
-            maxLines: 1,
-            style: mono?.copyWith(color: scheme.onSurfaceVariant),
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerLowest,
+            borderRadius: M3Shape.radiusSmall,
           ),
-        ],
-        if (tool?.summary case final summary?
-            when summary.isNotEmpty && summary != tool?.path) ...[
-          const SizedBox(height: 12),
-          Text(
-            summary,
-            maxLines: 4,
-            overflow: TextOverflow.ellipsis,
-            style: mono,
-          ),
-        ],
-        if (snapshot.connectionState != ConnectionState.done)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 32),
-            child: Center(child: CircularProgressIndicator()),
-          )
-        else if (error != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 24),
-            child: Text(
-              error is ApiException
-                  ? error.message
-                  : "Couldn't load this tool call.",
-              style: theme.textTheme.bodyMedium?.copyWith(color: scheme.error),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SelectableText(
+              widget.text,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontFamily: 'monospace',
+                fontSize: 14,
+                height: 1.5,
+              ),
             ),
           ),
-        if (tool?.output case final output? when output.isNotEmpty) ...[
-          const SectionLabel('Output'),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: scheme.surfaceContainerLowest,
-              borderRadius: M3Shape.radiusMedium,
-            ),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SelectableText(output, style: mono),
-            ),
-          ),
-          if (tool!.outputTruncated) _CutNote('Output cut at 32 KB'),
-        ],
-        if (tool?.diff case final diff? when diff.isNotEmpty) ...[
-          const SectionLabel('Diff'),
-          if (tool!.diffTruncated) _CutNote('Diff cut at 64 KB'),
-        ],
+        ),
       ],
     );
   }
@@ -393,7 +675,7 @@ class _DiffLine extends StatelessWidget {
         line,
         style: theme.textTheme.bodySmall?.copyWith(
           fontFamily: 'monospace',
-          fontSize: 11.5,
+          fontSize: 13,
           height: 1.4,
           fontWeight: kind == DiffLineKind.header ? FontWeight.w700 : null,
           color: kind == DiffLineKind.hunk ? scheme.onSurfaceVariant : null,
@@ -639,91 +921,36 @@ void _showFileDiff(
   if (all.isNotEmpty && all.last.isEmpty) all.removeLast();
   final hunk = all.indexWhere((line) => line.startsWith('@@'));
   final lines = hunk < 0 ? all : all.sublist(hunk);
-  showModalBottomSheet<void>(
-    context: context,
-    showDragHandle: true,
-    isScrollControlled: true,
-    builder: (_) => DraggableScrollableSheet(
-      expand: false,
-      initialChildSize: 0.7,
-      minChildSize: 0.3,
-      maxChildSize: 0.9,
-      builder: (context, controller) {
-        final theme = Theme.of(context);
-        final head = Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    _fileName(file.path),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                _Counts(file.added, file.removed, large: true),
-              ],
-            ),
-            if (_folder(file.path) case final folder?) ...[
-              const SizedBox(height: 4),
-              Text(
-                _middleEllipsis(folder, 48),
-                maxLines: 1,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  fontFamily: 'monospace',
-                  fontSize: 11.5,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-            const SectionLabel('Diff'),
-            if (diff == null)
-              const _CutNote('This file is past the 256 KB the phone loads.')
-            else if (cut)
-              const _CutNote('Diff cut at 256 KB'),
-          ],
-        );
-        return ListView.builder(
-          controller: controller,
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
-          itemCount: 1 + lines.length,
-          itemBuilder: (context, i) => i == 0
-              ? head
-              : _DiffLine(lines[i - 1], first: i == 1, last: i == lines.length),
-        );
+  final head = [
+    Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: _Counts(file.added, file.removed, large: true),
+    ),
+    const _FieldLabel('Diff'),
+    if (diff == null)
+      const _CutNote('This file is past the 256 KB the phone loads.')
+    else if (cut)
+      const _CutNote('Diff cut at 256 KB'),
+  ];
+  showAppSheet<void>(
+    context,
+    (_) => AppSheet(
+      title: _fileName(file.path),
+      subtitle: switch (_folder(file.path)) {
+        final folder? => _middleEllipsis(folder, 40),
+        null => null,
       },
+      initialSize: 0.7,
+      itemCount: head.length + lines.length,
+      itemBuilder: (context, i) => i < head.length
+          ? head[i]
+          : _DiffLine(
+              lines[i - head.length],
+              first: i == head.length,
+              last: i == head.length + lines.length - 1,
+            ),
     ),
   );
-}
-
-/// The thin "working" line while the session's turn runs. A still dot:
-/// an endless animation would repaint the screen for the whole turn.
-class _WorkingLine extends StatelessWidget {
-  const _WorkingLine();
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 8, 4, 4),
-      child: Row(
-        children: [
-          Icon(Icons.circle, size: 8, color: theme.colorScheme.primary),
-          const SizedBox(width: 10),
-          Text(
-            'Working…',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 /// `_ComposeBar` + `_SendButton`, channel chips removed.
@@ -740,90 +967,82 @@ class ChatComposeBar extends StatelessWidget {
   final bool sending;
   final VoidCallback onSend;
 
-  /// Shown at the left of the message box, such as the model pill.
+  /// Shown under the message box on the left, such as the model pill.
   final Widget? leading;
-
-  static const _pill = OutlineInputBorder(
-    borderRadius: BorderRadius.all(Radius.circular(24)),
-    borderSide: BorderSide.none,
-  );
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     return SafeArea(
       top: false,
       child: Container(
+        margin: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+        padding: const EdgeInsets.fromLTRB(18, 4, 8, 8),
         decoration: BoxDecoration(
-          color: scheme.surface,
-          border: Border(top: BorderSide(color: scheme.outlineVariant)),
+          color: scheme.surfaceContainerHigh,
+          borderRadius: M3Shape.radiusExtraLarge,
+          border: Border.all(color: scheme.outlineVariant),
         ),
-        padding: const EdgeInsets.all(8),
-        child: TextField(
-          controller: controller,
-          minLines: 1,
-          maxLines: 5,
-          textCapitalization: TextCapitalization.sentences,
-          keyboardType: TextInputType.multiline,
-          decoration: InputDecoration(
-            hintText: 'Send a message…',
-            filled: true,
-            fillColor: scheme.surfaceContainerHighest,
-            contentPadding: EdgeInsetsDirectional.fromSTEB(
-              leading == null ? 18 : 10,
-              12,
-              8,
-              12,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: controller,
+              minLines: 1,
+              maxLines: 5,
+              textCapitalization: TextCapitalization.sentences,
+              keyboardType: TextInputType.multiline,
+              style: _chatText(theme),
+              decoration: const InputDecoration(
+                hintText: 'Send a message…',
+                filled: false,
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(vertical: 12),
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+              ),
             ),
-            prefixIcon: leading == null
-                ? null
-                : Padding(
-                    padding: const EdgeInsetsDirectional.only(start: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: Align(
+                    alignment: AlignmentDirectional.centerStart,
                     child: leading,
                   ),
-            prefixIconConstraints: BoxConstraints(
-              maxWidth: MediaQuery.sizeOf(context).width * 0.45,
-              minHeight: 40,
-            ),
-            suffixIcon: Padding(
-              padding: const EdgeInsetsDirectional.only(end: 6),
-              child: SizedBox(
-                width: 40,
-                height: 40,
-                child: Material(
-                  color: scheme.primary,
-                  shape: const CircleBorder(),
-                  child: InkWell(
-                    customBorder: const CircleBorder(),
-                    onTap: sending ? null : onSend,
-                    child: Center(
-                      child: sending
-                          ? SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
+                ),
+                SizedBox(
+                  width: 40,
+                  height: 40,
+                  child: Material(
+                    color: scheme.primary,
+                    shape: const CircleBorder(),
+                    child: InkWell(
+                      customBorder: const CircleBorder(),
+                      onTap: sending ? null : onSend,
+                      child: Center(
+                        child: sending
+                            ? SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: scheme.onPrimary,
+                                ),
+                              )
+                            : Icon(
+                                Symbols.arrow_upward_rounded,
                                 color: scheme.onPrimary,
+                                size: 22,
                               ),
-                            )
-                          : Icon(
-                              Symbols.send_rounded,
-                              color: scheme.onPrimary,
-                              size: 20,
-                            ),
+                      ),
                     ),
                   ),
                 ),
-              ),
+              ],
             ),
-            suffixIconConstraints: const BoxConstraints(
-              minWidth: 48,
-              minHeight: 40,
-            ),
-            border: _pill,
-            enabledBorder: _pill,
-            focusedBorder: _pill,
-          ),
+          ],
         ),
       ),
     );
@@ -888,36 +1107,6 @@ class ChatNotice extends StatelessWidget {
   }
 }
 
-/// The thin line under the chat's title: how much of the context window is left.
-class ContextLeftLine extends StatelessWidget implements PreferredSizeWidget {
-  const ContextLeftLine(this.percent, {super.key});
-
-  final int percent;
-
-  @override
-  Size get preferredSize => const Size.fromHeight(24);
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Padding(
-      // Lined up with the title, after the back button's width.
-      padding: const EdgeInsetsDirectional.fromSTEB(
-        kToolbarHeight + NavigationToolbar.kMiddleSpacing,
-        0,
-        16,
-        8,
-      ),
-      child: Text(
-        '$percent% context left',
-        style: theme.textTheme.bodySmall?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
-      ),
-    );
-  }
-}
-
 /// The composer's model pill: the model's label, then its effort in a lighter
 /// weight. A tap opens the model and effort sheet.
 class ModelChip extends ConsumerWidget {
@@ -931,13 +1120,13 @@ class ModelChip extends ConsumerWidget {
     final scheme = theme.colorScheme;
     final config = ref.watch(sessionConfigProvider(session)).value;
     return Material(
-      color: Colors.transparent,
-      shape: StadiumBorder(side: BorderSide(color: scheme.outlineVariant)),
+      color: scheme.surfaceContainerHighest,
+      shape: const StadiumBorder(),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: () => showModelSheet(context, session),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
+          padding: const EdgeInsets.fromLTRB(14, 8, 8, 8),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -978,12 +1167,7 @@ class ModelChip extends ConsumerWidget {
 
 /// The machine's models and efforts for [session], the current ones checked.
 void showModelSheet(BuildContext context, (String, String) session) =>
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (_) => _ModelSheet(session),
-    );
+    showAppSheet<void>(context, (_) => _ModelSheet(session));
 
 class _ModelSheet extends ConsumerStatefulWidget {
   const _ModelSheet(this.session);
@@ -1030,23 +1214,9 @@ class _ModelSheetState extends ConsumerState<_ModelSheet> {
         shrinkWrap: true,
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
         children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: Text(
-              'Model and effort',
-              style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(4, 2, 4, 6),
-            child: Text(
-              'Used from the next message',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
+          const AppSheetHeader(
+            title: 'Model and effort',
+            subtitle: 'Used from the next message',
           ),
           SizedBox(
             height: 2,
