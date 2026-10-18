@@ -2356,13 +2356,18 @@ impl SessionStore {
         Ok(())
     }
 
-    /// The id of the non-revoked phone holding `token_hash`, marked as seen at `now`.
+    /// The id of the non-revoked phone holding `token_hash`, marked as seen at `now`. An unknown or
+    /// revoked token is a read only; only a real phone's request writes.
     pub fn touch_phone_device(&self, token_hash: &str, now: i64) -> Result<Option<String>> {
         use rusqlite::OptionalExtension;
+        let found: Option<String> = self.lock()?.query_row(
+            "SELECT id FROM phone_devices WHERE token_hash = ?1 AND revoked_at IS NULL", [token_hash], |row| row.get(0),
+        ).optional().map_err(|error| StoreError::sqlite("could not check the phone token", error))?;
+        let Some(id) = found else { return Ok(None) };
         self.lock_write()?.query_row(
-            "UPDATE phone_devices SET last_seen_at = ?2 WHERE token_hash = ?1 AND revoked_at IS NULL RETURNING id",
-            params![token_hash, now], |row| row.get(0),
-        ).optional().map_err(|error| StoreError::sqlite("could not check the phone token", error))
+            "UPDATE phone_devices SET last_seen_at = ?2 WHERE id = ?1 AND revoked_at IS NULL RETURNING id",
+            params![id, now], |row| row.get(0),
+        ).optional().map_err(|error| StoreError::sqlite("could not mark the phone seen", error))
     }
 
     /// Paired phones that have not been removed, newest first.

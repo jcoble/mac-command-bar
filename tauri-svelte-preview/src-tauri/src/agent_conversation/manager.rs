@@ -3791,10 +3791,6 @@ impl AgentRuntimeManager {
         Ok(page)
     }
 
-    /// The page of transcript events just older than `before_sequence`.
-    ///
-    /// Opening a conversation ships one screen of history; scrolling up calls
-    /// this for the previous page until `has_more` says there is nothing older.
     /// Every permission request waiting on the owner in this manager's sessions.
     pub fn pending_permissions(&self) -> Vec<PendingPermissionItem> {
         let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3812,6 +3808,10 @@ impl AgentRuntimeManager {
         sessions.get(owned_id).is_some_and(|session| session.active_turn_id.is_some())
     }
 
+    /// The page of transcript events just older than `before_sequence`.
+    ///
+    /// Opening a conversation ships one screen of history; scrolling up calls
+    /// this for the previous page until `has_more` says there is nothing older.
     pub fn list_events_before(
         &self,
         owned_id: &str,

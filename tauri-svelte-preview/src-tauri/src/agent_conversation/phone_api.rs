@@ -11,8 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
 use axum::extract::ws::{rejection::WebSocketUpgradeRejection, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Extension, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -54,10 +55,10 @@ pub(super) struct PairingCode {
     wrong_tries: u32,
 }
 
-/// The phone listener's routes. It never serves the desktop's `/assembly` socket.
-pub(super) fn router() -> Router<ServerState> {
-    Router::new()
-        .route("/phone/v1/pair", post(pair))
+/// The phone listener's routes. It never serves the desktop's `/assembly` socket. Every route but
+/// pairing checks the device token before its handler runs, so no body is read for a stranger.
+pub(super) fn router(state: ServerState) -> Router {
+    let device_routes = Router::new()
         .route("/phone/v1/me", get(me).delete(forget_me))
         .route("/phone/v1/chat", get(chat).post(send_chat))
         .route("/phone/v1/runs", get(runs))
@@ -66,7 +67,29 @@ pub(super) fn router() -> Router<ServerState> {
         .route("/phone/v1/inbox", get(inbox))
         .route("/phone/v1/inbox/{id}/answer", post(answer))
         .route("/phone/v1/live", get(live))
+        .route_layer(from_fn_with_state(state.clone(), require_device));
+    Router::new()
+        .route("/phone/v1/pair", post(pair))
+        .merge(device_routes)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .with_state(state)
+}
+
+/// The paired phone a request came from, put on the request by `require_device`.
+#[derive(Clone)]
+struct Device {
+    id: String,
+    token_hash: String,
+}
+
+async fn require_device(State(state): State<ServerState>, mut request: Request, next: Next) -> Response {
+    match authorized_device(&state, request.headers()) {
+        Ok(device) => {
+            request.extensions_mut().insert(device);
+            next.run(request).await
+        }
+        Err(refused) => refused,
+    }
 }
 
 /// Starts the phone listener on `bind` when it is set. A bad or busy address is
@@ -83,7 +106,7 @@ pub(super) async fn start_listener(bind: Option<&str>, state: ServerState) -> bo
     };
     println!("Assembly phone listener on {bind}");
     tokio::spawn(async move {
-        if let Err(error) = axum::serve(listener, router().with_state(state)).await {
+        if let Err(error) = axum::serve(listener, router(state)).await {
             eprintln!("Phone listener stopped: {error}");
         }
     });
@@ -184,11 +207,8 @@ fn add_device(state: &ServerState, device_name: &str) -> Result<Value, String> {
 }
 
 /// `GET /phone/v1/me` → `{deviceId, machine:{id, name}, hostsOrchestrator, orchestratorMarkedAt}`.
-async fn me(State(state): State<ServerState>, headers: HeaderMap) -> Response {
-    let device_id = match authorized_device(&state, &headers) {
-        Ok(device_id) => device_id,
-        Err(response) => return response,
-    };
+async fn me(State(state): State<ServerState>, Extension(device): Extension<Device>) -> Response {
+    let device_id = device.id;
     let store = state.manager.store();
     let body = store.phone_machine().and_then(|machine| Ok((machine, store.main_orchestrator()?)))
         .map(|(machine, orchestrator)| json!({
@@ -205,10 +225,11 @@ async fn me(State(state): State<ServerState>, headers: HeaderMap) -> Response {
 
 /// The paired device whose bearer token this is, found among non-revoked
 /// devices in one SQL statement that also marks it seen. Anything else is 401.
-fn authorized_device(state: &ServerState, headers: &HeaderMap) -> Result<String, Response> {
+fn authorized_device(state: &ServerState, headers: &HeaderMap) -> Result<Device, Response> {
     let token = bearer(headers).ok_or_else(|| refuse(StatusCode::UNAUTHORIZED, REMOVED))?;
-    match state.manager.store().touch_phone_device(&token_hash(token), now_ms()) {
-        Ok(Some(device_id)) => Ok(device_id),
+    let token_hash = token_hash(token);
+    match state.manager.store().touch_phone_device(&token_hash, now_ms()) {
+        Ok(Some(id)) => Ok(Device { id, token_hash }),
         Ok(None) => Err(refuse(StatusCode::UNAUTHORIZED, REMOVED)),
         Err(error) => Err(server_error(&error)),
     }
@@ -219,9 +240,8 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// `DELETE /phone/v1/me` → 204: the phone removes itself with the desktop's Remove query.
-async fn forget_me(State(state): State<ServerState>, headers: HeaderMap) -> Reply {
-    let device_id = authorized_device(&state, &headers)?;
-    state.manager.store().revoke_phone_device(&device_id, now_ms()).map_err(|error| server_error(&error))?;
+async fn forget_me(State(state): State<ServerState>, Extension(device): Extension<Device>) -> Reply {
+    state.manager.store().revoke_phone_device(&device.id, now_ms()).map_err(|error| server_error(&error))?;
     DEVICE_REMOVED.send_modify(|count| *count = count.wrapping_add(1));
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -233,8 +253,7 @@ fn orchestrator(state: &ServerState) -> Result<String, Response> {
 }
 
 /// `GET /phone/v1/chat?after=<seq>` → the orchestrator's chat items after `seq`, or its newest 100.
-async fn chat(State(state): State<ServerState>, headers: HeaderMap, Query(query): Query<HashMap<String, String>>) -> Reply {
-    authorized_device(&state, &headers)?;
+async fn chat(State(state): State<ServerState>, Query(query): Query<HashMap<String, String>>) -> Reply {
     let after = query.get("after").map(|after| after.parse::<i64>()).transpose()
         .map_err(|_| refuse(StatusCode::BAD_REQUEST, "after must be a sequence number"))?;
     let owned_id = orchestrator(&state)?;
@@ -260,8 +279,7 @@ struct ChatRequest {
 }
 
 /// `POST /phone/v1/chat {text}` → `{itemId}`: the desktop's ensure, then its send, on the orchestrator.
-async fn send_chat(State(state): State<ServerState>, headers: HeaderMap, body: Bytes) -> Reply {
-    authorized_device(&state, &headers)?;
+async fn send_chat(State(state): State<ServerState>, body: Bytes) -> Reply {
     let request: ChatRequest = parse(&body)?;
     let text = request.text.trim();
     if text.is_empty() || text.chars().count() > MAX_CHAT_CHARS {
@@ -278,19 +296,18 @@ async fn send_chat(State(state): State<ServerState>, headers: HeaderMap, body: B
         native_session_mode: AgentNativeSessionMode::Resume, reasoning_effort: None, project_id: row.project_id,
     });
     let RemoteResponse::Connection(connection) = execute_phone_command(&state, ensure).await
-        .map_err(|error| refuse(StatusCode::CONFLICT, &error))? else { return Err(server_error(&"ensure gave the wrong response")) };
+        .map_err(|error| server_error(&error))? else { return Err(server_error(&"ensure gave the wrong response")) };
     let send = RemoteCommand::Send(SendAgentConversationMessageRequest {
         owned_id, generation: connection.generation, text: text.into(), content: Vec::new(),
         attachment_ids: Vec::new(), model: None, approval_policy: None,
     });
     let RemoteResponse::SendReceipt(receipt) = execute_phone_command(&state, send).await
-        .map_err(|error| refuse(StatusCode::CONFLICT, &error))? else { return Err(server_error(&"send gave the wrong response")) };
+        .map_err(|error| server_error(&error))? else { return Err(server_error(&"send gave the wrong response")) };
     Ok(Json(json!({ "itemId": receipt.user_item_id })).into_response())
 }
 
 /// `GET /phone/v1/runs` → `{active, recent}`: unfinished runs and the 20 newest finished ones.
-async fn runs(State(state): State<ServerState>, headers: HeaderMap) -> Reply {
-    authorized_device(&state, &headers)?;
+async fn runs(State(state): State<ServerState>) -> Reply {
     let runs = state.workflow.recent_runs().map_err(|error| server_error(&error))?;
     let (recent, active): (Vec<_>, Vec<_>) = runs.iter()
         .partition(|run| matches!(run.state, WorkflowRunState::Completed | WorkflowRunState::Failed | WorkflowRunState::Cancelled));
@@ -301,8 +318,7 @@ async fn runs(State(state): State<ServerState>, headers: HeaderMap) -> Reply {
 }
 
 /// `GET /phone/v1/runs/{id}` → the run's row, steps with their latest attempt, and its last 20 changes.
-async fn run_detail(State(state): State<ServerState>, headers: HeaderMap, Path(run_id): Path<String>) -> Reply {
-    authorized_device(&state, &headers)?;
+async fn run_detail(State(state): State<ServerState>, Path(run_id): Path<String>) -> Reply {
     let run = match state.workflow.get_run(&run_id) {
         Ok(run) => run,
         Err(WorkflowError::NotFound(_)) => return Err(refuse(StatusCode::NOT_FOUND, "No such run")),
@@ -339,8 +355,7 @@ async fn run_detail(State(state): State<ServerState>, headers: HeaderMap, Path(r
 }
 
 /// `POST /phone/v1/runs/{id}/pause|resume|stop` → the run's row, through the desktop's engine operations.
-async fn control_run(State(state): State<ServerState>, headers: HeaderMap, Path((run_id, action)): Path<(String, String)>) -> Reply {
-    authorized_device(&state, &headers)?;
+async fn control_run(State(state): State<ServerState>, Path((run_id, action)): Path<(String, String)>) -> Reply {
     let operation = match action.as_str() {
         "pause" => "pause",
         "resume" => "resume",
@@ -349,9 +364,17 @@ async fn control_run(State(state): State<ServerState>, headers: HeaderMap, Path(
     };
     let command = RemoteCommand::Workflow { operation: operation.into(),
         args: json!({ "runId": run_id, "idempotencyKey": format!("phone:{}", uuid::Uuid::new_v4()) }) };
-    // The engine's refusal, such as "Only a running workflow can be paused", is the phone's to show.
-    let RemoteResponse::Workflow(run) = execute_phone_command(&state, command).await
-        .map_err(|error| refuse(StatusCode::CONFLICT, &error))? else { return Err(server_error(&"run control gave the wrong response")) };
+    // The engine's own refusal, such as "Only a running workflow can be paused", is the phone's to
+    // show; anything else is an internal error and stays in the log.
+    let run = match execute_phone_command(&state, command).await {
+        Ok(RemoteResponse::Workflow(run)) => run,
+        Ok(_) => return Err(server_error(&"run control gave the wrong response")),
+        Err(error) => return Err(match serde_json::from_str::<WorkflowError>(&error) {
+            Ok(WorkflowError::InvalidTransition(message) | WorkflowError::PolicyDenied(message)) => refuse(StatusCode::CONFLICT, &message),
+            Ok(WorkflowError::NotFound(_)) => refuse(StatusCode::NOT_FOUND, "No such run"),
+            _ => server_error(&error),
+        }),
+    };
     let run: WorkflowRunRecord = serde_json::from_value(run).map_err(|error| server_error(&error))?;
     Ok(Json(run_row(&run)).into_response())
 }
@@ -373,8 +396,7 @@ fn run_row(run: &WorkflowRunRecord) -> Value {
 }
 
 /// `GET /phone/v1/inbox` → `{items}`: everything waiting on the owner, newest first.
-async fn inbox(State(state): State<ServerState>, headers: HeaderMap) -> Reply {
-    authorized_device(&state, &headers)?;
+async fn inbox(State(state): State<ServerState>) -> Reply {
     let items: Vec<Value> = inbox_items(&state)?.into_iter().map(|(_, item)| item).collect();
     Ok(Json(json!({ "items": items })).into_response())
 }
@@ -433,10 +455,10 @@ struct AnswerRequest {
 }
 
 /// `POST /phone/v1/inbox/{id}/answer {optionId, version}` → 204, or 409 `{error:"stale"}`. The option must be
-/// one the item offers; the answer goes the way the desktop sends it, with the owner's origin and one
-/// idempotency key per item version, so a repeat is never recorded twice.
-async fn answer(State(state): State<ServerState>, headers: HeaderMap, Path(id): Path<String>, body: Bytes) -> Reply {
-    authorized_device(&state, &headers)?;
+/// one the item offers; the answer goes the way the desktop sends it, with the owner's origin. The
+/// idempotency key names the item, its version and the option, so a repeat is recorded once and a
+/// different answer to the same version is refused as stale instead of being taken for a repeat.
+async fn answer(State(state): State<ServerState>, Path(id): Path<String>, body: Bytes) -> Reply {
     let request: AnswerRequest = parse(&body)?;
     let stale = || refuse(StatusCode::CONFLICT, "stale");
     let (session, item) = inbox_items(&state)?.into_iter().find(|(_, item)| item["id"] == id.as_str()).ok_or_else(stale)?;
@@ -446,7 +468,7 @@ async fn answer(State(state): State<ServerState>, headers: HeaderMap, Path(id): 
     if !item["options"].as_array().is_some_and(|options| options.iter().any(|option| option["id"] == request.option_id.as_str())) {
         return Err(refuse(StatusCode::BAD_REQUEST, "That option is not offered for this item"));
     }
-    let key = format!("phone:{id}:{}", request.version);
+    let key = format!("phone:{id}:{}:{}", request.version, request.option_id);
     let command = match item["kind"].as_str() {
         Some("permission") => RemoteCommand::RespondPermission(RespondAgentConversationPermissionRequest {
             owned_id: session.unwrap_or_default(), generation: request.version as u64, request_id: id, option_id: request.option_id,
@@ -456,30 +478,47 @@ async fn answer(State(state): State<ServerState>, headers: HeaderMap, Path(id): 
         _ => RemoteCommand::Workflow { operation: "answer".into(), args: json!({
             "runId": item["runId"], "nodeId": item["stepId"], "decision": request.option_id, "idempotencyKey": key }) },
     };
-    // It was waiting a moment ago, so a refusal now means another answer got there first.
-    execute_phone_command(&state, command).await.map_err(|error| {
-        eprintln!("Phone answer refused: {error}");
-        stale()
-    })?;
-    Ok(StatusCode::NO_CONTENT.into_response())
+    match execute_phone_command(&state, command).await {
+        Ok(_) => Ok(StatusCode::NO_CONTENT.into_response()),
+        // It was waiting a moment ago, so these refusals mean another answer got there first.
+        Err(error) if answered_elsewhere(&error) => Err(stale()),
+        Err(error) => Err(server_error(&error)),
+    }
+}
+
+/// Whether an answer's refusal says the item is no longer waiting: the engine's "That step is not
+/// waiting for the owner" or a lost write race, or the manager's settled or replaced request.
+fn answered_elsewhere(error: &str) -> bool {
+    match serde_json::from_str::<WorkflowError>(error) {
+        Ok(WorkflowError::InvalidTransition(_) | WorkflowError::NotFound(_)) => true,
+        Ok(WorkflowError::Ledger(message)) => message.starts_with("Stale workflow transition"),
+        Ok(_) => false,
+        Err(_) => ["Approval request is no longer pending", "Stale approval request", "Conversation connection changed"]
+            .iter().any(|refusal| error.starts_with(refusal)),
+    }
 }
 
 /// `GET /phone/v1/live`: a WebSocket of `chat`, `chatDelta`, `turn` and `changed` frames (§5.3).
-async fn live(State(state): State<ServerState>, headers: HeaderMap,
+async fn live(State(state): State<ServerState>, Extension(device): Extension<Device>,
     upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>) -> Reply {
-    authorized_device(&state, &headers)?;
     let upgrade = upgrade.map_err(IntoResponse::into_response)?;
+    // Subscribed before the token is checked again, so a removal at any moment after the first
+    // check either fails this check or wakes the socket, which then checks and closes.
+    let removed = DEVICE_REMOVED.subscribe();
+    if state.manager.store().touch_phone_device(&device.token_hash, now_ms()).map_err(|error| server_error(&error))?.is_none() {
+        return Err(refuse(StatusCode::UNAUTHORIZED, REMOVED));
+    }
     let orchestrator = state.manager.store().main_orchestrator().map_err(|error| server_error(&error))?.map(|(owned_id, _)| owned_id);
-    let hash = bearer(&headers).map(token_hash).unwrap_or_default();
-    Ok(upgrade.on_upgrade(move |socket| serve_live(socket, state, hash, orchestrator)))
+    Ok(upgrade.max_message_size(MAX_BODY_BYTES)
+        .on_upgrade(move |socket| serve_live(socket, state, device.token_hash, orchestrator, removed)))
 }
 
 /// Sends frames until the phone hangs up, falls behind, or is removed. Its three subscriptions are
 /// dropped when this returns, which is the only place they are held.
-async fn serve_live(mut socket: WebSocket, state: ServerState, hash: String, orchestrator: Option<String>) {
+async fn serve_live(mut socket: WebSocket, state: ServerState, hash: String, orchestrator: Option<String>,
+    mut removed: tokio::sync::watch::Receiver<u64>) {
     let mut events = state.events.subscribe();
     let mut runs = state.workflow.run_changes();
-    let mut removed = DEVICE_REMOVED.subscribe();
     let mut waiting = HashMap::<String, usize>::new();
     loop {
         // A lagged or closed subscription ends the socket; the phone reconnects and refetches.
@@ -636,7 +675,7 @@ mod tests {
         let state = server_state(manager, directory, Arc::from("desktop-server-token-0123456789abcdef")).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        tokio::spawn(axum::serve(listener, router().with_state(state.clone())).into_future());
+        tokio::spawn(axum::serve(listener, router(state.clone())).into_future());
         (state, format!("http://{address}"))
     }
 
@@ -923,6 +962,9 @@ mod tests {
         assert_eq!(lines(&phone).last().map(String::as_str), Some("run cancelled"));
         let unknown = client(reqwest::Method::POST, &base, &format!("/runs/{phone}/merge"), &token).send().await.unwrap();
         assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
+        let refused = client(reqwest::Method::POST, &base, &format!("/runs/{phone}/pause"), &token).send().await.unwrap();
+        assert_eq!(refused.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(refused.json::<Value>().await.unwrap(), json!({"error": "Only a running workflow can be paused"}), "the engine's own words");
 
         let runs: Value = client(reqwest::Method::GET, &base, "/runs", &token).send().await.unwrap().json().await.unwrap();
         assert_eq!(runs["active"], json!([]));
@@ -958,6 +1000,47 @@ mod tests {
             match tokio::time::timeout(Duration::from_secs(10), socket.next()).await.expect("the socket closes") {
                 None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
                 Some(Ok(_)) => continue,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_post_with_body_is_refused_before_reading_it() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (_state, base) = phone_server().await;
+        let address = base.trim_start_matches("http://");
+        for path in ["/phone/v1/chat", "/phone/v1/inbox/step:run:checks/answer"] {
+            // Headers promise a 60,000-byte body that never comes: a server that read the body
+            // before checking the token would wait for it instead of answering.
+            let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+            socket.write_all(format!("POST {path} HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer not-a-device-token\r\n\
+                Content-Type: application/json\r\nContent-Length: 60000\r\n\r\n{{\"text\":").as_bytes()).await.unwrap();
+            let mut head = [0u8; 12];
+            tokio::time::timeout(Duration::from_secs(3), socket.read_exact(&mut head)).await
+                .expect("refused without waiting for the body").unwrap();
+            assert_eq!(&head, b"HTTP/1.1 401", "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn replayed_answer_with_different_option_is_stale() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        // Two answers to one item at once, with different options: exactly one is applied and
+        // the other is refused as stale, never accepted without being applied.
+        for _ in 0..8 {
+            let run_id = start_run(&state, LOOP_STOPS).await;
+            let item = inbox_item(&base, &token, &run_id).await;
+            let send = |option: &'static str| client(reqwest::Method::POST, &base, &format!("/inbox/{}/answer", item["id"].as_str().unwrap()), &token)
+                .json(&json!({"optionId": option, "version": item["version"]})).send();
+            let (accept, stop) = tokio::join!(send("accept"), send("stop"));
+            let (accept, stop) = (accept.unwrap().status(), stop.unwrap().status());
+            let run = state.workflow.get_run(&run_id).unwrap();
+            let state_now = serde_json::to_value(run.state).unwrap();
+            match (accept, stop) {
+                (reqwest::StatusCode::NO_CONTENT, reqwest::StatusCode::CONFLICT) => assert_eq!(state_now, "completed"),
+                (reqwest::StatusCode::CONFLICT, reqwest::StatusCode::NO_CONTENT) => assert_eq!(state_now, "cancelled"),
+                other => panic!("one answer must win and the other be stale, got {other:?} with the run {state_now}"),
             }
         }
     }
