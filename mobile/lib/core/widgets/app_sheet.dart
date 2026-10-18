@@ -49,7 +49,10 @@ class AppSheet extends StatelessWidget {
           // Pinned inside the scroll view so dragging it also resizes the sheet.
           PinnedHeaderSliver(
             child: ColoredBox(
-              color: theme.bottomSheetTheme.modalBackgroundColor!,
+              color:
+                  theme.bottomSheetTheme.modalBackgroundColor ??
+                  theme.bottomSheetTheme.backgroundColor ??
+                  theme.colorScheme.surface,
               // 16 more each side, as the model sheet's list pads its header.
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
