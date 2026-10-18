@@ -3274,16 +3274,7 @@ pub fn run_server_from_environment() -> Result<(), String> {
         let restart_flushed = state.restart_flushed.clone();
         let restart_manager = state.manager.clone();
         // The phone-only listener (`phone.env`): `/phone/v1` routes only, never `/assembly`.
-        if let Ok(phone_bind) = std::env::var("ASSEMBLY_PHONE_BIND") {
-            let phone_listener = tokio::net::TcpListener::bind(&phone_bind).await.map_err(|error| error.to_string())?;
-            println!("Assembly phone listener on {phone_bind}");
-            let phone_app = super::phone_api::router().with_state(state.clone());
-            tokio::spawn(async move {
-                if let Err(error) = axum::serve(phone_listener, phone_app).await {
-                    eprintln!("Phone listener stopped: {error}");
-                }
-            });
-        }
+        super::phone_api::start_listener(std::env::var("ASSEMBLY_PHONE_BIND").ok().as_deref(), state.clone()).await;
         let app = Router::new()
             .route("/assembly", get(upgrade_remote_socket))
             .with_state(state);

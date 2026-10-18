@@ -41,6 +41,27 @@ pub(super) fn router() -> Router<ServerState> {
         .route("/phone/v1/me", get(me))
 }
 
+/// Starts the phone listener on `bind` when it is set. A bad or busy address is
+/// logged and the server carries on without it: the optional phone API must
+/// never stop the desktop listener. Returns whether it started.
+pub(super) async fn start_listener(bind: Option<&str>, state: ServerState) -> bool {
+    let Some(bind) = bind.filter(|bind| !bind.is_empty()) else { return false };
+    let listener = match tokio::net::TcpListener::bind(bind).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            eprintln!("Phone listener not started on {bind}: {error}");
+            return false;
+        }
+    };
+    println!("Assembly phone listener on {bind}");
+    tokio::spawn(async move {
+        if let Err(error) = axum::serve(listener, router().with_state(state)).await {
+            eprintln!("Phone listener stopped: {error}");
+        }
+    });
+    true
+}
+
 /// Answers the desktop's phone operations, sent as workflow operations over its
 /// socket; `None` for every other operation, which goes to the workflow engine.
 pub(super) fn operation(state: &ServerState, operation: &str, args: &Value) -> Option<Result<Value, String>> {
@@ -60,7 +81,8 @@ pub(super) fn operation(state: &ServerState, operation: &str, args: &Value) -> O
 /// Names this machine for phones and replaces the pairing code with a new one.
 fn start_pairing(state: &ServerState, args: &Value) -> Result<Value, String> {
     let url = std::env::var("ASSEMBLY_PHONE_URL").ok().filter(|url| !url.is_empty()).ok_or(NOT_SET_UP)?;
-    let name = args["machineName"].as_str().ok_or("phonePairing needs a machineName")?;
+    let name = args["machineName"].as_str().map(str::trim).filter(|name| !name.is_empty())
+        .ok_or("phonePairing needs a machineName")?;
     let (_, machine_name) = state.manager.store()
         .name_phone_machine(&uuid::Uuid::new_v4().to_string(), name).map_err(|error| error.to_string())?;
     let (code, expires_at) = new_pairing_code(&state.pairing, now_ms())?;
@@ -106,12 +128,17 @@ struct PairRequest {
 
 /// `POST /phone/v1/pair {code, deviceName}` → `{deviceId, deviceToken, machine:{id, name}}`.
 async fn pair(State(state): State<ServerState>, Json(request): Json<PairRequest>) -> Response {
+    // Checked before the code is spent, so a bad name does not burn it.
+    let device_name = request.device_name.trim();
+    if device_name.is_empty() || device_name.chars().count() > 100 {
+        return refuse(StatusCode::BAD_REQUEST, "The device name must be 1 to 100 characters");
+    }
     if !redeem_pairing_code(&state.pairing, &request.code, now_ms()) {
         return refuse(StatusCode::UNAUTHORIZED, "This pairing code is wrong or has expired; show a new one on the desktop");
     }
-    match add_device(&state, &request.device_name) {
+    match add_device(&state, device_name) {
         Ok(body) => Json(body).into_response(),
-        Err(error) => refuse(StatusCode::INTERNAL_SERVER_ERROR, &error),
+        Err(error) => server_error(&error),
     }
 }
 
@@ -141,7 +168,7 @@ async fn me(State(state): State<ServerState>, headers: HeaderMap) -> Response {
         }));
     match body {
         Ok(body) => Json(body).into_response(),
-        Err(error) => refuse(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+        Err(error) => server_error(&error),
     }
 }
 
@@ -154,12 +181,18 @@ fn authorized_device(state: &ServerState, headers: &HeaderMap) -> Result<String,
     match state.manager.store().touch_phone_device(&token_hash(token), now_ms()) {
         Ok(Some(device_id)) => Ok(device_id),
         Ok(None) => Err(refuse(StatusCode::UNAUTHORIZED, REMOVED)),
-        Err(error) => Err(refuse(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string())),
+        Err(error) => Err(server_error(&error)),
     }
 }
 
 fn refuse(status: StatusCode, message: &str) -> Response {
     (status, Json(json!({ "error": message }))).into_response()
+}
+
+/// Logs the detail here and tells the caller only "Server error". Details never hold a token or code.
+fn server_error(detail: &dyn std::fmt::Display) -> Response {
+    eprintln!("Phone API error: {detail}");
+    refuse(StatusCode::INTERNAL_SERVER_ERROR, "Server error")
 }
 
 /// Only this hash of a device token is stored.
@@ -186,7 +219,7 @@ mod tests {
     use super::super::manager::AgentRuntimeManager;
     use super::super::providers::ProviderRegistry;
     use super::super::remote::{server_state, ServerState};
-    use super::{new_pairing_code, operation, redeem_pairing_code, router, PAIRING_CODE_LIFETIME_MS};
+    use super::{new_pairing_code, operation, redeem_pairing_code, router, start_listener, PAIRING_CODE_LIFETIME_MS};
 
     const PHONE_URL: &str = "https://phone.example.ts.net:8778";
 
@@ -256,7 +289,13 @@ mod tests {
     #[tokio::test]
     async fn phone_routes_reject_missing_unknown_and_revoked_tokens() {
         let (state, base) = phone_server().await;
-        let paired = pair(&base, &pairing_code(&state)).await;
+        let code = pairing_code(&state);
+        for device_name in ["  ", &"x".repeat(101)] {
+            let refused = reqwest::Client::new().post(format!("{base}/phone/v1/pair"))
+                .json(&serde_json::json!({"code": code, "deviceName": device_name})).send().await.unwrap();
+            assert_eq!(refused.status(), reqwest::StatusCode::BAD_REQUEST, "a bad device name leaves the code unused");
+        }
+        let paired = pair(&base, &code).await;
         assert_eq!(paired.status(), reqwest::StatusCode::OK);
         let paired: serde_json::Value = paired.json().await.unwrap();
         let token = paired["deviceToken"].as_str().unwrap();
@@ -288,6 +327,17 @@ mod tests {
             .bearer_auth(&*state.token).send().await.unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
         assert!(operation(&state, "list", &serde_json::json!({})).is_none(), "engine operations are not phone operations");
+    }
+
+    #[tokio::test]
+    async fn invalid_phone_bind_does_not_stop_main_server() {
+        let (state, _) = phone_server().await;
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let taken = taken.local_addr().unwrap().to_string();
+        for bind in [None, Some(""), Some("not-an-address"), Some(taken.as_str())] {
+            assert!(!start_listener(bind, state.clone()).await, "{bind:?} starts no phone listener and is not an error");
+        }
+        assert!(start_listener(Some("127.0.0.1:0"), state).await);
     }
 
     #[tokio::test]
