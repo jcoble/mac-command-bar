@@ -340,18 +340,52 @@ fn read_chat(state: &ServerState, owned_id: &str, query: &HashMap<String, String
     })).into_response())
 }
 
-/// `GET /phone/v1/sessions/{id}/items/{itemId}`: one tool call whole, its latest event in the
-/// newest page of events, the same page the chat list reads.
+/// `GET /phone/v1/sessions/{id}/items/{itemId}`: one tool call whole, its events in the newest page
+/// of events (the same page the chat list reads) folded in order.
 async fn tool_item(State(state): State<ServerState>, Path((owned_id, item_id)): Path<(String, String)>) -> Reply {
     known_session(&state, &owned_id)?;
     let page = state.manager.list_events_before(&owned_id, i64::MAX, CHAT_PAGE_BYTES).map_err(|error| server_error(&error))?;
-    let Some(Payload::Tool { name, state: tool_state, summary, output, path, diff, .. }) = page.events.iter().rev()
-        .map(|event| &event.payload).find(|payload| matches!(payload, Payload::Tool { item_id: id, .. } if *id == item_id))
+    let Some(call) = page.events.iter().filter_map(|event| ToolCall::of(&event.payload, &item_id)).reduce(ToolCall::fold)
     else { return Err(refuse(StatusCode::NOT_FOUND, NO_TOOL_CALL)) };
-    let (output, output_truncated) = capped(output.as_deref(), MAX_TOOL_OUTPUT_BYTES);
-    let (diff, diff_truncated) = capped(diff.as_deref(), MAX_TOOL_DIFF_BYTES);
-    Ok(Json(json!({ "name": name, "state": tool_state, "summary": summary, "path": path, "output": output,
+    let (output, output_truncated) = capped(call.output, MAX_TOOL_OUTPUT_BYTES);
+    let (diff, diff_truncated) = capped(call.diff, MAX_TOOL_DIFF_BYTES);
+    Ok(Json(json!({ "name": call.name, "state": call.state, "summary": call.summary, "path": call.path, "output": output,
         "outputTruncated": output_truncated, "diff": diff, "diffTruncated": diff_truncated })).into_response())
+}
+
+/// One tool call as its events say it. Imported history stores a call's output in a later event with
+/// no name, summary, path or diff, so the events of one item fold in order: each later non-empty
+/// field replaces the earlier one, and the state is the latest event's.
+#[derive(Clone, Copy)]
+struct ToolCall<'a> {
+    name: &'a str,
+    state: ToolState,
+    summary: Option<&'a str>,
+    output: Option<&'a str>,
+    path: Option<&'a str>,
+    diff: Option<&'a str>,
+}
+
+impl<'a> ToolCall<'a> {
+    /// The call `payload` describes, when it is a tool event of item `item_id`.
+    fn of(payload: &'a Payload, item_id: &str) -> Option<Self> {
+        match payload {
+            Payload::Tool { item_id: id, name, state, summary, output, path, diff } if id == item_id =>
+                Some(Self { name, state: *state, summary: summary.as_deref(), output: output.as_deref(), path: path.as_deref(), diff: diff.as_deref() }),
+            _ => None,
+        }
+    }
+
+    fn fold(self, later: Self) -> Self {
+        let newer = |old: Option<&'a str>, new: Option<&'a str>| new.filter(|text| !text.is_empty()).or(old);
+        Self { name: if later.name.is_empty() { self.name } else { later.name }, state: later.state,
+            summary: newer(self.summary, later.summary), output: newer(self.output, later.output),
+            path: newer(self.path, later.path), diff: newer(self.diff, later.diff) }
+    }
+
+    fn has_detail(&self) -> bool {
+        [self.output, self.path, self.diff].iter().any(|field| field.is_some_and(|text| !text.is_empty()))
+    }
 }
 
 /// `text` cut to at most `max` bytes on a char boundary, and whether it was cut.
@@ -709,12 +743,14 @@ struct ChatItem {
 }
 
 /// The phone's chat from a session's events (§5.3): owner, relayed, agent, tool and error items,
-/// one per item id in first-seen order, the latest event winning. Deltas for an item with no full
+/// one per item id in first-seen order, the latest event winning (a tool call's events fold, see
+/// [`ToolCall`]). Deltas for an item with no full
 /// message yet fold into one open agent item. Everything else is dropped.
 fn reduce_chat(events: &[AgentConversationEvent]) -> Vec<ChatItem> {
     let mut items: Vec<ChatItem> = Vec::new();
     let mut index = HashMap::<String, usize>::new();
     let mut messaged = HashSet::<&str>::new();
+    let mut tools = HashMap::<&str, ToolCall>::new();
     for event in events {
         let (id, kind, text, done) = match &event.payload {
             Payload::UserMessage { item_id, text, completed, .. } =>
@@ -732,14 +768,16 @@ fn reduce_chat(events: &[AgentConversationEvent]) -> Vec<ChatItem> {
                 }
                 (item_id.clone(), "agent", delta.clone(), false)
             }
-            Payload::Tool { item_id, name, state, summary, .. } => (item_id.clone(), "tool",
-                summary.clone().filter(|summary| !summary.is_empty()).unwrap_or_else(|| name.clone()),
-                matches!(state, ToolState::Completed | ToolState::Failed)),
+            Payload::Tool { item_id, .. } => {
+                let now = ToolCall::of(&event.payload, item_id).expect("a tool event is a tool call");
+                let call = *tools.entry(item_id).and_modify(|earlier| *earlier = earlier.fold(now)).or_insert(now);
+                (item_id.clone(), "tool", call.summary.filter(|summary| !summary.is_empty()).unwrap_or(call.name).to_owned(),
+                    matches!(call.state, ToolState::Completed | ToolState::Failed))
+            }
             Payload::Error { message, .. } => (format!("error-{}", event.sequence), "error", message.clone(), true),
             _ => continue,
         };
-        let has_detail = matches!(&event.payload, Payload::Tool { output, path, diff, .. }
-            if [output, path, diff].iter().any(|field| field.as_deref().is_some_and(|text| !text.is_empty())));
+        let has_detail = kind == "tool" && tools.get(id.as_str()).is_some_and(ToolCall::has_detail);
         let item = ChatItem { id, seq: event.sequence, kind, text, at: event.timestamp_ms as i64, done, has_detail };
         match index.get(&item.id) {
             Some(&at) => items[at] = item,
@@ -1405,6 +1443,26 @@ mod tests {
             .map(|item| (item["id"].as_str().unwrap(), item["hasDetail"].as_bool().unwrap_or(false))).collect();
         assert_eq!(details, [("edit", true), ("t1", false)], "only a tool with something to open has detail");
         assert!(chat["items"][0].get("output").is_none(), "chat rows carry no output");
+    }
+
+    #[tokio::test]
+    async fn phone_tool_item_merges_sparse_imported_events() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        // Imported history stores the call, then its output in a later event with no name or summary.
+        let call = |name: &str, state, summary: Option<&str>, output: Option<&str>| Payload::Tool { item_id: "tool-a".into(),
+            name: name.into(), state, summary: summary.map(str::to_string), output: output.map(str::to_string), path: None, diff: None };
+        file_session(&state, "lane", vec![
+            call("shell", ToolState::Started, Some("ls"), None),
+            call("", ToolState::Completed, None, Some("result")),
+        ]);
+        let body: Value = client(reqwest::Method::GET, &base, "/sessions/lane/items/tool-a", &token).send().await.unwrap()
+            .json().await.unwrap();
+        assert_eq!(body, json!({"name": "shell", "state": "completed", "summary": "ls", "path": null,
+            "output": "result", "outputTruncated": false, "diff": null, "diffTruncated": false}));
+        let chat: Value = client(reqwest::Method::GET, &base, "/sessions/lane/chat", &token).send().await.unwrap().json().await.unwrap();
+        let row = &chat["items"][0];
+        assert_eq!((row["text"].as_str(), row["done"].as_bool(), row["hasDetail"].as_bool()), (Some("ls"), Some(true), Some(true)));
     }
 
     #[tokio::test]
