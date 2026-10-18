@@ -529,7 +529,7 @@ async fn serve_live(mut socket: WebSocket, state: ServerState, hash: String, orc
             },
             change = runs.recv() => match change {
                 Ok((run_id, now)) => {
-                    let inbox = waiting.insert(run_id.clone(), now).unwrap_or(0) != now;
+                    let inbox = waiting.insert(run_id.clone(), now) != Some(now);
                     let mut frames = vec![json!({ "type": "changed", "entity": "runs" }), json!({ "type": "changed", "entity": "run", "id": run_id })];
                     if inbox { frames.push(json!({ "type": "changed", "entity": "inbox" })); }
                     frames
@@ -1042,6 +1042,27 @@ mod tests {
                 None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
                 Some(Ok(_)) => continue,
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn phone_live_sends_changed_inbox_for_run_waiting_before_connect() {
+        use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let run_id = start_run(&state, LOOP_STOPS).await;
+        inbox_item(&base, &token, &run_id).await;
+        let mut request = format!("{}/phone/v1/live", base.replacen("http", "ws", 1)).into_client_request().unwrap();
+        request.headers_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
+        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        // The step was already waiting when the phone connected; answering it on the desktop empties the inbox.
+        crate::workflow::execute_operation(&state.workflow, "answer", json!({"runId": run_id, "nodeId": "checks",
+            "decision": "accept", "idempotencyKey": "desktop:accept"})).await.unwrap();
+        let mut seen = Vec::new();
+        while !seen.contains(&json!({"type": "changed", "entity": "inbox"})) {
+            let Message::Text(text) = tokio::time::timeout(Duration::from_secs(3), socket.next()).await
+                .expect("a changed inbox frame for the answered step").unwrap().unwrap() else { continue };
+            seen.push(serde_json::from_str::<Value>(&text).unwrap());
         }
     }
 
