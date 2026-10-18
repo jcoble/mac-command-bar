@@ -26,12 +26,12 @@ class _RunScreenState extends ConsumerState<RunScreen> {
   RunAction? _busy;
   var _retrying = false;
 
-  /// Runs the failed step [stepId] again; the engine's refusal shows in a
+  /// Runs the failed [step] again; the engine's refusal shows in a
   /// snackbar. No confirmation: a retry is not destructive.
-  Future<void> _retry(String stepId) async {
+  Future<void> _retry(RunStep step) async {
     setState(() => _retrying = true);
     try {
-      await ref.read(runsProvider.notifier).retryStep(widget.runId, stepId);
+      await ref.read(runsProvider.notifier).retryStep(widget.runId, step);
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -193,7 +193,7 @@ class _RunScreenState extends ConsumerState<RunScreen> {
                 ),
               ),
               TextButton(
-                onPressed: _retrying ? null : () => _retry(stopped.id),
+                onPressed: _retrying ? null : () => _retry(stopped),
                 child: _retrying
                     ? const SizedBox.square(
                         dimension: 18,
@@ -260,7 +260,7 @@ class _RunScreenState extends ConsumerState<RunScreen> {
             detail.steps[i],
             MobileM3ListItemPositionForIndex.forIndex(i, detail.steps.length),
             onRetry: canRetry(detail.steps[i]) && !_retrying
-                ? () => _retry(detail.steps[i].id)
+                ? () => _retry(detail.steps[i])
                 : null,
           ),
         ],

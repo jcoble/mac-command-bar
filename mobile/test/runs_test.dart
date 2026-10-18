@@ -48,6 +48,7 @@ class FakeMachine implements HttpClientAdapter {
 
   final Map<String, Object?> routes;
   final requests = <String>[];
+  final bodies = <String, Object?>{};
 
   @override
   Future<ResponseBody> fetch(
@@ -57,6 +58,7 @@ class FakeMachine implements HttpClientAdapter {
   ) async {
     final key = '${options.method} ${options.path}';
     requests.add(key);
+    bodies[key] = options.data;
     return ResponseBody.fromString(
       jsonEncode(routes[key]),
       routes.containsKey(key) ? 200 : 404,
@@ -191,15 +193,31 @@ void main() {
         'active': [],
         'recent': [row('a', 'failed')],
       },
+      'GET runs/a': detail('a'),
       'POST runs/a/steps/checks/retry': row('a', 'running'),
     });
     container.listen(runsProvider, (_, _) {});
+    container.listen(runProvider('a'), (_, _) {});
     await container.read(runsProvider.future);
+    await container.read(runProvider('a').future);
     machine.requests.clear();
 
-    await container.read(runsProvider.notifier).retryStep('a', 'checks');
+    final failed = RunStep.fromJson({
+      'id': 'checks',
+      'state': 'failed',
+      'attempts': [
+        {'n': 3, 'state': 'failed'},
+      ],
+    });
+    await container.read(runsProvider.notifier).retryStep('a', failed);
+    await container.read(runProvider('a').future);
 
-    expect(machine.requests, ['POST runs/a/steps/checks/retry', 'GET runs']);
+    expect(machine.requests, [
+      'POST runs/a/steps/checks/retry',
+      'GET runs',
+      'GET runs/a',
+    ]);
+    expect(machine.bodies['POST runs/a/steps/checks/retry'], {'attempt': 3});
   });
 
   test('changed_run_notice_refetches_only_that_run', () async {

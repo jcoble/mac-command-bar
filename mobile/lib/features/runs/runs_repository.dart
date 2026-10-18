@@ -81,6 +81,10 @@ class RunStep {
   /// The engine's step state: blocked, running, waiting-input, completed, …
   final String state;
   final List<RunAttempt> attempts;
+
+  /// The attempt the phone saw on this step; a retry names it so a repeat of
+  /// the same request starts only one new attempt.
+  int get attempt => attempts.lastOrNull?.n ?? 1;
 }
 
 /// `GET /runs/{id}`: the row plus branch, steps and the last 20 timeline lines.
@@ -149,10 +153,11 @@ class RunsRepository {
     }
   }
 
-  Future<void> retryStep(String runId, String stepId) async {
+  Future<void> retryStep(String runId, RunStep step) async {
     try {
       await _dio.post<void>(
-        'runs/$runId/steps/${Uri.encodeComponent(stepId)}/retry',
+        'runs/$runId/steps/${Uri.encodeComponent(step.id)}/retry',
+        data: {'attempt': step.attempt},
       );
     } on DioException catch (e) {
       throw ApiException.fromDioException(e);
@@ -209,10 +214,10 @@ class RunsNotifier extends AsyncNotifier<RunsList> {
     await refresh();
   }
 
-  /// Runs the failed step [stepId] of run [id] again. Throws [ApiException]
+  /// Runs the failed [step] of run [id] again. Throws [ApiException]
   /// with the engine's refusal so the screen can show it.
-  Future<void> retryStep(String id, String stepId) async {
-    await _repo.retryStep(id, stepId);
+  Future<void> retryStep(String id, RunStep step) async {
+    await _repo.retryStep(id, step);
     runChanged(id);
     await refresh();
   }
