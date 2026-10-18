@@ -4752,6 +4752,7 @@ mod connection_tests {
             helper_of: None,
             run_id: None,
             run_label: None,
+            run_lead: None,
             meta: super::super::protocol::AgentConversationSessionMeta {
                 title: Some(format!("Session {owned_id}")),
                 ..Default::default()

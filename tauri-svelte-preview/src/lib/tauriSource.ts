@@ -557,6 +557,8 @@ export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
   /** The workflow run this worker belongs to, and its `<task key> · <workflow name>`. */
   runId?: string | null;
   runLabel?: string | null;
+  /** The session that started this worker's run; absent when the owner started it. */
+  runLead?: string | null;
 };
 
 export type ExecutionEnvironment = 'local' | 'remote';
@@ -1683,6 +1685,16 @@ export async function publishGitRepositoryFromTauri(
   return invoke<GitActionResult>('publish_git_repository', { root, expectedBranch, remote });
 }
 
+export async function addGitRemoteFromTauri(
+  root: string,
+  name: string,
+  url: string
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  return invoke<GitActionResult>('add_git_remote', { root, name, url });
+}
+
 export async function discardGitPathsFromTauri(
   root: string,
   paths: string[]
@@ -1714,6 +1726,12 @@ export async function listGitBranchesFromTauri(root: string, signal?: AbortSigna
 
   const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<GitBranchList>('list_git_branches', { root }, undefined, signal);
+}
+
+/** Make the folder a repository. `path` stays machine-qualified for a remote folder. */
+export async function initGitRepositoryFromTauri(path: string, signal: AbortSignal): Promise<void> {
+  const { invoke } = await import('./workspaceInvoke.ts');
+  await invoke<null>('workspace_git_init', { path }, undefined, signal);
 }
 
 export async function createGitBranchFromTauri(

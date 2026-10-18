@@ -135,6 +135,28 @@ pub(crate) fn publish_git_repository_sync(
     })
 }
 
+pub(crate) fn add_git_remote_sync(
+    root: String,
+    name: String,
+    url: String,
+) -> Result<GitActionResult, String> {
+    let root = PathBuf::from(root);
+    validate_git_root(&root)?;
+    let name = name.trim();
+    let url = url.trim();
+    if name.is_empty() || url.is_empty() {
+        return Err("A remote name and URL are required.".to_string());
+    }
+    if name.starts_with('-') || url.starts_with('-') {
+        return Err("The remote name and URL cannot start with a hyphen.".to_string());
+    }
+    run_git_text(&root, &["remote", "add", "--", name, url])?;
+    Ok(GitActionResult {
+        message: format!("Added remote {name}"),
+        status: project_git_status_sync(root)?,
+    })
+}
+
 fn git_has_staged_changes(root: &Path) -> Result<bool, String> {
     let root_arg = root.display().to_string();
     let output = bounded_process::output(

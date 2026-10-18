@@ -29,6 +29,7 @@ const {
   hasStagedChanges,
   isGitFileDeleted,
   isNotARepositoryError,
+  isPlainFolderError,
   repositoryLabel,
   resetGitPanelState
 } = store;
@@ -240,6 +241,10 @@ function makeBackend(overrides = {}) {
     async push(root) {
       calls.push(['push', root]);
       return { message: 'Pushed current branch', status: status() };
+    },
+    async addRemote(root, name, url) {
+      calls.push(['addRemote', root, name, url]);
+      return { message: `Added remote ${name}`, status: status() };
     },
     async publish(root, expectedBranch, remote) {
       calls.push(['publish', root, expectedBranch, remote]);
@@ -522,6 +527,46 @@ function makeBackend(overrides = {}) {
   assert.equal(state.status.branch, 'main', 'the status already on screen survives');
 }
 
+// Adding a remote shares action errors and reloads history after success.
+{
+  const backend = makeBackend();
+  const state = createGitPanelState();
+  const git = createGitService({ backend, state });
+  git.activate('/repo');
+  assert.equal(await git.addRemote('/other', 'origin', '/bare'), false);
+  state.actionBusy = 'fetch';
+  assert.equal(await git.addRemote('/repo', 'origin', '/bare'), false);
+  state.actionBusy = '';
+  assert.deepEqual(backend.calls, [], 'skipped adds never call the backend');
+  git.ensureHistorySurface();
+  await settle();
+  backend.calls.length = 0;
+  assert.equal(await git.addRemote('/repo', 'origin', '/bare'), true);
+  assert.equal(state.actionStatus, 'Added remote origin');
+  assert.equal(state.status.branch, 'main', 'fresh status is adopted');
+  assert.ok(backend.calls.some(([name]) => name === 'readHistory'), 'history reloads after add');
+  backend.addRemote = async (root, name, url) => {
+    backend.calls.push(['addRemote', root, name, url]);
+    if (name === 'origin') throw new Error("error: remote origin already exists.");
+    return { message: `Added remote ${name}`, status: state.status };
+  };
+  assert.equal(await git.addRemote('/repo', 'origin', '/bare'), false);
+  assert.equal(state.actionError, 'error: remote origin already exists.');
+  assert.equal(await git.addRemote('/repo', 'backup', '/bare'), true);
+  assert.equal(state.actionError, '');
+  assert.deepEqual(backend.calls.filter(([name]) => name === 'addRemote'), [
+    ['addRemote', '/repo', 'origin', '/bare'],
+    ['addRemote', '/repo', 'origin', '/bare'],
+    ['addRemote', '/repo', 'backup', '/bare']
+  ]);
+  backend.addRemote = async () => {
+    git.activate('/other');
+    return { message: 'Added remote stale', status: { branch: 'old', files: [] } };
+  };
+  assert.equal(await git.addRemote('/repo', 'stale', '/bare'), false, 'a result for a folder that left is skipped');
+  assert.notEqual(state.actionStatus, 'Added remote stale');
+}
+
 // ── publishing keeps the selected repository, branch and remote ──────────────
 {
   const noUpstream = { branch: 'tsk-1233-test', ahead: 0, behind: 0, hasUpstream: false, files: [] };
@@ -754,6 +799,55 @@ function makeBackend(overrides = {}) {
   for (const message of realFailures) {
     assert.equal(isNotARepositoryError(message), false, `"${message}" is a real failure`);
   }
+
+  // Only a folder with no repository at all may be initialized; a bare
+  // repository is one already.
+  assert.equal(isPlainFolderError('fatal: not a git repository (or any of the parent directories): .git'), true);
+  assert.equal(isPlainFolderError('fatal: this operation must be run in a work tree'), false);
+  for (const message of realFailures) {
+    assert.equal(isPlainFolderError(message), false, `"${message}" does not offer Initialize`);
+  }
+}
+
+// ── initializing a plain folder clears both stored "not a repository" errors ──
+{
+  const notARepo = 'fatal: not a git repository (or any of the parent directories): .git';
+  let initialized = false;
+  const backend = makeBackend({
+    async readStatus(root) {
+      backend.calls.push(['readStatus', root]);
+      if (!initialized) throw new Error(notARepo);
+      return backend.status();
+    },
+    async readHistory(root, cursor, relativePath) {
+      backend.calls.push(['readHistory', root, cursor, relativePath]);
+      if (!initialized) throw new Error(notARepo);
+      return { commits: [], nextCursor: null, complete: true };
+    },
+    async initRepository(root, signal) {
+      backend.calls.push(['initRepository', root, signal.aborted]);
+      initialized = true;
+    }
+  });
+  const state = createGitPanelState();
+  const git = createGitService({ backend, state });
+  const root = 'assembly-remote://profile-1/home/me/plain';
+
+  git.activate(root);
+  await git.refreshStatus();
+  git.ensureHistorySurface();
+  await settle();
+  assert.match(state.statusError, /not a git repository/);
+  assert.match(state.historyError, /not a git repository/);
+
+  backend.calls.length = 0;
+  await git.initRepository(new AbortController().signal);
+  assert.deepEqual(backend.calls[0], ['initRepository', root, false], 'the machine-qualified root is passed unchanged');
+  assert.equal(state.statusError, '');
+  assert.equal(state.historyError, '');
+  assert.equal(state.status.branch, 'main');
+  assert.equal(state.actionBusy, '');
+  assert.equal(state.actionError, '');
 }
 
 // ── the panel's three sections, its remote actions and its scope picker ──────
@@ -841,6 +935,7 @@ function makeBackend(overrides = {}) {
     canWrite: true,
     readOnlyReason: 'This page can read the repository but not change it.',
     busy: false,
+    remotes: null,
     ...over
   });
   const withUpstream = { branch: 'main', ahead: 1, behind: 2, hasUpstream: true, files: [] };
@@ -858,7 +953,16 @@ function makeBackend(overrides = {}) {
   );
 
   const detached = panelActions.sourceControlRemoteActions(noUpstream, '/repo', remoteContext());
-  assert.equal(detached[0].enabled, true, 'fetch does not require a branch upstream');
+  assert.equal(detached[0].enabled, false);
+  assert.equal(detached[0].disabledReason, 'Reading this repository’s remotes…');
+  const emptyRemotes = panelActions.sourceControlRemoteActions(noUpstream, '/repo', remoteContext({ remotes: [] }));
+  assert.equal(emptyRemotes[0].enabled, false);
+  assert.equal(emptyRemotes[0].disabledReason, 'This repository has no remote. Add one to fetch.');
+  assert.equal(panelActions.sourceControlRemoteActions(noUpstream, '/repo', remoteContext({ remotes: ['origin'] }))[0].enabled, true);
+  assert.equal(panelActions.sourceControlRemoteActions({ ...noUpstream, branch: null }, '/repo', remoteContext({ remotes: ['origin'] }))[0].enabled, true, 'detached HEAD can fetch');
+  for (const remotes of [null, [], ['origin']]) {
+    assert.equal(panelActions.sourceControlRemoteActions(withUpstream, '/repo', remoteContext({ remotes }))[0].enabled, true);
+  }
   for (const action of detached.slice(1)) {
     assert.equal(action.enabled, false, `${action.id} needs an upstream`);
     assert.match(
@@ -880,23 +984,23 @@ function makeBackend(overrides = {}) {
   );
 
   const readOnly = panelActions.sourceControlRemoteActions(
-    withUpstream,
+    noUpstream,
     '/repo',
-    remoteContext({ canWrite: false })
+    remoteContext({ canWrite: false, busy: true })
   );
   assert.equal(
-    readOnly[1].disabledReason,
+    readOnly[0].disabledReason,
     'This page can read the repository but not change it.',
     'a page that cannot write repeats the panel words'
   );
 
   const working = panelActions.sourceControlRemoteActions(
-    withUpstream,
+    noUpstream,
     '/repo',
     remoteContext({ busy: true })
   );
   assert.ok(
-    working.every((action) => !action.enabled),
+    working.every((action) => !action.enabled && action.disabledReason === 'Wait for the current source-control action to finish.'),
     'nothing else starts while a source-control action is running'
   );
 
