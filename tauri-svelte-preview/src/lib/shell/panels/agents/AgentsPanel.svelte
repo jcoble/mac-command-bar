@@ -6,6 +6,7 @@
   import { setContext, untrack } from 'svelte';
   import Bot from '@lucide/svelte/icons/bot';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+  import MessageSquare from '@lucide/svelte/icons/message-square';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
@@ -40,6 +41,7 @@
   import { conversationDisplayItems } from '$lib/shell/conversation/conversationMessages.ts';
   import type { ConversationDisplayItem, ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
   import { requestOpenConversationFile } from '$lib/shell/openFileBus.ts';
+  import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { parseRemoteWorkspacePath } from '$lib/workspacePaths.ts';
   import { listOwnerInboxFromTauri } from '$lib/tauriSource.ts';
@@ -103,6 +105,9 @@
   const waitingIds = $derived(new Set(waitingSessions.map((session) => session.ownedId)));
   const rows = $derived(agentActivityRows(conversation?.children ?? [], {}, waitingIds));
   const selectedRow = $derived(rows.find((row) => row.childId === selectedChildId) ?? null);
+  // A helper is a separate session (no parent tool call); its own chat holds its composer.
+  const selectedIsHelper = $derived(conversation?.children.some((child) =>
+    child.childId === selectedChildId && !child.parentToolCallId) ?? false);
   const historyOwnedId = $derived(conversation?.selectedChildHistoryOwnedId ?? null);
   const childConversation = $derived(historyOwnedId ? getConversationSession(historyOwnedId) : null);
   const transcriptChat = $derived.by(() => {
@@ -146,6 +151,8 @@
   function release(parentId: string): void {
     reader?.abort();
     reader = null;
+    helperOpen?.abort();
+    helperOpen = null;
     stopChildConversationHistory(parentId);
     disposeChildConversationChat(parentId);
     setConversationSelectedChild(parentId, null);
@@ -223,6 +230,25 @@
     }
   }
 
+  // Back or another selection stops a pending open, so its result never lands in the next sub-view.
+  let helperOpen: AbortController | null = null;
+
+  async function openHelperChat(childId: string): Promise<void> {
+    helperOpen?.abort();
+    const controller = new AbortController();
+    helperOpen = controller;
+    fileError = '';
+    let opened = false;
+    try {
+      opened = await sessionRowJump(childId, 'session');
+    } catch {
+      opened = false;
+    }
+    if (controller.signal.aborted) return;
+    helperOpen = null;
+    if (!opened) fileError = 'This helper’s chat could not be opened.';
+  }
+
   function openFile(reference: string, provenance?: ConversationFileLinkProvenance): void {
     const active = rail.owned.find((session) => session.ownedId === ownedId);
     fileError = active ? requestOpenConversationFile(active, reference, provenance) ?? ''
@@ -261,7 +287,13 @@
       </Button>
       <span class="min-w-0 flex-1 truncate">{selectedRow.label}</span>
       <Chip tone={AGENT_STATUS_TONE[selectedRow.status]}>{AGENT_STATUS_WORD[selectedRow.status]}</Chip>
+      {#if selectedIsHelper}
+        <Button variant="ghost" size="sm" iconPosition="start" onclick={() => void openHelperChat(selectedRow.childId)}>
+          <MessageSquare data-icon="inline-start" />Open chat
+        </Button>
+      {/if}
     </div>
+    {#if fileError}<p role="alert" class="px-2 pb-2 text-sm text-muted-foreground">{fileError}</p>{/if}
     {#if error}
       <EmptyState title="Could not load transcript" body={error} data-testid="agent-transcript-error" />
     {:else if transcriptState === 'loading'}
@@ -269,7 +301,6 @@
     {:else if transcriptState === 'unavailable'}
       <EmptyState title="Transcript unavailable" body="This agent’s transcript is not available yet." data-testid="agent-transcript-unavailable" />
     {:else if historyOwnedId && childConversation}
-      {#if fileError}<p role="alert" class="px-2 pb-2 text-sm text-muted-foreground">{fileError}</p>{/if}
       {#if transcriptChat}
         {#key transcriptChat}
           <UIProvider {ui} chat={transcriptChat}>

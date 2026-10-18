@@ -295,6 +295,15 @@ pub(crate) async fn project_root_is_bare(root: String) -> Result<bool, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Makes an existing folder on this machine a repository. A remote machine answers the
+/// same command name through `remote_workspace`.
+#[tauri::command]
+pub(crate) async fn workspace_git_init(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || git_init(Path::new(&path)))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 /// Workflow runs share the project's worktree root, never the session folder.
 pub(crate) fn create_project_worktree_sync(root: &Path, branch: &str) -> Result<String, String> {
     let common = git_text(root, &["rev-parse", "--path-format=absolute", "--git-common-dir"])

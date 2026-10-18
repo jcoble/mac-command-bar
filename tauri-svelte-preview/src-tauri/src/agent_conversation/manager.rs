@@ -3656,7 +3656,7 @@ impl AgentRuntimeManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         rows.into_iter()
             .map(|listed| {
-                let mcb_core::session_store::ListedSession { row, handle, helper_of, run_id, run_label } = listed;
+                let mcb_core::session_store::ListedSession { row, handle, helper_of, run_id, run_label, run_lead } = listed;
                 let live = sessions.get(&row.owned_id);
                 let (
                     provider,
@@ -3723,6 +3723,7 @@ impl AgentRuntimeManager {
                     helper_of,
                     run_id,
                     run_label,
+                    run_lead,
                     meta,
                 })
             })

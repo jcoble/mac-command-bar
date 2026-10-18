@@ -13,7 +13,8 @@
 	import { onMount } from "svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
-	import type { OwnedSession } from "$lib/shell/ownedSessions";
+	import { railRowStatuses, type OwnedSession, type RailRowStatus } from "$lib/shell/ownedSessions";
+	import { rail } from "$lib/shell/stores/sessionRailStore.svelte";
 	import { projectBadge } from "$lib/shell/projects/projects";
 	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
 	import {
@@ -68,6 +69,10 @@
 	}: Props = $props();
 
 	const groups = $derived(buildMyWorkGroups(sessions, options, manualOrder));
+	// Every row's status icons, built once per change to the whole rail (helpers
+	// and workers can be filtered out of `sessions`), so a row costs a lookup.
+	const rowStatuses = $derived(railRowStatuses(rail.owned));
+	const NO_STATUS: RailRowStatus = { waiting: [], background: 0, helpers: 0, runs: 0 };
 	let collapsedGroups = $state<Record<string, boolean>>({});
 	let visualActiveOwnedId = $state<string | null>(null);
 	// One clock for every row's age label, refreshed coarsely; a hidden window skips the write.
@@ -219,6 +224,7 @@
 {#snippet row(session: OwnedSession, dropPosition: "before" | "after" | null)}
 	<WorktreeAgentRow
 		{session}
+		status={rowStatuses.get(session.ownedId) ?? NO_STATUS}
 		{nowMs}
 		active={session.ownedId === visualActiveOwnedId}
 		onSelect={() => void selectRow(session.ownedId)}

@@ -29,6 +29,7 @@ const {
   hasStagedChanges,
   isGitFileDeleted,
   isNotARepositoryError,
+  isPlainFolderError,
   repositoryLabel,
   resetGitPanelState
 } = store;
@@ -798,6 +799,55 @@ function makeBackend(overrides = {}) {
   for (const message of realFailures) {
     assert.equal(isNotARepositoryError(message), false, `"${message}" is a real failure`);
   }
+
+  // Only a folder with no repository at all may be initialized; a bare
+  // repository is one already.
+  assert.equal(isPlainFolderError('fatal: not a git repository (or any of the parent directories): .git'), true);
+  assert.equal(isPlainFolderError('fatal: this operation must be run in a work tree'), false);
+  for (const message of realFailures) {
+    assert.equal(isPlainFolderError(message), false, `"${message}" does not offer Initialize`);
+  }
+}
+
+// ── initializing a plain folder clears both stored "not a repository" errors ──
+{
+  const notARepo = 'fatal: not a git repository (or any of the parent directories): .git';
+  let initialized = false;
+  const backend = makeBackend({
+    async readStatus(root) {
+      backend.calls.push(['readStatus', root]);
+      if (!initialized) throw new Error(notARepo);
+      return backend.status();
+    },
+    async readHistory(root, cursor, relativePath) {
+      backend.calls.push(['readHistory', root, cursor, relativePath]);
+      if (!initialized) throw new Error(notARepo);
+      return { commits: [], nextCursor: null, complete: true };
+    },
+    async initRepository(root, signal) {
+      backend.calls.push(['initRepository', root, signal.aborted]);
+      initialized = true;
+    }
+  });
+  const state = createGitPanelState();
+  const git = createGitService({ backend, state });
+  const root = 'assembly-remote://profile-1/home/me/plain';
+
+  git.activate(root);
+  await git.refreshStatus();
+  git.ensureHistorySurface();
+  await settle();
+  assert.match(state.statusError, /not a git repository/);
+  assert.match(state.historyError, /not a git repository/);
+
+  backend.calls.length = 0;
+  await git.initRepository(new AbortController().signal);
+  assert.deepEqual(backend.calls[0], ['initRepository', root, false], 'the machine-qualified root is passed unchanged');
+  assert.equal(state.statusError, '');
+  assert.equal(state.historyError, '');
+  assert.equal(state.status.branch, 'main');
+  assert.equal(state.actionBusy, '');
+  assert.equal(state.actionError, '');
 }
 
 // ── the panel's three sections, its remote actions and its scope picker ──────

@@ -813,6 +813,8 @@ pub struct ListedSession {
     /// The workflow run this worker belongs to, and its `<task key> · <workflow name>`.
     pub run_id: Option<String>,
     pub run_label: Option<String>,
+    /// The session that started that run, or `None` when the owner did.
+    pub run_lead: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2039,7 +2041,8 @@ impl SessionStore {
                         CASE WHEN json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.task.key')
                              IS NOT NULL THEN e.run_id END,
                         json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.task.key') || ' · '
-                            || json_extract(e.payload_json,'$.workflowPayload.run.definition.name')
+                            || json_extract(e.payload_json,'$.workflowPayload.run.definition.name'),
+                        json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.started_by')
                  FROM sessions s
                  -- Each session's latest workflow event, as in session_directory.
                  LEFT JOIN orchestration_events e ON e.rowid = (
@@ -2057,6 +2060,7 @@ impl SessionStore {
                 helper_of: row.get(18)?,
                 run_id: row.get(19)?,
                 run_label: row.get(20)?,
+                run_lead: row.get(21)?,
             }))
             .map_err(|error| StoreError::sqlite("could not list sessions", error))?;
         rows.collect::<rusqlite::Result<_>>()
