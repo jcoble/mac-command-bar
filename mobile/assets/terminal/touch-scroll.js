@@ -5,7 +5,7 @@
  *
  * Single-finger drag scrolling. The terminal has `touch-action: none`, so drags are
  * turned into pixel WheelEvents, which ghostty's own wheel handler consumes (including
- * alt-screen arrow keys). Taps pass through so tap-to-focus and the keyboard still work.
+ * alt-screen arrow keys). Taps reach the browser untouched so it focuses the WebView and shows the keyboard.
  */
 function attachTouchScroll(container, onTap) {
   const DRAG_SLOP_PX = 8;
@@ -30,10 +30,11 @@ function attachTouchScroll(container, onTap) {
     }));
   };
   const onTouchEnd = (event) => {
-    // ghostty's canvas touchend focuses the input on EVERY touch, so a scroll flick would
-    // summon the keyboard; swallow the event for drags and let taps through.
-    if (dragging) event.stopPropagation();
-    else if (lastY !== undefined) onTap();
+    // Keep every touchend from ghostty's canvas handler: it calls preventDefault, which cancels
+    // the browser's tap, and only that tap gives the WebView Android focus and the keyboard.
+    // A drag must not focus at all, or a scroll flick would summon the keyboard.
+    event.stopPropagation();
+    if (!dragging && lastY !== undefined) onTap();
     lastY = undefined;
     dragging = false;
   };
