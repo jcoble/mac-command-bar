@@ -8,6 +8,13 @@ import '../../core/theme/app_tokens.dart';
 import '../../core/widgets/mobile_m3_list.dart';
 import 'runs_repository.dart';
 
+/// Whether a screen draws the value in [v]. After the selected machine
+/// changes, Riverpod keeps the previous machine's value while the new load
+/// runs ([AsyncValue.isReloading]); that value must never be drawn, so the
+/// screen shows the spinner or the new load's error instead. Pull to refresh
+/// ([AsyncValue.isRefreshing]) keeps its rows.
+bool showsValue<T>(AsyncValue<T> v) => v.hasValue && !v.isReloading;
+
 /// Active runs (running, paused, waiting for the owner) and the 20 newest
 /// finished ones, on the selected machine.
 class RunsScreen extends ConsumerWidget {
@@ -19,7 +26,8 @@ class RunsScreen extends ConsumerWidget {
     return RefreshIndicator(
       onRefresh: () => ref.read(runsProvider.notifier).refresh(),
       child: switch (runs) {
-        AsyncValue(:final value?) => ListView(
+        AsyncValue(:final value?) when showsValue(runs) => ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
           children: [
             if (value.active.isEmpty && value.recent.isEmpty)
@@ -35,6 +43,7 @@ class RunsScreen extends ConsumerWidget {
           ],
         ),
         AsyncValue(:final error?) => ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
           children: [RunsMessage('Could not load runs. ${errorText(error)}')],
         ),
         _ => const Center(child: CircularProgressIndicator()),

@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:assembly_phone/features/runs/runs_repository.dart';
+import 'package:assembly_phone/features/runs/runs_screen.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -79,6 +81,33 @@ class FakeMachine implements HttpClientAdapter {
   );
   addTearDown(container.dispose);
   return (container, machine);
+}
+
+/// Holds which machine's repository the test has "selected".
+class _Selected extends Notifier<RunsRepository> {
+  @override
+  RunsRepository build() => throw UnimplementedError();
+
+  void select(RunsRepository repo) => state = repo;
+}
+
+/// Answers `GET runs` at once until [hold] is set, then only when [release]
+/// completes.
+class GatedMachine extends FakeMachine {
+  GatedMachine(super.routes);
+
+  final release = Completer<void>();
+  var hold = false;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    if (hold) await release.future;
+    return super.fetch(options, requestStream, cancelFuture);
+  }
 }
 
 void main() {
@@ -171,5 +200,96 @@ void main() {
     await container.read(runProvider('b').future);
 
     expect(machine.requests, ['GET runs/a']);
+  });
+
+  test('refresh_result_for_previous_machine_is_dropped', () async {
+    Map<String, Object?> runs(String id) => {
+      'GET runs': {
+        'active': [row(id, 'running')],
+        'recent': [],
+      },
+    };
+    final machineA = FakeMachine(runs('a'));
+    final machineB = FakeMachine(runs('b'));
+    final slowA = GatedMachine(runs('a'));
+    final selected = NotifierProvider<_Selected, RunsRepository>(_Selected.new);
+    final container = ProviderContainer(
+      overrides: [
+        selected.overrideWithBuild(
+          (ref, _) => RunsRepository(Dio()..httpClientAdapter = machineA),
+        ),
+        runsRepositoryProvider.overrideWith((ref) => ref.watch(selected)),
+      ],
+    );
+    addTearDown(container.dispose);
+    container.listen(runsProvider, (_, _) {});
+    await container.read(runsProvider.future);
+
+    // Machine A's pull to refresh is still in flight when the user switches.
+    container
+        .read(selected.notifier)
+        .select(RunsRepository(Dio()..httpClientAdapter = slowA));
+    await container.read(runsProvider.future);
+    slowA.hold = true;
+    final refresh = container.read(runsProvider.notifier).refresh();
+    container
+        .read(selected.notifier)
+        .select(RunsRepository(Dio()..httpClientAdapter = machineB));
+    await container.read(runsProvider.future);
+    slowA.release.complete();
+    await refresh;
+
+    expect(container.read(runsProvider).requireValue.active.map((r) => r.id), [
+      'b',
+    ]);
+  });
+
+  test('machine_switch_does_not_show_previous_machine_runs', () async {
+    Map<String, Object?> runs(String id) => {
+      'GET runs': {
+        'active': [row(id, 'running')],
+        'recent': [],
+      },
+    };
+    final slowB = GatedMachine(runs('b'))..hold = true;
+    final selected = NotifierProvider<_Selected, RunsRepository>(_Selected.new);
+    final container = ProviderContainer(
+      overrides: [
+        selected.overrideWithBuild(
+          (ref, _) =>
+              RunsRepository(Dio()..httpClientAdapter = FakeMachine(runs('a'))),
+        ),
+        runsRepositoryProvider.overrideWith((ref) => ref.watch(selected)),
+      ],
+    );
+    addTearDown(container.dispose);
+    container.listen(runsProvider, (_, _) {});
+    await container.read(runsProvider.future);
+    expect(showsValue(container.read(runsProvider)), isTrue);
+
+    // Switch to machine B while its list is still loading: A's rows are
+    // still held by the provider but the screen must not draw them.
+    container
+        .read(selected.notifier)
+        .select(RunsRepository(Dio()..httpClientAdapter = slowB));
+    expect(container.read(runsProvider).isLoading, isTrue);
+    expect(showsValue(container.read(runsProvider)), isFalse);
+
+    slowB.release.complete();
+    await container.read(runsProvider.future);
+    expect(showsValue(container.read(runsProvider)), isTrue);
+    expect(container.read(runsProvider).requireValue.active.map((r) => r.id), [
+      'b',
+    ]);
+
+    // Machine C fails to answer: the screen reaches its error branch rather
+    // than showing B's rows.
+    container
+        .read(selected.notifier)
+        .select(RunsRepository(Dio()..httpClientAdapter = FakeMachine({})));
+    while (!container.read(runsProvider).hasError) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(showsValue(container.read(runsProvider)), isFalse);
   });
 }
