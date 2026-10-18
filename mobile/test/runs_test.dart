@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -79,6 +80,33 @@ class FakeMachine implements HttpClientAdapter {
   );
   addTearDown(container.dispose);
   return (container, machine);
+}
+
+/// Holds which machine's repository the test has "selected".
+class _Selected extends Notifier<RunsRepository> {
+  @override
+  RunsRepository build() => throw UnimplementedError();
+
+  void select(RunsRepository repo) => state = repo;
+}
+
+/// Answers `GET runs` at once until [hold] is set, then only when [release]
+/// completes.
+class GatedMachine extends FakeMachine {
+  GatedMachine(super.routes);
+
+  final release = Completer<void>();
+  var hold = false;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    if (hold) await release.future;
+    return super.fetch(options, requestStream, cancelFuture);
+  }
 }
 
 void main() {
@@ -171,5 +199,47 @@ void main() {
     await container.read(runProvider('b').future);
 
     expect(machine.requests, ['GET runs/a']);
+  });
+
+  test('refresh_result_for_previous_machine_is_dropped', () async {
+    Map<String, Object?> runs(String id) => {
+      'GET runs': {
+        'active': [row(id, 'running')],
+        'recent': [],
+      },
+    };
+    final machineA = FakeMachine(runs('a'));
+    final machineB = FakeMachine(runs('b'));
+    final slowA = GatedMachine(runs('a'));
+    final selected = NotifierProvider<_Selected, RunsRepository>(_Selected.new);
+    final container = ProviderContainer(
+      overrides: [
+        selected.overrideWithBuild(
+          (ref, _) => RunsRepository(Dio()..httpClientAdapter = machineA),
+        ),
+        runsRepositoryProvider.overrideWith((ref) => ref.watch(selected)),
+      ],
+    );
+    addTearDown(container.dispose);
+    container.listen(runsProvider, (_, _) {});
+    await container.read(runsProvider.future);
+
+    // Machine A's pull to refresh is still in flight when the user switches.
+    container
+        .read(selected.notifier)
+        .select(RunsRepository(Dio()..httpClientAdapter = slowA));
+    await container.read(runsProvider.future);
+    slowA.hold = true;
+    final refresh = container.read(runsProvider.notifier).refresh();
+    container
+        .read(selected.notifier)
+        .select(RunsRepository(Dio()..httpClientAdapter = machineB));
+    await container.read(runsProvider.future);
+    slowA.release.complete();
+    await refresh;
+
+    expect(container.read(runsProvider).requireValue.active.map((r) => r.id), [
+      'b',
+    ]);
   });
 }

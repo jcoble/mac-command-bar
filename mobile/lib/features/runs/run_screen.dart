@@ -102,6 +102,7 @@ class _RunScreenState extends ConsumerState<RunScreen> {
         child: switch (run) {
           AsyncValue(:final value?) => _body(context, value),
           AsyncValue(:final error?) => ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
             children: [
               RunsMessage('Could not load this run. ${errorText(error)}'),
             ],
@@ -122,6 +123,7 @@ class _RunScreenState extends ConsumerState<RunScreen> {
         ? detail.steps.where((s) => s.state == 'failed').firstOrNull
         : null;
     return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 4, 16, 32),
       children: [
         Text(
