@@ -200,4 +200,34 @@ void main() {
       expect(await after({'type': 'chatDelta', 'seq': 9}), isEmpty);
     },
   );
+
+  test('reconnect_refetches_open_run_detail', () async {
+    final (c, adapter, socket) = await inboxWith(
+      (r) => switch ('${r.method} ${r.path}') {
+        'GET inbox' => (200, {'items': []}),
+        'GET runs' => (
+          200,
+          {
+            'active': [row('a', 'running')],
+            'recent': [],
+          },
+        ),
+        'GET runs/a' => (200, detail('a')),
+        _ => (404, null),
+      },
+    );
+    c.listen(runsProvider, (_, _) {});
+    c.listen(runProvider('a'), (_, _) {});
+    await c.read(runsProvider.future);
+    await c.read(runProvider('a').future);
+    adapter.requests.clear();
+
+    socket.controller.add({'type': 'open'});
+    await pumpEventQueue();
+
+    expect(
+      sent(adapter),
+      unorderedEquals(['GET inbox', 'GET runs', 'GET runs/a']),
+    );
+  });
 }

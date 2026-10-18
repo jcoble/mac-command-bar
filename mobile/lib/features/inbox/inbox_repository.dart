@@ -131,6 +131,8 @@ class InboxNotifier extends AsyncNotifier<Inbox> {
       case ('open', _):
         refresh();
         runs?.refresh();
+        // Every open run detail, too; only the watched ones refetch.
+        ref.invalidate(runProvider);
       case ('changed', 'inbox'):
         refresh();
       case ('changed', 'runs'):
