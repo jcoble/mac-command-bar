@@ -4,21 +4,29 @@
 //! serves only `/phone/v1`; the desktop's full-control `/assembly` socket and
 //! its server token are never reachable through it.
 
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::extract::State;
+use axum::body::Bytes;
+use axum::extract::ws::{rejection::WebSocketUpgradeRejection, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use super::remote::ServerState;
+use super::protocol::{
+    AgentConversationEvent, AgentConversationPayload as Payload, AgentNativeSessionMode, EnsureAgentConversationRequest,
+    ExecutionEnvironment, RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest, ToolState, TurnState,
+};
+use super::remote::{execute_phone_command, RemoteCommand, RemoteResponse, ServerState};
+use crate::workflow::{WorkflowError, WorkflowNodeState, WorkflowOutputContract, WorkflowRunRecord, WorkflowRunState};
 
 /// How long a pairing code works: 10 minutes.
 pub(super) const PAIRING_CODE_LIFETIME_MS: i64 = 10 * 60 * 1000;
@@ -26,6 +34,18 @@ const WRONG_TRIES_ALLOWED: u32 = 5;
 const NOT_SET_UP: &str =
     "Phone access is not set up on this machine: set ASSEMBLY_PHONE_URL in ~/.config/assembly/phone.env";
 const REMOVED: &str = "This phone was removed — pair again";
+const NO_ORCHESTRATOR: &str = "No orchestrator is marked on this machine";
+/// §5.3 sets no length for chat text, so a plain cap: 10,000 characters, in a body of at most 64 KiB.
+const MAX_CHAT_CHARS: usize = 10_000;
+const MAX_BODY_BYTES: usize = 64 * 1024;
+/// `GET /chat` reads one desktop-sized page of events, and with no `after` keeps its newest 100 items.
+const CHAT_PAGE_BYTES: u32 = 1024 * 1024;
+const LATEST_CHAT_ITEMS: usize = 100;
+
+/// Bumped whenever a phone is removed, so each open live socket checks its own token and closes if it went.
+static DEVICE_REMOVED: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::channel(0).0);
+
+type Reply = Result<Response, Response>;
 
 /// The one pairing code that works right now, kept in memory only.
 pub(super) struct PairingCode {
@@ -38,7 +58,15 @@ pub(super) struct PairingCode {
 pub(super) fn router() -> Router<ServerState> {
     Router::new()
         .route("/phone/v1/pair", post(pair))
-        .route("/phone/v1/me", get(me))
+        .route("/phone/v1/me", get(me).delete(forget_me))
+        .route("/phone/v1/chat", get(chat).post(send_chat))
+        .route("/phone/v1/runs", get(runs))
+        .route("/phone/v1/runs/{id}", get(run_detail))
+        .route("/phone/v1/runs/{id}/{action}", post(control_run))
+        .route("/phone/v1/inbox", get(inbox))
+        .route("/phone/v1/inbox/{id}/answer", post(answer))
+        .route("/phone/v1/live", get(live))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
 /// Starts the phone listener on `bind` when it is set. A bad or busy address is
@@ -71,7 +99,10 @@ pub(super) fn operation(state: &ServerState, operation: &str, args: &Value) -> O
         "phoneDevices" => store.phone_devices().map(|devices| json!({ "devices": devices })).map_err(|error| error.to_string()),
         "phoneRevoke" => match args["deviceId"].as_str() {
             Some(device_id) => store.revoke_phone_device(device_id, now_ms())
-                .map(|revoked| json!({ "revoked": revoked })).map_err(|error| error.to_string()),
+                .map(|revoked| {
+                    DEVICE_REMOVED.send_modify(|count| *count = count.wrapping_add(1));
+                    json!({ "revoked": revoked })
+                }).map_err(|error| error.to_string()),
             None => Err("phoneRevoke needs a deviceId".into()),
         },
         _ => return None,
@@ -175,14 +206,385 @@ async fn me(State(state): State<ServerState>, headers: HeaderMap) -> Response {
 /// The paired device whose bearer token this is, found among non-revoked
 /// devices in one SQL statement that also marks it seen. Anything else is 401.
 fn authorized_device(state: &ServerState, headers: &HeaderMap) -> Result<String, Response> {
-    let token = headers.get("authorization").and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .ok_or_else(|| refuse(StatusCode::UNAUTHORIZED, REMOVED))?;
+    let token = bearer(headers).ok_or_else(|| refuse(StatusCode::UNAUTHORIZED, REMOVED))?;
     match state.manager.store().touch_phone_device(&token_hash(token), now_ms()) {
         Ok(Some(device_id)) => Ok(device_id),
         Ok(None) => Err(refuse(StatusCode::UNAUTHORIZED, REMOVED)),
         Err(error) => Err(server_error(&error)),
     }
+}
+
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers.get("authorization").and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix("Bearer "))
+}
+
+/// `DELETE /phone/v1/me` → 204: the phone removes itself with the desktop's Remove query.
+async fn forget_me(State(state): State<ServerState>, headers: HeaderMap) -> Reply {
+    let device_id = authorized_device(&state, &headers)?;
+    state.manager.store().revoke_phone_device(&device_id, now_ms()).map_err(|error| server_error(&error))?;
+    DEVICE_REMOVED.send_modify(|count| *count = count.wrapping_add(1));
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The orchestrator session the owner marked on this machine (`broker.main_orchestrator`); 404 when none is.
+fn orchestrator(state: &ServerState) -> Result<String, Response> {
+    state.manager.store().main_orchestrator().map_err(|error| server_error(&error))?
+        .map(|(owned_id, _)| owned_id).ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_ORCHESTRATOR))
+}
+
+/// `GET /phone/v1/chat?after=<seq>` → the orchestrator's chat items after `seq`, or its newest 100.
+async fn chat(State(state): State<ServerState>, headers: HeaderMap, Query(query): Query<HashMap<String, String>>) -> Reply {
+    authorized_device(&state, &headers)?;
+    let after = query.get("after").map(|after| after.parse::<i64>()).transpose()
+        .map_err(|_| refuse(StatusCode::BAD_REQUEST, "after must be a sequence number"))?;
+    let owned_id = orchestrator(&state)?;
+    let page = match after {
+        Some(after) => state.manager.list_events_after(&owned_id, after, CHAT_PAGE_BYTES),
+        None => state.manager.list_events_before(&owned_id, i64::MAX, CHAT_PAGE_BYTES),
+    }.map_err(|error| server_error(&error))?;
+    let mut items = reduce_chat(&page.events);
+    if after.is_none() { items.drain(..items.len().saturating_sub(LATEST_CHAT_ITEMS)); }
+    let owner_items: Vec<Value> = inbox_items(&state)?.into_iter()
+        .filter(|(session, _)| session.as_deref() == Some(owned_id.as_str())).map(|(_, item)| item).collect();
+    Ok(Json(json!({
+        "items": items,
+        "cursor": page.events.last().map_or(after.unwrap_or(0), |event| event.sequence),
+        "turn": if state.manager.turn_running(&owned_id) { "running" } else { "idle" },
+        "ownerItems": owner_items,
+    })).into_response())
+}
+
+#[derive(Deserialize)]
+struct ChatRequest {
+    text: String,
+}
+
+/// `POST /phone/v1/chat {text}` → `{itemId}`: the desktop's ensure, then its send, on the orchestrator.
+async fn send_chat(State(state): State<ServerState>, headers: HeaderMap, body: Bytes) -> Reply {
+    authorized_device(&state, &headers)?;
+    let request: ChatRequest = parse(&body)?;
+    let text = request.text.trim();
+    if text.is_empty() || text.chars().count() > MAX_CHAT_CHARS {
+        return Err(refuse(StatusCode::BAD_REQUEST, "A message must be 1 to 10,000 characters"));
+    }
+    let owned_id = orchestrator(&state)?;
+    let row = state.manager.store().get_session(&owned_id).map_err(|error| server_error(&error))?
+        .ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_ORCHESTRATOR))?;
+    let provider = super::transcript::parse_provider(&row.provider).map_err(|error| server_error(&error))?;
+    // After a restart the manager holds no sessions; ensure loads the stored one and gives its generation.
+    let ensure = RemoteCommand::Ensure(EnsureAgentConversationRequest {
+        owned_id: owned_id.clone(), execution_environment: ExecutionEnvironment::Local, remote_profile_id: None,
+        provider, cwd: row.cwd, native_session_id: row.native_session_id,
+        native_session_mode: AgentNativeSessionMode::Resume, reasoning_effort: None, project_id: row.project_id,
+    });
+    let RemoteResponse::Connection(connection) = execute_phone_command(&state, ensure).await
+        .map_err(|error| refuse(StatusCode::CONFLICT, &error))? else { return Err(server_error(&"ensure gave the wrong response")) };
+    let send = RemoteCommand::Send(SendAgentConversationMessageRequest {
+        owned_id, generation: connection.generation, text: text.into(), content: Vec::new(),
+        attachment_ids: Vec::new(), model: None, approval_policy: None,
+    });
+    let RemoteResponse::SendReceipt(receipt) = execute_phone_command(&state, send).await
+        .map_err(|error| refuse(StatusCode::CONFLICT, &error))? else { return Err(server_error(&"send gave the wrong response")) };
+    Ok(Json(json!({ "itemId": receipt.user_item_id })).into_response())
+}
+
+/// `GET /phone/v1/runs` → `{active, recent}`: unfinished runs and the 20 newest finished ones.
+async fn runs(State(state): State<ServerState>, headers: HeaderMap) -> Reply {
+    authorized_device(&state, &headers)?;
+    let runs = state.workflow.recent_runs().map_err(|error| server_error(&error))?;
+    let (recent, active): (Vec<_>, Vec<_>) = runs.iter()
+        .partition(|run| matches!(run.state, WorkflowRunState::Completed | WorkflowRunState::Failed | WorkflowRunState::Cancelled));
+    Ok(Json(json!({
+        "active": active.into_iter().map(run_row).collect::<Vec<_>>(),
+        "recent": recent.into_iter().map(run_row).collect::<Vec<_>>(),
+    })).into_response())
+}
+
+/// `GET /phone/v1/runs/{id}` → the run's row, steps with their latest attempt, and its last 20 changes.
+async fn run_detail(State(state): State<ServerState>, headers: HeaderMap, Path(run_id): Path<String>) -> Reply {
+    authorized_device(&state, &headers)?;
+    let run = match state.workflow.get_run(&run_id) {
+        Ok(run) => run,
+        Err(WorkflowError::NotFound(_)) => return Err(refuse(StatusCode::NOT_FOUND, "No such run")),
+        Err(error) => return Err(server_error(&error)),
+    };
+    let timeline = state.workflow.run_timeline(&run_id).map_err(|error| server_error(&error))?;
+    let mut body = run_row(&run);
+    body["branch"] = run.input_snapshot["worktree"]["branch"].clone();
+    body["steps"] = run.definition.nodes.iter().filter_map(|step| {
+        let node = run.nodes.iter().find(|node| node.node_id == step.id)?;
+        let output = node.structured_output.as_ref().unwrap_or(&Value::Null);
+        let failing: Vec<Value> = output["commands"].as_array().into_iter().flatten().filter(|command| command["exitCode"] != 0)
+            .map(|command| {
+                let text = command["output"].as_str().unwrap_or_default();
+                let tail = text.lines().rev().take(20).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+                json!({ "command": command["command"], "exit": command["exitCode"], "tail": tail })
+            }).collect();
+        let findings = output["findings"].as_array().map(|findings| findings.iter()
+            .map(|finding| finding.as_str().map_or_else(|| finding.to_string(), str::to_owned)).collect::<Vec<_>>());
+        let kind = ["agent", "review", "run", "gate"].into_iter().find(|kind| step.step.get(kind).is_some()).unwrap_or("agent");
+        Some(json!({
+            "id": step.id,
+            "kind": kind,
+            "state": node.state,
+            "attempts": [{
+                "n": node.attempt, "state": node.state, "startedAt": node.started_at_ms, "endedAt": node.finished_at_ms,
+                "summary": output["summary"].as_str().or(node.failure.as_ref().map(|failure| failure.message.as_str())),
+                "findings": findings, "failingCommands": failing,
+            }],
+        }))
+    }).collect();
+    body["timeline"] = timeline.into_iter().map(|(at, text)| json!({ "at": at, "text": text })).collect();
+    Ok(Json(body).into_response())
+}
+
+/// `POST /phone/v1/runs/{id}/pause|resume|stop` → the run's row, through the desktop's engine operations.
+async fn control_run(State(state): State<ServerState>, headers: HeaderMap, Path((run_id, action)): Path<(String, String)>) -> Reply {
+    authorized_device(&state, &headers)?;
+    let operation = match action.as_str() {
+        "pause" => "pause",
+        "resume" => "resume",
+        "stop" => "cancel",
+        _ => return Err(refuse(StatusCode::NOT_FOUND, "Unknown run action")),
+    };
+    let command = RemoteCommand::Workflow { operation: operation.into(),
+        args: json!({ "runId": run_id, "idempotencyKey": format!("phone:{}", uuid::Uuid::new_v4()) }) };
+    // The engine's refusal, such as "Only a running workflow can be paused", is the phone's to show.
+    let RemoteResponse::Workflow(run) = execute_phone_command(&state, command).await
+        .map_err(|error| refuse(StatusCode::CONFLICT, &error))? else { return Err(server_error(&"run control gave the wrong response")) };
+    let run: WorkflowRunRecord = serde_json::from_value(run).map_err(|error| server_error(&error))?;
+    Ok(Json(run_row(&run)).into_response())
+}
+
+fn run_row(run: &WorkflowRunRecord) -> Value {
+    let waiting = run.nodes.iter().find(|node| matches!(node.state, WorkflowNodeState::WaitingInput | WorkflowNodeState::WaitingApproval));
+    let current = waiting.or_else(|| run.nodes.iter().find(|node| matches!(node.state, WorkflowNodeState::Starting | WorkflowNodeState::Running)));
+    let pr_url = run.nodes.iter()
+        .filter(|node| matches!(node.output_contract, WorkflowOutputContract::PullRequestReceipt | WorkflowOutputContract::PullRequestMergeReceipt))
+        .find_map(|node| node.structured_output.as_ref()?["url"].as_str());
+    json!({
+        "id": run.id, "taskKey": run.input_snapshot["task"]["key"], "taskTitle": run.input_snapshot["task"]["title"],
+        "workflow": run.definition.name, "state": run.state, "currentStep": current.map(|node| &node.node_id),
+        "round": run.nodes.iter().map(|node| node.attempt).max().unwrap_or(1),
+        "startedAt": run.created_at_ms, "updatedAt": run.updated_at_ms,
+        "iMerge": run.input_snapshot["inputs"]["i_merge"].as_bool().unwrap_or(false),
+        "prUrl": pr_url, "waitingItemId": waiting.map(|node| format!("step:{}:{}", run.id, node.node_id)),
+    })
+}
+
+/// `GET /phone/v1/inbox` → `{items}`: everything waiting on the owner, newest first.
+async fn inbox(State(state): State<ServerState>, headers: HeaderMap) -> Reply {
+    authorized_device(&state, &headers)?;
+    let items: Vec<Value> = inbox_items(&state)?.into_iter().map(|(_, item)| item).collect();
+    Ok(Json(json!({ "items": items })).into_response())
+}
+
+/// The inbox, newest first, each item with the session it belongs to: the desktop inbox's own
+/// read of waiting steps (one SQL statement) and the manager's pending permission requests.
+fn inbox_items(state: &ServerState) -> Result<Vec<(Option<String>, Value)>, Response> {
+    let steps = state.manager.store().waiting_workflow_steps().map_err(|error| server_error(&error))?;
+    let mut items: Vec<(Option<String>, Value)> = steps.into_iter().map(|step| {
+        let gate = step.state == "waiting-approval";
+        let kind = match step.code.as_deref() {
+            _ if gate => "gate",
+            Some("loop-stopped") if step.reason.as_deref().is_some_and(|reason| reason.starts_with("Stopped after")) => "round_limit",
+            Some("loop-stopped") => "loop_stalled",
+            Some("review-report") => "invalid_review",
+            Some("budget-exhausted") => "timeout",
+            _ => "restart",
+        };
+        // The desktop inbox's buttons: approve a gate; another round, accept or stop a pause.
+        let options = if gate {
+            json!([{ "id": "approve", "label": "Approve", "style": "primary" }])
+        } else {
+            json!([{ "id": "another-round", "label": "Another round", "style": "primary" },
+                { "id": "accept", "label": "Accept", "style": "neutral" }, { "id": "stop", "label": "Stop", "style": "danger" }])
+        };
+        let title = [step.task_key.as_deref(), step.workflow_name.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        (step.owned_id, json!({
+            "id": format!("step:{}:{}", step.run_id, step.node_id), "kind": kind, "runId": step.run_id,
+            "taskKey": step.task_key, "stepId": step.node_id, "title": if title.is_empty() { step.run_id.clone() } else { title },
+            "detail": step.reason.unwrap_or_default(), "evidence": [], "options": options,
+            "createdAt": step.updated_at_ms, "version": step.attempt,
+        }))
+    }).collect();
+    items.extend(state.manager.pending_permissions().into_iter().map(|request| {
+        let options: Vec<Value> = request.options.iter().map(|(id, label, kind)| json!({
+            "id": id, "label": label,
+            "style": if kind.starts_with("reject") { "danger" } else if kind == "allow_once" { "primary" } else { "neutral" },
+        })).collect();
+        (Some(request.owned_id.clone()), json!({
+            "id": request.request_id, "kind": "permission",
+            "sessionName": request.session_title.unwrap_or_else(|| request.owned_id.clone()),
+            "title": request.title, "detail": request.command.unwrap_or_default(),
+            "evidence": [{ "label": "Provider", "text": request.provider }], "options": options,
+            "createdAt": request.requested_at_ms as i64, "version": request.generation,
+        }))
+    }));
+    items.sort_by_key(|(_, item)| std::cmp::Reverse(item["createdAt"].as_i64()));
+    Ok(items)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AnswerRequest {
+    option_id: String,
+    version: i64,
+}
+
+/// `POST /phone/v1/inbox/{id}/answer {optionId, version}` → 204, or 409 `{error:"stale"}`. The option must be
+/// one the item offers; the answer goes the way the desktop sends it, with the owner's origin and one
+/// idempotency key per item version, so a repeat is never recorded twice.
+async fn answer(State(state): State<ServerState>, headers: HeaderMap, Path(id): Path<String>, body: Bytes) -> Reply {
+    authorized_device(&state, &headers)?;
+    let request: AnswerRequest = parse(&body)?;
+    let stale = || refuse(StatusCode::CONFLICT, "stale");
+    let (session, item) = inbox_items(&state)?.into_iter().find(|(_, item)| item["id"] == id.as_str()).ok_or_else(stale)?;
+    if item["version"] != request.version {
+        return Err(stale());
+    }
+    if !item["options"].as_array().is_some_and(|options| options.iter().any(|option| option["id"] == request.option_id.as_str())) {
+        return Err(refuse(StatusCode::BAD_REQUEST, "That option is not offered for this item"));
+    }
+    let key = format!("phone:{id}:{}", request.version);
+    let command = match item["kind"].as_str() {
+        Some("permission") => RemoteCommand::RespondPermission(RespondAgentConversationPermissionRequest {
+            owned_id: session.unwrap_or_default(), generation: request.version as u64, request_id: id, option_id: request.option_id,
+        }),
+        Some("gate") => RemoteCommand::Workflow { operation: "approveGate".into(), args: json!({
+            "runId": item["runId"], "nodeId": item["stepId"], "approval": { "approved": true }, "idempotencyKey": key }) },
+        _ => RemoteCommand::Workflow { operation: "answer".into(), args: json!({
+            "runId": item["runId"], "nodeId": item["stepId"], "decision": request.option_id, "idempotencyKey": key }) },
+    };
+    // It was waiting a moment ago, so a refusal now means another answer got there first.
+    execute_phone_command(&state, command).await.map_err(|error| {
+        eprintln!("Phone answer refused: {error}");
+        stale()
+    })?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `GET /phone/v1/live`: a WebSocket of `chat`, `chatDelta`, `turn` and `changed` frames (§5.3).
+async fn live(State(state): State<ServerState>, headers: HeaderMap,
+    upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>) -> Reply {
+    authorized_device(&state, &headers)?;
+    let upgrade = upgrade.map_err(IntoResponse::into_response)?;
+    let orchestrator = state.manager.store().main_orchestrator().map_err(|error| server_error(&error))?.map(|(owned_id, _)| owned_id);
+    let hash = bearer(&headers).map(token_hash).unwrap_or_default();
+    Ok(upgrade.on_upgrade(move |socket| serve_live(socket, state, hash, orchestrator)))
+}
+
+/// Sends frames until the phone hangs up, falls behind, or is removed. Its three subscriptions are
+/// dropped when this returns, which is the only place they are held.
+async fn serve_live(mut socket: WebSocket, state: ServerState, hash: String, orchestrator: Option<String>) {
+    let mut events = state.events.subscribe();
+    let mut runs = state.workflow.run_changes();
+    let mut removed = DEVICE_REMOVED.subscribe();
+    let mut waiting = HashMap::<String, usize>::new();
+    loop {
+        // A lagged or closed subscription ends the socket; the phone reconnects and refetches.
+        let frames = tokio::select! {
+            event = events.recv() => match event {
+                Ok(event) => live_frames(&event, orchestrator.as_deref()),
+                Err(_) => break,
+            },
+            change = runs.recv() => match change {
+                Ok((run_id, now)) => {
+                    let inbox = waiting.insert(run_id.clone(), now).unwrap_or(0) != now;
+                    let mut frames = vec![json!({ "type": "changed", "entity": "runs" }), json!({ "type": "changed", "entity": "run", "id": run_id })];
+                    if inbox { frames.push(json!({ "type": "changed", "entity": "inbox" })); }
+                    frames
+                }
+                Err(_) => break,
+            },
+            Ok(()) = removed.changed() => match state.manager.store().touch_phone_device(&hash, now_ms()) {
+                Ok(Some(_)) => Vec::new(),
+                _ => break,
+            },
+            message = socket.recv() => match message {
+                Some(Ok(_)) => Vec::new(),
+                _ => break,
+            },
+        };
+        for frame in frames {
+            if socket.send(Message::Text(frame.to_string().into())).await.is_err() { return; }
+        }
+    }
+    let _ = socket.send(Message::Close(None)).await;
+}
+
+/// One agent event's live frames: chat, delta and turn frames for the orchestrator's own events,
+/// and an inbox change for any permission request asked or settled in any session.
+fn live_frames(event: &AgentConversationEvent, orchestrator: Option<&str>) -> Vec<Value> {
+    if matches!(event.payload, Payload::Approval { .. }) {
+        return vec![json!({ "type": "changed", "entity": "inbox" })];
+    }
+    if orchestrator != Some(event.owned_id.as_str()) {
+        return Vec::new();
+    }
+    match &event.payload {
+        Payload::AssistantDelta { item_id, delta } => vec![json!({ "type": "chatDelta", "seq": event.sequence, "itemId": item_id, "delta": delta })],
+        Payload::Turn { state, .. } => vec![json!({ "type": "turn", "seq": event.sequence,
+            "state": if matches!(state, TurnState::Started) { "running" } else { "idle" } })],
+        _ => reduce_chat(std::slice::from_ref(event)).into_iter()
+            .map(|item| json!({ "type": "chat", "seq": event.sequence, "item": item })).collect(),
+    }
+}
+
+#[derive(Serialize)]
+struct ChatItem {
+    id: String,
+    seq: i64,
+    kind: &'static str,
+    text: String,
+    at: i64,
+    done: bool,
+}
+
+/// The phone's chat from the orchestrator's events (§5.3): owner, relayed, agent, tool and error items,
+/// one per item id in first-seen order, the latest event winning. Deltas for an item with no full
+/// message yet fold into one open agent item. Everything else is dropped.
+fn reduce_chat(events: &[AgentConversationEvent]) -> Vec<ChatItem> {
+    let mut items: Vec<ChatItem> = Vec::new();
+    let mut index = HashMap::<String, usize>::new();
+    let mut messaged = HashSet::<&str>::new();
+    for event in events {
+        let (id, kind, text, done) = match &event.payload {
+            Payload::UserMessage { item_id, text, completed, .. } =>
+                (item_id.clone(), if text.starts_with("[message from ") { "relayed" } else { "owner" }, text.clone(), *completed),
+            Payload::AssistantMessage { item_id, text, completed, .. } => {
+                messaged.insert(item_id);
+                (item_id.clone(), "agent", text.clone(), *completed)
+            }
+            Payload::AssistantDelta { item_id, delta } if !messaged.contains(item_id.as_str()) => {
+                if let Some(&at) = index.get(item_id) {
+                    let item = &mut items[at];
+                    item.text.push_str(delta);
+                    (item.seq, item.at) = (event.sequence, event.timestamp_ms as i64);
+                    continue;
+                }
+                (item_id.clone(), "agent", delta.clone(), false)
+            }
+            Payload::Tool { item_id, name, state, summary, .. } => (item_id.clone(), "tool",
+                summary.clone().filter(|summary| !summary.is_empty()).unwrap_or_else(|| name.clone()),
+                matches!(state, ToolState::Completed | ToolState::Failed)),
+            Payload::Error { message, .. } => (format!("error-{}", event.sequence), "error", message.clone(), true),
+            _ => continue,
+        };
+        let item = ChatItem { id, seq: event.sequence, kind, text, at: event.timestamp_ms as i64, done };
+        match index.get(&item.id) {
+            Some(&at) => items[at] = item,
+            None => {
+                index.insert(item.id.clone(), items.len());
+                items.push(item);
+            }
+        }
+    }
+    items
+}
+
+fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Response> {
+    serde_json::from_slice(body).map_err(|_| refuse(StatusCode::BAD_REQUEST, "The request body is not valid"))
 }
 
 fn refuse(status: StatusCode, message: &str) -> Response {
@@ -219,7 +621,11 @@ mod tests {
     use super::super::manager::AgentRuntimeManager;
     use super::super::providers::ProviderRegistry;
     use super::super::remote::{server_state, ServerState};
-    use super::{new_pairing_code, operation, redeem_pairing_code, router, start_listener, PAIRING_CODE_LIFETIME_MS};
+    use super::{new_pairing_code, operation, redeem_pairing_code, reduce_chat, router, start_listener, PAIRING_CODE_LIFETIME_MS};
+    use super::super::protocol::{AgentConversationEvent, AgentConversationPayload as Payload, AgentConversationProvider, ToolState, TurnState};
+    use futures_util::StreamExt;
+    use serde_json::{json, Value};
+    use std::time::Duration;
 
     const PHONE_URL: &str = "https://phone.example.ts.net:8778";
 
@@ -345,5 +751,214 @@ mod tests {
         let (state, base) = phone_server().await;
         assert_eq!(pair(&base, &pairing_code(&state)).await.status(), reqwest::StatusCode::OK);
         assert_eq!(me(&base, Some(&format!("Bearer {}", state.token))).await, reqwest::StatusCode::UNAUTHORIZED);
+    }
+
+    /// Pairs a phone with the test server and returns its device token.
+    async fn paired(state: &ServerState, base: &str) -> String {
+        pair(base, &pairing_code(state)).await.json::<Value>().await.unwrap()["deviceToken"].as_str().unwrap().to_string()
+    }
+
+    fn client(method: reqwest::Method, base: &str, path: &str, token: &str) -> reqwest::RequestBuilder {
+        reqwest::Client::new().request(method, format!("{base}/phone/v1{path}")).bearer_auth(token)
+    }
+
+    /// Starts a run of the repository workflow `steps` in its own folder; returns its id.
+    async fn start_run(state: &ServerState, steps: &str) -> String {
+        let root = std::path::PathBuf::from("/var/tmp").join(format!("tsk-1416-phone-run-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join(".assembly/workflows")).unwrap();
+        let path = std::path::Path::new(".assembly/workflows/phone.yml");
+        std::fs::write(root.join(path), format!("name: Phone\nsteps:\n{steps}")).unwrap();
+        let definition = crate::workflow::WorkflowEngine::validate_file(&root, path).unwrap();
+        let run = state.workflow.create_run(definition, json!({"cwd": root, "worktree": {"path": root, "branch": "main", "removed": true},
+            "run": {"proof_dir": root}, "task": {"key": "TSK-1", "title": "Phone test"}, "inputs": {}}),
+            uuid::Uuid::new_v4().to_string()).unwrap();
+        state.workflow.start(&run.id, "start").await.unwrap().id
+    }
+
+    const LOOP_STOPS: &str = "  prep: { run: [\"true\"] }\n  checks: { needs: [prep], run: [\"exit 1\"], on_fail: prep }\n";
+
+    /// The inbox once it holds an item for `run_id`.
+    async fn inbox_item(base: &str, token: &str, run_id: &str) -> Value {
+        for _ in 0..200 {
+            let inbox: Value = client(reqwest::Method::GET, base, "/inbox", token).send().await.unwrap().json().await.unwrap();
+            if let Some(item) = inbox["items"].as_array().unwrap().iter().find(|item| item["runId"] == run_id) {
+                return item.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("run {run_id} never reached the inbox");
+    }
+
+    fn event(sequence: i64, payload: Payload) -> AgentConversationEvent {
+        AgentConversationEvent { runtime_state: None, owned_id: "orchestrator".into(), provider: AgentConversationProvider::Claude,
+            generation: 1, sequence, timestamp_ms: sequence as u128, turn_id: None, payload }
+    }
+
+    fn tool(state: ToolState, summary: Option<&str>) -> Payload {
+        Payload::Tool { item_id: "t1".into(), name: "start_run".into(), state, summary: summary.map(str::to_string),
+            output: None, path: None, diff: None }
+    }
+
+    #[test]
+    fn phone_chat_keeps_owner_agent_relayed_tool_and_drops_the_rest() {
+        let events = vec![
+            event(1, Payload::UserMessage { item_id: "u1".into(), text: "Start the build".into(), completed: true, attachment_ids: vec![] }),
+            event(2, Payload::UserMessage { item_id: "u2".into(), text: "[message from tsk-1412/build]\nDone".into(), completed: true, attachment_ids: vec![] }),
+            event(3, Payload::Turn { turn_id: "turn".into(), state: TurnState::Started }),
+            event(4, tool(ToolState::Started, None)),
+            event(5, tool(ToolState::Completed, Some("2 runs started"))),
+            event(6, Payload::Plan { items: vec![] }),
+            event(7, Payload::AssistantMessage { item_id: "a1".into(), text: "On it.".into(), completed: true, blocks: None }),
+            event(8, Payload::Usage { input_tokens: None, output_tokens: None, used_tokens: None, context_window: None, total_tokens: None }),
+            event(9, Payload::Error { code: "provider".into(), message: "Provider failed".into(), recoverable: true }),
+        ];
+        assert_eq!(serde_json::to_value(reduce_chat(&events)).unwrap(), json!([
+            {"id": "u1", "seq": 1, "kind": "owner", "text": "Start the build", "at": 1, "done": true},
+            {"id": "u2", "seq": 2, "kind": "relayed", "text": "[message from tsk-1412/build]\nDone", "at": 2, "done": true},
+            {"id": "t1", "seq": 5, "kind": "tool", "text": "2 runs started", "at": 5, "done": true},
+            {"id": "a1", "seq": 7, "kind": "agent", "text": "On it.", "at": 7, "done": true},
+            {"id": "error-9", "seq": 9, "kind": "error", "text": "Provider failed", "at": 9, "done": true},
+        ]));
+        assert_eq!(serde_json::to_value(reduce_chat(&events[3..4])).unwrap()[0]["text"], "start_run", "a tool with no summary shows its name");
+    }
+
+    #[test]
+    fn phone_chat_folds_unfinished_deltas_into_open_agent_item() {
+        let delta = |sequence, item: &str, text: &str| event(sequence, Payload::AssistantDelta { item_id: item.into(), delta: text.into() });
+        let mut events = vec![
+            event(1, Payload::AssistantMessage { item_id: "a1".into(), text: "Done.".into(), completed: true, blocks: None }),
+            delta(2, "a1", " ignored"),
+            delta(3, "a2", "Hel"),
+            delta(4, "a2", "lo"),
+        ];
+        assert_eq!(serde_json::to_value(reduce_chat(&events)).unwrap(), json!([
+            {"id": "a1", "seq": 1, "kind": "agent", "text": "Done.", "at": 1, "done": true},
+            {"id": "a2", "seq": 4, "kind": "agent", "text": "Hello", "at": 4, "done": false},
+        ]));
+        events.push(event(5, Payload::AssistantMessage { item_id: "a2".into(), text: "Hello there".into(), completed: true, blocks: None }));
+        assert_eq!(serde_json::to_value(reduce_chat(&events)).unwrap()[1],
+            json!({"id": "a2", "seq": 5, "kind": "agent", "text": "Hello there", "at": 5, "done": true}));
+    }
+
+    #[tokio::test]
+    async fn session_mcp_token_cannot_call_phone_routes() {
+        let (state, base) = phone_server().await;
+        let device = paired(&state, &base).await;
+        let endpoint = super::super::messaging::MessagingEndpoint::start().unwrap();
+        let session = endpoint.issue("orchestrator");
+        use reqwest::Method;
+        for (method, path) in [(Method::GET, "/me"), (Method::DELETE, "/me"), (Method::GET, "/chat"), (Method::POST, "/chat"),
+            (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::GET, "/inbox"),
+            (Method::POST, "/inbox/i/answer"), (Method::GET, "/live")] {
+            let response = client(method.clone(), &base, path, &session.token).json(&json!({"text": "hi"})).send().await.unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED, "{method} {path}");
+            assert_eq!(response.json::<Value>().await.unwrap(), json!({"error": "This phone was removed — pair again"}));
+        }
+        let mcp = reqwest::Client::new().post(&session.url).bearer_auth(&device)
+            .json(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})).send().await.unwrap();
+        assert_eq!(mcp.status(), reqwest::StatusCode::UNAUTHORIZED, "a device token is not a session token");
+
+        assert_eq!(client(Method::DELETE, &base, "/me", &device).send().await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(me(&base, Some(&format!("Bearer {device}"))).await, reqwest::StatusCode::UNAUTHORIZED, "DELETE /me revokes the token");
+    }
+
+    #[tokio::test]
+    async fn phone_answer_uses_owner_origin_once() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let run_id = start_run(&state, LOOP_STOPS).await;
+        let item = inbox_item(&base, &token, &run_id).await;
+        assert_eq!((item["kind"].as_str(), item["stepId"].as_str()), (Some("loop_stalled"), Some("checks")));
+        assert_eq!(item["options"].as_array().unwrap().iter().map(|option| option["id"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["another-round", "accept", "stop"], "the desktop's own choices");
+        let answer = || client(reqwest::Method::POST, &base, &format!("/inbox/{}/answer", item["id"].as_str().unwrap()), &token)
+            .json(&json!({"optionId": "accept", "version": item["version"]}));
+        assert_eq!(answer().send().await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        let again = answer().send().await.unwrap();
+        assert_eq!(again.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(again.json::<Value>().await.unwrap(), json!({"error": "stale"}));
+        // The engine takes an answer only from the owner, and recorded this one once.
+        let run = state.workflow.get_run(&run_id).unwrap();
+        assert_eq!(run.input_snapshot["answers"], json!([{"step": "checks", "decision": "accept", "reply": null}]));
+        assert_eq!(serde_json::to_value(run.state).unwrap(), "completed");
+    }
+
+    #[tokio::test]
+    async fn phone_answer_with_unknown_option_or_stale_version_is_rejected() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let run_id = start_run(&state, LOOP_STOPS).await;
+        let item = inbox_item(&base, &token, &run_id).await;
+        let id = item["id"].as_str().unwrap();
+        let version = item["version"].as_i64().unwrap();
+        for (path, option, version, status) in [
+            (id, "approve", version, reqwest::StatusCode::BAD_REQUEST),
+            (id, "accept", version + 1, reqwest::StatusCode::CONFLICT),
+            ("step:no-such-run:checks", "accept", version, reqwest::StatusCode::CONFLICT),
+        ] {
+            let response = client(reqwest::Method::POST, &base, &format!("/inbox/{path}/answer"), &token)
+                .json(&json!({"optionId": option, "version": version})).send().await.unwrap();
+            assert_eq!(response.status(), status, "{path} {option} {version}");
+        }
+        assert_eq!(inbox_item(&base, &token, &run_id).await, item, "nothing was answered");
+        assert!(state.workflow.get_run(&run_id).unwrap().input_snapshot.get("answers").is_none());
+    }
+
+    #[tokio::test]
+    async fn phone_run_controls_match_desktop_engine_calls() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let steps = "  wait: { run: [\"sleep 5\"] }\n";
+        let (phone, desktop) = (start_run(&state, steps).await, start_run(&state, steps).await);
+        for (action, operation, expected) in [("pause", "pause", "paused"), ("resume", "resume", "running"), ("stop", "cancel", "cancelled")] {
+            let row: Value = client(reqwest::Method::POST, &base, &format!("/runs/{phone}/{action}"), &token)
+                .send().await.unwrap().json().await.unwrap();
+            assert_eq!((row["id"].as_str(), row["state"].as_str()), (Some(phone.as_str()), Some(expected)), "{action}");
+            let desktop_run = crate::workflow::execute_operation(&state.workflow, operation,
+                json!({"runId": desktop, "idempotencyKey": format!("desktop:{action}")})).await.unwrap();
+            assert_eq!(desktop_run["state"], expected, "{operation}");
+        }
+        let lines = |run_id: &str| state.workflow.run_timeline(run_id).unwrap().into_iter().map(|(_, line)| line).collect::<Vec<_>>();
+        assert_eq!(lines(&phone), lines(&desktop), "the phone made the same engine calls");
+        assert_eq!(lines(&phone).last().map(String::as_str), Some("run cancelled"));
+        let unknown = client(reqwest::Method::POST, &base, &format!("/runs/{phone}/merge"), &token).send().await.unwrap();
+        assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let runs: Value = client(reqwest::Method::GET, &base, "/runs", &token).send().await.unwrap().json().await.unwrap();
+        assert_eq!(runs["active"], json!([]));
+        assert_eq!(runs["recent"].as_array().unwrap().len(), 2);
+        let detail: Value = client(reqwest::Method::GET, &base, &format!("/runs/{phone}"), &token).send().await.unwrap().json().await.unwrap();
+        assert_eq!((detail["taskKey"].as_str(), detail["state"].as_str()), (Some("TSK-1"), Some("cancelled")));
+        assert_eq!(detail["steps"][0]["id"], "wait");
+        assert_eq!(detail["steps"][0]["attempts"][0]["n"], 1);
+        assert_eq!(detail["timeline"].as_array().unwrap().len(), lines(&phone).len());
+    }
+
+    #[tokio::test]
+    async fn phone_live_sends_changed_inbox_when_item_created() {
+        use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let mut request = format!("{}/phone/v1/live", base.replacen("http", "ws", 1)).into_client_request().unwrap();
+        request.headers_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
+        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        let run_id = start_run(&state, "  ask: { gate: { prompt: \"Continue?\", options: [\"yes\", \"no\"] } }\n").await;
+        let mut seen = Vec::new();
+        while !seen.contains(&json!({"type": "changed", "entity": "inbox"})) {
+            let Message::Text(text) = tokio::time::timeout(Duration::from_secs(10), socket.next()).await
+                .expect("a changed inbox frame").unwrap().unwrap() else { continue };
+            seen.push(serde_json::from_str::<Value>(&text).unwrap());
+        }
+        assert!(seen.contains(&json!({"type": "changed", "entity": "run", "id": run_id})));
+        assert_eq!(inbox_item(&base, &token, &run_id).await["kind"], "gate");
+
+        // Removing the phone closes its live socket.
+        assert_eq!(client(reqwest::Method::DELETE, &base, "/me", &token).send().await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        loop {
+            match tokio::time::timeout(Duration::from_secs(10), socket.next()).await.expect("the socket closes") {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,
+                Some(Ok(_)) => continue,
+            }
+        }
     }
 }

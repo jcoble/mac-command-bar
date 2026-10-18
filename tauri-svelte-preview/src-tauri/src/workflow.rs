@@ -1263,6 +1263,8 @@ pub(crate) struct WorkflowEngine {
     store: Arc<SessionStore>,
     dispatch_lock: Arc<tokio::sync::Mutex<()>>,
     deadlines: Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
+    /// Told `(run id, steps waiting on the owner)` after every stored change to a run.
+    changes: tokio::sync::broadcast::Sender<(String, usize)>,
 }
 
 impl Drop for WorkflowEngine {
@@ -1289,6 +1291,7 @@ impl WorkflowEngine {
             store,
             dispatch_lock: Arc::new(tokio::sync::Mutex::new(())),
             deadlines: Arc::new(Mutex::new(HashMap::new())),
+            changes: tokio::sync::broadcast::channel(64).0,
         }
     }
 
@@ -2625,6 +2628,28 @@ impl WorkflowEngine {
         self.require_run(run_id)
     }
 
+    /// Every unfinished run, then the 20 newest finished ones, chosen in one SQL statement.
+    pub(crate) fn recent_runs(&self) -> Result<Vec<WorkflowRunRecord>, WorkflowError> {
+        self.store.recent_workflow_runs(20).map_err(|error| WorkflowError::Ledger(error.to_string()))?
+            .into_iter().map(|row| serde_json::from_str(&row.payload_json)
+                .map_err(|error| WorkflowError::Ledger(error.to_string())).and_then(run_from_event))
+            .collect()
+    }
+
+    /// A run's 20 newest changes, oldest first, as `(time ms, line)`, e.g. "review: owner answered".
+    pub(crate) fn run_timeline(&self, run_id: &str) -> Result<Vec<(i64, String)>, WorkflowError> {
+        let rows = self.store.workflow_run_timeline(run_id, 20).map_err(|error| WorkflowError::Ledger(error.to_string()))?;
+        Ok(rows.into_iter().map(|(at, kind, node)| {
+            let what = kind.rsplit('.').next().unwrap_or_default().replace('-', " ");
+            (at, node.map_or_else(|| format!("run {what}"), |node| format!("{node}: {what}")))
+        }).collect())
+    }
+
+    /// Hears about every stored change to a run until the receiver is dropped.
+    pub(crate) fn run_changes(&self) -> tokio::sync::broadcast::Receiver<(String, usize)> {
+        self.changes.subscribe()
+    }
+
     fn finish_step(&self, run_id: &str, node_id: &str, output: Value, passed: bool, key: &str) -> Result<WorkflowRunRecord, WorkflowError> {
         let mut run = self.require_run(run_id)?;
         let node = run.nodes.iter_mut().find(|node| node.node_id == node_id).unwrap();
@@ -2660,14 +2685,14 @@ impl WorkflowEngine {
         let node = &run.nodes[index];
         let seconds = run.definition.nodes.iter().find(|definition| definition.id == node.node_id).unwrap().timeout_seconds;
         let remaining = seconds.saturating_mul(1000).saturating_sub(self.clock.now_ms().saturating_sub(node.started_at_ms.unwrap()));
-        let (runtime, leases, clock, ids, store, dispatch_lock) = (self.runtime.clone(), self.leases.clone(), self.clock.clone(), self.ids.clone(), self.store.clone(), self.dispatch_lock.clone());
+        let (runtime, leases, clock, ids, store, dispatch_lock, changes) = (self.runtime.clone(), self.leases.clone(), self.clock.clone(), self.ids.clone(), self.store.clone(), self.dispatch_lock.clone(), self.changes.clone());
         let deadlines = Arc::downgrade(&self.deadlines);
         let (run_id, node_id, attempt_id) = (run.id.clone(), node.node_id.clone(), node.id.clone());
         let task = tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(remaining)).await;
             if let Some(deadlines) = deadlines.upgrade() {
                 deadlines.lock().unwrap().remove(&attempt_id);
-                let engine = Self { runtime, leases, clock, ids, store, dispatch_lock, deadlines };
+                let engine = Self { runtime, leases, clock, ids, store, dispatch_lock, deadlines, changes };
                 // Another write to the run can land first; retry so the timeout is not lost.
                 for _ in 0..5 {
                     match engine.timeout_step(&run_id, &node_id).await {
@@ -2955,6 +2980,10 @@ impl WorkflowEngine {
             .get("sequence")
             .and_then(Value::as_u64)
             .unwrap_or(run.last_sequence);
+        let waiting = run.nodes.iter()
+            .filter(|node| matches!(node.state, WorkflowNodeState::WaitingInput | WorkflowNodeState::WaitingApproval)).count();
+        // No listener is not an error: the phone's live sockets subscribe while they are open.
+        let _ = self.changes.send((run.id.clone(), waiting));
         // The event is stored; a message that cannot be queued does not undo it.
         if let Err(error) = self.tell_starter(run, before.as_deref()) {
             crate::debug_log::stderr_log!("Could not tell the starter of run {} about it: {error}", run.id);
