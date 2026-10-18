@@ -4,8 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
 import '../../core/api/api_exception.dart';
+import '../../core/api/machine_client.dart';
 import '../../core/live/live_providers.dart';
 import '../../core/machines/machine_store.dart';
+import '../files/files_repository.dart';
+import '../files/files_screen.dart';
 import 'chat_repository.dart';
 import 'chat_widgets.dart';
 import 'sessions_repository.dart';
@@ -106,6 +109,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ),
               ),
             ),
+          IconButton(
+            tooltip: 'Files',
+            icon: const Icon(Symbols.folder_rounded),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => FilesScreen(
+                  files: FilesRepository(
+                    ref.read(machineClientProvider(machine.id)),
+                    widget.ownedId,
+                  ),
+                  title: folderName(session?.project) ?? session?.name,
+                ),
+              ),
+            ),
+          ),
           IconButton(
             tooltip: 'Changes',
             icon: const Icon(Symbols.difference_rounded),

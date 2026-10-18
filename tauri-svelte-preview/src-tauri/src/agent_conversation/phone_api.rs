@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
+use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -39,6 +40,7 @@ const NOT_SET_UP: &str =
 const REMOVED: &str = "This phone was removed — pair again";
 const NO_SESSION: &str = "No such session on this machine";
 const NO_TOOL_CALL: &str = "No such tool call in this session";
+const NO_FILE: &str = "No such file or folder in this session";
 /// The engine's refusals of a model or effort change, which the phone shows as they are.
 const CONFIG_REFUSALS: [&str; 2] = ["The requested ", "Effort is set when the session starts"];
 /// §5.3 sets no length for chat text, so a plain cap: 10,000 characters, in a body of at most 64 KiB.
@@ -53,6 +55,9 @@ const MAX_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
 const MAX_TOOL_DIFF_BYTES: usize = 64 * 1024;
 /// A session's changes send at most this much diff; the file list is always whole.
 const MAX_CHANGES_DIFF_BYTES: usize = 256 * 1024;
+/// A folder lists at most this many entries; a file opens or saves up to 1 MiB, and only its save body may be that big.
+const MAX_FOLDER_ENTRIES: usize = 2000;
+const MAX_FILE_BYTES: usize = 1024 * 1024;
 
 /// Bumped whenever a phone is removed, so each open live socket checks its own token and closes if it went.
 static DEVICE_REMOVED: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::channel(0).0);
@@ -75,6 +80,8 @@ pub(super) fn router(state: ServerState) -> Router {
         .route("/phone/v1/sessions/{id}/chat", get(session_chat).post(send_session_chat))
         .route("/phone/v1/sessions/{id}/items/{item}", get(tool_item))
         .route("/phone/v1/sessions/{id}/changes", get(changes))
+        .route("/phone/v1/sessions/{id}/files", get(list_files))
+        .route("/phone/v1/sessions/{id}/file", get(read_file).put(save_file).layer(DefaultBodyLimit::max(MAX_FILE_BYTES)))
         .route("/phone/v1/sessions/{id}/config", get(session_config).post(set_session_config))
         .route("/phone/v1/runs", get(runs))
         .route("/phone/v1/runs/{id}", get(run_detail))
@@ -408,6 +415,100 @@ fn changed_files(diff: &str) -> Vec<Value> {
         }
     }
     files.into_iter().map(|(path, added, removed)| json!({ "path": path, "added": added, "removed": removed })).collect()
+}
+
+/// `relative` inside session `owned_id`'s folder (its worktree, else its cwd, from the store), as
+/// `(root, path)`, both canonical. 400 for an absolute path, a `..` or a NUL; 404 when it does not
+/// exist; 403 when its real path, symlinks followed, is outside the root.
+fn session_path(state: &ServerState, owned_id: &str, relative: &str) -> Result<(PathBuf, PathBuf), Response> {
+    known_session(state, owned_id)?;
+    let session = state.manager.store().get_session(owned_id).map_err(|error| server_error(&error))?
+        .ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))?;
+    let root = session.worktree.filter(|worktree| !worktree.is_empty()).unwrap_or(session.cwd);
+    let plain = |part: std::path::Component| matches!(part, std::path::Component::Normal(_) | std::path::Component::CurDir);
+    if relative.contains('\0') || !std::path::Path::new(relative).components().all(plain) {
+        return Err(refuse(StatusCode::BAD_REQUEST, "A path must be relative to the session's folder"));
+    }
+    let root = std::fs::canonicalize(&root).map_err(|error| server_error(&error))?;
+    let path = std::fs::canonicalize(root.join(relative)).map_err(|_| refuse(StatusCode::NOT_FOUND, NO_FILE))?;
+    if !path.starts_with(&root) { return Err(refuse(StatusCode::FORBIDDEN, "That path is outside the session's folder")) }
+    Ok((root, path))
+}
+
+/// `GET /phone/v1/sessions/{id}/files?dir=<relative>` → `{dir, entries: [{name, kind, size}], truncated}`: one
+/// folder, folders first then files by name, with the desktop file tree's listing (no symlinks, no `.git`).
+async fn list_files(State(state): State<ServerState>, Path(owned_id): Path<String>,
+    Query(query): Query<HashMap<String, String>>) -> Reply {
+    let dir = query.get("dir").map_or("", String::as_str);
+    let (root, path) = session_path(&state, &owned_id, dir)?;
+    if !path.is_dir() { return Err(refuse(StatusCode::BAD_REQUEST, "Not a folder")) }
+    let mut entries: Vec<Value> = crate::list_source_directory_sync_with_cancellation(root, path, true, crate::SourceScanCancellation::none())
+        .map_err(|error| server_error(&error))?.into_iter().filter(|entry| entry.name != ".git").map(|entry| match entry.is_directory {
+            true => json!({ "name": entry.name, "kind": "dir" }),
+            false => json!({ "name": entry.name, "kind": "file", "size": std::fs::metadata(&entry.path).map_or(0, |meta| meta.len()) }),
+        }).collect();
+    let truncated = entries.len() > MAX_FOLDER_ENTRIES;
+    entries.truncate(MAX_FOLDER_ENTRIES);
+    Ok(Json(json!({ "dir": dir, "entries": entries, "truncated": truncated })).into_response())
+}
+
+/// The bytes of the regular file at `path` and their size, or `None` for the bytes when it is over 1 MiB.
+fn file_bytes(path: &std::path::Path) -> Result<(Option<Vec<u8>>, u64), Response> {
+    let metadata = std::fs::metadata(path).map_err(|error| server_error(&error))?;
+    if !metadata.is_file() { return Err(refuse(StatusCode::BAD_REQUEST, "Not a file")) }
+    if metadata.len() > MAX_FILE_BYTES as u64 { return Ok((None, metadata.len())) }
+    let bytes = std::fs::read(path).map_err(|error| server_error(&error))?;
+    let size = bytes.len() as u64;
+    Ok(((bytes.len() <= MAX_FILE_BYTES).then_some(bytes), size))
+}
+
+/// The desktop editor's revision of a file's bytes, which its save checks.
+fn file_version(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+/// `GET /phone/v1/sessions/{id}/file?path=<relative>` → `{path, text, size, version}`, or
+/// `{path, size, tooLarge: true}` over 1 MiB, or `{path, size, binary: true}` when it is not UTF-8.
+async fn read_file(State(state): State<ServerState>, Path(owned_id): Path<String>,
+    Query(query): Query<HashMap<String, String>>) -> Reply {
+    let relative = query.get("path").map_or("", String::as_str);
+    let (_, path) = session_path(&state, &owned_id, relative)?;
+    let body = match file_bytes(&path)? {
+        (None, size) => json!({ "path": relative, "size": size, "tooLarge": true }),
+        (Some(bytes), size) => {
+            let version = file_version(&bytes);
+            match String::from_utf8(bytes) {
+                Ok(text) => json!({ "path": relative, "text": text, "size": size, "version": version }),
+                Err(_) => json!({ "path": relative, "size": size, "binary": true }),
+            }
+        }
+    };
+    Ok(Json(body).into_response())
+}
+
+#[derive(Deserialize)]
+struct SaveFileRequest {
+    path: String,
+    text: String,
+    version: String,
+}
+
+/// `PUT /phone/v1/sessions/{id}/file {path, text, version}` → 204: an existing file's new text, saved
+/// with the desktop editor's save (temp file then rename) only while the file is still at `version`;
+/// 409 `{error: "changed"}` otherwise.
+async fn save_file(State(state): State<ServerState>, Path(owned_id): Path<String>, body: Bytes) -> Reply {
+    let request: SaveFileRequest = parse(&body)?;
+    let (_, path) = session_path(&state, &owned_id, &request.path)?;
+    let changed = || refuse(StatusCode::CONFLICT, "changed");
+    match file_bytes(&path)? {
+        (Some(bytes), _) if file_version(&bytes) == request.version => {}
+        _ => return Err(changed()),
+    }
+    match crate::write_source_file_sync(path, request.text, request.version) {
+        Ok(_) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(error) if error.contains("changed on disk") => Err(changed()),
+        Err(error) => Err(server_error(&error)),
+    }
 }
 
 /// One tool call as its events say it. Imported history stores a call's output in a later event with
@@ -1207,7 +1308,8 @@ mod tests {
             (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::GET, "/inbox"),
             (Method::POST, "/inbox/i/answer"), (Method::GET, "/live"), (Method::GET, "/sessions"),
             (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat"), (Method::GET, "/sessions/s/items/i"),
-            (Method::GET, "/sessions/s/changes"), (Method::GET, "/sessions/s/config"), (Method::POST, "/sessions/s/config")] {
+            (Method::GET, "/sessions/s/changes"), (Method::GET, "/sessions/s/config"), (Method::POST, "/sessions/s/config"),
+            (Method::GET, "/sessions/s/files"), (Method::GET, "/sessions/s/file"), (Method::PUT, "/sessions/s/file")] {
             let response = client(method.clone(), &base, path, &session.token).json(&json!({"text": "hi"})).send().await.unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED, "{method} {path}");
             assert_eq!(response.json::<Value>().await.unwrap(), json!({"error": "This phone was removed — pair again"}));
@@ -1695,6 +1797,137 @@ mod tests {
         assert_eq!(response.json::<Value>().await.unwrap(),
             json!({"error": "This repository has no origin/HEAD, so there is no default branch to compare with."}));
         let response = client(reqwest::Method::GET, &base, "/sessions/nobody/changes", &token).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    fn get_json(base: &str, path: &str, token: &str) -> impl std::future::Future<Output = (reqwest::StatusCode, Value)> {
+        let request = client(reqwest::Method::GET, base, path, token);
+        async move {
+            let response = request.send().await.unwrap();
+            (response.status(), response.json().await.unwrap_or(Value::Null))
+        }
+    }
+
+    #[tokio::test]
+    async fn phone_files_lists_a_folder_dirs_first() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let repo = session_in_repo(&state, "lane", false);
+        std::fs::create_dir(repo.join("src")).unwrap();
+        std::fs::write(repo.join("Zeta.txt"), "abc").unwrap();
+        std::fs::write(repo.join("alpha.rs"), "fn main() {}\n").unwrap();
+        let (status, body) = get_json(&base, "/sessions/lane/files", &token).await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        assert_eq!(body, json!({"dir": "", "truncated": false, "entries": [
+            {"name": "docs", "kind": "dir"}, {"name": "src", "kind": "dir"},
+            {"name": "alpha.rs", "kind": "file", "size": 13}, {"name": "Zeta.txt", "kind": "file", "size": 3}]}), ".git is hidden");
+        let (_, body) = get_json(&base, "/sessions/lane/files?dir=docs", &token).await;
+        assert_eq!(body["entries"], json!([{"name": "notes.txt", "kind": "file", "size": 15}]));
+
+        std::fs::create_dir(repo.join("many")).unwrap();
+        for index in 0..2001 { std::fs::write(repo.join(format!("many/{index:04}.txt")), "").unwrap(); }
+        let (_, body) = get_json(&base, "/sessions/lane/files?dir=many", &token).await;
+        assert_eq!((body["entries"].as_array().unwrap().len(), &body["truncated"]), (2000, &json!(true)));
+
+        assert_eq!(get_json(&base, "/sessions/nobody/files", &token).await.0, reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(get_json(&base, "/sessions/lane/files?dir=missing", &token).await.0, reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(get_json(&base, "/sessions/lane/files?dir=Zeta.txt", &token).await.0, reqwest::StatusCode::BAD_REQUEST);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_files_rejects_paths_outside_the_root() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let repo = session_in_repo(&state, "lane", false);
+        let outside = std::path::PathBuf::from("/var/tmp").join(format!("assembly-phone-outside-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "secret").unwrap();
+        std::os::unix::fs::symlink(&outside, repo.join("out")).unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.txt"), repo.join("leak.txt")).unwrap();
+        std::os::unix::fs::symlink(repo.join("docs/notes.txt"), repo.join("inside.txt")).unwrap();
+
+        use reqwest::StatusCode;
+        for (path, status) in [("/files?dir=..", StatusCode::BAD_REQUEST), ("/files?dir=docs/../..", StatusCode::BAD_REQUEST),
+            ("/files?dir=docs/..", StatusCode::BAD_REQUEST), ("/files?dir=/etc", StatusCode::BAD_REQUEST),
+            ("/file?path=/etc/passwd", StatusCode::BAD_REQUEST), ("/file?path=../secret.txt", StatusCode::BAD_REQUEST),
+            ("/file?path=docs/notes.txt%00", StatusCode::BAD_REQUEST),
+            ("/files?dir=out", StatusCode::FORBIDDEN), ("/file?path=out/secret.txt", StatusCode::FORBIDDEN),
+            ("/file?path=leak.txt", StatusCode::FORBIDDEN)] {
+            let (got, body) = get_json(&base, &format!("/sessions/lane{path}"), &token).await;
+            assert_eq!(got, status, "{path}");
+            assert!(body.get("text").is_none() && body.get("entries").is_none(), "{path} sends nothing: {body}");
+        }
+        let (_, listed) = get_json(&base, "/sessions/lane/files", &token).await;
+        assert!(!listed.to_string().contains("leak.txt") && !listed.to_string().contains("\"out\""), "symlinks are not listed: {listed}");
+        let (status, body) = get_json(&base, "/sessions/lane/file?path=inside.txt", &token).await;
+        assert_eq!((status, body["text"].as_str()), (StatusCode::OK, Some("one\nthree\nfour\n")), "a symlink inside the root reads");
+
+        for path in ["leak.txt", "../secret.txt", "/var/tmp/x.txt"] {
+            let response = client(reqwest::Method::PUT, &base, "/sessions/lane/file", &token)
+                .json(&json!({"path": path, "text": "owned", "version": "x"})).send().await.unwrap();
+            assert!(matches!(response.status(), StatusCode::FORBIDDEN | StatusCode::BAD_REQUEST), "{path}: {}", response.status());
+        }
+        assert_eq!(std::fs::read_to_string(outside.join("secret.txt")).unwrap(), "secret");
+        std::fs::remove_dir_all(repo).unwrap();
+        std::fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_file_reads_text_and_flags_binary() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let repo = session_in_repo(&state, "lane", false);
+        std::fs::write(repo.join("blob.bin"), [0xff, 0xfe, 0x00]).unwrap();
+        std::fs::write(repo.join("big.txt"), "x".repeat(1024 * 1024 + 1)).unwrap();
+        let (status, body) = get_json(&base, "/sessions/lane/file?path=docs/notes.txt", &token).await;
+        assert_eq!(status, reqwest::StatusCode::OK);
+        use sha2::Digest;
+        let version = format!("{:x}", sha2::Sha256::digest(b"one\nthree\nfour\n"));
+        assert_eq!(body, json!({"path": "docs/notes.txt", "text": "one\nthree\nfour\n", "size": 15, "version": version}));
+        assert_eq!(get_json(&base, "/sessions/lane/file?path=blob.bin", &token).await.1,
+            json!({"path": "blob.bin", "size": 3, "binary": true}));
+        assert_eq!(get_json(&base, "/sessions/lane/file?path=big.txt", &token).await.1,
+            json!({"path": "big.txt", "size": 1024 * 1024 + 1, "tooLarge": true}));
+        assert_eq!(get_json(&base, "/sessions/lane/file?path=docs", &token).await.0, reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(get_json(&base, "/sessions/lane/file?path=nope.txt", &token).await.0, reqwest::StatusCode::NOT_FOUND);
+        assert_eq!(get_json(&base, "/sessions/nobody/file?path=docs/notes.txt", &token).await.0, reqwest::StatusCode::NOT_FOUND);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_file_save_writes_and_refuses_a_stale_version() {
+        use std::os::unix::fs::PermissionsExt;
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let repo = session_in_repo(&state, "lane", false);
+        let notes = repo.join("docs/notes.txt");
+        std::fs::set_permissions(&notes, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let version = get_json(&base, "/sessions/lane/file?path=docs/notes.txt", &token).await.1["version"].as_str().unwrap().to_string();
+        let save = |text: String, version: &str, path: &str| client(reqwest::Method::PUT, &base, "/sessions/lane/file", &token)
+            .json(&json!({"path": path, "text": text, "version": version})).send();
+
+        let response = save("stale".into(), "not-the-version", "docs/notes.txt").await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(response.json::<Value>().await.unwrap(), json!({"error": "changed"}));
+        assert_eq!(std::fs::read_to_string(&notes).unwrap(), "one\nthree\nfour\n");
+
+        // More than the listener's 64 KiB body limit: this route allows 1 MiB.
+        let text = "line\n".repeat(20 * 1024);
+        assert_eq!(save(text.clone(), &version, "docs/notes.txt").await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(std::fs::read_to_string(&notes).unwrap(), text);
+        assert_eq!(std::fs::metadata(&notes).unwrap().permissions().mode() & 0o777, 0o755, "permissions are kept");
+        let names: Vec<String> = std::fs::read_dir(repo.join("docs")).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into()).collect();
+        assert_eq!(names, ["notes.txt"], "no temp file is left");
+
+        let response = save("again".into(), &version, "docs/notes.txt").await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::CONFLICT, "the old version is stale now");
+        assert_eq!(save("new".into(), &version, "docs/new.txt").await.unwrap().status(), reqwest::StatusCode::NOT_FOUND, "no new files");
+        assert_eq!(save("x".into(), &version, "docs").await.unwrap().status(), reqwest::StatusCode::BAD_REQUEST);
+        assert!(!repo.join("docs/new.txt").exists());
+        let response = client(reqwest::Method::PUT, &base, "/sessions/nobody/file", &token)
+            .json(&json!({"path": "docs/notes.txt", "text": "x", "version": version})).send().await.unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
         std::fs::remove_dir_all(repo).unwrap();
     }

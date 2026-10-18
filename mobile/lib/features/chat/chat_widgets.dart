@@ -467,14 +467,9 @@ class _ToolSheetState extends State<_ToolSheet> {
               _ => 'Running',
             },
             onBack: _single ? null : () => setState(() => _detail = null),
-            itemCount: head.length + lines.length,
-            itemBuilder: (context, i) => i < head.length
-                ? head[i]
-                : _DiffLine(
-                    lines[i - head.length],
-                    first: i == head.length,
-                    last: i == head.length + lines.length - 1,
-                  ),
+            itemCount: head.length + (lines.isEmpty ? 0 : 1),
+            itemBuilder: (context, i) =>
+                i < head.length ? head[i] : _DiffBlock(lines),
           );
         },
       ),
@@ -644,6 +639,39 @@ class _CutNote extends StatelessWidget {
   }
 }
 
+/// A unified diff as one block that scrolls sideways as a whole: lines never
+/// wrap, and every row is as wide as the longest so the colours line up.
+class _DiffBlock extends StatelessWidget {
+  const _DiffBlock(this.lines);
+
+  final List<String> lines;
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+    borderRadius: M3Shape.radiusMedium,
+    child: ColoredBox(
+      color: Theme.of(context).colorScheme.surfaceContainerLowest,
+      child: LayoutBuilder(
+        builder: (context, box) => SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minWidth: box.maxWidth),
+            child: IntrinsicWidth(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final (i, line) in lines.indexed)
+                    _DiffLine(line, first: i == 0, last: i == lines.length - 1),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
 /// One unified-diff line: added green, removed red, hunks muted, headers bold.
 class _DiffLine extends StatelessWidget {
   const _DiffLine(this.line, {required this.first, required this.last});
@@ -657,22 +685,16 @@ class _DiffLine extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final kind = diffLineKind(line);
-    const radius = Radius.circular(M3Shape.medium);
     return Container(
       padding: EdgeInsets.fromLTRB(12, first ? 10 : 1, 12, last ? 10 : 1),
-      decoration: BoxDecoration(
-        color: switch (kind) {
-          DiffLineKind.added => context.tokens.success.withValues(alpha: 0.16),
-          DiffLineKind.removed => scheme.error.withValues(alpha: 0.16),
-          _ => scheme.surfaceContainerLowest,
-        },
-        borderRadius: BorderRadius.vertical(
-          top: first ? radius : Radius.zero,
-          bottom: last ? radius : Radius.zero,
-        ),
-      ),
+      color: switch (kind) {
+        DiffLineKind.added => context.tokens.success.withValues(alpha: 0.16),
+        DiffLineKind.removed => scheme.error.withValues(alpha: 0.16),
+        _ => null,
+      },
       child: Text(
         line,
+        softWrap: false,
         style: theme.textTheme.bodySmall?.copyWith(
           fontFamily: 'monospace',
           fontSize: 13,
@@ -941,14 +963,9 @@ void _showFileDiff(
         null => null,
       },
       initialSize: 0.7,
-      itemCount: head.length + lines.length,
-      itemBuilder: (context, i) => i < head.length
-          ? head[i]
-          : _DiffLine(
-              lines[i - head.length],
-              first: i == head.length,
-              last: i == head.length + lines.length - 1,
-            ),
+      itemCount: head.length + (lines.isEmpty ? 0 : 1),
+      itemBuilder: (context, i) =>
+          i < head.length ? head[i] : _DiffBlock(lines),
     ),
   );
 }

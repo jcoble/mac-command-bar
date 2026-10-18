@@ -29,6 +29,9 @@ dependencies:
   firebase_messaging: ^15.1.6
   flutter_local_notifications: ^18.0.1
   flutter_markdown_plus: ^1.0.12
+  # Syntax colours in the file viewer: a pure-Dart highlight.js port that emits
+  # tokens we split into per-line spans, so long files render lazily.
+  re_highlight: ^0.0.3
 
 dev_dependencies:
   flutter_test:
