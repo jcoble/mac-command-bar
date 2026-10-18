@@ -22,6 +22,7 @@
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import X from '@lucide/svelte/icons/x';
 
+  import { Badge } from '$lib/components/ui/badge/index.js';
   import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import * as Tabs from '$lib/components/ui/tabs/index.js';
@@ -34,8 +35,10 @@
     extraId: RightExtraTabId | null;
     onSelect(id: RightTabId): void;
     onClose(): void;
+    /** New messages for the selected session, shown on the Agents tab. */
+    agentsUnread: number;
   }
-  let { activeId, extraId, onSelect, onClose }: Props = $props();
+  let { activeId, extraId, onSelect, onClose, agentsUnread }: Props = $props();
 
   const PERMANENT = [
     { id: 'files', label: 'Files', icon: Files },
@@ -71,6 +74,11 @@
             {#snippet child({ props })}
               <Tabs.Trigger {...props} value={tab.id} aria-label={tab.label} class={PILL}>
                 <tab.icon class="size-[14px]" strokeWidth={2} aria-hidden="true" />
+                {#if tab.id === 'agents' && agentsUnread > 0}
+                  <Badge class="pointer-events-none absolute -top-1 -right-1 h-4 min-w-4 px-1" aria-label={`${agentsUnread} unread messages`}>
+                    {agentsUnread}
+                  </Badge>
+                {/if}
               </Tabs.Trigger>
             {/snippet}
           </Tooltip.Trigger>
