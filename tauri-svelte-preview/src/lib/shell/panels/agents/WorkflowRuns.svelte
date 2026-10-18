@@ -32,6 +32,7 @@
     cancelWorkflowRun,
     createWorkflowRun,
     listWorkflowFiles,
+    listWorkflowRunHistory,
     listWorkflowRuns,
     pauseWorkflowRun,
     resumeWorkflowRun,
@@ -52,6 +53,9 @@
   } from '$lib/shell/workflows/workflowStore.svelte.ts';
   import WorkflowPipelineStrip from './WorkflowPipelineStrip.svelte';
   import WorkflowStepDetails, { type StepStatus } from './WorkflowStepDetails.svelte';
+  import WorkflowTimeline from './WorkflowTimeline.svelte';
+  import { buildWorkflowTimeline, type WorkflowTimelineItem } from '$lib/shell/workflows/workflowTimeline.ts';
+  import { listAgentMessagesFromTauri } from '$lib/tauriSource.ts';
   import {
     type WorkflowNodeRunRecord,
     type WorkflowNodeState,
@@ -99,6 +103,11 @@
       now - runningNode.startedAtMs >= runningDefinition.timeoutSeconds * 1000
     )
   );
+  /** The selected run's timeline; kept while it reloads, so an update does not blank it. */
+  let timeline = $state<{ runId: string; items: WorkflowTimelineItem[]; error: string; loading: boolean } | null>(null);
+  const shownTimeline = $derived(timeline && selected && timeline.runId === selected.id ? timeline : null);
+  // One string, so the timeline reloads only when the run changes or moves on, not on every snapshot.
+  const timelineKey = $derived(visible && selected ? `${selected.id}\n${selected.updatedAtMs}` : '');
   const completedCount = $derived(
     selected?.nodes.filter((node) => ['completed', 'skipped'].includes(node.state)).length ?? 0
   );
@@ -340,6 +349,34 @@
     }
   }
 
+  $effect(() => {
+    if (!timelineKey) return;
+    const run = untrack(() => selected);
+    if (!run) return;
+    const owner = machine;
+    const controller = new AbortController();
+    // Untracked: the load reads and writes the timeline it keeps while reloading.
+    untrack(() => { void loadTimeline(run, owner, controller.signal); });
+    return () => controller.abort();
+  });
+
+  /** Reads the run's history and messages and merges them with its snapshot. */
+  async function loadTimeline(run: WorkflowRunRecord, owner: string | null, signal: AbortSignal): Promise<void> {
+    const kept = timeline?.runId === run.id ? timeline.items : [];
+    timeline = { runId: run.id, items: kept, error: '', loading: true };
+    try {
+      const [history, messages] = await Promise.all([
+        listWorkflowRunHistory(owner, run.id, signal),
+        // This Mac is 'mac' to the message relay; no machine at all would read every machine.
+        listAgentMessagesFromTauri({ runId: run.id, machine: owner ?? 'mac', before: null, limit: 200 }, signal)
+      ]);
+      if (signal.aborted) return;
+      timeline = { runId: run.id, items: buildWorkflowTimeline(history ?? [], messages ?? [], run), error: '', loading: false };
+    } catch (error) {
+      if (!signal.aborted) timeline = { runId: run.id, items: kept, error: `Could not load the timeline: ${message(error)}`, loading: false };
+    }
+  }
+
   // A newer click, another run, or the view going away makes a slow lookup's answer stale.
   let stageOpen = 0;
   let stageLookup: AbortController | null = null;
@@ -411,6 +448,8 @@
           duration={elapsed(openStep)}
           busy={busy !== null}
           onRetry={openStep.state === 'failed' ? () => retryStep(selected, openStep) : null}
+          rounds={shownTimeline?.items.filter((item) => item.nodeId === openStep.nodeId
+            && ['review', 'checks', 'finish', 'failed', 'timeout', 'waiting'].includes(item.kind)) ?? []}
         />
       </div>
     </ScrollArea>
@@ -509,7 +548,8 @@
                 <WorkflowPipelineStrip
                   segments={orderedNodes.map((node) => {
                     const status = stepStatus(selected, node);
-                    return { key: node.nodeId, title: stepTitle(selected, node.nodeId), tone: status.tone, label: status.summary, attempt: node.attempt };
+                    const state = status.chip ?? (node.state === 'completed' ? 'completed' : status.notRun ? 'not run' : 'waiting');
+                    return { key: node.nodeId, title: stepTitle(selected, node.nodeId), tone: status.tone, label: status.summary, state, attempt: node.attempt };
                   })}
                   onSelect={(nodeId) => (openStepId = nodeId)}
                 />
@@ -586,6 +626,14 @@
                 </ol>
               </Card.Content>
             </Card.Root>
+
+            <WorkflowTimeline
+              items={shownTimeline?.items ?? []}
+              loading={shownTimeline?.loading ?? true}
+              error={shownTimeline?.error ?? ''}
+              local={!machine}
+              onOpenStep={(nodeId) => (openStepId = nodeId)}
+            />
           {/if}
         </div>
       </ScrollArea>
