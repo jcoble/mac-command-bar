@@ -20,6 +20,8 @@ steps:
   checks:
     needs: [build]
     run:
+      # The build must leave its work committed, or the PR step has nothing to open.
+      - test -z "$(git status --porcelain)" && test -n "$(git log --oneline origin/main..HEAD)" || { echo "The build left work uncommitted or made no commit:"; git status --short; exit 1; }
       - cd tauri-svelte-preview && pnpm install --frozen-lockfile --prefer-offline
       - cd tauri-svelte-preview && npx tsc --noEmit -p .
       - cd tauri-svelte-preview && pnpm run check:svelte

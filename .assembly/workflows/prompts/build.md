@@ -10,7 +10,7 @@ ${{ steps.spec.summary }}
 On redo, fix these review findings: ${{ redo.findings }}
 and this failing check output: ${{ redo.output }}
 
-Follow the repository rules (CLAUDE.md, AGENTS.md): test first, the smallest diff, SQL work in SQL, the async lifecycle rule, no CSS :has(). Run the targeted tests yourself before committing. Commit only your changes on this branch; the commit body ends with `Task: ${{ task.key }}`, `Architecture: unchanged` (or the staged architecture page), and `Committed-by: Codex`, and has no Co-Authored-By line.
+Follow the repository rules (CLAUDE.md, AGENTS.md): test first, the smallest diff, SQL work in SQL, the async lifecycle rule, no CSS :has(). Run the targeted tests yourself before committing. Always commit finished work, even when a proof could not run; report what you could not prove instead of stopping before the commit. If your change raises `PROTOCOL_VERSION`, put your backend on Workbox Test before the remote proof with `node --experimental-strip-types tauri-svelte-preview/scripts/deployRemoteBackendDev.ts workbox-test` (always name `workbox-test`; never run it without a host or against any other machine). Commit only your changes on this branch; the commit body ends with `Task: ${{ task.key }}`, `Architecture: unchanged` (or the staged architecture page), and `Committed-by: Codex`, and has no Co-Authored-By line.
 
 The run works without the owner. Answer questions about how the code works by reading it. For small decisions the task leaves open, make the best choice, state it in one line, and keep going. Mark something `blocked` only when you truly cannot do it without the owner.
 
