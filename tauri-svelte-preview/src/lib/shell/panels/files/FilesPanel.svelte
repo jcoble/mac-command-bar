@@ -60,8 +60,10 @@
 	import ArrowUpZA from "@lucide/svelte/icons/arrow-up-z-a";
 	import Eye from "@lucide/svelte/icons/eye";
 	import EyeOff from "@lucide/svelte/icons/eye-off";
+	import FilePlus from "@lucide/svelte/icons/file-plus";
 	import Folder from "@lucide/svelte/icons/folder";
 	import FolderOpen from "@lucide/svelte/icons/folder-open";
+	import FolderPlus from "@lucide/svelte/icons/folder-plus";
 	import FolderTree from "@lucide/svelte/icons/folder-tree";
 	import RefreshCw from "@lucide/svelte/icons/refresh-cw";
 	import Rows3 from "@lucide/svelte/icons/rows-3";
@@ -233,6 +235,11 @@
 	});
 	const searching = $derived(searchText.trim().length > 0);
 	const treeVisible = $derived(explorer.activated && explorer.unavailable === null && loadedNodes.length > 0);
+	/** The root's own listing has returned; the loaded-directory map changes only alongside the tree rows. */
+	const rootListed = $derived.by(() => {
+		loadedNodes.length;
+		return explorer.root !== null && loadedExplorerDirectoryDepth(explorer.root) !== null;
+	});
 	const searchTreeData = $derived(
 		searchMatches.map<TreeItem>((match) => ({
 			path: match.path,
@@ -814,6 +821,18 @@
 		pendingName = kind === "rename" ? node.name : "";
 	}
 
+	function beginRootEntry(kind: "new-file" | "new-folder"): void {
+		if (readOnlyInspection) return;
+		if (!canMutateFileTree()) {
+			actionError = fileTreeMutationReason();
+			return;
+		}
+		if (!explorer.root || !rootListed) return;
+		actionError = null;
+		pending = { kind, path: explorer.root };
+		pendingName = "";
+	}
+
 	async function isFree(target: string): Promise<boolean> {
 		const { exists } = await import("../../../workspaceFs");
 		if (!(await exists(target))) return true;
@@ -1104,6 +1123,12 @@
 						<Rows3 class="size-[14px]" strokeWidth={2} aria-hidden="true" />
 					</Button>
 				{/if}
+				<IconButton label="New file" disabled={!rootListed || readOnlyInspection} onclick={() => beginRootEntry("new-file")}>
+					<FilePlus class="size-[14px]" />
+				</IconButton>
+				<IconButton label="New folder" disabled={!rootListed || readOnlyInspection} onclick={() => beginRootEntry("new-folder")}>
+					<FolderPlus class="size-[14px]" />
+				</IconButton>
 				<IconButton
 					label={sortDirection === "ascending" ? "Sort Z to A" : "Sort A to Z"}
 					onclick={() => (sortDirection = sortDirection === "ascending" ? "descending" : "ascending")}
@@ -1192,30 +1217,38 @@
 	{:else if loadedNodes.length === 0}
 		<EmptyState title="No source files here" body="This folder has no files the app can open.">
 			{#snippet icon()}<FolderTree />{/snippet}
+			{#snippet actions()}
+				<Button size="sm" variant="secondary" disabled={!rootListed || readOnlyInspection} onclick={() => beginRootEntry("new-file")}>
+					New file
+				</Button>
+				<Button size="sm" variant="secondary" disabled={!rootListed || readOnlyInspection} onclick={() => beginRootEntry("new-folder")}>
+					New folder
+				</Button>
+			{/snippet}
 		</EmptyState>
 	{:else}
 		{#if explorer.error}
 			<p class="border-b px-3 py-2 text-sm leading-snug text-[var(--color-bad)]">{explorer.error}</p>
 		{/if}
-		{#if actionError}
-			<p class="border-b px-3 py-2 text-sm leading-snug text-[var(--color-bad)]">{actionError}</p>
-		{/if}
 		{#if searchError}
 			<p class="border-b px-3 py-2 text-sm leading-snug text-[var(--color-bad)]">{searchError}</p>
 		{/if}
-		{#if pending}
-			<div class="entry-bar">
-				<Input
-					class="h-6 w-full"
-					aria-label={pending.kind === "rename" ? "Rename path" : "New path name"}
-					placeholder={pending.kind === "new-folder" ? "New folder name" : "New file name"}
-					bind:ref={entryField}
-					bind:value={pendingName}
-					onkeydown={onEntryKeydown}
-					onblur={() => void commitEntry()}
-				/>
-			</div>
-		{/if}
+	{/if}
+	{#if explorer.root && actionError}
+		<p class="border-b px-3 py-2 text-sm leading-snug text-[var(--color-bad)]">{actionError}</p>
+	{/if}
+	{#if explorer.root && pending}
+		<div class="entry-bar">
+			<Input
+				class="h-6 w-full"
+				aria-label={pending.kind === "rename" ? "Rename path" : "New path name"}
+				placeholder={pending.kind === "new-folder" ? "New folder name" : "New file name"}
+				bind:ref={entryField}
+				bind:value={pendingName}
+				onkeydown={onEntryKeydown}
+				onblur={() => void commitEntry()}
+			/>
+		</div>
 	{/if}
 
 	<div
