@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
 import '../../core/api/api_exception.dart';
@@ -732,11 +733,15 @@ class ChatComposeBar extends StatelessWidget {
     required this.controller,
     required this.sending,
     required this.onSend,
+    this.leading,
   });
 
   final TextEditingController controller;
   final bool sending;
   final VoidCallback onSend;
+
+  /// Shown at the left of the message box, such as the model pill.
+  final Widget? leading;
 
   static const _pill = OutlineInputBorder(
     borderRadius: BorderRadius.all(Radius.circular(24)),
@@ -764,7 +769,22 @@ class ChatComposeBar extends StatelessWidget {
             hintText: 'Send a message…',
             filled: true,
             fillColor: scheme.surfaceContainerHighest,
-            contentPadding: const EdgeInsetsDirectional.fromSTEB(18, 12, 8, 12),
+            contentPadding: EdgeInsetsDirectional.fromSTEB(
+              leading == null ? 18 : 10,
+              12,
+              8,
+              12,
+            ),
+            prefixIcon: leading == null
+                ? null
+                : Padding(
+                    padding: const EdgeInsetsDirectional.only(start: 6),
+                    child: leading,
+                  ),
+            prefixIconConstraints: BoxConstraints(
+              maxWidth: MediaQuery.sizeOf(context).width * 0.45,
+              minHeight: 40,
+            ),
             suffixIcon: Padding(
               padding: const EdgeInsetsDirectional.only(end: 6),
               child: SizedBox(
@@ -863,6 +883,261 @@ class ChatNotice extends StatelessWidget {
             if (action != null) ...[const SizedBox(height: 24), action!],
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// The thin line under the chat's title: how much of the context window is left.
+class ContextLeftLine extends StatelessWidget implements PreferredSizeWidget {
+  const ContextLeftLine(this.percent, {super.key});
+
+  final int percent;
+
+  @override
+  Size get preferredSize => const Size.fromHeight(24);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      // Lined up with the title, after the back button's width.
+      padding: const EdgeInsetsDirectional.fromSTEB(
+        kToolbarHeight + NavigationToolbar.kMiddleSpacing,
+        0,
+        16,
+        8,
+      ),
+      child: Text(
+        '$percent% context left',
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+}
+
+/// The composer's model pill: the model's label, then its effort in a lighter
+/// weight. A tap opens the model and effort sheet.
+class ModelChip extends ConsumerWidget {
+  const ModelChip({super.key, required this.session});
+
+  final (String, String) session;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final config = ref.watch(sessionConfigProvider(session)).value;
+    return Material(
+      color: Colors.transparent,
+      shape: StadiumBorder(side: BorderSide(color: scheme.outlineVariant)),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => showModelSheet(context, session),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: Text.rich(
+                  TextSpan(
+                    text: config?.modelName ?? 'Model',
+                    children: [
+                      if (config?.effort case final effort?)
+                        TextSpan(
+                          text: ' ${effortLabel(effort)}',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w400,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Icon(
+                Symbols.expand_more_rounded,
+                size: 18,
+                color: scheme.onSurfaceVariant,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The machine's models and efforts for [session], the current ones checked.
+void showModelSheet(BuildContext context, (String, String) session) =>
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (_) => _ModelSheet(session),
+    );
+
+class _ModelSheet extends ConsumerStatefulWidget {
+  const _ModelSheet(this.session);
+
+  final (String, String) session;
+
+  @override
+  ConsumerState<_ModelSheet> createState() => _ModelSheetState();
+}
+
+class _ModelSheetState extends ConsumerState<_ModelSheet> {
+  var _busy = false;
+  String? _error;
+
+  /// Sends the choice, then reads the config back so the checks and the chip follow.
+  Future<void> _choose({String? model, String? effort}) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await ref
+          .read(chatProvider(widget.session).notifier)
+          .setConfig(model: model, effort: effort);
+      if (!mounted) return;
+      ref.invalidate(sessionConfigProvider(widget.session));
+      await ref.read(sessionConfigProvider(widget.session).future);
+    } on ApiException catch (e) {
+      _error = e.message;
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final config = ref.watch(sessionConfigProvider(widget.session));
+    return ConstrainedBox(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * 0.8,
+      ),
+      child: ListView(
+        shrinkWrap: true,
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Text(
+              'Model and effort',
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 2, 4, 6),
+            child: Text(
+              'Used from the next message',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+          SizedBox(
+            height: 2,
+            child: _busy ? const LinearProgressIndicator() : null,
+          ),
+          if (_error case final error?)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 12, 4, 0),
+              child: Text(
+                error,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: scheme.error,
+                ),
+              ),
+            ),
+          ...switch (config) {
+            AsyncData(:final value) => [
+              if (value.efforts.isNotEmpty) ...[
+                const SectionLabel('Effort'),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final effort in value.efforts)
+                      ChoiceChip(
+                        label: Text(effortLabel(effort)),
+                        selected: effort == value.effort,
+                        showCheckmark: false,
+                        side: BorderSide(color: scheme.outlineVariant),
+                        // The current one stays enabled so it reads as chosen, not greyed out.
+                        onSelected: _busy
+                            ? null
+                            : (_) {
+                                if (effort != value.effort) {
+                                  _choose(effort: effort);
+                                }
+                              },
+                      ),
+                  ],
+                ),
+              ],
+              const SectionLabel('Model'),
+              for (final (i, model) in value.models.indexed)
+                Column(
+                  children: [
+                    if (i > 0) const MobileM3ListDivider(indent: 16),
+                    MobileM3ListItem(
+                      position: MobileM3ListItemPositionForIndex.forIndex(
+                        i,
+                        value.models.length,
+                      ),
+                      contentPadding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
+                      title: Text(
+                        model.label,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: model.id == value.model
+                              ? FontWeight.w600
+                              : FontWeight.w500,
+                        ),
+                      ),
+                      trailing: Icon(
+                        Symbols.check_rounded,
+                        color: model.id == value.model
+                            ? scheme.primary
+                            : Colors.transparent,
+                      ),
+                      onTap: _busy || model.id == value.model
+                          ? null
+                          : () => _choose(model: model.id),
+                    ),
+                  ],
+                ),
+            ],
+            AsyncError(:final error) => [
+              Text(
+                error is ApiException
+                    ? error.message
+                    : "Couldn't load this session's models.",
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: scheme.error,
+                ),
+              ),
+            ],
+            _ => [
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 32),
+                child: Center(child: CircularProgressIndicator()),
+              ),
+            ],
+          },
+        ],
       ),
     );
   }

@@ -24,7 +24,8 @@ use sha2::{Digest, Sha256};
 
 use super::protocol::{
     AgentConversationEvent, AgentConversationPayload as Payload, AgentNativeSessionMode, EnsureAgentConversationRequest,
-    ExecutionEnvironment, RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest, ToolState, TurnState,
+    ExecutionEnvironment, RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest,
+    SetAgentConversationConfigRequest, ToolState, TurnState,
 };
 use super::phone_push::PushSender;
 use super::remote::{execute_phone_command, RemoteCommand, RemoteResponse, ServerState};
@@ -38,6 +39,8 @@ const NOT_SET_UP: &str =
 const REMOVED: &str = "This phone was removed — pair again";
 const NO_SESSION: &str = "No such session on this machine";
 const NO_TOOL_CALL: &str = "No such tool call in this session";
+/// The engine's refusals of a model or effort change, which the phone shows as they are.
+const CONFIG_REFUSALS: [&str; 2] = ["The requested ", "Effort is set when the session starts"];
 /// §5.3 sets no length for chat text, so a plain cap: 10,000 characters, in a body of at most 64 KiB.
 const MAX_CHAT_CHARS: usize = 10_000;
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -72,6 +75,7 @@ pub(super) fn router(state: ServerState) -> Router {
         .route("/phone/v1/sessions/{id}/chat", get(session_chat).post(send_session_chat))
         .route("/phone/v1/sessions/{id}/items/{item}", get(tool_item))
         .route("/phone/v1/sessions/{id}/changes", get(changes))
+        .route("/phone/v1/sessions/{id}/config", get(session_config).post(set_session_config))
         .route("/phone/v1/runs", get(runs))
         .route("/phone/v1/runs/{id}", get(run_detail))
         .route("/phone/v1/runs/{id}/{action}", post(control_run))
@@ -323,7 +327,8 @@ async fn session_chat(State(state): State<ServerState>, Path(owned_id): Path<Str
     read_chat(&state, &owned_id, &query)
 }
 
-/// A session's chat items after `after`, or its newest 100.
+/// A session's chat items after `after`, or its newest 100, with `usage: {usedTokens, contextWindow}`
+/// from its latest usage event when it has one: the page's newest, else one store read.
 fn read_chat(state: &ServerState, owned_id: &str, query: &HashMap<String, String>) -> Reply {
     let after = query.get("after").map(|after| after.parse::<i64>()).transpose()
         .map_err(|_| refuse(StatusCode::BAD_REQUEST, "after must be a sequence number"))?;
@@ -335,12 +340,27 @@ fn read_chat(state: &ServerState, owned_id: &str, query: &HashMap<String, String
     if after.is_none() { items.drain(..items.len().saturating_sub(LATEST_CHAT_ITEMS)); }
     let owner_items: Vec<Value> = inbox_items(state)?.into_iter()
         .filter(|(session, _)| session.as_deref() == Some(owned_id)).map(|(_, item)| item).collect();
-    Ok(Json(json!({
+    let mut body = json!({
         "items": items,
         "cursor": page.events.last().map_or(after.unwrap_or(0), |event| event.sequence),
         "turn": if state.manager.turn_running(owned_id) { "running" } else { "idle" },
         "ownerItems": owner_items,
-    })).into_response())
+    });
+    let usage = match page.events.iter().rev().find_map(|event| usage_of(&event.payload)) {
+        Some(usage) => Some(usage),
+        None => state.manager.store().latest_usage_events(&[owned_id.to_string()]).map_err(|error| server_error(&error))?
+            .first().and_then(|row| serde_json::from_str::<AgentConversationEvent>(&row.payload_json).ok())
+            .and_then(|event| usage_of(&event.payload)),
+    };
+    if let Some(usage) = usage { body["usage"] = usage; }
+    Ok(Json(body).into_response())
+}
+
+fn usage_of(payload: &Payload) -> Option<Value> {
+    match payload {
+        Payload::Usage { used_tokens, context_window, .. } => Some(json!({ "usedTokens": used_tokens, "contextWindow": context_window })),
+        _ => None,
+    }
 }
 
 /// `GET /phone/v1/sessions/{id}/items/{itemId}`: one tool call whole, its events in the newest page
@@ -479,24 +499,71 @@ async fn send_to(state: &ServerState, owned_id: String, body: &[u8]) -> Reply {
     if text.is_empty() || text.chars().count() > MAX_CHAT_CHARS {
         return Err(refuse(StatusCode::BAD_REQUEST, "A message must be 1 to 10,000 characters"));
     }
-    let row = state.manager.store().get_session(&owned_id).map_err(|error| server_error(&error))?
-        .ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))?;
-    let provider = super::transcript::parse_provider(&row.provider).map_err(|error| server_error(&error))?;
-    // After a restart the manager holds no sessions; ensure loads the stored one and gives its generation.
-    let ensure = RemoteCommand::Ensure(EnsureAgentConversationRequest {
-        owned_id: owned_id.clone(), execution_environment: ExecutionEnvironment::Local, remote_profile_id: None,
-        provider, cwd: row.cwd, native_session_id: row.native_session_id,
-        native_session_mode: AgentNativeSessionMode::Resume, reasoning_effort: None, project_id: row.project_id,
-    });
-    let RemoteResponse::Connection(connection) = execute_phone_command(state, ensure).await
-        .map_err(|error| server_error(&error))? else { return Err(server_error(&"ensure gave the wrong response")) };
+    let generation = ensure(state, &owned_id).await?;
     let send = RemoteCommand::Send(SendAgentConversationMessageRequest {
-        owned_id, generation: connection.generation, text: text.into(), content: Vec::new(),
+        owned_id, generation, text: text.into(), content: Vec::new(),
         attachment_ids: Vec::new(), model: None, approval_policy: None,
     });
     let RemoteResponse::SendReceipt(receipt) = execute_phone_command(state, send).await
         .map_err(|error| server_error(&error))? else { return Err(server_error(&"send gave the wrong response")) };
     Ok(Json(json!({ "itemId": receipt.user_item_id })).into_response())
+}
+
+/// The desktop's ensure for `owned_id`, which loads a stored session after a restart; its generation.
+async fn ensure(state: &ServerState, owned_id: &str) -> Result<u64, Response> {
+    let row = state.manager.store().get_session(&owned_id).map_err(|error| server_error(&error))?
+        .ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))?;
+    let provider = super::transcript::parse_provider(&row.provider).map_err(|error| server_error(&error))?;
+    // After a restart the manager holds no sessions; ensure loads the stored one and gives its generation.
+    let ensure = RemoteCommand::Ensure(EnsureAgentConversationRequest {
+        owned_id: owned_id.into(), execution_environment: ExecutionEnvironment::Local, remote_profile_id: None,
+        provider, cwd: row.cwd, native_session_id: row.native_session_id,
+        native_session_mode: AgentNativeSessionMode::Resume, reasoning_effort: None, project_id: row.project_id,
+    });
+    let RemoteResponse::Connection(connection) = execute_phone_command(state, ensure).await
+        .map_err(|error| server_error(&error))? else { return Err(server_error(&"ensure gave the wrong response")) };
+    Ok(connection.generation)
+}
+
+/// `GET /phone/v1/sessions/{id}/config` → `{models: [{id, label}], model, efforts, effort}`: what the
+/// desktop's picker offers this session and what it has chosen (`model`, `effort` and a `label` may be
+/// null; the phone then words the id as the desktop does). It is the desktop's config read, live or
+/// stored, so nothing starts. The approval policy is never sent.
+async fn session_config(State(state): State<ServerState>, Path(owned_id): Path<String>) -> Reply {
+    known_session(&state, &owned_id)?;
+    let RemoteResponse::Config(config) = execute_phone_command(&state, RemoteCommand::Config { owned_id }).await
+        .map_err(|error| server_error(&error))? else { return Err(server_error(&"config gave the wrong response")) };
+    let models: Vec<Value> = config.available_models.iter()
+        .map(|id| json!({ "id": id, "label": config.model_labels.get(id) })).collect();
+    Ok(Json(json!({ "models": models, "model": config.model, "efforts": config.available_efforts,
+        "effort": config.reasoning_effort })).into_response())
+}
+
+/// The only fields the phone may set; any other, such as `approvalPolicy`, refuses the body.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigRequest {
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+/// `POST /phone/v1/sessions/{id}/config {model?, effort?}` → 204: the desktop's ensure, then its config
+/// change. An engine refusal, such as an effort a started session cannot change, is a 409 with its message.
+async fn set_session_config(State(state): State<ServerState>, Path(owned_id): Path<String>, body: Bytes) -> Reply {
+    known_session(&state, &owned_id)?;
+    let request: ConfigRequest = parse(&body)?;
+    if request.model.is_none() && request.effort.is_none() {
+        return Err(refuse(StatusCode::BAD_REQUEST, "Choose a model or an effort"));
+    }
+    let generation = ensure(&state, &owned_id).await?;
+    let command = RemoteCommand::SetConfig(SetAgentConversationConfigRequest {
+        owned_id, generation, model: request.model, reasoning_effort: request.effort, approval_policy: None,
+    });
+    match execute_phone_command(&state, command).await {
+        Ok(_) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(error) if CONFIG_REFUSALS.iter().any(|refusal| error.starts_with(refusal)) => Err(refuse(StatusCode::CONFLICT, &error)),
+        Err(error) => Err(server_error(&error)),
+    }
 }
 
 /// `GET /phone/v1/runs` → `{active, recent}`: unfinished runs and the 20 newest finished ones.
@@ -1140,7 +1207,7 @@ mod tests {
             (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::GET, "/inbox"),
             (Method::POST, "/inbox/i/answer"), (Method::GET, "/live"), (Method::GET, "/sessions"),
             (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat"), (Method::GET, "/sessions/s/items/i"),
-            (Method::GET, "/sessions/s/changes")] {
+            (Method::GET, "/sessions/s/changes"), (Method::GET, "/sessions/s/config"), (Method::POST, "/sessions/s/config")] {
             let response = client(method.clone(), &base, path, &session.token).json(&json!({"text": "hi"})).send().await.unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED, "{method} {path}");
             assert_eq!(response.json::<Value>().await.unwrap(), json!({"error": "This phone was removed — pair again"}));
@@ -1478,7 +1545,8 @@ mod tests {
         for (index, payload) in payloads.into_iter().enumerate() {
             let event = session_event(owned_id, index as i64 + 1, payload);
             store.append_event(&mcb_core::session_store::EventRow { owned_id: owned_id.into(), seq: event.sequence, turn_id: None,
-                kind: "tool".into(), payload_json: serde_json::to_string(&event).unwrap(), created_at_ms: 0 }).unwrap();
+                kind: if matches!(event.payload, Payload::Usage { .. }) { "usage.updated" } else { "tool" }.into(),
+                payload_json: serde_json::to_string(&event).unwrap(), created_at_ms: 0 }).unwrap();
         }
     }
 
@@ -1705,5 +1773,99 @@ mod tests {
         socket.send(Message::Text(json!({"type": "hello"}).to_string().into())).await.unwrap();
         socket.send(Message::Text(json!({"type": "watch", "ownedId": null}).to_string().into())).await.unwrap();
         chat_frame_arrives(&state, &mut socket, "orchestrator", "o3").await;
+    }
+
+    fn usage(used_tokens: u64) -> Payload {
+        Payload::Usage { input_tokens: None, output_tokens: None, used_tokens: Some(used_tokens), context_window: Some(200_000),
+            total_tokens: None }
+    }
+
+    #[tokio::test]
+    async fn phone_chat_includes_latest_usage() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        file_session(&state, "lane", vec![usage(1_000), edit(None, None), usage(50_000)]);
+        let chat: Value = client(reqwest::Method::GET, &base, "/sessions/lane/chat", &token).send().await.unwrap().json().await.unwrap();
+        assert_eq!(chat["usage"], json!({"usedTokens": 50_000, "contextWindow": 200_000}));
+        // A read after the cursor has no usage event in its page, so the store gives the latest.
+        let after: Value = client(reqwest::Method::GET, &base, "/sessions/lane/chat?after=3", &token).send().await.unwrap()
+            .json().await.unwrap();
+        assert_eq!(after["items"], json!([]));
+        assert_eq!(after["usage"], json!({"usedTokens": 50_000, "contextWindow": 200_000}));
+
+        file_session(&state, "quiet", vec![edit(None, None)]);
+        let quiet: Value = client(reqwest::Method::GET, &base, "/sessions/quiet/chat", &token).send().await.unwrap().json().await.unwrap();
+        assert!(quiet.get("usage").is_none(), "no usage yet: {quiet}");
+    }
+
+    /// A phone server whose Claude adapter is the fixture offering default, sonnet and haiku; and its device token.
+    async fn claude_server() -> (ServerState, String, String) {
+        let (state, base) = phone_server_with(|directory| {
+            let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&directory.join("acp.jsonl"), "standard_config");
+            ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)]).unwrap()
+        }).await;
+        let token = paired(&state, &base).await;
+        (state, base, token)
+    }
+
+    /// Ensures Claude session `owned_id`, as the desktop does before its first turn; returns its generation.
+    async fn claude_session(state: &ServerState, owned_id: &str) -> u64 {
+        state.manager.ensure_async(EnsureAgentConversationRequest { owned_id: owned_id.into(),
+            execution_environment: ExecutionEnvironment::Local, remote_profile_id: None, provider: AgentConversationProvider::Claude,
+            cwd: std::env::temp_dir().to_string_lossy().into_owned(), native_session_id: None,
+            native_session_mode: AgentNativeSessionMode::Resume, reasoning_effort: None, project_id: None }).await.unwrap().generation
+    }
+
+    #[tokio::test]
+    async fn phone_session_config_lists_models_and_current() {
+        let (state, base, token) = claude_server().await;
+        let generation = claude_session(&state, "lane").await;
+        state.manager.activate("lane", generation).await.unwrap();
+        let response = client(reqwest::Method::GET, &base, "/sessions/lane/config", &token).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let config: Value = response.json().await.unwrap();
+        // The adapter's three, then the Claude models Assembly adds, as the desktop's picker lists them.
+        let models: Vec<(&str, &Value)> = config["models"].as_array().unwrap().iter()
+            .map(|model| (model["id"].as_str().unwrap(), &model["label"])).collect();
+        assert_eq!(models, [("default", &Value::Null), ("sonnet", &Value::Null), ("haiku", &Value::Null), ("opus", &Value::Null),
+            ("claude-opus-5", &Value::Null), ("claude-fable-5", &Value::Null)], "{config}");
+        assert_eq!((&config["model"], &config["efforts"], &config["effort"]),
+            (&json!("default"), &json!(["low", "medium", "high", "max"]), &Value::Null));
+        assert_eq!(config.as_object().unwrap().len(), 4, "no approval policy goes to the phone: {config}");
+        let unknown = client(reqwest::Method::GET, &base, "/sessions/nobody/config", &token).send().await.unwrap();
+        assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
+        state.manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn phone_session_config_sets_model_and_effort() {
+        let (state, base, token) = claude_server().await;
+        let set = |owned_id: &str, body: Value| client(reqwest::Method::POST, &base, &format!("/sessions/{owned_id}/config"), &token)
+            .json(&body).send();
+        let read = |owned_id: &str| client(reqwest::Method::GET, &base, &format!("/sessions/{owned_id}/config"), &token).send();
+        // Before its first turn a session takes an effort, kept for when the adapter starts.
+        claude_session(&state, "fresh").await;
+        assert_eq!(set("fresh", json!({"effort": "high"})).await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(read("fresh").await.unwrap().json::<Value>().await.unwrap()["effort"], "high");
+
+        // A running adapter is asked to change model.
+        let generation = claude_session(&state, "lane").await;
+        state.manager.activate("lane", generation).await.unwrap();
+        assert_eq!(set("lane", json!({"model": "sonnet"})).await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(read("lane").await.unwrap().json::<Value>().await.unwrap()["model"], "sonnet");
+
+        for body in [json!({}), json!({"approvalPolicy": "bypassPermissions"}), json!({"model": "haiku", "approvalPolicy": "x"})] {
+            let refused = set("lane", body.clone()).await.unwrap();
+            assert_eq!(refused.status(), reqwest::StatusCode::BAD_REQUEST, "{body}");
+        }
+        // The engine's refusals are the phone's to show.
+        for (body, error) in [(json!({"effort": "low"}), "Effort is set when the session starts. Start a new session to change it."),
+            (json!({"model": "nope"}), "The requested model is not available for this session")] {
+            let refused = set("lane", body.clone()).await.unwrap();
+            assert_eq!(refused.status(), reqwest::StatusCode::CONFLICT, "{body}");
+            assert_eq!(refused.json::<Value>().await.unwrap()["error"], error);
+        }
+        assert_eq!(set("nobody", json!({"model": "sonnet"})).await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
+        state.manager.shutdown().await;
     }
 }

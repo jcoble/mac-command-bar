@@ -106,6 +106,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
           ),
         ],
+        bottom: switch (chat.value?.contextLeft) {
+          final left? => ContextLeftLine(left),
+          null => null,
+        },
       ),
       body: switch (chat) {
         AsyncData(:final value) => Column(
@@ -139,6 +143,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               controller: _text,
               sending: _sending,
               onSend: () => _send(machine.id),
+              leading: ModelChip(session: (machine.id, widget.ownedId)),
             ),
           ],
         ),
