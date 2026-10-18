@@ -435,6 +435,9 @@
   }
 
   async function addRemote(name: string, url: string): Promise<string | null> {
+    // A skipped add leaves the panel's error from some other action; say why here instead.
+    if (folder !== addRemoteRoot) return 'The folder changed. Close this dialog and add the remote again.';
+    if (busy) return 'Wait for the current source-control action to finish.';
     if (await service.addRemote(addRemoteRoot, name, url)) return null;
     return panel.actionError || 'The remote was not added. Refresh Source Control and try again.';
   }
