@@ -38,6 +38,8 @@ dependencies:
   webview_flutter: ^4.14.1
   # Its WebView id lets the terminal's Keyboard key show the keyboard.
   webview_flutter_android: ^4.13.0
+  # Attaches a photo or screenshot to a chat message (gallery or camera).
+  image_picker: ^1.2.4
 
 dev_dependencies:
   flutter_test:

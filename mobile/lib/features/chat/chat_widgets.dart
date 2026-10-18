@@ -1,9 +1,11 @@
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:material_symbols_icons/symbols.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -34,9 +36,17 @@ String toolGroupLabel(List<ChatItem> tools) => tools.length == 1
     ? 'Ran ${tools.single.text}'
     : 'Ran ${tools.length} commands';
 
+/// The thread follows new content while the owner is within 48 px of the
+/// bottom; further up it holds still.
+bool scrollPinned(double distanceFromBottom) => distanceFromBottom <= 48;
+
 /// Rental Command's `_MessageThread` (`message_detail_screen.dart`), newest at
-/// the bottom. Reversed so new items keep the view pinned to the bottom. A
-/// round button scrolls back down once the owner has scrolled up.
+/// the bottom. The rows already settled when the thread opened sit above the
+/// scroll anchor, laid out upward; the last of them and everything after sit
+/// below it, laid out downward. So text or rows arriving at the bottom grow
+/// away from what the owner is reading and never move it; while pinned to the
+/// bottom the view jumps down to follow. A round button scrolls back down
+/// once the owner has scrolled up, with a dot when something came since.
 class ChatThread extends StatefulWidget {
   const ChatThread({super.key, required this.items, required this.onOpenTools});
 
@@ -46,26 +56,91 @@ class ChatThread extends StatefulWidget {
   final void Function(List<ChatItem> tools) onOpenTools;
 
   @override
-  State<ChatThread> createState() => _ChatThreadState();
+  State<ChatThread> createState() => ChatThreadState();
 }
 
-class _ChatThreadState extends State<ChatThread> {
+class ChatThreadState extends State<ChatThread> {
   final _scroll = ScrollController();
-  var _scrolledUp = false;
+  final _anchor = UniqueKey();
+
+  /// How many rows sit above the anchor: those settled when the thread opened.
+  late final int _settled;
+  var _pinned = true;
+  var _unseen = false;
 
   @override
   void initState() {
     super.initState();
+    _settled = math.max(0, chatRows(widget.items).length - 1);
     _scroll.addListener(() {
-      final up = _scroll.offset > 400;
-      if (up != _scrolledUp) setState(() => _scrolledUp = up);
+      final p = _scroll.position;
+      final pinned = scrollPinned(p.maxScrollExtent - p.pixels);
+      if (pinned != _pinned) {
+        setState(() {
+          _pinned = pinned;
+          if (pinned) _unseen = false;
+        });
+      }
     });
+  }
+
+  @override
+  void didUpdateWidget(ChatThread oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_pinned && widget.items != oldWidget.items) _unseen = true;
   }
 
   @override
   void dispose() {
     _scroll.dispose();
     super.dispose();
+  }
+
+  /// Jumps to the bottom and follows from there (the owner just sent).
+  void jumpToLatest() {
+    if (!_scroll.hasClients) return;
+    _scroll.jumpTo(_scroll.position.maxScrollExtent);
+  }
+
+  Future<void> _scrollToLatest() async {
+    await _scroll.animateTo(
+      _scroll.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOutCubic,
+    );
+    // Rows laid out on the way down can make the bottom further than it was.
+    if (mounted) jumpToLatest();
+  }
+
+  /// The content changed size: follow it down while pinned.
+  bool _onMetrics(ScrollMetricsNotification n) {
+    if (n.depth == 0 &&
+        _pinned &&
+        !_scroll.position.isScrollingNotifier.value) {
+      jumpToLatest();
+    }
+    return false;
+  }
+
+  Widget _row(List<ChatItem> row) {
+    final item = row.first;
+    return Padding(
+      key: ValueKey(item.id),
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: switch (item.kind) {
+        'owner' => _OwnerBubble(item: item),
+        'agent' => _AgentReply(item: item),
+        'relayed' => _RelayedCard(item: item),
+        'tool' => _ToolGroupRow(
+          label: toolGroupLabel(row),
+          // A single call with no detail has nothing to open.
+          onTap: row.length == 1 && !item.hasDetail
+              ? null
+              : () => widget.onOpenTools(row),
+        ),
+        _ => _ErrorLine(item: item),
+      },
+    );
   }
 
   @override
@@ -75,33 +150,32 @@ class _ChatThreadState extends State<ChatThread> {
     return Stack(
       alignment: Alignment.bottomCenter,
       children: [
-        ListView.builder(
-          controller: _scroll,
-          reverse: true,
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
-          itemCount: rows.length,
-          itemBuilder: (context, i) {
-            final row = rows[rows.length - 1 - i];
-            final item = row.first;
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: switch (item.kind) {
-                'owner' => _OwnerBubble(item: item),
-                'agent' => _AgentReply(item: item),
-                'relayed' => _RelayedCard(item: item),
-                'tool' => _ToolGroupRow(
-                  label: toolGroupLabel(row),
-                  // A single call with no detail has nothing to open.
-                  onTap: row.length == 1 && !item.hasDetail
-                      ? null
-                      : () => widget.onOpenTools(row),
+        NotificationListener<ScrollMetricsNotification>(
+          onNotification: _onMetrics,
+          child: CustomScrollView(
+            controller: _scroll,
+            center: _anchor,
+            anchor: 1,
+            slivers: [
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                sliver: SliverList.builder(
+                  itemCount: _settled,
+                  itemBuilder: (context, i) => _row(rows[_settled - 1 - i]),
                 ),
-                _ => _ErrorLine(item: item),
-              },
-            );
-          },
+              ),
+              SliverPadding(
+                key: _anchor,
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                sliver: SliverList.builder(
+                  itemCount: rows.length - _settled,
+                  itemBuilder: (context, i) => _row(rows[_settled + i]),
+                ),
+              ),
+            ],
+          ),
         ),
-        if (_scrolledUp)
+        if (!_pinned)
           Padding(
             padding: const EdgeInsets.only(bottom: 12),
             child: IconButton(
@@ -110,12 +184,11 @@ class _ChatThreadState extends State<ChatThread> {
                 backgroundColor: scheme.surfaceContainerHighest,
                 side: BorderSide(color: scheme.outlineVariant),
               ),
-              icon: const Icon(Symbols.arrow_downward_rounded),
-              onPressed: () => _scroll.animateTo(
-                0,
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeOutCubic,
+              icon: Badge(
+                isLabelVisible: _unseen,
+                child: const Icon(Symbols.arrow_downward_rounded),
               ),
+              onPressed: _scrollToLatest,
             ),
           ),
       ],
@@ -148,7 +221,35 @@ class _OwnerBubble extends StatelessWidget {
             color: theme.colorScheme.surfaceContainerHigh,
             borderRadius: M3Shape.radiusLargeIncreased,
           ),
-          child: Text(item.text, style: _chatText(theme)),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (item.localImages.isNotEmpty || item.images > 0)
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  alignment: WrapAlignment.end,
+                  children: [
+                    for (final path in item.localImages)
+                      ImageThumbnail(path: path, size: 96),
+                    // History holds no image bytes: a chip for each.
+                    if (item.localImages.isEmpty)
+                      for (var i = 0; i < item.images; i++)
+                        Chip(
+                          avatar: const Icon(Symbols.image_rounded, size: 18),
+                          label: const Text('Image'),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                  ],
+                ),
+              if (item.text.isNotEmpty) ...[
+                if (item.localImages.isNotEmpty || item.images > 0)
+                  const SizedBox(height: 8),
+                Text(item.text, style: _chatText(theme)),
+              ],
+            ],
+          ),
         ),
       ),
     );
@@ -1019,6 +1120,9 @@ class ChatComposeBar extends StatelessWidget {
     required this.controller,
     required this.sending,
     required this.onSend,
+    required this.onAttach,
+    this.images = const [],
+    this.onRemoveImage,
     this.leading,
   });
 
@@ -1026,7 +1130,14 @@ class ChatComposeBar extends StatelessWidget {
   final bool sending;
   final VoidCallback onSend;
 
-  /// Shown under the message box on the left, such as the model pill.
+  /// The "+" button: picks an image to send with the message.
+  final VoidCallback onAttach;
+
+  /// The images picked for the next message, as thumbnails above the text.
+  final List<PendingImage> images;
+  final void Function(PendingImage image)? onRemoveImage;
+
+  /// Shown under the message box on the left, after the "+" button, such as the model pill.
   final Widget? leading;
 
   @override
@@ -1046,6 +1157,24 @@ class ChatComposeBar extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (images.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: SizedBox(
+                  height: 64,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: images.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 8),
+                    itemBuilder: (context, i) => _PendingThumbnail(
+                      image: images[i],
+                      onRemove: sending
+                          ? null
+                          : () => onRemoveImage?.call(images[i]),
+                    ),
+                  ),
+                ),
+              ),
             TextField(
               controller: controller,
               minLines: 1,
@@ -1065,6 +1194,15 @@ class ChatComposeBar extends StatelessWidget {
             ),
             Row(
               children: [
+                // Pulled left so the icon lines up with the text above it.
+                Transform.translate(
+                  offset: const Offset(-10, 0),
+                  child: IconButton(
+                    tooltip: 'Attach an image',
+                    onPressed: sending ? null : onAttach,
+                    icon: Icon(Symbols.add_rounded, color: scheme.onSurface),
+                  ),
+                ),
                 Expanded(
                   child: Align(
                     alignment: AlignmentDirectional.centerStart,
@@ -1101,6 +1239,143 @@ class ChatComposeBar extends StatelessWidget {
                 ),
               ],
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// An image picked for the next message: its file, then its id once uploaded.
+class PendingImage {
+  PendingImage(this.path);
+
+  final String path;
+  String? attachmentId;
+
+  /// 0 to 1 while it uploads; null otherwise.
+  double? progress;
+  String? error;
+}
+
+/// The "+" sheet: Photos or Camera.
+Future<ImageSource?> showAttachSheet(
+  BuildContext context,
+) => showAppSheet<ImageSource>(
+  context,
+  (context) => ListView(
+    shrinkWrap: true,
+    padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
+    children: [
+      const AppSheetHeader(title: 'Attach an image'),
+      for (final (i, (icon, label, source)) in const [
+        (Symbols.photo_library_rounded, 'Photos', ImageSource.gallery),
+        (Symbols.photo_camera_rounded, 'Camera', ImageSource.camera),
+      ].indexed) ...[
+        if (i > 0) const MobileM3ListDivider(),
+        MobileM3ListItem(
+          position: MobileM3ListItemPositionForIndex.forIndex(i, 2),
+          leading: MobileM3LeadingIcon(
+            icon: icon,
+            backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
+            foregroundColor: Theme.of(context).colorScheme.onSecondaryContainer,
+          ),
+          title: Text(label),
+          onTap: () => Navigator.of(context).pop(source),
+        ),
+      ],
+    ],
+  ),
+);
+
+/// A square, rounded image from a file, decoded at the size it is shown.
+class ImageThumbnail extends StatelessWidget {
+  const ImageThumbnail({super.key, required this.path, required this.size});
+
+  final String path;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+    borderRadius: M3Shape.radiusMedium,
+    child: Image.file(
+      File(path),
+      width: size,
+      height: size,
+      fit: BoxFit.cover,
+      cacheWidth: (size * MediaQuery.devicePixelRatioOf(context)).round(),
+      errorBuilder: (context, _, _) => SizedBox.square(
+        dimension: size,
+        child: const Icon(Symbols.broken_image_rounded),
+      ),
+    ),
+  );
+}
+
+/// A picked image above the text: its upload progress or error over it, and
+/// an × to take it off the message.
+class _PendingThumbnail extends StatelessWidget {
+  const _PendingThumbnail({required this.image, required this.onRemove});
+
+  final PendingImage image;
+  final VoidCallback? onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: image.error ?? '',
+      triggerMode: TooltipTriggerMode.tap,
+      child: SizedBox.square(
+        dimension: 64,
+        child: Stack(
+          children: [
+            ImageThumbnail(path: image.path, size: 64),
+            if (image.progress != null || image.error != null)
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: scheme.scrim.withValues(alpha: 0.45),
+                    borderRadius: M3Shape.radiusMedium,
+                    border: image.error == null
+                        ? null
+                        : Border.all(color: scheme.error, width: 2),
+                  ),
+                  child: Center(
+                    child: image.error != null
+                        ? Icon(Symbols.error_rounded, color: scheme.error)
+                        : SizedBox.square(
+                            dimension: 24,
+                            child: CircularProgressIndicator(
+                              value: image.progress,
+                              strokeWidth: 3,
+                              color: Colors.white,
+                            ),
+                          ),
+                  ),
+                ),
+              ),
+            if (onRemove != null)
+              Positioned(
+                top: 2,
+                right: 2,
+                child: Material(
+                  color: scheme.scrim.withValues(alpha: 0.6),
+                  shape: const CircleBorder(),
+                  child: InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: onRemove,
+                    child: const Padding(
+                      padding: EdgeInsets.all(3),
+                      child: Icon(
+                        Symbols.close_rounded,
+                        size: 14,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
