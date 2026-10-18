@@ -22,6 +22,8 @@ dependencies:
   material_symbols_icons: ^4.2928.1
   # Pairing QR code scanner (Rental Command has no QR package).
   mobile_scanner: ^7.4.2
+  # The live socket, GET /phone/v1/live (Rental Command's version, there transitive).
+  web_socket_channel: ^3.0.3
 
 dev_dependencies:
   flutter_test:
