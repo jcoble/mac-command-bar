@@ -6,6 +6,7 @@ import 'package:assembly_phone/core/api/machine_client.dart';
 import 'package:assembly_phone/core/live/live_providers.dart';
 import 'package:assembly_phone/core/live/live_socket.dart';
 import 'package:assembly_phone/features/chat/chat_repository.dart';
+import 'package:assembly_phone/features/chat/chat_widgets.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -344,5 +345,119 @@ void main() {
     expect(texts(c), [('u1', 'Hi'), ('a1', 'Hello')]);
     final state = c.read(chatProvider(session)).requireValue;
     expect((state.cursor, state.working), (15, false));
+  });
+
+  test('tool_item_parses_detail_fields', () async {
+    final (c, adapter, _) = await chatWith(
+      (r) => r.path.contains('/items/')
+          ? (
+              200,
+              {
+                'name': 'Edit',
+                'state': 'completed',
+                'summary': 'notes.txt',
+                'path': '/work/notes.txt',
+                'output': 'Wrote 2 lines',
+                'outputTruncated': true,
+                'diff': '+one\n',
+                'diffTruncated': false,
+              },
+            )
+          : (
+              200,
+              {
+                'items': [
+                  {...item('t1', 2, 'tool', 'notes.txt'), 'hasDetail': true},
+                  item('t2', 3, 'tool', 'start_run'),
+                ],
+                'cursor': 3,
+                'turn': 'idle',
+                'ownerItems': [],
+              },
+            ),
+    );
+    final items = c.read(chatProvider(session)).requireValue.items;
+    expect([for (final i in items) i.hasDetail], [true, false]);
+
+    final tool = await c.read(chatProvider(session).notifier).toolItem('t 1');
+    expect(adapter.requests.last.path, 'sessions/lane-1/items/t%201');
+    expect(
+      (tool.name, tool.state, tool.summary, tool.path, tool.output),
+      ('Edit', 'completed', 'notes.txt', '/work/notes.txt', 'Wrote 2 lines'),
+    );
+    expect(
+      (tool.outputTruncated, tool.diff, tool.diffTruncated),
+      (true, '+one\n', false),
+    );
+  });
+
+  test('diff_lines_classify_added_removed_hunk_and_header', () {
+    expect(
+      [
+        for (final line in [
+          'diff --git a/n b/n',
+          '--- a/notes.txt',
+          '+++ b/notes.txt',
+          '@@ -1,2 +1,2 @@',
+          '+two',
+          '-one',
+          ' same',
+          '',
+        ])
+          diffLineKind(line),
+      ],
+      [
+        DiffLineKind.header,
+        DiffLineKind.header,
+        DiffLineKind.header,
+        DiffLineKind.hunk,
+        DiffLineKind.added,
+        DiffLineKind.removed,
+        DiffLineKind.context,
+        DiffLineKind.context,
+      ],
+    );
+  });
+
+  test('changes_parses_files_and_counts', () async {
+    const diff =
+        'diff --git a/a.txt b/a.txt\n@@ -1 +1,2 @@\n-one\n+two\n+three\n';
+    final (c, adapter, _) = await chatWith(
+      (r) => r.path.endsWith('/changes')
+          ? (
+              200,
+              {
+                'base': 'origin/main',
+                'files': [
+                  {'path': 'a.txt', 'added': 2, 'removed': 1},
+                  {'path': 'src/b.rs', 'added': 3, 'removed': 0},
+                ],
+                'diff': diff,
+                'diffTruncated': true,
+              },
+            )
+          : (200, {'items': [], 'cursor': 0, 'turn': 'idle', 'ownerItems': []}),
+    );
+    final changes = await c.read(chatProvider(session).notifier).changes();
+    expect(adapter.requests.last.path, 'sessions/lane-1/changes');
+    expect(
+      [for (final f in changes.files) (f.path, f.added, f.removed)],
+      [('a.txt', 2, 1), ('src/b.rs', 3, 0)],
+    );
+    expect(
+      (changes.base, changes.added, changes.removed, changes.diffTruncated),
+      ('origin/main', 5, 1, true),
+    );
+    expect(changes.diffs, [
+      diff,
+    ], reason: 'the cut diff holds only the first file');
+  });
+
+  test('changes_splits_diff_per_file', () {
+    const a =
+        'diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-x\n+diff --git y\n';
+    const b = 'diff --git a/b.txt b/b.txt\nBinary files differ\n';
+    expect(splitDiffFiles('$a$b'), [a, b]);
+    expect(splitDiffFiles(''), isEmpty);
   });
 }

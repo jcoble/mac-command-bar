@@ -15,6 +15,7 @@ class ChatItem {
     required this.text,
     required this.at,
     required this.done,
+    this.hasDetail = false,
   });
 
   factory ChatItem.fromJson(Map<String, dynamic> json) => ChatItem(
@@ -23,6 +24,7 @@ class ChatItem {
     text: json['text'] as String,
     at: json['at'] as int,
     done: json['done'] as bool,
+    hasDetail: json['hasDetail'] == true,
   );
 
   final String id;
@@ -32,7 +34,68 @@ class ChatItem {
   /// Milliseconds since the epoch.
   final int at;
   final bool done;
+
+  /// A tool call with output, a path or a diff to open.
+  final bool hasDetail;
 }
+
+/// `GET sessions/{id}/items/{itemId}`: one tool call whole, output and diff capped.
+class ToolItem {
+  ToolItem.fromJson(Map<String, dynamic> json)
+    : name = json['name'] as String,
+      state = json['state'] as String,
+      summary = json['summary'] as String?,
+      path = json['path'] as String?,
+      output = json['output'] as String?,
+      outputTruncated = json['outputTruncated'] == true,
+      diff = json['diff'] as String?,
+      diffTruncated = json['diffTruncated'] == true;
+
+  final String name;
+
+  /// started, updated, completed or failed.
+  final String state;
+  final String? summary;
+  final String? path;
+  final String? output;
+  final bool outputTruncated;
+  final String? diff;
+  final bool diffTruncated;
+}
+
+/// `GET sessions/{id}/changes`: what the session's branch changed since [base].
+class BranchChanges {
+  BranchChanges.fromJson(Map<String, dynamic> json)
+    : base = json['base'] as String,
+      files = [
+        for (final f in json['files'] as List)
+          (
+            path: f['path'] as String,
+            added: f['added'] as int,
+            removed: f['removed'] as int,
+          ),
+      ],
+      diffs = splitDiffFiles(json['diff'] as String),
+      diffTruncated = json['diffTruncated'] == true;
+
+  /// The branch compared with, e.g. `origin/main`.
+  final String base;
+  final List<({String path, int added, int removed})> files;
+
+  /// Each file's part of the diff, in the order of [files]; fewer than
+  /// [files] when the diff was cut.
+  final List<String> diffs;
+  final bool diffTruncated;
+
+  int get added => files.fold(0, (sum, f) => sum + f.added);
+  int get removed => files.fold(0, (sum, f) => sum + f.removed);
+}
+
+/// [diff] split before each line that starts `diff --git `, one part per file.
+List<String> splitDiffFiles(String diff) => [
+  for (final part in diff.split(RegExp(r'^(?=diff --git )', multiLine: true)))
+    if (part.isNotEmpty) part,
+];
 
 class ChatState {
   const ChatState({
@@ -181,6 +244,30 @@ class ChatNotifier extends Notifier<AsyncValue<ChatState>> {
     state = AsyncValue.data(
       ChatState(items: items, cursor: seq, working: working),
     );
+  }
+
+  /// The tool call [itemId] whole, read when the owner opens it.
+  Future<ToolItem> toolItem(String itemId) async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>(
+        'sessions/${Uri.encodeComponent(_session.$2)}/items/${Uri.encodeComponent(itemId)}',
+      );
+      return ToolItem.fromJson(response.data!);
+    } on DioException catch (e) {
+      throw ApiException.fromDioException(e);
+    }
+  }
+
+  /// The session branch's changed files and diff, read when the owner opens them.
+  Future<BranchChanges> changes() async {
+    try {
+      final response = await _dio.get<Map<String, dynamic>>(
+        'sessions/${Uri.encodeComponent(_session.$2)}/changes',
+      );
+      return BranchChanges.fromJson(response.data!);
+    } on DioException catch (e) {
+      throw ApiException.fromDioException(e);
+    }
   }
 
   /// `POST sessions/{id}/chat`. Shows the owner's bubble at once; the live
