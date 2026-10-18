@@ -87,6 +87,14 @@ pub(super) fn router(state: ServerState) -> Router {
         .route("/phone/v1/sessions/{id}/files", get(list_files))
         .route("/phone/v1/sessions/{id}/file", get(read_file).put(save_file).layer(DefaultBodyLimit::max(MAX_SAVE_BODY_BYTES)))
         .route("/phone/v1/sessions/{id}/config", get(session_config).post(set_session_config))
+        .route("/phone/v1/sessions/{id}/git", get(git_status))
+        .route("/phone/v1/sessions/{id}/git/diff", get(git_diff))
+        .route("/phone/v1/sessions/{id}/git/stage-all", post(git_stage_all))
+        .route("/phone/v1/sessions/{id}/git/commit", post(git_commit))
+        .route("/phone/v1/sessions/{id}/git/sync", post(git_sync))
+        .route("/phone/v1/sessions/{id}/git/branches", get(git_branches))
+        .route("/phone/v1/sessions/{id}/git/switch", post(git_switch))
+        .route("/phone/v1/sessions/{id}/git/prs", get(git_prs))
         .route("/phone/v1/runs", get(runs))
         .route("/phone/v1/runs/{id}", get(run_detail))
         .route("/phone/v1/runs/{id}/{action}", post(control_run))
@@ -561,6 +569,144 @@ async fn save_file(State(state): State<ServerState>, Path(owned_id): Path<String
         Err(error) if error.contains("changed on disk") => Err(changed()),
         Err(error) => Err(server_error(&error)),
     }
+}
+
+/// Session `owned_id`'s folder as the store records it: its worktree, else its cwd. 404 for an unknown session.
+fn session_root(state: &ServerState, owned_id: &str) -> Result<String, Response> {
+    known_session(state, owned_id)?;
+    let session = state.manager.store().get_session(owned_id).map_err(|error| server_error(&error))?
+        .ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))?;
+    Ok(session.worktree.filter(|worktree| !worktree.is_empty()).unwrap_or(session.cwd))
+}
+
+/// A git or `gh` refusal, which the phone shows as it is.
+fn git_refused(error: String) -> Response {
+    refuse(StatusCode::CONFLICT, &error)
+}
+
+async fn git_files(root: &str) -> Result<crate::ProjectGitStatus, Response> {
+    crate::commands::source_control::project_git_status(root.into()).await.map_err(git_refused)
+}
+
+/// `GET /phone/v1/sessions/{id}/git` → `{branch, hasUpstream, ahead, behind, files: [{path, status, staged, unstaged}]}`:
+/// the desktop Source Control panel's status (at most 1,000 files); `status` is its letter, such as M, A, D or ?.
+/// A partly staged file has both flags; `unstaged` is what Stage All would stage.
+async fn git_status(State(state): State<ServerState>, Path(owned_id): Path<String>) -> Reply {
+    let status = git_files(&session_root(&state, &owned_id)?).await?;
+    let files: Vec<Value> = status.files.iter().map(|file| json!({ "path": file.relative_path, "status": file.badge,
+        "staged": !matches!(file.index_status.as_str(), "" | "untracked"),
+        "unstaged": !file.worktree_status.is_empty() || file.badge == "?" })).collect();
+    Ok(Json(json!({ "branch": status.branch, "hasUpstream": status.has_upstream, "ahead": status.ahead,
+        "behind": status.behind, "files": files })).into_response())
+}
+
+/// `GET /phone/v1/sessions/{id}/git/diff?path=` → `{diff, capped}`: the desktop's diff of one file the status
+/// lists (staged and unstaged together), cut at 256 KiB; a new file's text comes as added lines. 400 for a
+/// path the status does not list.
+async fn git_diff(State(state): State<ServerState>, Path(owned_id): Path<String>,
+    Query(query): Query<HashMap<String, String>>) -> Reply {
+    let root = session_root(&state, &owned_id)?;
+    let relative = query.get("path").map_or("", String::as_str);
+    if !git_files(&root).await?.files.iter().any(|file| file.relative_path == relative) {
+        return Err(refuse(StatusCode::BAD_REQUEST, "That file has no changes in this session"));
+    }
+    let path = PathBuf::from(&root).join(relative).to_string_lossy().into_owned();
+    let diff = crate::commands::source_control::read_source_git_diff(root, path).await.map_err(git_refused)?;
+    let text = match (diff.diff.is_empty(), &diff.modified_content) {
+        (true, Some(content)) => content.lines().map(|line| format!("+{line}\n")).collect(),
+        _ => diff.diff,
+    };
+    let (text, cut) = capped(Some(&text), MAX_CHANGES_DIFF_BYTES);
+    Ok(Json(json!({ "diff": text, "capped": cut })).into_response())
+}
+
+/// `POST /phone/v1/sessions/{id}/git/stage-all` → 204: the desktop's Stage All, every listed file with
+/// unstaged changes or not yet tracked.
+async fn git_stage_all(State(state): State<ServerState>, Path(owned_id): Path<String>) -> Reply {
+    let root = session_root(&state, &owned_id)?;
+    let paths: Vec<String> = git_files(&root).await?.files.into_iter()
+        .filter(|file| !file.worktree_status.is_empty() || file.badge == "?").map(|file| file.relative_path).collect();
+    if !paths.is_empty() {
+        crate::commands::source_control::stage_git_paths(root, paths).await.map_err(git_refused)?;
+    }
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(Deserialize)]
+struct CommitRequest {
+    message: String,
+}
+
+/// `POST /phone/v1/sessions/{id}/git/commit {message}` → `{commit}`, its short hash: the desktop's commit of
+/// what is staged. An empty message is a 400; nothing staged, or a hook that refuses, a 409 with the message.
+async fn git_commit(State(state): State<ServerState>, Path(owned_id): Path<String>, body: Bytes) -> Reply {
+    let root = session_root(&state, &owned_id)?;
+    let request: CommitRequest = parse(&body)?;
+    if request.message.trim().is_empty() { return Err(refuse(StatusCode::BAD_REQUEST, "Type a commit message")) }
+    crate::commands::source_control::commit_git_repository(root.clone(), request.message).await.map_err(git_refused)?;
+    let commit = crate::run_git_text(std::path::Path::new(&root), &["rev-parse", "--short", "HEAD"]).map_err(git_refused)?;
+    Ok(Json(json!({ "commit": commit.trim() })).into_response())
+}
+
+#[derive(Deserialize)]
+struct SyncRequest {
+    action: String,
+}
+
+/// `POST /phone/v1/sessions/{id}/git/sync {action: "fetch"|"pull"|"push"}` → 204: the desktop's
+/// `fetch --prune`, `pull --ff-only` or plain `push` (never forced), each with git's 120 s network limit.
+/// A refusal, such as no upstream or not a fast-forward, is a 409 with git's message.
+async fn git_sync(State(state): State<ServerState>, Path(owned_id): Path<String>, body: Bytes) -> Reply {
+    use crate::commands::source_control as git;
+    let root = session_root(&state, &owned_id)?;
+    let request: SyncRequest = parse(&body)?;
+    let done = match request.action.as_str() {
+        "fetch" => git::fetch_git_repository(root).await,
+        "pull" => git::pull_git_repository(root).await,
+        "push" => git::push_git_repository(root).await,
+        _ => return Err(refuse(StatusCode::BAD_REQUEST, "The action must be fetch, pull or push")),
+    };
+    done.map_err(git_refused)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `GET /phone/v1/sessions/{id}/git/branches` → `{current, branches: [{name, current}]}`: the local branches
+/// the desktop's branch menu lists, most recently committed first.
+async fn git_branches(State(state): State<ServerState>, Path(owned_id): Path<String>) -> Reply {
+    let list = crate::git_workspace::list_git_branches(session_root(&state, &owned_id)?).await.map_err(git_refused)?;
+    let branches: Vec<Value> = list.branches.iter().map(|branch| json!({ "name": branch.name, "current": branch.is_current })).collect();
+    Ok(Json(json!({ "current": list.current, "branches": branches })).into_response())
+}
+
+#[derive(Deserialize)]
+struct SwitchRequest {
+    name: String,
+}
+
+/// `POST /phone/v1/sessions/{id}/git/switch {name}` → 204: the desktop branch menu's `git switch <name>` in the
+/// same folder, only to a branch the list names (400 otherwise). Git's refusal, such as changes in the way or
+/// a branch checked out in another worktree, is a 409.
+async fn git_switch(State(state): State<ServerState>, Path(owned_id): Path<String>, body: Bytes) -> Reply {
+    let root = session_root(&state, &owned_id)?;
+    let request: SwitchRequest = parse(&body)?;
+    let list = crate::git_workspace::list_git_branches(root.clone()).await.map_err(git_refused)?;
+    if !list.branches.iter().any(|branch| branch.name == request.name) {
+        return Err(refuse(StatusCode::BAD_REQUEST, "No such branch in this session's folder"));
+    }
+    crate::git_workspace::switch_git_branch(root, request.name).await.map_err(git_refused)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `GET /phone/v1/sessions/{id}/git/prs` → `[{number, title, state, url, branch}]`: the repository's open pull
+/// requests (at most 30) from the desktop panel's `gh pr list`. `gh` missing or signed out is a 409 with its message.
+async fn git_prs(State(state): State<ServerState>, Path(owned_id): Path<String>) -> Reply {
+    let list = crate::git_workspace::list_open_pull_requests(session_root(&state, &owned_id)?).await.map_err(git_refused)?;
+    Ok(Json(pull_request_rows(list)).into_response())
+}
+
+fn pull_request_rows(list: Vec<crate::git_workspace::PullRequestSummary>) -> Value {
+    list.into_iter().map(|pr| json!({ "number": pr.number, "title": pr.title, "state": pr.state, "url": pr.url,
+        "branch": pr.head_branch })).collect()
 }
 
 /// One tool call as its events say it. Imported history stores a call's output in a later event with
@@ -1132,7 +1278,7 @@ mod tests {
     use super::super::manager::AgentRuntimeManager;
     use super::super::providers::ProviderRegistry;
     use super::super::remote::{bind_listeners, server_state, ServerState};
-    use super::{answered_elsewhere, execute_phone_command, new_pairing_code, operation, redeem_pairing_code, reduce_chat, router, start_listener, RemoteCommand, PAIRING_CODE_LIFETIME_MS};
+    use super::{answered_elsewhere, execute_phone_command, new_pairing_code, operation, pull_request_rows, redeem_pairing_code, reduce_chat, router, start_listener, RemoteCommand, PAIRING_CODE_LIFETIME_MS};
     use super::super::protocol::{AgentConversationEvent, AgentConversationPayload as Payload, AgentConversationProvider,
         AgentNativeSessionMode, EnsureAgentConversationRequest, ExecutionEnvironment, ToolState, TurnState};
     use futures_util::StreamExt;
@@ -1381,7 +1527,10 @@ mod tests {
             (Method::POST, "/inbox/i/answer"), (Method::GET, "/live"), (Method::GET, "/sessions"),
             (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat"), (Method::GET, "/sessions/s/items/i"),
             (Method::GET, "/sessions/s/changes"), (Method::GET, "/sessions/s/config"), (Method::POST, "/sessions/s/config"),
-            (Method::GET, "/sessions/s/files"), (Method::GET, "/sessions/s/file"), (Method::PUT, "/sessions/s/file")] {
+            (Method::GET, "/sessions/s/files"), (Method::GET, "/sessions/s/file"), (Method::PUT, "/sessions/s/file"),
+            (Method::GET, "/sessions/s/git"), (Method::GET, "/sessions/s/git/diff"), (Method::POST, "/sessions/s/git/stage-all"),
+            (Method::POST, "/sessions/s/git/commit"), (Method::POST, "/sessions/s/git/sync"), (Method::GET, "/sessions/s/git/branches"),
+            (Method::POST, "/sessions/s/git/switch"), (Method::GET, "/sessions/s/git/prs")] {
             let response = client(method.clone(), &base, path, &session.token).json(&json!({"text": "hi"})).send().await.unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED, "{method} {path}");
             assert_eq!(response.json::<Value>().await.unwrap(), json!({"error": "This phone was removed — pair again"}));
@@ -1963,6 +2112,195 @@ mod tests {
         let response = client(reqwest::Method::GET, &base, "/sessions/nobody/changes", &token).send().await.unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
         std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    fn git_in(dir: &std::path::Path, args: &[&str]) {
+        assert!(std::process::Command::new("git").arg("-C").arg(dir).args(args).status().unwrap().success(), "git {args:?}");
+    }
+
+    /// A scratch folder with a bare `origin.git` and its clone `work`, which has one pushed commit on
+    /// `main` and is session `owned_id`'s worktree. Returns the scratch folder.
+    fn session_with_origin(state: &ServerState, owned_id: &str) -> std::path::PathBuf {
+        let scratch = std::path::PathBuf::from("/var/tmp").join(format!("assembly-phone-git-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        git_in(&scratch, &["init", "-q", "--bare", "origin.git"]);
+        git_in(&scratch, &["clone", "-q", "origin.git", "work"]);
+        let work = scratch.join("work");
+        git_in(&work, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git_in(&work, &["config", "user.name", "T"]);
+        git_in(&work, &["config", "user.email", "t@example.invalid"]);
+        std::fs::write(work.join("notes.txt"), "one\n").unwrap();
+        git_in(&work, &["add", "."]);
+        git_in(&work, &["commit", "-qm", "initial"]);
+        git_in(&work, &["push", "-q", "-u", "origin", "main"]);
+        file_session(state, owned_id, vec![]);
+        let store = state.manager.store();
+        let row = store.get_session(owned_id).unwrap().unwrap();
+        store.upsert_session(&mcb_core::session_store::SessionRow { worktree: Some(work.to_string_lossy().into()), ..row }).unwrap();
+        scratch
+    }
+
+    fn post_json(base: &str, path: &str, token: &str, body: Value) -> impl std::future::Future<Output = (reqwest::StatusCode, Value)> {
+        let request = client(reqwest::Method::POST, base, path, token).json(&body);
+        async move {
+            let response = request.send().await.unwrap();
+            (response.status(), response.json().await.unwrap_or(Value::Null))
+        }
+    }
+
+    #[tokio::test]
+    async fn phone_git_status_lists_changes() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let scratch = session_with_origin(&state, "lane");
+        let work = scratch.join("work");
+        std::fs::write(work.join("notes.txt"), "two\n").unwrap();
+        std::fs::write(work.join("staged.txt"), "s\n").unwrap();
+        std::fs::write(work.join("new.txt"), "n\n").unwrap();
+        git_in(&work, &["add", "staged.txt"]);
+        let (status, body) = get_json(&base, "/sessions/lane/git", &token).await;
+        assert_eq!(status, reqwest::StatusCode::OK, "{body}");
+        assert_eq!(body, json!({"branch": "main", "hasUpstream": true, "ahead": 0, "behind": 0, "files": [
+            {"path": "notes.txt", "status": "M", "staged": false, "unstaged": true},
+            {"path": "staged.txt", "status": "A", "staged": true, "unstaged": false},
+            {"path": "new.txt", "status": "?", "staged": false, "unstaged": true}]}));
+        assert_eq!(get_json(&base, "/sessions/nobody/git", &token).await.0, reqwest::StatusCode::NOT_FOUND);
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_git_status_flags_partly_staged_files() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let scratch = session_with_origin(&state, "lane");
+        let work = scratch.join("work");
+        std::fs::write(work.join("notes.txt"), "two\n").unwrap();
+        git_in(&work, &["add", "notes.txt"]);
+        std::fs::write(work.join("notes.txt"), "three\n").unwrap();
+        let (status, body) = get_json(&base, "/sessions/lane/git", &token).await;
+        assert_eq!(status, reqwest::StatusCode::OK, "{body}");
+        assert_eq!(body["files"], json!([{"path": "notes.txt", "status": "M", "staged": true, "unstaged": true}]));
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_git_diff_only_for_listed_paths() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let scratch = session_with_origin(&state, "lane");
+        let work = scratch.join("work");
+        std::fs::write(work.join("notes.txt"), "two\n").unwrap();
+        std::fs::write(work.join("new.txt"), "fresh\n").unwrap();
+        std::fs::write(scratch.join("outside.txt"), "secret\n").unwrap();
+        let (status, body) = get_json(&base, "/sessions/lane/git/diff?path=notes.txt", &token).await;
+        assert_eq!(status, reqwest::StatusCode::OK, "{body}");
+        assert!(body["diff"].as_str().unwrap().contains("-one\n+two"), "{body}");
+        assert_eq!(body["capped"], false);
+        let (_, body) = get_json(&base, "/sessions/lane/git/diff?path=new.txt", &token).await;
+        assert!(body["diff"].as_str().unwrap().contains("+fresh"), "a new file shows as added lines: {body}");
+        for path in ["../outside.txt", "missing.txt", "", "/etc/passwd"] {
+            let (status, _) = get_json(&base, &format!("/sessions/lane/git/diff?path={path}"), &token).await;
+            assert_eq!(status, reqwest::StatusCode::BAD_REQUEST, "{path}");
+        }
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_git_stage_all_and_commit() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let scratch = session_with_origin(&state, "lane");
+        let work = scratch.join("work");
+        std::fs::write(work.join("notes.txt"), "two\n").unwrap();
+        std::fs::write(work.join("new.txt"), "n\n").unwrap();
+        assert_eq!(post_json(&base, "/sessions/lane/git/commit", &token, json!({"message": "  "})).await.0,
+            reqwest::StatusCode::BAD_REQUEST);
+        assert_eq!(post_json(&base, "/sessions/lane/git/commit", &token, json!({"message": "early"})).await,
+            (reqwest::StatusCode::CONFLICT, json!({"error": "No staged changes to commit"})));
+        assert_eq!(post_json(&base, "/sessions/lane/git/stage-all", &token, json!({})).await.0, reqwest::StatusCode::NO_CONTENT);
+        let (_, body) = get_json(&base, "/sessions/lane/git", &token).await;
+        assert!(body["files"].as_array().unwrap().iter().all(|file| file["staged"] == true), "{body}");
+        let (status, body) = post_json(&base, "/sessions/lane/git/commit", &token, json!({"message": "From the phone"})).await;
+        assert_eq!(status, reqwest::StatusCode::OK, "{body}");
+        let head = std::process::Command::new("git").arg("-C").arg(&work).args(["log", "-1", "--format=%h %s"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), format!("{} From the phone", body["commit"].as_str().unwrap()));
+        let (_, body) = get_json(&base, "/sessions/lane/git", &token).await;
+        assert_eq!((body["files"].clone(), body["ahead"].clone()), (json!([]), json!(1)));
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_git_push_then_fetch_and_pull() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let scratch = session_with_origin(&state, "lane");
+        let work = scratch.join("work");
+        let counts = || async {
+            let (_, body) = get_json(&base, "/sessions/lane/git", &token).await;
+            (body["ahead"].as_u64().unwrap(), body["behind"].as_u64().unwrap())
+        };
+        let sync = |action: &str| post_json(&base, "/sessions/lane/git/sync", &token, json!({"action": action}));
+        assert_eq!(sync("force-push").await.0, reqwest::StatusCode::BAD_REQUEST);
+        std::fs::write(work.join("notes.txt"), "two\n").unwrap();
+        git_in(&work, &["commit", "-qam", "local"]);
+        assert_eq!(counts().await, (1, 0));
+        assert_eq!(sync("push").await.0, reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(counts().await, (0, 0));
+
+        git_in(&scratch, &["clone", "-q", "origin.git", "other"]);
+        let other = scratch.join("other");
+        std::fs::write(other.join("theirs.txt"), "t\n").unwrap();
+        git_in(&other, &["add", "."]);
+        git_in(&other, &["-c", "user.name=O", "-c", "user.email=o@example.invalid", "commit", "-qm", "theirs"]);
+        git_in(&other, &["push", "-q"]);
+        assert_eq!(counts().await, (0, 0), "nothing is known before a fetch");
+        assert_eq!(sync("fetch").await.0, reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(counts().await, (0, 1));
+        assert_eq!(sync("pull").await.0, reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(counts().await, (0, 0));
+        assert!(work.join("theirs.txt").exists());
+
+        // Both sides move on: a fast-forward pull is refused with git's message.
+        std::fs::write(other.join("theirs.txt"), "t2\n").unwrap();
+        git_in(&other, &["-c", "user.name=O", "-c", "user.email=o@example.invalid", "commit", "-qam", "theirs again"]);
+        git_in(&other, &["push", "-q"]);
+        std::fs::write(work.join("notes.txt"), "three\n").unwrap();
+        git_in(&work, &["commit", "-qam", "mine again"]);
+        let (status, body) = sync("pull").await;
+        assert_eq!(status, reqwest::StatusCode::CONFLICT, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("fast-forward"), "{body}");
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_git_switch_only_to_listed_names() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let scratch = session_with_origin(&state, "lane");
+        git_in(&scratch.join("work"), &["branch", "feature"]);
+        let (status, body) = get_json(&base, "/sessions/lane/git/branches", &token).await;
+        assert_eq!(status, reqwest::StatusCode::OK, "{body}");
+        assert_eq!(body["current"], "main");
+        let mut branches: Vec<(String, bool)> = body["branches"].as_array().unwrap().iter()
+            .map(|branch| (branch["name"].as_str().unwrap().into(), branch["current"].as_bool().unwrap())).collect();
+        branches.sort();
+        assert_eq!(branches, [("feature".to_string(), false), ("main".to_string(), true)]);
+        for name in ["nope", "-f", "origin/main"] {
+            assert_eq!(post_json(&base, "/sessions/lane/git/switch", &token, json!({"name": name})).await.0,
+                reqwest::StatusCode::BAD_REQUEST, "{name}");
+        }
+        assert_eq!(post_json(&base, "/sessions/lane/git/switch", &token, json!({"name": "feature"})).await.0,
+            reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(get_json(&base, "/sessions/lane/git", &token).await.1["branch"], "feature");
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+
+    #[test]
+    fn phone_git_prs_keep_number_title_state_url_branch() {
+        let list = crate::git_workspace::parse_pull_request_list(r#"[{"number": 7, "title": "Fix it", "state": "OPEN",
+            "url": "https://github.com/o/r/pull/7", "headRefName": "tsk-7-fix", "isDraft": false}]"#).unwrap();
+        assert_eq!(pull_request_rows(list), json!([{"number": 7, "title": "Fix it", "state": "OPEN",
+            "url": "https://github.com/o/r/pull/7", "branch": "tsk-7-fix"}]));
     }
 
     fn get_json(base: &str, path: &str, token: &str) -> impl std::future::Future<Output = (reqwest::StatusCode, Value)> {

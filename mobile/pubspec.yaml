@@ -32,6 +32,8 @@ dependencies:
   # Syntax colours in the file viewer: a pure-Dart highlight.js port that emits
   # tokens we split into per-line spans, so long files render lazily.
   re_highlight: ^0.0.3
+  # Opens a pull request's link, which Android hands to the GitHub app when installed.
+  url_launcher: ^6.3.3
 
 dev_dependencies:
   flutter_test:
