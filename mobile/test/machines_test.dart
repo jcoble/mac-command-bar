@@ -120,9 +120,9 @@ void main() {
     expect(payload.url, 'https://agent-workbox.example.ts.net:8777');
     expect(payload.machine, 'Workbox');
     expect(payload.code, 'K7QM4XTD9P');
-    // Codes are uppercase base32 and the machine compares them exactly; a typed code may be lowercase.
+    // Codes are uppercase base32 and the machine compares them exactly; a typed code may be lowercase or keep the grouping spaces the desktop shows.
     expect(
-      PairingPayload.parse('{"v":1,"url":"https://a.example","code":" k7qm4xtd9p "}').code,
+      PairingPayload.parse('{"v":1,"url":"https://a.example","code":" k7qm 4xtd 9p "}').code,
       'K7QM4XTD9P',
     );
 

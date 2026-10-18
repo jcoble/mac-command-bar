@@ -42,7 +42,7 @@ class PairingPayload {
     final machine = json['machine'];
     return PairingPayload(
       url: (url as String).replaceFirst(RegExp(r'/+$'), ''),
-      code: code.trim().toUpperCase(),
+      code: code.replaceAll(RegExp(r'\s'), '').toUpperCase(),
       machine: machine is String ? machine : null,
     );
   }
