@@ -31,7 +31,7 @@
 		sessionPresenceHistory,
 	} from "$lib/shell/conversation/sessionPresence.ts";
 	import { presentAgentError } from "$lib/shell/errorPresentation";
-	import { railRowStatus, sessionWaitsOnYou, type OwnedSession } from "$lib/shell/ownedSessions";
+	import { sessionWaitsOnYou, type OwnedSession, type RailRowStatus } from "$lib/shell/ownedSessions";
 	import { projectMachineLabel } from "$lib/shell/projects/projects";
 	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
 	import { sessionLabel } from "$lib/shell/sessionStrip";
@@ -41,6 +41,8 @@
 
 	interface Props {
 		session: OwnedSession;
+		/** What the status icons count: this session, its helpers and the workers of runs it started. */
+		status: RailRowStatus;
 		nowMs: number;
 		active?: boolean;
 		onSelect?(): void;
@@ -57,6 +59,7 @@
 	type RowPresence = "working" | "attention" | "idle" | "done" | "failed";
 	let {
 		session,
+		status,
 		nowMs,
 		active = false,
 		onSelect,
@@ -75,8 +78,6 @@
 	// Presence is rail-record truth plus events received live. Loading a stored
 	// transcript may populate `conversation`, but it must not repaint this row.
 	const needsYou = $derived(sessionWaitsOnYou(session));
-	/** What the status icons count: this session, its helpers and the workers of runs it started. */
-	const status = $derived(railRowStatus(session, rail.owned));
 	/** The one status tooltip open on this row; its content mounts only while open. */
 	let openTip = $state<string | null>(null);
 	// Moving between two icons opens the next before the last one closes.

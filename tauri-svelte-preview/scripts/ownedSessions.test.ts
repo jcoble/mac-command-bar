@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {
   normalizeProvider, adoptAgentSession, createFreshSession,
   ownedSessionFromBackend, ownedSessionMetaForBackend, parseStoredOwnedSessions, reconcileOwnedSessions,
-  findSessionRecord, railRowStatus,
+  findSessionRecord, railRowStatuses,
 } from '../src/lib/shell/ownedSessions.ts';
 
 const mint = () => 'owned-1';
@@ -357,14 +357,40 @@ const scanRecord = {
     row('old', { runId: 'run-0', runLead: 'lead', runtimeState: 'closed' }),
     row('finished-step', { runId: 'run-3', runLead: 'lead', runtimeState: 'ready' }),
     row('theirs', { runId: 'run-2', runLead: 'someone-else', runtimeState: 'waiting-approval' }),
+    // A second parent in the same list keeps its own helpers, runs and waits.
+    row('other', { backgroundWork: [{ id: 'c2', kind: 'command', label: 'test', startedAtMs: 1 }] }),
+    row('other-helper', { helperOf: 'other', runtimeState: 'working' }),
+    row('other-worker', { runId: 'run-9', runLead: 'other', runtimeState: 'waiting-approval' }),
+    row('alone', { pendingPermission: true }),
   ];
-  assert.deepEqual(railRowStatus(lead, all), {
+  const statuses = railRowStatuses(all);
+  assert.deepEqual(statuses.get('lead'), {
     waiting: ['helper ux-check is asking for approval', 'build in TSK-9 · Fix is waiting for an answer'],
     background: 1,
     helpers: 2,
     runs: 1,
   });
-  assert.deepEqual(railRowStatus(row('alone', { pendingPermission: true }), all),
+  assert.deepEqual(statuses.get('other'), {
+    waiting: ['other-worker in a workflow run is asking for approval'], background: 1, helpers: 1, runs: 1,
+  });
+  assert.deepEqual(statuses.get('alone'),
     { waiting: ['this session is asking for approval'], background: 0, helpers: 0, runs: 0 });
+  assert.deepEqual(statuses.get('ux-check'),
+    { waiting: ['this session is asking for approval'], background: 0, helpers: 0, runs: 0 });
+}
+
+{ // rail_row_statuses_reads_each_record_once
+  // Every row reads one shared index, so building it must not scan the list
+  // once per row: each record's parent link is read a fixed number of times.
+  let reads = 0;
+  const records = Array.from({ length: 10_000 }, (_, index) => {
+    const record = { ...createFreshSession({ cwd: '/tmp/x' }, () => `s${index}`) } as Record<string, unknown>;
+    Object.defineProperty(record, 'helperOf', { get: () => { reads += 1; return null; } });
+    return record as never;
+  });
+  const statuses = railRowStatuses(records);
+  assert.equal(statuses.size, 10_000);
+  assert.deepEqual(statuses.get('s9999'), { waiting: [], background: 0, helpers: 0, runs: 0 });
+  assert.ok(reads <= 2 * records.length, `helperOf read ${reads} times for ${records.length} records`);
 }
 console.log('ownedSessions tests passed');
