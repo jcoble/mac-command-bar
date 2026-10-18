@@ -372,13 +372,14 @@ async fn changes(State(state): State<ServerState>, Path(owned_id): Path<String>)
 }
 
 /// Each file in a `git diff` text, in order, with its added and removed lines. The path is the `b/`
-/// side of the `diff --git` header; only lines inside a hunk count, so `---`/`+++` headers do not.
+/// side of the `diff --git` header (decoded when git quotes it); only lines inside a hunk count, so
+/// `---`/`+++` headers do not.
 fn changed_files(diff: &str) -> Vec<Value> {
-    let mut files: Vec<(&str, u32, u32)> = Vec::new();
+    let mut files: Vec<(String, u32, u32)> = Vec::new();
     let mut in_hunk = false;
     for line in diff.lines() {
         if let Some(header) = line.strip_prefix("diff --git ") {
-            files.push((header.rsplit_once(" b/").map_or(header, |(_, path)| path), 0, 0));
+            files.push((header_path(header), 0, 0));
             in_hunk = false;
         } else if line.starts_with("@@") {
             in_hunk = true;
@@ -422,6 +423,33 @@ impl<'a> ToolCall<'a> {
     fn has_detail(&self) -> bool {
         [self.output, self.path, self.diff].iter().any(|field| field.is_some_and(|text| !text.is_empty()))
     }
+}
+
+/// The `b/` path in a `diff --git` header's text. Git quotes a path with a quote, backslash,
+/// control character or non-ASCII byte in C style: `"b/a\"b.txt"`, with `\t`, `\n` and `\NNN` octal bytes.
+fn header_path(header: &str) -> String {
+    let Some((_, quoted)) = header.rsplit_once(" \"b/") else {
+        return header.rsplit_once(" b/").map_or(header, |(_, path)| path).to_owned();
+    };
+    let mut bytes = quoted.strip_suffix('"').unwrap_or(quoted).bytes().peekable();
+    let mut path = Vec::new();
+    while let Some(byte) = bytes.next() {
+        if byte != b'\\' { path.push(byte); continue; }
+        match bytes.next() {
+            Some(b't') => path.push(b'\t'),
+            Some(b'n') => path.push(b'\n'),
+            Some(first @ b'0'..=b'7') => {
+                let mut value = u32::from(first - b'0');
+                for _ in 0..2 {
+                    match bytes.next_if(|digit| (b'0'..=b'7').contains(digit)) { Some(digit) => value = value * 8 + u32::from(digit - b'0'), None => break }
+                }
+                path.push(value as u8);
+            }
+            Some(other) => path.push(other),
+            None => {}
+        }
+    }
+    String::from_utf8_lossy(&path).into_owned()
 }
 
 /// `text` cut to at most `max` bytes on a char boundary, and whether it was cut.
@@ -1569,6 +1597,23 @@ mod tests {
         let diff = body["diff"].as_str().unwrap();
         assert!(diff.starts_with("diff --git a/docs/notes.txt b/docs/notes.txt") && diff.contains("+three\n+four\n"), "{diff}");
         assert_eq!(body["diffTruncated"], false);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_changes_decodes_quoted_paths() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let repo = session_in_repo(&state, "lane", true);
+        for name in ["a\"b.txt", "é.txt"] {
+            std::fs::write(repo.join(name), "x\n").unwrap();
+            assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(["add", name]).status().unwrap().success());
+        }
+        let body: Value = client(reqwest::Method::GET, &base, "/sessions/lane/changes", &token).send().await.unwrap().json().await.unwrap();
+        assert!(body["diff"].as_str().unwrap().contains("diff --git \"a/a\\\"b.txt\" \"b/a\\\"b.txt\""), "git quotes the path: {body}");
+        let files: Vec<(&str, i64)> = body["files"].as_array().unwrap().iter()
+            .map(|file| (file["path"].as_str().unwrap(), file["added"].as_i64().unwrap())).collect();
+        assert_eq!(files, [("a\"b.txt", 1), ("docs/notes.txt", 2), ("é.txt", 1)], "octal bytes decode too");
         std::fs::remove_dir_all(repo).unwrap();
     }
 
