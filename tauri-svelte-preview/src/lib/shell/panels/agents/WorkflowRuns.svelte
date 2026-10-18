@@ -206,9 +206,10 @@
     return (run.inputSnapshot as { task?: { title?: string } }).task?.title ?? run.definition.name;
   }
 
-  function runTone(run: WorkflowRunRecord): 'live' | 'good' | 'bad' | 'attention' {
+  function runTone(run: WorkflowRunRecord): 'live' | 'good' | 'bad' | 'attention' | 'neutral' {
     if (run.state === 'failed') return 'bad';
     if (run.state === 'completed') return 'good';
+    if (run.state === 'cancelled') return 'neutral';
     return run.state === 'waiting-approval' ? 'attention' : 'live';
   }
 
