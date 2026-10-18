@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_symbols_icons/symbols.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/api/api_exception.dart';
 import '../../core/theme/app_recipes.dart';
@@ -188,14 +189,19 @@ class _AgentReply extends StatelessWidget {
           // Full width, so code blocks span the screen.
           fitContent: false,
           syntaxHighlighter: _PlainCode(mono),
+          // Links open in the browser (or the app Android hands them to).
+          onTapLink: (text, href, title) => _openLink(href),
           // Never load images: agent text must not make the phone fetch
-          // arbitrary URLs. Show the alt text (or the URL) instead.
-          imageBuilder: (uri, title, alt) => Text(
-            alt != null && alt.isNotEmpty ? alt : uri.toString(),
-            style: body.copyWith(
-              fontSize: 14,
-              color: scheme.onSurfaceVariant,
-              decoration: TextDecoration.underline,
+          // arbitrary URLs. Show the alt text (or the URL) as a link instead.
+          imageBuilder: (uri, title, alt) => GestureDetector(
+            onTap: () => _openLink(uri.toString()),
+            child: Text(
+              alt != null && alt.isNotEmpty ? alt : uri.toString(),
+              style: body.copyWith(
+                fontSize: 14,
+                color: scheme.primary,
+                decoration: TextDecoration.underline,
+              ),
             ),
           ),
           styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
@@ -1364,4 +1370,11 @@ class _ModelSheetState extends ConsumerState<_ModelSheet> {
       ),
     );
   }
+}
+
+/// Opens an http(s) link from agent text outside the app; anything else is ignored.
+void _openLink(String? href) {
+  final uri = href == null ? null : Uri.tryParse(href);
+  if (uri == null || !(uri.scheme == 'https' || uri.scheme == 'http')) return;
+  launchUrl(uri, mode: LaunchMode.externalApplication);
 }
