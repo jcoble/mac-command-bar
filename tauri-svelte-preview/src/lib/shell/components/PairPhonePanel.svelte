@@ -11,7 +11,8 @@
   let panel = $state<PhonePanel | null>(null);
   let error = $state('');
   let owner = new AbortController();
-  const run = (operation: string, args: object) => remoteWorkflowFromTauri(profile.id, operation, args);
+  // Each call is cancelled with the panel's current owner, so closing or a new code stops the SSH request.
+  const run = (operation: string, args: object) => remoteWorkflowFromTauri(profile.id, operation, args, owner.signal);
   const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   const day = (ms: number) => new Date(ms).toLocaleDateString([], { month: 'short', day: 'numeric' });
   const message = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
