@@ -5,7 +5,7 @@ import {
   createConversationState,
   reduceConversationEvent
 } from '../src/lib/shell/conversation/conversationReducer.ts';
-import { conversationChunksFromEvent, conversationDisplayItems, conversationMessagesAfterCustom, conversationMessagesFromEvents } from '../src/lib/shell/conversation/conversationMessages.ts';
+import { conversationChunksFromEvent, conversationDisplayItems, conversationMessagesAfterCustom, conversationMessagesFromEvents, conversationSnapshotChunks, conversationHasRunningTool } from '../src/lib/shell/conversation/conversationMessages.ts';
 import type { AgentConversationEvent } from '../src/lib/shell/conversation/conversationTypes.ts';
 import { configOptionPlacement } from '../src/lib/shell/conversation/conversationTypes.ts';
 import { decideConversationActivation } from '../src/lib/shell/conversation/conversationActivation.ts';
@@ -78,6 +78,37 @@ const event = (overrides: Partial<AgentConversationEvent> = {}): AgentConversati
     completed: true,
     timestampMs: 1_000
   });
+}
+
+// A completed tool retains its full output once and still displays it.
+{
+  const output = 'x'.repeat(1_000_000) + 'OUTPUT-MARKER-1299';
+  const messages = conversationMessagesFromEvents([event({
+    payload: {
+      kind: 'toolCall', toolCallId: 'large-tool', title: 'Read output',
+      toolKind: 'command', status: 'in_progress'
+    }
+  }), event({
+    sequence: 2,
+    payload: {
+      kind: 'toolCallUpdate', toolCallId: 'large-tool', title: 'Read output',
+      toolKind: 'command', status: 'completed',
+      content: [{ type: 'terminal', output }]
+    }
+  })]);
+  assert.equal(JSON.stringify(messages).split('OUTPUT-MARKER-1299').length - 1, 1);
+  const items = conversationDisplayItems(messages);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].kind, 'tool');
+  assert.equal(items[0].state, 'completed');
+  assert.equal(items[0].output, output);
+  assert.equal(messages[0].parts.find((part) => part.type === 'tool-call')?.state, 'complete');
+  assert.equal(messages[0].parts.find((part) => part.type === 'tool-result')?.content, '{"state":"completed"}');
+  assert.equal(conversationHasRunningTool(messages), false);
+  const restored = new StreamProcessor();
+  for (const chunk of conversationSnapshotChunks(messages)) restored.processChunk(chunk);
+  assert.equal(JSON.stringify(restored.getMessages()).split('OUTPUT-MARKER-1299').length - 1, 1);
+  assert.equal(conversationDisplayItems(restored.getMessages())[0].output, output);
 }
 
 // An admitted prompt uses native time so it follows every row of the previous turn.

@@ -133,7 +133,7 @@ export function conversationChunksFromEvent(
     lastSequence: event.sequence,
     positionKnown: item.providerMetadata?.positionKnown ?? prior.positionKnown ?? true
   };
-  // Tool output has one owner: the paired canonical tool-call/result parts.
+  // Tool output has one owner: the canonical tool-call part.
   delete metadata.output;
   const text = item.content.map((part) => part.text).join('');
   const append = conversationEventAppendsItemContent(event);
@@ -164,11 +164,10 @@ export function conversationChunksFromEvent(
     }
     if (display.state === 'completed' || display.state === 'failed') {
       chunks.push({ type: EventType.TOOL_CALL_RESULT, toolCallId: item.id, messageId: item.id,
-        content: JSON.stringify(output), role: 'tool',
+        content: JSON.stringify({ state: display.state }), role: 'tool',
         metadata: display.state === 'failed' ? { tanstack: { state: 'output-error' } } : undefined });
-    } else {
-      chunks.push(nativeCustomChunk('assembly:running-tool', { itemId: item.id, output }));
     }
+    chunks.push(nativeCustomChunk('assembly:running-tool', { itemId: item.id, output }));
     return [...chunks, ...finishChunks];
   }
   const previousText = textOf(existing);
@@ -248,7 +247,7 @@ export function conversationMessagesAfterCustom(
           if (part.type === 'tool-result' && authoritative) return parts;
           if (part.type !== 'tool-call') return [...parts, part];
           if (current.toolCalls && !authoritative) return [...parts, part];
-          return [...parts, authoritative ?? { ...part, output: current.output, state: 'input-complete' as const }];
+          return [...parts, authoritative ?? { ...part, output: current.output, state: part.state === 'complete' || part.state === 'error' ? part.state : 'input-complete' as const }];
         }, [])
       };
     });
