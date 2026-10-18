@@ -11,6 +11,7 @@ import {
   type SessionWorkspaceSnapshot
 } from './shell/sessionWorkspaces.ts';
 import type {
+  WorkflowHistoryRow,
   WorkflowPauseDecision,
   WorkflowRunRecord,
   WorkflowTaskSnapshot
@@ -2789,6 +2790,12 @@ export async function listWorkflowRunsFromTauri(): Promise<WorkflowRunRecord[] |
   if (!isTauriRuntime()) return null;
   const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<WorkflowRunRecord[]>('list_workflow_runs');
+}
+
+export async function listWorkflowRunHistoryFromTauri(runId: string): Promise<WorkflowHistoryRow[] | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  return invoke<WorkflowHistoryRow[]>('workflow_history', { runId });
 }
 
 export async function createWorkflowRunFromTauri(
