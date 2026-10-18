@@ -84,7 +84,7 @@ enum ClientFrame {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "command", content = "input", rename_all = "camelCase")]
-enum RemoteCommand {
+pub(super) enum RemoteCommand {
     Workspace { operation: String, args: serde_json::Value },
     ProbeProviderConfig { provider: AgentConversationProvider, cwd: String },
     ListSessions,
@@ -191,7 +191,7 @@ enum RemoteCommand {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "result", content = "value", rename_all = "camelCase")]
-enum RemoteResponse {
+pub(super) enum RemoteResponse {
     Workspace(serde_json::Value),
     Sessions(Vec<AgentConversationSessionRecord>),
     ProviderUpdates(super::providers::updates::ProviderUpdateStatus),
@@ -250,9 +250,9 @@ pub(super) struct ServerState {
     restarting: Arc<AtomicBool>,
     restart_requested: Arc<tokio::sync::Notify>,
     restart_flushed: Arc<tokio::sync::Notify>,
-    events: broadcast::Sender<AgentConversationEvent>,
+    pub(super) events: broadcast::Sender<AgentConversationEvent>,
     /// Runs started on this machine, kept in its own `sessions.db`.
-    workflow: crate::workflow::WorkflowEngine,
+    pub(super) workflow: crate::workflow::WorkflowEngine,
     terminals: RemoteTerminals,
     relay: Arc<RelayLink>,
     /// The one phone pairing code that works right now (`phone_api`).
@@ -3277,14 +3277,10 @@ pub fn run_server_from_environment() -> Result<(), String> {
         let restart_requested = state.restart_requested.clone();
         let restart_flushed = state.restart_flushed.clone();
         let restart_manager = state.manager.clone();
-        // The phone-only listener (`phone.env`): `/phone/v1` routes only, never `/assembly`.
-        super::phone_api::start_listener(std::env::var("ASSEMBLY_PHONE_BIND").ok().as_deref(), state.clone()).await;
+        let listener = bind_listeners(&bind, std::env::var("ASSEMBLY_PHONE_BIND").ok().as_deref(), &state).await?;
         let app = Router::new()
             .route("/assembly", get(upgrade_remote_socket))
             .with_state(state);
-        let listener = tokio::net::TcpListener::bind(&bind)
-            .await
-            .map_err(|error| error.to_string())?;
         println!("Assembly remote server listening on {bind}");
         use axum::serve::ListenerExt;
         tokio::select! {
@@ -3306,6 +3302,15 @@ pub fn run_server_from_environment() -> Result<(), String> {
             }
         }
     })
+}
+
+/// Binds the desktop listener, then starts the optional phone listener (`phone.env`:
+/// `/phone/v1` routes only, never `/assembly`). The desktop binds first so a phone
+/// address that overlaps it is the one that is skipped, never the desktop.
+pub(super) async fn bind_listeners(bind: &str, phone_bind: Option<&str>, state: &ServerState) -> Result<tokio::net::TcpListener, String> {
+    let listener = tokio::net::TcpListener::bind(bind).await.map_err(|error| error.to_string())?;
+    super::phone_api::start_listener(phone_bind, state.clone()).await;
+    Ok(listener)
 }
 
 async fn wait_for_provider_restart(requested: &tokio::sync::Notify, flushed: &tokio::sync::Notify) {
@@ -3743,6 +3748,13 @@ async fn execute_server_command(state: &ServerState, upload: &Arc<Mutex<Option<P
             .await.map_err(|error| error.to_string())?.map(RemoteResponse::Workflow);
     }
     execute_remote_command(&state.manager, &vault, command, progress).await
+}
+
+/// Runs one command for the phone listener exactly as the desktop socket runs it: the
+/// same restart guard, workflow task and handlers. The phone API builds each command
+/// itself from the few actions phone spec §5.3 allows; it never forwards one from the phone.
+pub(super) async fn execute_phone_command(state: &ServerState, command: RemoteCommand) -> Result<RemoteResponse, String> {
+    execute_server_command(state, &Arc::default(), command, Arc::new(|_| {})).await
 }
 
 async fn execute_remote_command(

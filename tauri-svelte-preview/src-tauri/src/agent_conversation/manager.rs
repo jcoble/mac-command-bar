@@ -99,6 +99,20 @@ pub type BrokerEmitter = std::sync::Arc<dyn Fn(WorkflowBrokerEvent) + Send + Syn
 pub type SessionNamer =
     std::sync::Arc<dyn Fn(&str) -> Result<String, crate::helper::HelperError> + Send + Sync>;
 
+/// A permission request waiting on the owner, as the phone's inbox shows it.
+pub struct PendingPermissionItem {
+    pub request_id: String,
+    pub owned_id: String,
+    pub generation: u64,
+    pub provider: AgentConversationProvider,
+    pub session_title: Option<String>,
+    pub title: String,
+    pub command: Option<String>,
+    /// `(option id, label, kind)` as the provider sent them.
+    pub options: Vec<(String, String, String)>,
+    pub requested_at_ms: u128,
+}
+
 /// Told which session has just been given a new name, once that name is saved,
 /// so the rail can show it without asking for it.
 pub type SessionRenamedListener = std::sync::Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -107,6 +121,8 @@ pub type SessionRenamedListener = std::sync::Arc<dyn Fn(&str, &str) + Send + Syn
 struct PermissionOption {
     option_id: String,
     kind: String,
+    /// The provider's label, such as "Allow once".
+    name: String,
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +130,8 @@ struct PendingPermission {
     wire_id: Value,
     options: Vec<PermissionOption>,
     summary: String,
+    /// The tool call's command, when it runs one.
+    command: Option<String>,
     child_scoped: bool,
     event: AgentConversationEvent,
 }
@@ -3773,6 +3791,23 @@ impl AgentRuntimeManager {
         Ok(page)
     }
 
+    /// Every permission request waiting on the owner in this manager's sessions.
+    pub fn pending_permissions(&self) -> Vec<PendingPermissionItem> {
+        let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        sessions.iter().flat_map(|(owned_id, session)| session.permission_requests.iter().map(|(request_id, pending)| PendingPermissionItem {
+            request_id: request_id.clone(), owned_id: owned_id.clone(), generation: session.generation,
+            provider: session.provider, session_title: session.rail_meta.title.clone(), title: pending.summary.clone(),
+            command: pending.command.clone(), requested_at_ms: pending.event.timestamp_ms,
+            options: pending.options.iter().map(|option| (option.option_id.clone(), option.name.clone(), option.kind.clone())).collect(),
+        })).collect()
+    }
+
+    /// Whether `owned_id` has a turn running now.
+    pub fn turn_running(&self, owned_id: &str) -> bool {
+        let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        sessions.get(owned_id).is_some_and(|session| session.active_turn_id.is_some())
+    }
+
     /// The page of transcript events just older than `before_sequence`.
     ///
     /// Opening a conversation ships one screen of history; scrolling up calls
@@ -6268,6 +6303,8 @@ async fn pump_inbound(
                 }
                 let summary = permission_summary(&params);
                 let options = permission_options(&params);
+                let command = params.pointer("/toolCall/rawInput/command").and_then(|command| command.as_str().map(str::to_owned)
+                    .or_else(|| command.as_array().map(|parts| parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))));
                 let mut sessions = sessions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -6301,6 +6338,7 @@ async fn pump_inbound(
                                 wire_id,
                                 options,
                                 summary,
+                                command,
                                 child_scoped,
                                 event,
                             },
@@ -7471,6 +7509,7 @@ fn permission_options(params: &Value) -> Vec<PermissionOption> {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
+                name: option.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
             })
         })
         .collect()
@@ -12016,6 +12055,7 @@ mod tests {
                     wire_id: json!(1),
                     options: Vec::new(),
                     summary: "Pending permission".into(),
+                    command: None,
                     child_scoped: false,
                     event: pending_test_event(
                         &fixture.owned_id,
