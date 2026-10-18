@@ -100,7 +100,10 @@ class _RunScreenState extends ConsumerState<RunScreen> {
       body: RefreshIndicator(
         onRefresh: () => ref.refresh(runProvider(widget.runId).future),
         child: switch (run) {
-          AsyncValue(:final value?) => _body(context, value),
+          AsyncValue(:final value?) when showsValue(run) => _body(
+            context,
+            value,
+          ),
           AsyncValue(:final error?) => ListView(
             physics: const AlwaysScrollableScrollPhysics(),
             children: [

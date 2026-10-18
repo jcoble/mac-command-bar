@@ -99,6 +99,20 @@ pub type BrokerEmitter = std::sync::Arc<dyn Fn(WorkflowBrokerEvent) + Send + Syn
 pub type SessionNamer =
     std::sync::Arc<dyn Fn(&str) -> Result<String, crate::helper::HelperError> + Send + Sync>;
 
+/// A permission request waiting on the owner, as the phone's inbox shows it.
+pub struct PendingPermissionItem {
+    pub request_id: String,
+    pub owned_id: String,
+    pub generation: u64,
+    pub provider: AgentConversationProvider,
+    pub session_title: Option<String>,
+    pub title: String,
+    pub command: Option<String>,
+    /// `(option id, label, kind)` as the provider sent them.
+    pub options: Vec<(String, String, String)>,
+    pub requested_at_ms: u128,
+}
+
 /// Told which session has just been given a new name, once that name is saved,
 /// so the rail can show it without asking for it.
 pub type SessionRenamedListener = std::sync::Arc<dyn Fn(&str, &str) + Send + Sync>;
@@ -107,6 +121,8 @@ pub type SessionRenamedListener = std::sync::Arc<dyn Fn(&str, &str) + Send + Syn
 struct PermissionOption {
     option_id: String,
     kind: String,
+    /// The provider's label, such as "Allow once".
+    name: String,
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +130,8 @@ struct PendingPermission {
     wire_id: Value,
     options: Vec<PermissionOption>,
     summary: String,
+    /// The tool call's command, when it runs one.
+    command: Option<String>,
     child_scoped: bool,
     event: AgentConversationEvent,
 }
@@ -3773,6 +3791,23 @@ impl AgentRuntimeManager {
         Ok(page)
     }
 
+    /// Every permission request waiting on the owner in this manager's sessions.
+    pub fn pending_permissions(&self) -> Vec<PendingPermissionItem> {
+        let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        sessions.iter().flat_map(|(owned_id, session)| session.permission_requests.iter().map(|(request_id, pending)| PendingPermissionItem {
+            request_id: request_id.clone(), owned_id: owned_id.clone(), generation: session.generation,
+            provider: session.provider, session_title: session.rail_meta.title.clone(), title: pending.summary.clone(),
+            command: pending.command.clone(), requested_at_ms: pending.event.timestamp_ms,
+            options: pending.options.iter().map(|option| (option.option_id.clone(), option.name.clone(), option.kind.clone())).collect(),
+        })).collect()
+    }
+
+    /// Whether `owned_id` has a turn running now.
+    pub fn turn_running(&self, owned_id: &str) -> bool {
+        let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        sessions.get(owned_id).is_some_and(|session| session.active_turn_id.is_some())
+    }
+
     /// The page of transcript events just older than `before_sequence`.
     ///
     /// Opening a conversation ships one screen of history; scrolling up calls
@@ -5334,14 +5369,9 @@ fn record_payload_for_session_with_lifecycle(
     lifecycle: Option<SessionLifecycleUpdate>,
     event_turn_id: Option<String>,
 ) -> Result<AgentConversationEvent, String> {
-    if let AgentConversationPayload::AssistantMessage {
-        ref text,
-        ref mut blocks,
-        ..
-    } = payload
-    {
-        if blocks.is_none() {
-            *blocks = Some(crate::agent_conversation::safe_markdown::parse_safe_markdown(text));
+    if let AgentConversationPayload::AssistantMessage { text, blocks, .. } = &mut payload {
+        if blocks.is_none() && !std::env::args().any(|argument| argument == "--assembly-server") {
+            *blocks = Some(super::safe_markdown::parse_safe_markdown(text));
         }
     }
     let mut candidate = SessionEventCandidate::from_session(session);
@@ -5465,16 +5495,6 @@ pub(super) fn stored_event(row: EventRow) -> Result<AgentConversationEvent, Stri
         .map_err(|error| format!("Could not decode stored conversation event: {error}"))?;
     event.sequence = row.seq;
     event.turn_id = row.turn_id;
-    if let AgentConversationPayload::AssistantMessage {
-        ref text,
-        ref mut blocks,
-        ..
-    } = event.payload
-    {
-        if blocks.is_none() {
-            *blocks = Some(crate::agent_conversation::safe_markdown::parse_safe_markdown(text));
-        }
-    }
     Ok(event)
 }
 
@@ -6283,6 +6303,8 @@ async fn pump_inbound(
                 }
                 let summary = permission_summary(&params);
                 let options = permission_options(&params);
+                let command = params.pointer("/toolCall/rawInput/command").and_then(|command| command.as_str().map(str::to_owned)
+                    .or_else(|| command.as_array().map(|parts| parts.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "))));
                 let mut sessions = sessions
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -6316,6 +6338,7 @@ async fn pump_inbound(
                                 wire_id,
                                 options,
                                 summary,
+                                command,
                                 child_scoped,
                                 event,
                             },
@@ -7486,6 +7509,7 @@ fn permission_options(params: &Value) -> Vec<PermissionOption> {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
+                name: option.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
             })
         })
         .collect()
@@ -7958,7 +7982,6 @@ fn payload_from_session_update_for_turn(
                 .get("content")
                 .and_then(text_from_value)
                 .unwrap_or_default();
-            let blocks = crate::agent_conversation::safe_markdown::parse_safe_markdown(&text);
             Some(AgentConversationPayload::AssistantMessage {
                 item_id: update
                     .get("messageId")
@@ -7968,7 +7991,7 @@ fn payload_from_session_update_for_turn(
                     .unwrap_or_else(|| format!("assistant-{turn_id}")),
                 text,
                 completed: true,
-                blocks: Some(blocks),
+                blocks: None,
             })
         }
         "agent_message_chunk" => Some(AgentConversationPayload::AssistantDelta {
@@ -9356,9 +9379,7 @@ mod tests {
                 item_id: "m-replay".into(),
                 text: "Restored".into(),
                 completed: true,
-                blocks: Some(
-                    crate::agent_conversation::safe_markdown::parse_safe_markdown("Restored")
-                ),
+                blocks: None,
             })
         );
         let tool = json!({ "sessionId": "s", "update": {
@@ -12034,6 +12055,7 @@ mod tests {
                     wire_id: json!(1),
                     options: Vec::new(),
                     summary: "Pending permission".into(),
+                    command: None,
                     child_scoped: false,
                     event: pending_test_event(
                         &fixture.owned_id,
@@ -14193,6 +14215,15 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_streamed_reply_is_stored_once_as_a_finished_message_with_rust_blocks() {
+        let provider_update = json!({ "update": {
+            "sessionUpdate": "agent_message_chunk", "messageId": "reply-a",
+            "content": { "type": "text", "text": "**Bold** start" },
+            "_meta": { "replay": true }
+        } });
+        assert!(matches!(
+            payload_from_session_update_for_turn(&provider_update, None),
+            Some(AgentConversationPayload::AssistantMessage { blocks: None, .. })
+        ));
         let fixture = fixture_manager_with_acp_session("two_replies").await;
         let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
         let sink = Arc::clone(&seen);
@@ -14217,8 +14248,12 @@ mod tests {
         })
         .await;
 
-        // Read the rows as stored, not through the read path that fills in
-        // missing blocks.
+        // The desktop records and publishes pieces; the provider supplies none.
+        for event in seen.lock().unwrap().iter() {
+            if let AgentConversationPayload::AssistantMessage { text, blocks, .. } = &event.payload {
+                assert_eq!(blocks.as_ref(), Some(&super::super::safe_markdown::parse_safe_markdown(text)));
+            }
+        }
         let store = Arc::clone(
             &fixture
                 .manager
@@ -16463,6 +16498,59 @@ mod tests {
             line_count < 40,
             "expected a patch under 40 lines, got {line_count}"
         );
+    }
+
+    #[test]
+    fn desktop_markdown_stored_event_keeps_missing_blocks() {
+        let event = serde_json::json!({
+            "ownedId": "owned-a", "provider": "codex", "generation": 1,
+            "sequence": 1, "timestampMs": 1000,
+            "payload": { "kind": "assistantMessage", "itemId": "a",
+                "text": "**hello**", "completed": true }
+        });
+        let decoded = stored_event(EventRow {
+            owned_id: "owned-a".into(), seq: 1, turn_id: None,
+            kind: "item.completed".into(), payload_json: event.to_string(), created_at_ms: 1000,
+        }).unwrap();
+        assert!(matches!(decoded.payload,
+            AgentConversationPayload::AssistantMessage { blocks: None, .. }));
+    }
+
+    #[test]
+    fn desktop_markdown_remote_server_records_and_emits_without_blocks() {
+        let server = std::env::args().any(|arg| arg == "--assembly-server");
+        if !server {
+            // libtest accepts the existing server argument as a skip filter.
+            // The child then exercises the real process distinction, without global test state.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact",
+                    "agent_conversation::manager::tests::desktop_markdown_remote_server_records_and_emits_without_blocks",
+                    "--skip", "--assembly-server", "--nocapture"])
+                .output().unwrap();
+            assert!(output.status.success(), "{}\n{}",
+                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        }
+        let root = temp_root();
+        let manager = AgentRuntimeManager::default();
+        let connection = manager.ensure_inner(request(root.to_str().unwrap(), "server-markdown",
+            AgentConversationProvider::Codex)).unwrap().0;
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let captured = emitted.clone();
+        manager.set_emitter(Arc::new(move |event| captured.lock().unwrap().push(event)));
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            let session = current_session_mut(&mut sessions, "server-markdown", connection.generation).unwrap();
+            record_payload_for_session_and_dispatch(session, &manager.emitter,
+                AgentConversationPayload::AssistantMessage {
+                    item_id: "a".into(), text: "**hello**".into(), completed: true, blocks: None,
+                }).unwrap();
+        }
+        let saved = manager.store.list_events("server-markdown", 0, 100).unwrap();
+        let saved: AgentConversationEvent = serde_json::from_str(&saved.last().unwrap().payload_json).unwrap();
+        assert_eq!(emitted.lock().unwrap().last(), Some(&saved));
+        assert!(matches!(saved.payload,
+            AgentConversationPayload::AssistantMessage { blocks, .. } if blocks.is_some() == !server));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

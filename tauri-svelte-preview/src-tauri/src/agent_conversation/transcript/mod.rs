@@ -813,7 +813,7 @@ mod tests {
         );
         assert_eq!(records.len(), 2);
         assert!(matches!(records[0].native,
-            Some(AgentConversationPayload::AssistantMessage { ref blocks, .. }) if blocks.is_some()));
+            Some(AgentConversationPayload::AssistantMessage { ref blocks, .. }) if blocks.is_none()));
         assert!(matches!(records[1].native,
             Some(AgentConversationPayload::Tool { ref name, .. }) if name == "Read"));
         assert!(parse_durable_child_line(
