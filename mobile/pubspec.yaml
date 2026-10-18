@@ -24,6 +24,10 @@ dependencies:
   mobile_scanner: ^7.4.2
   # The live socket, GET /phone/v1/live (Rental Command's version, there transitive).
   web_socket_channel: ^3.0.3
+  # Push notifications (Rental Command's versions, rental-management/mobile/pubspec.yaml).
+  firebase_core: ^3.8.1
+  firebase_messaging: ^15.1.6
+  flutter_local_notifications: ^18.0.1
 
 dev_dependencies:
   flutter_test:
