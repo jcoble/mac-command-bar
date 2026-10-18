@@ -32,6 +32,7 @@ class ChatScreen extends ConsumerStatefulWidget {
 
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _text = TextEditingController();
+  final _thread = GlobalKey<ChatThreadState>();
   var _sending = false;
 
   /// Images picked for the next message, at most 8.
@@ -126,6 +127,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Clear first so anything typed while the send is pending is kept.
     _text.clear();
     setState(_images.clear);
+    _thread.currentState?.jumpToLatest();
+    setState(() => _sending = true);
     try {
       await chat.send(
         text,
@@ -264,6 +267,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           'Your message goes to this session as your own turn.',
                     )
                   : ChatThread(
+                      key: _thread,
                       items: value.items,
                       onOpenTools: (tools) => showToolSheet(
                         context,
