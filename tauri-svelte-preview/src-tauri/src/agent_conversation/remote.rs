@@ -244,7 +244,7 @@ where D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned {
 #[derive(Clone)]
 pub(super) struct ServerState {
     pub(super) manager: AgentRuntimeManager,
-    data_dir: PathBuf,
+    pub(super) data_dir: PathBuf,
     pub(super) token: Arc<str>,
     maintenance: Arc<tokio::sync::RwLock<()>>,
     restarting: Arc<AtomicBool>,

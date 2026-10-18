@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:assembly_phone/core/api/api_exception.dart';
 import 'package:assembly_phone/core/api/machine_client.dart';
 import 'package:assembly_phone/core/live/live_providers.dart';
 import 'package:assembly_phone/core/live/live_socket.dart';
@@ -220,8 +222,20 @@ void main() {
       ),
     );
     socket.controller
-      ..add({'type': 'chatDelta', 'ownedId': 'lane-1', 'seq': 2, 'itemId': 'a2', 'delta': 'Hel'})
-      ..add({'type': 'chatDelta', 'ownedId': 'lane-1', 'seq': 3, 'itemId': 'a2', 'delta': 'lo'});
+      ..add({
+        'type': 'chatDelta',
+        'ownedId': 'lane-1',
+        'seq': 2,
+        'itemId': 'a2',
+        'delta': 'Hel',
+      })
+      ..add({
+        'type': 'chatDelta',
+        'ownedId': 'lane-1',
+        'seq': 3,
+        'itemId': 'a2',
+        'delta': 'lo',
+      });
     await pumpEventQueue();
     final open = c.read(chatProvider(session)).requireValue.items.single;
     expect(
@@ -236,7 +250,13 @@ void main() {
         'seq': 4,
         'item': item('a2', 4, 'agent', 'Hello there'),
       })
-      ..add({'type': 'chatDelta', 'ownedId': 'lane-1', 'seq': 5, 'itemId': 'a2', 'delta': ' late'});
+      ..add({
+        'type': 'chatDelta',
+        'ownedId': 'lane-1',
+        'seq': 5,
+        'itemId': 'a2',
+        'delta': ' late',
+      });
     await pumpEventQueue();
     expect(texts(c), [('a2', 'Hello there')]);
   });
@@ -283,6 +303,69 @@ void main() {
           {'text': text},
       ],
     );
+  });
+
+  test('send_includes_attachment_ids', () async {
+    late final FakeLiveSocket live;
+    final (c, adapter, socket) = await chatWith(
+      (r) => switch (r.path) {
+        'sessions/lane-1/attachments' => (200, {'attachmentId': 'a1'}),
+        'sessions/lane-1/chat' when r.method == 'POST' => () {
+          // The machine's live frame for the message can beat the send's reply.
+          live.controller.add({
+            'type': 'chat',
+            'ownedId': 'lane-1',
+            'seq': 2,
+            'item': {...item('u1', 2, 'owner', 'What is this?'), 'images': 1},
+          });
+          return (200, {'itemId': 'u1'});
+        }(),
+        _ => (200, {'items': [], 'cursor': 1, 'turn': 'idle'}),
+      },
+    );
+    live = socket;
+    final dir = Directory.systemTemp.createTempSync('chat-attach');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final png = File('${dir.path}/shot.PNG')
+      ..writeAsBytesSync([137, 80, 78, 71]);
+    final chat = c.read(chatProvider(session).notifier);
+
+    final id = await chat.uploadImage(png.path);
+    await chat.send(
+      'What is this?',
+      attachmentIds: [id],
+      localImages: [png.path],
+    );
+
+    final upload = adapter.requests.singleWhere(
+      (r) => r.path.endsWith('/attachments'),
+    );
+    expect((upload.method, upload.contentType), ('POST', 'image/png'));
+    expect(upload.data, [137, 80, 78, 71]);
+    final post = adapter.requests.singleWhere(
+      (r) => r.path == 'sessions/lane-1/chat' && r.method == 'POST',
+    );
+    expect(post.data, {
+      'text': 'What is this?',
+      'attachmentIds': ['a1'],
+    });
+    final sent = c.read(chatProvider(session)).requireValue.items.single;
+    expect(sent.images, 1);
+    expect(sent.localImages, [png.path]);
+  });
+
+  test('upload_rejects_non_images_before_sending', () async {
+    final (c, adapter, _) = await chatWith(
+      (r) => (200, {'items': [], 'cursor': 1, 'turn': 'idle'}),
+    );
+
+    await expectLater(
+      c.read(chatProvider(session).notifier).uploadImage('/sdcard/notes.txt'),
+      throwsA(
+        isA<ApiException>().having((e) => e.statusCode, 'statusCode', 415),
+      ),
+    );
+    expect(adapter.requests.where((r) => r.method == 'POST'), isEmpty);
   });
 
   test('chat_for_session_uses_its_endpoints', () async {
