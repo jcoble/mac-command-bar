@@ -308,14 +308,15 @@ function applyConversationEventControls(
   appendRecentEvent(current, event);
   Object.assign(current, next);
   const displayEvent = displayEventFrom(event);
+  // TSK-1299 experiment: attachments off
   // Each user event claims the held screenshots it names, so two quick sends
   // keep their own whichever order the backend admits them in.
-  const claimedIds = event.payload.kind === 'userMessage' ? event.payload.attachmentIds ?? [] : [];
-  const claimed = current.unclaimedSentAttachments.filter((item) => claimedIds.includes(item.id));
-  if (event.payload.kind === 'userMessage' && claimed.length) {
-    current.sentAttachments[event.payload.itemId] = claimed;
-    current.unclaimedSentAttachments = current.unclaimedSentAttachments.filter((item) => !claimedIds.includes(item.id));
-  }
+  // const claimedIds = event.payload.kind === 'userMessage' ? event.payload.attachmentIds ?? [] : [];
+  // const claimed = current.unclaimedSentAttachments.filter((item) => claimedIds.includes(item.id));
+  // if (event.payload.kind === 'userMessage' && claimed.length) {
+  //   current.sentAttachments[event.payload.itemId] = claimed;
+  //   current.unclaimedSentAttachments = current.unclaimedSentAttachments.filter((item) => !claimedIds.includes(item.id));
+  // }
   applyTypedEventPayload(current, displayEvent);
   return { current, displayEvent };
 }
@@ -840,41 +841,39 @@ export function recordSentConversationAttachments(
   ownedId: string,
   attachments: ConversationAttachment[]
 ): void {
-  const current = conversationSessions[ownedId];
-  if (current) current.unclaimedSentAttachments = attachments;
+  // TSK-1299 experiment: attachments off
+  // const current = conversationSessions[ownedId];
+  // if (current) current.unclaimedSentAttachments = attachments;
 }
 
-/** Restore the screenshots of messages replayed from the journal. The live
- * hold above only covers sends this window made, so a restarted app has to
- * hang the saved files back on the user messages that named them. A message
- * that already carries its screenshots keeps them. */
-/** Keep saved attachments only for user items still in the selected TanStack graph. */
+/** Restore the screenshots of messages replayed from the journal. */
 export function restoreSelectedConversationAttachments(
   ownedId: string,
   byItemId: Record<string, ConversationAttachment[]>,
   generation: number,
   retainedItemIds: readonly string[]
 ): void {
-  const current = conversationSessions[ownedId];
-  const retained = new Set(retainedItemIds);
-  const incoming = Object.values(byItemId).flat();
-  if (!current || current.generation !== generation) {
-    revokeUnretainedPreviewUrls(incoming, current ? Object.values(current.sentAttachments).flat() : []);
-    return;
-  }
-  const next: Record<string, ConversationAttachment[]> = {};
-  for (const [itemId, attachments] of Object.entries(current.sentAttachments)) {
-    if (retained.has(itemId)) next[itemId] = attachments;
-  }
-  for (const [itemId, attachments] of Object.entries(byItemId)) {
-    if (retained.has(itemId)) next[itemId] = attachments;
-  }
-  revokeUnretainedPreviewUrls(
-    [...Object.values(current.sentAttachments).flat(), ...incoming],
-    [...Object.values(next).flat(), ...current.attachments]
-  );
-  current.sentAttachments = next;
-  publishConversationProjectionDiagnostics();
+  // TSK-1299 experiment: attachments off
+  // const current = conversationSessions[ownedId];
+  // const retained = new Set(retainedItemIds);
+  // const incoming = Object.values(byItemId).flat();
+  // if (!current || current.generation !== generation) {
+  //   revokeUnretainedPreviewUrls(incoming, current ? Object.values(current.sentAttachments).flat() : []);
+  //   return;
+  // }
+  // const next: Record<string, ConversationAttachment[]> = {};
+  // for (const [itemId, attachments] of Object.entries(current.sentAttachments)) {
+  //   if (retained.has(itemId)) next[itemId] = attachments;
+  // }
+  // for (const [itemId, attachments] of Object.entries(byItemId)) {
+  //   if (retained.has(itemId)) next[itemId] = attachments;
+  // }
+  // revokeUnretainedPreviewUrls(
+  //   [...Object.values(current.sentAttachments).flat(), ...incoming],
+  //   [...Object.values(next).flat(), ...current.attachments]
+  // );
+  // current.sentAttachments = next;
+  // publishConversationProjectionDiagnostics();
 }
 
 export function setConversationCapabilities(
