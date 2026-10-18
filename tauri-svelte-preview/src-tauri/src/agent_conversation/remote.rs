@@ -5669,8 +5669,9 @@ pub async fn remote_workflow(
     profile_id: String,
     operation: String,
     args: serde_json::Value,
+    request_id: Option<u64>,
 ) -> Result<serde_json::Value, String> {
-    remote.workflow_operation(&profile_id, operation, args, None).await
+    remote.workflow_operation(&profile_id, operation, args, request_id).await
 }
 
 #[tauri::command]

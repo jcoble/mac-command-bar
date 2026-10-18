@@ -55,7 +55,7 @@ export async function listWorkflowRunHistory(
   signal: AbortSignal
 ): Promise<WorkflowHistoryRow[] | null> {
   const rows = machine
-    ? await remoteWorkflowFromTauri<WorkflowHistoryRow[]>(machine, 'history', { runId })
+    ? await remoteWorkflowFromTauri<WorkflowHistoryRow[]>(machine, 'history', { runId }, signal)
     : await listWorkflowRunHistoryFromTauri(runId);
   return signal.aborted ? null : rows;
 }
