@@ -34,6 +34,8 @@ dependencies:
   re_highlight: ^0.0.3
   # Opens a pull request's link, which Android hands to the GitHub app when installed.
   url_launcher: ^6.3.3
+  # The session terminal page: ghostty-web, as on the desktop, in a WebView.
+  webview_flutter: ^4.14.1
 
 dev_dependencies:
   flutter_test:
@@ -42,3 +44,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/terminal/

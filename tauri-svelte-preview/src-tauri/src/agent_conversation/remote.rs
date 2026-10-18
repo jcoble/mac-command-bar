@@ -253,7 +253,7 @@ pub(super) struct ServerState {
     pub(super) events: broadcast::Sender<AgentConversationEvent>,
     /// Runs started on this machine, kept in its own `sessions.db`.
     pub(super) workflow: crate::workflow::WorkflowEngine,
-    terminals: RemoteTerminals,
+    pub(super) terminals: RemoteTerminals,
     relay: Arc<RelayLink>,
     /// The one phone pairing code that works right now (`phone_api`).
     pub(super) pairing: Arc<Mutex<Option<super::phone_api::PairingCode>>>,
@@ -345,10 +345,10 @@ pub(super) fn server_state(manager: AgentRuntimeManager, data_dir: PathBuf, toke
 
 /// Shells that desktops opened on this machine. Output fans out to every connected socket.
 #[derive(Clone)]
-struct RemoteTerminals {
-    registry: TerminalRegistry,
+pub(super) struct RemoteTerminals {
+    pub(super) registry: TerminalRegistry,
     streams: ProjectionStreams,
-    output: broadcast::Sender<TerminalOutputFrame>,
+    pub(super) output: broadcast::Sender<TerminalOutputFrame>,
 }
 
 impl RemoteTerminals {

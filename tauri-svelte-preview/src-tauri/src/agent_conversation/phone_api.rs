@@ -16,7 +16,7 @@ use axum::extract::{DefaultBodyLimit, Extension, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,7 @@ use super::protocol::{
 };
 use super::phone_push::PushSender;
 use super::remote::{execute_phone_command, RemoteCommand, RemoteResponse, ServerState};
+use crate::terminal::{self, TerminalKind, TerminalStartRequest};
 use crate::workflow::{WorkflowError, WorkflowNodeState, WorkflowOutputContract, WorkflowRunRecord, WorkflowRunState};
 
 /// How long a pairing code works: 10 minutes.
@@ -62,6 +63,10 @@ const MAX_FILE_BYTES: usize = 1024 * 1024;
 /// (`\u00XX` for a control byte; a newline is two and non-ASCII text is sent as is), so a 1 MiB text
 /// always fits in six times that, plus room for the path and version. `save_file` checks the text.
 const MAX_SAVE_BODY_BYTES: usize = 6 * MAX_FILE_BYTES + MAX_BODY_BYTES;
+/// A terminal page that opens replays at most the last 1 MiB of its shell's scrollback (the desktop's 8,000-line
+/// view holds about that much), so a phone never receives the full 16 MB ring.
+const MAX_TERMINAL_REPLAY_BYTES: usize = 1024 * 1024;
+const NO_TERMINAL: &str = "No such terminal on this machine";
 
 /// Bumped whenever a phone is removed, so each open live socket checks its own token and closes if it went.
 static DEVICE_REMOVED: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::channel(0).0);
@@ -95,6 +100,9 @@ pub(super) fn router(state: ServerState) -> Router {
         .route("/phone/v1/sessions/{id}/git/branches", get(git_branches))
         .route("/phone/v1/sessions/{id}/git/switch", post(git_switch))
         .route("/phone/v1/sessions/{id}/git/prs", get(git_prs))
+        .route("/phone/v1/sessions/{id}/terminal", post(start_terminal))
+        .route("/phone/v1/terminals/{id}", delete(close_terminal))
+        .route("/phone/v1/terminals/{id}/stream", get(terminal_stream))
         .route("/phone/v1/runs", get(runs))
         .route("/phone/v1/runs/{id}", get(run_detail))
         .route("/phone/v1/runs/{id}/{action}", post(control_run))
@@ -1240,6 +1248,117 @@ fn reduce_chat(events: &[AgentConversationEvent]) -> Vec<ChatItem> {
     items
 }
 
+/// The size a phone's terminal page measured. Any other field, such as a shell or a command, is refused:
+/// the phone never chooses what runs.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TerminalSize {
+    cols: u16,
+    rows: u16,
+}
+
+/// `POST /phone/v1/sessions/{id}/terminal {cols, rows}` → `{terminalId}`: the session's shell, the machine's
+/// default one started in the session's folder from the store, or the live one the session already has.
+/// A start the machine refuses, such as a folder that is gone, is a 409 with its message.
+async fn start_terminal(State(state): State<ServerState>, Path(owned_id): Path<String>, body: Bytes) -> Reply {
+    let size: TerminalSize = parse(&body)?;
+    let cwd = session_root(&state, &owned_id)?;
+    let request = TerminalStartRequest { cwd, shell: None, cols: Some(size.cols), rows: Some(size.rows),
+        owned_id: Some(owned_id), command: None };
+    match execute_phone_command(&state, RemoteCommand::TerminalStart(request)).await {
+        Ok(RemoteResponse::TerminalSession(info)) => Ok(Json(json!({ "terminalId": info.session_id })).into_response()),
+        Ok(_) => Err(server_error(&"terminal start returned another response")),
+        Err(error) => Err(refuse(StatusCode::CONFLICT, &error)),
+    }
+}
+
+/// Terminal `id` when it is a session's own shell and that session is in this machine's directory; 404 for
+/// anything else, such as an agent's tool terminal.
+fn session_terminal(state: &ServerState, id: &str) -> Result<(), Response> {
+    let owned_id = terminal::list_terminal_sessions(&state.terminals.registry).map_err(|error| server_error(&error))?
+        .into_iter().find(|info| info.session_id == id && info.kind == TerminalKind::UserPty)
+        .and_then(|info| info.owned_id).ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_TERMINAL))?;
+    known_session(state, &owned_id)
+}
+
+/// `DELETE /phone/v1/terminals/{id}` → 204: ends the shell.
+async fn close_terminal(State(state): State<ServerState>, Path(id): Path<String>) -> Reply {
+    session_terminal(&state, &id)?;
+    terminal::close_terminal_session(&state.terminals.registry, &id).map_err(|error| server_error(&error))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `GET /phone/v1/terminals/{id}/stream`: a WebSocket that sends `{type:"scrollback", data}` once, then
+/// `{type:"output", data, terminated, exitCode}` frames, and takes `{"input": text}` and
+/// `{"resize": {cols, rows}}` frames of at most 64 KiB.
+async fn terminal_stream(State(state): State<ServerState>, Extension(device): Extension<Device>, Path(id): Path<String>,
+    upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>) -> Reply {
+    session_terminal(&state, &id)?;
+    let upgrade = upgrade.map_err(IntoResponse::into_response)?;
+    // As in `live`: subscribed before the token is checked again, so a removal is never missed.
+    let removed = DEVICE_REMOVED.subscribe();
+    if state.manager.store().touch_phone_device(&device.token_hash, now_ms()).map_err(|error| server_error(&error))?.is_none() {
+        return Err(refuse(StatusCode::UNAUTHORIZED, REMOVED));
+    }
+    Ok(upgrade.max_message_size(MAX_BODY_BYTES)
+        .on_upgrade(move |socket| serve_terminal(socket, state, id, device.token_hash, removed)))
+}
+
+/// Sends the shell's screen and output until the phone hangs up, falls behind, or is removed. Output is
+/// subscribed before the scrollback is read, so nothing falls between them, and output the scrollback
+/// already holds (same generation, sequence at or below its own) is skipped, as the desktop does.
+async fn serve_terminal(mut socket: WebSocket, state: ServerState, id: String, hash: String,
+    mut removed: tokio::sync::watch::Receiver<u64>) {
+    let mut output = state.terminals.output.subscribe();
+    let Ok(Some(snapshot)) = terminal::read_terminal_session_scrollback(&state.terminals.registry, &id, Some(MAX_TERMINAL_REPLAY_BYTES)) else {
+        let _ = socket.send(Message::Close(None)).await;
+        return;
+    };
+    let replay = json!({ "type": "scrollback", "data": snapshot.data });
+    if socket.send(Message::Text(replay.to_string().into())).await.is_err() { return; }
+    loop {
+        let frame = tokio::select! {
+            frame = output.recv() => match frame {
+                Ok(frame) if frame.output.session_id == id
+                    && !(frame.generation == snapshot.generation && frame.sequence <= snapshot.sequence) =>
+                    json!({ "type": "output", "data": frame.output.data, "terminated": frame.output.terminated,
+                        "exitCode": frame.output.exit_code }),
+                Ok(_) => continue,
+                // A phone that falls behind is closed; it reconnects and gets the scrollback again.
+                Err(_) => break,
+            },
+            Ok(()) = removed.changed() => match state.manager.store().touch_phone_device(&hash, now_ms()) {
+                Ok(Some(_)) => continue,
+                _ => break,
+            },
+            message = socket.recv() => match message {
+                Some(Ok(Message::Text(text))) => {
+                    terminal_input(&state, &id, &text);
+                    continue;
+                }
+                Some(Ok(_)) => continue,
+                _ => break,
+            },
+        };
+        if socket.send(Message::Text(frame.to_string().into())).await.is_err() { return; }
+    }
+    let _ = socket.send(Message::Close(None)).await;
+}
+
+/// Types a phone's `{"input": text}` into the shell or applies its `{"resize": {cols, rows}}`; any other frame is ignored.
+fn terminal_input(state: &ServerState, id: &str, text: &str) {
+    let Ok(frame) = serde_json::from_str::<Value>(text) else { return };
+    let size = |key: &str| frame["resize"][key].as_u64().and_then(|value| u16::try_from(value).ok());
+    let result = if let Some(input) = frame["input"].as_str() {
+        terminal::write_terminal_session(&state.terminals.registry, id, input)
+    } else if let (Some(cols), Some(rows)) = (size("cols"), size("rows")) {
+        terminal::resize_terminal_session(&state.terminals.registry, id, Some(cols), Some(rows))
+    } else {
+        return;
+    };
+    if let Err(error) = result { eprintln!("Phone terminal {id}: {error}"); }
+}
+
 fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Response> {
     serde_json::from_slice(body).map_err(|_| refuse(StatusCode::BAD_REQUEST, "The request body is not valid"))
 }
@@ -1530,7 +1649,8 @@ mod tests {
             (Method::GET, "/sessions/s/files"), (Method::GET, "/sessions/s/file"), (Method::PUT, "/sessions/s/file"),
             (Method::GET, "/sessions/s/git"), (Method::GET, "/sessions/s/git/diff"), (Method::POST, "/sessions/s/git/stage-all"),
             (Method::POST, "/sessions/s/git/commit"), (Method::POST, "/sessions/s/git/sync"), (Method::GET, "/sessions/s/git/branches"),
-            (Method::POST, "/sessions/s/git/switch"), (Method::GET, "/sessions/s/git/prs")] {
+            (Method::POST, "/sessions/s/git/switch"), (Method::GET, "/sessions/s/git/prs"), (Method::POST, "/sessions/s/terminal"),
+            (Method::GET, "/terminals/t/stream"), (Method::DELETE, "/terminals/t")] {
             let response = client(method.clone(), &base, path, &session.token).json(&json!({"text": "hi"})).send().await.unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED, "{method} {path}");
             assert_eq!(response.json::<Value>().await.unwrap(), json!({"error": "This phone was removed — pair again"}));
@@ -2624,5 +2744,122 @@ mod tests {
         }
         assert_eq!(set("nobody", json!({"model": "sonnet"})).await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
         state.manager.shutdown().await;
+    }
+
+    /// Files session `owned_id` with a new empty folder as its worktree, and returns the folder.
+    fn terminal_session(state: &ServerState, owned_id: &str) -> std::path::PathBuf {
+        let root = std::path::PathBuf::from("/var/tmp").join(format!("assembly-phone-terminal-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        file_session(state, owned_id, vec![]);
+        let store = state.manager.store();
+        let row = store.get_session(owned_id).unwrap().unwrap();
+        store.upsert_session(&mcb_core::session_store::SessionRow { worktree: Some(root.to_string_lossy().into()), ..row }).unwrap();
+        root
+    }
+
+    async fn terminal_socket(base: &str, token: &str, terminal_id: &str) -> LiveClient {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("{}/phone/v1/terminals/{terminal_id}/stream", base.replacen("http", "ws", 1)).into_client_request().unwrap();
+        request.headers_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
+        tokio_tungstenite::connect_async(request).await.unwrap().0
+    }
+
+    async fn terminal_frame(socket: &mut LiveClient) -> Value {
+        next_frame(socket, Duration::from_secs(10)).await.expect("a terminal frame")
+    }
+
+    async fn send_frame(socket: &mut LiveClient, frame: Value) {
+        use futures_util::SinkExt;
+        socket.send(tokio_tungstenite::tungstenite::Message::Text(frame.to_string().into())).await.unwrap();
+    }
+
+    /// The output frames' text up to and including the first that makes it contain `needle`.
+    async fn output_until(socket: &mut LiveClient, needle: &str) -> String {
+        let mut seen = String::new();
+        while !seen.contains(needle) {
+            let frame = terminal_frame(socket).await;
+            assert_eq!(frame["type"], "output", "{frame}");
+            seen.push_str(frame["data"].as_str().unwrap());
+        }
+        seen
+    }
+
+    #[tokio::test]
+    async fn phone_terminal_starts_in_the_session_folder_and_ignores_a_shell() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let root = terminal_session(&state, "lane");
+        for body in [json!({"cols": 80, "rows": 24, "shell": "/bin/false"}), json!({"cols": 80, "rows": 24, "command": "true"}), json!({})] {
+            let (status, _) = post_json(&base, "/sessions/lane/terminal", &token, body.clone()).await;
+            assert_eq!(status, reqwest::StatusCode::BAD_REQUEST, "{body}");
+        }
+        let (status, _) = post_json(&base, "/sessions/nobody/terminal", &token, json!({"cols": 80, "rows": 24})).await;
+        assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
+        let (status, body) = post_json(&base, "/sessions/lane/terminal", &token, json!({"cols": 80, "rows": 24})).await;
+        assert_eq!(status, reqwest::StatusCode::OK, "{body}");
+        let terminal_id = body["terminalId"].as_str().unwrap().to_string();
+        let (_, again) = post_json(&base, "/sessions/lane/terminal", &token, json!({"cols": 80, "rows": 24})).await;
+        assert_eq!(again["terminalId"], terminal_id, "the session's live shell is reused");
+
+        let mut socket = terminal_socket(&base, &token, &terminal_id).await;
+        assert_eq!(terminal_frame(&mut socket).await["type"], "scrollback");
+        send_frame(&mut socket, json!({"input": "echo \"cwd=$(pwd)\"\r"})).await;
+        output_until(&mut socket, &format!("cwd={}", root.display())).await;
+
+        assert_eq!(client(reqwest::Method::DELETE, &base, &format!("/terminals/{terminal_id}"), &token).send().await.unwrap().status(),
+            reqwest::StatusCode::NO_CONTENT);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_terminal_stream_sends_scrollback_then_output_and_takes_input() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let root = terminal_session(&state, "lane");
+        let (_, body) = post_json(&base, "/sessions/lane/terminal", &token, json!({"cols": 80, "rows": 24})).await;
+        let terminal_id = body["terminalId"].as_str().unwrap().to_string();
+
+        let mut socket = terminal_socket(&base, &token, &terminal_id).await;
+        assert_eq!(terminal_frame(&mut socket).await["type"], "scrollback");
+        send_frame(&mut socket, json!({"input": "echo \"one-$((1+1))\"\r"})).await;
+        output_until(&mut socket, "one-2").await;
+        send_frame(&mut socket, json!({"resize": {"cols": 100, "rows": 30}})).await;
+        send_frame(&mut socket, json!({"type": "nonsense"})).await;
+        send_frame(&mut socket, json!({"input": "stty size\r"})).await;
+        output_until(&mut socket, "30 100").await;
+        drop(socket);
+
+        // A new connection replays the screen first, and its output frames carry only what came after.
+        let mut socket = terminal_socket(&base, &token, &terminal_id).await;
+        let replay = terminal_frame(&mut socket).await;
+        assert_eq!(replay["type"], "scrollback");
+        let replay = replay["data"].as_str().unwrap();
+        assert!(replay.contains("one-2") && replay.contains("30 100"), "{replay}");
+        send_frame(&mut socket, json!({"input": "echo \"two-$((2+1))\"\r"})).await;
+        let after = output_until(&mut socket, "two-3").await;
+        assert!(!after.contains("one-2") && !after.contains("30 100"), "{after}");
+
+        assert_eq!(client(reqwest::Method::DELETE, &base, &format!("/terminals/{terminal_id}"), &token).send().await.unwrap().status(),
+            reqwest::StatusCode::NO_CONTENT);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_terminal_close() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let root = terminal_session(&state, "lane");
+        let (_, body) = post_json(&base, "/sessions/lane/terminal", &token, json!({"cols": 80, "rows": 24})).await;
+        let terminal_id = body["terminalId"].as_str().unwrap().to_string();
+        let close = || client(reqwest::Method::DELETE, &base, &format!("/terminals/{terminal_id}"), &token).send();
+        assert_eq!(close().await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(close().await.unwrap().status(), reqwest::StatusCode::NOT_FOUND, "a closed shell is gone");
+        let (status, _) = get_json(&base, &format!("/terminals/{terminal_id}/stream"), &token).await;
+        assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
+        let (_, body) = post_json(&base, "/sessions/lane/terminal", &token, json!({"cols": 80, "rows": 24})).await;
+        assert_ne!(body["terminalId"], terminal_id, "the next open starts a new shell");
+        assert_eq!(client(reqwest::Method::DELETE, &base, &format!("/terminals/{}", body["terminalId"].as_str().unwrap()), &token)
+            .send().await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

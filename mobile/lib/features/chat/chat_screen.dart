@@ -11,6 +11,7 @@ import '../files/files_repository.dart';
 import '../files/files_screen.dart';
 import '../source_control/source_control_repository.dart';
 import '../source_control/source_control_sheet.dart';
+import '../terminal/terminal_screen.dart';
 import 'chat_repository.dart';
 import 'chat_widgets.dart';
 import 'sessions_repository.dart';
@@ -121,6 +122,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     ref.read(machineClientProvider(machine.id)),
                     widget.ownedId,
                   ),
+                  title: folderName(session?.project) ?? session?.name,
+                ),
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Terminal',
+            icon: const Icon(Symbols.terminal_rounded),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => TerminalScreen(
+                  ownedId: widget.ownedId,
                   title: folderName(session?.project) ?? session?.name,
                 ),
               ),

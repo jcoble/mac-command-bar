@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<style>
+  html, body { margin: 0; height: 100%; background: #282a36; overflow: hidden; }
+  #terminal { position: absolute; inset: 0; padding: 4px 6px; touch-action: none; }
+</style>
+<script src="ghostty-web.js"></script>
+<script src="ime-input.js"></script>
+<script src="touch-scroll.js"></script>
+</head>
+<body>
+<div id="terminal"></div>
+<script>
+// The page only draws. Dart owns the socket: it calls termWrite, termReplay, termPaste and termBlur,
+// and the page posts the stream's own frames, {"input": text} and {"resize": {cols, rows}}, to TerminalBridge.
+// Look and size are the desktop terminal's defaults (settingsStore.svelte.ts, themeRegistry.ts DRACULA_TERMINAL).
+const post = (frame) => TerminalBridge.postMessage(JSON.stringify(frame));
+const host = document.getElementById('terminal');
+let term;
+let textarea;
+
+async function start() {
+  await GhosttyWeb.init();
+  term = new GhosttyWeb.Terminal({
+    convertEol: true, cursorBlink: true, cursorStyle: 'block', scrollback: 8000,
+    fontFamily: '"JetBrains Mono", monospace', fontSize: 15, lineHeight: 1.2,
+    theme: {
+      background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f2', cursorAccent: '#282a36',
+      selectionBackground: '#44475a', black: '#000000', red: '#ff5555', green: '#50fa7b',
+      yellow: '#f1fa8c', blue: '#bd93f9', magenta: '#ff79c6', cyan: '#8be9fd', white: '#bbbbbb',
+      brightBlack: '#555555', brightRed: '#ff5555', brightGreen: '#50fa7b', brightYellow: '#f1fa8c',
+      brightBlue: '#caa9fa', brightMagenta: '#ff79c6', brightCyan: '#8be9fd', brightWhite: '#ffffff',
+    },
+  });
+  const fit = new GhosttyWeb.FitAddon();
+  term.loadAddon(fit);
+  term.open(host);
+  // Focus ghostty's textarea, never the container: the container drops composed text.
+  textarea = host.querySelector('textarea');
+  textarea.setAttribute('autocomplete', 'off');
+  textarea.focus();
+  attachImeInput(host, textarea, (data) => post({ input: data }));
+  attachTouchScroll(host, () => textarea.focus());
+  term.onData((data) => post({ input: data }));
+  term.onResize(({ cols, rows }) => post({ resize: { cols, rows } }));
+  fit.fit();
+  fit.observeResize();
+  post({ resize: { cols: term.cols, rows: term.rows } });
+}
+
+window.termWrite = (data) => term.write(data);
+window.termReplay = (data) => { term.reset(); term.write(data); };
+window.termPaste = (text) => term.paste(text);
+window.termBlur = () => textarea.blur();
+start().catch((error) => post({ error: String(error) }));
+</script>
+</body>
+</html>
