@@ -11,8 +11,18 @@
 	 * provider tile says when the session is waiting on you or failed, and a
 	 * cloud in its corner marks a session on a remote machine.
 	 */
+	import Bot from "@lucide/svelte/icons/bot";
 	import Cloud from "@lucide/svelte/icons/cloud";
+	import Crown from "@lucide/svelte/icons/crown";
+	import Hand from "@lucide/svelte/icons/hand";
+	import MessageSquareDot from "@lucide/svelte/icons/message-square-dot";
+	import SquareTerminal from "@lucide/svelte/icons/square-terminal";
+	import Workflow from "@lucide/svelte/icons/workflow";
+	import type { Component } from "svelte";
 	import { Button } from "$lib/components/ui/button/index.js";
+	import { Chip } from "$lib/components/ui/chip/index.js";
+	import type { ChipTone } from "$lib/components/ui/chip/variants.js";
+	import * as Tooltip from "$lib/components/ui/tooltip/index.js";
 	import { AGENT_ICONS, agentDisplayName } from "$lib/shell/agentIcons.ts";
 	import WorkingSpinner from "$lib/shell/components/conversation/WorkingSpinner.svelte";
 	import {
@@ -21,7 +31,7 @@
 		sessionPresenceHistory,
 	} from "$lib/shell/conversation/sessionPresence.ts";
 	import { presentAgentError } from "$lib/shell/errorPresentation";
-	import { backgroundWorkSummary, type OwnedSession } from "$lib/shell/ownedSessions";
+	import { railRowStatus, sessionWaitsOnYou, type OwnedSession } from "$lib/shell/ownedSessions";
 	import { projectMachineLabel } from "$lib/shell/projects/projects";
 	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
 	import { sessionLabel } from "$lib/shell/sessionStrip";
@@ -64,12 +74,16 @@
 	const presenceHistory = $derived($sessionPresenceHistory[session.ownedId] ?? EMPTY_SESSION_PRESENCE_HISTORY);
 	// Presence is rail-record truth plus events received live. Loading a stored
 	// transcript may populate `conversation`, but it must not repaint this row.
-	const needsYou = $derived(
-		session.pendingPermission === true ||
-			session.pendingInput === true ||
-			session.runtimeState === "waiting-approval" ||
-			session.runtimeState === "waiting-input",
-	);
+	const needsYou = $derived(sessionWaitsOnYou(session));
+	/** What the status icons count: this session, its helpers and the workers of runs it started. */
+	const status = $derived(railRowStatus(session, rail.owned));
+	/** The one status tooltip open on this row; its content mounts only while open. */
+	let openTip = $state<string | null>(null);
+	// Moving between two icons opens the next before the last one closes.
+	function setTip(kind: string, open: boolean): void {
+		if (open) openTip = kind;
+		else if (openTip === kind) openTip = null;
+	}
 	const pendingApprovalCount = $derived(needsYou ? 1 : 0);
 	const runtimeState = $derived(session.runtimeState);
 	const activeTurnId = $derived(session.activeTurnId ?? presenceHistory.activeTurnId);
@@ -78,7 +92,6 @@
 		(session.backgroundWork?.length ?? 0) > 0
 			&& (session.executionEnvironment !== "remote" || rail.remoteConnections[session.remoteProfileId ?? ""] === "connected"),
 	);
-	const backgroundLabel = $derived(backgroundActive ? backgroundWorkSummary(session.backgroundWork ?? []) : null);
 	const presenceSignals = $derived(
 		deriveSessionPresence(
 			{
@@ -111,7 +124,7 @@
 	);
 	const finishedUnread = $derived(!needsYou && presenceSignals === "needs-attention");
 	const presenceLabel = $derived(
-		backgroundLabel ?? {
+		{
 			working: "Working",
 			attention: "Waiting on you",
 			idle: "Idle",
@@ -169,6 +182,22 @@
 	}
 </script>
 
+<!-- One status icon: a small chip with a count when there is more than one, and a tooltip that says it in words. -->
+{#snippet statusIcon(kind: string, testId: string, tone: ChipTone, Icon: Component, count: number, tip: string)}
+	<Tooltip.Root open={openTip === kind} onOpenChange={(open) => setTip(kind, open)}>
+		<Tooltip.Trigger>
+			{#snippet child({ props })}
+				<span {...props} data-testid={testId} class="status-icon" role="img" aria-label={tip}>
+					<Chip {tone} class="h-4 gap-0.5 px-1 tabular-nums"><Icon aria-hidden="true" />{#if count > 1}{count}{/if}</Chip>
+				</span>
+			{/snippet}
+		</Tooltip.Trigger>
+		{#if openTip === kind}
+			<Tooltip.Content side="top" sideOffset={6}>{tip}</Tooltip.Content>
+		{/if}
+	</Tooltip.Root>
+{/snippet}
+
 <li
 	data-testid="worktree-agent-row"
 	data-presence={presence}
@@ -211,6 +240,20 @@
                  either way, so the buttons never land on the title — the title
                  simply clips a little earlier to make room for them. -->
 			<span class="line line-title">
+				{#if session.orchestratorMarkedAtMs}
+					<Tooltip.Root open={openTip === "crown"} onOpenChange={(open) => setTip("crown", open)}>
+						<Tooltip.Trigger>
+							{#snippet child({ props })}
+								<span {...props} data-testid="worktree-agent-crown" class="crown" role="img" aria-label="Main orchestrator">
+									<Crown aria-hidden="true" />
+								</span>
+							{/snippet}
+						</Tooltip.Trigger>
+						{#if openTip === "crown"}
+							<Tooltip.Content side="top" sideOffset={6}>Main orchestrator</Tooltip.Content>
+						{/if}
+					</Tooltip.Root>
+				{/if}
 				<span data-testid="worktree-agent-title" class="session-title">{label}</span>
 				<span data-testid="worktree-agent-age" class="age">
 					<span class="age-text">{ageText ?? ""}</span>
@@ -233,22 +276,31 @@
 					<span class="branch">{session.branch}</span>
 				{/if}
 
-				<!-- What the row still needs to say in words. The working state is
-                   the mark's job, so only the states a colour cannot carry are
-                   spelled out here. -->
-				{#if needsYou}
-					<span data-testid="worktree-agent-needs-you" class="needs-you">
-						<span class="attention-dot" aria-hidden="true"></span>
-						Needs you
-					</span>
-				{:else if backgroundLabel}
-					<span data-testid="worktree-agent-background" class="background-work">{backgroundLabel}</span>
-				{:else if finishedUnread}
-					<span data-testid="worktree-agent-unread" class="unread">
-						<span class="unread-dot" aria-hidden="true"></span>
-						Unread
-					</span>
-				{:else if presence === "failed"}
+				<!-- Small icons for what is under this session, needs you first. The
+				     working state is the mark's job; a failure still needs its words. -->
+				<span class="status-icons">
+					{#if status.waiting.length}
+						{@render statusIcon("needs-you", "worktree-agent-needs-you", "attention", Hand, status.waiting.length,
+							`Needs you: ${status.waiting.length} (${status.waiting.join("; ")})`)}
+					{/if}
+					{#if backgroundActive && status.background}
+						{@render statusIcon("background", "worktree-agent-background", "live", SquareTerminal, status.background,
+							`${status.background} background ${status.background === 1 ? "task" : "tasks"} running`)}
+					{/if}
+					{#if status.helpers}
+						{@render statusIcon("helpers", "worktree-agent-helpers", "live", Bot, status.helpers,
+							`${status.helpers} ${status.helpers === 1 ? "helper or sub-agent" : "helpers and sub-agents"} running`)}
+					{/if}
+					{#if status.runs}
+						{@render statusIcon("runs", "worktree-agent-runs", "live", Workflow, status.runs,
+							`${status.runs} workflow ${status.runs === 1 ? "run" : "runs"} working`)}
+					{/if}
+					{#if finishedUnread}
+						{@render statusIcon("unread", "worktree-agent-unread", "neutral", MessageSquareDot, 1,
+							"Unread: the last turn finished and you have not read it")}
+					{/if}
+				</span>
+				{#if presence === "failed"}
 					<span data-testid="worktree-agent-status" class="failed">{presentedError?.summary ?? presenceLabel}</span>
 				{/if}
 			</span>
@@ -515,11 +567,31 @@
 		white-space: nowrap;
 	}
 
-	.failed,
-	.needs-you,
-	.background-work,
-	.unread {
+	/* The status icons sit at the meta line's right end and never shrink; the
+     machine, the branch and a failure's words give way to them. */
+	.status-icons {
+		display: inline-flex;
+		flex: 0 0 auto;
+		align-items: center;
+		gap: 4px;
 		margin-left: auto;
+	}
+
+	.status-icon {
+		display: inline-flex;
+		flex: 0 0 auto;
+	}
+
+	/* Same 12px glyph as the status chips, beside the title. */
+	.crown {
+		display: inline-flex;
+		flex: 0 0 auto;
+		color: var(--primary);
+	}
+
+	.crown :global(svg) {
+		width: 12px;
+		height: 12px;
 	}
 
 	/* Last activity stays in line one's right corner while the row is hovered. */
@@ -549,53 +621,6 @@
 		flex: 0 0 auto;
 		place-items: center;
 		color: var(--primary);
-	}
-
-	.needs-you {
-		display: inline-flex;
-		flex: 0 0 auto;
-		align-items: center;
-		gap: 5px;
-		color: var(--color-attention);
-		font-size: 12px;
-		font-weight: 500;
-		white-space: nowrap;
-	}
-
-	/* The needs-you label's type, without its dot, in the working colour. */
-	.background-work {
-		flex: 0 0 auto;
-		color: var(--primary);
-		font-size: 12px;
-		font-weight: 500;
-		white-space: nowrap;
-	}
-
-	.attention-dot {
-		width: 7px;
-		height: 7px;
-		flex: 0 0 auto;
-		border-radius: 50%;
-		background: var(--color-attention);
-	}
-
-	.unread {
-		display: inline-flex;
-		flex: 0 0 auto;
-		align-items: center;
-		gap: 5px;
-		color: var(--primary);
-		font-size: 12px;
-		font-weight: 500;
-		white-space: nowrap;
-	}
-
-	.unread-dot {
-		width: 7px;
-		height: 7px;
-		flex: 0 0 auto;
-		border-radius: 2px;
-		background: var(--primary);
 	}
 
 	.failed {

@@ -158,6 +158,54 @@ export function backgroundWorkSummary(work: readonly BackgroundWorkItem[]): stri
   return null;
 }
 
+// ── What a rail row counts ───────────────────────────────────────────────────
+
+/** True while the session waits on the owner: a permission prompt or a question. */
+export function sessionWaitsOnYou(session: OwnedSession): boolean {
+  return session.pendingPermission === true || session.pendingInput === true
+    || session.runtimeState === 'waiting-approval' || session.runtimeState === 'waiting-input';
+}
+
+// Not 'starting': a session whose start failed can keep that state on the rail.
+const BUSY: readonly (AgentRuntimeState | undefined)[] = ['working', 'interrupting', 'waiting-approval', 'waiting-input'];
+
+/**
+ * The rail row's status icons for `session`, from the rail's own records: who
+ * waits on the owner (the session itself, its helpers, and the workers of runs
+ * it started), its background commands, its running helpers and sub-agents,
+ * and its workflow runs with a worker at work. A run counts only while a
+ * worker is busy: the engine leaves a finished step's session open, so an
+ * open session is no sign that its run is still going. A running helper also appears in
+ * the parent's background work as a sub-agent; it is counted once. `waiting`
+ * says each one in words.
+ */
+export function railRowStatus(session: OwnedSession, all: readonly OwnedSession[]): {
+  waiting: string[]; background: number; helpers: number; runs: number;
+} {
+  const asking = (other: OwnedSession) => other.pendingPermission || other.runtimeState === 'waiting-approval'
+    ? 'is asking for approval' : 'is waiting for an answer';
+  const waiting = sessionWaitsOnYou(session) ? [`this session ${asking(session)}`] : [];
+  let helpers = 0;
+  const helperIds = new Set<string>();
+  const runs = new Set<string>();
+  for (const other of all) {
+    const helper = other.helperOf === session.ownedId;
+    if (!helper && !(other.runId && other.runLead === session.ownedId)) continue;
+    const name = other.title || other.handle || other.ownedId.slice(0, 8);
+    if (helper) helperIds.add(`claude-child:${other.ownedId}`);
+    if (sessionWaitsOnYou(other)) {
+      waiting.push(`${helper ? `helper ${name}` : `${name} in ${other.runLabel ?? 'a workflow run'}`} ${asking(other)}`);
+    }
+    if (!BUSY.includes(other.runtimeState)) continue;
+    if (helper) helpers += 1;
+    else runs.add(other.runId!);
+  }
+  const work = session.backgroundWork ?? [];
+  const subagents = work.filter((item) => item.kind === 'subagent');
+  const nativeSubagents = subagents.filter((item) => !helperIds.has(item.id)).length;
+  return { waiting, background: work.length - subagents.length, helpers: helpers + nativeSubagents, runs: runs.size };
+}
+
 /** The item's own label, or what kind of work it is when it has none. */
 export function backgroundWorkLabel(item: BackgroundWorkItem): string {
   return item.label.trim() || (item.kind === 'subagent' ? 'Sub-agent' : 'Background command');
