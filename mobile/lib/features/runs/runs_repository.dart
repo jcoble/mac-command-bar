@@ -170,8 +170,14 @@ class RunsNotifier extends AsyncNotifier<RunsList> {
   Future<RunsList> build() => ref.watch(runsRepositoryProvider).list();
 
   /// Refetches the list, keeping the current rows on screen meanwhile. Called
-  /// by pull to refresh and by a live `changed runs` notice.
-  Future<void> refresh() async => state = await AsyncValue.guard(_repo.list);
+  /// by pull to refresh and by a live `changed runs` notice. A result for a
+  /// machine the user has since switched away from is dropped.
+  Future<void> refresh() async {
+    final repo = _repo;
+    final result = await AsyncValue.guard(repo.list);
+    if (!identical(repo, _repo)) return;
+    state = result;
+  }
 
   /// A live `changed run <id>` notice: refetches that run's detail if a
   /// screen shows it, and nothing else.
