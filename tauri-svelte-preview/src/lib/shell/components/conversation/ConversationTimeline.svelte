@@ -122,12 +122,17 @@
     const foldedGroups = groups.map((group) => ({ group, items: foldToolRuns(group.items) }));
     const seeds = new Set(foldedGroups.flatMap(({ items }) =>
       items.filter((item) => item.kind === 'toolRun').map((item) => item.itemId)));
+    // Another turn's rows can split a turn into two groups; each part needs its own row keys.
+    const turnParts = new Map<string | null, number>();
     for (const { group, items: groupedItems } of foldedGroups) {
+      const part = turnParts.get(group.turnId) ?? 0;
+      turnParts.set(group.turnId, part + 1);
+      const turnKey = part === 0 ? group.turnId : `${group.turnId}:${part}`;
       const summary = group.completed ? summarizeCompletedWork(group.items) : null;
       const opened = disclosures[`turn:${group.turnId}:open`];
       for (const item of turnRows(group, groupedItems, opened)) {
         if (item === 'heading') {
-          result.push({ key: `turn-work:${group.turnId}`, group, workSummary: summary ?? '',
+          result.push({ key: `turn-work:${turnKey}`, group, workSummary: summary ?? '',
             folded: group.completed && group.workItemIds.length ? opened !== true : undefined });
           continue;
         }
@@ -151,7 +156,7 @@
       }
       if (group.completed) {
         const edits = getTurnFileEdits(group);
-        for (const edit of edits) result.push({ key: `turn-file:${group.turnId}:${edit.path}`, group, edit });
+        for (const edit of edits) result.push({ key: `turn-file:${turnKey}:${edit.path}`, group, edit });
       }
     }
     previousRuns = nextRuns;
@@ -420,7 +425,7 @@
   }
 
   function toggleTurn(group: ConversationTurnGroup): void {
-    const key = `turn-work:${group.turnId}`;
+    const key = rows.find((row) => row.group === group && row.workSummary !== undefined)?.key ?? '';
     const node = host?.querySelector<HTMLElement>(`[data-row-key="${CSS.escape(key)}"]`);
     const offsetPx = node && host ? node.getBoundingClientRect().top - host.getBoundingClientRect().top : null;
     follow = false;
