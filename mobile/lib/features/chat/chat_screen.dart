@@ -90,6 +90,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ),
           ],
         ),
+        actions: [
+          IconButton(
+            tooltip: 'Changes',
+            icon: const Icon(Symbols.difference_rounded),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => ChangesScreen(
+                  title: session?.name,
+                  load: ref
+                      .read(chatProvider((machine.id, widget.ownedId)).notifier)
+                      .changes,
+                ),
+              ),
+            ),
+          ),
+        ],
+        bottom: switch (chat.value?.contextLeft) {
+          final left? => ContextLeftLine(left),
+          null => null,
+        },
       ),
       body: switch (chat) {
         AsyncData(:final value) => Column(
@@ -102,12 +122,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       message:
                           'Your message goes to this session as your own turn.',
                     )
-                  : ChatThread(items: value.items, working: value.working),
+                  : ChatThread(
+                      items: value.items,
+                      working: value.working,
+                      onOpenTool: (item) => showToolSheet(
+                        context,
+                        item,
+                        ref
+                            .read(
+                              chatProvider((
+                                machine.id,
+                                widget.ownedId,
+                              )).notifier,
+                            )
+                            .toolItem(item.id),
+                      ),
+                    ),
             ),
             ChatComposeBar(
               controller: _text,
               sending: _sending,
               onSend: () => _send(machine.id),
+              leading: ModelChip(session: (machine.id, widget.ownedId)),
             ),
           ],
         ),

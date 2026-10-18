@@ -68,6 +68,9 @@ const TOOL_ITEM_SEQUENCE_INDEX_SCHEMA: &str =
        WHERE json_extract(payload,'$.payload.kind')='tool'
          AND json_type(payload,'$.payload.diff') NOT IN ('null');";
 
+const ITEM_EVENTS_SQL: &str = "SELECT owned_id, seq, turn_id, kind, payload, created_at
+     FROM events WHERE owned_id = ?1 AND item_id = ?2 ORDER BY seq";
+
 const ITEM_PAGE_INDEX_SCHEMA: &str = "CREATE INDEX IF NOT EXISTS events_command_generation_idx
   ON events(owned_id,json_extract(payload,'$.generation'),seq)
   WHERE json_extract(payload,'$.payload.kind')='availableCommandsUpdate';
@@ -3719,6 +3722,20 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not read the recent event list", error))
     }
 
+    /// Every event of one item, oldest first. A tool call's updates share its item id,
+    /// so this is the whole call wherever its events sit in the session.
+    pub fn list_item_events(&self, owned_id: &str, item_id: &str) -> Result<Vec<EventRow>> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(ITEM_EVENTS_SQL)
+            .map_err(|error| StoreError::sqlite("could not prepare the item event list", error))?;
+        let rows = statement
+            .query_map(params![owned_id, item_id], event_from_row)
+            .map_err(|error| StoreError::sqlite("could not list item events", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read the item event list", error))
+    }
+
     /// The window of events just older than `before_seq` and no older than
     /// `lowest_seq`, bounded by bytes.
     ///
@@ -5854,6 +5871,35 @@ mod tests {
             ),
             ..fixture_event_of_kind(owned_id, seq, kind)
         }
+    }
+
+    #[test]
+    fn list_item_events_returns_one_items_events_in_order_through_the_item_index() {
+        let (_directory, _path, store) = open_temp_store();
+        store.upsert_session(&fixture_session("session-a", 10_000)).unwrap();
+        store.upsert_session(&fixture_session("session-b", 10_000)).unwrap();
+        for event in [
+            tool_event("session-a", 1, "item.updated", "tool-a", "running"),
+            tool_event("session-a", 2, "item.updated", "tool-b", "running"),
+            tool_event("session-b", 1, "item.updated", "tool-a", "running"),
+            tool_event("session-a", 3, "item.completed", "tool-a", "completed"),
+        ] {
+            store.append_event(&event).unwrap();
+        }
+        let rows = store.list_item_events("session-a", "tool-a").unwrap();
+        assert_eq!(rows.iter().map(|row| row.seq).collect::<Vec<_>>(), [1, 3]);
+        assert!(store.list_item_events("session-a", "missing").unwrap().is_empty());
+        let connection = store.lock().unwrap();
+        use super::{params, ITEM_EVENTS_SQL};
+        let plan: Vec<String> = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {ITEM_EVENTS_SQL}"))
+            .unwrap()
+            .query_map(params!["session-a", "tool-a"], |row| row.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        println!("query plan: {plan:?}");
+        assert!(plan.iter().any(|step| step.contains("events_owned_item_seq_idx")), "{plan:?}");
     }
 
     #[test]

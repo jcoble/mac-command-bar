@@ -24,7 +24,8 @@ use sha2::{Digest, Sha256};
 
 use super::protocol::{
     AgentConversationEvent, AgentConversationPayload as Payload, AgentNativeSessionMode, EnsureAgentConversationRequest,
-    ExecutionEnvironment, RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest, ToolState, TurnState,
+    ExecutionEnvironment, RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest,
+    SetAgentConversationConfigRequest, ToolState, TurnState,
 };
 use super::phone_push::PushSender;
 use super::remote::{execute_phone_command, RemoteCommand, RemoteResponse, ServerState};
@@ -37,6 +38,9 @@ const NOT_SET_UP: &str =
     "Phone access is not set up on this machine: set ASSEMBLY_PHONE_URL in ~/.config/assembly/phone.env";
 const REMOVED: &str = "This phone was removed — pair again";
 const NO_SESSION: &str = "No such session on this machine";
+const NO_TOOL_CALL: &str = "No such tool call in this session";
+/// The engine's refusals of a model or effort change, which the phone shows as they are.
+const CONFIG_REFUSALS: [&str; 2] = ["The requested ", "Effort is set when the session starts"];
 /// §5.3 sets no length for chat text, so a plain cap: 10,000 characters, in a body of at most 64 KiB.
 const MAX_CHAT_CHARS: usize = 10_000;
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -44,6 +48,11 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 const CHAT_PAGE_BYTES: u32 = 1024 * 1024;
 const LATEST_CHAT_ITEMS: usize = 100;
 const MAX_PUSH_TOKEN_CHARS: usize = 4096;
+/// A tool call opened on the phone sends at most this much output and diff.
+const MAX_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
+const MAX_TOOL_DIFF_BYTES: usize = 64 * 1024;
+/// A session's changes send at most this much diff; the file list is always whole.
+const MAX_CHANGES_DIFF_BYTES: usize = 256 * 1024;
 
 /// Bumped whenever a phone is removed, so each open live socket checks its own token and closes if it went.
 static DEVICE_REMOVED: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::channel(0).0);
@@ -64,6 +73,9 @@ pub(super) fn router(state: ServerState) -> Router {
         .route("/phone/v1/me", get(me).delete(forget_me))
         .route("/phone/v1/sessions", get(sessions))
         .route("/phone/v1/sessions/{id}/chat", get(session_chat).post(send_session_chat))
+        .route("/phone/v1/sessions/{id}/items/{item}", get(tool_item))
+        .route("/phone/v1/sessions/{id}/changes", get(changes))
+        .route("/phone/v1/sessions/{id}/config", get(session_config).post(set_session_config))
         .route("/phone/v1/runs", get(runs))
         .route("/phone/v1/runs/{id}", get(run_detail))
         .route("/phone/v1/runs/{id}/{action}", post(control_run))
@@ -316,7 +328,8 @@ async fn session_chat(State(state): State<ServerState>, Path(owned_id): Path<Str
     read_chat(&state, &owned_id, &query)
 }
 
-/// A session's chat items after `after`, or its newest 100.
+/// A session's chat items after `after`, or its newest 100, with `usage: {usedTokens, contextWindow}`
+/// from its latest usage event when it has one: the page's newest, else one store read.
 fn read_chat(state: &ServerState, owned_id: &str, query: &HashMap<String, String>) -> Reply {
     let after = query.get("after").map(|after| after.parse::<i64>()).transpose()
         .map_err(|_| refuse(StatusCode::BAD_REQUEST, "after must be a sequence number"))?;
@@ -328,12 +341,190 @@ fn read_chat(state: &ServerState, owned_id: &str, query: &HashMap<String, String
     if after.is_none() { items.drain(..items.len().saturating_sub(LATEST_CHAT_ITEMS)); }
     let owner_items: Vec<Value> = inbox_items(state)?.into_iter()
         .filter(|(session, _)| session.as_deref() == Some(owned_id)).map(|(_, item)| item).collect();
-    Ok(Json(json!({
+    let mut body = json!({
         "items": items,
         "cursor": page.events.last().map_or(after.unwrap_or(0), |event| event.sequence),
         "turn": if state.manager.turn_running(owned_id) { "running" } else { "idle" },
         "ownerItems": owner_items,
-    })).into_response())
+    });
+    let usage = match page.events.iter().rev().find_map(|event| usage_of(&event.payload)) {
+        Some(usage) => Some(usage),
+        None => state.manager.store().latest_usage_events(&[owned_id.to_string()]).map_err(|error| server_error(&error))?
+            .first().and_then(|row| serde_json::from_str::<AgentConversationEvent>(&row.payload_json).ok())
+            .and_then(|event| usage_of(&event.payload)),
+    };
+    if let Some(usage) = usage { body["usage"] = usage; }
+    Ok(Json(body).into_response())
+}
+
+fn usage_of(payload: &Payload) -> Option<Value> {
+    match payload {
+        Payload::Usage { used_tokens, context_window, .. } => Some(json!({ "usedTokens": used_tokens, "contextWindow": context_window })),
+        _ => None,
+    }
+}
+
+/// `GET /phone/v1/sessions/{id}/items/{itemId}`: one tool call whole, all its events in the store
+/// (one indexed read, however old they are) folded in order.
+async fn tool_item(State(state): State<ServerState>, Path((owned_id, item_id)): Path<(String, String)>) -> Reply {
+    known_session(&state, &owned_id)?;
+    let events = state.manager.store().list_item_events(&owned_id, &item_id).map_err(|error| server_error(&error))?
+        .into_iter().map(super::manager::stored_event).collect::<Result<Vec<_>, _>>().map_err(|error| server_error(&error))?;
+    let Some(call) = events.iter().filter_map(|event| ToolCall::of(&event.payload, &item_id)).reduce(ToolCall::fold)
+    else { return Err(refuse(StatusCode::NOT_FOUND, NO_TOOL_CALL)) };
+    let (output, output_truncated) = capped(call.output, MAX_TOOL_OUTPUT_BYTES);
+    let (diff, diff_truncated) = capped(call.diff, MAX_TOOL_DIFF_BYTES);
+    Ok(Json(json!({ "name": call.name, "state": call.state, "summary": call.summary, "path": call.path, "output": output,
+        "outputTruncated": output_truncated, "diff": diff, "diffTruncated": diff_truncated })).into_response())
+}
+
+/// `GET /phone/v1/sessions/{id}/changes`: what the session's branch changed since the default branch,
+/// the desktop Changes tab's branch diff, plus the files the agent created and never `git add`ed (which
+/// `git diff` leaves out) as new-file sections after it. The folder is the session's worktree, else its
+/// cwd, from the store, never from the request. A git refusal, such as no `origin/HEAD`, is a 409 with git's message.
+async fn changes(State(state): State<ServerState>, Path(owned_id): Path<String>) -> Reply {
+    known_session(&state, &owned_id)?;
+    let session = state.manager.store().get_session(&owned_id).map_err(|error| server_error(&error))?
+        .ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))?;
+    let root = session.worktree.filter(|worktree| !worktree.is_empty()).unwrap_or(session.cwd);
+    let mut branch = crate::commands::source_control::read_git_branch_diff(root.clone()).await
+        .map_err(|error| refuse(StatusCode::CONFLICT, &error))?;
+    let mut files = changed_files(&branch.diff);
+    let budget = MAX_CHANGES_DIFF_BYTES.saturating_sub(branch.diff.len());
+    let untracked = tauri::async_runtime::spawn_blocking(move || untracked_sections(std::path::Path::new(&root), budget)).await
+        .map_err(|error| server_error(&error))?.map_err(|error| refuse(StatusCode::CONFLICT, &error))?;
+    for (path, added, section) in untracked {
+        files.push(json!({ "path": path, "added": added, "removed": 0 }));
+        branch.diff.push_str(&section);
+    }
+    let (diff, diff_truncated) = capped(Some(&branch.diff), MAX_CHANGES_DIFF_BYTES);
+    Ok(Json(json!({ "base": branch.base, "files": files, "diff": diff, "diffTruncated": diff_truncated })).into_response())
+}
+
+/// Each untracked, not ignored file under `root`, in path order, as `(path, added lines, new-file diff
+/// section)`. Contents are read only while `budget` bytes of diff remain; after that a file is still
+/// listed, with 0 added and no section, since the diff is cut there anyway. A binary, non-regular
+/// (symlink) or unreadable file has 0 added and a "Binary files differ" section.
+fn untracked_sections(root: &std::path::Path, mut budget: usize) -> Result<Vec<(String, u32, String)>, String> {
+    let listing = crate::run_git_text(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    let mut files = Vec::new();
+    for path in listing.split('\0').filter(|path| !path.is_empty()) {
+        if budget == 0 {
+            files.push((path.to_owned(), 0, String::new()));
+            continue;
+        }
+        let file = root.join(path);
+        let content = std::fs::symlink_metadata(&file).ok().filter(std::fs::Metadata::is_file).and_then(|_| {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut std::io::Read::take(std::fs::File::open(&file).ok()?, budget as u64), &mut bytes).ok()?;
+            (!bytes.contains(&0)).then(|| String::from_utf8_lossy(&bytes).into_owned())
+        });
+        let mut section = format!("diff --git a/{path} b/{path}\nnew file mode 100644\n");
+        let mut added = 0;
+        match content {
+            None => section.push_str(&format!("Binary files /dev/null and b/{path} differ\n")),
+            Some(text) if text.is_empty() => {}
+            Some(text) => {
+                added = text.lines().count();
+                let range = if added == 1 { "1".to_owned() } else { format!("1,{added}") };
+                section.push_str(&format!("--- /dev/null\n+++ b/{path}\n@@ -0,0 +{range} @@\n"));
+                for line in text.lines() { section.push('+'); section.push_str(line); section.push('\n'); }
+                if !text.ends_with('\n') { section.push_str("\\ No newline at end of file\n"); }
+            }
+        }
+        budget = budget.saturating_sub(section.len());
+        files.push((path.to_owned(), added as u32, section));
+    }
+    Ok(files)
+}
+
+/// Each file in a `git diff` text, in order, with its added and removed lines. The path is the `b/`
+/// side of the `diff --git` header (decoded when git quotes it); only lines inside a hunk count, so
+/// `---`/`+++` headers do not.
+fn changed_files(diff: &str) -> Vec<Value> {
+    let mut files: Vec<(String, u32, u32)> = Vec::new();
+    let mut in_hunk = false;
+    for line in diff.lines() {
+        if let Some(header) = line.strip_prefix("diff --git ") {
+            files.push((header_path(header), 0, 0));
+            in_hunk = false;
+        } else if line.starts_with("@@") {
+            in_hunk = true;
+        } else if let (true, Some(file)) = (in_hunk, files.last_mut()) {
+            if line.starts_with('+') { file.1 += 1 } else if line.starts_with('-') { file.2 += 1 }
+        }
+    }
+    files.into_iter().map(|(path, added, removed)| json!({ "path": path, "added": added, "removed": removed })).collect()
+}
+
+/// One tool call as its events say it. Imported history stores a call's output in a later event with
+/// no name, summary, path or diff, so the events of one item fold in order: each later non-empty
+/// field replaces the earlier one, and the state is the latest event's.
+#[derive(Clone, Copy)]
+struct ToolCall<'a> {
+    name: &'a str,
+    state: ToolState,
+    summary: Option<&'a str>,
+    output: Option<&'a str>,
+    path: Option<&'a str>,
+    diff: Option<&'a str>,
+}
+
+impl<'a> ToolCall<'a> {
+    /// The call `payload` describes, when it is a tool event of item `item_id`.
+    fn of(payload: &'a Payload, item_id: &str) -> Option<Self> {
+        match payload {
+            Payload::Tool { item_id: id, name, state, summary, output, path, diff } if id == item_id =>
+                Some(Self { name, state: *state, summary: summary.as_deref(), output: output.as_deref(), path: path.as_deref(), diff: diff.as_deref() }),
+            _ => None,
+        }
+    }
+
+    fn fold(self, later: Self) -> Self {
+        let newer = |old: Option<&'a str>, new: Option<&'a str>| new.filter(|text| !text.is_empty()).or(old);
+        Self { name: if later.name.is_empty() { self.name } else { later.name }, state: later.state,
+            summary: newer(self.summary, later.summary), output: newer(self.output, later.output),
+            path: newer(self.path, later.path), diff: newer(self.diff, later.diff) }
+    }
+
+    fn has_detail(&self) -> bool {
+        [self.output, self.path, self.diff].iter().any(|field| field.is_some_and(|text| !text.is_empty()))
+    }
+}
+
+/// The `b/` path in a `diff --git` header's text. Git quotes a path with a quote, backslash,
+/// control character or non-ASCII byte in C style: `"b/a\"b.txt"`, with `\t`, `\n` and `\NNN` octal bytes.
+fn header_path(header: &str) -> String {
+    let Some((_, quoted)) = header.rsplit_once(" \"b/") else {
+        return header.rsplit_once(" b/").map_or(header, |(_, path)| path).to_owned();
+    };
+    let mut bytes = quoted.strip_suffix('"').unwrap_or(quoted).bytes().peekable();
+    let mut path = Vec::new();
+    while let Some(byte) = bytes.next() {
+        if byte != b'\\' { path.push(byte); continue; }
+        match bytes.next() {
+            Some(b't') => path.push(b'\t'),
+            Some(b'n') => path.push(b'\n'),
+            Some(first @ b'0'..=b'7') => {
+                let mut value = u32::from(first - b'0');
+                for _ in 0..2 {
+                    match bytes.next_if(|digit| (b'0'..=b'7').contains(digit)) { Some(digit) => value = value * 8 + u32::from(digit - b'0'), None => break }
+                }
+                path.push(value as u8);
+            }
+            Some(other) => path.push(other),
+            None => {}
+        }
+    }
+    String::from_utf8_lossy(&path).into_owned()
+}
+
+/// `text` cut to at most `max` bytes on a char boundary, and whether it was cut.
+fn capped(text: Option<&str>, max: usize) -> (Option<&str>, bool) {
+    match text {
+        Some(text) if text.len() > max => (Some(&text[..text.floor_char_boundary(max)]), true),
+        text => (text, false),
+    }
 }
 
 #[derive(Deserialize)]
@@ -355,24 +546,71 @@ async fn send_to(state: &ServerState, owned_id: String, body: &[u8]) -> Reply {
     if text.is_empty() || text.chars().count() > MAX_CHAT_CHARS {
         return Err(refuse(StatusCode::BAD_REQUEST, "A message must be 1 to 10,000 characters"));
     }
-    let row = state.manager.store().get_session(&owned_id).map_err(|error| server_error(&error))?
-        .ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))?;
-    let provider = super::transcript::parse_provider(&row.provider).map_err(|error| server_error(&error))?;
-    // After a restart the manager holds no sessions; ensure loads the stored one and gives its generation.
-    let ensure = RemoteCommand::Ensure(EnsureAgentConversationRequest {
-        owned_id: owned_id.clone(), execution_environment: ExecutionEnvironment::Local, remote_profile_id: None,
-        provider, cwd: row.cwd, native_session_id: row.native_session_id,
-        native_session_mode: AgentNativeSessionMode::Resume, reasoning_effort: None, project_id: row.project_id,
-    });
-    let RemoteResponse::Connection(connection) = execute_phone_command(state, ensure).await
-        .map_err(|error| server_error(&error))? else { return Err(server_error(&"ensure gave the wrong response")) };
+    let generation = ensure(state, &owned_id).await?;
     let send = RemoteCommand::Send(SendAgentConversationMessageRequest {
-        owned_id, generation: connection.generation, text: text.into(), content: Vec::new(),
+        owned_id, generation, text: text.into(), content: Vec::new(),
         attachment_ids: Vec::new(), model: None, approval_policy: None,
     });
     let RemoteResponse::SendReceipt(receipt) = execute_phone_command(state, send).await
         .map_err(|error| server_error(&error))? else { return Err(server_error(&"send gave the wrong response")) };
     Ok(Json(json!({ "itemId": receipt.user_item_id })).into_response())
+}
+
+/// The desktop's ensure for `owned_id`, which loads a stored session after a restart; its generation.
+async fn ensure(state: &ServerState, owned_id: &str) -> Result<u64, Response> {
+    let row = state.manager.store().get_session(&owned_id).map_err(|error| server_error(&error))?
+        .ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))?;
+    let provider = super::transcript::parse_provider(&row.provider).map_err(|error| server_error(&error))?;
+    // After a restart the manager holds no sessions; ensure loads the stored one and gives its generation.
+    let ensure = RemoteCommand::Ensure(EnsureAgentConversationRequest {
+        owned_id: owned_id.into(), execution_environment: ExecutionEnvironment::Local, remote_profile_id: None,
+        provider, cwd: row.cwd, native_session_id: row.native_session_id,
+        native_session_mode: AgentNativeSessionMode::Resume, reasoning_effort: None, project_id: row.project_id,
+    });
+    let RemoteResponse::Connection(connection) = execute_phone_command(state, ensure).await
+        .map_err(|error| server_error(&error))? else { return Err(server_error(&"ensure gave the wrong response")) };
+    Ok(connection.generation)
+}
+
+/// `GET /phone/v1/sessions/{id}/config` → `{models: [{id, label}], model, efforts, effort}`: what the
+/// desktop's picker offers this session and what it has chosen (`model`, `effort` and a `label` may be
+/// null; the phone then words the id as the desktop does). It is the desktop's config read, live or
+/// stored, so nothing starts. The approval policy is never sent.
+async fn session_config(State(state): State<ServerState>, Path(owned_id): Path<String>) -> Reply {
+    known_session(&state, &owned_id)?;
+    let RemoteResponse::Config(config) = execute_phone_command(&state, RemoteCommand::Config { owned_id }).await
+        .map_err(|error| server_error(&error))? else { return Err(server_error(&"config gave the wrong response")) };
+    let models: Vec<Value> = config.available_models.iter()
+        .map(|id| json!({ "id": id, "label": config.model_labels.get(id) })).collect();
+    Ok(Json(json!({ "models": models, "model": config.model, "efforts": config.available_efforts,
+        "effort": config.reasoning_effort })).into_response())
+}
+
+/// The only fields the phone may set; any other, such as `approvalPolicy`, refuses the body.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigRequest {
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+/// `POST /phone/v1/sessions/{id}/config {model?, effort?}` → 204: the desktop's ensure, then its config
+/// change. An engine refusal, such as an effort a started session cannot change, is a 409 with its message.
+async fn set_session_config(State(state): State<ServerState>, Path(owned_id): Path<String>, body: Bytes) -> Reply {
+    known_session(&state, &owned_id)?;
+    let request: ConfigRequest = parse(&body)?;
+    if request.model.is_none() && request.effort.is_none() {
+        return Err(refuse(StatusCode::BAD_REQUEST, "Choose a model or an effort"));
+    }
+    let generation = ensure(&state, &owned_id).await?;
+    let command = RemoteCommand::SetConfig(SetAgentConversationConfigRequest {
+        owned_id, generation, model: request.model, reasoning_effort: request.effort, approval_policy: None,
+    });
+    match execute_phone_command(&state, command).await {
+        Ok(_) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(error) if CONFIG_REFUSALS.iter().any(|refusal| error.starts_with(refusal)) => Err(refuse(StatusCode::CONFLICT, &error)),
+        Err(error) => Err(server_error(&error)),
+    }
 }
 
 /// `GET /phone/v1/runs` → `{active, recent}`: unfinished runs and the 20 newest finished ones.
@@ -697,15 +935,20 @@ struct ChatItem {
     text: String,
     at: i64,
     done: bool,
+    /// A tool call with output, a path or a diff the phone can open; the row itself carries none of them.
+    #[serde(rename = "hasDetail", skip_serializing_if = "std::ops::Not::not")]
+    has_detail: bool,
 }
 
 /// The phone's chat from a session's events (§5.3): owner, relayed, agent, tool and error items,
-/// one per item id in first-seen order, the latest event winning. Deltas for an item with no full
+/// one per item id in first-seen order, the latest event winning (a tool call's events fold, see
+/// [`ToolCall`]). Deltas for an item with no full
 /// message yet fold into one open agent item. Everything else is dropped.
 fn reduce_chat(events: &[AgentConversationEvent]) -> Vec<ChatItem> {
     let mut items: Vec<ChatItem> = Vec::new();
     let mut index = HashMap::<String, usize>::new();
     let mut messaged = HashSet::<&str>::new();
+    let mut tools = HashMap::<&str, ToolCall>::new();
     for event in events {
         let (id, kind, text, done) = match &event.payload {
             Payload::UserMessage { item_id, text, completed, .. } =>
@@ -723,13 +966,17 @@ fn reduce_chat(events: &[AgentConversationEvent]) -> Vec<ChatItem> {
                 }
                 (item_id.clone(), "agent", delta.clone(), false)
             }
-            Payload::Tool { item_id, name, state, summary, .. } => (item_id.clone(), "tool",
-                summary.clone().filter(|summary| !summary.is_empty()).unwrap_or_else(|| name.clone()),
-                matches!(state, ToolState::Completed | ToolState::Failed)),
+            Payload::Tool { item_id, .. } => {
+                let now = ToolCall::of(&event.payload, item_id).expect("a tool event is a tool call");
+                let call = *tools.entry(item_id).and_modify(|earlier| *earlier = earlier.fold(now)).or_insert(now);
+                (item_id.clone(), "tool", call.summary.filter(|summary| !summary.is_empty()).unwrap_or(call.name).to_owned(),
+                    matches!(call.state, ToolState::Completed | ToolState::Failed))
+            }
             Payload::Error { message, .. } => (format!("error-{}", event.sequence), "error", message.clone(), true),
             _ => continue,
         };
-        let item = ChatItem { id, seq: event.sequence, kind, text, at: event.timestamp_ms as i64, done };
+        let has_detail = kind == "tool" && tools.get(id.as_str()).is_some_and(ToolCall::has_detail);
+        let item = ChatItem { id, seq: event.sequence, kind, text, at: event.timestamp_ms as i64, done, has_detail };
         match index.get(&item.id) {
             Some(&at) => items[at] = item,
             None => {
@@ -1026,7 +1273,8 @@ mod tests {
         for (method, path) in [(Method::GET, "/me"), (Method::DELETE, "/me"),
             (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::POST, "/runs/r/steps/s/retry"), (Method::GET, "/inbox"),
             (Method::POST, "/inbox/i/answer"), (Method::GET, "/live"), (Method::GET, "/sessions"),
-            (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat")] {
+            (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat"), (Method::GET, "/sessions/s/items/i"),
+            (Method::GET, "/sessions/s/changes"), (Method::GET, "/sessions/s/config"), (Method::POST, "/sessions/s/config")] {
             let response = client(method.clone(), &base, path, &session.token).json(&json!({"text": "hi"})).send().await.unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED, "{method} {path}");
             assert_eq!(response.json::<Value>().await.unwrap(), json!({"error": "This phone was removed — pair again"}));
@@ -1412,6 +1660,204 @@ mod tests {
         state.manager.shutdown().await;
     }
 
+    /// Files session `owned_id` in the store with `payloads` as its events, numbered from 1.
+    fn file_session(state: &ServerState, owned_id: &str, payloads: Vec<Payload>) {
+        let store = state.manager.store();
+        store.upsert_session(&mcb_core::session_store::SessionRow { owned_id: owned_id.into(), native_session_id: None,
+            provider: "claude".into(), model: None, effort: None, cwd: "/work".into(), worktree: None, branch: None,
+            title: Some("Lane".into()), title_source: None, project: None, project_id: None,
+            state: "ready".into(), suspended: false, created_at_ms: 1, last_activity_at_ms: 1, extra_json: "{}".into() }).unwrap();
+        for (index, payload) in payloads.into_iter().enumerate() {
+            let event = session_event(owned_id, index as i64 + 1, payload);
+            store.append_event(&mcb_core::session_store::EventRow { owned_id: owned_id.into(), seq: event.sequence, turn_id: None,
+                kind: if matches!(event.payload, Payload::Usage { .. }) { "usage.updated" } else { "tool" }.into(),
+                payload_json: serde_json::to_string(&event).unwrap(), created_at_ms: 0 }).unwrap();
+        }
+    }
+
+    fn edit(output: Option<String>, diff: Option<String>) -> Payload {
+        Payload::Tool { item_id: "edit".into(), name: "Edit".into(), state: ToolState::Completed, summary: Some("notes.txt".into()),
+            output, path: Some("/work/notes.txt".into()), diff }
+    }
+
+    #[tokio::test]
+    async fn phone_tool_item_returns_output_path_and_diff() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let diff = "--- a/notes.txt\n+++ b/notes.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n";
+        file_session(&state, "lane", vec![
+            Payload::Tool { item_id: "edit".into(), name: "Edit".into(), state: ToolState::Started, summary: None,
+                output: None, path: None, diff: None },
+            edit(Some("Wrote 2 lines".into()), Some(diff.into())),
+            tool(ToolState::Completed, Some("wc -l notes.txt")),
+        ]);
+        let body: Value = client(reqwest::Method::GET, &base, "/sessions/lane/items/edit", &token).send().await.unwrap()
+            .json().await.unwrap();
+        assert_eq!(body, json!({"name": "Edit", "state": "completed", "summary": "notes.txt", "path": "/work/notes.txt",
+            "output": "Wrote 2 lines", "outputTruncated": false, "diff": diff, "diffTruncated": false}), "the latest event wins");
+
+        let chat: Value = client(reqwest::Method::GET, &base, "/sessions/lane/chat", &token).send().await.unwrap().json().await.unwrap();
+        let details: Vec<(&str, bool)> = chat["items"].as_array().unwrap().iter()
+            .map(|item| (item["id"].as_str().unwrap(), item["hasDetail"].as_bool().unwrap_or(false))).collect();
+        assert_eq!(details, [("edit", true), ("t1", false)], "only a tool with something to open has detail");
+        assert!(chat["items"][0].get("output").is_none(), "chat rows carry no output");
+    }
+
+    #[tokio::test]
+    async fn phone_tool_item_merges_sparse_imported_events() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        // Imported history stores the call, then its output in a later event with no name or summary.
+        let call = |name: &str, state, summary: Option<&str>, output: Option<&str>| Payload::Tool { item_id: "tool-a".into(),
+            name: name.into(), state, summary: summary.map(str::to_string), output: output.map(str::to_string), path: None, diff: None };
+        file_session(&state, "lane", vec![
+            call("shell", ToolState::Started, Some("ls"), None),
+            call("", ToolState::Completed, None, Some("result")),
+        ]);
+        let body: Value = client(reqwest::Method::GET, &base, "/sessions/lane/items/tool-a", &token).send().await.unwrap()
+            .json().await.unwrap();
+        assert_eq!(body, json!({"name": "shell", "state": "completed", "summary": "ls", "path": null,
+            "output": "result", "outputTruncated": false, "diff": null, "diffTruncated": false}));
+        let chat: Value = client(reqwest::Method::GET, &base, "/sessions/lane/chat", &token).send().await.unwrap().json().await.unwrap();
+        let row = &chat["items"][0];
+        assert_eq!((row["text"].as_str(), row["done"].as_bool(), row["hasDetail"].as_bool()), (Some("ls"), Some(true), Some(true)));
+    }
+
+    #[tokio::test]
+    async fn phone_tool_item_caps_large_output() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        // "é" is two bytes, and the leading "x" puts the 32 KiB mark inside one.
+        let output = format!("x{}", "é".repeat(20 * 1024));
+        file_session(&state, "lane", vec![edit(Some(output.clone()), Some("+".repeat(70 * 1024)))]);
+        let body: Value = client(reqwest::Method::GET, &base, "/sessions/lane/items/edit", &token).send().await.unwrap()
+            .json().await.unwrap();
+        let cut = body["output"].as_str().unwrap();
+        assert_eq!(cut.len(), 32 * 1024 - 1, "cut on the char boundary below 32 KiB");
+        assert!(output.starts_with(cut));
+        assert_eq!(body["outputTruncated"], true);
+        assert_eq!(body["diff"].as_str().unwrap().len(), 64 * 1024);
+        assert_eq!(body["diffTruncated"], true);
+    }
+
+    #[tokio::test]
+    async fn phone_tool_item_found_beyond_the_newest_page() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let mut payloads = vec![edit(Some("Wrote 2 lines".into()), None)];
+        // Four 600 KiB messages after it: more than the 1 MiB page the chat list reads.
+        payloads.extend((0..4).map(|index| Payload::AssistantMessage { item_id: format!("a{index}"),
+            text: "x".repeat(600 * 1024), completed: true, blocks: None }));
+        file_session(&state, "lane", payloads);
+        let body: Value = client(reqwest::Method::GET, &base, "/sessions/lane/items/edit", &token).send().await.unwrap()
+            .json().await.unwrap();
+        assert_eq!((body["name"].as_str(), body["output"].as_str(), body["path"].as_str()),
+            (Some("Edit"), Some("Wrote 2 lines"), Some("/work/notes.txt")), "{body}");
+    }
+
+    #[tokio::test]
+    async fn phone_tool_item_unknown_session_or_item_is_404() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        file_session(&state, "lane", vec![edit(None, None),
+            Payload::AssistantMessage { item_id: "a1".into(), text: "Done".into(), completed: true, blocks: None }]);
+        for (path, error) in [("/sessions/nobody/items/edit", "No such session on this machine"),
+            ("/sessions/lane/items/missing", "No such tool call in this session"), ("/sessions/lane/items/a1", "No such tool call in this session")] {
+            let response = client(reqwest::Method::GET, &base, path, &token).send().await.unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND, "{path}");
+            assert_eq!(response.json::<Value>().await.unwrap(), json!({"error": error}), "{path}");
+        }
+    }
+
+    /// A git repository with `docs/notes.txt` committed on `main`, then changed in the working tree;
+    /// with `origin/HEAD` pointing at `main` when `origin_head` is set. Files session `owned_id` with it as its worktree.
+    fn session_in_repo(state: &ServerState, owned_id: &str, origin_head: bool) -> std::path::PathBuf {
+        let repo = std::path::PathBuf::from("/var/tmp").join(format!("assembly-phone-changes-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(repo.join("docs")).unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&repo)
+            .args(["-c", "user.name=T", "-c", "user.email=t@example.invalid"]).args(args).status().unwrap().success(), "git {args:?}");
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("docs/notes.txt"), "one\ntwo\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        if origin_head {
+            git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+            git(&["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        }
+        std::fs::write(repo.join("docs/notes.txt"), "one\nthree\nfour\n").unwrap();
+        file_session(state, owned_id, vec![]);
+        let store = state.manager.store();
+        let row = store.get_session(owned_id).unwrap().unwrap();
+        store.upsert_session(&mcb_core::session_store::SessionRow { worktree: Some(repo.to_string_lossy().into()), ..row }).unwrap();
+        repo
+    }
+
+    #[tokio::test]
+    async fn phone_changes_lists_files_with_counts_and_diff() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let repo = session_in_repo(&state, "lane", true);
+        let response = client(reqwest::Method::GET, &base, "/sessions/lane/changes", &token).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["base"], "origin/main");
+        assert_eq!(body["files"], json!([{"path": "docs/notes.txt", "added": 2, "removed": 1}]));
+        let diff = body["diff"].as_str().unwrap();
+        assert!(diff.starts_with("diff --git a/docs/notes.txt b/docs/notes.txt") && diff.contains("+three\n+four\n"), "{diff}");
+        assert_eq!(body["diffTruncated"], false);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_changes_includes_untracked_files() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let repo = session_in_repo(&state, "lane", true);
+        std::fs::write(repo.join("new.txt"), "a\nb\nc\n").unwrap();
+        std::fs::write(repo.join("blob.bin"), [0u8, 1, 2]).unwrap();
+        std::fs::write(repo.join("ignored.log"), "x\n").unwrap();
+        std::fs::write(repo.join(".git/info/exclude"), "ignored.log\n").unwrap();
+        let body: Value = client(reqwest::Method::GET, &base, "/sessions/lane/changes", &token).send().await.unwrap().json().await.unwrap();
+        assert_eq!(body["files"], json!([{"path": "docs/notes.txt", "added": 2, "removed": 1},
+            {"path": "blob.bin", "added": 0, "removed": 0}, {"path": "new.txt", "added": 3, "removed": 0}]), "{body}");
+        let diff = body["diff"].as_str().unwrap();
+        assert!(diff.contains("diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,3 @@\n+a\n+b\n+c\n"), "{diff}");
+        assert!(diff.contains("diff --git a/blob.bin b/blob.bin\nnew file mode 100644\nBinary files /dev/null and b/blob.bin differ\n"), "{diff}");
+        assert!(!diff.contains("ignored.log"), "{diff}");
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_changes_decodes_quoted_paths() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let repo = session_in_repo(&state, "lane", true);
+        for name in ["a\"b.txt", "é.txt"] {
+            std::fs::write(repo.join(name), "x\n").unwrap();
+            assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(["add", name]).status().unwrap().success());
+        }
+        let body: Value = client(reqwest::Method::GET, &base, "/sessions/lane/changes", &token).send().await.unwrap().json().await.unwrap();
+        assert!(body["diff"].as_str().unwrap().contains("diff --git \"a/a\\\"b.txt\" \"b/a\\\"b.txt\""), "git quotes the path: {body}");
+        let files: Vec<(&str, i64)> = body["files"].as_array().unwrap().iter()
+            .map(|file| (file["path"].as_str().unwrap(), file["added"].as_i64().unwrap())).collect();
+        assert_eq!(files, [("a\"b.txt", 1), ("docs/notes.txt", 2), ("é.txt", 1)], "octal bytes decode too");
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_changes_without_origin_head_is_409_with_message() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let repo = session_in_repo(&state, "lane", false);
+        let response = client(reqwest::Method::GET, &base, "/sessions/lane/changes", &token).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(response.json::<Value>().await.unwrap(),
+            json!({"error": "This repository has no origin/HEAD, so there is no default branch to compare with."}));
+        let response = client(reqwest::Method::GET, &base, "/sessions/nobody/changes", &token).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
     type LiveClient = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
     async fn next_frame(socket: &mut LiveClient, wait: Duration) -> Option<Value> {
@@ -1486,5 +1932,99 @@ mod tests {
         socket.send(Message::Text(json!({"type": "hello"}).to_string().into())).await.unwrap();
         socket.send(Message::Text(json!({"type": "watch", "ownedId": null}).to_string().into())).await.unwrap();
         chat_frame_arrives(&state, &mut socket, "orchestrator", "o3").await;
+    }
+
+    fn usage(used_tokens: u64) -> Payload {
+        Payload::Usage { input_tokens: None, output_tokens: None, used_tokens: Some(used_tokens), context_window: Some(200_000),
+            total_tokens: None }
+    }
+
+    #[tokio::test]
+    async fn phone_chat_includes_latest_usage() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        file_session(&state, "lane", vec![usage(1_000), edit(None, None), usage(50_000)]);
+        let chat: Value = client(reqwest::Method::GET, &base, "/sessions/lane/chat", &token).send().await.unwrap().json().await.unwrap();
+        assert_eq!(chat["usage"], json!({"usedTokens": 50_000, "contextWindow": 200_000}));
+        // A read after the cursor has no usage event in its page, so the store gives the latest.
+        let after: Value = client(reqwest::Method::GET, &base, "/sessions/lane/chat?after=3", &token).send().await.unwrap()
+            .json().await.unwrap();
+        assert_eq!(after["items"], json!([]));
+        assert_eq!(after["usage"], json!({"usedTokens": 50_000, "contextWindow": 200_000}));
+
+        file_session(&state, "quiet", vec![edit(None, None)]);
+        let quiet: Value = client(reqwest::Method::GET, &base, "/sessions/quiet/chat", &token).send().await.unwrap().json().await.unwrap();
+        assert!(quiet.get("usage").is_none(), "no usage yet: {quiet}");
+    }
+
+    /// A phone server whose Claude adapter is the fixture offering default, sonnet and haiku; and its device token.
+    async fn claude_server() -> (ServerState, String, String) {
+        let (state, base) = phone_server_with(|directory| {
+            let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&directory.join("acp.jsonl"), "standard_config");
+            ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)]).unwrap()
+        }).await;
+        let token = paired(&state, &base).await;
+        (state, base, token)
+    }
+
+    /// Ensures Claude session `owned_id`, as the desktop does before its first turn; returns its generation.
+    async fn claude_session(state: &ServerState, owned_id: &str) -> u64 {
+        state.manager.ensure_async(EnsureAgentConversationRequest { owned_id: owned_id.into(),
+            execution_environment: ExecutionEnvironment::Local, remote_profile_id: None, provider: AgentConversationProvider::Claude,
+            cwd: std::env::temp_dir().to_string_lossy().into_owned(), native_session_id: None,
+            native_session_mode: AgentNativeSessionMode::Resume, reasoning_effort: None, project_id: None }).await.unwrap().generation
+    }
+
+    #[tokio::test]
+    async fn phone_session_config_lists_models_and_current() {
+        let (state, base, token) = claude_server().await;
+        let generation = claude_session(&state, "lane").await;
+        state.manager.activate("lane", generation).await.unwrap();
+        let response = client(reqwest::Method::GET, &base, "/sessions/lane/config", &token).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let config: Value = response.json().await.unwrap();
+        // The adapter's three, then the Claude models Assembly adds, as the desktop's picker lists them.
+        let models: Vec<(&str, &Value)> = config["models"].as_array().unwrap().iter()
+            .map(|model| (model["id"].as_str().unwrap(), &model["label"])).collect();
+        assert_eq!(models, [("default", &Value::Null), ("sonnet", &Value::Null), ("haiku", &Value::Null), ("opus", &Value::Null),
+            ("claude-opus-5", &Value::Null), ("claude-fable-5", &Value::Null)], "{config}");
+        assert_eq!((&config["model"], &config["efforts"], &config["effort"]),
+            (&json!("default"), &json!(["low", "medium", "high", "max"]), &Value::Null));
+        assert_eq!(config.as_object().unwrap().len(), 4, "no approval policy goes to the phone: {config}");
+        let unknown = client(reqwest::Method::GET, &base, "/sessions/nobody/config", &token).send().await.unwrap();
+        assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
+        state.manager.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn phone_session_config_sets_model_and_effort() {
+        let (state, base, token) = claude_server().await;
+        let set = |owned_id: &str, body: Value| client(reqwest::Method::POST, &base, &format!("/sessions/{owned_id}/config"), &token)
+            .json(&body).send();
+        let read = |owned_id: &str| client(reqwest::Method::GET, &base, &format!("/sessions/{owned_id}/config"), &token).send();
+        // Before its first turn a session takes an effort, kept for when the adapter starts.
+        claude_session(&state, "fresh").await;
+        assert_eq!(set("fresh", json!({"effort": "high"})).await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(read("fresh").await.unwrap().json::<Value>().await.unwrap()["effort"], "high");
+
+        // A running adapter is asked to change model.
+        let generation = claude_session(&state, "lane").await;
+        state.manager.activate("lane", generation).await.unwrap();
+        assert_eq!(set("lane", json!({"model": "sonnet"})).await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(read("lane").await.unwrap().json::<Value>().await.unwrap()["model"], "sonnet");
+
+        for body in [json!({}), json!({"approvalPolicy": "bypassPermissions"}), json!({"model": "haiku", "approvalPolicy": "x"})] {
+            let refused = set("lane", body.clone()).await.unwrap();
+            assert_eq!(refused.status(), reqwest::StatusCode::BAD_REQUEST, "{body}");
+        }
+        // The engine's refusals are the phone's to show.
+        for (body, error) in [(json!({"effort": "low"}), "Effort is set when the session starts. Start a new session to change it."),
+            (json!({"model": "nope"}), "The requested model is not available for this session")] {
+            let refused = set("lane", body.clone()).await.unwrap();
+            assert_eq!(refused.status(), reqwest::StatusCode::CONFLICT, "{body}");
+            assert_eq!(refused.json::<Value>().await.unwrap()["error"], error);
+        }
+        assert_eq!(set("nobody", json!({"model": "sonnet"})).await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
+        state.manager.shutdown().await;
     }
 }
