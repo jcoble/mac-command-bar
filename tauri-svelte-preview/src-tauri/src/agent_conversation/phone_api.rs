@@ -79,6 +79,7 @@ pub(super) fn router(state: ServerState) -> Router {
         .route("/phone/v1/runs", get(runs))
         .route("/phone/v1/runs/{id}", get(run_detail))
         .route("/phone/v1/runs/{id}/{action}", post(control_run))
+        .route("/phone/v1/runs/{id}/steps/{step}/retry", post(retry_step))
         .route("/phone/v1/inbox", get(inbox))
         .route("/phone/v1/inbox/{id}/answer", post(answer))
         .route("/phone/v1/live", get(live))
@@ -363,12 +364,13 @@ fn usage_of(payload: &Payload) -> Option<Value> {
     }
 }
 
-/// `GET /phone/v1/sessions/{id}/items/{itemId}`: one tool call whole, its events in the newest page
-/// of events (the same page the chat list reads) folded in order.
+/// `GET /phone/v1/sessions/{id}/items/{itemId}`: one tool call whole, all its events in the store
+/// (one indexed read, however old they are) folded in order.
 async fn tool_item(State(state): State<ServerState>, Path((owned_id, item_id)): Path<(String, String)>) -> Reply {
     known_session(&state, &owned_id)?;
-    let page = state.manager.list_events_before(&owned_id, i64::MAX, CHAT_PAGE_BYTES).map_err(|error| server_error(&error))?;
-    let Some(call) = page.events.iter().filter_map(|event| ToolCall::of(&event.payload, &item_id)).reduce(ToolCall::fold)
+    let events = state.manager.store().list_item_events(&owned_id, &item_id).map_err(|error| server_error(&error))?
+        .into_iter().map(super::manager::stored_event).collect::<Result<Vec<_>, _>>().map_err(|error| server_error(&error))?;
+    let Some(call) = events.iter().filter_map(|event| ToolCall::of(&event.payload, &item_id)).reduce(ToolCall::fold)
     else { return Err(refuse(StatusCode::NOT_FOUND, NO_TOOL_CALL)) };
     let (output, output_truncated) = capped(call.output, MAX_TOOL_OUTPUT_BYTES);
     let (diff, diff_truncated) = capped(call.diff, MAX_TOOL_DIFF_BYTES);
@@ -377,18 +379,63 @@ async fn tool_item(State(state): State<ServerState>, Path((owned_id, item_id)): 
 }
 
 /// `GET /phone/v1/sessions/{id}/changes`: what the session's branch changed since the default branch,
-/// the desktop Changes tab's branch diff. The folder is the session's worktree, else its cwd, from the
-/// store, never from the request. A git refusal, such as no `origin/HEAD`, is a 409 with git's message.
+/// the desktop Changes tab's branch diff, plus the files the agent created and never `git add`ed (which
+/// `git diff` leaves out) as new-file sections after it. The folder is the session's worktree, else its
+/// cwd, from the store, never from the request. A git refusal, such as no `origin/HEAD`, is a 409 with git's message.
 async fn changes(State(state): State<ServerState>, Path(owned_id): Path<String>) -> Reply {
     known_session(&state, &owned_id)?;
     let session = state.manager.store().get_session(&owned_id).map_err(|error| server_error(&error))?
         .ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))?;
     let root = session.worktree.filter(|worktree| !worktree.is_empty()).unwrap_or(session.cwd);
-    let branch = crate::commands::source_control::read_git_branch_diff(root).await
+    let mut branch = crate::commands::source_control::read_git_branch_diff(root.clone()).await
         .map_err(|error| refuse(StatusCode::CONFLICT, &error))?;
+    let mut files = changed_files(&branch.diff);
+    let budget = MAX_CHANGES_DIFF_BYTES.saturating_sub(branch.diff.len());
+    let untracked = tauri::async_runtime::spawn_blocking(move || untracked_sections(std::path::Path::new(&root), budget)).await
+        .map_err(|error| server_error(&error))?.map_err(|error| refuse(StatusCode::CONFLICT, &error))?;
+    for (path, added, section) in untracked {
+        files.push(json!({ "path": path, "added": added, "removed": 0 }));
+        branch.diff.push_str(&section);
+    }
     let (diff, diff_truncated) = capped(Some(&branch.diff), MAX_CHANGES_DIFF_BYTES);
-    Ok(Json(json!({ "base": branch.base, "files": changed_files(&branch.diff), "diff": diff,
-        "diffTruncated": diff_truncated })).into_response())
+    Ok(Json(json!({ "base": branch.base, "files": files, "diff": diff, "diffTruncated": diff_truncated })).into_response())
+}
+
+/// Each untracked, not ignored file under `root`, in path order, as `(path, added lines, new-file diff
+/// section)`. Contents are read only while `budget` bytes of diff remain; after that a file is still
+/// listed, with 0 added and no section, since the diff is cut there anyway. A binary, non-regular
+/// (symlink) or unreadable file has 0 added and a "Binary files differ" section.
+fn untracked_sections(root: &std::path::Path, mut budget: usize) -> Result<Vec<(String, u32, String)>, String> {
+    let listing = crate::run_git_text(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+    let mut files = Vec::new();
+    for path in listing.split('\0').filter(|path| !path.is_empty()) {
+        if budget == 0 {
+            files.push((path.to_owned(), 0, String::new()));
+            continue;
+        }
+        let file = root.join(path);
+        let content = std::fs::symlink_metadata(&file).ok().filter(std::fs::Metadata::is_file).and_then(|_| {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut std::io::Read::take(std::fs::File::open(&file).ok()?, budget as u64), &mut bytes).ok()?;
+            (!bytes.contains(&0)).then(|| String::from_utf8_lossy(&bytes).into_owned())
+        });
+        let mut section = format!("diff --git a/{path} b/{path}\nnew file mode 100644\n");
+        let mut added = 0;
+        match content {
+            None => section.push_str(&format!("Binary files /dev/null and b/{path} differ\n")),
+            Some(text) if text.is_empty() => {}
+            Some(text) => {
+                added = text.lines().count();
+                let range = if added == 1 { "1".to_owned() } else { format!("1,{added}") };
+                section.push_str(&format!("--- /dev/null\n+++ b/{path}\n@@ -0,0 +{range} @@\n"));
+                for line in text.lines() { section.push('+'); section.push_str(line); section.push('\n'); }
+                if !text.ends_with('\n') { section.push_str("\\ No newline at end of file\n"); }
+            }
+        }
+        budget = budget.saturating_sub(section.len());
+        files.push((path.to_owned(), added as u32, section));
+    }
+    Ok(files)
 }
 
 /// Each file in a `git diff` text, in order, with its added and removed lines. The path is the `b/`
@@ -622,16 +669,36 @@ async fn control_run(State(state): State<ServerState>, Path((run_id, action)): P
         "stop" => "cancel",
         _ => return Err(refuse(StatusCode::NOT_FOUND, "Unknown run action")),
     };
-    let command = RemoteCommand::Workflow { operation: operation.into(),
-        args: json!({ "runId": run_id, "idempotencyKey": format!("phone:{}", uuid::Uuid::new_v4()) }) };
-    // The engine's own refusal, such as "Only a running workflow can be paused", is the phone's to
-    // show; anything else is an internal error and stays in the log.
-    let run = match execute_phone_command(&state, command).await {
+    run_operation(&state, operation, json!({ "runId": run_id }), format!("phone:{}", uuid::Uuid::new_v4()), "No such run").await
+}
+
+#[derive(serde::Deserialize)]
+struct RetryRequest {
+    attempt: u32,
+}
+
+/// `POST /phone/v1/runs/{id}/steps/{stepId}/retry {attempt}` → the run's row, through the engine's `retry`, as the
+/// desktop's Retry button. `attempt` is the attempt the phone saw fail; the idempotency key names it, so a repeat
+/// of the same request (its response lost) is recorded once, while a retry after a later failure has a new key.
+async fn retry_step(State(state): State<ServerState>, Path((run_id, step_id)): Path<(String, String)>, body: Bytes) -> Reply {
+    let request: RetryRequest = parse(&body)?;
+    let key = format!("phone:retry:{run_id}:{step_id}:{}", request.attempt);
+    run_operation(&state, "retry", json!({ "runId": run_id, "nodeId": step_id }), key, "No such run or step").await
+}
+
+/// Runs the engine `operation` on a run under the idempotency `key` and answers the run's row.
+async fn run_operation(state: &ServerState, operation: &str, mut args: Value, key: String, not_found: &str) -> Reply {
+    args["idempotencyKey"] = json!(key);
+    let command = RemoteCommand::Workflow { operation: operation.into(), args };
+    // The engine's own refusal, such as "Only a running workflow can be paused" or an exhausted
+    // attempt budget, is the phone's to show; anything else is an internal error and stays in the log.
+    let run = match execute_phone_command(state, command).await {
         Ok(RemoteResponse::Workflow(run)) => run,
         Ok(_) => return Err(server_error(&"run control gave the wrong response")),
         Err(error) => return Err(match serde_json::from_str::<WorkflowError>(&error) {
             Ok(WorkflowError::InvalidTransition(message) | WorkflowError::PolicyDenied(message)) => refuse(StatusCode::CONFLICT, &message),
-            Ok(WorkflowError::NotFound(_)) => refuse(StatusCode::NOT_FOUND, "No such run"),
+            Ok(WorkflowError::BudgetExhausted(failure)) => refuse(StatusCode::CONFLICT, &failure.message),
+            Ok(WorkflowError::NotFound(_)) => refuse(StatusCode::NOT_FOUND, not_found),
             _ => server_error(&error),
         }),
     };
@@ -1204,7 +1271,7 @@ mod tests {
         let session = endpoint.issue("orchestrator");
         use reqwest::Method;
         for (method, path) in [(Method::GET, "/me"), (Method::DELETE, "/me"),
-            (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::GET, "/inbox"),
+            (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::POST, "/runs/r/steps/s/retry"), (Method::GET, "/inbox"),
             (Method::POST, "/inbox/i/answer"), (Method::GET, "/live"), (Method::GET, "/sessions"),
             (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat"), (Method::GET, "/sessions/s/items/i"),
             (Method::GET, "/sessions/s/changes"), (Method::GET, "/sessions/s/config"), (Method::POST, "/sessions/s/config")] {
@@ -1322,6 +1389,64 @@ mod tests {
         assert_eq!(detail["steps"][0]["id"], "wait");
         assert_eq!(detail["steps"][0]["attempts"][0]["n"], 1);
         assert_eq!(detail["timeline"].as_array().unwrap().len(), lines(&phone).len());
+    }
+
+    /// The run once it reaches `state`.
+    async fn run_in_state(state: &ServerState, run_id: &str, wanted: &str) -> crate::workflow::WorkflowRunRecord {
+        for _ in 0..200 {
+            let run = state.workflow.get_run(run_id).unwrap();
+            if serde_json::to_value(run.state).unwrap() == wanted { return run; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("run {run_id} never became {wanted}");
+    }
+
+    #[tokio::test]
+    async fn phone_retry_failed_step_runs_it_again() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let run_id = start_run(&state, "  checks: { run: [\"exit 1\"] }\n").await;
+        assert_eq!(run_in_state(&state, &run_id, "failed").await.nodes[0].attempt, 1);
+        let response = client(reqwest::Method::POST, &base, &format!("/runs/{run_id}/steps/checks/retry"), &token).json(&json!({"attempt": 1})).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.json::<Value>().await.unwrap()["id"], run_id.as_str(), "the run's row");
+        assert_eq!(run_in_state(&state, &run_id, "failed").await.nodes[0].attempt, 2, "the step ran again");
+    }
+
+    #[tokio::test]
+    async fn phone_retry_refuses_a_step_that_did_not_fail() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let run_id = start_run(&state, "  wait: { run: [\"sleep 5\"] }\n").await;
+        let refused = client(reqwest::Method::POST, &base, &format!("/runs/{run_id}/steps/wait/retry"), &token).json(&json!({"attempt": 1})).send().await.unwrap();
+        assert_eq!(refused.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(refused.json::<Value>().await.unwrap(), json!({"error": "Only a failed or waiting node can be retried"}), "the engine's own words");
+        for path in [format!("/runs/{run_id}/steps/nope/retry"), "/runs/nope/steps/wait/retry".into()] {
+            let unknown = client(reqwest::Method::POST, &base, &path, &token).json(&json!({"attempt": 1})).send().await.unwrap();
+            assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND, "{path}");
+        }
+        for body in [json!({}), json!({"attempt": "one"})] {
+            let bad = client(reqwest::Method::POST, &base, &format!("/runs/{run_id}/steps/wait/retry"), &token).json(&body).send().await.unwrap();
+            assert_eq!(bad.status(), reqwest::StatusCode::BAD_REQUEST, "{body}");
+        }
+        client(reqwest::Method::POST, &base, &format!("/runs/{run_id}/stop"), &token).send().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_retry_repeat_for_same_attempt_starts_one_attempt() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let run_id = start_run(&state, "  checks: { run: [\"exit 1\"] }\n").await;
+        assert_eq!(run_in_state(&state, &run_id, "failed").await.nodes[0].attempt, 1);
+        let path = format!("/runs/{run_id}/steps/checks/retry");
+        for _ in 0..2 {
+            let response = client(reqwest::Method::POST, &base, &path, &token).json(&json!({"attempt": 1})).send().await.unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+        }
+        assert_eq!(run_in_state(&state, &run_id, "failed").await.nodes[0].attempt, 2, "the repeat did not start a third attempt");
+        let again = client(reqwest::Method::POST, &base, &path, &token).json(&json!({"attempt": 2})).send().await.unwrap();
+        assert_eq!(again.status(), reqwest::StatusCode::OK);
+        assert_eq!(run_in_state(&state, &run_id, "failed").await.nodes[0].attempt, 3, "a retry after the later failure runs again");
     }
 
     #[tokio::test]
@@ -1616,6 +1741,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn phone_tool_item_found_beyond_the_newest_page() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let mut payloads = vec![edit(Some("Wrote 2 lines".into()), None)];
+        // Four 600 KiB messages after it: more than the 1 MiB page the chat list reads.
+        payloads.extend((0..4).map(|index| Payload::AssistantMessage { item_id: format!("a{index}"),
+            text: "x".repeat(600 * 1024), completed: true, blocks: None }));
+        file_session(&state, "lane", payloads);
+        let body: Value = client(reqwest::Method::GET, &base, "/sessions/lane/items/edit", &token).send().await.unwrap()
+            .json().await.unwrap();
+        assert_eq!((body["name"].as_str(), body["output"].as_str(), body["path"].as_str()),
+            (Some("Edit"), Some("Wrote 2 lines"), Some("/work/notes.txt")), "{body}");
+    }
+
+    #[tokio::test]
     async fn phone_tool_item_unknown_session_or_item_is_404() {
         let (state, base) = phone_server().await;
         let token = paired(&state, &base).await;
@@ -1665,6 +1805,25 @@ mod tests {
         let diff = body["diff"].as_str().unwrap();
         assert!(diff.starts_with("diff --git a/docs/notes.txt b/docs/notes.txt") && diff.contains("+three\n+four\n"), "{diff}");
         assert_eq!(body["diffTruncated"], false);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_changes_includes_untracked_files() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let repo = session_in_repo(&state, "lane", true);
+        std::fs::write(repo.join("new.txt"), "a\nb\nc\n").unwrap();
+        std::fs::write(repo.join("blob.bin"), [0u8, 1, 2]).unwrap();
+        std::fs::write(repo.join("ignored.log"), "x\n").unwrap();
+        std::fs::write(repo.join(".git/info/exclude"), "ignored.log\n").unwrap();
+        let body: Value = client(reqwest::Method::GET, &base, "/sessions/lane/changes", &token).send().await.unwrap().json().await.unwrap();
+        assert_eq!(body["files"], json!([{"path": "docs/notes.txt", "added": 2, "removed": 1},
+            {"path": "blob.bin", "added": 0, "removed": 0}, {"path": "new.txt", "added": 3, "removed": 0}]), "{body}");
+        let diff = body["diff"].as_str().unwrap();
+        assert!(diff.contains("diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,3 @@\n+a\n+b\n+c\n"), "{diff}");
+        assert!(diff.contains("diff --git a/blob.bin b/blob.bin\nnew file mode 100644\nBinary files /dev/null and b/blob.bin differ\n"), "{diff}");
+        assert!(!diff.contains("ignored.log"), "{diff}");
         std::fs::remove_dir_all(repo).unwrap();
     }
 

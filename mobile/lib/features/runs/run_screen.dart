@@ -24,6 +24,24 @@ class RunScreen extends ConsumerStatefulWidget {
 
 class _RunScreenState extends ConsumerState<RunScreen> {
   RunAction? _busy;
+  var _retrying = false;
+
+  /// Runs the failed [step] again; the engine's refusal shows in a
+  /// snackbar. No confirmation: a retry is not destructive.
+  Future<void> _retry(RunStep step) async {
+    setState(() => _retrying = true);
+    try {
+      await ref.read(runsProvider.notifier).retryStep(widget.runId, step);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(errorText(error))));
+      }
+    } finally {
+      if (mounted) setState(() => _retrying = false);
+    }
+  }
 
   Future<void> _act(RunAction action) async {
     // Stop shows its spinner only once the owner has said yes.
@@ -164,9 +182,26 @@ class _RunScreenState extends ConsumerState<RunScreen> {
         ),
         if (stopped != null) ...[
           const SizedBox(height: 12),
-          Text(
-            stoppedLine(stopped),
-            style: theme.textTheme.bodyMedium?.copyWith(color: scheme.error),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  stoppedLine(stopped),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: scheme.error,
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: _retrying ? null : () => _retry(stopped),
+                child: _retrying
+                    ? const SizedBox.square(
+                        dimension: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Retry'),
+              ),
+            ],
           ),
         ],
         if (actions.isNotEmpty) ...[
@@ -224,6 +259,9 @@ class _RunScreenState extends ConsumerState<RunScreen> {
             detail,
             detail.steps[i],
             MobileM3ListItemPositionForIndex.forIndex(i, detail.steps.length),
+            onRetry: canRetry(detail.steps[i]) && !_retrying
+                ? () => _retry(detail.steps[i])
+                : null,
           ),
         ],
         if (detail.timeline.isNotEmpty) ...[
@@ -335,11 +373,12 @@ String stepLine(RunDetail run, RunStep step) {
 }
 
 class _StepRow extends StatelessWidget {
-  const _StepRow(this.run, this.step, this.position);
+  const _StepRow(this.run, this.step, this.position, {this.onRetry});
 
   final RunDetail run;
   final RunStep step;
   final MobileM3ListItemPosition position;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -398,18 +437,20 @@ class _StepRow extends StatelessWidget {
         context: context,
         showDragHandle: true,
         isScrollControlled: true,
-        builder: (_) => _StepSheet(run, step),
+        builder: (_) => _StepSheet(run, step, onRetry: onRetry),
       ),
     );
   }
 }
 
-/// A step's latest attempt: summary, review findings, failing command output.
+/// A step's latest attempt: summary, review findings, failing command output,
+/// and Retry when the step failed.
 class _StepSheet extends StatelessWidget {
-  const _StepSheet(this.run, this.step);
+  const _StepSheet(this.run, this.step, {this.onRetry});
 
   final RunDetail run;
   final RunStep step;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -449,6 +490,16 @@ class _StepSheet extends StatelessWidget {
               color: scheme.onSurfaceVariant,
             ),
           ),
+          if (onRetry != null) ...[
+            const SizedBox(height: 16),
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(context);
+                onRetry!();
+              },
+              child: const Text('Retry'),
+            ),
+          ],
           if (summary != null && summary != stepLine(run, step)) ...[
             const SizedBox(height: 16),
             Text(summary, style: theme.textTheme.bodyMedium),
