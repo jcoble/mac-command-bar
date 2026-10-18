@@ -6,6 +6,7 @@ import 'package:assembly_phone/core/api/machine_client.dart';
 import 'package:assembly_phone/core/live/live_providers.dart';
 import 'package:assembly_phone/core/live/live_socket.dart';
 import 'package:assembly_phone/features/chat/chat_repository.dart';
+import 'package:assembly_phone/features/chat/chat_widgets.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -298,5 +299,77 @@ void main() {
     expect(texts(c), [('u1', 'Hi'), ('a1', 'Hello')]);
     final state = c.read(chatProvider(session)).requireValue;
     expect((state.cursor, state.working), (15, false));
+  });
+
+  test('tool_item_parses_detail_fields', () async {
+    final (c, adapter, _) = await chatWith(
+      (r) => r.path.contains('/items/')
+          ? (
+              200,
+              {
+                'name': 'Edit',
+                'state': 'completed',
+                'summary': 'notes.txt',
+                'path': '/work/notes.txt',
+                'output': 'Wrote 2 lines',
+                'outputTruncated': true,
+                'diff': '+one\n',
+                'diffTruncated': false,
+              },
+            )
+          : (
+              200,
+              {
+                'items': [
+                  {...item('t1', 2, 'tool', 'notes.txt'), 'hasDetail': true},
+                  item('t2', 3, 'tool', 'start_run'),
+                ],
+                'cursor': 3,
+                'turn': 'idle',
+                'ownerItems': [],
+              },
+            ),
+    );
+    final items = c.read(chatProvider(session)).requireValue.items;
+    expect([for (final i in items) i.hasDetail], [true, false]);
+
+    final tool = await c.read(chatProvider(session).notifier).toolItem('t 1');
+    expect(adapter.requests.last.path, 'sessions/lane-1/items/t%201');
+    expect(
+      (tool.name, tool.state, tool.summary, tool.path, tool.output),
+      ('Edit', 'completed', 'notes.txt', '/work/notes.txt', 'Wrote 2 lines'),
+    );
+    expect(
+      (tool.outputTruncated, tool.diff, tool.diffTruncated),
+      (true, '+one\n', false),
+    );
+  });
+
+  test('diff_lines_classify_added_removed_hunk_and_header', () {
+    expect(
+      [
+        for (final line in [
+          'diff --git a/n b/n',
+          '--- a/notes.txt',
+          '+++ b/notes.txt',
+          '@@ -1,2 +1,2 @@',
+          '+two',
+          '-one',
+          ' same',
+          '',
+        ])
+          diffLineKind(line),
+      ],
+      [
+        DiffLineKind.header,
+        DiffLineKind.header,
+        DiffLineKind.header,
+        DiffLineKind.hunk,
+        DiffLineKind.added,
+        DiffLineKind.removed,
+        DiffLineKind.context,
+        DiffLineKind.context,
+      ],
+    );
   });
 }

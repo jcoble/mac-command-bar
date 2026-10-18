@@ -1,17 +1,27 @@
 import 'package:flutter/material.dart';
 import 'package:material_symbols_icons/symbols.dart';
 
+import '../../core/api/api_exception.dart';
 import '../../core/theme/app_recipes.dart';
 import '../../core/theme/app_tokens.dart';
+import '../runs/runs_screen.dart';
 import 'chat_repository.dart';
 
 /// Rental Command's `_MessageThread` (`message_detail_screen.dart`), newest at
 /// the bottom. Reversed so new items keep the view pinned to the bottom.
 class ChatThread extends StatelessWidget {
-  const ChatThread({super.key, required this.items, required this.working});
+  const ChatThread({
+    super.key,
+    required this.items,
+    required this.working,
+    required this.onOpenTool,
+  });
 
   final List<ChatItem> items;
   final bool working;
+
+  /// Opens a tool line that has detail.
+  final void Function(ChatItem item) onOpenTool;
 
   @override
   Widget build(BuildContext context) {
@@ -28,7 +38,12 @@ class ChatThread extends StatelessWidget {
           child: switch (item.kind) {
             'owner' || 'agent' => _MessageBubble(item: item),
             'relayed' => _RelayedCard(item: item),
-            _ => _ToolLine(item: item),
+            _ => _ToolLine(
+              item: item,
+              onTap: item.kind == 'tool' && item.hasDetail
+                  ? () => onOpenTool(item)
+                  : null,
+            ),
           },
         );
       },
@@ -116,11 +131,13 @@ class _RelayedCard extends StatelessWidget {
   }
 }
 
-/// One grey line per tool call ("2 runs started"), or an error in red.
+/// One grey line per tool call ("2 runs started"), or an error in red. A
+/// tool call with detail opens on tap.
 class _ToolLine extends StatelessWidget {
-  const _ToolLine({required this.item});
+  const _ToolLine({required this.item, this.onTap});
 
   final ChatItem item;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -129,34 +146,256 @@ class _ToolLine extends StatelessWidget {
     final color = error
         ? theme.colorScheme.error
         : theme.colorScheme.onSurfaceVariant;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
-            error
-                ? Symbols.error_rounded
-                : item.done
-                ? Symbols.check_rounded
-                : Symbols.more_horiz_rounded,
-            size: 16,
-            color: error || !item.done ? color : theme.colorScheme.secondary,
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              item.text,
-              maxLines: error ? null : 2,
-              overflow: error ? null : TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: color,
-                fontFamily: error ? null : 'monospace',
-                fontSize: error ? null : 11.5,
+    return InkWell(
+      onTap: onTap,
+      borderRadius: M3Shape.radiusSmall,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              error
+                  ? Symbols.error_rounded
+                  : item.done
+                  ? Symbols.check_rounded
+                  : Symbols.more_horiz_rounded,
+              size: 16,
+              color: error || !item.done ? color : theme.colorScheme.secondary,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                item.text,
+                maxLines: error ? null : 2,
+                overflow: error ? null : TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: color,
+                  fontFamily: error ? null : 'monospace',
+                  fontSize: error ? null : 11.5,
+                ),
               ),
             ),
+            if (onTap != null)
+              Icon(Symbols.chevron_right_rounded, size: 16, color: color),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+enum DiffLineKind { header, hunk, added, removed, context }
+
+/// What a unified-diff line is: a file header, a hunk line, an added or
+/// removed line, or unchanged context.
+DiffLineKind diffLineKind(String line) {
+  if (line.startsWith('diff ') ||
+      line.startsWith('index ') ||
+      line.startsWith('--- ') ||
+      line.startsWith('+++ ')) {
+    return DiffLineKind.header;
+  }
+  if (line.startsWith('@@')) return DiffLineKind.hunk;
+  if (line.startsWith('+')) return DiffLineKind.added;
+  if (line.startsWith('-')) return DiffLineKind.removed;
+  return DiffLineKind.context;
+}
+
+/// Opens [item]'s detail in a bottom sheet; [detail] is its fetch, started on tap.
+void showToolSheet(
+  BuildContext context,
+  ChatItem item,
+  Future<ToolItem> detail,
+) => showModalBottomSheet<void>(
+  context: context,
+  showDragHandle: true,
+  isScrollControlled: true,
+  builder: (_) => DraggableScrollableSheet(
+    expand: false,
+    initialChildSize: 0.6,
+    minChildSize: 0.3,
+    maxChildSize: 0.9,
+    builder: (context, controller) => FutureBuilder<ToolItem>(
+      future: detail,
+      builder: (context, snapshot) {
+        final diff = snapshot.data?.diff ?? '';
+        final lines = diff.isEmpty ? const <String>[] : diff.split('\n');
+        if (lines.isNotEmpty && lines.last.isEmpty) lines.removeLast();
+        return ListView.builder(
+          controller: controller,
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
+          itemCount: 1 + lines.length,
+          itemBuilder: (context, i) => i == 0
+              ? _ToolHead(item: item, snapshot: snapshot)
+              : _DiffLine(lines[i - 1], first: i == 1, last: i == lines.length),
+        );
+      },
+    ),
+  ),
+);
+
+/// The sheet above the diff: name, state, path, command, output.
+class _ToolHead extends StatelessWidget {
+  const _ToolHead({required this.item, required this.snapshot});
+
+  final ChatItem item;
+  final AsyncSnapshot<ToolItem> snapshot;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final mono = theme.textTheme.bodySmall?.copyWith(
+      fontFamily: 'monospace',
+      fontSize: 11.5,
+      height: 1.4,
+    );
+    final tool = snapshot.data;
+    final error = snapshot.error;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                tool?.name ?? item.text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            if (tool != null)
+              StateChip(
+                RunLook.of(context, switch (tool.state) {
+                  'completed' || 'failed' => tool.state,
+                  _ => 'running',
+                }),
+              ),
+          ],
+        ),
+        if (tool?.path case final path?) ...[
+          const SizedBox(height: 4),
+          Text(
+            _middleEllipsis(path, 48),
+            maxLines: 1,
+            style: mono?.copyWith(color: scheme.onSurfaceVariant),
           ),
         ],
+        if (tool?.summary case final summary?
+            when summary.isNotEmpty && summary != tool?.path) ...[
+          const SizedBox(height: 12),
+          Text(
+            summary,
+            maxLines: 4,
+            overflow: TextOverflow.ellipsis,
+            style: mono,
+          ),
+        ],
+        if (snapshot.connectionState != ConnectionState.done)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 32),
+            child: Center(child: CircularProgressIndicator()),
+          )
+        else if (error != null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Text(
+              error is ApiException
+                  ? error.message
+                  : "Couldn't load this tool call.",
+              style: theme.textTheme.bodyMedium?.copyWith(color: scheme.error),
+            ),
+          ),
+        if (tool?.output case final output? when output.isNotEmpty) ...[
+          const SectionLabel('Output'),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerLowest,
+              borderRadius: M3Shape.radiusMedium,
+            ),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SelectableText(output, style: mono),
+            ),
+          ),
+          if (tool!.outputTruncated) _CutNote('Output cut at 32 KB'),
+        ],
+        if (tool?.diff case final diff? when diff.isNotEmpty) ...[
+          const SectionLabel('Diff'),
+          if (tool!.diffTruncated) _CutNote('Diff cut at 64 KB'),
+        ],
+      ],
+    );
+  }
+}
+
+/// [text] with its middle replaced by "…" when longer than [max] characters.
+String _middleEllipsis(String text, int max) => text.length <= max
+    ? text
+    : '${text.substring(0, max ~/ 3)}…${text.substring(text.length - (max - max ~/ 3 - 1))}';
+
+class _CutNote extends StatelessWidget {
+  const _CutNote(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.only(top: 6, bottom: 6),
+      child: Text(
+        text,
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+}
+
+/// One unified-diff line: added green, removed red, hunks muted, headers bold.
+class _DiffLine extends StatelessWidget {
+  const _DiffLine(this.line, {required this.first, required this.last});
+
+  final String line;
+  final bool first;
+  final bool last;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final kind = diffLineKind(line);
+    const radius = Radius.circular(M3Shape.medium);
+    return Container(
+      padding: EdgeInsets.fromLTRB(12, first ? 10 : 1, 12, last ? 10 : 1),
+      decoration: BoxDecoration(
+        color: switch (kind) {
+          DiffLineKind.added => context.tokens.success.withValues(alpha: 0.16),
+          DiffLineKind.removed => scheme.error.withValues(alpha: 0.16),
+          _ => scheme.surfaceContainerLowest,
+        },
+        borderRadius: BorderRadius.vertical(
+          top: first ? radius : Radius.zero,
+          bottom: last ? radius : Radius.zero,
+        ),
+      ),
+      child: Text(
+        line,
+        style: theme.textTheme.bodySmall?.copyWith(
+          fontFamily: 'monospace',
+          fontSize: 11.5,
+          height: 1.4,
+          fontWeight: kind == DiffLineKind.header ? FontWeight.w700 : null,
+          color: kind == DiffLineKind.hunk ? scheme.onSurfaceVariant : null,
+        ),
       ),
     );
   }

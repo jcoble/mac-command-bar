@@ -102,7 +102,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       message:
                           'Your message goes to this session as your own turn.',
                     )
-                  : ChatThread(items: value.items, working: value.working),
+                  : ChatThread(
+                      items: value.items,
+                      working: value.working,
+                      onOpenTool: (item) => showToolSheet(
+                        context,
+                        item,
+                        ref
+                            .read(
+                              chatProvider((
+                                machine.id,
+                                widget.ownedId,
+                              )).notifier,
+                            )
+                            .toolItem(item.id),
+                      ),
+                    ),
             ),
             ChatComposeBar(
               controller: _text,

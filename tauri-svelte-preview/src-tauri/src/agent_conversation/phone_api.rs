@@ -38,6 +38,7 @@ const NOT_SET_UP: &str =
 const REMOVED: &str = "This phone was removed — pair again";
 const NO_ORCHESTRATOR: &str = "No orchestrator is marked on this machine";
 const NO_SESSION: &str = "No such session on this machine";
+const NO_TOOL_CALL: &str = "No such tool call in this session";
 /// §5.3 sets no length for chat text, so a plain cap: 10,000 characters, in a body of at most 64 KiB.
 const MAX_CHAT_CHARS: usize = 10_000;
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -45,6 +46,9 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 const CHAT_PAGE_BYTES: u32 = 1024 * 1024;
 const LATEST_CHAT_ITEMS: usize = 100;
 const MAX_PUSH_TOKEN_CHARS: usize = 4096;
+/// A tool call opened on the phone sends at most this much output and diff.
+const MAX_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
+const MAX_TOOL_DIFF_BYTES: usize = 64 * 1024;
 
 /// Bumped whenever a phone is removed, so each open live socket checks its own token and closes if it went.
 static DEVICE_REMOVED: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::channel(0).0);
@@ -66,6 +70,7 @@ pub(super) fn router(state: ServerState) -> Router {
         .route("/phone/v1/chat", get(chat).post(send_chat))
         .route("/phone/v1/sessions", get(sessions))
         .route("/phone/v1/sessions/{id}/chat", get(session_chat).post(send_session_chat))
+        .route("/phone/v1/sessions/{id}/items/{item}", get(tool_item))
         .route("/phone/v1/runs", get(runs))
         .route("/phone/v1/runs/{id}", get(run_detail))
         .route("/phone/v1/runs/{id}/{action}", post(control_run))
@@ -347,6 +352,28 @@ fn read_chat(state: &ServerState, owned_id: &str, query: &HashMap<String, String
         "turn": if state.manager.turn_running(owned_id) { "running" } else { "idle" },
         "ownerItems": owner_items,
     })).into_response())
+}
+
+/// `GET /phone/v1/sessions/{id}/items/{itemId}`: one tool call whole, its latest event in the
+/// newest page of events, the same page the chat list reads.
+async fn tool_item(State(state): State<ServerState>, Path((owned_id, item_id)): Path<(String, String)>) -> Reply {
+    known_session(&state, &owned_id)?;
+    let page = state.manager.list_events_before(&owned_id, i64::MAX, CHAT_PAGE_BYTES).map_err(|error| server_error(&error))?;
+    let Some(Payload::Tool { name, state: tool_state, summary, output, path, diff, .. }) = page.events.iter().rev()
+        .map(|event| &event.payload).find(|payload| matches!(payload, Payload::Tool { item_id: id, .. } if *id == item_id))
+    else { return Err(refuse(StatusCode::NOT_FOUND, NO_TOOL_CALL)) };
+    let (output, output_truncated) = capped(output.as_deref(), MAX_TOOL_OUTPUT_BYTES);
+    let (diff, diff_truncated) = capped(diff.as_deref(), MAX_TOOL_DIFF_BYTES);
+    Ok(Json(json!({ "name": name, "state": tool_state, "summary": summary, "path": path, "output": output,
+        "outputTruncated": output_truncated, "diff": diff, "diffTruncated": diff_truncated })).into_response())
+}
+
+/// `text` cut to at most `max` bytes on a char boundary, and whether it was cut.
+fn capped(text: Option<&str>, max: usize) -> (Option<&str>, bool) {
+    match text {
+        Some(text) if text.len() > max => (Some(&text[..text.floor_char_boundary(max)]), true),
+        text => (text, false),
+    }
 }
 
 #[derive(Deserialize)]
@@ -695,6 +722,9 @@ struct ChatItem {
     text: String,
     at: i64,
     done: bool,
+    /// A tool call with output, a path or a diff the phone can open; the row itself carries none of them.
+    #[serde(rename = "hasDetail", skip_serializing_if = "std::ops::Not::not")]
+    has_detail: bool,
 }
 
 /// The phone's chat from a session's events (§5.3): owner, relayed, agent, tool and error items,
@@ -727,7 +757,9 @@ fn reduce_chat(events: &[AgentConversationEvent]) -> Vec<ChatItem> {
             Payload::Error { message, .. } => (format!("error-{}", event.sequence), "error", message.clone(), true),
             _ => continue,
         };
-        let item = ChatItem { id, seq: event.sequence, kind, text, at: event.timestamp_ms as i64, done };
+        let has_detail = matches!(&event.payload, Payload::Tool { output, path, diff, .. }
+            if [output, path, diff].iter().any(|field| field.as_deref().is_some_and(|text| !text.is_empty())));
+        let item = ChatItem { id, seq: event.sequence, kind, text, at: event.timestamp_ms as i64, done, has_detail };
         match index.get(&item.id) {
             Some(&at) => items[at] = item,
             None => {
@@ -1024,7 +1056,7 @@ mod tests {
         for (method, path) in [(Method::GET, "/me"), (Method::DELETE, "/me"), (Method::GET, "/chat"), (Method::POST, "/chat"),
             (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::GET, "/inbox"),
             (Method::POST, "/inbox/i/answer"), (Method::GET, "/live"), (Method::GET, "/sessions"),
-            (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat")] {
+            (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat"), (Method::GET, "/sessions/s/items/i")] {
             let response = client(method.clone(), &base, path, &session.token).json(&json!({"text": "hi"})).send().await.unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED, "{method} {path}");
             assert_eq!(response.json::<Value>().await.unwrap(), json!({"error": "This phone was removed — pair again"}));
@@ -1350,6 +1382,79 @@ mod tests {
             assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND, "{method}");
         }
         state.manager.shutdown().await;
+    }
+
+    /// Files session `owned_id` in the store with `payloads` as its events, numbered from 1.
+    fn file_session(state: &ServerState, owned_id: &str, payloads: Vec<Payload>) {
+        let store = state.manager.store();
+        store.upsert_session(&mcb_core::session_store::SessionRow { owned_id: owned_id.into(), native_session_id: None,
+            provider: "claude".into(), model: None, effort: None, cwd: "/work".into(), worktree: None, branch: None,
+            title: Some("Lane".into()), title_source: None, project: None, project_id: None,
+            state: "ready".into(), suspended: false, created_at_ms: 1, last_activity_at_ms: 1, extra_json: "{}".into() }).unwrap();
+        for (index, payload) in payloads.into_iter().enumerate() {
+            let event = session_event(owned_id, index as i64 + 1, payload);
+            store.append_event(&mcb_core::session_store::EventRow { owned_id: owned_id.into(), seq: event.sequence, turn_id: None,
+                kind: "tool".into(), payload_json: serde_json::to_string(&event).unwrap(), created_at_ms: 0 }).unwrap();
+        }
+    }
+
+    fn edit(output: Option<String>, diff: Option<String>) -> Payload {
+        Payload::Tool { item_id: "edit".into(), name: "Edit".into(), state: ToolState::Completed, summary: Some("notes.txt".into()),
+            output, path: Some("/work/notes.txt".into()), diff }
+    }
+
+    #[tokio::test]
+    async fn phone_tool_item_returns_output_path_and_diff() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let diff = "--- a/notes.txt\n+++ b/notes.txt\n@@ -0,0 +1,2 @@\n+one\n+two\n";
+        file_session(&state, "lane", vec![
+            Payload::Tool { item_id: "edit".into(), name: "Edit".into(), state: ToolState::Started, summary: None,
+                output: None, path: None, diff: None },
+            edit(Some("Wrote 2 lines".into()), Some(diff.into())),
+            tool(ToolState::Completed, Some("wc -l notes.txt")),
+        ]);
+        let body: Value = client(reqwest::Method::GET, &base, "/sessions/lane/items/edit", &token).send().await.unwrap()
+            .json().await.unwrap();
+        assert_eq!(body, json!({"name": "Edit", "state": "completed", "summary": "notes.txt", "path": "/work/notes.txt",
+            "output": "Wrote 2 lines", "outputTruncated": false, "diff": diff, "diffTruncated": false}), "the latest event wins");
+
+        let chat: Value = client(reqwest::Method::GET, &base, "/sessions/lane/chat", &token).send().await.unwrap().json().await.unwrap();
+        let details: Vec<(&str, bool)> = chat["items"].as_array().unwrap().iter()
+            .map(|item| (item["id"].as_str().unwrap(), item["hasDetail"].as_bool().unwrap_or(false))).collect();
+        assert_eq!(details, [("edit", true), ("t1", false)], "only a tool with something to open has detail");
+        assert!(chat["items"][0].get("output").is_none(), "chat rows carry no output");
+    }
+
+    #[tokio::test]
+    async fn phone_tool_item_caps_large_output() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        // "é" is two bytes, and the leading "x" puts the 32 KiB mark inside one.
+        let output = format!("x{}", "é".repeat(20 * 1024));
+        file_session(&state, "lane", vec![edit(Some(output.clone()), Some("+".repeat(70 * 1024)))]);
+        let body: Value = client(reqwest::Method::GET, &base, "/sessions/lane/items/edit", &token).send().await.unwrap()
+            .json().await.unwrap();
+        let cut = body["output"].as_str().unwrap();
+        assert_eq!(cut.len(), 32 * 1024 - 1, "cut on the char boundary below 32 KiB");
+        assert!(output.starts_with(cut));
+        assert_eq!(body["outputTruncated"], true);
+        assert_eq!(body["diff"].as_str().unwrap().len(), 64 * 1024);
+        assert_eq!(body["diffTruncated"], true);
+    }
+
+    #[tokio::test]
+    async fn phone_tool_item_unknown_session_or_item_is_404() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        file_session(&state, "lane", vec![edit(None, None),
+            Payload::AssistantMessage { item_id: "a1".into(), text: "Done".into(), completed: true, blocks: None }]);
+        for (path, error) in [("/sessions/nobody/items/edit", "No such session on this machine"),
+            ("/sessions/lane/items/missing", "No such tool call in this session"), ("/sessions/lane/items/a1", "No such tool call in this session")] {
+            let response = client(reqwest::Method::GET, &base, path, &token).send().await.unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND, "{path}");
+            assert_eq!(response.json::<Value>().await.unwrap(), json!({"error": error}), "{path}");
+        }
     }
 
     type LiveClient = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
