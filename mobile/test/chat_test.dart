@@ -534,4 +534,34 @@ void main() {
     );
     expect(c.read(chatProvider(session)).requireValue.contextLeft, 62);
   });
+
+  test('tool_rows_group_between_messages', () {
+    ChatItem item(String id, String kind, [String text = '']) =>
+        ChatItem(id: id, kind: kind, text: text, at: 0, done: true);
+    final rows = chatRows([
+      item('o1', 'owner'),
+      item('t1', 'tool', 'pwd'),
+      item('t2', 'tool', 'ls -la'),
+      item('t3', 'tool', 'date'),
+      item('a1', 'agent'),
+      item('t4', 'tool', 'Check the build'),
+      item('e1', 'error'),
+      item('t5', 'tool', 'git status'),
+    ]);
+    expect(
+      [
+        for (final row in rows) [for (final i in row) i.id],
+      ],
+      [
+        ['o1'],
+        ['t1', 't2', 't3'],
+        ['a1'],
+        ['t4'],
+        ['e1'],
+        ['t5'],
+      ],
+    );
+    expect(toolGroupLabel(rows[1]), 'Ran 3 commands');
+    expect(toolGroupLabel(rows[3]), 'Ran Check the build');
+  });
 }

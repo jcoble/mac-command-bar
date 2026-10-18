@@ -67,30 +67,45 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final chat = ref.watch(chatProvider((machine.id, widget.ownedId)));
     return Scaffold(
       appBar: AppBar(
+        centerTitle: true,
         title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               session?.name ?? 'Chat',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontSize: 17),
             ),
             if (session != null)
               Text(
                 [
-                  providerLabel(session.provider),
-                  ?folderName(session.project),
-                  session.handle,
+                  folderName(session.project) ??
+                      '${providerLabel(session.provider)} · ${session.handle}',
+                  if (chat.value?.contextLeft case final left?)
+                    '$left% context left',
                 ].join(' · '),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  fontSize: 13,
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                 ),
               ),
           ],
         ),
         actions: [
+          if (chat.value?.working ?? false)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 8),
+              child: RepaintBoundary(
+                child: SizedBox.square(
+                  dimension: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            ),
           IconButton(
             tooltip: 'Changes',
             icon: const Icon(Symbols.difference_rounded),
@@ -106,10 +121,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
           ),
         ],
-        bottom: switch (chat.value?.contextLeft) {
-          final left? => ContextLeftLine(left),
-          null => null,
-        },
       ),
       body: switch (chat) {
         AsyncData(:final value) => Column(
@@ -124,10 +135,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     )
                   : ChatThread(
                       items: value.items,
-                      working: value.working,
-                      onOpenTool: (item) => showToolSheet(
+                      onOpenTools: (tools) => showToolSheet(
                         context,
-                        item,
+                        tools,
                         ref
                             .read(
                               chatProvider((
@@ -135,7 +145,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                 widget.ownedId,
                               )).notifier,
                             )
-                            .toolItem(item.id),
+                            .toolItem,
                       ),
                     ),
             ),
