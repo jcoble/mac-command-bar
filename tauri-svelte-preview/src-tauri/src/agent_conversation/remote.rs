@@ -242,10 +242,10 @@ where D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned {
 }
 
 #[derive(Clone)]
-struct ServerState {
-    manager: AgentRuntimeManager,
+pub(super) struct ServerState {
+    pub(super) manager: AgentRuntimeManager,
     data_dir: PathBuf,
-    token: Arc<str>,
+    pub(super) token: Arc<str>,
     maintenance: Arc<tokio::sync::RwLock<()>>,
     restarting: Arc<AtomicBool>,
     restart_requested: Arc<tokio::sync::Notify>,
@@ -255,6 +255,8 @@ struct ServerState {
     workflow: crate::workflow::WorkflowEngine,
     terminals: RemoteTerminals,
     relay: Arc<RelayLink>,
+    /// The one phone pairing code that works right now (`phone_api`).
+    pub(super) pairing: Arc<Mutex<Option<super::phone_api::PairingCode>>>,
 }
 
 /// The desktops connected to this server, through which its sessions message other machines.
@@ -295,7 +297,7 @@ impl RelayLink {
 /// The server's state over `manager`: its events go to the sockets, and a
 /// finished turn also advances the workflow run that owns the session. Runs
 /// interrupted by the last shutdown are recovered before any request is served.
-fn server_state(manager: AgentRuntimeManager, data_dir: PathBuf, token: Arc<str>) -> Result<ServerState, String> {
+pub(super) fn server_state(manager: AgentRuntimeManager, data_dir: PathBuf, token: Arc<str>) -> Result<ServerState, String> {
     let (events, _) = broadcast::channel(256);
     let workflow = crate::workflow::WorkflowEngine::managed(manager.clone(), manager.store_handle());
     let event_sender = events.clone();
@@ -337,6 +339,7 @@ fn server_state(manager: AgentRuntimeManager, data_dir: PathBuf, token: Arc<str>
         workflow,
         terminals: RemoteTerminals::new(),
         relay: Arc::default(),
+        pairing: Arc::default(),
     })
 }
 
@@ -3274,6 +3277,8 @@ pub fn run_server_from_environment() -> Result<(), String> {
         let restart_requested = state.restart_requested.clone();
         let restart_flushed = state.restart_flushed.clone();
         let restart_manager = state.manager.clone();
+        // The phone-only listener (`phone.env`): `/phone/v1` routes only, never `/assembly`.
+        super::phone_api::start_listener(std::env::var("ASSEMBLY_PHONE_BIND").ok().as_deref(), state.clone()).await;
         let app = Router::new()
             .route("/assembly", get(upgrade_remote_socket))
             .with_state(state);
@@ -3727,6 +3732,10 @@ async fn execute_server_command(state: &ServerState, upload: &Arc<Mutex<Option<P
         return Err("The remote server is restarting; reconnect before continuing".into());
     }
     if let RemoteCommand::Workflow { operation, args } = command {
+        // Phone pairing needs this server's pairing code and database, not the engine.
+        if let Some(answer) = super::phone_api::operation(state, &operation, &args) {
+            return answer.map(RemoteResponse::Workflow);
+        }
         // A dropped socket or a client cancel aborts this request's task; the engine
         // call runs on its own task so a run is never left half-started.
         let workflow = state.workflow.clone();
@@ -4082,7 +4091,7 @@ mod connection_tests {
             manager: remote.clone(), data_dir: directory.clone(), token: Arc::from("test-token"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
-            events: broadcast::channel(2).0, terminals: RemoteTerminals::new(), relay: Arc::default(),
+            events: broadcast::channel(2).0, terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -5269,7 +5278,7 @@ mod connection_tests {
             manager, data_dir: directory.clone(), token: Arc::from("test-token"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
-            events: broadcast::channel(64).0, terminals: RemoteTerminals::new(), relay: Arc::default(),
+            events: broadcast::channel(64).0, terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -5476,7 +5485,7 @@ mod connection_tests {
             manager, data_dir: directory.clone(), token: Arc::from("test"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events,
-            terminals: RemoteTerminals::new(), relay: Arc::default(),
+            terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
         };
         let (outbound, mut received) = mpsc::channel(8);
         let mut queued = BTreeMap::from([("large-history".to_string(), 1)]);
@@ -5548,7 +5557,7 @@ mod connection_tests {
             manager: manager.clone(), data_dir: directory.clone(), token: Arc::from("test-token"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events: events.clone(),
-            terminals: RemoteTerminals::new(), relay: Arc::default(),
+            terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -5808,7 +5817,7 @@ mod provider_restart_tests {
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
             events: broadcast::channel(2).0,
-            terminals: RemoteTerminals::new(), relay: Arc::default(),
+            terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
         };
         let response = execute_server_command(&state, &Arc::new(Mutex::new(None)),
             RemoteCommand::RestartForProviderUpdates, Arc::new(|_| {})).await;
@@ -5877,7 +5886,7 @@ mod terminal_tests {
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
             events: broadcast::channel(2).0,
-            terminals: RemoteTerminals::new(), relay: Arc::default(),
+            terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
         }
     }
 
