@@ -677,13 +677,17 @@ mod tests {
             ('worker','codex','/work','ready',0,1,1,'{}');
             INSERT INTO orchestration_events (id,run_id,kind,timestamp,sequence,payload_json) VALUES
             ('e','run-1','workflow.node.started','1',1,
-             '{"ownedId":"worker","nodeId":"build","workflowPayload":{"run":{"definition":{"name":"Fix and review"},"inputSnapshot":{"task":{"key":"TSK-9"}}}}}');"#).unwrap();
+             '{"ownedId":"worker","nodeId":"build","workflowPayload":{"run":{"definition":{"name":"Fix and review"},"inputSnapshot":{"task":{"key":"TSK-9"},"started_by":"parent"}}}}');"#).unwrap();
         let listed = store.list_sessions_with_handles().unwrap();
         let lineage = |id: &str| listed.iter().find(|entry| entry.row.owned_id == id)
             .map(|entry| (entry.helper_of.clone(), entry.run_id.clone(), entry.run_label.clone())).unwrap();
         assert_eq!(lineage("parent"), (None, None, None));
         assert_eq!(lineage("helper"), (Some("parent".into()), None, None));
         assert_eq!(lineage("worker"), (None, Some("run-1".into()), Some("TSK-9 · Fix and review".into())));
+        // A worker names the session that started its run; any other row names none.
+        let lead = |id: &str| listed.iter().find(|entry| entry.row.owned_id == id).unwrap().run_lead.clone();
+        assert_eq!(lead("worker").as_deref(), Some("parent"));
+        assert_eq!((lead("parent"), lead("helper")), (None, None));
     }
 
     #[test]

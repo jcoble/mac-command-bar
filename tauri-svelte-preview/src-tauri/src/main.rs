@@ -5627,6 +5627,7 @@ fn main() {
             pull_git_repository,
             push_git_repository,
             publish_git_repository,
+            add_git_remote,
             read_git_commit_history,
             read_git_commit_files,
             read_git_commit_file_diff,
@@ -5750,6 +5751,7 @@ fn main() {
             agent_conversation::remove_project,
             project_folders::list_folders,
             project_folders::project_root_is_bare,
+            project_folders::workspace_git_init,
             agent_conversation::respond_agent_conversation_approval,
             agent_conversation::respond_agent_conversation_permission,
             agent_conversation::respond_agent_conversation_input,
@@ -5896,7 +5898,7 @@ fn main() {
 mod tests {
     use super::*;
     use crate::git_workspace::{
-        commit_git_repository_sync, fetch_git_repository_sync, publish_git_repository_sync,
+        add_git_remote_sync, commit_git_repository_sync, fetch_git_repository_sync, publish_git_repository_sync,
         pull_git_repository_sync, push_git_repository_sync, stage_git_paths_sync,
         unstage_git_paths_sync,
     };
@@ -7625,6 +7627,38 @@ mod tests {
         std::fs::remove_dir_all(remote).unwrap();
         std::fs::remove_dir_all(local).unwrap();
         std::fs::remove_dir_all(peer).unwrap();
+    }
+
+    #[test]
+    fn git_add_remote_then_publish() {
+        let origin = unique_temp_root();
+        let local = unique_temp_root();
+        for path in [&origin, &local] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        run_git_for_test(&origin, &["init", "--bare"]);
+        run_git_for_test(&local, &["init"]);
+        run_git_for_test(&local, &["config", "user.name", "MacCommandBar Test"]);
+        run_git_for_test(&local, &["config", "user.email", "test@example.invalid"]);
+        run_git_for_test(&local, &["commit", "--allow-empty", "-m", "first"]);
+        run_git_for_test(&local, &["branch", "-M", "tsk-1481-test"]);
+        let root = local.display().to_string();
+        let url = origin.display().to_string();
+        assert!(run_git_text(&local, &["remote"]).unwrap().is_empty());
+        let added = add_git_remote_sync(root.clone(), " origin ".into(), format!(" {url} ")).unwrap();
+        assert_eq!(added.message, "Added remote origin");
+        assert!(!added.status.has_upstream);
+        assert!(add_git_remote_sync(root.clone(), "origin".into(), url.clone()).unwrap_err().contains("already exists"));
+        assert!(add_git_remote_sync(root.clone(), " ".into(), url.clone()).is_err());
+        assert!(add_git_remote_sync(root.clone(), "-x".into(), url.clone()).is_err());
+        assert!(add_git_remote_sync(root.clone(), "backup".into(), " ".into()).is_err());
+        assert!(add_git_remote_sync(root.clone(), "backup".into(), "-x".into()).is_err());
+        assert!(add_git_remote_sync(root, "invalid name".into(), url).is_err());
+        let published = publish_git_repository_sync(local.clone(), "tsk-1481-test".into(), "origin".into()).unwrap();
+        assert!(published.status.has_upstream);
+        assert_eq!(run_git_text(&origin, &["rev-parse", "tsk-1481-test"]).unwrap(), run_git_text(&local, &["rev-parse", "HEAD"]).unwrap());
+        std::fs::remove_dir_all(origin).unwrap();
+        std::fs::remove_dir_all(local).unwrap();
     }
 
     #[test]

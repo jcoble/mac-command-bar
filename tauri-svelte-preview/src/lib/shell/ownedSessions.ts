@@ -102,6 +102,8 @@ export type OwnedSession = Omit<Partial<OwnedAgentRuntimeFields>, 'nativeSession
   /** The workflow run this worker belongs to; the rail groups a run's workers under its label. */
   runId?: string | null;
   runLabel?: string | null;
+  /** The session that started this worker's run; the rail counts the run on that session's row. */
+  runLead?: string | null;
   /**
    * What the scanner worked out about the session — the branch it is on, the
    * task it belongs to, the pull request it opened. Copied off the scanned
@@ -154,6 +156,74 @@ export function backgroundWorkSummary(work: readonly BackgroundWorkItem[]): stri
   if (subagents) return `${count(subagents, 'sub-agent')} running`;
   if (commands) return `${count(commands, 'background command')} running`;
   return null;
+}
+
+// ── What a rail row counts ───────────────────────────────────────────────────
+
+/** True while the session waits on the owner: a permission prompt or a question. */
+export function sessionWaitsOnYou(session: OwnedSession): boolean {
+  return session.pendingPermission === true || session.pendingInput === true
+    || session.runtimeState === 'waiting-approval' || session.runtimeState === 'waiting-input';
+}
+
+// Not 'starting': a session whose start failed can keep that state on the rail.
+const BUSY: readonly (AgentRuntimeState | undefined)[] = ['working', 'interrupting', 'waiting-approval', 'waiting-input'];
+
+/** What one rail row's status icons show. `waiting` says each wait in words. */
+export interface RailRowStatus { waiting: string[]; background: number; helpers: number; runs: number }
+
+/**
+ * Every rail row's status icons, built in one pass over the rail's records
+ * and keyed by ownedId: who waits on the owner (the session itself, its
+ * helpers, and the workers of runs it started), its background commands, its
+ * running helpers and sub-agents, and its workflow runs with a worker at work.
+ * A run counts only while a worker is busy: the engine leaves a finished
+ * step's session open, so an open session is no sign that its run is still
+ * going. A running helper also appears in the parent's background work as a
+ * sub-agent; it is counted once.
+ */
+export function railRowStatuses(all: readonly OwnedSession[]): Map<string, RailRowStatus> {
+  const asking = (other: OwnedSession) => other.pendingPermission || other.runtimeState === 'waiting-approval'
+    ? 'is asking for approval' : 'is waiting for an answer';
+  const children = new Map<string, { waiting: string[]; helpers: number; helperIds: Set<string>; runs: Set<string> }>();
+  const childrenOf = (ownedId: string) => {
+    let entry = children.get(ownedId);
+    if (!entry) children.set(ownedId, entry = { waiting: [], helpers: 0, helperIds: new Set(), runs: new Set() });
+    return entry;
+  };
+  for (const other of all) {
+    const helperOf = other.helperOf;
+    const runLead = other.runId && other.runLead !== helperOf ? other.runLead : null;
+    if (!helperOf && !runLead) continue;
+    const name = other.title || other.handle || other.ownedId.slice(0, 8);
+    const waits = sessionWaitsOnYou(other);
+    const busy = BUSY.includes(other.runtimeState);
+    if (helperOf) {
+      const parent = childrenOf(helperOf);
+      parent.helperIds.add(`claude-child:${other.ownedId}`);
+      if (waits) parent.waiting.push(`helper ${name} ${asking(other)}`);
+      if (busy) parent.helpers += 1;
+    }
+    if (runLead) {
+      const lead = childrenOf(runLead);
+      if (waits) lead.waiting.push(`${name} in ${other.runLabel ?? 'a workflow run'} ${asking(other)}`);
+      if (busy) lead.runs.add(other.runId!);
+    }
+  }
+  const statuses = new Map<string, RailRowStatus>();
+  for (const session of all) {
+    const own = children.get(session.ownedId);
+    const work = session.backgroundWork ?? [];
+    const subagents = work.filter((item) => item.kind === 'subagent');
+    const nativeSubagents = subagents.filter((item) => !own?.helperIds.has(item.id)).length;
+    statuses.set(session.ownedId, {
+      waiting: [...(sessionWaitsOnYou(session) ? [`this session ${asking(session)}`] : []), ...(own?.waiting ?? [])],
+      background: work.length - subagents.length,
+      helpers: (own?.helpers ?? 0) + nativeSubagents,
+      runs: own?.runs.size ?? 0,
+    });
+  }
+  return statuses;
 }
 
 /** The item's own label, or what kind of work it is when it has none. */
@@ -368,6 +438,7 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
     helperOf: record.helperOf ?? null,
     runId: record.runId ?? null,
     runLabel: record.runLabel ?? null,
+    runLead: record.runLead ?? null,
     // The rail prints the branch straight into the row, so anything that is not
     // a name has to stop here rather than reach the row as "[object Object]".
     // The two constructors below already read it this way.

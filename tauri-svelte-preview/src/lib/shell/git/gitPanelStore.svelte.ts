@@ -40,7 +40,8 @@ export type GitActionKind =
   | 'fetch'
   | 'pull'
   | 'push'
-  | 'publish';
+  | 'publish'
+  | 'init';
 
 export type GitSurfaceOwner = 'compact' | 'large';
 
@@ -359,4 +360,13 @@ export function isNotARepositoryError(message: string): boolean {
   // that is hard to read — so only git's own wording for this counts. A bare
   // repository answers status with "must be run in a work tree".
   return /not a git repository|must be run in a work tree/i.test(message);
+}
+
+/**
+ * Is this failure git saying the folder has no repository at all, so one can be
+ * made there? A bare repository ("must be run in a work tree") is a repository
+ * already and never qualifies.
+ */
+export function isPlainFolderError(message: string): boolean {
+  return /not a git repository/i.test(message);
 }

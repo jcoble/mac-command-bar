@@ -128,7 +128,7 @@ export function conversationChunksFromEvent(
     // turns must not move into them. A message sent from here has no turn
     // until it is admitted.
     turnId: 'turnId' in prior ? prior.turnId : item.turnId ?? null,
-    startedAtMs: prior.startedAtMs ?? item.providerMetadata?.startedAtMs ?? event.timestampMs,
+    startedAtMs: (prior.firstSequence == null ? undefined : prior.startedAtMs) ?? item.providerMetadata?.startedAtMs ?? event.timestampMs,
     firstSequence: prior.firstSequence ?? item.providerMetadata?.firstSequence ?? event.sequence,
     lastSequence: event.sequence,
     positionKnown: item.providerMetadata?.positionKnown ?? prior.positionKnown ?? true

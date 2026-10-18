@@ -307,7 +307,11 @@ export function bridgeGitBackend(): GitBackend {
     fetch: refuse,
     pull: refuse,
     push: refuse,
-    publish: refuse
+    addRemote: refuse,
+    publish: refuse,
+    initRepository: async () => {
+      throw new Error(READ_ONLY_IN_BROWSER_MESSAGE);
+    }
   };
 }
 
