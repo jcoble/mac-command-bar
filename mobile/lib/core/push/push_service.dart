@@ -123,19 +123,21 @@ class PushService {
   }
 
   /// A tap on a notification whose data is `{machineId, itemId}`: selects that
-  /// machine and returns the route to open, `/inbox/<itemId>`. Null when the
-  /// data is incomplete or the machine is not paired here.
+  /// machine and returns the route to open, `/inbox/<itemId>`. A finished
+  /// reply, `{machineId, sessionId, kind: turn}`, opens `/chat/<sessionId>`.
+  /// Null when the data is incomplete or the machine is not paired here.
   Future<String?> routeForTap(Map<String, dynamic> data) async {
     final machineId = data['machineId'];
-    final itemId = data['itemId'];
-    if (machineId is! String || itemId is! String || itemId.isEmpty) {
+    final isTurn = data['kind'] == 'turn';
+    final target = isTurn ? data['sessionId'] : data['itemId'];
+    if (machineId is! String || target is! String || target.isEmpty) {
       return null;
     }
     final paired =
         _ref.read(machinesProvider).value?.visible ?? const <Machine>[];
     if (!paired.any((m) => m.id == machineId)) return null;
     await _ref.read(machinesProvider.notifier).select(machineId);
-    return '/inbox/${Uri.encodeComponent(itemId)}';
+    return '${isTurn ? '/chat' : '/inbox'}/${Uri.encodeComponent(target)}';
   }
 
   Future<void> openFromData(Map<String, dynamic> data) async {
