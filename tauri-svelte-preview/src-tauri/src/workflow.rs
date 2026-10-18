@@ -713,57 +713,32 @@ impl AgentRuntimePort for AgentRuntimeManager {
             let capabilities = self
                 .capabilities(&connection.owned_id, connection.generation)
                 .map_err(WorkflowError::Runtime)?;
-            // Models are set the way the chat sets them; Codex lists its models without a config option.
-            if request.model.is_some() {
+            // The model and mode are set the way the chat sets them. The adapter names its modes when the
+            // session starts, not in the capabilities it reports at initialize, so a worker cannot be judged
+            // on those; a mode the session does not offer fails the dispatch instead of running in default.
+            let starter_mode = request.starter.as_deref().map(|id|
+                self.conversation_config(id).ok().and_then(|config| config.approval_policy));
+            let permission = capped_permission(request.permission.clone(), starter_mode.as_ref().map(|mode| mode.as_deref()), provider);
+            if request.model.is_some() || permission.is_some() {
                 self.apply_conversation_config(crate::agent_conversation::protocol::SetAgentConversationConfigRequest {
                     owned_id: connection.owned_id.clone(), generation: connection.generation,
-                    model: request.model.clone(), reasoning_effort: None, approval_policy: None,
-                }, false).await.map_err(WorkflowError::Runtime)?;
+                    model: request.model.clone(), reasoning_effort: None, approval_policy: permission.clone(),
+                }, false).await.map_err(|error| WorkflowError::Runtime(format!(
+                    "Provider {} could not start the worker on model {:?} and mode {:?}: {error}",
+                    request.provider, request.model, permission)))?;
             }
-            // The default Auto applies only where the provider offers a mode; a mode the owner chose must exist.
-            let offers_mode = capabilities.config_options.iter().any(|option|
-                ["mode", "permission", "permissions"].iter().any(|category| option.category.eq_ignore_ascii_case(category)));
-            let permission = if offers_mode {
-                let starter_mode = request.starter.as_deref().map(|id|
-                    self.conversation_config(id).ok().and_then(|config| config.approval_policy));
-                capped_permission(request.permission.clone(), starter_mode.as_ref().map(|mode| mode.as_deref()), provider)
-            } else { request.permission.clone() };
-            for (categories, selected) in [
-                (&["thought_level", "effort"][..], request.effort.as_deref()),
-                (
-                    &["mode", "permission", "permissions"][..],
-                    permission.as_deref(),
-                ),
-            ] {
-                if provider == AgentConversationProvider::Claude
-                    && categories.contains(&"thought_level")
-                {
-                    continue;
-                }
-                if let Some(value) = selected {
-                    let option = capabilities
-                        .config_options
-                        .iter()
-                        .find(|option| {
-                            categories
-                                .iter()
-                                .any(|category| option.category.eq_ignore_ascii_case(category))
-                        })
-                        .ok_or_else(|| {
-                            WorkflowError::PolicyDenied(format!(
-                                "Provider {} did not advertise the requested {} capability",
-                                request.provider, categories[0]
-                            ))
-                        })?;
-                    self.set_config(
-                        &connection.owned_id,
-                        connection.generation,
-                        &option.id,
-                        json!(value),
-                    )
+            if let Some(effort) = request.effort.as_deref().filter(|_| provider != AgentConversationProvider::Claude) {
+                let option = capabilities
+                    .config_options
+                    .iter()
+                    .find(|option| ["thought_level", "effort"].iter().any(|category| option.category.eq_ignore_ascii_case(category)))
+                    .ok_or_else(|| WorkflowError::PolicyDenied(format!(
+                        "Provider {} did not advertise the requested thought_level capability",
+                        request.provider
+                    )))?;
+                self.set_config(&connection.owned_id, connection.generation, &option.id, json!(effort))
                     .await
                     .map_err(WorkflowError::Runtime)?;
-                }
             }
             self.prompt(
                 &connection.owned_id,
@@ -5739,5 +5714,26 @@ mod tests {
             worktrees_allocated: 0,
             last_sequence: 0,
         }
+    }
+
+    /// Like the real Claude adapter, the fixture names its modes only when the session starts, not when it initializes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn claude_worker_starts_in_auto_before_its_first_prompt() {
+        let root = std::path::PathBuf::from("/var/tmp").join(format!("tsk1416-worker-auto-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let log = root.join("adapter.jsonl");
+        let manifest = crate::agent_conversation::providers::acp_client::tests::fixture_manifest_named(&log, "config_options");
+        let providers = crate::agent_conversation::providers::ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)]).unwrap();
+        let manager = AgentRuntimeManager::new(providers);
+        manager.dispatch(AgentDispatchRequest {
+            owned_id: "worker".into(), provider: "claude".into(), cwd: root.to_string_lossy().into(), title: "Review".into(),
+            prompt: "Review it".into(), role_id: "review".into(), model: None, effort: None, permission: None, starter: None,
+        }).await.unwrap();
+        let frames = std::fs::read_to_string(&log).unwrap();
+        let set_mode = frames.lines().position(|line| line.contains(r#""method":"session/set_mode""#) && line.contains(r#""modeId":"auto""#));
+        let prompt = frames.lines().position(|line| line.contains(r#""method":"session/prompt""#));
+        manager.shutdown().await;
+        assert!(set_mode.is_some(), "the worker was never put in auto:\n{frames}");
+        assert!(prompt.is_none() || set_mode < prompt, "auto was set after the first prompt:\n{frames}");
     }
 }
