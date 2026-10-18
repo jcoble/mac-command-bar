@@ -749,6 +749,32 @@ CREATE INDEX IF NOT EXISTS notion_task_projections_offline_page_idx
         source_task_id ASC
     );";
 
+/// Phones paired with this backend, and the id and name it gives them (phone spec §5.2).
+/// Only a SHA-256 of each device token is kept.
+const PHONE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS phone_machine (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS phone_devices (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    fcm_token TEXT,
+    created_at INTEGER NOT NULL,
+    last_seen_at INTEGER,
+    revoked_at INTEGER
+);";
+
+/// A paired phone, as the desktop's phone list shows it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhoneDevice {
+    pub id: String,
+    pub name: String,
+    pub created_at: i64,
+    pub last_seen_at: Option<i64>,
+}
+
 pub type Result<T> = std::result::Result<T, StoreError>;
 
 #[derive(Debug)]
@@ -803,6 +829,35 @@ pub struct WaitingStep {
     pub reason: Option<String>,
     pub owned_id: Option<String>,
     pub updated_at_ms: i64,
+}
+
+/// One command a workflow step ran; its output text stays out of the history.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowHistoryCommand {
+    pub command: String,
+    pub exit_code: Option<i64>,
+}
+
+/// One ledger row of a workflow run, for the run timeline.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowHistoryRow {
+    pub sequence: i64,
+    pub timestamp_ms: i64,
+    pub kind: String,
+    pub node_id: Option<String>,
+    pub attempt: Option<i64>,
+    pub owned_id: Option<String>,
+    /// The state of the step after this change.
+    pub status: Option<String>,
+    pub commands: Vec<WorkflowHistoryCommand>,
+    pub finding_count: Option<i64>,
+    pub verdict: Option<String>,
+    pub files: Vec<String>,
+    /// The owner's latest answer `{step, decision, reply}`, only on `workflow.node.owner-answered`.
+    pub answer: Option<serde_json::Value>,
+    pub gate_approved: Option<bool>,
 }
 
 /// A row of the session list: the session, its handle, and where it came from.
@@ -1935,6 +1990,8 @@ impl SessionStore {
         add_remote_history_column(&connection)?;
         add_child_session_schema(&connection)?;
         add_project_schema(&connection)?;
+        connection.execute_batch(PHONE_SCHEMA)
+            .map_err(|error| StoreError::sqlite("could not create the phone tables", error))?;
         add_session_handle(&connection)?;
         upgrade_broker_queue(&mut connection)?;
 
@@ -2294,6 +2351,65 @@ impl SessionStore {
             .execute("DELETE FROM app_settings WHERE setting_key = ?", [setting_key])
             .map_err(|error| StoreError::sqlite("could not delete the app setting", error))?;
         Ok(())
+    }
+
+    /// Names this machine for paired phones, creating its id from `new_id` the
+    /// first time. Returns the machine's `(id, name)`.
+    pub fn name_phone_machine(&self, new_id: &str, name: &str) -> Result<(String, String)> {
+        let connection = self.lock_write()?;
+        connection.execute(
+            "INSERT INTO phone_machine (id, name) SELECT ?1, ?2 WHERE NOT EXISTS (SELECT 1 FROM phone_machine)",
+            params![new_id, name],
+        ).map_err(|error| StoreError::sqlite("could not create the phone machine id", error))?;
+        connection.query_row("UPDATE phone_machine SET name = ? RETURNING id, name", [name],
+            |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|error| StoreError::sqlite("could not name the phone machine", error))
+    }
+
+    /// This machine's `(id, name)` for phones, once it has been named.
+    pub fn phone_machine(&self) -> Result<Option<(String, String)>> {
+        use rusqlite::OptionalExtension;
+        self.lock()?.query_row("SELECT id, name FROM phone_machine", [], |row| Ok((row.get(0)?, row.get(1)?)))
+            .optional().map_err(|error| StoreError::sqlite("could not read the phone machine", error))
+    }
+
+    pub fn add_phone_device(&self, id: &str, name: &str, token_hash: &str, created_at: i64) -> Result<()> {
+        self.lock_write()?.execute(
+            "INSERT INTO phone_devices (id, name, token_hash, created_at) VALUES (?, ?, ?, ?)",
+            params![id, name, token_hash, created_at],
+        ).map_err(|error| StoreError::sqlite("could not save the paired phone", error))?;
+        Ok(())
+    }
+
+    /// The id of the non-revoked phone holding `token_hash`, marked as seen at `now`.
+    pub fn touch_phone_device(&self, token_hash: &str, now: i64) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        self.lock_write()?.query_row(
+            "UPDATE phone_devices SET last_seen_at = ?2 WHERE token_hash = ?1 AND revoked_at IS NULL RETURNING id",
+            params![token_hash, now], |row| row.get(0),
+        ).optional().map_err(|error| StoreError::sqlite("could not check the phone token", error))
+    }
+
+    /// Paired phones that have not been removed, newest first.
+    pub fn phone_devices(&self) -> Result<Vec<PhoneDevice>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT id, name, created_at, last_seen_at FROM phone_devices
+             WHERE revoked_at IS NULL ORDER BY created_at DESC, id",
+        ).map_err(|error| StoreError::sqlite("could not list paired phones", error))?;
+        let rows = statement.query_map([], |row| Ok(PhoneDevice {
+            id: row.get(0)?, name: row.get(1)?, created_at: row.get(2)?, last_seen_at: row.get(3)?,
+        })).map_err(|error| StoreError::sqlite("could not list paired phones", error))?;
+        rows.collect::<rusqlite::Result<_>>().map_err(|error| StoreError::sqlite("could not read a paired phone", error))
+    }
+
+    /// Removes a paired phone: its token stops working and it gets no more pushes.
+    pub fn revoke_phone_device(&self, id: &str, now: i64) -> Result<bool> {
+        let changed = self.lock_write()?.execute(
+            "UPDATE phone_devices SET revoked_at = ?2, fcm_token = NULL WHERE id = ?1 AND revoked_at IS NULL",
+            params![id, now],
+        ).map_err(|error| StoreError::sqlite("could not remove the paired phone", error))?;
+        Ok(changed > 0)
     }
 
     pub fn list_projects(&self) -> Result<Vec<ProjectRow>> {
@@ -2842,6 +2958,50 @@ impl SessionStore {
         ).optional().map_err(|error| StoreError::sqlite("could not read latest workflow run", error))
     }
 
+    /// Every ledger row of one workflow run in order, so the timeline shows each attempt of each step.
+    /// The projection happens in this one statement; no full run snapshot is loaded.
+    pub fn list_workflow_run_history(&self, run_id: &str) -> Result<Vec<WorkflowHistoryRow>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT e.sequence, CAST(e.timestamp AS INTEGER), e.kind,
+                    json_extract(e.payload_json,'$.nodeId'), json_extract(e.payload_json,'$.attempt'),
+                    json_extract(e.payload_json,'$.ownedId'),
+                    (SELECT json_extract(n.value,'$.state') FROM json_each(e.payload_json,'$.workflowPayload.run.nodes') n
+                     WHERE json_extract(n.value,'$.nodeId') = json_extract(e.payload_json,'$.nodeId')),
+                    (SELECT json_group_array(json_object('command', json_extract(c.value,'$.command'),
+                                                         'exitCode', json_extract(c.value,'$.exitCode')))
+                     FROM json_each(e.payload_json,'$.workflowPayload.stepResult.commands') c),
+                    json_extract(e.payload_json,'$.workflowPayload.stepResult.findingCount'),
+                    json_extract(e.payload_json,'$.workflowPayload.stepResult.verdict'),
+                    json_extract(e.payload_json,'$.workflowPayload.stepResult.files'),
+                    CASE WHEN e.kind = 'workflow.node.owner-answered'
+                         THEN json_extract(e.payload_json,'$.workflowPayload.run.inputSnapshot.answers[#-1]') END,
+                    CASE WHEN e.kind = 'workflow.gate.decided'
+                         THEN (SELECT json_extract(n.value,'$.gate.approved')
+                               FROM json_each(e.payload_json,'$.workflowPayload.run.nodes') n
+                               WHERE json_extract(n.value,'$.nodeId') = json_extract(e.payload_json,'$.nodeId')) END
+             FROM orchestration_events e
+             WHERE e.run_id = ?1 AND e.kind LIKE 'workflow.%'
+             ORDER BY e.sequence",
+        ).map_err(|error| StoreError::sqlite("could not prepare workflow run history", error))?;
+        let rows = statement.query_map([run_id], |row| {
+            // The SQL builds these three columns as JSON text; they are decoded here, not searched.
+            let decode = |index: usize| -> rusqlite::Result<Option<serde_json::Value>> {
+                Ok(row.get::<_, Option<String>>(index)?.and_then(|text| serde_json::from_str(&text).ok()))
+            };
+            Ok(WorkflowHistoryRow {
+                sequence: row.get(0)?, timestamp_ms: row.get(1)?, kind: row.get(2)?,
+                node_id: row.get(3)?, attempt: row.get(4)?, owned_id: row.get(5)?, status: row.get(6)?,
+                commands: decode(7)?.and_then(|value| serde_json::from_value(value).ok()).unwrap_or_default(),
+                finding_count: row.get(8)?, verdict: row.get(9)?,
+                files: decode(10)?.and_then(|value| serde_json::from_value(value).ok()).unwrap_or_default(),
+                answer: decode(11)?, gate_approved: row.get(12)?,
+            })
+        }).map_err(|error| StoreError::sqlite("could not query workflow run history", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read workflow run history", error))
+    }
+
     pub fn find_workflow_event_by_idempotency_key(&self, workflow_id: &str, key: &str) -> Result<Option<OrchestrationEventRow>> {
         let connection = self.lock()?;
         connection.query_row(
@@ -3237,6 +3397,21 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not list events", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read the event list", error))
+    }
+
+    /// Read only the requested sequences from one session in a single query.
+    pub fn get_events_by_sequences(&self, owned_id: &str, sequences: &[i64]) -> Result<Vec<EventRow>> {
+        let sequences_json = serde_json::to_string(sequences)
+            .map_err(|_| StoreError::message("could not encode event sequences"))?;
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT owned_id, seq, turn_id, kind, payload, created_at
+             FROM events WHERE owned_id = ?1 AND seq IN (SELECT value FROM json_each(?2))",
+        ).map_err(|error| StoreError::sqlite("could not prepare event lookup", error))?;
+        let rows = statement.query_map(params![owned_id, sequences_json], event_from_row)
+            .map_err(|error| StoreError::sqlite("could not find events", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read selected events", error))
     }
 
     /// Latest durable child descriptor per child at one captured journal head.

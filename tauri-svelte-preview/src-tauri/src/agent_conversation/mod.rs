@@ -7,6 +7,7 @@ pub mod handoff;
 mod legacy_import;
 pub mod manager;
 pub mod messaging;
+mod phone_api;
 pub mod prompt_content;
 pub mod protocol;
 pub mod providers;
