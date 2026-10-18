@@ -4,8 +4,10 @@
 
   A status card says what state the step is in and why, its attempt, timing
   and usage, the pull request it opened, and offers Retry when it failed. A
-  review card holds the verdict and findings of the latest round, and a
-  commands card lists every shell command with its exit code and output.
+  review card holds the verdict and findings of the latest round, a rounds
+  card lists every round's result from the run's history, and a commands card
+  lists every shell command with its exit code and output (a command step's
+  failed commands are its findings, so they show there only).
   Every block starts at the card's left edge; output wraps and scrolls inside
   its own block, never the panel.
 -->
@@ -32,6 +34,7 @@
   import { Chip } from '$lib/components/ui/chip/index.js';
   import { sessionContextUsage } from '$lib/shell/panels/context/sessionContextModel.ts';
   import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
+  import type { WorkflowTimelineItem } from '$lib/shell/workflows/workflowTimeline.ts';
   import { workflowStepFacts, type WorkflowNodeRunRecord } from '$lib/shell/workflows/workflowTypes.ts';
 
   interface Props {
@@ -44,9 +47,17 @@
     busy: boolean;
     /** Retry this step; null when it has not failed. */
     onRetry: (() => void) | null;
+    /** This step's results from the run's timeline, one per round or attempt, oldest first. */
+    rounds: WorkflowTimelineItem[];
   }
 
-  let { node, status, kind, duration, busy, onRetry }: Props = $props();
+  let { node, status, kind, duration, busy, onRetry, rounds }: Props = $props();
+
+  // A round's result in one or two words, with the tone its chip reads in.
+  const ROUND_RESULT: Partial<Record<WorkflowTimelineItem['kind'], [string, ChipTone]>> = {
+    finish: ['finished', 'good'], failed: ['failed', 'bad'], timeout: ['timed out', 'attention'], waiting: ['waited for you', 'neutral']
+  };
+  const roundWord = $derived(rounds.some((round) => round.kind === 'review') ? 'Round' : 'Attempt');
 
   const facts = $derived(workflowStepFacts(node));
   const failedCommands = $derived(
@@ -141,7 +152,7 @@
   </Card.Root>
 
   <!-- Review verdict and findings (a command step reports findings without a verdict). The run record keeps only the latest round. -->
-  {#if facts.verdict || facts.findings.length}
+  {#if facts.verdict || (facts.findings.length && !facts.commands.length)}
     <Card.Root size="sm" class="gap-2 bg-foreground/8">
       <Card.Header>
         <div class="flex min-w-0 items-center gap-2">
@@ -165,6 +176,27 @@
         {:else}
           <p class="text-sm text-muted-foreground">No findings.</p>
         {/if}
+      </Card.Content>
+    </Card.Root>
+  {/if}
+
+  <!-- Every round or attempt this step has had, from the run's history; the record above keeps only the latest. -->
+  {#if rounds.length > 1}
+    <Card.Root size="sm" class="gap-1.5 bg-foreground/8">
+      <Card.Header>
+        <h3 class="min-w-0 truncate text-[13px] leading-tight font-semibold">{roundWord}s</h3>
+      </Card.Header>
+      <Card.Content>
+        <ol class="m-0 flex min-w-0 list-none flex-col p-0">
+          {#each rounds as round (round.key)}
+            {@const result = round.verdict ? [round.verdict, verdictTone(round.verdict)] as const : ROUND_RESULT[round.kind]}
+            <li class="flex min-h-8 min-w-0 items-center gap-3 border-b py-1.5 last:border-b-0">
+              <span class="w-20 shrink-0 text-[13px] font-medium tabular-nums">{roundWord} {round.attempt ?? 1}</span>
+              <span class="min-w-0 flex-1 truncate text-sm text-muted-foreground tabular-nums" class:font-mono={round.kind === 'checks'} title={round.detail}>{round.detail || clock(round.atMs)}</span>
+              {#if result}<Chip tone={result[1]}>{result[0]}</Chip>{/if}
+            </li>
+          {/each}
+        </ol>
       </Card.Content>
     </Card.Root>
   {/if}
