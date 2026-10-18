@@ -6,12 +6,14 @@ import {
   type UIMessage
 } from '@tanstack/ai-svelte';
 import {
-  attachmentDisplayMetadata,
-  discardRestoredAttachments,
+  // TSK-1299 experiment: attachments off
+  // attachmentDisplayMetadata,
+  // discardRestoredAttachments,
   readNewerSelectedConversationItems,
   readOlderSelectedConversationItems,
-  readSelectedConversationAttachments,
-  restoreAttachmentList,
+  // TSK-1299 experiment: attachments off
+  // readSelectedConversationAttachments,
+  // restoreAttachmentList,
   sendStructuredMessage,
   subscribeSelectedConversation
 } from './conversationService.ts';
@@ -32,8 +34,9 @@ import {
   ensureConversationSession,
   evictConversationSession,
   failChildConversationTranscript,
-  restoreSelectedConversationAttachments,
-  setConversationAttachmentError,
+  // TSK-1299 experiment: attachments off
+  // restoreSelectedConversationAttachments,
+  // setConversationAttachmentError,
   setConversationSendError,
   setSelectedConversationPageLoading,
   setSelectedConversationPageError
@@ -300,68 +303,70 @@ function bindSelectionSignal(selection: ActiveConversation, signal?: AbortSignal
   selection.releaseSelectionSignal = () => signal?.removeEventListener('abort', abort);
 }
 
-async function restorePageAttachments(
-  selection: ActiveConversation,
-  wanted: ReadonlyMap<string, readonly string[]>,
-  generation: number,
-  retainedItemIds: readonly string[]
-): Promise<void> {
-  try {
-    restoreSelectedConversationAttachments(
-      selection.historyOwnedId, {}, generation, retainedItemIds
-    );
-    if (!wanted.size) return;
-    const byItem: Record<string, ConversationAttachment[]> = {};
-    if (wanted.size) {
-      const ids = [...new Set([...wanted.values()].flat())];
-      const saved = await readSelectedConversationAttachments(
-        selection.historyOwnedId,
-        ids,
-        selection.controller.signal
-      );
-      if (!isCurrent(selection) || selection.controller.signal.aborted) return;
-      const restored = await restoreAttachmentList(
-        selection.historyOwnedId,
-        saved,
-        selection.controller.signal
-      );
-      if (!isCurrent(selection) || selection.controller.signal.aborted) {
-        discardRestoredAttachments(restored);
-        return;
-      }
-      const byId = new Map(restored.map((attachment) => [attachment.id, attachment]));
-      for (const [itemId, attachmentIds] of wanted) {
-        // Some stored messages name one screenshot twice; show it once.
-        byItem[itemId] = [...new Set(attachmentIds)].flatMap((id) => byId.get(id) ?? []);
-      }
-    }
-    if (isCurrent(selection)) {
-      restoreSelectedConversationAttachments(
-        selection.historyOwnedId,
-        byItem,
-        generation,
-        selection.chat.messages.map((message) => message.id)
-      );
-    }
-  } catch (error) {
-    if (isCurrent(selection) && !selection.controller.signal.aborted) {
-      setConversationAttachmentError(
-        selection.historyOwnedId,
-        error instanceof Error ? error.message : String(error)
-      );
-    }
-  }
-}
+// TSK-1299 experiment: attachments off
+// async function restorePageAttachments(
+//   selection: ActiveConversation,
+//   wanted: ReadonlyMap<string, readonly string[]>,
+//   generation: number,
+//   retainedItemIds: readonly string[]
+// ): Promise<void> {
+//   try {
+//     restoreSelectedConversationAttachments(
+//       selection.historyOwnedId, {}, generation, retainedItemIds
+//     );
+//     if (!wanted.size) return;
+//     const byItem: Record<string, ConversationAttachment[]> = {};
+//     if (wanted.size) {
+//       const ids = [...new Set([...wanted.values()].flat())];
+//       const saved = await readSelectedConversationAttachments(
+//         selection.historyOwnedId,
+//         ids,
+//         selection.controller.signal
+//       );
+//       if (!isCurrent(selection) || selection.controller.signal.aborted) return;
+//       const restored = await restoreAttachmentList(
+//         selection.historyOwnedId,
+//         saved,
+//         selection.controller.signal
+//       );
+//       if (!isCurrent(selection) || selection.controller.signal.aborted) {
+//         discardRestoredAttachments(restored);
+//         return;
+//       }
+//       const byId = new Map(restored.map((attachment) => [attachment.id, attachment]));
+//       for (const [itemId, attachmentIds] of wanted) {
+//         // Some stored messages name one screenshot twice; show it once.
+//         byItem[itemId] = [...new Set(attachmentIds)].flatMap((id) => byId.get(id) ?? []);
+//       }
+//     }
+//     if (isCurrent(selection)) {
+//       restoreSelectedConversationAttachments(
+//         selection.historyOwnedId,
+//         byItem,
+//         generation,
+//         selection.chat.messages.map((message) => message.id)
+//       );
+//     }
+//   } catch (error) {
+//     if (isCurrent(selection) && !selection.controller.signal.aborted) {
+//       setConversationAttachmentError(
+//         selection.historyOwnedId,
+//         error instanceof Error ? error.message : String(error)
+//       );
+//     }
+//   }
+// }
 
-function pageAttachments(events: readonly AgentConversationEvent[]): Map<string, readonly string[]> {
-  const wanted = new Map<string, readonly string[]>();
-  for (const event of events) {
-    if (event.payload.kind === 'userMessage' && event.payload.attachmentIds?.length) {
-      wanted.set(event.payload.itemId, event.payload.attachmentIds);
-    }
-  }
-  return wanted;
-}
+// TSK-1299 experiment: attachments off
+// function pageAttachments(events: readonly AgentConversationEvent[]): Map<string, readonly string[]> {
+//   const wanted = new Map<string, readonly string[]>();
+//   for (const event of events) {
+//     if (event.payload.kind === 'userMessage' && event.payload.attachmentIds?.length) {
+//       wanted.set(event.payload.itemId, event.payload.attachmentIds);
+//     }
+//   }
+//   return wanted;
+// }
 
 function snapshotChunks(
   selection: ActiveConversation,
@@ -417,12 +422,13 @@ function snapshotChunks(
   }
   pushMessagesSnapshot(selection, messages, push);
   push({ type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: selection.historyOwnedId } as StreamChunk);
-  void restorePageAttachments(
-    selection,
-    pageAttachments(snapshot.page.events),
-    snapshot.connection.generation,
-    messages.map((message) => message.id)
-  );
+  // TSK-1299 experiment: attachments off
+  // void restorePageAttachments(
+  //   selection,
+  //   pageAttachments(snapshot.page.events),
+  //   snapshot.connection.generation,
+  //   messages.map((message) => message.id)
+  // );
   if (pending?.receipt && snapshot.page.turns.some((turn) =>
     turn.turnId === pending.receipt?.turnId && turn.terminalState
   )) {
@@ -782,7 +788,8 @@ export function selectedConversationChat(
 
 function disposeConversationChat(selection: ActiveConversation): void {
   const generation = getConversationSession(selection.historyOwnedId)?.generation ?? 0;
-  restoreSelectedConversationAttachments(selection.historyOwnedId, {}, generation, []);
+  // TSK-1299 experiment: attachments off
+  // restoreSelectedConversationAttachments(selection.historyOwnedId, {}, generation, []);
   selection.controller.abort();
   selection.rejectReady?.(new DOMException('Conversation selection disposed', 'AbortError'));
   selection.releaseSelectionSignal?.();
@@ -837,6 +844,8 @@ export async function sendSelectedConversationMessage(
   if (selection.pendingAdmission) {
     throw new Error('A message is already being admitted.');
   }
+  // TSK-1299 experiment: attachments off
+  const disabledAttachments: readonly ConversationAttachment[] = [];
   let resolve!: (receipt: AgentConversationSendReceipt) => void;
   let reject!: (error: unknown) => void;
   const promise = new Promise<AgentConversationSendReceipt>((accept, decline) => {
@@ -855,7 +864,7 @@ export async function sendSelectedConversationMessage(
     metadata: {
       itemType: 'user-message',
       startedAtMs: Date.now(),
-      ...(attachments.length ? { attachments: attachments.map(attachmentDisplayMetadata) } : {})
+      ...(disabledAttachments.length ? { attachments: disabledAttachments } : {})
     }
   });
   return await promise;
@@ -954,12 +963,13 @@ export async function pageSelectedConversation(direction: Direction, historyOwne
       transferBytes: selection.graphBytes
     });
     const generation = getConversationSession(selection.historyOwnedId)?.generation ?? 0;
-    void restorePageAttachments(
-      selection,
-      pageAttachments(page.events),
-      generation,
-      messages.map((message) => message.id)
-    );
+    // TSK-1299 experiment: attachments off
+    // void restorePageAttachments(
+    //   selection,
+    //   pageAttachments(page.events),
+    //   generation,
+    //   messages.map((message) => message.id)
+    // );
     // Keep paging locked until this page is consumed; the next merge must see its messages.
     selection.push({ type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: selection.historyOwnedId } as StreamChunk);
     await selection.ready;

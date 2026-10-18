@@ -32,13 +32,15 @@
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { agentDisplayName } from '$lib/shell/agentIcons.ts';
-  import AttachmentLightbox from '$lib/shell/components/conversation/AttachmentLightbox.svelte';
-  import { cleanupConversationAttachmentPreview, restoreAttachmentList, type SavedAttachment } from '$lib/shell/conversation/conversationService';
+  // TSK-1299 experiment: attachments off
+  // import AttachmentLightbox from '$lib/shell/components/conversation/AttachmentLightbox.svelte';
+  // import { cleanupConversationAttachmentPreview, restoreAttachmentList, type SavedAttachment } from '$lib/shell/conversation/conversationService';
   import { getConversationSession } from '$lib/shell/conversation/conversationStore.svelte';
   import { openFileInEditor } from '$lib/shell/workbenchNavigation';
   import { listAgentConversationEventsBeforeFromTauri } from '$lib/tauriSource';
-  import { invoke } from '@tauri-apps/api/core';
-  import type { ConversationAttachment } from '$lib/shell/conversation/conversationTypes.ts';
+  // TSK-1299 experiment: attachments off
+  // import { invoke } from '@tauri-apps/api/core';
+  // import type { ConversationAttachment } from '$lib/shell/conversation/conversationTypes.ts';
 
   import {
     fileNameOf,
@@ -72,12 +74,13 @@
     sessionContextFacts(metadataWithConfigFallback(session?.metadata ?? null, session?.agentConfig))
   );
   const usage = $derived(sessionContextUsage(session?.metadata ?? null, session?.usage));
-  let savedAttachments = $state<ConversationAttachment[]>([]);
-  const attachments = $derived(sessionAttachments(
-    [...savedAttachments, ...(session?.attachments ?? [])],
-    session?.unclaimedSentAttachments ?? [],
-    session?.sentAttachments ?? {}
-  ));
+  // TSK-1299 experiment: attachments off
+  // let savedAttachments = $state<ConversationAttachment[]>([]);
+  // const attachments = $derived(sessionAttachments(
+  //   [...savedAttachments, ...(session?.attachments ?? [])],
+  //   session?.unclaimedSentAttachments ?? [],
+  //   session?.sentAttachments ?? {}
+  // ));
 
   /** Whoever did not send a figure gets named for it, so "not reported" reads
    * as a fact about the provider rather than as a hole in the panel. */
@@ -102,7 +105,8 @@
       filesLoaded = false;
       filesError = false;
       filesTouched = [];
-      savedAttachments = [];
+      // TSK-1299 experiment: attachments off
+      // savedAttachments = [];
       return;
     }
 
@@ -110,31 +114,35 @@
     filesLoaded = false;
     filesError = false;
     filesTouched = [];
-    savedAttachments = [];
+    // TSK-1299 experiment: attachments off
+    // savedAttachments = [];
     void loadTouchedFiles(owner, forSession, forRoot);
-    void loadAttachments(owner, forSession);
+    // TSK-1299 experiment: attachments off
+    // void loadAttachments(owner, forSession);
 
     return () => {
       owner.active = false;
-      savedAttachments.forEach(cleanupConversationAttachmentPreview);
-      savedAttachments = [];
+      // TSK-1299 experiment: attachments off
+      // savedAttachments.forEach(cleanupConversationAttachmentPreview);
+      // savedAttachments = [];
     };
   });
 
-  async function loadAttachments(owner: { active: boolean }, forSession: string): Promise<void> {
-    try {
-      const records = await invoke<SavedAttachment[]>('read_agent_conversation_attachments', { ownedId: forSession });
-      if (!owner.active) return;
-      const restored = await restoreAttachmentList(forSession, records);
-      if (!owner.active || ownedId !== forSession) {
-        restored.forEach(cleanupConversationAttachmentPreview);
-        return;
-      }
-      savedAttachments = restored;
-    } catch {
-      // Existing draft and loaded-message attachments remain visible.
-    }
-  }
+  // TSK-1299 experiment: attachments off
+  // async function loadAttachments(owner: { active: boolean }, forSession: string): Promise<void> {
+  //   try {
+  //     const records = await invoke<SavedAttachment[]>('read_agent_conversation_attachments', { ownedId: forSession });
+  //     if (!owner.active) return;
+  //     const restored = await restoreAttachmentList(forSession, records);
+  //     if (!owner.active || ownedId !== forSession) {
+  //       restored.forEach(cleanupConversationAttachmentPreview);
+  //       return;
+  //     }
+  //     savedAttachments = restored;
+  //   } catch {
+  //     // Existing draft and loaded-message attachments remain visible.
+  //   }
+  // }
 
   async function loadTouchedFiles(
     owner: { active: boolean },
@@ -321,7 +329,7 @@
           </Card.Root>
         </section>
 
-        <!-- Attachments -->
+        <!-- TSK-1299 experiment: attachments off
         <section aria-labelledby="session-context-attachments">
           <Card.Root size="sm" class={cardClass}>
             <Card.Header>
@@ -363,7 +371,7 @@
               {/if}
             </Card.Content>
           </Card.Root>
-        </section>
+        </section> -->
       </div>
     </ScrollArea>
   {/if}

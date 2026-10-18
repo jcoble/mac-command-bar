@@ -416,80 +416,82 @@ export function discardRestoredAttachments(attachments: readonly ConversationAtt
 }
 
 /** Restore attachment metadata supplied by the existing owner-scoped vault. */
-export async function restoreConversationAttachments(
-  ownedId: string,
-  saved: readonly (Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string })[] = [],
-  signal?: AbortSignal
-): Promise<ConversationAttachment[]> {
-  if (signal?.aborted) return [];
-  const generation = getConversationSession(ownedId)?.generation;
-  if (generation === undefined) return [];
-  if (saved.length > 0) {
-    const restored = await restoreAttachmentList(ownedId, saved as SavedAttachment[], signal,
-      (items) => { if (conversationGenerationMatches(ownedId, generation)) setConversationAttachments(ownedId, items); });
-    if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) {
-      discardRestoredAttachments(restored);
-      return [];
-    }
-    setConversationAttachments(ownedId, restored);
-    return restored;
-  }
-  if (!isTauri()) return [];
-  try {
-    const draftIds = new Set(getConversationSession(ownedId)?.attachmentIds ?? []);
-    const records = await invoke<(Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string })[]>(
-      'read_agent_conversation_attachments',
-      { ownedId }
-    );
-    const restored = Array.isArray(records) ? await restoreAttachmentList(ownedId, (records as SavedAttachment[]).filter((record) => draftIds.has(record.id)), signal,
-      (items) => { if (conversationGenerationMatches(ownedId, generation)) setConversationAttachments(ownedId, items); }) : [];
-    if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) {
-      discardRestoredAttachments(restored);
-      return [];
-    }
-    setConversationAttachments(ownedId, restored);
-    return restored;
-  } catch (_error) {
-    // The invoke seam logged the sanitized failure before this fallback runs.
-    // Older controller builds have no listing command. The draft and saved ids
-    // remain intact so a later controller can hydrate them without data loss.
-    return [];
-  }
-}
+// TSK-1299 experiment: attachments off
+// export async function restoreConversationAttachments(
+//   ownedId: string,
+//   saved: readonly (Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string })[] = [],
+//   signal?: AbortSignal
+// ): Promise<ConversationAttachment[]> {
+//   if (signal?.aborted) return [];
+//   const generation = getConversationSession(ownedId)?.generation;
+//   if (generation === undefined) return [];
+//   if (saved.length > 0) {
+//     const restored = await restoreAttachmentList(ownedId, saved as SavedAttachment[], signal,
+//       (items) => { if (conversationGenerationMatches(ownedId, generation)) setConversationAttachments(ownedId, items); });
+//     if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) {
+//       discardRestoredAttachments(restored);
+//       return [];
+//     }
+//     setConversationAttachments(ownedId, restored);
+//     return restored;
+//   }
+//   if (!isTauri()) return [];
+//   try {
+//     const draftIds = new Set(getConversationSession(ownedId)?.attachmentIds ?? []);
+//     const records = await invoke<(Omit<ConversationAttachment, 'previewUrl'> & { previewUrl?: string })[]>(
+//       'read_agent_conversation_attachments',
+//       { ownedId }
+//     );
+//     const restored = Array.isArray(records) ? await restoreAttachmentList(ownedId, (records as SavedAttachment[]).filter((record) => draftIds.has(record.id)), signal,
+//       (items) => { if (conversationGenerationMatches(ownedId, generation)) setConversationAttachments(ownedId, items); }) : [];
+//     if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) {
+//       discardRestoredAttachments(restored);
+//       return [];
+//     }
+//     setConversationAttachments(ownedId, restored);
+//     return restored;
+//   } catch (_error) {
+//     // The invoke seam logged the sanitized failure before this fallback runs.
+//     // Older controller builds have no listing command. The draft and saved ids
+//     // remain intact so a later controller can hydrate them without data loss.
+//     return [];
+//   }
+// }
 
-export async function restoreAttachmentList(
-  ownedId: string, records: readonly SavedAttachment[], signal?: AbortSignal,
-  onUpdate?: (attachments: ConversationAttachment[]) => void
-): Promise<ConversationAttachment[]> {
-  const remote = isRemoteConversation(ownedId);
-  const restored = records.map((record) => {
-    if (remote) return { ...record, remoteOwnedId: ownedId, previewUrl: '', previewLoading: record.thumbnailByteLength != null };
-    try { return restoreConversationAttachmentPreview(record); }
-    catch { return { ...record, previewUrl: '' }; }
-  });
-  onUpdate?.([...restored]);
-  if (!remote) return restored;
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(3, records.length) }, async () => {
-    while (!signal?.aborted && next < records.length) {
-      const index = next++;
-      try {
-        const previewUrl = await remoteAttachmentPreview(ownedId, records[index], signal);
-        if (signal?.aborted) return;
-        restored[index] = { ...restored[index], previewUrl, previewLoading: false };
-      } catch {
-        if (signal?.aborted) return;
-        restored[index] = { ...restored[index], previewLoading: false };
-      }
-      onUpdate?.([...restored]);
-    }
-  }));
-  if (signal?.aborted) {
-    discardRestoredAttachments(restored);
-    return [];
-  }
-  return restored;
-}
+// TSK-1299 experiment: attachments off
+// export async function restoreAttachmentList(
+//   ownedId: string, records: readonly SavedAttachment[], signal?: AbortSignal,
+//   onUpdate?: (attachments: ConversationAttachment[]) => void
+// ): Promise<ConversationAttachment[]> {
+//   const remote = isRemoteConversation(ownedId);
+//   const restored = records.map((record) => {
+//     if (remote) return { ...record, remoteOwnedId: ownedId, previewUrl: '', previewLoading: record.thumbnailByteLength != null };
+//     try { return restoreConversationAttachmentPreview(record); }
+//     catch { return { ...record, previewUrl: '' }; }
+//   });
+//   onUpdate?.([...restored]);
+//   if (!remote) return restored;
+//   let next = 0;
+//   await Promise.all(Array.from({ length: Math.min(3, records.length) }, async () => {
+//     while (!signal?.aborted && next < records.length) {
+//       const index = next++;
+//       try {
+//         const previewUrl = await remoteAttachmentPreview(ownedId, records[index], signal);
+//         if (signal?.aborted) return;
+//         restored[index] = { ...restored[index], previewUrl, previewLoading: false };
+//       } catch {
+//         if (signal?.aborted) return;
+//         restored[index] = { ...restored[index], previewLoading: false };
+//       }
+//       onUpdate?.([...restored]);
+//     }
+//   }));
+//   if (signal?.aborted) {
+//     discardRestoredAttachments(restored);
+//     return [];
+//   }
+//   return restored;
+// }
 
 /** Ask the owner-validated vault to delete one managed file, then revoke its URL. */
 export async function removeConversationAttachment(
@@ -897,18 +899,19 @@ export async function readNewerSelectedConversationItems(
   );
 }
 
-export async function readSelectedConversationAttachments(
-  ownedId: string,
-  attachmentIds: readonly string[],
-  signal?: AbortSignal
-): Promise<SavedAttachment[]> {
-  if (!isTauri() || signal?.aborted || attachmentIds.length === 0) return [];
-  const rows = await invoke<SavedAttachment[]>('read_agent_conversation_selected_attachments', {
-    ownedId,
-    attachmentIds: [...attachmentIds]
-  });
-  return signal?.aborted ? [] : rows;
-}
+// TSK-1299 experiment: attachments off
+// export async function readSelectedConversationAttachments(
+//   ownedId: string,
+//   attachmentIds: readonly string[],
+//   signal?: AbortSignal
+// ): Promise<SavedAttachment[]> {
+//   if (!isTauri() || signal?.aborted || attachmentIds.length === 0) return [];
+//   const rows = await invoke<SavedAttachment[]>('read_agent_conversation_selected_attachments', {
+//     ownedId,
+//     attachmentIds: [...attachmentIds]
+//   });
+//   return signal?.aborted ? [] : rows;
+// }
 
 export async function startConversationEvents(): Promise<void> {
   if (!isTauri() || conversationStream) return;

@@ -1,11 +1,14 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import ArrowUp from '@lucide/svelte/icons/arrow-up';
-  import ImageUp from '@lucide/svelte/icons/image-up';
+  // TSK-1299 experiment: attachments off
+  // import ImageUp from '@lucide/svelte/icons/image-up';
   import Mic from '@lucide/svelte/icons/mic';
-  import Plus from '@lucide/svelte/icons/plus';
+  // TSK-1299 experiment: attachments off
+  // import Plus from '@lucide/svelte/icons/plus';
   import Square from '@lucide/svelte/icons/square';
-  import X from '@lucide/svelte/icons/x';
+  // TSK-1299 experiment: attachments off
+  // import X from '@lucide/svelte/icons/x';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
   import type { ConversationAttachment, AgentUserInputAction, AgentConfigValue, AgentPermissionRequest, AgentUserInputRequest } from '$lib/shell/conversation/conversationTypes.ts';
@@ -19,8 +22,9 @@
   import type { AgentKind } from '$lib/shell/ownedSessions.ts';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import AgentCommandMenu from './AgentCommandMenu.svelte';
-  import AttachmentLightbox from './AttachmentLightbox.svelte';
-  import WorkingSpinner from './WorkingSpinner.svelte';
+  // TSK-1299 experiment: attachments off
+  // import AttachmentLightbox from './AttachmentLightbox.svelte';
+  // import WorkingSpinner from './WorkingSpinner.svelte';
   import ComposerBannerStack, { type ComposerBannerItem } from './ComposerBannerStack.svelte';
   import ComposerConfigMenu from './ComposerConfigMenu.svelte';
   import PlanChip, { type PlanFileChanges } from './PlanChip.svelte';
@@ -200,7 +204,8 @@
     contextMeter ? contextMeterPopover(contextMeter, agentDisplayName(provider as AgentKind)) : null
   );
   const composerLocked = $derived(Boolean(pendingApproval || pendingInputs.length));
-  const hasSendableContent = $derived(Boolean(inputDraft.trim() || attachments.length));
+  // TSK-1299 experiment: attachments off
+  const hasSendableContent = $derived(Boolean(inputDraft.trim()));
   /* Typed text joins a running turn; with only background work it starts a new one. */
   const steerable = $derived(turnRunning ?? sending);
   /* Five seconds into a turn the empty box goes back to its capsule so the
@@ -399,9 +404,9 @@
       class="composer-box"
       data-testid="conversation-composer-box"
       role="presentation"
-      ondragover={onDragOver}
-      ondragleave={() => (dragging = false)}
-      ondrop={onDrop}
+      ondragover={/* TSK-1299 experiment: attachments off */ undefined}
+      ondragleave={/* TSK-1299 experiment: attachments off */ undefined}
+      ondrop={/* TSK-1299 experiment: attachments off */ undefined}
     >
       {#if pendingApproval || pendingInputs.length}
         <div class="composer-panels">
@@ -425,6 +430,7 @@
       {/if}
 
       <div class="composer-input-zone" data-testid="conversation-composer">
+        <!-- TSK-1299 experiment: attachments off
         {#if attachments.length || pendingImageCount}
           <div class="attachments" data-testid="conversation-attachment-previews">
             {#each Array(pendingImageCount) as _}
@@ -451,7 +457,7 @@
               </figure>
             {/each}
           </div>
-        {/if}
+        {/if} -->
         {#if menu.open && !composerLocked}<AgentCommandMenu commands={menu.commands} activeIndex={menu.activeIndex} emptyText={menu.emptyText} onSelect={chooseCommand} />{/if}
         <div class="prompt-row">
           <textarea
@@ -465,7 +471,7 @@
             placeholder={pendingApproval ? 'Resolve the approval above to continue' : pendingInputs.length ? 'Complete the requested input above' : `Message ${provider}`}
             value={inputDraft}
             disabled={composerLocked}
-            onpaste={(event) => void onPaste?.(event)}
+            onpaste={/* TSK-1299 experiment: attachments off */ undefined}
             oninput={(event) => changeDraft(event.currentTarget.value)}
             onblur={() => void onDraftBlur?.()}
             onkeydown={onKeydown}
@@ -476,9 +482,11 @@
       {#if !composerLocked}
         <div class="composer-footer" data-testid="conversation-composer-footer">
           <div class="footer-left">
-            <input bind:this={fileInput} class="file-input" type="file" accept="image/*" multiple onchange={chooseFiles} />
+            <!-- TSK-1299 experiment: attachments off -->
+            <!-- <input bind:this={fileInput} class="file-input" type="file" accept="image/*" multiple onchange={chooseFiles} /> -->
             <!-- The add button. It carries a menu, so it turns into a close
                  cross while that menu is on screen. -->
+            <!-- TSK-1299 experiment: attachments off
             <DropdownMenu.Root bind:open={addMenuOpen}>
               <DropdownMenu.Trigger>
                 {#snippet child({ props })}
@@ -508,7 +516,7 @@
                   </span>
                 </DropdownMenu.Item>
               </DropdownMenu.Content>
-            </DropdownMenu.Root>
+            </DropdownMenu.Root> -->
           </div>
           <div class="footer-right">
             {@render footerControls?.()}
@@ -566,11 +574,16 @@
           </div>
         </div>
       {/if}
-      {#if dragging}<p class="drop-hint" data-testid="conversation-drop-hint">Drop images to attach them</p>{/if}
+      <!-- TSK-1299 experiment: attachments off
+      {#if dragging}<p class="drop-hint" data-testid="conversation-drop-hint">Drop images to attach them</p>{/if} -->
     </div>
   </form>
   {#if subBar}<div class="sub-bar" data-testid="composer-sub-bar">{@render subBar()}</div>{/if}
-  <div class="composer-hint" data-testid="conversation-paste-hint"><span>Paste or drop images · type / for commands</span>{#if contextMeter?.kind === 'percent'}<span aria-hidden="true">·</span><span>{contextMeter.remaining}% left</span>{/if}</div>
+  <div class="composer-hint" data-testid="conversation-paste-hint">
+    <!-- TSK-1299 experiment: attachments off -->
+    <span>Type / for commands</span>
+    {#if contextMeter?.kind === 'percent'}<span aria-hidden="true">·</span><span>{contextMeter.remaining}% left</span>{/if}
+  </div>
 </div>
 
 <style>

@@ -24,8 +24,9 @@
     setConversationAgentConfigError,
     setConversationAgentConfigState,
     setConversationAttachmentError,
-    setConversationAttachmentIds,
-    setConversationAttachments,
+    // TSK-1299 experiment: attachments off
+    // setConversationAttachmentIds,
+    // setConversationAttachments,
     setConversationDraft,
     setConversationSendError,
     setConversationMode,
@@ -34,16 +35,19 @@
     setSelectedConversationViewState
   } from '$lib/shell/conversation/conversationStore.svelte';
   import {
-    cleanupConversationAttachment,
+    // TSK-1299 experiment: attachments off
+    // cleanupConversationAttachment,
     clearConversationSessionDraft,
     flushConversationSessionDraft,
     loadConversationCapabilities,
     persistConversationSessionDraft,
-    removeConversationAttachment,
+    // TSK-1299 experiment: attachments off
+    // removeConversationAttachment,
     sendPermissionResponse,
     respondToStructuredInput,
-    restoreConversationAttachments,
-    saveConversationClipboardImage,
+    // TSK-1299 experiment: attachments off
+    // restoreConversationAttachments,
+    // saveConversationClipboardImage,
     sendStructuredMessage,
     stopStructuredTurn
   } from '$lib/shell/conversation/conversationService';
@@ -170,7 +174,8 @@
     previousVisibleTimeline = conversationDisplayItems(
       transcriptMessages,
       previousVisibleTimeline,
-      conversation.sentAttachments
+      // TSK-1299 experiment: attachments off
+      {}
     ).filter((item) => (item.kind !== 'approval' || !conversation.pendingApprovals[item.requestId])
         && (item.kind !== 'input' || !conversation.pendingInputs[item.requestId]));
     return previousVisibleTimeline;
@@ -258,9 +263,12 @@
   let localTurnStarted = $state(false);
   let composerHeight = $state(0);
   let composer = $state<{ focus(): void; expandPlan(): void } | null>(null);
-  const pendingAttachmentUploads = new Map<string, Promise<void>>();
-  let pendingImageCounts = $state<Record<string, number>>({});
-  const sendsWaitingForUpload = new Set<string>();
+  // TSK-1299 experiment: attachments off
+  // const pendingAttachmentUploads = new Map<string, Promise<void>>();
+  // TSK-1299 experiment: attachments off
+  // let pendingImageCounts = $state<Record<string, number>>({});
+  // TSK-1299 experiment: attachments off
+  // const sendsWaitingForUpload = new Set<string>();
 
   /** Put the caret in the prompt box. The page calls this when a panel hands
    * the composer something — an attachment, a line of text — so the reader ends
@@ -329,14 +337,15 @@
     };
   });
 
-  $effect(() => {
-    if (!active || !conversation || !structured) return;
-    const ownedId = active.ownedId;
-    const generation = conversation.generation;
-    if (!conversation.attachments.length && conversation.attachmentIds.length) {
-      void restoreAttachmentsForSurface(surfaceController.signal, ownedId, generation);
-    }
-  });
+  // TSK-1299 experiment: attachments off
+  // $effect(() => {
+  //   if (!active || !conversation || !structured) return;
+  //   const ownedId = active.ownedId;
+  //   const generation = conversation.generation;
+  //   if (!conversation.attachments.length && conversation.attachmentIds.length) {
+  //     void restoreAttachmentsForSurface(surfaceController.signal, ownedId, generation);
+  //   }
+  // });
 
   function ownsConversationGeneration(signal: AbortSignal, ownedId: string, generation: number): boolean {
     return !signal.aborted && conversationSessions[ownedId]?.generation === generation;
@@ -383,20 +392,21 @@
     }
   }
 
-  async function restoreAttachmentsForSurface(
-    signal: AbortSignal,
-    ownedId: string,
-    generation: number
-  ): Promise<void> {
-    try {
-      if (ownsConversationGeneration(signal, ownedId, generation)) {
-        // Publishing metadata reruns the effect; only the generation check may discard its thumbnail results.
-        await restoreConversationAttachments(ownedId, []);
-      }
-    } catch (_error) {
-      // Attachment restore is best effort; saved ids remain in the session.
-    }
-  }
+  // TSK-1299 experiment: attachments off
+  // async function restoreAttachmentsForSurface(
+  //   signal: AbortSignal,
+  //   ownedId: string,
+  //   generation: number
+  // ): Promise<void> {
+  //   try {
+  //     if (ownsConversationGeneration(signal, ownedId, generation)) {
+  //       // Publishing metadata reruns the effect; only the generation check may discard its thumbnail results.
+  //       await restoreConversationAttachments(ownedId, []);
+  //     }
+  //   } catch (_error) {
+  //     // Attachment restore is best effort; saved ids remain in the session.
+  //   }
+  // }
 
   async function ignoreDraftFlushFailure(ownedId: string): Promise<void> {
     try {
@@ -406,20 +416,21 @@
     }
   }
 
-  async function cleanupSavedAttachments(
-    ownedId: string,
-    attachments: ConversationAttachment[],
-    onDeleted: (id: string) => Promise<void>
-  ): Promise<void> {
-    for (const attachment of attachments) {
-      try {
-        await cleanupConversationAttachment(ownedId, attachment);
-        await onDeleted(attachment.id);
-      } catch (_error) {
-        // A failed cleanup is already best-effort; previews are revoked by the service.
-      }
-    }
-  }
+  // TSK-1299 experiment: attachments off
+  // async function cleanupSavedAttachments(
+  //   ownedId: string,
+  //   attachments: ConversationAttachment[],
+  //   onDeleted: (id: string) => Promise<void>
+  // ): Promise<void> {
+  //   for (const attachment of attachments) {
+  //     try {
+  //       await cleanupConversationAttachment(ownedId, attachment);
+  //       await onDeleted(attachment.id);
+  //     } catch (_error) {
+  //       // A failed cleanup is already best-effort; previews are revoked by the service.
+  //     }
+  //   }
+  // }
 
   async function chooseApprovalOption(ownedId: string, requestId: string, optionId: string, generation: number): Promise<void> {
     try {
@@ -470,26 +481,30 @@
   async function send(): Promise<void> {
     const ownedId = activeOwnedId;
     if (!ownedId || !conversation || remoteDisconnected) return;
-    if (pendingAttachmentUploads.has(ownedId)) {
-      if (sendsWaitingForUpload.has(ownedId)) return;
-      sendsWaitingForUpload.add(ownedId);
-      try {
-        let upload = pendingAttachmentUploads.get(ownedId);
-        while (upload) {
-          await upload;
-          const next = pendingAttachmentUploads.get(ownedId);
-          upload = next === upload ? undefined : next;
-        }
-      } finally {
-        sendsWaitingForUpload.delete(ownedId);
-      }
-      if (activeOwnedId !== ownedId || !conversation || conversation.attachmentError) return;
-    }
-    if (!conversation.draft.trim() && conversation.attachments.length === 0) return;
+    // TSK-1299 experiment: attachments off
+    // if (pendingAttachmentUploads.has(ownedId)) {
+    //   if (sendsWaitingForUpload.has(ownedId)) return;
+    //   sendsWaitingForUpload.add(ownedId);
+    //   try {
+    //     let upload = pendingAttachmentUploads.get(ownedId);
+    //     while (upload) {
+    //       await upload;
+    //       const next = pendingAttachmentUploads.get(ownedId);
+    //       upload = next === upload ? undefined : next;
+    //     }
+    //   } finally {
+    //     sendsWaitingForUpload.delete(ownedId);
+    //   }
+    //   if (activeOwnedId !== ownedId || !conversation || conversation.attachmentError) return;
+    // }
+    // TSK-1299 experiment: attachments off
+    if (!conversation.draft.trim()) return;
     const steering = turnRunning;
     const text = conversation.draft;
-    const deliveredIds = new Set(conversation.attachments.map((attachment) => attachment.id));
-    const retainedIds = conversation.attachmentIds.filter((id) => !deliveredIds.has(id));
+    // TSK-1299 experiment: attachments off
+    // const deliveredIds = new Set(conversation.attachments.map((attachment) => attachment.id));
+    // const retainedIds = conversation.attachmentIds.filter((id) => !deliveredIds.has(id));
+    const retainedIds = conversation.attachmentIds;
     if (!steering) {
       localTurnActive = true;
       localTurnStarted = false;
@@ -500,7 +515,8 @@
     // admits it; the receipt below re-anchors the same row under its real id.
     const messageId = steering ? undefined : crypto.randomUUID();
     if (messageId) sendAnchorRequest = { requestId: ++sendAnchorRequestId, conversationId: ownedId, userItemId: messageId };
-    const attachments = conversation.attachments;
+    // TSK-1299 experiment: attachments off
+    const attachments: readonly ConversationAttachment[] = [];
     // The saved draft is cleared alongside the send, not before it: the clear is
     // a round trip (to the workbox for a remote session) and the message draws
     // when it is sent. Best effort, like the flush below: a delivered message is
@@ -548,110 +564,111 @@
     }
   }
 
-  /** Cmd+V checks files first; text paste is untouched when there are no files. */
-  async function paste(event: ClipboardEvent): Promise<void> {
-    if (!active || !conversation) return;
-    const files = [...(event.clipboardData?.files ?? [])];
-    if (files.length === 0) return;
-    event.preventDefault();
-    await attachImages(files, 'The clipboard file is not a supported image.');
-  }
-
-  /** Files dragged onto the composer take the same path as a paste. */
-  async function dropFiles(files: File[]): Promise<void> {
-    await attachImages(files, 'That file is not a supported image.');
-  }
-
-  async function attachImages(files: File[], rejectedMessage: string): Promise<void> {
-    const ownedId = active?.ownedId;
-    if (!ownedId) return;
-    pendingImageCounts[ownedId] = (pendingImageCounts[ownedId] ?? 0) + files.filter((file) => file.type.startsWith('image/')).length;
-    const previous = pendingAttachmentUploads.get(ownedId);
-    const upload = saveImagesAfter(previous, ownedId, files, rejectedMessage);
-    pendingAttachmentUploads.set(ownedId, upload);
-    try {
-      await upload;
-    } finally {
-      pendingImageCounts[ownedId] = Math.max(0, (pendingImageCounts[ownedId] ?? 0) - files.filter((file) => file.type.startsWith('image/')).length);
-      if (pendingAttachmentUploads.get(ownedId) === upload) pendingAttachmentUploads.delete(ownedId);
-    }
-  }
-
-  // Uploads for one session run in order; one that finds its session no longer
-  // active stops before saving, as saveImages does after each await.
-  async function saveImagesAfter(
-    previous: Promise<void> | undefined,
-    ownedId: string,
-    files: File[],
-    rejectedMessage: string
-  ): Promise<void> {
-    await previous;
-    if (active?.ownedId === ownedId) await saveImages(files, rejectedMessage);
-  }
-
-  async function saveImages(files: File[], rejectedMessage: string): Promise<void> {
-    if (!active || !conversation) return;
-    const ownedId = active.ownedId;
-    const generation = conversation.generation;
-    const images = files.filter((file) => file.type.startsWith('image/'));
-    setConversationAttachmentError(ownedId, '');
-    if (images.length === 0) {
-      setConversationAttachmentError(ownedId, rejectedMessage);
-      return;
-    }
-    const saved: ConversationAttachment[] = [];
-    let pendingIds = [...conversation.attachmentIds];
-    async function checkpointSavedId(id: string, retained: boolean): Promise<void> {
-      const current = conversationSessions[ownedId];
-      const ids = current?.generation === generation ? current.attachmentIds : pendingIds;
-      pendingIds = retained ? [...new Set([...ids, id])] : ids.filter((item) => item !== id);
-      if (current?.generation === generation) setConversationAttachmentIds(ownedId, pendingIds);
-      await onPersistAttachmentIds(ownedId, pendingIds);
-    }
-    try {
-      for (const file of images) {
-        saved.push(await saveConversationClipboardImage(ownedId, file, (attachment, retained) => checkpointSavedId(attachment.id, retained)));
-        if (active?.ownedId !== ownedId || conversation?.generation !== generation) {
-          await cleanupSavedAttachments(ownedId, saved, (id) => checkpointSavedId(id, false));
-          return;
-        }
-      }
-      const savedIds = new Set(saved.map((item) => item.id));
-      const attachments = [...conversation.attachments.filter((item) => !savedIds.has(item.id)), ...saved];
-      const ids = [...new Set([...conversation.attachmentIds, ...attachments.map((item) => item.id)])];
-      setConversationAttachmentIds(ownedId, ids);
-      await onPersistAttachmentIds(ownedId, ids);
-      if (active?.ownedId !== ownedId || conversation?.generation !== generation) {
-        await cleanupSavedAttachments(ownedId, saved, (id) => checkpointSavedId(id, false));
-        return;
-      }
-      setConversationAttachments(ownedId, attachments);
-    } catch (error) {
-      await cleanupSavedAttachments(ownedId, saved, (id) => checkpointSavedId(id, false));
-      if (active?.ownedId === ownedId && conversation?.generation === generation) {
-        setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
-      }
-      // Draft and existing attachments remain untouched after a failed paste.
-    }
-  }
-
-  async function removeAttachment(id: string): Promise<void> {
-    if (!active || !conversation) return;
-    const ownedId = active.ownedId;
-    const generation = conversation.generation;
-    const found = conversation.attachments.find((item) => item.id === id);
-    if (!found) return;
-    const remainingIds = conversation.attachmentIds.filter((item) => item !== id);
-    try {
-      await removeConversationAttachment(ownedId, found);
-      await onPersistAttachmentIds(ownedId, remainingIds);
-      if (active?.ownedId === ownedId && conversation?.generation === generation) setConversationAttachmentError(ownedId, '');
-    } catch (error) {
-      if (active?.ownedId === ownedId && conversation?.generation === generation) {
-        setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
-      }
-    }
-  }
+  // TSK-1299 experiment: attachments off
+  // /** Cmd+V checks files first; text paste is untouched when there are no files. */
+  // async function paste(event: ClipboardEvent): Promise<void> {
+  //   if (!active || !conversation) return;
+  //   const files = [...(event.clipboardData?.files ?? [])];
+  //   if (files.length === 0) return;
+  //   event.preventDefault();
+  //   await attachImages(files, 'The clipboard file is not a supported image.');
+  // }
+  //
+  // /** Files dragged onto the composer take the same path as a paste. */
+  // async function dropFiles(files: File[]): Promise<void> {
+  //   await attachImages(files, 'That file is not a supported image.');
+  // }
+  //
+  // async function attachImages(files: File[], rejectedMessage: string): Promise<void> {
+  //   const ownedId = active?.ownedId;
+  //   if (!ownedId) return;
+  //   pendingImageCounts[ownedId] = (pendingImageCounts[ownedId] ?? 0) + files.filter((file) => file.type.startsWith('image/')).length;
+  //   const previous = pendingAttachmentUploads.get(ownedId);
+  //   const upload = saveImagesAfter(previous, ownedId, files, rejectedMessage);
+  //   pendingAttachmentUploads.set(ownedId, upload);
+  //   try {
+  //     await upload;
+  //   } finally {
+  //     pendingImageCounts[ownedId] = Math.max(0, (pendingImageCounts[ownedId] ?? 0) - files.filter((file) => file.type.startsWith('image/')).length);
+  //     if (pendingAttachmentUploads.get(ownedId) === upload) pendingAttachmentUploads.delete(ownedId);
+  //   }
+  // }
+  //
+  // // Uploads for one session run in order; one that finds its session no longer
+  // // active stops before saving, as saveImages does after each await.
+  // async function saveImagesAfter(
+  //   previous: Promise<void> | undefined,
+  //   ownedId: string,
+  //   files: File[],
+  //   rejectedMessage: string
+  // ): Promise<void> {
+  //   await previous;
+  //   if (active?.ownedId === ownedId) await saveImages(files, rejectedMessage);
+  // }
+  //
+  // async function saveImages(files: File[], rejectedMessage: string): Promise<void> {
+  //   if (!active || !conversation) return;
+  //   const ownedId = active.ownedId;
+  //   const generation = conversation.generation;
+  //   const images = files.filter((file) => file.type.startsWith('image/'));
+  //   setConversationAttachmentError(ownedId, '');
+  //   if (images.length === 0) {
+  //     setConversationAttachmentError(ownedId, rejectedMessage);
+  //     return;
+  //   }
+  //   const saved: ConversationAttachment[] = [];
+  //   let pendingIds = [...conversation.attachmentIds];
+  //   async function checkpointSavedId(id: string, retained: boolean): Promise<void> {
+  //     const current = conversationSessions[ownedId];
+  //     const ids = current?.generation === generation ? current.attachmentIds : pendingIds;
+  //     pendingIds = retained ? [...new Set([...ids, id])] : ids.filter((item) => item !== id);
+  //     if (current?.generation === generation) setConversationAttachmentIds(ownedId, pendingIds);
+  //     await onPersistAttachmentIds(ownedId, pendingIds);
+  //   }
+  //   try {
+  //     for (const file of images) {
+  //       saved.push(await saveConversationClipboardImage(ownedId, file, (attachment, retained) => checkpointSavedId(attachment.id, retained)));
+  //       if (active?.ownedId !== ownedId || conversation?.generation !== generation) {
+  //         await cleanupSavedAttachments(ownedId, saved, (id) => checkpointSavedId(id, false));
+  //         return;
+  //       }
+  //     }
+  //     const savedIds = new Set(saved.map((item) => item.id));
+  //     const attachments = [...conversation.attachments.filter((item) => !savedIds.has(item.id)), ...saved];
+  //     const ids = [...new Set([...conversation.attachmentIds, ...attachments.map((item) => item.id)])];
+  //     setConversationAttachmentIds(ownedId, ids);
+  //     await onPersistAttachmentIds(ownedId, ids);
+  //     if (active?.ownedId !== ownedId || conversation?.generation !== generation) {
+  //       await cleanupSavedAttachments(ownedId, saved, (id) => checkpointSavedId(id, false));
+  //       return;
+  //     }
+  //     setConversationAttachments(ownedId, attachments);
+  //   } catch (error) {
+  //     await cleanupSavedAttachments(ownedId, saved, (id) => checkpointSavedId(id, false));
+  //     if (active?.ownedId === ownedId && conversation?.generation === generation) {
+  //       setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
+  //     }
+  //     // Draft and existing attachments remain untouched after a failed paste.
+  //   }
+  // }
+  //
+  // async function removeAttachment(id: string): Promise<void> {
+  //   if (!active || !conversation) return;
+  //   const ownedId = active.ownedId;
+  //   const generation = conversation.generation;
+  //   const found = conversation.attachments.find((item) => item.id === id);
+  //   if (!found) return;
+  //   const remainingIds = conversation.attachmentIds.filter((item) => item !== id);
+  //   try {
+  //     await removeConversationAttachment(ownedId, found);
+  //     await onPersistAttachmentIds(ownedId, remainingIds);
+  //     if (active?.ownedId === ownedId && conversation?.generation === generation) setConversationAttachmentError(ownedId, '');
+  //   } catch (error) {
+  //     if (active?.ownedId === ownedId && conversation?.generation === generation) {
+  //       setConversationAttachmentError(ownedId, error instanceof Error ? error.message : String(error));
+  //     }
+  //   }
+  // }
 
   function selectCommand(command: ConversationCommand): void {
     if (!active) return;
@@ -785,8 +802,8 @@
           bind:this={composer}
           provider={active.agent}
           draft={conversation.draft}
-          attachments={conversation.attachments}
-          pendingImageCount={pendingImageCounts[active.ownedId] ?? 0}
+          attachments={/* TSK-1299 experiment: attachments off */ []}
+          pendingImageCount={/* TSK-1299 experiment: attachments off */ 0}
           sending={turnActive}
           {turnRunning}
           supportsSteering={Boolean(activeTurnId) && conversation.capabilities?.session.steering === true}
@@ -819,9 +836,9 @@
               void stopActiveStructuredTurn(activeOwnedId, conversation.generation);
             }
           }}
-          onPaste={paste}
-          onDropFiles={dropFiles}
-          onRemoveAttachment={removeAttachment}
+          onPaste={/* TSK-1299 experiment: attachments off */ undefined}
+          onDropFiles={/* TSK-1299 experiment: attachments off */ undefined}
+          onRemoveAttachment={/* TSK-1299 experiment: attachments off */ undefined}
           onCommandSelected={selectCommand}
           onApprovalDecision={onApprovalDecision}
           onInputSubmit={onInputSubmit}
