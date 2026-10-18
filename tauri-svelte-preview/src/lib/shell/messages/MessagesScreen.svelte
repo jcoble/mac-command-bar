@@ -17,11 +17,19 @@
     onShowRun: (runId: string, label: string) => void;
   }
   let { runId, runLabel, onBack, onClearRun, onShowRun }: Props = $props();
+
+  // Focus starts inside the screen so Escape closes it straight after opening.
+  let screen: HTMLDivElement | undefined = $state();
+  $effect(() => {
+    screen?.focus();
+  });
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div
+  bind:this={screen}
   class="messages-screen"
+  tabindex="-1"
   role="region"
   aria-label="Messages"
   data-testid="messages-screen"
@@ -48,6 +56,7 @@
     gap: var(--space-3);
     padding: var(--space-3) var(--space-5) var(--space-5);
     background: var(--color-bg);
+    outline: none;
   }
 
   .title {
