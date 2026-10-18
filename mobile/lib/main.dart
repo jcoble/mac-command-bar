@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'core/machines/machine_store.dart';
+import 'core/push/push_service.dart';
 import 'core/router.dart';
 import 'core/theme/app_theme.dart';
 
@@ -20,6 +21,9 @@ Future<void> main() async {
   final container = ProviderContainer();
   await container.read(machinesProvider.future);
   container.read(machinesProvider.notifier).retryRemovals().ignore();
+
+  // Push never throws; without Firebase it stays off.
+  container.read(pushServiceProvider).init().ignore();
 
   runApp(
     UncontrolledProviderScope(container: container, child: const AssemblyApp()),

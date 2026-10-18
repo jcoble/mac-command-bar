@@ -36,13 +36,12 @@ const WRONG_TRIES_ALLOWED: u32 = 5;
 const NOT_SET_UP: &str =
     "Phone access is not set up on this machine: set ASSEMBLY_PHONE_URL in ~/.config/assembly/phone.env";
 const REMOVED: &str = "This phone was removed — pair again";
-const NO_ORCHESTRATOR: &str = "No orchestrator is marked on this machine";
 const NO_SESSION: &str = "No such session on this machine";
 const NO_TOOL_CALL: &str = "No such tool call in this session";
 /// §5.3 sets no length for chat text, so a plain cap: 10,000 characters, in a body of at most 64 KiB.
 const MAX_CHAT_CHARS: usize = 10_000;
 const MAX_BODY_BYTES: usize = 64 * 1024;
-/// `GET /chat` reads one desktop-sized page of events, and with no `after` keeps its newest 100 items.
+/// `GET /sessions/{id}/chat` reads one desktop-sized page of events, and with no `after` keeps its newest 100 items.
 const CHAT_PAGE_BYTES: u32 = 1024 * 1024;
 const LATEST_CHAT_ITEMS: usize = 100;
 const MAX_PUSH_TOKEN_CHARS: usize = 4096;
@@ -69,7 +68,6 @@ pub(super) struct PairingCode {
 pub(super) fn router(state: ServerState) -> Router {
     let device_routes = Router::new()
         .route("/phone/v1/me", get(me).delete(forget_me))
-        .route("/phone/v1/chat", get(chat).post(send_chat))
         .route("/phone/v1/sessions", get(sessions))
         .route("/phone/v1/sessions/{id}/chat", get(session_chat).post(send_session_chat))
         .route("/phone/v1/sessions/{id}/items/{item}", get(tool_item))
@@ -301,12 +299,6 @@ async fn forget_me(State(state): State<ServerState>, Extension(device): Extensio
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-/// The orchestrator session the owner marked on this machine (`broker.main_orchestrator`); 404 when none is.
-fn orchestrator(state: &ServerState) -> Result<String, Response> {
-    state.manager.store().main_orchestrator().map_err(|error| server_error(&error))?
-        .map(|(owned_id, _)| owned_id).ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_ORCHESTRATOR))
-}
-
 /// `GET /phone/v1/sessions` → `{sessions}`: this machine's sessions, newest activity first (one SQL statement).
 async fn sessions(State(state): State<ServerState>) -> Reply {
     let sessions = state.manager.store().list_phone_sessions().map_err(|error| server_error(&error))?;
@@ -322,12 +314,6 @@ async fn sessions(State(state): State<ServerState>) -> Reply {
 fn known_session(state: &ServerState, owned_id: &str) -> Result<(), Response> {
     state.manager.store().directory_name(owned_id).map_err(|error| server_error(&error))?
         .map(|_| ()).ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))
-}
-
-/// `GET /phone/v1/chat?after=<seq>`: the orchestrator's chat, as the first phone app reads it.
-async fn chat(State(state): State<ServerState>, Query(query): Query<HashMap<String, String>>) -> Reply {
-    let owned_id = orchestrator(&state)?;
-    read_chat(&state, &owned_id, &query)
 }
 
 /// `GET /phone/v1/sessions/{id}/chat?after=<seq>`: that session's chat.
@@ -357,17 +343,16 @@ fn read_chat(state: &ServerState, owned_id: &str, query: &HashMap<String, String
     })).into_response())
 }
 
-/// `GET /phone/v1/sessions/{id}/items/{itemId}`: one tool call whole, its latest event in the
-/// newest page of events, the same page the chat list reads.
+/// `GET /phone/v1/sessions/{id}/items/{itemId}`: one tool call whole, its events in the newest page
+/// of events (the same page the chat list reads) folded in order.
 async fn tool_item(State(state): State<ServerState>, Path((owned_id, item_id)): Path<(String, String)>) -> Reply {
     known_session(&state, &owned_id)?;
     let page = state.manager.list_events_before(&owned_id, i64::MAX, CHAT_PAGE_BYTES).map_err(|error| server_error(&error))?;
-    let Some(Payload::Tool { name, state: tool_state, summary, output, path, diff, .. }) = page.events.iter().rev()
-        .map(|event| &event.payload).find(|payload| matches!(payload, Payload::Tool { item_id: id, .. } if *id == item_id))
+    let Some(call) = page.events.iter().filter_map(|event| ToolCall::of(&event.payload, &item_id)).reduce(ToolCall::fold)
     else { return Err(refuse(StatusCode::NOT_FOUND, NO_TOOL_CALL)) };
-    let (output, output_truncated) = capped(output.as_deref(), MAX_TOOL_OUTPUT_BYTES);
-    let (diff, diff_truncated) = capped(diff.as_deref(), MAX_TOOL_DIFF_BYTES);
-    Ok(Json(json!({ "name": name, "state": tool_state, "summary": summary, "path": path, "output": output,
+    let (output, output_truncated) = capped(call.output, MAX_TOOL_OUTPUT_BYTES);
+    let (diff, diff_truncated) = capped(call.diff, MAX_TOOL_DIFF_BYTES);
+    Ok(Json(json!({ "name": call.name, "state": call.state, "summary": call.summary, "path": call.path, "output": output,
         "outputTruncated": output_truncated, "diff": diff, "diffTruncated": diff_truncated })).into_response())
 }
 
@@ -404,6 +389,41 @@ fn changed_files(diff: &str) -> Vec<Value> {
     files.into_iter().map(|(path, added, removed)| json!({ "path": path, "added": added, "removed": removed })).collect()
 }
 
+/// One tool call as its events say it. Imported history stores a call's output in a later event with
+/// no name, summary, path or diff, so the events of one item fold in order: each later non-empty
+/// field replaces the earlier one, and the state is the latest event's.
+#[derive(Clone, Copy)]
+struct ToolCall<'a> {
+    name: &'a str,
+    state: ToolState,
+    summary: Option<&'a str>,
+    output: Option<&'a str>,
+    path: Option<&'a str>,
+    diff: Option<&'a str>,
+}
+
+impl<'a> ToolCall<'a> {
+    /// The call `payload` describes, when it is a tool event of item `item_id`.
+    fn of(payload: &'a Payload, item_id: &str) -> Option<Self> {
+        match payload {
+            Payload::Tool { item_id: id, name, state, summary, output, path, diff } if id == item_id =>
+                Some(Self { name, state: *state, summary: summary.as_deref(), output: output.as_deref(), path: path.as_deref(), diff: diff.as_deref() }),
+            _ => None,
+        }
+    }
+
+    fn fold(self, later: Self) -> Self {
+        let newer = |old: Option<&'a str>, new: Option<&'a str>| new.filter(|text| !text.is_empty()).or(old);
+        Self { name: if later.name.is_empty() { self.name } else { later.name }, state: later.state,
+            summary: newer(self.summary, later.summary), output: newer(self.output, later.output),
+            path: newer(self.path, later.path), diff: newer(self.diff, later.diff) }
+    }
+
+    fn has_detail(&self) -> bool {
+        [self.output, self.path, self.diff].iter().any(|field| field.is_some_and(|text| !text.is_empty()))
+    }
+}
+
 /// `text` cut to at most `max` bytes on a char boundary, and whether it was cut.
 fn capped(text: Option<&str>, max: usize) -> (Option<&str>, bool) {
     match text {
@@ -415,12 +435,6 @@ fn capped(text: Option<&str>, max: usize) -> (Option<&str>, bool) {
 #[derive(Deserialize)]
 struct ChatRequest {
     text: String,
-}
-
-/// `POST /phone/v1/chat {text}` → `{itemId}`: a message to the orchestrator, as the first phone app sends it.
-async fn send_chat(State(state): State<ServerState>, body: Bytes) -> Reply {
-    let owned_id = orchestrator(&state)?;
-    send_to(&state, owned_id, &body).await
 }
 
 /// `POST /phone/v1/sessions/{id}/chat {text}` → `{itemId}`: a message to that session.
@@ -733,6 +747,7 @@ fn watch_frame(text: &str) -> Option<Option<String>> {
 }
 
 /// One agent event's live frames: chat, delta and turn frames for the watched session's own events,
+/// each naming its session in `ownedId` so a phone that has since opened another chat can drop it,
 /// and an inbox change for any permission request asked or settled in any session.
 fn live_frames(event: &AgentConversationEvent, watched: Option<&str>) -> Vec<Value> {
     if matches!(event.payload, Payload::Approval { .. }) {
@@ -742,11 +757,11 @@ fn live_frames(event: &AgentConversationEvent, watched: Option<&str>) -> Vec<Val
         return Vec::new();
     }
     match &event.payload {
-        Payload::AssistantDelta { item_id, delta } => vec![json!({ "type": "chatDelta", "seq": event.sequence, "itemId": item_id, "delta": delta })],
-        Payload::Turn { state, .. } => vec![json!({ "type": "turn", "seq": event.sequence,
+        Payload::AssistantDelta { item_id, delta } => vec![json!({ "type": "chatDelta", "ownedId": event.owned_id, "seq": event.sequence, "itemId": item_id, "delta": delta })],
+        Payload::Turn { state, .. } => vec![json!({ "type": "turn", "ownedId": event.owned_id, "seq": event.sequence,
             "state": if matches!(state, TurnState::Started) { "running" } else { "idle" } })],
         _ => reduce_chat(std::slice::from_ref(event)).into_iter()
-            .map(|item| json!({ "type": "chat", "seq": event.sequence, "item": item })).collect(),
+            .map(|item| json!({ "type": "chat", "ownedId": event.owned_id, "seq": event.sequence, "item": item })).collect(),
     }
 }
 
@@ -764,12 +779,14 @@ struct ChatItem {
 }
 
 /// The phone's chat from a session's events (§5.3): owner, relayed, agent, tool and error items,
-/// one per item id in first-seen order, the latest event winning. Deltas for an item with no full
+/// one per item id in first-seen order, the latest event winning (a tool call's events fold, see
+/// [`ToolCall`]). Deltas for an item with no full
 /// message yet fold into one open agent item. Everything else is dropped.
 fn reduce_chat(events: &[AgentConversationEvent]) -> Vec<ChatItem> {
     let mut items: Vec<ChatItem> = Vec::new();
     let mut index = HashMap::<String, usize>::new();
     let mut messaged = HashSet::<&str>::new();
+    let mut tools = HashMap::<&str, ToolCall>::new();
     for event in events {
         let (id, kind, text, done) = match &event.payload {
             Payload::UserMessage { item_id, text, completed, .. } =>
@@ -787,14 +804,16 @@ fn reduce_chat(events: &[AgentConversationEvent]) -> Vec<ChatItem> {
                 }
                 (item_id.clone(), "agent", delta.clone(), false)
             }
-            Payload::Tool { item_id, name, state, summary, .. } => (item_id.clone(), "tool",
-                summary.clone().filter(|summary| !summary.is_empty()).unwrap_or_else(|| name.clone()),
-                matches!(state, ToolState::Completed | ToolState::Failed)),
+            Payload::Tool { item_id, .. } => {
+                let now = ToolCall::of(&event.payload, item_id).expect("a tool event is a tool call");
+                let call = *tools.entry(item_id).and_modify(|earlier| *earlier = earlier.fold(now)).or_insert(now);
+                (item_id.clone(), "tool", call.summary.filter(|summary| !summary.is_empty()).unwrap_or(call.name).to_owned(),
+                    matches!(call.state, ToolState::Completed | ToolState::Failed))
+            }
             Payload::Error { message, .. } => (format!("error-{}", event.sequence), "error", message.clone(), true),
             _ => continue,
         };
-        let has_detail = matches!(&event.payload, Payload::Tool { output, path, diff, .. }
-            if [output, path, diff].iter().any(|field| field.as_deref().is_some_and(|text| !text.is_empty())));
+        let has_detail = kind == "tool" && tools.get(id.as_str()).is_some_and(ToolCall::has_detail);
         let item = ChatItem { id, seq: event.sequence, kind, text, at: event.timestamp_ms as i64, done, has_detail };
         match index.get(&item.id) {
             Some(&at) => items[at] = item,
@@ -1089,7 +1108,7 @@ mod tests {
         let endpoint = super::super::messaging::MessagingEndpoint::start().unwrap();
         let session = endpoint.issue("orchestrator");
         use reqwest::Method;
-        for (method, path) in [(Method::GET, "/me"), (Method::DELETE, "/me"), (Method::GET, "/chat"), (Method::POST, "/chat"),
+        for (method, path) in [(Method::GET, "/me"), (Method::DELETE, "/me"),
             (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::GET, "/inbox"),
             (Method::POST, "/inbox/i/answer"), (Method::GET, "/live"), (Method::GET, "/sessions"),
             (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat"), (Method::GET, "/sessions/s/items/i"),
@@ -1264,7 +1283,7 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let (_state, base) = phone_server().await;
         let address = base.trim_start_matches("http://");
-        for path in ["/phone/v1/chat", "/phone/v1/inbox/step:run:checks/answer"] {
+        for path in ["/phone/v1/sessions/s/chat", "/phone/v1/inbox/step:run:checks/answer"] {
             // Headers promise a 60,000-byte body that never comes: a server that read the body
             // before checking the token would wait for it instead of answering.
             let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
@@ -1412,7 +1431,7 @@ mod tests {
             .map(|item| (item["kind"].as_str().unwrap(), item["text"].as_str().unwrap())).collect();
         assert_eq!(items, [("owner", "Reply with the single word: pong"), ("agent", "generated text")], "{chat}");
         assert_eq!(chat["items"][0]["id"], item_id, "the send's own item");
-        let orchestrator: Value = client(reqwest::Method::GET, &base, "/chat", &token).send().await.unwrap().json().await.unwrap();
+        let orchestrator: Value = client(reqwest::Method::GET, &base, "/sessions/orchestrator/chat", &token).send().await.unwrap().json().await.unwrap();
         assert_eq!(orchestrator["items"], json!([]), "the orchestrator's chat holds nothing of it");
         for method in [reqwest::Method::GET, reqwest::Method::POST] {
             let unknown = client(method.clone(), &base, "/sessions/nobody/chat", &token).json(&json!({"text": "hi"})).send().await.unwrap();
@@ -1461,6 +1480,26 @@ mod tests {
             .map(|item| (item["id"].as_str().unwrap(), item["hasDetail"].as_bool().unwrap_or(false))).collect();
         assert_eq!(details, [("edit", true), ("t1", false)], "only a tool with something to open has detail");
         assert!(chat["items"][0].get("output").is_none(), "chat rows carry no output");
+    }
+
+    #[tokio::test]
+    async fn phone_tool_item_merges_sparse_imported_events() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        // Imported history stores the call, then its output in a later event with no name or summary.
+        let call = |name: &str, state, summary: Option<&str>, output: Option<&str>| Payload::Tool { item_id: "tool-a".into(),
+            name: name.into(), state, summary: summary.map(str::to_string), output: output.map(str::to_string), path: None, diff: None };
+        file_session(&state, "lane", vec![
+            call("shell", ToolState::Started, Some("ls"), None),
+            call("", ToolState::Completed, None, Some("result")),
+        ]);
+        let body: Value = client(reqwest::Method::GET, &base, "/sessions/lane/items/tool-a", &token).send().await.unwrap()
+            .json().await.unwrap();
+        assert_eq!(body, json!({"name": "shell", "state": "completed", "summary": "ls", "path": null,
+            "output": "result", "outputTruncated": false, "diff": null, "diffTruncated": false}));
+        let chat: Value = client(reqwest::Method::GET, &base, "/sessions/lane/chat", &token).send().await.unwrap().json().await.unwrap();
+        let row = &chat["items"][0];
+        assert_eq!((row["text"].as_str(), row["done"].as_bool(), row["hasDetail"].as_bool()), (Some("ls"), Some(true), Some(true)));
     }
 
     #[tokio::test]
@@ -1572,6 +1611,18 @@ mod tests {
             if next_frame(socket, Duration::from_millis(100)).await.is_some_and(|frame| frame["item"]["id"] == item) { return; }
         }
         panic!("no chat frame for {owned_id}");
+    }
+
+    #[test]
+    fn phone_live_frames_carry_the_session_they_belong_to() {
+        let started = Payload::Turn { turn_id: "turn".into(), state: TurnState::Started };
+        let delta = Payload::AssistantDelta { item_id: "l".into(), delta: "h".into() };
+        for (frame_type, payload) in [("turn", started), ("chatDelta", delta)] {
+            let frames = super::live_frames(&session_event("lane", 5, payload), Some("lane"));
+            assert_eq!((frames[0]["type"].as_str(), frames[0]["ownedId"].as_str()), (Some(frame_type), Some("lane")));
+        }
+        let frames = super::live_frames(&message("lane", 6, "m"), Some("lane"));
+        assert_eq!((frames[0]["type"].as_str(), frames[0]["ownedId"].as_str()), (Some("chat"), Some("lane")));
     }
 
     #[tokio::test]

@@ -37,12 +37,16 @@
     if (event.key === 'Escape') onBack();
   }}
 >
-  <header class="flex items-center gap-2">
-    <Button variant="ghost" size="sm" onclick={onBack}><ArrowLeft />Back</Button>
+  <!-- One centred column, so lines stay readable on a wide window. -->
+  <div class="mx-auto flex min-h-0 w-full max-w-[1180px] flex-1 flex-col gap-1">
+    <header class="-ml-2 pb-2">
+      <Button variant="ghost" size="sm" onclick={onBack}><ArrowLeft />Back</Button>
+    </header>
     <h1 class="title">Messages</h1>
-  </header>
-  <div class="min-h-0 flex-1">
-    <AgentMessages visible={true} layout="screen" session={null} {runId} {runLabel} {onClearRun} {onShowRun} onOpened={onBack} />
+    <p class="pb-4 text-(length:--text-quiet) text-[var(--color-text-2)]">What your agents and workflows sent each other, on every machine.</p>
+    <div class="min-h-0 flex-1">
+      <AgentMessages visible={true} layout="screen" session={null} {runId} {runLabel} {onClearRun} {onShowRun} onOpened={onBack} />
+    </div>
   </div>
 </div>
 
