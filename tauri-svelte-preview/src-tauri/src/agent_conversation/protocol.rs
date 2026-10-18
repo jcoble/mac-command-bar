@@ -925,6 +925,9 @@ pub struct AgentConversationSessionRecord {
     pub run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_label: Option<String>,
+    /// The session that started this worker's run; absent when the owner started it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_lead: Option<String>,
     #[serde(flatten)]
     pub meta: AgentConversationSessionMeta,
 }
@@ -995,6 +998,7 @@ mod contract_tests {
             helper_of: None,
             run_id: None,
             run_label: None,
+            run_lead: None,
             meta: AgentConversationSessionMeta::default(),
         };
         let value = serde_json::to_value(&record).unwrap();
