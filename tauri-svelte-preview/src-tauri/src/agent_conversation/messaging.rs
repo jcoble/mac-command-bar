@@ -1,9 +1,11 @@
 use agent_client_protocol::schema::v1 as acp;
 use axum::{extract::State, http::{HeaderMap, StatusCode}, response::{IntoResponse, Response}, routing::post, Json, Router};
 use serde_json::{json, Value};
-use mcb_core::{broker::MessageKind, session_store::SessionStore};
+use mcb_core::{broker::{MessageKind, TrafficQuery}, session_store::SessionStore};
 use super::{manager::AgentRuntimeManager, protocol::AgentConversationProvider};
 use std::{collections::HashMap, future::Future, pin::Pin, sync::{Arc, Mutex, OnceLock, Weak}};
+
+pub(super) const MAX_MESSAGE_PAGE: i64 = 500;
 
 /// Carries one messaging operation (`directory`, `enqueue`, `status`) to the
 /// other machines. The desktop routes it itself; a remote server asks the
@@ -55,10 +57,16 @@ pub fn answer(store: &SessionStore, manager: Option<&AgentRuntimeManager>, op: &
         // A page of this machine's agent-to-agent messages, for the owner's traffic view.
         "messages" => {
             let before = args["before_ms"].as_i64().zip(args["before_id"].as_str());
-            let limit = args["limit"].as_i64().unwrap_or(100).clamp(1, 500);
-            serde_json::to_value(store.list_messages(args["run_id"].as_str(), args["session"].as_str(), before, limit)
+            let limit = args["limit"].as_i64().unwrap_or(100).clamp(1, MAX_MESSAGE_PAGE);
+            serde_json::to_value(store.list_messages(&TrafficQuery {
+                run_id: args["run_id"].as_str(), session: args["session"].as_str(), before, limit,
+                status: args["status"].as_str(), search: args["search"].as_str(),
+                sort: args["sort"].as_str().unwrap_or("time"), before_key: args["before_key"].as_str(),
+            })
                 .map_err(|error| error.to_string())?).map_err(|error| error.to_string())
         }
+        "count" => Ok(json!(store.count_messages(arg("session")?, args["after_ms"].as_i64().ok_or("after_ms is required")?)
+            .map_err(|error| error.to_string())?)),
         _ => Err(format!("Unknown messaging operation {op}")),
     }
 }

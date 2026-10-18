@@ -97,15 +97,42 @@ pub struct TrafficMessage {
     pub kind: String,
 }
 
-/// Agent messages only (not review reports or group bookkeeping), newest first, one page. ?1 run, ?2 session (sender or receiver), ?3 and ?4 the
-/// (time, id) of the oldest message already shown, ?5 page size. NULL skips a filter.
-const TRAFFIC: &str = "SELECT m.id, m.created_at_ms, m.sender_name, m.from_owned_id, m.to_owned_id,
-        COALESCE(s.handle || ' · ' || s.title, s.handle, m.to_owned_id), m.body, m.receipt, m.run_id, m.kind
-    FROM workflow_messages m LEFT JOIN sessions s ON s.owned_id = m.to_owned_id
-    WHERE m.kind = 'message' AND (?1 IS NULL OR m.run_id = ?1)
-      AND (?2 IS NULL OR m.from_owned_id = ?2 OR m.to_owned_id = ?2)
-      AND (?3 IS NULL OR (m.created_at_ms, m.id) < (?3, ?4))
-    ORDER BY m.created_at_ms DESC, m.id DESC LIMIT ?5";
+/// Filters and keyset cursor for one machine's SQL message page.
+#[derive(Default)]
+pub struct TrafficQuery<'a> {
+    pub run_id: Option<&'a str>,
+    pub session: Option<&'a str>,
+    pub status: Option<&'a str>,
+    pub search: Option<&'a str>,
+    pub sort: &'a str,
+    pub before: Option<(i64, &'a str)>,
+    pub before_key: Option<&'a str>,
+    pub limit: i64,
+}
+
+const MESSAGE_SCOPE: &str = "(?2 IS NULL OR m.from_owned_id = ?2 OR m.to_owned_id = ?2 OR m.run_id IN
+    (SELECT run_id FROM orchestration_events WHERE json_extract(payload_json,'$.workflowPayload.run.inputSnapshot.started_by')=?2))";
+const RECEIVER: &str = "COALESCE(s.handle || ' · ' || s.title, s.handle, m.to_owned_id)";
+
+fn traffic_sql(sort: &str) -> String {
+    let key = match sort { "sender" => "m.sender_name", "receiver" => RECEIVER, _ => "" };
+    let cursor = if key.is_empty() { "(?5 IS NULL OR (m.created_at_ms,m.id)<(?5,?6))".to_string() }
+        else { format!("(?5 IS NULL OR {key}>?7 OR ({key}=?7 AND (m.created_at_ms,m.id)<(?5,?6)))") };
+    let order = if key.is_empty() { "m.created_at_ms DESC,m.id DESC".to_string() }
+        else { format!("{key} ASC,m.created_at_ms DESC,m.id DESC") };
+    format!("SELECT m.id,m.created_at_ms,m.sender_name,m.from_owned_id,m.to_owned_id,{RECEIVER},
+        m.body,m.receipt,m.run_id,m.kind FROM workflow_messages m LEFT JOIN sessions s ON s.owned_id=m.to_owned_id
+        WHERE m.kind='message' AND (?1 IS NULL OR m.run_id=?1) AND {MESSAGE_SCOPE}
+        AND (?3 IS NULL OR m.receipt=?3) AND (?4 IS NULL OR m.sender_name LIKE ?4 ESCAPE '\\'
+          OR {RECEIVER} LIKE ?4 ESCAPE '\\' OR m.body LIKE ?4 ESCAPE '\\') AND {cursor}
+        ORDER BY {order} LIMIT ?8")
+}
+
+static MESSAGE_LISTENER: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+pub fn on_messages_changed(listener: impl Fn() + Send + Sync + 'static) {
+    let _ = MESSAGE_LISTENER.set(Box::new(listener));
+}
+fn messages_changed() { if let Some(listener) = MESSAGE_LISTENER.get() { listener(); } }
 
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -371,6 +398,8 @@ impl SessionStore {
                 ],
             ),
         )?;
+        drop(connection);
+        messages_changed();
         Ok(Envelope {
             id,
             group_id: group_id.to_owned(),
@@ -397,6 +426,8 @@ impl SessionStore {
             ),
         )?;
         if changed == 1 {
+            drop(connection);
+            if receipt != Receipt::Queued { messages_changed(); }
             return Ok(());
         }
         let exists = db(
@@ -472,20 +503,30 @@ impl SessionStore {
         )
     }
 
-    /// A page of agent-to-agent messages stored on this machine, newest first. Each message is
+    /// An ordered page of agent-to-agent messages stored on this machine. Each message is
     /// stored on its receiver's machine, so pages from every machine together list each once.
-    pub fn list_messages(&self, run_id: Option<&str>, session: Option<&str>,
-                         before: Option<(i64, &str)>, limit: i64) -> Result<Vec<TrafficMessage>> {
+    pub fn list_messages(&self, query: &TrafficQuery<'_>) -> Result<Vec<TrafficMessage>> {
         let connection = self.lock()?;
-        let mut statement = db("could not prepare the message list", connection.prepare(TRAFFIC))?;
+        let sql = traffic_sql(query.sort);
+        let pattern = query.search.filter(|text| !text.is_empty()).map(|text|
+            format!("%{}%", text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
+        let mut statement = db("could not prepare the message list", connection.prepare(&sql))?;
         let rows = db("could not list messages", statement.query_map(
-            params![run_id, session, before.map(|(at, _)| at), before.map(|(_, id)| id), limit],
+            params![query.run_id, query.session, query.status, pattern,
+                query.before.map(|(at, _)| at), query.before.map(|(_, id)| id), query.before_key, query.limit],
             |row| Ok(TrafficMessage {
                 id: row.get(0)?, created_at_ms: row.get(1)?, sender_name: row.get(2)?,
                 from_owned_id: row.get(3)?, to_owned_id: row.get(4)?, receiver: row.get(5)?,
                 body: row.get(6)?, receipt: row.get(7)?, run_id: row.get(8)?, kind: row.get(9)?,
             })))?;
         db("could not read messages", rows.collect())
+    }
+
+    pub fn count_messages(&self, session: &str, after_ms: i64) -> Result<i64> {
+        let connection = self.lock()?;
+        db("could not count messages", connection.query_row(&format!(
+            "SELECT COUNT(*) FROM workflow_messages m WHERE m.kind='message' AND m.created_at_ms>?1 AND {MESSAGE_SCOPE}"),
+            params![after_ms, session], |row| row.get(0)))
     }
 
     pub fn list_open_groups(&self) -> Result<Vec<(String, String, Option<String>, Vec<String>)>> {
@@ -743,26 +784,92 @@ mod tests {
             ('m5','b','attempt-1','calm-otter · Lane B','run-1','review','{}','delivered',40,40),
             ('m6','a','b','brisk-heron · A',NULL,'system','joined','delivered',40,40);").unwrap();
         // Review reports and group bookkeeping are not agent messages, so the owner's view leaves them out.
-        use super::{TrafficMessage, TRAFFIC};
+        use super::{TrafficMessage, TrafficQuery, traffic_sql};
         use rusqlite::params;
         let ids = |page: Vec<TrafficMessage>| page.into_iter().map(|message| message.id).collect::<Vec<_>>();
-        assert_eq!(ids(store.list_messages(None, None, None, 10).unwrap()), ["m4", "m3", "m2", "m1"]);
-        assert_eq!(ids(store.list_messages(Some("run-1"), None, None, 10).unwrap()), ["m4", "m1"]);
-        assert_eq!(ids(store.list_messages(None, Some("b"), None, 10).unwrap()), ["m4", "m2", "m1"]);
+        assert_eq!(ids(store.list_messages(&TrafficQuery { limit: 10, ..Default::default() }).unwrap()), ["m4", "m3", "m2", "m1"]);
+        assert_eq!(ids(store.list_messages(&TrafficQuery { run_id: Some("run-1"), limit: 10, ..Default::default() }).unwrap()), ["m4", "m1"]);
+        assert_eq!(ids(store.list_messages(&TrafficQuery { session: Some("b"), limit: 10, ..Default::default() }).unwrap()), ["m4", "m2", "m1"]);
         // Paging resumes after the last row shown, even between two rows of the same time.
-        let first = store.list_messages(None, None, None, 2).unwrap();
+        let first = store.list_messages(&TrafficQuery { limit: 2, ..Default::default() }).unwrap();
         assert_eq!(ids(first.clone()), ["m4", "m3"]);
         let last = first.last().unwrap();
-        assert_eq!(ids(store.list_messages(None, None, Some((last.created_at_ms, &last.id)), 10).unwrap()), ["m2", "m1"]);
-        let messages = store.list_messages(None, None, None, 10).unwrap();
+        assert_eq!(ids(store.list_messages(&TrafficQuery { before: Some((last.created_at_ms, &last.id)), limit: 10, ..Default::default() }).unwrap()), ["m2", "m1"]);
+        let messages = store.list_messages(&TrafficQuery { limit: 10, ..Default::default() }).unwrap();
         assert_eq!(messages[2].receiver, "calm-otter · Lane B");
         assert_eq!(messages[1].receiver, "gone");
         let connection = store.lock().unwrap();
-        let mut statement = connection.prepare(&format!("EXPLAIN QUERY PLAN {TRAFFIC}")).unwrap();
-        let details = statement.query_map(params![None::<String>, None::<String>, None::<i64>, None::<String>, 10], |row| row.get::<_, String>(3)).unwrap()
+        let mut statement = connection.prepare(&format!("EXPLAIN QUERY PLAN {}", traffic_sql("time"))).unwrap();
+        let details = statement.query_map(params![None::<String>, None::<String>, None::<String>, None::<String>, None::<i64>, None::<String>, None::<String>, 10], |row| row.get::<_, String>(3)).unwrap()
             .collect::<rusqlite::Result<Vec<_>>>().unwrap().join("\n");
         assert!(details.contains("idx_workflow_messages_created"), "{details}");
         assert!(!details.contains("TEMP B-TREE"), "{details}");
+    }
+
+    #[test]
+    fn list_messages_session_scope_includes_runs_it_started() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.lock_write().unwrap().execute_batch(r#"INSERT INTO orchestration_events
+            (id,run_id,kind,timestamp,payload_json) VALUES ('e','run-b','run','now',
+            '{"workflowPayload":{"run":{"inputSnapshot":{"started_by":"owner"}}}}');
+            INSERT INTO workflow_messages (id,from_owned_id,to_owned_id,sender_name,run_id,kind,body,receipt,created_at_ms,updated_at_ms)
+            VALUES ('m','worker-a','worker-b','Worker','run-b','message','hello','queued',10,10);"#).unwrap();
+        assert_eq!(store.list_messages(&super::TrafficQuery { session: Some("owner"), limit: 10, ..Default::default() }).unwrap().len(), 1);
+        assert!(store.list_messages(&super::TrafficQuery { session: Some("unrelated"), limit: 10, ..Default::default() }).unwrap().is_empty());
+        let connection = store.lock().unwrap();
+        let plan: String = connection.query_row("EXPLAIN QUERY PLAN SELECT run_id FROM orchestration_events WHERE json_extract(payload_json,'$.workflowPayload.run.inputSnapshot.started_by')='owner'", [], |r| r.get(3)).unwrap();
+        assert!(plan.contains("orchestration_events_started_by_idx"), "{plan}");
+    }
+
+    #[test]
+    fn list_messages_search_sort_status_in_sql() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.lock_write().unwrap().execute_batch("INSERT INTO workflow_messages
+            (id,from_owned_id,to_owned_id,sender_name,kind,body,receipt,created_at_ms,updated_at_ms) VALUES
+            ('a','a','Receiver','Zebra','message','100% done','queued',30,30),
+            ('b','b','Other','Alpha','message','ordinary','delivered',20,20),
+            ('c','c','Other','Alpha','message','1000 done','queued',10,10);").unwrap();
+        let query = |search| super::TrafficQuery { search, limit: 10, ..Default::default() };
+        for search in ["Zebra", "Receiver", "100%"] {
+            assert_eq!(store.list_messages(&query(Some(search))).unwrap()[0].id, "a");
+            assert_eq!(store.list_messages(&query(Some(search))).unwrap().len(), 1);
+        }
+        let rows = store.list_messages(&super::TrafficQuery { sort: "sender", limit: 10, ..Default::default() }).unwrap();
+        assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["b", "c", "a"]);
+        for (sort, key) in [("sender", "Alpha"), ("receiver", "Other")] {
+            let rows = store.list_messages(&super::TrafficQuery { sort, before_key: Some(key), before: Some((20,"b")), status: Some("queued"), limit: 10, ..Default::default() }).unwrap();
+            assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["c", "a"]);
+        }
+    }
+
+    #[test]
+    fn count_messages_after() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let message = store.append_message("", "sender", "target", MessageKind::Message, "hello").unwrap();
+        assert_eq!(store.count_messages("target", message.created_at_ms - 1).unwrap(), 1);
+        assert_eq!(store.count_messages("sender", message.created_at_ms).unwrap(), 0);
+        assert_eq!(store.count_messages("other", 0).unwrap(), 0);
+    }
+
+    #[test]
+    fn message_listener_fires_on_append_and_receipt() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (observed, count) = (store.clone(), calls.clone());
+        let owner = std::thread::current().id();
+        super::on_messages_changed(move || {
+            // Taking the same database lock proves notification happens after release.
+            if std::thread::current().id() == owner && observed.count_messages("listener-target", 0).unwrap() > 0 { count.fetch_add(1, Ordering::SeqCst); }
+        });
+        let message = store.append_message("", "sender", "listener-target", MessageKind::Message, "hello").unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        store.set_receipt(&message.id, Receipt::Queued).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        store.set_receipt(&message.id, Receipt::Delivered).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(store.set_receipt(&message.id, Receipt::Failed).is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]

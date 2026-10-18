@@ -2173,8 +2173,11 @@ export type AgentMessageFilter = {
   machine?: string | null;
   runId?: string | null;
   session?: string | null;
-  /** The oldest message already shown; the page continues after it. */
-  before?: Pick<AgentMessage, 'createdAtMs' | 'id'> | null;
+  status?: AgentMessage['receipt'] | null;
+  search?: string;
+  sort?: 'time' | 'sender' | 'receiver';
+  /** The last message already shown, with its name key when sorting by name. */
+  before?: (Pick<AgentMessage, 'createdAtMs' | 'id'> & { key?: string }) | null;
   limit: number;
 };
 
@@ -2184,10 +2187,30 @@ export async function listAgentMessagesFromTauri(filter: AgentMessageFilter, sig
     machine: filter.machine ?? null,
     runId: filter.runId ?? null,
     session: filter.session ?? null,
+    status: filter.status ?? null,
+    search: filter.search ?? '',
+    sort: filter.sort ?? 'time',
     beforeMs: filter.before?.createdAtMs ?? null,
     beforeId: filter.before?.id ?? null,
+    beforeKey: filter.before?.key ?? null,
     limit: filter.limit
   }, signal);
+}
+
+export async function countAgentMessagesFromTauri(session: string, afterMs: number, signal: AbortSignal): Promise<number | null> {
+  return invokeCancellable<number>('count_agent_messages', { session, afterMs }, signal);
+}
+
+/** The owner aborts this listener when its view closes, including during registration. */
+export async function listenAgentMessagesChanged(handler: () => void, signal: AbortSignal): Promise<void> {
+  if (!isTauriRuntime() || signal.aborted) return;
+  const { listen } = await import('@tauri-apps/api/event');
+  if (signal.aborted) return;
+  const stop = trackTauriListener(await listen('agent-messages-changed', () => {
+    if (!signal.aborted) handler();
+  }));
+  if (signal.aborted) { stop(); return; }
+  signal.addEventListener('abort', stop, { once: true });
 }
 
 /** A workflow step waiting on the owner: a pause to answer (`waiting-input`) or a gate to approve (`waiting-approval`). */
