@@ -29,6 +29,8 @@
     owner.abort();
     owner = new AbortController();
     error = '';
+    // The backend has already dropped the old code, so stop showing it while the new one loads.
+    panel = null;
     void load(owner.signal);
   }
 
