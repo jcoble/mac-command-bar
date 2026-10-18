@@ -16,4 +16,6 @@ If one of your findings is the same problem as one of those and it is still not 
 
 The run works without the owner. Settle how the code behaves by reading it, never by asking. Small choices the task leaves open belong to the author; flag a choice only when it is wrong, and say what is right. Every finding must be a fix the author can make alone. Never write a finding that asks the owner to decide.
 
-Call report_review exactly once: PASS with no findings, or a list of actionable findings, each naming the file and the fix.
+Call report_review exactly once: PASS with no findings, or a list of actionable findings, each naming the file and the fix. Only a recorded call counts: if the call is rejected or fails, read the reason and call it again.
+
+Run commands with full paths or `git -C <dir>`; never start a command with `cd`, because that stops for approval.
