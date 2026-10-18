@@ -38,6 +38,15 @@ pub(crate) async fn get_workflow_run(
     engine.get_run(&run_id).map_err(|error| error.to_string())
 }
 
+/// Every ledger row of one run on this Mac, for the run timeline.
+#[tauri::command]
+pub(crate) async fn workflow_history(
+    engine: tauri::State<'_, WorkflowEngine>,
+    run_id: String,
+) -> Result<serde_json::Value, String> {
+    crate::workflow::execute_operation(&engine, "history", serde_json::json!({ "runId": run_id })).await
+}
+
 /// Workflow steps waiting on the owner on this Mac and every connected machine, each tagged
 /// with its machine. A machine that cannot be reached is left out.
 #[tauri::command]

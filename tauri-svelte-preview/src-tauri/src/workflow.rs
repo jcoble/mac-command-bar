@@ -3543,6 +3543,9 @@ pub(crate) async fn execute_operation(engine: &WorkflowEngine, operation: &str, 
             .map_err(|error| error.to_string()),
         "list" => return serde_json::to_value(engine.list_runs().map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string()),
+        // Every ledger row of one run, so the timeline can show each attempt of each step.
+        "history" => return serde_json::to_value(engine.store.list_workflow_run_history(&text("runId")?).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string()),
         "get" => engine.get_run(&text("runId")?),
         "create" => {
             let task = serde_json::from_value(args["task"].clone()).map_err(|error| error.to_string())?;
@@ -4246,6 +4249,43 @@ mod tests {
             assert!(Path::new(command["evidencePath"].as_str().unwrap()).is_file());
         }
         std::fs::remove_dir_all(finished.input_snapshot["run"]["proof_dir"].as_str().unwrap()).unwrap();
+    }
+    #[test]
+    fn workflow_history_lists_every_attempt_in_order() {
+        let repo = RunRepo::new();
+        let engine = run_engine(Arc::new(FakeRuntime::default()));
+        let mut workflow = definition();
+        workflow.nodes[1].step = json!({"run":["printf first; exit 7"]});
+        // A command step has no failure code the test roles list as retryable; an empty list allows any.
+        workflow.roles.iter_mut().for_each(|role| role.retry_policy.retryable_codes.clear());
+        let proof = repo.0.parent().unwrap().join("proof");
+        std::fs::create_dir_all(&proof).unwrap();
+        let run = engine.create_run(workflow, json!({"cwd":repo.0,"worktree":{"path":repo.0,"branch":"main"},
+            "run":{"proof_dir":proof,"pr_body":proof.join("pr-body.md")},
+            "task":{"key":"TSK-1416","title":"Task title","body":"Task body"},
+            "inputs":{"flag":false}}), "create".into()).unwrap();
+        tauri::async_runtime::block_on(engine.start(&run.id, "start")).unwrap();
+        settle(&engine, &run.id);
+        tauri::async_runtime::block_on(engine.retry_node(&run.id, "a", "retry")).unwrap();
+        settle(&engine, &run.id);
+        let other = limit_run(&engine, &repo.0, "other", 1);
+        let history = tauri::async_runtime::block_on(execute_operation(&engine, "history", json!({"runId":run.id}))).unwrap();
+        let rows = history.as_array().unwrap();
+        let sequences: Vec<_> = rows.iter().map(|row| row["sequence"].as_i64().unwrap()).collect();
+        let ledger: Vec<_> = crate::orchestration::read_workflow_event_values(&engine.store).unwrap().iter()
+            .filter(|event| event["runId"] == json!(run.id)).map(|event| event["sequence"].as_i64().unwrap()).collect();
+        assert_eq!(sequences, ledger);
+        assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
+        let finished: Vec<_> = rows.iter().filter(|row| row["kind"] == "workflow.node.commands-finished").collect();
+        assert_eq!(finished.iter().map(|row| row["attempt"].clone()).collect::<Vec<_>>(), vec![json!(1), json!(2)]);
+        for row in finished {
+            assert_eq!(row["nodeId"], "a");
+            assert_eq!(row["commands"], json!([{"command":"printf first; exit 7","exitCode":7}]));
+            assert_eq!(row["findingCount"], 1);
+            assert_eq!(row["status"], "failed");
+        }
+        let other_history = tauri::async_runtime::block_on(execute_operation(&engine, "history", json!({"runId":other.id}))).unwrap();
+        assert!(other_history.as_array().unwrap().iter().all(|row| row["commands"] == json!([])));
     }
     #[test]
     fn agent_missing_expected_file_fails() {

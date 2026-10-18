@@ -14,6 +14,7 @@ import {
   createWorkflowRunFromTauri,
   isNativeTauriRuntime,
   listWorkflowFilesFromTauri,
+  listWorkflowRunHistoryFromTauri,
   listWorkflowRunsFromTauri,
   pauseWorkflowRunFromTauri,
   remoteWorkflowFromTauri,
@@ -34,6 +35,7 @@ import type {
   ResumeWorkflowRunDto,
   RetryWorkflowNodeDto,
   StartWorkflowRunDto,
+  WorkflowHistoryRow,
   WorkflowRunRecord
 } from './workflowTypes';
 
@@ -44,6 +46,18 @@ export const workflowSnapshotEvent = 'workflow-run-updated';
 
 export async function listWorkflowRuns(machine: string | null = null): Promise<WorkflowRunRecord[] | null> {
   return machine ? remoteWorkflowFromTauri(machine, 'list', {}) : listWorkflowRunsFromTauri();
+}
+
+/** Every ledger row of one run, oldest first, for the run timeline. */
+export async function listWorkflowRunHistory(
+  machine: string | null,
+  runId: string,
+  signal: AbortSignal
+): Promise<WorkflowHistoryRow[] | null> {
+  const rows = machine
+    ? await remoteWorkflowFromTauri<WorkflowHistoryRow[]>(machine, 'history', { runId })
+    : await listWorkflowRunHistoryFromTauri(runId);
+  return signal.aborted ? null : rows;
 }
 
 export async function createWorkflowRun(
