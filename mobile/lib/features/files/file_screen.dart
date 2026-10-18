@@ -177,7 +177,12 @@ class _FileScreenState extends State<FileScreen> {
                 padding: const EdgeInsets.only(right: 8),
                 child: FilledButton(
                   onPressed: _saving || _conflict ? null : _save,
-                  child: const Text('Save'),
+                  child: _saving
+                      ? const SizedBox.square(
+                          dimension: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Save'),
                 ),
               )
             else if (_content?.text != null)
@@ -193,7 +198,9 @@ class _FileScreenState extends State<FileScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               if (_conflict) _ConflictBanner(onReload: _reload),
-              Expanded(child: _Editor(controller: editor)),
+              // Read-only while saving: the save sends the text as it was, then
+              // reloads, so anything typed meanwhile would be lost.
+              Expanded(child: _Editor(controller: editor, readOnly: _saving)),
             ],
           ),
           (_, final error?) => ChatNotice(
@@ -361,9 +368,10 @@ class _CodeViewState extends State<_CodeView> {
 /// A plain monospace text box that never wraps: it is as wide as its longest
 /// line and scrolls sideways.
 class _Editor extends StatefulWidget {
-  const _Editor({required this.controller});
+  const _Editor({required this.controller, required this.readOnly});
 
   final TextEditingController controller;
+  final bool readOnly;
 
   @override
   State<_Editor> createState() => _EditorState();
@@ -402,6 +410,7 @@ class _EditorState extends State<_Editor> {
             width: math.max(_textWidth(style, _longest) + 64, box.maxWidth),
             child: TextField(
               controller: widget.controller,
+              readOnly: widget.readOnly,
               maxLines: null,
               expands: true,
               autofocus: true,
