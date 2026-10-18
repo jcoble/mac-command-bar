@@ -20,6 +20,7 @@ class RunsScreen extends ConsumerWidget {
       onRefresh: () => ref.read(runsProvider.notifier).refresh(),
       child: switch (runs) {
         AsyncValue(:final value?) => ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
           children: [
             if (value.active.isEmpty && value.recent.isEmpty)
@@ -35,6 +36,7 @@ class RunsScreen extends ConsumerWidget {
           ],
         ),
         AsyncValue(:final error?) => ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
           children: [RunsMessage('Could not load runs. ${errorText(error)}')],
         ),
         _ => const Center(child: CircularProgressIndicator()),
