@@ -698,6 +698,8 @@ CREATE INDEX IF NOT EXISTS orchestration_events_workflow_idempotency_idx
     ON orchestration_events(workflow_id, idempotency_key);
 CREATE INDEX IF NOT EXISTS orchestration_events_owned_idx
     ON orchestration_events(json_extract(payload_json,'$.ownedId'), sequence);
+CREATE INDEX IF NOT EXISTS orchestration_events_started_by_idx
+    ON orchestration_events(json_extract(payload_json,'$.workflowPayload.run.inputSnapshot.started_by'), run_id);
 CREATE UNIQUE INDEX IF NOT EXISTS orchestration_events_idempotency_idx
     ON orchestration_events(run_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;";
@@ -3308,6 +3310,21 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not list events", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not read the event list", error))
+    }
+
+    /// Read only the requested sequences from one session in a single query.
+    pub fn get_events_by_sequences(&self, owned_id: &str, sequences: &[i64]) -> Result<Vec<EventRow>> {
+        let sequences_json = serde_json::to_string(sequences)
+            .map_err(|_| StoreError::message("could not encode event sequences"))?;
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT owned_id, seq, turn_id, kind, payload, created_at
+             FROM events WHERE owned_id = ?1 AND seq IN (SELECT value FROM json_each(?2))",
+        ).map_err(|error| StoreError::sqlite("could not prepare event lookup", error))?;
+        let rows = statement.query_map(params![owned_id, sequences_json], event_from_row)
+            .map_err(|error| StoreError::sqlite("could not find events", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read selected events", error))
     }
 
     /// Latest durable child descriptor per child at one captured journal head.

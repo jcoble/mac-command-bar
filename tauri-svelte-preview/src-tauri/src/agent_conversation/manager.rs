@@ -5334,14 +5334,9 @@ fn record_payload_for_session_with_lifecycle(
     lifecycle: Option<SessionLifecycleUpdate>,
     event_turn_id: Option<String>,
 ) -> Result<AgentConversationEvent, String> {
-    if let AgentConversationPayload::AssistantMessage {
-        ref text,
-        ref mut blocks,
-        ..
-    } = payload
-    {
-        if blocks.is_none() {
-            *blocks = Some(crate::agent_conversation::safe_markdown::parse_safe_markdown(text));
+    if let AgentConversationPayload::AssistantMessage { text, blocks, .. } = &mut payload {
+        if blocks.is_none() && !std::env::args().any(|argument| argument == "--assembly-server") {
+            *blocks = Some(super::safe_markdown::parse_safe_markdown(text));
         }
     }
     let mut candidate = SessionEventCandidate::from_session(session);
@@ -5465,16 +5460,6 @@ pub(super) fn stored_event(row: EventRow) -> Result<AgentConversationEvent, Stri
         .map_err(|error| format!("Could not decode stored conversation event: {error}"))?;
     event.sequence = row.seq;
     event.turn_id = row.turn_id;
-    if let AgentConversationPayload::AssistantMessage {
-        ref text,
-        ref mut blocks,
-        ..
-    } = event.payload
-    {
-        if blocks.is_none() {
-            *blocks = Some(crate::agent_conversation::safe_markdown::parse_safe_markdown(text));
-        }
-    }
     Ok(event)
 }
 
@@ -7958,7 +7943,6 @@ fn payload_from_session_update_for_turn(
                 .get("content")
                 .and_then(text_from_value)
                 .unwrap_or_default();
-            let blocks = crate::agent_conversation::safe_markdown::parse_safe_markdown(&text);
             Some(AgentConversationPayload::AssistantMessage {
                 item_id: update
                     .get("messageId")
@@ -7968,7 +7952,7 @@ fn payload_from_session_update_for_turn(
                     .unwrap_or_else(|| format!("assistant-{turn_id}")),
                 text,
                 completed: true,
-                blocks: Some(blocks),
+                blocks: None,
             })
         }
         "agent_message_chunk" => Some(AgentConversationPayload::AssistantDelta {
@@ -9356,9 +9340,7 @@ mod tests {
                 item_id: "m-replay".into(),
                 text: "Restored".into(),
                 completed: true,
-                blocks: Some(
-                    crate::agent_conversation::safe_markdown::parse_safe_markdown("Restored")
-                ),
+                blocks: None,
             })
         );
         let tool = json!({ "sessionId": "s", "update": {
@@ -14193,6 +14175,15 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_streamed_reply_is_stored_once_as_a_finished_message_with_rust_blocks() {
+        let provider_update = json!({ "update": {
+            "sessionUpdate": "agent_message_chunk", "messageId": "reply-a",
+            "content": { "type": "text", "text": "**Bold** start" },
+            "_meta": { "replay": true }
+        } });
+        assert!(matches!(
+            payload_from_session_update_for_turn(&provider_update, None),
+            Some(AgentConversationPayload::AssistantMessage { blocks: None, .. })
+        ));
         let fixture = fixture_manager_with_acp_session("two_replies").await;
         let seen: Arc<Mutex<Vec<AgentConversationEvent>>> = Default::default();
         let sink = Arc::clone(&seen);
@@ -14217,8 +14208,12 @@ mod tests {
         })
         .await;
 
-        // Read the rows as stored, not through the read path that fills in
-        // missing blocks.
+        // The desktop records and publishes pieces; the provider supplies none.
+        for event in seen.lock().unwrap().iter() {
+            if let AgentConversationPayload::AssistantMessage { text, blocks, .. } = &event.payload {
+                assert_eq!(blocks.as_ref(), Some(&super::super::safe_markdown::parse_safe_markdown(text)));
+            }
+        }
         let store = Arc::clone(
             &fixture
                 .manager
@@ -16463,6 +16458,59 @@ mod tests {
             line_count < 40,
             "expected a patch under 40 lines, got {line_count}"
         );
+    }
+
+    #[test]
+    fn desktop_markdown_stored_event_keeps_missing_blocks() {
+        let event = serde_json::json!({
+            "ownedId": "owned-a", "provider": "codex", "generation": 1,
+            "sequence": 1, "timestampMs": 1000,
+            "payload": { "kind": "assistantMessage", "itemId": "a",
+                "text": "**hello**", "completed": true }
+        });
+        let decoded = stored_event(EventRow {
+            owned_id: "owned-a".into(), seq: 1, turn_id: None,
+            kind: "item.completed".into(), payload_json: event.to_string(), created_at_ms: 1000,
+        }).unwrap();
+        assert!(matches!(decoded.payload,
+            AgentConversationPayload::AssistantMessage { blocks: None, .. }));
+    }
+
+    #[test]
+    fn desktop_markdown_remote_server_records_and_emits_without_blocks() {
+        let server = std::env::args().any(|arg| arg == "--assembly-server");
+        if !server {
+            // libtest accepts the existing server argument as a skip filter.
+            // The child then exercises the real process distinction, without global test state.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact",
+                    "agent_conversation::manager::tests::desktop_markdown_remote_server_records_and_emits_without_blocks",
+                    "--skip", "--assembly-server", "--nocapture"])
+                .output().unwrap();
+            assert!(output.status.success(), "{}\n{}",
+                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        }
+        let root = temp_root();
+        let manager = AgentRuntimeManager::default();
+        let connection = manager.ensure_inner(request(root.to_str().unwrap(), "server-markdown",
+            AgentConversationProvider::Codex)).unwrap().0;
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let captured = emitted.clone();
+        manager.set_emitter(Arc::new(move |event| captured.lock().unwrap().push(event)));
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            let session = current_session_mut(&mut sessions, "server-markdown", connection.generation).unwrap();
+            record_payload_for_session_and_dispatch(session, &manager.emitter,
+                AgentConversationPayload::AssistantMessage {
+                    item_id: "a".into(), text: "**hello**".into(), completed: true, blocks: None,
+                }).unwrap();
+        }
+        let saved = manager.store.list_events("server-markdown", 0, 100).unwrap();
+        let saved: AgentConversationEvent = serde_json::from_str(&saved.last().unwrap().payload_json).unwrap();
+        assert_eq!(emitted.lock().unwrap().last(), Some(&saved));
+        assert!(matches!(saved.payload,
+            AgentConversationPayload::AssistantMessage { blocks, .. } if blocks.is_some() == !server));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

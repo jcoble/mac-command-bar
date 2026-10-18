@@ -3,7 +3,7 @@
 
   Clicking it opens a menu for app-level items (Settings). Hovering it, or
   moving keyboard focus into it, slides joined circles out to its right:
-  Projects, and Update while an app update is waiting. The waiting update also
+  Projects, Messages, and Update while an app update is waiting. The waiting update also
   puts a dot on the green button, and while the circles are out a short arc
   sweeps round the Update circle every two seconds. The arc only runs while the
   circles are out, so at rest nothing animates.
@@ -12,6 +12,7 @@
   import Download from '@lucide/svelte/icons/download';
   import FolderKanban from '@lucide/svelte/icons/folder-kanban';
   import House from '@lucide/svelte/icons/house';
+  import MessagesSquare from '@lucide/svelte/icons/messages-square';
   import Settings from '@lucide/svelte/icons/settings';
 
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
@@ -20,11 +21,12 @@
 
   interface Props {
     onOpenProjects: () => void;
+    onOpenMessages: () => void;
     onOpenSettings: () => void;
     onOpenUpdate: () => void;
   }
 
-  let { onOpenProjects, onOpenSettings, onOpenUpdate }: Props = $props();
+  let { onOpenProjects, onOpenMessages, onOpenSettings, onOpenUpdate }: Props = $props();
 
   let hovered = $state(false);
   /** Focus arrived by keyboard; a click's focus does not keep the circles out. */
@@ -62,6 +64,9 @@
   <div class="home-slide" aria-hidden={!out}>
     <IconButton label="Projects" side="bottom" class="home-circle" data-testid="home-projects" onclick={onOpenProjects}>
       <FolderKanban />
+    </IconButton>
+    <IconButton label="Messages" side="bottom" class="home-circle" data-testid="home-messages" onclick={onOpenMessages}>
+      <MessagesSquare />
     </IconButton>
     {#if updateWaiting}
       <span class="home-update">

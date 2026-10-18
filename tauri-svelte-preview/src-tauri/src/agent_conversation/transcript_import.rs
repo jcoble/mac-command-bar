@@ -8,7 +8,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::protocol::{
-    AgentConversationEvent, AgentConversationProvider, AgentEventType, AgentRawFrameReference,
+    AgentConversationEvent, AgentConversationPayload, AgentConversationProvider, AgentEventType, AgentRawFrameReference,
     TerminalProjectionPayload,
 };
 use super::transcript::{
@@ -854,9 +854,14 @@ fn imported_event_row(
     //
     // `importable` has already dropped anything without a shape of its own, so
     // there is nothing here to fall back to.
-    let payload = record.native.take().ok_or_else(|| {
+    let mut payload = record.native.take().ok_or_else(|| {
         "An imported record reached the store with no event of its own".to_string()
     })?;
+    if let AgentConversationPayload::AssistantMessage { text, blocks, .. } = &mut payload {
+        if blocks.is_none() && !std::env::args().any(|argument| argument == "--assembly-server") {
+            *blocks = Some(super::safe_markdown::parse_safe_markdown(text));
+        }
+    }
     let event = AgentConversationEvent {
         runtime_state: None,
         owned_id: owned_id.to_string(),
@@ -1025,8 +1030,37 @@ mod tests {
     use serde_json::{json, Value};
     use uuid::Uuid;
 
-    use super::super::protocol::AgentConversationPayload;
     use super::*;
+
+    #[test]
+    fn desktop_markdown_import_prepares_only_at_desktop_save() {
+        let server = std::env::args().any(|arg| arg == "--assembly-server");
+        for (provider, line) in [
+            (AgentConversationProvider::Codex,
+                r#"{"type":"response_item","payload":{"type":"message","id":"a","role":"assistant","content":[{"type":"output_text","text":"**hello**"}]}}"#),
+            (AgentConversationProvider::Claude,
+                r#"{"type":"assistant","uuid":"a","sessionId":"native","message":{"content":[{"type":"text","text":"**hello**"}]}}"#),
+        ] {
+            let records = super::super::transcript::parse_durable_line(provider, "native", line.as_bytes());
+            let record = records.into_iter().find(|record| matches!(record.native,
+                Some(AgentConversationPayload::AssistantMessage { .. }))).unwrap();
+            assert!(matches!(record.native,
+                Some(AgentConversationPayload::AssistantMessage { blocks: None, .. })));
+            let row = imported_event_row("owned", provider, 1, record, 1000).unwrap();
+            let event: AgentConversationEvent = serde_json::from_str(&row.payload_json).unwrap();
+            assert!(matches!(event.payload,
+                AgentConversationPayload::AssistantMessage { blocks, .. } if blocks.is_some() == !server));
+        }
+        if !server {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact",
+                    "agent_conversation::transcript_import::tests::desktop_markdown_import_prepares_only_at_desktop_save",
+                    "--skip", "--assembly-server", "--nocapture"])
+                .output().unwrap();
+            assert!(output.status.success(), "{}\n{}",
+                String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        }
+    }
 
     struct TranscriptFixture {
         path: PathBuf,

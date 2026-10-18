@@ -56,11 +56,14 @@
     visible: boolean;
     root: string;
     ownedId: string | null;
+    /** New messages for this session since its Messages view was last open. */
+    messagesUnread: number;
+    onMessagesSeen: () => void;
+    /** Opens the full Messages screen filtered to one workflow run. */
+    onShowRunMessages: (runId: string, label: string) => void;
   }
-  let { visible, root, ownedId }: Props = $props();
+  let { visible, root, ownedId, messagesUnread, onMessagesSeen, onShowRunMessages }: Props = $props();
   let view = $state<'session' | 'workflows' | 'messages' | 'inbox'>('session');
-  /** The workflow run whose messages the Messages view shows; null shows all of them. */
-  let messageRun = $state<{ id: string; label: string } | null>(null);
   let inboxStepCount = $state(0);
   let transcriptState = $state<'loading' | 'unavailable' | 'ready' | 'error'>('unavailable');
   let transcriptError = $state('');
@@ -92,7 +95,7 @@
   const VIEW_OPTIONS = $derived([
     { value: 'session', label: 'Session' },
     { value: 'workflows', label: 'Workflows' },
-    { value: 'messages', label: 'Messages' },
+    { value: 'messages', label: messagesUnread > 0 ? `Messages ${messagesUnread}` : 'Messages' },
     { value: 'inbox', label: inboxCount > 0 ? `Inbox ${inboxCount}` : 'Inbox' }
   ]);
   const conversation = $derived(ownedId ? getConversationSession(ownedId) : null);
@@ -274,10 +277,16 @@
       visible={visible}
       root={workflowRoot}
       {machine}
-      onShowMessages={(id, label) => { messageRun = { id, label }; view = 'messages'; }}
+      onShowMessages={onShowRunMessages}
     />
   {:else if view === 'messages'}
-    <AgentMessages visible={visible && view === 'messages'} runId={messageRun?.id ?? null} runLabel={messageRun?.label ?? ''} onClearRun={() => (messageRun = null)} />
+    <AgentMessages
+      visible={visible && view === 'messages'}
+      layout="drawer"
+      session={ownedId}
+      onShowRun={onShowRunMessages}
+      onSeen={onMessagesSeen}
+    />
   {:else if view === 'inbox'}
     <OwnerInbox visible={visible && view === 'inbox'} sessions={waitingSessions} bind:stepCount={inboxStepCount} />
   {:else if visible && selectedRow && ownedId}
