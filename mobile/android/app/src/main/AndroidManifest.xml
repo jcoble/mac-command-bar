@@ -1,6 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Release builds need it to reach the paired machines (debug adds it on its own). -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 13+ runtime permission for push notifications. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
         android:label="Assembly"
         android:name="${applicationName}"
@@ -27,6 +29,11 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Channel for push notifications that arrive while the app is closed;
+             must match the backend's channel_id and push_service.dart. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="assembly_inbox" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
