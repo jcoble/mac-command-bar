@@ -460,4 +460,78 @@ void main() {
     expect(splitDiffFiles('$a$b'), [a, b]);
     expect(splitDiffFiles(''), isEmpty);
   });
+
+  test('session_config_parses_models_efforts_and_current', () async {
+    final (c, adapter, _) = await chatWith(
+      (r) => r.path.endsWith('/config')
+          ? (
+              r.method == 'POST' ? 204 : 200,
+              r.method == 'POST'
+                  ? null
+                  : {
+                      'models': [
+                        {'id': 'default', 'label': 'Default (recommended)'},
+                        {'id': 'claude-opus-5', 'label': null},
+                        {'id': 'gpt-5.6-sol', 'label': null},
+                      ],
+                      'model': 'claude-opus-5',
+                      'efforts': ['low', 'high', 'xhigh'],
+                      'effort': 'xhigh',
+                    },
+            )
+          : (200, {'items': [], 'cursor': 0, 'turn': 'idle', 'ownerItems': []}),
+    );
+    final config = await c.read(sessionConfigProvider(session).future);
+    expect(adapter.requests.last.path, 'sessions/lane-1/config');
+    expect(
+      [for (final m in config.models) (m.id, m.label)],
+      [
+        ('default', 'Default (recommended)'),
+        ('claude-opus-5', 'Opus 5'),
+        ('gpt-5.6-sol', 'GPT-5.6 Sol'),
+      ],
+      reason: 'a model with no label is worded as the desktop words it',
+    );
+    expect((config.model, config.effort), ('claude-opus-5', 'xhigh'));
+    expect(config.efforts, ['low', 'high', 'xhigh']);
+    expect(config.modelName, 'Opus 5');
+
+    await c.read(chatProvider(session).notifier).setConfig(model: 'default');
+    final post = adapter.requests.last;
+    expect((post.method, post.path), ('POST', 'sessions/lane-1/config'));
+    expect(post.data, {'model': 'default'}, reason: 'only the field chosen');
+  });
+
+  test('context_left_percent_from_usage', () async {
+    expect(
+      contextLeftPercent({'usedTokens': 76000, 'contextWindow': 200000}),
+      62,
+    );
+    expect(
+      contextLeftPercent({'usedTokens': 250000, 'contextWindow': 200000}),
+      0,
+    );
+    for (final usage in [
+      null,
+      {'usedTokens': null, 'contextWindow': 200000},
+      {'usedTokens': 5, 'contextWindow': null},
+      {'usedTokens': 5, 'contextWindow': 0},
+    ]) {
+      expect(contextLeftPercent(usage), isNull, reason: '$usage');
+    }
+
+    final (c, _, _) = await chatWith(
+      (r) => (
+        200,
+        {
+          'items': [],
+          'cursor': 4,
+          'turn': 'idle',
+          'ownerItems': [],
+          'usage': {'usedTokens': 76000, 'contextWindow': 200000},
+        },
+      ),
+    );
+    expect(c.read(chatProvider(session)).requireValue.contextLeft, 62);
+  });
 }
