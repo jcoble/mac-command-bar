@@ -30,12 +30,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Future<void> _send(String machineId) async {
     final text = _text.text.trim();
     if (text.isEmpty) return;
+    // Clear first so anything typed while the send is pending is kept.
+    _text.clear();
     setState(() => _sending = true);
     try {
       await ref.read(chatProvider(machineId).notifier).send(text);
-      _text.clear();
     } on DioException catch (e) {
       if (mounted) {
+        // Give the failed message back, unless the owner has typed since.
+        if (_text.text.isEmpty) _text.text = text;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(ApiException.fromDioException(e).message)),
         );
