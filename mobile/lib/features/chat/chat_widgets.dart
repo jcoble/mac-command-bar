@@ -36,8 +36,8 @@ class ChatThread extends StatelessWidget {
   }
 }
 
-/// `_MessageBubble`: the owner on the right in primary, the orchestrator on
-/// the left in surfaceContainerHighest.
+/// `_MessageBubble`: the owner on the right in primary, the session on the
+/// left in surfaceContainerHighest.
 class _MessageBubble extends StatelessWidget {
   const _MessageBubble({required this.item});
 
@@ -78,7 +78,7 @@ class _MessageBubble extends StatelessWidget {
   }
 }
 
-/// A message another session sent the orchestrator: `[message from <label>]\n<text>`.
+/// A message another session sent this one: `[message from <label>]\n<text>`.
 class _RelayedCard extends StatelessWidget {
   const _RelayedCard({required this.item});
 
@@ -116,7 +116,7 @@ class _RelayedCard extends StatelessWidget {
   }
 }
 
-/// One grey line per orchestrator tool call ("2 runs started"), or an error in red.
+/// One grey line per tool call ("2 runs started"), or an error in red.
 class _ToolLine extends StatelessWidget {
   const _ToolLine({required this.item});
 
@@ -162,7 +162,7 @@ class _ToolLine extends StatelessWidget {
   }
 }
 
-/// The thin "working" line while the orchestrator's turn runs. A still dot:
+/// The thin "working" line while the session's turn runs. A still dot:
 /// an endless animation would repaint the screen for the whole turn.
 class _WorkingLine extends StatelessWidget {
   const _WorkingLine();
@@ -177,7 +177,7 @@ class _WorkingLine extends StatelessWidget {
           Icon(Icons.circle, size: 8, color: theme.colorScheme.primary),
           const SizedBox(width: 10),
           Text(
-            'Orchestrator is working…',
+            'Working…',
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
@@ -224,7 +224,7 @@ class ChatComposeBar extends StatelessWidget {
           textCapitalization: TextCapitalization.sentences,
           keyboardType: TextInputType.multiline,
           decoration: InputDecoration(
-            hintText: 'Message the orchestrator…',
+            hintText: 'Send a message…',
             filled: true,
             fillColor: scheme.surfaceContainerHighest,
             contentPadding: const EdgeInsetsDirectional.fromSTEB(18, 12, 8, 12),

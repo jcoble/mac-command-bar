@@ -189,6 +189,17 @@ impl SessionStore {
         db("could not read session directory", rows.collect())
     }
 
+    /// This machine's sessions for the phone, each with its last activity (ms), newest first.
+    pub fn list_phone_sessions(&self) -> Result<Vec<(DirectoryEntry, i64)>> {
+        let connection = self.lock()?;
+        let mut statement = db("could not prepare phone sessions", connection.prepare(
+            "SELECT d.name,d.owned_id,d.provider,d.project,d.state,d.run_id,d.step_id,d.handle,d.orchestrator,s.last_activity_at
+             FROM session_directory d JOIN sessions s ON s.owned_id = d.owned_id
+             ORDER BY s.last_activity_at DESC, d.owned_id"))?;
+        let rows = db("could not query phone sessions", statement.query_map([], |row| Ok((directory_entry(row)?, row.get(9)?))))?;
+        db("could not read phone sessions", rows.collect())
+    }
+
     /// The sessions `caller` may message, or, with a relayed role as `scope`, those that role may reach.
     pub fn list_directory_for(&self, caller: &str, scope: &str) -> Result<Vec<DirectoryEntry>> {
         let connection = self.lock()?;

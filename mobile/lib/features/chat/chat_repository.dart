@@ -46,25 +46,33 @@ class ChatState {
   /// The highest event sequence applied; live frames at or below it are duplicates.
   final int cursor;
 
-  /// The orchestrator's turn is running.
+  /// The session's turn is running.
   final bool working;
 }
 
-/// The orchestrator chat on one machine (Rental Command's `conversationProvider`
-/// pattern). Live frames and refetches run one at a time, in arrival order.
+/// One session's chat, keyed by (machine id, owned id) (Rental Command's
+/// `conversationProvider` pattern). Live frames and refetches run one at a
+/// time, in arrival order. While it is open the machine's live socket watches
+/// this session, so its chat frames are the ones that come.
 class ChatNotifier extends Notifier<AsyncValue<ChatState>> {
-  ChatNotifier(this._machineId);
+  ChatNotifier(this._session);
 
-  final String _machineId;
+  final (String, String) _session;
   Future<void> _tail = Future.value();
 
-  Dio get _dio => ref.read(machineClientProvider(_machineId));
+  Dio get _dio => ref.read(machineClientProvider(_session.$1));
+
+  String get _path => 'sessions/${Uri.encodeComponent(_session.$2)}/chat';
 
   @override
   AsyncValue<ChatState> build() {
-    final frames = ref.watch(liveSocketProvider(_machineId)).frames;
-    final subscription = frames.listen((f) => _enqueue(() => _apply(f)));
-    ref.onDispose(subscription.cancel);
+    final socket = ref.watch(liveSocketProvider(_session.$1));
+    final subscription = socket.frames.listen((f) => _enqueue(() => _apply(f)));
+    socket.watch(_session.$2);
+    ref.onDispose(() {
+      subscription.cancel();
+      socket.watch(null);
+    });
     _enqueue(_fetch);
     return const AsyncValue.loading();
   }
@@ -90,12 +98,13 @@ class ChatNotifier extends Notifier<AsyncValue<ChatState>> {
     return _tail;
   }
 
-  /// `GET /chat`, or only what came after the cursor once loaded. Never throws.
+  /// `GET sessions/{id}/chat`, or only what came after the cursor once loaded.
+  /// Never throws.
   Future<void> _fetch() async {
     final loaded = state.value;
     try {
       final response = await _dio.get<Map<String, dynamic>>(
-        'chat',
+        _path,
         queryParameters: {'after': ?loaded?.cursor},
       );
       if (!ref.mounted) return;
@@ -127,6 +136,9 @@ class ChatNotifier extends Notifier<AsyncValue<ChatState>> {
 
   Future<void> _apply(Map<String, dynamic> frame) async {
     if (frame['type'] == 'open') return _fetch();
+    // A frame sent before the machine saw the phone switch chats belongs to
+    // the chat it left.
+    if (frame['ownedId'] != _session.$2) return;
     final current = state.value;
     final seq = frame['seq'];
     if (current == null || seq is! int || seq <= current.cursor) return;
@@ -171,11 +183,12 @@ class ChatNotifier extends Notifier<AsyncValue<ChatState>> {
     );
   }
 
-  /// `POST /chat`. Shows the owner's bubble at once; the live `chat` frame for
-  /// the same item replaces it. Plain chat text never answers an inbox item (D13).
+  /// `POST sessions/{id}/chat`. Shows the owner's bubble at once; the live
+  /// `chat` frame for the same item replaces it. Plain chat text never answers
+  /// an inbox item (D13).
   Future<void> send(String text) async {
     final response = await _dio.post<Map<String, dynamic>>(
-      'chat',
+      _path,
       data: {'text': text},
     );
     final id = response.data!['itemId'] as String;
@@ -218,4 +231,6 @@ List<ChatItem> _merge(List<ChatItem> items, List<ChatItem> updates) {
 }
 
 final chatProvider = NotifierProvider.autoDispose
-    .family<ChatNotifier, AsyncValue<ChatState>, String>(ChatNotifier.new);
+    .family<ChatNotifier, AsyncValue<ChatState>, (String, String)>(
+      ChatNotifier.new,
+    );
