@@ -185,7 +185,8 @@ class _RunScreenState extends ConsumerState<RunScreen> {
           M3TonalCard(
             family: M3TonalFamily.amber,
             padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-            onTap: () => context.go('/inbox'),
+            onTap: () =>
+                context.go('/inbox/${Uri.encodeComponent(run.waitingItemId!)}'),
             child: Row(
               children: [
                 Expanded(

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../app_shell.dart';
 import '../features/chat/chat_screen.dart';
+import '../features/inbox/inbox_screen.dart';
 import '../features/machines/machines_screen.dart';
 import '../features/machines/pair_screen.dart';
 import '../features/runs/run_screen.dart';
@@ -33,16 +34,26 @@ final routerProvider = Provider<GoRouter>((ref) {
               GoRoute(path: '/chat', builder: (_, _) => const ChatScreen()),
             ],
           ),
-          for (final path in ['/runs', '/inbox'])
-            StatefulShellBranch(
-              routes: [
-                GoRoute(
-                  path: path,
-                  builder: (_, _) =>
-                      path == '/runs' ? const RunsScreen() : const EmptyTab(),
-                ),
-              ],
-            ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(path: '/runs', builder: (_, _) => const RunsScreen()),
+            ],
+          ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/inbox',
+                builder: (_, _) => const InboxScreen(),
+                routes: [
+                  GoRoute(
+                    path: ':id',
+                    builder: (_, state) =>
+                        InboxScreen(focusId: state.pathParameters['id']),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ],
       ),
       GoRoute(

@@ -6,6 +6,7 @@ import 'package:material_symbols_icons/symbols.dart';
 import 'core/machines/machine_store.dart';
 import 'core/theme/app_recipes.dart';
 import 'core/theme/app_tokens.dart';
+import 'features/inbox/inbox_repository.dart';
 
 /// The three tabs, each with the selected machine as a chip in the app bar.
 class AppShell extends ConsumerWidget {
@@ -23,6 +24,10 @@ class AppShell extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final index = navigationShell.currentIndex;
     final machine = ref.watch(machinesProvider).value?.selected;
+    // Watching the inbox keeps its live socket open while the app shows.
+    final pending = machine == null
+        ? 0
+        : ref.watch(inboxProvider(machine.id)).value?.pending.length ?? 0;
     return Scaffold(
       appBar: AppBar(
         title: Text(_tabs[index].title),
@@ -46,26 +51,9 @@ class AppShell extends ConsumerWidget {
       bottomNavigationBar: _MorphNavBar(
         tabs: _tabs,
         selectedIndex: index,
+        inboxCount: pending,
         onSelected: (i) =>
             navigationShell.goBranch(i, initialLocation: i == index),
-      ),
-    );
-  }
-}
-
-/// Placeholder body for a tab whose screen comes in a later build.
-class EmptyTab extends StatelessWidget {
-  const EmptyTab({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Center(
-      child: Text(
-        'Nothing here yet.',
-        style: theme.textTheme.bodyMedium?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
       ),
     );
   }
@@ -90,11 +78,15 @@ class _MorphNavBar extends StatelessWidget {
   const _MorphNavBar({
     required this.tabs,
     required this.selectedIndex,
+    required this.inboxCount,
     required this.onSelected,
   });
 
   final List<_TabItem> tabs;
   final int selectedIndex;
+
+  /// Pending inbox items, shown as a badge on the last tab when above 0.
+  final int inboxCount;
   final ValueChanged<int> onSelected;
 
   @override
@@ -115,11 +107,15 @@ class _MorphNavBar extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               for (var i = 0; i < tabs.length; i++)
-                M3MorphNavItem(
-                  icon: tabs[i].icon,
-                  label: tabs[i].label,
-                  selected: i == selectedIndex,
-                  onTap: () => onSelected(i),
+                Badge(
+                  isLabelVisible: i == tabs.length - 1 && inboxCount > 0,
+                  label: Text('$inboxCount'),
+                  child: M3MorphNavItem(
+                    icon: tabs[i].icon,
+                    label: tabs[i].label,
+                    selected: i == selectedIndex,
+                    onTap: () => onSelected(i),
+                  ),
                 ),
             ],
           ),
