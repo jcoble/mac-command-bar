@@ -77,13 +77,30 @@ class _PairScreenState extends ConsumerState<PairScreen> {
             borderRadius: BorderRadius.circular(28),
             child: SizedBox(
               height: 260,
-              child: MobileScanner(
-                onDetect: (capture) {
-                  final raw = capture.barcodes.firstOrNull?.rawValue;
-                  if (raw == null || raw == _lastScan) return;
-                  _lastScan = raw;
-                  _pair(raw);
-                },
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  MobileScanner(
+                    onDetect: (capture) {
+                      final raw = capture.barcodes.firstOrNull?.rawValue;
+                      if (raw == null || raw == _lastScan) return;
+                      _lastScan = raw;
+                      _pair(raw);
+                    },
+                  ),
+                  Align(
+                    alignment: Alignment.bottomCenter,
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text(
+                        'Looking for a pairing code…',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),

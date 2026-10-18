@@ -74,7 +74,9 @@ class MachinesScreen extends ConsumerWidget {
                     ),
                   ),
                 Text(
-                  machines[i].url,
+                  Uri.parse(machines[i].url).authority,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.bodySmall?.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
