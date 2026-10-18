@@ -55,9 +55,13 @@ const MAX_TOOL_OUTPUT_BYTES: usize = 32 * 1024;
 const MAX_TOOL_DIFF_BYTES: usize = 64 * 1024;
 /// A session's changes send at most this much diff; the file list is always whole.
 const MAX_CHANGES_DIFF_BYTES: usize = 256 * 1024;
-/// A folder lists at most this many entries; a file opens or saves up to 1 MiB, and only its save body may be that big.
+/// A folder lists at most this many entries; a file opens or saves up to 1 MiB of text.
 const MAX_FOLDER_ENTRIES: usize = 2000;
 const MAX_FILE_BYTES: usize = 1024 * 1024;
+/// Only the save body may be bigger than the listener's limit. JSON escapes a byte to at most six
+/// (`\u00XX` for a control byte; a newline is two and non-ASCII text is sent as is), so a 1 MiB text
+/// always fits in six times that, plus room for the path and version. `save_file` checks the text.
+const MAX_SAVE_BODY_BYTES: usize = 6 * MAX_FILE_BYTES + MAX_BODY_BYTES;
 
 /// Bumped whenever a phone is removed, so each open live socket checks its own token and closes if it went.
 static DEVICE_REMOVED: LazyLock<tokio::sync::watch::Sender<u64>> = LazyLock::new(|| tokio::sync::watch::channel(0).0);
@@ -81,7 +85,7 @@ pub(super) fn router(state: ServerState) -> Router {
         .route("/phone/v1/sessions/{id}/items/{item}", get(tool_item))
         .route("/phone/v1/sessions/{id}/changes", get(changes))
         .route("/phone/v1/sessions/{id}/files", get(list_files))
-        .route("/phone/v1/sessions/{id}/file", get(read_file).put(save_file).layer(DefaultBodyLimit::max(MAX_FILE_BYTES)))
+        .route("/phone/v1/sessions/{id}/file", get(read_file).put(save_file).layer(DefaultBodyLimit::max(MAX_SAVE_BODY_BYTES)))
         .route("/phone/v1/sessions/{id}/config", get(session_config).post(set_session_config))
         .route("/phone/v1/runs", get(runs))
         .route("/phone/v1/runs/{id}", get(run_detail))
@@ -545,6 +549,7 @@ struct SaveFileRequest {
 /// 409 `{error: "changed"}` otherwise.
 async fn save_file(State(state): State<ServerState>, Path(owned_id): Path<String>, body: Bytes) -> Reply {
     let request: SaveFileRequest = parse(&body)?;
+    if request.text.len() > MAX_FILE_BYTES { return Err(refuse(StatusCode::PAYLOAD_TOO_LARGE, "The phone saves files up to 1 MB")) }
     let (_, path) = session_path(&state, &owned_id, &request.path)?;
     let changed = || refuse(StatusCode::CONFLICT, "changed");
     match file_bytes(&path)? {
@@ -2088,6 +2093,28 @@ mod tests {
         let response = client(reqwest::Method::PUT, &base, "/sessions/nobody/file", &token)
             .json(&json!({"path": "docs/notes.txt", "text": "x", "version": version})).send().await.unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+
+    #[tokio::test]
+    async fn phone_file_save_accepts_a_newline_heavy_file_near_the_limit() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let repo = session_in_repo(&state, "lane", false);
+        let notes = repo.join("docs/notes.txt");
+        let version = get_json(&base, "/sessions/lane/file?path=docs/notes.txt", &token).await.1["version"].as_str().unwrap().to_string();
+        let save = |text: String| client(reqwest::Method::PUT, &base, "/sessions/lane/file", &token)
+            .json(&json!({"path": "docs/notes.txt", "text": text, "version": version})).send();
+
+        // Every "\n" is two bytes in JSON, so this body is about 2 MiB.
+        let text = "\n".repeat(super::MAX_FILE_BYTES - 1);
+        assert_eq!(save(text.clone()).await.unwrap().status(), reqwest::StatusCode::NO_CONTENT);
+        assert_eq!(std::fs::read_to_string(&notes).unwrap(), text);
+
+        let response = save("x".repeat(super::MAX_FILE_BYTES + 1)).await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(response.json::<Value>().await.unwrap(), json!({"error": "The phone saves files up to 1 MB"}));
+        assert_eq!(std::fs::read_to_string(&notes).unwrap(), text, "the oversize text is not saved");
         std::fs::remove_dir_all(repo).unwrap();
     }
 
