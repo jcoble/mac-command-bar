@@ -1683,6 +1683,16 @@ export async function publishGitRepositoryFromTauri(
   return invoke<GitActionResult>('publish_git_repository', { root, expectedBranch, remote });
 }
 
+export async function addGitRemoteFromTauri(
+  root: string,
+  name: string,
+  url: string
+): Promise<GitActionResult | null> {
+  if (!isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  return invoke<GitActionResult>('add_git_remote', { root, name, url });
+}
+
 export async function discardGitPathsFromTauri(
   root: string,
   paths: string[]

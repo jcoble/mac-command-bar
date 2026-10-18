@@ -307,6 +307,7 @@ export function bridgeGitBackend(): GitBackend {
     fetch: refuse,
     pull: refuse,
     push: refuse,
+    addRemote: refuse,
     publish: refuse
   };
 }

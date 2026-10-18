@@ -350,20 +350,8 @@
         : READ_ONLY_IN_BROWSER_MESSAGE
   );
 
-  const remoteActions = $derived(
-    sourceControlRemoteActions(panel.status, folder, {
-      canWrite: canChange,
-      readOnlyReason: cannotChangeReason,
-      busy
-    })
-  );
-
-  function runRemote(id: SourceControlRemoteActionId): void {
-    void service.runRemoteAction(id);
-  }
-
-  /** The folder, branch and remotes a Publish targets, captured when the more-actions
-   * menu opens on a branch with no upstream. Null otherwise, which hides Publish.
+  /** The folder, branch and remotes captured when the more-actions menu opens
+   * without an upstream, also used by Fetch at detached HEAD. Null otherwise.
    * Raw: each update replaces the whole object. */
   type PublishTarget = { root: string; branch: string; remotes: string[] | null; error: string };
   let publishTarget = $state.raw<PublishTarget | null>(null);
@@ -371,14 +359,27 @@
   let remotesRead = new AbortController();
   $effect(() => () => remotesRead.abort());
 
+  const remoteActions = $derived(
+    sourceControlRemoteActions(panel.status, folder, {
+      canWrite: canChange,
+      readOnlyReason: cannotChangeReason,
+      busy,
+      remotes: publishTarget?.root === folder ? publishTarget.remotes : null
+    })
+  );
+
+  function runRemote(id: SourceControlRemoteActionId): void {
+    void service.runRemoteAction(id);
+  }
+
   function moreMenuOpenChange(open: boolean): void {
     remotesRead.abort();
     const branch = panel.status?.branch;
-    if (!open || !branch || panel.status?.hasUpstream) {
+    if (!open || panel.status?.hasUpstream) {
       publishTarget = null;
       return;
     }
-    const target = { root: folder, branch, remotes: null, error: '' };
+    const target = { root: folder, branch: branch ?? '', remotes: null, error: '' };
     publishTarget = target;
     remotesRead = new AbortController();
     void readPublishRemotes(target, remotesRead.signal);
@@ -397,7 +398,8 @@
     sourceControlPublishAction(panel.status, folder, {
       canWrite: canChange,
       readOnlyReason: cannotChangeReason,
-      busy
+      busy,
+      remotes: publishTarget?.root === folder ? publishTarget.remotes : null
     })
   );
   const publishReason = $derived.by(() => {

@@ -7,10 +7,7 @@
  * answers it for the panel itself, and for the same reason: an action that is
  * off without a sentence teaches nobody anything.
  *
- * Fetch, pull and push all need a folder, a page allowed to change a
- * repository, and nothing else already running. Pull and push also need a
- * branch that has an upstream — without one there is no matching branch to
- * bring commits from or send commits to.
+ * All remote actions need a writable, idle repository; Fetch needs a known remote or upstream, while Pull and Push need an upstream.
  *
  * The scope picker lists the checkouts of the same repository so the panel can
  * be pointed at one and read it. Any folder other than the session's own is
@@ -40,6 +37,8 @@ export interface SourceControlRemoteContext {
   readOnlyReason: string;
   /** True while another source-control action is still running. */
   busy: boolean;
+  /** The remotes read for this folder, null while unknown. */
+  remotes: string[] | null;
 }
 
 const NO_REPOSITORY = 'This panel is not pointed at a repository folder yet.';
@@ -72,7 +71,15 @@ export function sourceControlRemoteActions(
       ['push', 'Push']
     ] as const
   ).map(([id, label]) => {
-    const reason = commonReason ?? (id === 'fetch' || status?.hasUpstream ? null : NO_UPSTREAM);
+    const reason = commonReason ?? (status?.hasUpstream
+      ? null
+      : id !== 'fetch'
+        ? NO_UPSTREAM
+        : context.remotes === null
+          ? 'Reading this repository’s remotes…'
+          : context.remotes.length === 0
+            ? 'This repository has no remote. Add one to fetch.'
+            : null);
     return { id, label, enabled: reason === null, disabledReason: reason };
   });
 }

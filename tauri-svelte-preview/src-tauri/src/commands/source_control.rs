@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use mcb_core::scanners::worktrees::{repository_checkouts, RepositoryCheckout};
 
 use crate::git_workspace::{
-    commit_git_repository_sync, fetch_git_repository_sync, publish_git_repository_sync,
+    add_git_remote_sync, commit_git_repository_sync, fetch_git_repository_sync, publish_git_repository_sync,
     pull_git_repository_sync, push_git_repository_sync, stage_git_paths_sync,
     unstage_git_paths_sync,
 };
@@ -103,6 +103,13 @@ pub(crate) async fn publish_git_repository(root: String, expected_branch: String
     tauri::async_runtime::spawn_blocking(move || publish_git_repository_sync(PathBuf::from(root), expected_branch, remote))
         .await
         .map_err(|error| format!("Git publish task failed: {error}"))?
+}
+
+#[tauri::command]
+pub(crate) async fn add_git_remote(root: String, name: String, url: String) -> Result<GitActionResult, String> {
+    tauri::async_runtime::spawn_blocking(move || add_git_remote_sync(root, name, url))
+        .await
+        .map_err(|error| format!("Git add remote task failed: {error}"))?
 }
 
 #[tauri::command]
