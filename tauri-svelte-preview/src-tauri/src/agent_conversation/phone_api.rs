@@ -36,12 +36,11 @@ const WRONG_TRIES_ALLOWED: u32 = 5;
 const NOT_SET_UP: &str =
     "Phone access is not set up on this machine: set ASSEMBLY_PHONE_URL in ~/.config/assembly/phone.env";
 const REMOVED: &str = "This phone was removed — pair again";
-const NO_ORCHESTRATOR: &str = "No orchestrator is marked on this machine";
 const NO_SESSION: &str = "No such session on this machine";
 /// §5.3 sets no length for chat text, so a plain cap: 10,000 characters, in a body of at most 64 KiB.
 const MAX_CHAT_CHARS: usize = 10_000;
 const MAX_BODY_BYTES: usize = 64 * 1024;
-/// `GET /chat` reads one desktop-sized page of events, and with no `after` keeps its newest 100 items.
+/// `GET /sessions/{id}/chat` reads one desktop-sized page of events, and with no `after` keeps its newest 100 items.
 const CHAT_PAGE_BYTES: u32 = 1024 * 1024;
 const LATEST_CHAT_ITEMS: usize = 100;
 const MAX_PUSH_TOKEN_CHARS: usize = 4096;
@@ -63,7 +62,6 @@ pub(super) struct PairingCode {
 pub(super) fn router(state: ServerState) -> Router {
     let device_routes = Router::new()
         .route("/phone/v1/me", get(me).delete(forget_me))
-        .route("/phone/v1/chat", get(chat).post(send_chat))
         .route("/phone/v1/sessions", get(sessions))
         .route("/phone/v1/sessions/{id}/chat", get(session_chat).post(send_session_chat))
         .route("/phone/v1/runs", get(runs))
@@ -293,12 +291,6 @@ async fn forget_me(State(state): State<ServerState>, Extension(device): Extensio
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-/// The orchestrator session the owner marked on this machine (`broker.main_orchestrator`); 404 when none is.
-fn orchestrator(state: &ServerState) -> Result<String, Response> {
-    state.manager.store().main_orchestrator().map_err(|error| server_error(&error))?
-        .map(|(owned_id, _)| owned_id).ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_ORCHESTRATOR))
-}
-
 /// `GET /phone/v1/sessions` → `{sessions}`: this machine's sessions, newest activity first (one SQL statement).
 async fn sessions(State(state): State<ServerState>) -> Reply {
     let sessions = state.manager.store().list_phone_sessions().map_err(|error| server_error(&error))?;
@@ -314,12 +306,6 @@ async fn sessions(State(state): State<ServerState>) -> Reply {
 fn known_session(state: &ServerState, owned_id: &str) -> Result<(), Response> {
     state.manager.store().directory_name(owned_id).map_err(|error| server_error(&error))?
         .map(|_| ()).ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))
-}
-
-/// `GET /phone/v1/chat?after=<seq>`: the orchestrator's chat, as the first phone app reads it.
-async fn chat(State(state): State<ServerState>, Query(query): Query<HashMap<String, String>>) -> Reply {
-    let owned_id = orchestrator(&state)?;
-    read_chat(&state, &owned_id, &query)
 }
 
 /// `GET /phone/v1/sessions/{id}/chat?after=<seq>`: that session's chat.
@@ -352,12 +338,6 @@ fn read_chat(state: &ServerState, owned_id: &str, query: &HashMap<String, String
 #[derive(Deserialize)]
 struct ChatRequest {
     text: String,
-}
-
-/// `POST /phone/v1/chat {text}` → `{itemId}`: a message to the orchestrator, as the first phone app sends it.
-async fn send_chat(State(state): State<ServerState>, body: Bytes) -> Reply {
-    let owned_id = orchestrator(&state)?;
-    send_to(&state, owned_id, &body).await
 }
 
 /// `POST /phone/v1/sessions/{id}/chat {text}` → `{itemId}`: a message to that session.
@@ -670,6 +650,7 @@ fn watch_frame(text: &str) -> Option<Option<String>> {
 }
 
 /// One agent event's live frames: chat, delta and turn frames for the watched session's own events,
+/// each naming its session in `ownedId` so a phone that has since opened another chat can drop it,
 /// and an inbox change for any permission request asked or settled in any session.
 fn live_frames(event: &AgentConversationEvent, watched: Option<&str>) -> Vec<Value> {
     if matches!(event.payload, Payload::Approval { .. }) {
@@ -679,11 +660,11 @@ fn live_frames(event: &AgentConversationEvent, watched: Option<&str>) -> Vec<Val
         return Vec::new();
     }
     match &event.payload {
-        Payload::AssistantDelta { item_id, delta } => vec![json!({ "type": "chatDelta", "seq": event.sequence, "itemId": item_id, "delta": delta })],
-        Payload::Turn { state, .. } => vec![json!({ "type": "turn", "seq": event.sequence,
+        Payload::AssistantDelta { item_id, delta } => vec![json!({ "type": "chatDelta", "ownedId": event.owned_id, "seq": event.sequence, "itemId": item_id, "delta": delta })],
+        Payload::Turn { state, .. } => vec![json!({ "type": "turn", "ownedId": event.owned_id, "seq": event.sequence,
             "state": if matches!(state, TurnState::Started) { "running" } else { "idle" } })],
         _ => reduce_chat(std::slice::from_ref(event)).into_iter()
-            .map(|item| json!({ "type": "chat", "seq": event.sequence, "item": item })).collect(),
+            .map(|item| json!({ "type": "chat", "ownedId": event.owned_id, "seq": event.sequence, "item": item })).collect(),
     }
 }
 
@@ -1021,7 +1002,7 @@ mod tests {
         let endpoint = super::super::messaging::MessagingEndpoint::start().unwrap();
         let session = endpoint.issue("orchestrator");
         use reqwest::Method;
-        for (method, path) in [(Method::GET, "/me"), (Method::DELETE, "/me"), (Method::GET, "/chat"), (Method::POST, "/chat"),
+        for (method, path) in [(Method::GET, "/me"), (Method::DELETE, "/me"),
             (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::GET, "/inbox"),
             (Method::POST, "/inbox/i/answer"), (Method::GET, "/live"), (Method::GET, "/sessions"),
             (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat")] {
@@ -1195,7 +1176,7 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let (_state, base) = phone_server().await;
         let address = base.trim_start_matches("http://");
-        for path in ["/phone/v1/chat", "/phone/v1/inbox/step:run:checks/answer"] {
+        for path in ["/phone/v1/sessions/s/chat", "/phone/v1/inbox/step:run:checks/answer"] {
             // Headers promise a 60,000-byte body that never comes: a server that read the body
             // before checking the token would wait for it instead of answering.
             let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
@@ -1343,7 +1324,7 @@ mod tests {
             .map(|item| (item["kind"].as_str().unwrap(), item["text"].as_str().unwrap())).collect();
         assert_eq!(items, [("owner", "Reply with the single word: pong"), ("agent", "generated text")], "{chat}");
         assert_eq!(chat["items"][0]["id"], item_id, "the send's own item");
-        let orchestrator: Value = client(reqwest::Method::GET, &base, "/chat", &token).send().await.unwrap().json().await.unwrap();
+        let orchestrator: Value = client(reqwest::Method::GET, &base, "/sessions/orchestrator/chat", &token).send().await.unwrap().json().await.unwrap();
         assert_eq!(orchestrator["items"], json!([]), "the orchestrator's chat holds nothing of it");
         for method in [reqwest::Method::GET, reqwest::Method::POST] {
             let unknown = client(method.clone(), &base, "/sessions/nobody/chat", &token).json(&json!({"text": "hi"})).send().await.unwrap();
@@ -1377,6 +1358,18 @@ mod tests {
             if next_frame(socket, Duration::from_millis(100)).await.is_some_and(|frame| frame["item"]["id"] == item) { return; }
         }
         panic!("no chat frame for {owned_id}");
+    }
+
+    #[test]
+    fn phone_live_frames_carry_the_session_they_belong_to() {
+        let started = Payload::Turn { turn_id: "turn".into(), state: TurnState::Started };
+        let delta = Payload::AssistantDelta { item_id: "l".into(), delta: "h".into() };
+        for (frame_type, payload) in [("turn", started), ("chatDelta", delta)] {
+            let frames = super::live_frames(&session_event("lane", 5, payload), Some("lane"));
+            assert_eq!((frames[0]["type"].as_str(), frames[0]["ownedId"].as_str()), (Some(frame_type), Some("lane")));
+        }
+        let frames = super::live_frames(&message("lane", 6, "m"), Some("lane"));
+        assert_eq!((frames[0]["type"].as_str(), frames[0]["ownedId"].as_str()), (Some("chat"), Some("lane")));
     }
 
     #[tokio::test]
