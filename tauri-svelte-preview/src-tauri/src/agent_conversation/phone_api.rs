@@ -37,6 +37,7 @@ const NOT_SET_UP: &str =
     "Phone access is not set up on this machine: set ASSEMBLY_PHONE_URL in ~/.config/assembly/phone.env";
 const REMOVED: &str = "This phone was removed — pair again";
 const NO_ORCHESTRATOR: &str = "No orchestrator is marked on this machine";
+const NO_SESSION: &str = "No such session on this machine";
 /// §5.3 sets no length for chat text, so a plain cap: 10,000 characters, in a body of at most 64 KiB.
 const MAX_CHAT_CHARS: usize = 10_000;
 const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -63,6 +64,8 @@ pub(super) fn router(state: ServerState) -> Router {
     let device_routes = Router::new()
         .route("/phone/v1/me", get(me).delete(forget_me))
         .route("/phone/v1/chat", get(chat).post(send_chat))
+        .route("/phone/v1/sessions", get(sessions))
+        .route("/phone/v1/sessions/{id}/chat", get(session_chat).post(send_session_chat))
         .route("/phone/v1/runs", get(runs))
         .route("/phone/v1/runs/{id}", get(run_detail))
         .route("/phone/v1/runs/{id}/{action}", post(control_run))
@@ -296,23 +299,52 @@ fn orchestrator(state: &ServerState) -> Result<String, Response> {
         .map(|(owned_id, _)| owned_id).ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_ORCHESTRATOR))
 }
 
-/// `GET /phone/v1/chat?after=<seq>` → the orchestrator's chat items after `seq`, or its newest 100.
+/// `GET /phone/v1/sessions` → `{sessions}`: this machine's sessions, newest activity first (one SQL statement).
+async fn sessions(State(state): State<ServerState>) -> Reply {
+    let sessions = state.manager.store().list_phone_sessions().map_err(|error| server_error(&error))?;
+    let sessions: Vec<Value> = sessions.into_iter().map(|(entry, last_activity_at)| {
+        let mut row = json!(entry);
+        row["lastActivityAt"] = json!(last_activity_at);
+        row
+    }).collect();
+    Ok(Json(json!({ "sessions": sessions })).into_response())
+}
+
+/// A session in this machine's directory, the one the sessions list shows; 404 for any other.
+fn known_session(state: &ServerState, owned_id: &str) -> Result<(), Response> {
+    state.manager.store().directory_name(owned_id).map_err(|error| server_error(&error))?
+        .map(|_| ()).ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))
+}
+
+/// `GET /phone/v1/chat?after=<seq>`: the orchestrator's chat, as the first phone app reads it.
 async fn chat(State(state): State<ServerState>, Query(query): Query<HashMap<String, String>>) -> Reply {
+    let owned_id = orchestrator(&state)?;
+    read_chat(&state, &owned_id, &query)
+}
+
+/// `GET /phone/v1/sessions/{id}/chat?after=<seq>`: that session's chat.
+async fn session_chat(State(state): State<ServerState>, Path(owned_id): Path<String>,
+    Query(query): Query<HashMap<String, String>>) -> Reply {
+    known_session(&state, &owned_id)?;
+    read_chat(&state, &owned_id, &query)
+}
+
+/// A session's chat items after `after`, or its newest 100.
+fn read_chat(state: &ServerState, owned_id: &str, query: &HashMap<String, String>) -> Reply {
     let after = query.get("after").map(|after| after.parse::<i64>()).transpose()
         .map_err(|_| refuse(StatusCode::BAD_REQUEST, "after must be a sequence number"))?;
-    let owned_id = orchestrator(&state)?;
     let page = match after {
-        Some(after) => state.manager.list_events_after(&owned_id, after, CHAT_PAGE_BYTES),
-        None => state.manager.list_events_before(&owned_id, i64::MAX, CHAT_PAGE_BYTES),
+        Some(after) => state.manager.list_events_after(owned_id, after, CHAT_PAGE_BYTES),
+        None => state.manager.list_events_before(owned_id, i64::MAX, CHAT_PAGE_BYTES),
     }.map_err(|error| server_error(&error))?;
     let mut items = reduce_chat(&page.events);
     if after.is_none() { items.drain(..items.len().saturating_sub(LATEST_CHAT_ITEMS)); }
-    let owner_items: Vec<Value> = inbox_items(&state)?.into_iter()
-        .filter(|(session, _)| session.as_deref() == Some(owned_id.as_str())).map(|(_, item)| item).collect();
+    let owner_items: Vec<Value> = inbox_items(state)?.into_iter()
+        .filter(|(session, _)| session.as_deref() == Some(owned_id)).map(|(_, item)| item).collect();
     Ok(Json(json!({
         "items": items,
         "cursor": page.events.last().map_or(after.unwrap_or(0), |event| event.sequence),
-        "turn": if state.manager.turn_running(&owned_id) { "running" } else { "idle" },
+        "turn": if state.manager.turn_running(owned_id) { "running" } else { "idle" },
         "ownerItems": owner_items,
     })).into_response())
 }
@@ -322,16 +354,28 @@ struct ChatRequest {
     text: String,
 }
 
-/// `POST /phone/v1/chat {text}` → `{itemId}`: the desktop's ensure, then its send, on the orchestrator.
+/// `POST /phone/v1/chat {text}` → `{itemId}`: a message to the orchestrator, as the first phone app sends it.
 async fn send_chat(State(state): State<ServerState>, body: Bytes) -> Reply {
-    let request: ChatRequest = parse(&body)?;
+    let owned_id = orchestrator(&state)?;
+    send_to(&state, owned_id, &body).await
+}
+
+/// `POST /phone/v1/sessions/{id}/chat {text}` → `{itemId}`: a message to that session.
+async fn send_session_chat(State(state): State<ServerState>, Path(owned_id): Path<String>, body: Bytes) -> Reply {
+    known_session(&state, &owned_id)?;
+    send_to(&state, owned_id, &body).await
+}
+
+/// The owner's own turn in `owned_id`: the desktop's ensure, which wakes an idle or suspended
+/// session, then its send.
+async fn send_to(state: &ServerState, owned_id: String, body: &[u8]) -> Reply {
+    let request: ChatRequest = parse(body)?;
     let text = request.text.trim();
     if text.is_empty() || text.chars().count() > MAX_CHAT_CHARS {
         return Err(refuse(StatusCode::BAD_REQUEST, "A message must be 1 to 10,000 characters"));
     }
-    let owned_id = orchestrator(&state)?;
     let row = state.manager.store().get_session(&owned_id).map_err(|error| server_error(&error))?
-        .ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_ORCHESTRATOR))?;
+        .ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))?;
     let provider = super::transcript::parse_provider(&row.provider).map_err(|error| server_error(&error))?;
     // After a restart the manager holds no sessions; ensure loads the stored one and gives its generation.
     let ensure = RemoteCommand::Ensure(EnsureAgentConversationRequest {
@@ -339,13 +383,13 @@ async fn send_chat(State(state): State<ServerState>, body: Bytes) -> Reply {
         provider, cwd: row.cwd, native_session_id: row.native_session_id,
         native_session_mode: AgentNativeSessionMode::Resume, reasoning_effort: None, project_id: row.project_id,
     });
-    let RemoteResponse::Connection(connection) = execute_phone_command(&state, ensure).await
+    let RemoteResponse::Connection(connection) = execute_phone_command(state, ensure).await
         .map_err(|error| server_error(&error))? else { return Err(server_error(&"ensure gave the wrong response")) };
     let send = RemoteCommand::Send(SendAgentConversationMessageRequest {
         owned_id, generation: connection.generation, text: text.into(), content: Vec::new(),
         attachment_ids: Vec::new(), model: None, approval_policy: None,
     });
-    let RemoteResponse::SendReceipt(receipt) = execute_phone_command(&state, send).await
+    let RemoteResponse::SendReceipt(receipt) = execute_phone_command(state, send).await
         .map_err(|error| server_error(&error))? else { return Err(server_error(&"send gave the wrong response")) };
     Ok(Json(json!({ "itemId": receipt.user_item_id })).into_response())
 }
@@ -574,9 +618,11 @@ async fn live(State(state): State<ServerState>, Extension(device): Extension<Dev
 }
 
 /// Sends frames until the phone hangs up, falls behind, or is removed. Its three subscriptions are
-/// dropped when this returns, which is the only place they are held.
+/// dropped when this returns, which is the only place they are held. Chat frames are for the session
+/// the phone last named in a `watch` frame, or the orchestrator marked at connect when it named none.
 async fn serve_live(mut socket: WebSocket, state: ServerState, hash: String, orchestrator: Option<String>,
     mut removed: tokio::sync::watch::Receiver<u64>) {
+    let mut watched = orchestrator.clone();
     let mut events = state.events.subscribe();
     let mut runs = state.workflow.run_changes();
     let mut waiting = HashMap::<String, usize>::new();
@@ -584,7 +630,7 @@ async fn serve_live(mut socket: WebSocket, state: ServerState, hash: String, orc
         // A lagged or closed subscription ends the socket; the phone reconnects and refetches.
         let frames = tokio::select! {
             event = events.recv() => match event {
-                Ok(event) => live_frames(&event, orchestrator.as_deref()),
+                Ok(event) => live_frames(&event, watched.as_deref()),
                 Err(_) => break,
             },
             change = runs.recv() => match change {
@@ -601,6 +647,10 @@ async fn serve_live(mut socket: WebSocket, state: ServerState, hash: String, orc
                 _ => break,
             },
             message = socket.recv() => match message {
+                Some(Ok(Message::Text(text))) => {
+                    if let Some(owned_id) = watch_frame(&text) { watched = owned_id.or_else(|| orchestrator.clone()); }
+                    Vec::new()
+                }
                 Some(Ok(_)) => Vec::new(),
                 _ => break,
             },
@@ -612,13 +662,20 @@ async fn serve_live(mut socket: WebSocket, state: ServerState, hash: String, orc
     let _ = socket.send(Message::Close(None)).await;
 }
 
-/// One agent event's live frames: chat, delta and turn frames for the orchestrator's own events,
+/// The session a phone's `{"type":"watch","ownedId":<id or null>}` frame names: `Some(None)` for
+/// null, `None` for any other frame, which is ignored.
+fn watch_frame(text: &str) -> Option<Option<String>> {
+    let frame: Value = serde_json::from_str(text).ok()?;
+    (frame["type"] == "watch").then(|| frame["ownedId"].as_str().map(str::to_owned))
+}
+
+/// One agent event's live frames: chat, delta and turn frames for the watched session's own events,
 /// and an inbox change for any permission request asked or settled in any session.
-fn live_frames(event: &AgentConversationEvent, orchestrator: Option<&str>) -> Vec<Value> {
+fn live_frames(event: &AgentConversationEvent, watched: Option<&str>) -> Vec<Value> {
     if matches!(event.payload, Payload::Approval { .. }) {
         return vec![json!({ "type": "changed", "entity": "inbox" })];
     }
-    if orchestrator != Some(event.owned_id.as_str()) {
+    if watched != Some(event.owned_id.as_str()) {
         return Vec::new();
     }
     match &event.payload {
@@ -640,7 +697,7 @@ struct ChatItem {
     done: bool,
 }
 
-/// The phone's chat from the orchestrator's events (§5.3): owner, relayed, agent, tool and error items,
+/// The phone's chat from a session's events (§5.3): owner, relayed, agent, tool and error items,
 /// one per item id in first-seen order, the latest event winning. Deltas for an item with no full
 /// message yet fold into one open agent item. Everything else is dropped.
 fn reduce_chat(events: &[AgentConversationEvent]) -> Vec<ChatItem> {
@@ -721,7 +778,8 @@ mod tests {
     use super::super::providers::ProviderRegistry;
     use super::super::remote::{bind_listeners, server_state, ServerState};
     use super::{answered_elsewhere, execute_phone_command, new_pairing_code, operation, redeem_pairing_code, reduce_chat, router, start_listener, RemoteCommand, PAIRING_CODE_LIFETIME_MS};
-    use super::super::protocol::{AgentConversationEvent, AgentConversationPayload as Payload, AgentConversationProvider, ToolState, TurnState};
+    use super::super::protocol::{AgentConversationEvent, AgentConversationPayload as Payload, AgentConversationProvider,
+        AgentNativeSessionMode, EnsureAgentConversationRequest, ExecutionEnvironment, ToolState, TurnState};
     use futures_util::StreamExt;
     use serde_json::{json, Value};
     use std::time::Duration;
@@ -729,9 +787,14 @@ mod tests {
     const PHONE_URL: &str = "https://phone.example.ts.net:8778";
 
     async fn phone_server() -> (ServerState, String) {
+        phone_server_with(|_| ProviderRegistry::default()).await
+    }
+
+    /// A phone server whose providers `providers` makes from the server's data folder.
+    async fn phone_server_with(providers: impl FnOnce(&std::path::Path) -> ProviderRegistry) -> (ServerState, String) {
         let directory = std::env::temp_dir().join(format!("assembly-phone-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
-        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("sessions.db")).unwrap();
+        let manager = AgentRuntimeManager::open(providers(&directory), &directory.join("sessions.db")).unwrap();
         let state = server_state(manager, directory, Arc::from("desktop-server-token-0123456789abcdef")).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -960,7 +1023,8 @@ mod tests {
         use reqwest::Method;
         for (method, path) in [(Method::GET, "/me"), (Method::DELETE, "/me"), (Method::GET, "/chat"), (Method::POST, "/chat"),
             (Method::GET, "/runs"), (Method::GET, "/runs/r"), (Method::POST, "/runs/r/pause"), (Method::GET, "/inbox"),
-            (Method::POST, "/inbox/i/answer"), (Method::GET, "/live")] {
+            (Method::POST, "/inbox/i/answer"), (Method::GET, "/live"), (Method::GET, "/sessions"),
+            (Method::GET, "/sessions/s/chat"), (Method::POST, "/sessions/s/chat")] {
             let response = client(method.clone(), &base, path, &session.token).json(&json!({"text": "hi"})).send().await.unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED, "{method} {path}");
             assert_eq!(response.json::<Value>().await.unwrap(), json!({"error": "This phone was removed — pair again"}));
@@ -1221,5 +1285,134 @@ mod tests {
         assert_eq!(messages.len(), 1, "{messages:?}");
         assert_eq!(messages[0]["message"]["data"]["itemId"], item["id"]);
         assert_eq!(messages[0]["message"]["token"], "fcm-1");
+    }
+
+    #[tokio::test]
+    async fn phone_sessions_lists_this_machines_sessions_newest_first() {
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        let store = state.manager.store();
+        for (owned_id, title, activity) in [("old", "Old lane", 100), ("orch", "Orchestrator", 200), ("new", "New lane", 300)] {
+            store.upsert_session(&mcb_core::session_store::SessionRow { owned_id: owned_id.into(), native_session_id: None,
+                provider: "codex".into(), model: None, effort: None, cwd: "/work/assembly".into(), worktree: None, branch: None,
+                title: Some(title.into()), title_source: None, project: Some("assembly".into()), project_id: None,
+                state: "ready".into(), suspended: false, created_at_ms: 1, last_activity_at_ms: activity, extra_json: "{}".into() }).unwrap();
+        }
+        store.set_main_orchestrator(Some("orch")).unwrap();
+        // Another machine's session cached here is newer, but it is not this machine's.
+        store.file_remote_sessions("other-machine", "{}", r#"[["cached", null, 999]]"#).unwrap();
+
+        let body: Value = client(reqwest::Method::GET, &base, "/sessions", &token).send().await.unwrap().json().await.unwrap();
+        let sessions = body["sessions"].as_array().unwrap();
+        assert_eq!(sessions.iter().map(|session| session["ownedId"].as_str().unwrap()).collect::<Vec<_>>(), ["new", "orch", "old"]);
+        assert_eq!(sessions.iter().map(|session| session["orchestrator"].as_bool().unwrap()).collect::<Vec<_>>(), [false, true, false]);
+        let newest = &sessions[0];
+        assert_eq!((newest["name"].as_str(), newest["provider"].as_str(), newest["project"].as_str(), newest["state"].as_str()),
+            (Some("New lane"), Some("codex"), Some("assembly"), Some("idle")));
+        assert_eq!((newest["lastActivityAt"].as_i64(), &newest["runId"], &newest["stepId"]), (Some(300), &Value::Null, &Value::Null));
+        assert!(newest["handle"].as_str().is_some_and(|handle| !handle.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn phone_chat_with_any_session_reads_and_sends() {
+        let (state, base) = phone_server_with(|directory| {
+            let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&directory.join("acp.jsonl"), "default");
+            ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)]).unwrap()
+        }).await;
+        let token = paired(&state, &base).await;
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+        for owned_id in ["orchestrator", "lane"] {
+            state.manager.ensure_async(EnsureAgentConversationRequest { owned_id: owned_id.into(),
+                execution_environment: ExecutionEnvironment::Local, remote_profile_id: None, provider: AgentConversationProvider::Codex,
+                cwd: cwd.clone(), native_session_id: None,
+                native_session_mode: AgentNativeSessionMode::Resume, reasoning_effort: None, project_id: None }).await.unwrap();
+        }
+        state.manager.store().set_main_orchestrator(Some("orchestrator")).unwrap();
+
+        let sent = client(reqwest::Method::POST, &base, "/sessions/lane/chat", &token)
+            .json(&json!({"text": "Reply with the single word: pong"})).send().await.unwrap();
+        assert_eq!(sent.status(), reqwest::StatusCode::OK);
+        let item_id = sent.json::<Value>().await.unwrap()["itemId"].clone();
+        let mut chat = Value::Null;
+        for _ in 0..200 {
+            chat = client(reqwest::Method::GET, &base, "/sessions/lane/chat", &token).send().await.unwrap().json().await.unwrap();
+            if chat["items"].as_array().unwrap().iter().any(|item| item["kind"] == "agent" && item["done"] == true) { break; }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let items: Vec<(&str, &str)> = chat["items"].as_array().unwrap().iter()
+            .map(|item| (item["kind"].as_str().unwrap(), item["text"].as_str().unwrap())).collect();
+        assert_eq!(items, [("owner", "Reply with the single word: pong"), ("agent", "generated text")], "{chat}");
+        assert_eq!(chat["items"][0]["id"], item_id, "the send's own item");
+        let orchestrator: Value = client(reqwest::Method::GET, &base, "/chat", &token).send().await.unwrap().json().await.unwrap();
+        assert_eq!(orchestrator["items"], json!([]), "the orchestrator's chat holds nothing of it");
+        for method in [reqwest::Method::GET, reqwest::Method::POST] {
+            let unknown = client(method.clone(), &base, "/sessions/nobody/chat", &token).json(&json!({"text": "hi"})).send().await.unwrap();
+            assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND, "{method}");
+        }
+        state.manager.shutdown().await;
+    }
+
+    type LiveClient = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+    async fn next_frame(socket: &mut LiveClient, wait: Duration) -> Option<Value> {
+        match tokio::time::timeout(wait, socket.next()).await {
+            Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text)))) => Some(serde_json::from_str(&text).unwrap()),
+            _ => None,
+        }
+    }
+
+    fn session_event(owned_id: &str, sequence: i64, payload: Payload) -> AgentConversationEvent {
+        AgentConversationEvent { owned_id: owned_id.into(), ..event(sequence, payload) }
+    }
+
+    fn message(owned_id: &str, sequence: i64, item: &str) -> AgentConversationEvent {
+        session_event(owned_id, sequence, Payload::AssistantMessage { item_id: item.into(), text: "hi".into(), completed: true, blocks: None })
+    }
+
+    /// Sends `owned_id`'s message `item` until its chat frame arrives: the socket may not have
+    /// subscribed, or read the phone's watch frame, yet.
+    async fn chat_frame_arrives(state: &ServerState, socket: &mut LiveClient, owned_id: &str, item: &str) {
+        for sequence in 1..100 {
+            let _ = state.events.send(message(owned_id, sequence, item));
+            if next_frame(socket, Duration::from_millis(100)).await.is_some_and(|frame| frame["item"]["id"] == item) { return; }
+        }
+        panic!("no chat frame for {owned_id}");
+    }
+
+    #[tokio::test]
+    async fn phone_live_watch_switches_chat_frames_to_that_session() {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message};
+        let (state, base) = phone_server().await;
+        let token = paired(&state, &base).await;
+        state.manager.store().set_main_orchestrator(Some("orchestrator")).unwrap();
+        let mut request = format!("{}/phone/v1/live", base.replacen("http", "ws", 1)).into_client_request().unwrap();
+        request.headers_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
+        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        // With no watch frame, the orchestrator's chat comes, as before.
+        chat_frame_arrives(&state, &mut socket, "orchestrator", "o1").await;
+
+        socket.send(Message::Text(json!({"type": "watch", "ownedId": "lane"}).to_string().into())).await.unwrap();
+        chat_frame_arrives(&state, &mut socket, "lane", "l1").await;
+        let started = || Payload::Turn { turn_id: "turn".into(), state: TurnState::Started };
+        for event in [message("orchestrator", 1000, "o2"), session_event("orchestrator", 1001, started()),
+            session_event("lane", 2000, started()),
+            session_event("lane", 2001, Payload::AssistantDelta { item_id: "l2".into(), delta: "h".into() }), message("lane", 2002, "l2")] {
+            state.events.send(event).unwrap();
+        }
+        let mut seen = Vec::new();
+        while seen.last().is_none_or(|frame: &Value| frame["item"]["id"] != "l2") {
+            seen.push(next_frame(&mut socket, Duration::from_secs(5)).await.expect("the lane's frames"));
+        }
+        // Frames below 1000 are late copies of the messages sent while waiting.
+        let frames: Vec<(&str, i64)> = seen.iter().filter(|frame| frame["seq"].as_i64() >= Some(1000))
+            .map(|frame| (frame["type"].as_str().unwrap(), frame["seq"].as_i64().unwrap())).collect();
+        assert_eq!(frames, [("turn", 2000), ("chatDelta", 2001), ("chat", 2002)], "only the watched session's frames");
+
+        // Unknown frames are ignored, and watching null goes back to the orchestrator.
+        socket.send(Message::Text("not json".into())).await.unwrap();
+        socket.send(Message::Text(json!({"type": "hello"}).to_string().into())).await.unwrap();
+        socket.send(Message::Text(json!({"type": "watch", "ownedId": null}).to_string().into())).await.unwrap();
+        chat_frame_arrives(&state, &mut socket, "orchestrator", "o3").await;
     }
 }
