@@ -10,7 +10,7 @@ import {
   DISCARD_NAMES_SHOWN,
   describeDiscardQuestion,
   describeDiscardTargets
-} from '../src/lib/shell/components/git/discardConfirm.ts';
+} from '../src/lib/shell/git/components/discardConfirm.ts';
 
 // ── one tracked file ────────────────────────────────────────────────────────
 const oneFile = describeDiscardQuestion({

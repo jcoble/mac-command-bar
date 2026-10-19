@@ -1,7 +1,7 @@
 /** Pure snapshots and placement for Source Control row context menus. */
 
 import type { ProjectGitFileStatus } from '../../../tauriSource.ts';
-import type { GitCommitFileChange } from '../../git/gitBackendExtra.ts';
+import type { GitCommitFileChange } from '../gitBackendExtra.ts';
 
 export type SourceControlFileAction =
   | 'open-diff'

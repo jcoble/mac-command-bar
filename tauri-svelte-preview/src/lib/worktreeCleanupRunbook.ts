@@ -1,4 +1,4 @@
-import { extractGitTaskIDs, normalizeGitTaskID } from './gitTaskLinks.ts';
+import { extractGitTaskIDs, normalizeGitTaskID } from './shell/git/gitTaskLinks.ts';
 import type {
   WorktreeCleanupCommandPlanKind,
   WorktreeCleanupLane,

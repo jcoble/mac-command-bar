@@ -2,8 +2,8 @@
 use std::path::PathBuf;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
-use crate::commands::source_control as git;
-use crate::git_workspace as changes;
+use crate::git::commands as git;
+use crate::git::workspace as changes;
 
 fn arg<T: DeserializeOwned>(args: &Value, name: &str) -> Result<T, String> {
     serde_json::from_value(args.get(name).cloned().unwrap_or(Value::Null))
@@ -69,13 +69,13 @@ pub(super) async fn execute(operation: String, args: Value) -> Result<Value, Str
         "archive_project_worktree" => return json(git::archive_project_worktree(arg(&args, "root")?, arg(&args, "path")?).await?),
         "project_root_is_bare" => return json(crate::project_folders::project_root_is_bare(arg(&args, "root")?).await?),
         // Hosted PR commands run gh here, with the same stale-head guards as the Mac.
-        "list_github_pull_requests" => return json(crate::github::list_github_pull_requests(arg(&args, "query")?).await?),
-        "read_github_pull_request" => return json(crate::github::read_github_pull_request(arg(&args, "root")?, arg(&args, "number")?).await?),
-        "read_github_pull_request_file" => return json(crate::github::read_github_pull_request_file(arg(&args, "query")?).await?),
-        "submit_github_pull_request_review" => return json(crate::github::submit_github_pull_request_review(arg(&args, "submission")?).await?),
-        "reply_github_pull_request_comment" => return json(crate::github::reply_github_pull_request_comment(arg(&args, "reply")?).await?),
-        "comment_github_pull_request" => return json(crate::github::comment_github_pull_request(arg(&args, "comment")?).await?),
-        "merge_github_pull_request" => return json(crate::github::merge_github_pull_request(arg(&args, "request")?).await?),
+        "list_github_pull_requests" => return json(crate::git::github::list_github_pull_requests(arg(&args, "query")?).await?),
+        "read_github_pull_request" => return json(crate::git::github::read_github_pull_request(arg(&args, "root")?, arg(&args, "number")?).await?),
+        "read_github_pull_request_file" => return json(crate::git::github::read_github_pull_request_file(arg(&args, "query")?).await?),
+        "submit_github_pull_request_review" => return json(crate::git::github::submit_github_pull_request_review(arg(&args, "submission")?).await?),
+        "reply_github_pull_request_comment" => return json(crate::git::github::reply_github_pull_request_comment(arg(&args, "reply")?).await?),
+        "comment_github_pull_request" => return json(crate::git::github::comment_github_pull_request(arg(&args, "comment")?).await?),
+        "merge_github_pull_request" => return json(crate::git::github::merge_github_pull_request(arg(&args, "request")?).await?),
         _ => {}
     }
     tokio::task::spawn_blocking(move || {

@@ -1,5 +1,5 @@
 import type { ProjectWorktree } from './tauriSource';
-import { extractGitTaskIDs } from './gitTaskLinks.ts';
+import { extractGitTaskIDs } from './shell/git/gitTaskLinks.ts';
 
 export type WorktreeSafetyKind = 'protected' | 'blocked' | 'ready' | 'review';
 export type WorktreeAgeBucket = 'active' | 'stale' | 'unknown';

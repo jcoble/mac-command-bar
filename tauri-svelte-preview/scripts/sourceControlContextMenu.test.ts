@@ -7,7 +7,7 @@ import {
   snapshotSourceControlCommitFileMenu,
   snapshotSourceControlCommitMenu,
   sourceControlCommitFileContextMenuItems
-} from '../src/lib/shell/components/git/sourceControlContextMenu.ts';
+} from '../src/lib/shell/git/components/sourceControlContextMenu.ts';
 
 const anchor = {
   left: 400,
@@ -60,8 +60,8 @@ originalFile.relativePath = 'src/changed-after-menu-open.ts';
 assert.equal(file.target.file.relativePath, 'src/app.ts', 'the menu owns an immutable row snapshot');
 
 for (const relativePath of [
-  '../src/lib/shell/panels/sourceControl/CommitTimeline.svelte',
-  '../src/lib/shell/components/git/GitHistoryView.svelte'
+  '../src/lib/shell/git/components/sourceControl/CommitTimeline.svelte',
+  '../src/lib/shell/git/components/GitHistoryView.svelte'
 ]) {
   const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8');
   assert.match(source, /let contextMenu = \$state\.raw<SourceControlMenuSnapshot \| null>\(null\)/);
@@ -72,7 +72,7 @@ for (const relativePath of [
 console.log('sourceControlContextMenu: commit and commit-file menus passed');
 
 test('checkout availability follows backend support and preserves session safety gates', () => {
-  const source = readFileSync(new URL('../src/lib/shell/panels/sourceControl/SourceControlPanel.svelte', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../src/lib/shell/git/components/sourceControl/SourceControlPanel.svelte', import.meta.url), 'utf8');
   const body = source.match(/const checkoutDisabledReason = \$derived.by\(\(\) => \{([\s\S]*?)\n  \}\);/)![1];
   const reason = new Function('readOnlyScope', 'onUseSessionCheckout', 'rail', 'ownedId', 'ownedSession', 'conversation', 'activeTool', body);
   const conversation = { sending: false, pendingApprovals: {}, pendingInputs: {} };

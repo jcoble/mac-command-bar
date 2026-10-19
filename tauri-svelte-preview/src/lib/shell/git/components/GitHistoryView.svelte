@@ -35,15 +35,15 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import * as Select from '$lib/components/ui/select/index.js';
-  import SourceControlContextMenu from '$lib/shell/components/git/SourceControlContextMenu.svelte';
+  import SourceControlContextMenu from '$lib/shell/git/components/SourceControlContextMenu.svelte';
   import {
     snapshotSourceControlCommitFileMenu,
     snapshotSourceControlCommitMenu,
     sourceControlContextMenuAnchor,
     type SourceControlContextMenuAction,
     type SourceControlMenuSnapshot
-  } from '$lib/shell/components/git/sourceControlContextMenu';
-  import { buildGitCommitGraphRows } from '$lib/gitGraphViewModel';
+  } from '$lib/shell/git/components/sourceControlContextMenu';
+  import { buildGitCommitGraphRows } from '$lib/shell/git/gitGraphViewModel';
   import {
     assignGitGraphLanes,
     gitGraphLaneWidth,

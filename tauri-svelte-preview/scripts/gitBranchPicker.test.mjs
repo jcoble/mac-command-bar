@@ -14,7 +14,7 @@ import {
   describeBranchRow,
   describeCurrentBranch,
   filterBranches
-} from '../src/lib/shell/components/git/branchPicker.ts';
+} from '../src/lib/shell/git/components/branchPicker.ts';
 
 const branches = [
   { name: 'main', isCurrent: true, upstream: 'origin/main', subject: 'latest work' },

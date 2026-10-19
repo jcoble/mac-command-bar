@@ -33,7 +33,7 @@
   import { pullRequestSelection } from './pullRequestSelection.svelte';
   import { pullRequestSearchQuery, sessionProjectFilter, type PullRequestScope, type PullRequestState } from './pullRequestSearch';
   import ConversationMessage from '$lib/shell/conversation/components/ConversationMessage.svelte';
-  import MultiFileDiff from '$lib/shell/components/git/MultiFileDiff.svelte';
+  import MultiFileDiff from '$lib/shell/git/components/MultiFileDiff.svelte';
   import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';

@@ -19,7 +19,7 @@
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
   import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
-  import MultiFileDiff from '$lib/shell/components/git/MultiFileDiff.svelte';
+  import MultiFileDiff from '$lib/shell/git/components/MultiFileDiff.svelte';
   import { diffTextOf, parsedDiffOf, splitDiffByFile } from '$lib/shell/git/diffRows';
   import { readBranchDiff } from '$lib/shell/git/gitBackendExtra';
   import { gitCommitFiles, gitCommitFilesView } from '$lib/shell/git/gitCommitFilesStore.svelte';

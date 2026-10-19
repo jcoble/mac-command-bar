@@ -43,7 +43,7 @@
   import type { SourceDockPanelID } from '$lib/sourceDockLayout';
   import type { GitTaskSourceGroup, GitBranchHealthSummary } from '$lib/sourceData';
   import type { GitCommitHistoryEntry, ProjectGitFileStatus, SourceGitDiff } from '$lib/tauriSource';
-  import type { GitGraphViewModel, GitGraphCommitRow } from '$lib/gitGraphViewModel';
+  import type { GitGraphViewModel, GitGraphCommitRow } from '$lib/shell/git/gitGraphViewModel';
 
   /** Mirrors the page-local `GitStatusFileGroup` (assigns structurally). */
   type GitStatusGroupID = 'staged' | 'unstaged' | 'untracked';

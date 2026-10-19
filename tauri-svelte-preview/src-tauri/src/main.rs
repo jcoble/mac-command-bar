@@ -19,7 +19,7 @@ use files::{lsp, lsp_commands::*};
 use workflow::orchestration_commands::*;
 use commands::runtime::*;
 use files::commands::*;
-use commands::source_control::*;
+use git::commands::*;
 use commands::terminal::*;
 use commands::usage::*;
 use workflow::commands::*;
@@ -41,10 +41,7 @@ mod claude_quota;
 mod commands;
 mod debug_log;
 mod evidence;
-mod git_diff_models;
-mod git_pr;
-mod github;
-mod git_workspace;
+mod git;
 mod helper;
 mod files;
 mod notion_oauth;
@@ -2633,12 +2630,12 @@ pub(crate) fn read_git_commit_file_diff_sync(
     )?;
     let is_binary = diff.contains("Binary files ") || diff.contains("GIT binary patch");
     let models = if is_binary {
-        git_diff_models::GitDiffModels {
+        git::diff_models::GitDiffModels {
             original_content: None,
             modified_content: None,
         }
     } else {
-        git_diff_models::commit_models(&root, &sha, &relative_path)?
+        git::diff_models::commit_models(&root, &sha, &relative_path)?
     };
     let status = if status.is_empty() && !diff.is_empty() {
         "modified".to_string()
@@ -2830,12 +2827,12 @@ pub(crate) fn read_source_git_diff_sync(
     let diff = combine_source_git_diffs(&staged_diff, &working_diff);
     let is_binary = diff.contains("Binary files ") || diff.contains("GIT binary patch");
     let models = if is_binary {
-        git_diff_models::GitDiffModels {
+        git::diff_models::GitDiffModels {
             original_content: None,
             modified_content: None,
         }
     } else {
-        git_diff_models::working_tree_models(&canonical_root, &relative_path, &worktree_path)?
+        git::diff_models::working_tree_models(&canonical_root, &relative_path, &worktree_path)?
     };
     let status = if status.is_empty() && !diff.is_empty() {
         "modified".to_string()
@@ -5638,28 +5635,28 @@ fn main() {
             read_git_commit_history,
             read_git_commit_files,
             read_git_commit_file_diff,
-            git_pr::generate_commit_message,
-            git_pr::read_pull_request_context,
-            git_pr::generate_pull_request_details,
-            git_pr::create_pull_request,
-            git_pr::read_pull_request_status,
-            github::list_github_pull_requests,
-            github::read_github_pull_request,
-            github::read_github_pull_request_file,
-            github::submit_github_pull_request_review,
-            github::reply_github_pull_request_comment,
-            github::comment_github_pull_request,
-            github::merge_github_pull_request,
-            git_workspace::discard_git_paths,
-            git_workspace::discard_all_git_changes,
-            git_workspace::list_git_branches,
-            git_workspace::create_git_branch,
-            git_workspace::switch_git_branch,
-            git_workspace::stash_git_changes,
-            git_workspace::pop_git_stash,
-            git_workspace::list_git_stashes,
-            git_workspace::amend_git_commit,
-            git_workspace::list_open_pull_requests,
+            git::pull_requests::generate_commit_message,
+            git::pull_requests::read_pull_request_context,
+            git::pull_requests::generate_pull_request_details,
+            git::pull_requests::create_pull_request,
+            git::pull_requests::read_pull_request_status,
+            git::github::list_github_pull_requests,
+            git::github::read_github_pull_request,
+            git::github::read_github_pull_request_file,
+            git::github::submit_github_pull_request_review,
+            git::github::reply_github_pull_request_comment,
+            git::github::comment_github_pull_request,
+            git::github::merge_github_pull_request,
+            git::workspace::discard_git_paths,
+            git::workspace::discard_all_git_changes,
+            git::workspace::list_git_branches,
+            git::workspace::create_git_branch,
+            git::workspace::switch_git_branch,
+            git::workspace::stash_git_changes,
+            git::workspace::pop_git_stash,
+            git::workspace::list_git_stashes,
+            git::workspace::amend_git_commit,
+            git::workspace::list_open_pull_requests,
             list_project_worktrees,
             list_repository_checkouts,
             remove_project_worktree,
@@ -5907,7 +5904,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git_workspace::{
+    use crate::git::workspace::{
         add_git_remote_sync, commit_git_repository_sync, fetch_git_repository_sync, publish_git_repository_sync,
         pull_git_repository_sync, push_git_repository_sync, stage_git_paths_sync,
         unstage_git_paths_sync,

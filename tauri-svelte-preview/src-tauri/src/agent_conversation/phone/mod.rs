@@ -432,7 +432,7 @@ async fn changes(State(state): State<ServerState>, Path(owned_id): Path<String>)
     let session = state.manager.store().get_session(&owned_id).map_err(|error| server_error(&error))?
         .ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))?;
     let root = session.worktree.filter(|worktree| !worktree.is_empty()).unwrap_or(session.cwd);
-    let mut branch = crate::commands::source_control::read_git_branch_diff(root.clone()).await
+    let mut branch = crate::git::commands::read_git_branch_diff(root.clone()).await
         .map_err(|error| refuse(StatusCode::CONFLICT, &error))?;
     let mut files = changed_files(&branch.diff);
     let budget = MAX_CHANGES_DIFF_BYTES.saturating_sub(branch.diff.len());
@@ -611,7 +611,7 @@ fn git_refused(error: String) -> Response {
 }
 
 async fn git_files(root: &str) -> Result<crate::ProjectGitStatus, Response> {
-    crate::commands::source_control::project_git_status(root.into()).await.map_err(git_refused)
+    crate::git::commands::project_git_status(root.into()).await.map_err(git_refused)
 }
 
 /// `GET /phone/v1/sessions/{id}/git` → `{branch, hasUpstream, ahead, behind, files: [{path, status, staged, unstaged}]}`:
@@ -637,7 +637,7 @@ async fn git_diff(State(state): State<ServerState>, Path(owned_id): Path<String>
         return Err(refuse(StatusCode::BAD_REQUEST, "That file has no changes in this session"));
     }
     let path = PathBuf::from(&root).join(relative).to_string_lossy().into_owned();
-    let diff = crate::commands::source_control::read_source_git_diff(root, path).await.map_err(git_refused)?;
+    let diff = crate::git::commands::read_source_git_diff(root, path).await.map_err(git_refused)?;
     let text = match (diff.diff.is_empty(), &diff.modified_content) {
         (true, Some(content)) => content.lines().map(|line| format!("+{line}\n")).collect(),
         _ => diff.diff,
@@ -653,7 +653,7 @@ async fn git_stage_all(State(state): State<ServerState>, Path(owned_id): Path<St
     let paths: Vec<String> = git_files(&root).await?.files.into_iter()
         .filter(|file| !file.worktree_status.is_empty() || file.badge == "?").map(|file| file.relative_path).collect();
     if !paths.is_empty() {
-        crate::commands::source_control::stage_git_paths(root, paths).await.map_err(git_refused)?;
+        crate::git::commands::stage_git_paths(root, paths).await.map_err(git_refused)?;
     }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -669,7 +669,7 @@ async fn git_commit(State(state): State<ServerState>, Path(owned_id): Path<Strin
     let root = session_root(&state, &owned_id)?;
     let request: CommitRequest = parse(&body)?;
     if request.message.trim().is_empty() { return Err(refuse(StatusCode::BAD_REQUEST, "Type a commit message")) }
-    crate::commands::source_control::commit_git_repository(root.clone(), request.message).await.map_err(git_refused)?;
+    crate::git::commands::commit_git_repository(root.clone(), request.message).await.map_err(git_refused)?;
     let commit = crate::run_git_text(std::path::Path::new(&root), &["rev-parse", "--short", "HEAD"]).map_err(git_refused)?;
     Ok(Json(json!({ "commit": commit.trim() })).into_response())
 }
@@ -683,7 +683,7 @@ struct SyncRequest {
 /// `fetch --prune`, `pull --ff-only` or plain `push` (never forced), each with git's 120 s network limit.
 /// A refusal, such as no upstream or not a fast-forward, is a 409 with git's message.
 async fn git_sync(State(state): State<ServerState>, Path(owned_id): Path<String>, body: Bytes) -> Reply {
-    use crate::commands::source_control as git;
+    use crate::git::commands as git;
     let root = session_root(&state, &owned_id)?;
     let request: SyncRequest = parse(&body)?;
     let done = match request.action.as_str() {
@@ -699,7 +699,7 @@ async fn git_sync(State(state): State<ServerState>, Path(owned_id): Path<String>
 /// `GET /phone/v1/sessions/{id}/git/branches` → `{current, branches: [{name, current}]}`: the local branches
 /// the desktop's branch menu lists, most recently committed first.
 async fn git_branches(State(state): State<ServerState>, Path(owned_id): Path<String>) -> Reply {
-    let list = crate::git_workspace::list_git_branches(session_root(&state, &owned_id)?).await.map_err(git_refused)?;
+    let list = crate::git::workspace::list_git_branches(session_root(&state, &owned_id)?).await.map_err(git_refused)?;
     let branches: Vec<Value> = list.branches.iter().map(|branch| json!({ "name": branch.name, "current": branch.is_current })).collect();
     Ok(Json(json!({ "current": list.current, "branches": branches })).into_response())
 }
@@ -715,22 +715,22 @@ struct SwitchRequest {
 async fn git_switch(State(state): State<ServerState>, Path(owned_id): Path<String>, body: Bytes) -> Reply {
     let root = session_root(&state, &owned_id)?;
     let request: SwitchRequest = parse(&body)?;
-    let list = crate::git_workspace::list_git_branches(root.clone()).await.map_err(git_refused)?;
+    let list = crate::git::workspace::list_git_branches(root.clone()).await.map_err(git_refused)?;
     if !list.branches.iter().any(|branch| branch.name == request.name) {
         return Err(refuse(StatusCode::BAD_REQUEST, "No such branch in this session's folder"));
     }
-    crate::git_workspace::switch_git_branch(root, request.name).await.map_err(git_refused)?;
+    crate::git::workspace::switch_git_branch(root, request.name).await.map_err(git_refused)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// `GET /phone/v1/sessions/{id}/git/prs` → `[{number, title, state, url, branch}]`: the repository's open pull
 /// requests (at most 30) from the desktop panel's `gh pr list`. `gh` missing or signed out is a 409 with its message.
 async fn git_prs(State(state): State<ServerState>, Path(owned_id): Path<String>) -> Reply {
-    let list = crate::git_workspace::list_open_pull_requests(session_root(&state, &owned_id)?).await.map_err(git_refused)?;
+    let list = crate::git::workspace::list_open_pull_requests(session_root(&state, &owned_id)?).await.map_err(git_refused)?;
     Ok(Json(pull_request_rows(list)).into_response())
 }
 
-fn pull_request_rows(list: Vec<crate::git_workspace::PullRequestSummary>) -> Value {
+fn pull_request_rows(list: Vec<crate::git::workspace::PullRequestSummary>) -> Value {
     list.into_iter().map(|pr| json!({ "number": pr.number, "title": pr.title, "state": pr.state, "url": pr.url,
         "branch": pr.head_branch })).collect()
 }
@@ -2575,7 +2575,7 @@ mod tests {
 
     #[test]
     fn phone_git_prs_keep_number_title_state_url_branch() {
-        let list = crate::git_workspace::parse_pull_request_list(r#"[{"number": 7, "title": "Fix it", "state": "OPEN",
+        let list = crate::git::workspace::parse_pull_request_list(r#"[{"number": 7, "title": "Fix it", "state": "OPEN",
             "url": "https://github.com/o/r/pull/7", "headRefName": "tsk-7-fix", "isDraft": false}]"#).unwrap();
         assert_eq!(pull_request_rows(list), json!([{"number": 7, "title": "Fix it", "state": "OPEN",
             "url": "https://github.com/o/r/pull/7", "branch": "tsk-7-fix"}]));

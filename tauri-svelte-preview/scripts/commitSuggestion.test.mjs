@@ -15,7 +15,7 @@ import {
   describeCommitSuggestion,
   suggestCommitMessage,
   suggestCommitVerb
-} from '../src/lib/shell/components/git/commitSuggestion.ts';
+} from '../src/lib/shell/git/components/commitSuggestion.ts';
 
 function file(relativePath, badge, indexStatus = 'modified') {
   return { relativePath, indexStatus, worktreeStatus: '', status: indexStatus, badge };

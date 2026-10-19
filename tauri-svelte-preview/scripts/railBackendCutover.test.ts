@@ -34,7 +34,7 @@ const utilityStrip = read('../src/lib/shell/components/UtilityStrip.svelte');
 const dockPanel = read('../src/lib/shell/components/DockPanel.svelte');
 const workspaceTerminal = read('../src/lib/shell/components/WorkspaceTerminal.svelte');
 const palettePanel = read('../src/lib/shell/components/PalettePanel.svelte');
-const sourceControlPanel = read('../src/lib/shell/panels/sourceControl/SourceControlPanel.svelte');
+const sourceControlPanel = read('../src/lib/shell/git/components/sourceControl/SourceControlPanel.svelte');
 
 assert.match(shellStartup, /listAgentConversationSessionsFromTauri\(\)/);
 // a0b9ca6d0 folded the remote list into the start-up Promise.all; it keeps the shell stop signal and generation guard.

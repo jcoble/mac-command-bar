@@ -51,13 +51,13 @@ const allowedHits = new Set([
   'src/lib/components/ui/filter-pills/filter-pills.svelte:setTimeout:timer = window.setTimeout(close, AUTO_CLOSE_MS);',
   // A jump re-aligns its file two frames later, after its neighbours are drawn; the next
   // jump or unmounting cancels the pending frame.
-  'src/lib/shell/components/git/MultiFileDiff.svelte:cancelAnimationFrame:cancelAnimationFrame(jumpFrame);',
-  'src/lib/shell/components/git/MultiFileDiff.svelte:requestAnimationFrame:jumpFrame = requestAnimationFrame(() => {',
-  "src/lib/shell/components/git/MultiFileDiff.svelte:requestAnimationFrame:jumpFrame = requestAnimationFrame(() => section?.scrollIntoView({ block: 'start' }));",
-  'src/lib/shell/components/git/MultiFileDiff.svelte:cancelAnimationFrame:onDestroy(() => cancelAnimationFrame(jumpFrame));',
+  'src/lib/shell/git/components/MultiFileDiff.svelte:cancelAnimationFrame:cancelAnimationFrame(jumpFrame);',
+  'src/lib/shell/git/components/MultiFileDiff.svelte:requestAnimationFrame:jumpFrame = requestAnimationFrame(() => {',
+  "src/lib/shell/git/components/MultiFileDiff.svelte:requestAnimationFrame:jumpFrame = requestAnimationFrame(() => section?.scrollIntoView({ block: 'start' }));",
+  'src/lib/shell/git/components/MultiFileDiff.svelte:cancelAnimationFrame:onDestroy(() => cancelAnimationFrame(jumpFrame));',
   // The 350 ms pull request search debounce; each keystroke, Enter and unmounting clear it.
-  'src/lib/shell/components/github/PullRequestWorkspace.svelte:setTimeout:let searchTimer: ReturnType<typeof setTimeout> | undefined;',
-  'src/lib/shell/components/github/PullRequestWorkspace.svelte:setTimeout:if (searchInput.trim() !== searchedText) searchTimer = setTimeout(() => void load(true), 350);',
+  'src/lib/shell/git/github/PullRequestWorkspace.svelte:setTimeout:let searchTimer: ReturnType<typeof setTimeout> | undefined;',
+  'src/lib/shell/git/github/PullRequestWorkspace.svelte:setTimeout:if (searchInput.trim() !== searchedText) searchTimer = setTimeout(() => void load(true), 350);',
   // A diff read races the abort of its combined owner-and-timeout signal, so a read that ignores
   // the signal (every local call) still ends; settled by that abort, listener removed in finally.
   'src/lib/shell/git/gitBackendExtra.ts:new Promise:const aborted = new Promise<never>((_resolve, reject) => {',

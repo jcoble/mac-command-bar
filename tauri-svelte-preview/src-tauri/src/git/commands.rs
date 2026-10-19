@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use mcb_core::scanners::worktrees::{repository_checkouts, RepositoryCheckout};
 
-use crate::git_workspace::{
+use crate::git::workspace::{
     add_git_remote_sync, commit_git_repository_sync, fetch_git_repository_sync, publish_git_repository_sync,
     pull_git_repository_sync, push_git_repository_sync, stage_git_paths_sync,
     unstage_git_paths_sync,

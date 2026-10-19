@@ -7,7 +7,7 @@ import {
   buildGitTaskSearchTargetsFromText,
   extractGitTaskIDs,
   normalizeGitTaskID
-} from '../src/lib/gitTaskLinks.ts';
+} from '../src/lib/shell/git/gitTaskLinks.ts';
 
 assert.equal(normalizeGitTaskID('TSK-127'), 'TSK-127');
 assert.equal(normalizeGitTaskID('tsk-127'), 'TSK-127');

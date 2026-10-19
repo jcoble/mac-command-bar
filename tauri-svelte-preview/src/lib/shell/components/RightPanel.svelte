@@ -24,7 +24,7 @@
   import HistoryPanel from '$lib/shell/history/components/HistoryPanel.svelte';
   import RunPanel from '$lib/shell/panels/run/RunPanel.svelte';
   import SessionContextPanel from '$lib/shell/panels/context/SessionContextPanel.svelte';
-  import SourceControlPanel from '$lib/shell/panels/sourceControl/SourceControlPanel.svelte';
+  import SourceControlPanel from '$lib/shell/git/components/sourceControl/SourceControlPanel.svelte';
   import WorktreesPanel from '$lib/shell/panels/worktrees/WorktreesPanel.svelte';
   import TasksPanel from '$lib/shell/panels/tasks/TasksPanel.svelte';
   import WorkspaceTerminal from './WorkspaceTerminal.svelte';
