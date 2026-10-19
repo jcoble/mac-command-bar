@@ -76,6 +76,7 @@ An empty database is a bad test. Seed your worktree's db with a copy of real dat
 
 Data flows one way: into your sandbox, never back out.
 Verifying
+Pre-commit checks staged source file sizes (600 lines, or a non-growing existing baseline) and provider branch counts outside provider adapters; commit-msg requires fix commits to change a test or give a No-test reason. Existing counts live in `tauri-svelte-preview/scripts/commitChecks.baseline.json`; lower a file size entry when its file shrinks. The existing async lifecycle scanner still runs.
 Smallest proof that the change works. svelte check test run <files> for the tests you touched, targeted backend tests and typecheck for the scope you changed.
 Test meaningful logic or observable behavior. Do not render components to static markup to assert props or attributes, or add tests that merely assert callback wiring or mirror the implementation.
 Do not run repo-wide checks. CI owns the full suite.

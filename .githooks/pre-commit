@@ -3,4 +3,5 @@ set -eu
 
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
-exec pnpm --dir tauri-svelte-preview exec node --experimental-strip-types scripts/scanSchedulers.ts --staged
+pnpm --dir tauri-svelte-preview exec node --experimental-strip-types scripts/scanSchedulers.ts --staged
+exec pnpm --dir tauri-svelte-preview exec node --experimental-strip-types scripts/commitChecks.ts --staged

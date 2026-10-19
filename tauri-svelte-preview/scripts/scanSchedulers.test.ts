@@ -76,6 +76,8 @@ test('the executable hook scans the staged source instead of the working copy', 
     await mkdir(join(sourceRoot, 'src'), { recursive: true });
     await mkdir(join(repo, '.githooks'), { recursive: true });
     await copyFile(new URL('scanSchedulers.ts', import.meta.url), join(sourceRoot, 'scripts', 'scanSchedulers.ts'));
+    await copyFile(new URL('commitChecks.ts', import.meta.url), join(sourceRoot, 'scripts', 'commitChecks.ts'));
+    await copyFile(new URL('commitChecks.baseline.json', import.meta.url), join(sourceRoot, 'scripts', 'commitChecks.baseline.json'));
     await copyFile(new URL('../../.githooks/pre-commit', import.meta.url), hook);
     await chmod(hook, 0o755);
     await writeFile(join(sourceRoot, 'package.json'), '{"type":"module"}\n');
@@ -85,6 +87,7 @@ test('the executable hook scans the staged source instead of the working copy', 
     assert.equal(git('config', 'user.email', 'codex@example.invalid').status, 0);
     assert.equal(git('config', 'core.hooksPath', '.githooks').status, 0);
 
+    assert.equal(git('add', 'tauri-svelte-preview/scripts/commitChecks.baseline.json').status, 0);
     await writeFile(probe, 'setTimeout(work, 1);\n');
     assert.equal(git('add', 'tauri-svelte-preview/src/probe.ts').status, 0);
     await writeFile(probe, 'export const clean = true;\n');
