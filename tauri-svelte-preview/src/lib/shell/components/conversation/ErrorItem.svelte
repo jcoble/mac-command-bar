@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
+  import { providerErrorMessage } from '$lib/shell/errorPresentation.ts';
   let { item }: { item: Extract<ConversationDisplayItem, { kind: 'error' }> } = $props();
 
   /**
@@ -10,13 +11,7 @@
    * told what that is.
    */
   const shown = $derived.by(() => {
-    let message = item.text.trim();
-    try {
-      const parsed = JSON.parse(message) as { message?: unknown };
-      if (parsed && typeof parsed.message === 'string') message = parsed.message;
-    } catch {
-      // Not JSON: the text is already the sentence.
-    }
+    let message = providerErrorMessage(item.text).trim();
     message = message.replace(/^Internal error:\s*/i, '');
     if (/prompt is too long/i.test(message)) {
       return {
