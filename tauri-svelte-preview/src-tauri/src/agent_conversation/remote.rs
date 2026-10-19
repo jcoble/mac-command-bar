@@ -633,7 +633,9 @@ fn read_cached_sessions(store: &SessionStore) -> Result<Vec<AgentConversationSes
                 ("pendingPermission", "pendingPermission", serde_json::json!(false)),
                 ("pendingInput", "pendingInput", serde_json::json!(false)),
             ] {
-                row[field] = controls.get(saved).cloned().unwrap_or(default);
+                // A list saved before activity moved into the history controls
+                // still carries it; it serves until the next listing replaces it.
+                row[field] = controls.get(saved).or_else(|| row.get(field)).cloned().unwrap_or(default);
             }
             serde_json::from_value(row).map_err(|e| e.to_string())
         }).collect()
@@ -5098,6 +5100,48 @@ mod connection_tests {
         assert_eq!(row.state, second.state);
         assert_eq!(row.active_turn_id, None);
         assert!(!row.pending_input);
+    }
+
+    #[test]
+    fn remote_history_offline_restart_keeps_activity_saved_before_the_upgrade() {
+        let shared = store();
+        let mut listed = session("large-history", "workbox", 90);
+        listed.state = super::super::protocol::AgentRuntimeState::WaitingApproval;
+        listed.suspended = false;
+        listed.active_turn_id = Some("turn".into());
+        listed.pending_permission = true;
+        // The earlier format: activity in the saved list, none in the history controls.
+        shared.upsert_app_setting(REMOTE_SESSION_PROJECTIONS_SETTING_KEY,
+            &serde_json::to_string(&[listed.clone()]).unwrap()).unwrap();
+        shared.file_remote_sessions("workbox", &serde_json::json!([[
+            super::super::remote_history::RemoteHistory::key("workbox", "large-history"),
+            listed.project_id, 90,
+            {"remoteProfileId": "workbox", "suspended": false, "activeTurnId": "turn"},
+        ]]).to_string()).unwrap();
+        let restarted = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
+        let row = restarted.cached_sessions().remove(0);
+        assert_eq!(row.state, super::super::protocol::AgentRuntimeState::WaitingApproval);
+        assert!(row.pending_permission);
+        assert_eq!(row.active_turn_id.as_deref(), Some("turn"));
+    }
+
+    #[test]
+    fn remote_history_offline_restart_keeps_a_failed_session_failed() {
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared.clone()).unwrap();
+        let mut listed = session("large-history", "workbox", 90);
+        listed.state = super::super::protocol::AgentRuntimeState::Working;
+        listed.suspended = false;
+        manager.replace_cached_profile_sessions("workbox", &[listed]).unwrap();
+        let mut failed = history_snapshot(vec![], 90);
+        failed.connection.state = super::super::protocol::ConversationConnectionState::Failed;
+        failed.suspended = false;
+        manager.history.lock().unwrap().snapshot("workbox", 0, None, &mut failed).unwrap();
+        let restarted = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
+        assert_eq!(restarted.cached_sessions().remove(0).state, super::super::protocol::AgentRuntimeState::Failed);
     }
 
     #[test]

@@ -4,6 +4,7 @@ use super::protocol::{
     AgentConversationConnection, AgentConversationEvent, AgentConversationEventPage,
     AgentConversationItemPage, AgentConversationPayload, AgentConversationSelectionSnapshot,
     AgentConversationSessionRecord, AgentConversationSnapshot, AgentRuntimeState, ApprovalState,
+    ConversationConnectionState,
 };
 use mcb_core::session_store::{EventCoverage, EventRow, SessionRow, SessionStore};
 use serde::{Deserialize, Serialize};
@@ -799,7 +800,10 @@ impl RemoteHistory {
                 matches!(event.payload, AgentConversationPayload::Approval { state: ApprovalState::Requested, .. }));
             coverage.pending_input = snapshot.pending_events.iter().any(|event|
                 matches!(event.payload, AgentConversationPayload::UserInputRequested { .. }));
-            coverage.runtime_state = Some(if snapshot.suspended { AgentRuntimeState::Suspended }
+            coverage.runtime_state = Some(if snapshot.connection.state == ConversationConnectionState::Failed {
+                    AgentRuntimeState::Failed
+                }
+                else if snapshot.suspended { AgentRuntimeState::Suspended }
                 else if coverage.pending_permission { AgentRuntimeState::WaitingApproval }
                 else if coverage.pending_input { AgentRuntimeState::WaitingInput }
                 else if snapshot.active_turn_id.is_some() { AgentRuntimeState::Working }
