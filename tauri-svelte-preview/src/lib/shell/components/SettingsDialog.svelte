@@ -74,7 +74,7 @@
   import { apply as applyTheme, themeChoices } from '$lib/shell/themes/themeService';
   import { applyUiFont, applyMonoFont } from '$lib/shell/themes/fontService';
   import { getMonoFont, mergeFontChoices, UI_FONTS, MONO_FONTS } from '$lib/shell/themes/fontRegistry';
-  import { applyTerminalSettings } from '$lib/shell/ghosttyFactory';
+  import { applyTerminalSettings } from '$lib/shell/terminal/ghosttyFactory';
   import {
     appUpdateState,
     checkForAppUpdate,

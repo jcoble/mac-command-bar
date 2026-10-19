@@ -1,9 +1,9 @@
 /** Ghostty Web renderer seam for the workspace terminal. */
-import type { TerminalView } from '../liveConversationTerminals';
-import { settings } from '../settingsStore.svelte';
-import { addTerminalView } from './resourceDiagnostics.svelte.ts';
-import { terminalFontStack } from './themes/fontRegistry';
-import { currentTheme, registerTerminalApplier } from './themes/themeService';
+import type { TerminalView } from '../../liveConversationTerminals';
+import { settings } from '../../settingsStore.svelte';
+import { addTerminalView } from '../resourceDiagnostics.svelte.ts';
+import { terminalFontStack } from '../themes/fontRegistry';
+import { currentTheme, registerTerminalApplier } from '../themes/themeService';
 
 const liveTerminals = new Map<import('ghostty-web').Terminal, () => void>();
 

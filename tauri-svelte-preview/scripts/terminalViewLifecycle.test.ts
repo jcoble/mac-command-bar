@@ -5,7 +5,7 @@ import {
   createTerminalService,
   type TerminalBackend,
   type TerminalViewHooks
-} from '../src/lib/shell/terminalService.ts';
+} from '../src/lib/shell/terminal/terminalService.ts';
 import type { TerminalOutputEnvelope } from '../src/lib/tauriSource.ts';
 
 const writes: string[] = [];

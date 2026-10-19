@@ -120,7 +120,7 @@ assert.deepEqual(parseClaudeJsonl(apiBatchJobJsonl, '/private/var/folders/rp/T')
  * diff. 186 of these exist here and every one is `sdk-py`.
  */
 const securityReviewAgentJsonl = [
-  '{"type":"user","isSidechain":false,"userType":"external","entrypoint":"sdk-py","promptSource":"sdk","sessionId":"S7","cwd":"/Users/dev/work/mac-command-bar","timestamp":"2026-07-28T13:00:00Z","message":{"role":"user","content":"Review this change for security vulnerabilities.\\n\\nChanged files (you may Read these and any other file in the repo):\\n  - tauri-svelte-preview/src/lib/shell/terminalService.ts\\n\\nUnified diff (only + lines are new):"}}',
+  '{"type":"user","isSidechain":false,"userType":"external","entrypoint":"sdk-py","promptSource":"sdk","sessionId":"S7","cwd":"/Users/dev/work/mac-command-bar","timestamp":"2026-07-28T13:00:00Z","message":{"role":"user","content":"Review this change for security vulnerabilities.\\n\\nChanged files (you may Read these and any other file in the repo):\\n  - tauri-svelte-preview/src/lib/shell/terminal/terminalService.ts\\n\\nUnified diff (only + lines are new):"}}',
   '{"type":"assistant","isSidechain":false,"entrypoint":"sdk-py","sessionId":"S7","timestamp":"2026-07-28T13:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"No vulnerabilities found."}]}}'
 ].join('\n');
 

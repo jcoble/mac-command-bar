@@ -22,8 +22,8 @@
 import {
   createLiveConversationTerminals,
   type TerminalView
-} from '../liveConversationTerminals.ts';
-import type { OwnedSession } from './ownedSessions.ts';
+} from '../../liveConversationTerminals.ts';
+import type { OwnedSession } from '../ownedSessions.ts';
 import {
   closeTerminalSessionFromTauri,
   listTerminalSessionsFromTauri,
@@ -38,9 +38,9 @@ import {
   type TerminalScrollbackSnapshot,
   type TerminalSessionInfo,
   type TerminalStartRequest
-} from '../tauriSource.ts';
-import { hasBackendCapability } from './backendCapabilities.ts';
-import { trackTauriSubscriber } from './resourceDiagnostics.svelte.ts';
+} from '../../tauriSource.ts';
+import { hasBackendCapability } from '../backendCapabilities.ts';
+import { trackTauriSubscriber } from '../resourceDiagnostics.svelte.ts';
 
 export type TerminalOutputSubscriber = (envelope: TerminalOutputEnvelope) => void;
 
