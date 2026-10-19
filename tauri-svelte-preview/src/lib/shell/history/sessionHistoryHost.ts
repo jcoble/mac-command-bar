@@ -10,8 +10,8 @@ import { rail, setAvailable } from '$lib/shell/stores/sessionRailStore.svelte.ts
 import {
   createSessionLibraryService,
   registerSessionLibraryHost
-} from '$lib/shell/sessionLibrary/sessionLibraryService.ts';
-import type { SessionLibraryRecord } from '$lib/shell/sessionLibrary/sessionLibraryModel.ts';
+} from '$lib/shell/history/library/sessionLibraryService.ts';
+import type { SessionLibraryRecord } from '$lib/shell/history/library/sessionLibraryModel.ts';
 
 export interface SessionHistoryHostOptions {
   openOwned(ownedId: string): Promise<void>;

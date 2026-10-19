@@ -16,7 +16,7 @@
 	import { railRowStatuses, type OwnedSession, type RailRowStatus } from "$lib/shell/ownedSessions";
 	import { rail } from "$lib/shell/stores/sessionRailStore.svelte";
 	import { projectBadge } from "$lib/shell/projects/projects";
-	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
+	import { deriveOwnedLibraryState } from "$lib/shell/history/library/sessionLibraryModel";
 	import {
 		buildMyWorkGroups,
 		myWorkGroupSessions,

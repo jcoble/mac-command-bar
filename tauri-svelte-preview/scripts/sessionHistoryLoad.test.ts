@@ -5,8 +5,8 @@ import {
   sessionHistoryLoadOutcome,
   type RepositoryCheckouts
 } from '../src/lib/shell/history/sessionHistoryLoad.ts';
-import { sessionHistoryActions } from '../src/lib/shell/panels/history/sessionHistoryActions.ts';
-import type { SessionLibraryRecord } from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
+import { sessionHistoryActions } from '../src/lib/shell/history/components/sessionHistoryActions.ts';
+import type { SessionLibraryRecord } from '../src/lib/shell/history/library/sessionLibraryModel.ts';
 
 function record(key: string): SessionLibraryRecord {
   return {
@@ -109,7 +109,7 @@ run('an_owned_history_row_opens_instead_of_importing_a_duplicate', () => {
 
 run('project_and_detail_reads_have_independent_lifecycles', () => {
   const panel = readFileSync(
-    new URL('../src/lib/shell/panels/history/HistoryPanel.svelte', import.meta.url),
+    new URL('../src/lib/shell/history/components/HistoryPanel.svelte', import.meta.url),
     'utf8'
   );
   assert.match(panel, /let historyLoadVersion = 0;/);

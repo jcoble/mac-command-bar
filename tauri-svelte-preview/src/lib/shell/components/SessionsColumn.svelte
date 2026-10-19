@@ -23,7 +23,7 @@
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import type { OwnedSession } from '$lib/shell/ownedSessions';
   import { AGENT_ICONS } from '$lib/shell/agentIcons';
-  import { openSessionLibrary } from '$lib/shell/sessionLibrary/sessionLibraryNavigation';
+  import { openSessionLibrary } from '$lib/shell/history/library/sessionLibraryNavigation';
   import SessionRail from './SessionRail.svelte';
   import { sessionLabel, stripCells } from '$lib/shell/sessionStrip';
   import {

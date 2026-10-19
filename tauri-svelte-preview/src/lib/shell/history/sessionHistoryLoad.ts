@@ -1,5 +1,5 @@
 import type { RepositoryCheckout } from '../../tauriSource.ts';
-import type { SessionLibraryRecord } from '../sessionLibrary/sessionLibraryModel.ts';
+import type { SessionLibraryRecord } from './library/sessionLibraryModel.ts';
 
 export type RepositoryCheckouts = Record<string, RepositoryCheckout[]>;
 

@@ -6,8 +6,8 @@
  * archive and never starts a provider. Identity intentionally never includes a
  * title: two same-title sessions in different worktrees are different rows.
  */
-import type { AgentSession, AgentSessionTurn } from '../../tauriSource.ts';
-import type { AgentRuntimeState, OwnedSession } from '../ownedSessions.ts';
+import type { AgentSession, AgentSessionTurn } from '../../../tauriSource.ts';
+import type { AgentRuntimeState, OwnedSession } from '../../ownedSessions.ts';
 
 export type SessionLibraryState = 'working' | 'done' | 'settled' | 'resumable';
 export type SessionLibrarySource = 'owned' | 'provider';

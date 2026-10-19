@@ -54,9 +54,9 @@
     type SessionHistoryScope,
     type SessionHistoryFilters,
     type SessionLibraryRecord
-  } from '$lib/shell/sessionLibrary/sessionLibraryModel.ts';
-  import { sessionLibraryHost } from '$lib/shell/sessionLibrary/sessionLibraryService.ts';
-  import { resetSessionLibraryState, sessionLibraryState, setSessionLibraryQuery } from '$lib/shell/sessionLibrary/sessionLibraryStore.svelte.ts';
+  } from '$lib/shell/history/library/sessionLibraryModel.ts';
+  import { sessionLibraryHost } from '$lib/shell/history/library/sessionLibraryService.ts';
+  import { resetSessionLibraryState, sessionLibraryState, setSessionLibraryQuery } from '$lib/shell/history/library/sessionLibraryStore.svelte.ts';
   import {
     ensureStructuredConversation
   } from '$lib/shell/conversation/conversationService.ts';

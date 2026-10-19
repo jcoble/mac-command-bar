@@ -33,7 +33,7 @@
 	import { presentAgentError } from "$lib/shell/errorPresentation";
 	import { sessionWaitsOnYou, type OwnedSession, type RailRowStatus } from "$lib/shell/ownedSessions";
 	import { projectMachineLabel } from "$lib/shell/projects/projects";
-	import { deriveOwnedLibraryState } from "$lib/shell/sessionLibrary/sessionLibraryModel";
+	import { deriveOwnedLibraryState } from "$lib/shell/history/library/sessionLibraryModel";
 	import { sessionLabel } from "$lib/shell/sessionStrip";
 	import { rail } from "$lib/shell/stores/sessionRailStore.svelte";
 	import { formatRailElapsed } from "./railElapsedTicker.ts";

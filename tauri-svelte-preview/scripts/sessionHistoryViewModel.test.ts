@@ -8,7 +8,7 @@ import {
   toggleSessionHistoryGroup,
   visibleSessionHistoryRows
 } from '../src/lib/shell/history/sessionHistoryViewModel.ts';
-import type { SessionLibraryRecord } from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
+import type { SessionLibraryRecord } from '../src/lib/shell/history/library/sessionLibraryModel.ts';
 
 const ATLAS = { projectGroupKey: 'repo:github.com/dev/atlas', projectGroupLabel: 'atlas' };
 

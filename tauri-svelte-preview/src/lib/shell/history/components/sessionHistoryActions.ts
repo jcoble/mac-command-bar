@@ -13,7 +13,7 @@
 import { normalizeProvider } from '../../ownedSessions.ts';
 import { resumeCommand } from '../../resumeCommand.ts';
 import type { AgentConversationTranscriptImport } from '../../../tauriSource.ts';
-import type { SessionLibraryRecord } from '../../sessionLibrary/sessionLibraryModel.ts';
+import type { SessionLibraryRecord } from '../library/sessionLibraryModel.ts';
 
 export type SessionHistoryActionId =
   | 'resume-assembly'

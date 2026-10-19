@@ -862,7 +862,7 @@ async fn send_to(state: &ServerState, owned_id: String, body: &[u8]) -> Reply {
 async fn ensure(state: &ServerState, owned_id: &str) -> Result<u64, Response> {
     let row = state.manager.store().get_session(&owned_id).map_err(|error| server_error(&error))?
         .ok_or_else(|| refuse(StatusCode::NOT_FOUND, NO_SESSION))?;
-    let provider = super::transcript::parse_provider(&row.provider).map_err(|error| server_error(&error))?;
+    let provider = super::history::transcript::parse_provider(&row.provider).map_err(|error| server_error(&error))?;
     // After a restart the manager holds no sessions; ensure loads the stored one and gives its generation.
     let ensure = RemoteCommand::Ensure(EnsureAgentConversationRequest {
         owned_id: owned_id.into(), execution_environment: ExecutionEnvironment::Local, remote_profile_id: None,

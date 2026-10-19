@@ -11,7 +11,7 @@
  * siblings: the row lives in the left column, the center tabs are owned by the
  * frame, and the tool column owns its own views. The page is the one place that
  * can reach all three, so it registers itself here — the same shape as
- * `conversation/sessionRestart.ts` and `sessionLibrary/sessionLibraryNavigation.ts`.
+ * `conversation/sessionRestart.ts` and `history/library/sessionLibraryNavigation.ts`.
  */
 
 /** The surfaces a row can send you to. */

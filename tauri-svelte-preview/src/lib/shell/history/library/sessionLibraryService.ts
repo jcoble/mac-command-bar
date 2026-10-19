@@ -6,8 +6,8 @@
  * The service has no archive, no browser-storage key, and no second rail/runtime
  * authority.
  */
-import type { AgentSession, RemoteSavedSessionDetails } from '../../tauriSource.ts';
-import type { OwnedSession } from '../ownedSessions.ts';
+import type { AgentSession, RemoteSavedSessionDetails } from '../../../tauriSource.ts';
+import type { OwnedSession } from '../../ownedSessions.ts';
 import {
   buildSessionLibrary,
   type SessionLibraryRecord

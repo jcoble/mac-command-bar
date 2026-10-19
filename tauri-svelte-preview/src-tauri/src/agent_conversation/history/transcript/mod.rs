@@ -9,7 +9,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use super::protocol::{
+use super::super::protocol::{
     AgentConversationPayload, AgentConversationProvider, AgentEventType, ToolState,
 };
 
