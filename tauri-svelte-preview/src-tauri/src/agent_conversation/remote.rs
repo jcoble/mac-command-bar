@@ -621,8 +621,9 @@ fn merge_message_pages(pages: Vec<(String, Vec<serde_json::Value>)>, limit: usiz
 }
 
 fn read_cached_sessions(store: &SessionStore) -> Result<Vec<AgentConversationSessionRecord>, String> {
-    store.remote_session_controls().map_err(|error| error.to_string())?
-        .into_iter().map(|(metadata, controls)| {
+    // One unreadable saved session must not hide every remote machine's list.
+    Ok(store.remote_session_controls().map_err(|error| error.to_string())?
+        .into_iter().filter_map(|(metadata, controls)| (|| -> Result<AgentConversationSessionRecord, String> {
             let mut row: serde_json::Value = serde_json::from_str(&metadata).map_err(|e| e.to_string())?;
             let controls: serde_json::Value = serde_json::from_str(controls.as_deref().unwrap_or("{}"))
                 .map_err(|e| e.to_string())?;
@@ -638,7 +639,8 @@ fn read_cached_sessions(store: &SessionStore) -> Result<Vec<AgentConversationSes
                 row[field] = controls.get(saved).or_else(|| row.get(field)).cloned().unwrap_or(default);
             }
             serde_json::from_value(row).map_err(|e| e.to_string())
-        }).collect()
+        })().map_err(|error| eprintln!("Skipped an unreadable saved remote session: {error}")).ok())
+        .collect())
 }
 
 impl RemoteConnectionManager {
@@ -5142,6 +5144,23 @@ mod connection_tests {
         let restarted = RemoteConnectionManager::from_environment(
             Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
         assert_eq!(restarted.cached_sessions().remove(0).state, super::super::protocol::AgentRuntimeState::Failed);
+    }
+
+    #[test]
+    fn remote_history_offline_restart_skips_one_unreadable_session() {
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared.clone()).unwrap();
+        manager.replace_cached_profile_sessions("workbox", &[
+            session("broken", "workbox", 90), session("intact", "workbox", 80),
+        ]).unwrap();
+        let mut row = shared.get_session(&RemoteHistory::key("workbox", "broken")).unwrap().unwrap();
+        row.extra_json = "not json".into();
+        shared.upsert_session(&row).unwrap();
+        let restarted = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
+        let listed: Vec<_> = restarted.cached_sessions().into_iter().map(|session| session.owned_id).collect();
+        assert_eq!(listed, ["intact"]);
     }
 
     #[test]
