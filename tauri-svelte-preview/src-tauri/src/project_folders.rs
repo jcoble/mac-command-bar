@@ -654,7 +654,7 @@ mod tests {
         manager.store().insert_or_get_project(&row).unwrap();
         // The command deletes remote sessions on their machine first; a cached
         // row the machine kept is left here without a project.
-        manager.store().file_remote_sessions("box", "{}", r#"[["[\"box\",\"s1\"]", "remote", 5]]"#).unwrap();
+        manager.store().file_remote_sessions("box", r#"[["[\"box\",\"s1\"]", "remote", 5, {}]]"#).unwrap();
 
         manager.remove_project("remote", true).await.unwrap();
         assert_eq!(manager.store().get_project("remote").unwrap(), None);

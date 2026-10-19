@@ -1459,18 +1459,20 @@ impl SessionStore {
     /// a new row starts with `extra_json` and no events. A row keeps the
     /// first project it got and the newest activity. Rows that are local or
     /// another machine's are left alone.
-    pub fn file_remote_sessions(&self, profile_id: &str, extra_json: &str, rows_json: &str) -> Result<()> {
+    pub fn file_remote_sessions(&self, profile_id: &str, rows_json: &str) -> Result<()> {
         self.lock_write()?.execute(
             "INSERT INTO sessions (owned_id, provider, cwd, state, suspended, created_at,
                 last_activity_at, extra, project_id, cached_remote_profile_id)
              SELECT json_extract(r.value, '$[0]'), 'remote-cache', '', 'cached', 1, 0,
-                json_extract(r.value, '$[2]'), ?2, json_extract(r.value, '$[1]'), ?1
-             FROM json_each(?3) r WHERE true
+                json_extract(r.value, '$[2]'), json_extract(r.value, '$[3]'), json_extract(r.value, '$[1]'), ?1
+             FROM json_each(?2) r WHERE true
              ON CONFLICT(owned_id) DO UPDATE SET
                 project_id = COALESCE(sessions.project_id, excluded.project_id),
-                last_activity_at = MAX(sessions.last_activity_at, excluded.last_activity_at)
+                last_activity_at = MAX(sessions.last_activity_at, excluded.last_activity_at),
+                extra = CASE WHEN json_extract(sessions.extra,'$.pendingSequence') IS NULL
+                    THEN excluded.extra ELSE sessions.extra END
              WHERE sessions.cached_remote_profile_id IS ?1",
-            params![profile_id, extra_json, rows_json],
+            params![profile_id, rows_json],
         ).map_err(|error| StoreError::sqlite("could not file the remote sessions", error))?;
         Ok(())
     }
@@ -2706,6 +2708,24 @@ impl SessionStore {
     /// Records that the back-fill has run for every local project up to `created_at_ms`.
     pub fn mark_project_backfill(&self, created_at_ms: i64) -> Result<()> {
         self.upsert_app_setting(PROJECT_BACKFILL_MARK_KEY, &created_at_ms.to_string())
+    }
+
+    /// Read inventory metadata and its sole saved activity record together.
+    pub fn remote_session_controls(&self) -> Result<Vec<(String, Option<String>)>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT j.value, s.extra FROM app_settings a, json_each(a.value_json) j
+             LEFT JOIN sessions s ON s.owned_id=json_array(
+               json_extract(j.value,'$.remoteProfileId'),json_extract(j.value,'$.ownedId'))
+               AND s.cached_remote_profile_id=json_extract(j.value,'$.remoteProfileId')
+             WHERE a.setting_key='remote-assembly.session-projections.v1'
+               AND json_extract(j.value,'$.executionEnvironment')='remote'
+               AND length(json_extract(j.value,'$.remoteProfileId')) > 0"
+        ).map_err(|error| StoreError::sqlite("could not read remote controls", error))?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|error| StoreError::sqlite("could not read remote controls", error))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| StoreError::sqlite("could not decode remote controls", error))
     }
 
     pub fn get_app_setting(&self, setting_key: &str) -> Result<Option<String>> {
@@ -5375,9 +5395,9 @@ mod tests {
         store.cache_remote_events("workbox", &filed, &[]).unwrap();
         store.cache_remote_events("other", &fixture_session("elsewhere", 5), &[]).unwrap();
 
-        store.file_remote_sessions("workbox", r#"{"remoteProfileId":"workbox"}"#, r#"[
-            ["[\"workbox\",\"new\"]", "p1", 30], ["[\"workbox\",\"cached\"]", "p1", 40], ["filed", "p2", 90],
-            ["local", "p1", 99], ["elsewhere", "p1", 99], ["loose", null, 7]
+        store.file_remote_sessions("workbox", r#"[
+            ["[\"workbox\",\"new\"]", "p1", 30, {"remoteProfileId":"workbox"}], ["[\"workbox\",\"cached\"]", "p1", 40, {"remoteProfileId":"workbox"}], ["filed", "p2", 90, {"remoteProfileId":"workbox"}],
+            ["local", "p1", 99, {"remoteProfileId":"workbox"}], ["elsewhere", "p1", 99, {"remoteProfileId":"workbox"}], ["loose", null, 7, {"remoteProfileId":"workbox"}]
         ]"#).unwrap();
 
         let row = |id: &str| store.get_session(id).unwrap().unwrap();

@@ -2018,7 +2018,7 @@ mod tests {
         }
         store.set_main_orchestrator(Some("orch")).unwrap();
         // Another machine's session cached here is newer, but it is not this machine's.
-        store.file_remote_sessions("other-machine", "{}", r#"[["cached", null, 999]]"#).unwrap();
+        store.file_remote_sessions("other-machine", r#"[["cached", null, 999, {}]]"#).unwrap();
 
         let body: Value = client(reqwest::Method::GET, &base, "/sessions", &token).send().await.unwrap().json().await.unwrap();
         let sessions = body["sessions"].as_array().unwrap();
