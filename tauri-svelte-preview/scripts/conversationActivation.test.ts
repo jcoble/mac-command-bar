@@ -58,6 +58,28 @@ assert.deepEqual(
   'a stopped external Codex session loads by native id instead of trusting a stale connection'
 );
 
+for (const agent of ['codex', 'claude', 'antigravity']) {
+  const session = { ...stoppedExternal, agent };
+  assert.deepEqual(
+    decideConversationActivation(session, null),
+    agent === 'antigravity' ? { kind: 'terminal' } : { kind: 'structured', nativeSessionMode: 'load' },
+    `a stopped external ${agent} session follows proven adapter load support`
+  );
+  for (const running of [
+    { state: 'live' },
+    { executionOwner: 'terminal' },
+    { ptySessionId: 'pty-live' }
+  ]) {
+    assert.deepEqual(
+      decideConversationActivation({ ...session, ...running }, null),
+      { kind: 'terminal' },
+      `an external ${agent} session with a live CLI writer stays terminal-owned`
+    );
+  }
+  assert.deepEqual(decideConversationActivation({ ...session, nativeSessionId: null }, null),
+    { kind: 'terminal' }, `${agent} history without a native id stays terminal-owned`);
+}
+
 assert.deepEqual(
   decideConversationActivation(
     { ...stoppedExternal, state: 'live', executionOwner: 'terminal', ptySessionId: 'pty-live' },

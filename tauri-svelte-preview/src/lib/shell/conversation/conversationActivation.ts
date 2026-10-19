@@ -106,8 +106,8 @@ function connectedSessionMatches(
 /**
  * Decide whether a rail selection is view-only, terminal-owned, or needs ACP.
  * Running external sessions are checked first: an old structured connection
- * never overrides their live CLI writer. A stopped external Codex session may
- * use session/load only when its native thread id is known.
+ * never overrides their live CLI writer. A stopped external session may load
+ * through a proven provider only when its native session id is known.
  */
 export function decideConversationActivation(
   session: ConversationActivationSession,
@@ -119,7 +119,9 @@ export function decideConversationActivation(
       || Boolean(session.ptySessionId);
     const stopped = session.executionOwner === 'stopped' || session.state === 'exited';
     if (terminalOwned || !stopped) return { kind: 'terminal' };
-    if (session.agent !== 'codex' || !session.nativeSessionId) return { kind: 'terminal' };
+    // Claude ACP 0.90.0: claude -p "remember the word pelican", session/load replayed it, session/prompt answered "pelican".
+    // Antigravity ACP 1.4.1: loading an agy CLI ID returned "Session not found in the current GEMINI_HOME".
+    if (!['codex', 'claude'].includes(session.agent) || !session.nativeSessionId) return { kind: 'terminal' };
     return { kind: 'structured', nativeSessionMode: 'load' };
   }
 

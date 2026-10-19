@@ -5,7 +5,7 @@
  */
 export function resumeCommand(agent: string, nativeSessionId: string | null, cwd: string): string | null {
   const id = nativeSessionId?.trim();
-  const command = !id ? null : agent === 'claude' ? `claude --resume ${id}` : agent === 'codex' ? `codex resume ${id}` : null;
+  const command = !id ? null : agent === 'claude' ? `claude --resume ${id}` : agent === 'codex' ? `codex resume ${id}` : agent === 'antigravity' ? `agy --conversation ${id}` : null;
   if (!command || !cwd.trim()) return command;
   // Quote the folder only when the shell would otherwise split or expand it.
   const folder = /^[\w@%+=:,./-]+$/.test(cwd) ? cwd : `'${cwd.replaceAll("'", "'\\''")}'`;
