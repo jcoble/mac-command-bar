@@ -27,7 +27,7 @@ function lineCount(source: string): number {
 }
 
 function isTestPath(path: string): boolean {
-  return path.endsWith('.test.ts') || path.endsWith('_test.dart') || /(^|\/)tests?\//.test(path);
+  return /\.test\.[cm]?[jt]s$/.test(path) || path.endsWith('_test.dart') || /(^|\/)tests?\//.test(path);
 }
 
 function providerBranchCount(path: string, source: string): number {
@@ -83,7 +83,7 @@ function hasRustTestChange(file: StagedFile): boolean {
   for (const [index, line] of file.source.split('\n').entries()) {
     if (added.has(index + 1) && /#\s*\[\s*(?:test|tokio::test)(?:\s*\([^\]]*\))?\s*\]/.test(line)) return true;
     if (/^\s*#\[cfg\(test\)\]/.test(line)) awaitingModule = true;
-    if (awaitingModule && /\bmod\s+tests\s*\{/.test(line)) {
+    if (awaitingModule && /\bmod\s+\w+\s*\{/.test(line)) {
       insideTests = true;
       awaitingModule = false;
       depth = 0;

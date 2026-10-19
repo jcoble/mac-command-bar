@@ -86,3 +86,11 @@ test('Rust fixes accept added test attributes and changed code inside test modul
   assert.match(checkFixCommit('fix: repair', [file(source, 'src/a.rs', [1])])[0], /test/);
   assert.match(checkFixCommit('fix: repair', [file(source, 'src/a.rs', [8])])[0], /test/);
 });
+
+test('existing JavaScript suites and any test-gated Rust module count as tests', () => {
+  for (const path of ['scripts/parseUnifiedDiff.test.mjs', 'scripts/a.test.js', 'scripts/a.test.mts']) {
+    assert.deepEqual(checkFixCommit('fix: repair', [file('test();', path)]), []);
+  }
+  const source = 'fn production() {}\n#[cfg(test)]\nmod contract_tests {\n  fn works() {\n    assert!(true);\n  }\n}';
+  assert.deepEqual(checkFixCommit('fix: repair', [file(source, 'src/a.rs', [5])]), []);
+});
