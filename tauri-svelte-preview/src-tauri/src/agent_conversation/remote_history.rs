@@ -635,6 +635,12 @@ impl RemoteHistory {
         Ok(self.coverage(profile, owned)?.through)
     }
 
+    pub fn forget_if_shrunk(&self, profile: &str, owned: &str, head: i64, saved: Option<i64>) -> Result<bool, String> {
+        if saved.is_none_or(|saved| saved <= head) { return Ok(false); }
+        self.forget(profile, owned)?;
+        Ok(true)
+    }
+
     pub fn forget(&self, profile: &str, owned: &str) -> Result<(), String> {
         self.store
             .delete_session(&Self::key(profile, owned))
