@@ -186,3 +186,9 @@ for (const [name, raw, summary] of [
     assert.equal(presentAgentError(raw).summary, summary);
   });
 }
+
+test('a full conversation tells the reader what to do, in the composer too', () => {
+  const summary = presentAgentError('{"code":-32603,"message":"Internal error: Prompt is too long"}').summary;
+  assert.match(summary, /conversation is full/i);
+  assert.match(summary, /\/compact/);
+});

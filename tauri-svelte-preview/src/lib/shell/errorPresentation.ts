@@ -50,6 +50,10 @@ function humanSummary(raw: string): string {
   const normalized = raw.toLowerCase();
   const code = errorCode(raw);
 
+  if (normalized.includes('prompt is too long')) {
+    return 'This conversation is full. Send /compact if this agent offers it, or start a new session.';
+  }
+
   if (normalized.includes('no rollout found')) {
     return "This session's history is missing, so it can't be resumed.";
   }
