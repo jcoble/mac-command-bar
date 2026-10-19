@@ -5,7 +5,7 @@
  * provider, and a new session opens on it. Kept in settings so it survives a
  * restart, which is when it was most obviously being forgotten.
  */
-import { settings, updateSettings, type AgentConfigChoice } from '../../settingsStore.svelte';
+import { settings, updateSettings, type AgentConfigChoice } from '../settings/settingsStore.svelte';
 
 /** Remember a choice for `provider`. Fields left undefined keep what they had. */
 export function rememberAgentConfigChoice(

@@ -91,7 +91,7 @@
     sourceIntelligence,
     type SourceInlayHintRequest
   } from '$lib/shell/files/editor/sourceIntelligence';
-  import { settings } from '$lib/settingsStore.svelte';
+  import { settings } from '$lib/shell/settings/settingsStore.svelte';
   import { sourceRecordFromPath } from '$lib/shell/files/editor/sourceRecordFromPath';
   import {
     dotnetWorkspaceSessionRequest,

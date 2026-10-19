@@ -10,7 +10,7 @@
  * The editor and the terminals are NOT covered here on purpose: each has its
  * own font setting already (Settings → Editor, Settings → Terminal).
  */
-import { settings, updateSettings } from '../../settingsStore.svelte';
+import { settings, updateSettings } from '../settingsStore.svelte';
 import { getMonoFont, getUiFont, type ShellFont } from './fontRegistry';
 
 const UI_TOKEN = '--font-ui';

@@ -7,7 +7,7 @@
  * `let` declarations. Consumers `import { dock }` and read/write `dock.x`;
  * reads/writes are tracked by Svelte's runes runtime.
  *
- * Pattern mirrors `src/lib/settingsStore.svelte.ts` exactly: module-level
+ * Pattern mirrors `src/lib/shell/settings/settingsStore.svelte.ts` exactly: module-level
  * `export const <store> = $state({...})`.
  *
  * SCOPE (Task 6, re-scoped per plan review C2): this module owns the *values*

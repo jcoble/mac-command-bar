@@ -10,7 +10,7 @@
  * `import { files }` and read/write `files.x`; reads/writes are tracked by
  * Svelte's runes runtime.
  *
- * Pattern mirrors `src/lib/settingsStore.svelte.ts` / `dockLayoutStore.svelte.ts`
+ * Pattern mirrors `src/lib/shell/settings/settingsStore.svelte.ts` / `dockLayoutStore.svelte.ts`
  * exactly: module-level `export const <store> = $state({...})`.
  *
  * SCOPE: this module owns the *values* only. All `read_source_file` /

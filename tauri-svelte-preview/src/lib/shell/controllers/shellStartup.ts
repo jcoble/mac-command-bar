@@ -1,6 +1,6 @@
-import { hydrateSettings } from '$lib/settingsStore.svelte';
-import { applyStoredFonts, clearFonts } from '../themes/fontService';
-import { applyStoredTheme, clearTheme } from '../themes/themeService';
+import { hydrateSettings } from '$lib/shell/settings/settingsStore.svelte';
+import { applyStoredFonts, clearFonts } from '../settings/themes/fontService';
+import { applyStoredTheme, clearTheme } from '../settings/themes/themeService';
 import {
 	ACTIVE_OWNED_SESSION_SETTING_KEY,
 	hydrateOwned,

@@ -18,9 +18,9 @@
 import {
 	readAssemblySettingFromTauri,
 	writeAssemblySettingFromTauri
-} from './tauriSource';
-import { DEFAULT_MONO_FONT_ID } from './shell/themes/fontRegistry';
-import { DEFAULT_THEME_ID, isThemeId } from './shell/themes/themeRegistry';
+} from '../../tauriSource';
+import { DEFAULT_MONO_FONT_ID } from './themes/fontRegistry';
+import { DEFAULT_THEME_ID, isThemeId } from './themes/themeRegistry';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

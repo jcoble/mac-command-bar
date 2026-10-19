@@ -15,7 +15,7 @@
 	import { onMount } from "svelte";
 
 	import * as AlertDialog from "$lib/components/ui/alert-dialog/index.js";
-	import type { ProblemsLocation } from "$lib/settingsStore.svelte";
+	import type { ProblemsLocation } from "$lib/shell/settings/settingsStore.svelte";
 	import { cancelAppExit, continueAppExit, listenToAppExitRequests, type AppExitKind } from "$lib/tauriSource";
 	import { backgroundWorkSummary, localBackgroundWorkSessions } from "$lib/shell/ownedSessions";
 	import { sessionLabel } from "$lib/shell/sessionStrip";
@@ -26,7 +26,7 @@
 	import { resourceManagerState } from "$lib/shell/resources/resourceSampleStore.svelte";
 	import UsagePopover from "$lib/shell/usage/UsagePopover.svelte";
 	import PalettePanel from "./PalettePanel.svelte";
-	import SettingsHost from "./SettingsHost.svelte";
+	import SettingsHost from "../settings/SettingsHost.svelte";
 	import { utilityAnchorStyle, type UtilityAnchor, type UtilityId } from "./utilityStrip";
 
 	interface Props {

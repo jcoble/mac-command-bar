@@ -3,7 +3,7 @@ import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { EditorView } from '@codemirror/view';
 import { tags } from '@lezer/highlight';
 
-import { getMonoFont } from '../../themes/fontRegistry';
+import { getMonoFont } from '../../settings/themes/fontRegistry';
 
 const syntax = HighlightStyle.define([
   { tag: [tags.keyword, tags.modifier], color: '#54b9ff' },

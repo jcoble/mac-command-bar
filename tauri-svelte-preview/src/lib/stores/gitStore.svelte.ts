@@ -14,7 +14,7 @@
  * `projectStore`/`filesStore` lesson (avoid short names that read like locals;
  * `gitStore` reads clearly next to the `gitStatus` local in the Activity loop).
  *
- * Pattern mirrors `src/lib/settingsStore.svelte.ts` / `filesStore.svelte.ts` /
+ * Pattern mirrors `src/lib/shell/settings/settingsStore.svelte.ts` / `filesStore.svelte.ts` /
  * `projectStore.svelte.ts` exactly: module-level `export const <store> = $state({...})`.
  *
  * SCOPE: this module owns the *values* only. ALL git loaders

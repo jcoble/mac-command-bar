@@ -8,7 +8,7 @@
     3. loading the screen itself, which only happens the first time
        someone asks for it.
 
-  The settings surface is `$lib/shell/components/SettingsDialog.svelte` — the
+  The settings surface is `$lib/shell/settings/SettingsDialog.svelte` — the
   /next shell's own, built from the shadcn components. It is pulled in on
   demand rather than with the rest of the shell so that starting the app costs
   nothing for a screen most launches never show. The host also owns the one
@@ -16,7 +16,7 @@
 
   Usage:
     <script>
-      import SettingsHost from '$lib/shell/components/SettingsHost.svelte';
+      import SettingsHost from '$lib/shell/settings/SettingsHost.svelte';
       let settingsHost: SettingsHost;
     </script>
     <SettingsHost bind:this={settingsHost} />
@@ -30,13 +30,13 @@
   import '$lib/shell/styles/next.css';
   import { onDestroy, onMount } from 'svelte';
 
-  import type { ProblemsLocation } from '$lib/settingsStore.svelte';
+  import type { ProblemsLocation } from '$lib/shell/settings/settingsStore.svelte';
   import { checkForProviderUpdates } from '$lib/shell/providers/providerUpdateService.svelte';
   import { checkForAppUpdate } from '$lib/shell/appUpdateService.svelte';
 
   /** The real settings surface, referred to by type only — no load yet. */
   type SettingsDialogComponent =
-    (typeof import('$lib/shell/components/SettingsDialog.svelte'))['default'];
+    (typeof import('$lib/shell/settings/SettingsDialog.svelte'))['default'];
 
   interface Props {
     /** Passed straight through to the dialog: the user moved the Problems
@@ -90,7 +90,7 @@
     loading = true;
     const generation = ++loadGeneration;
     try {
-      const module = await import('$lib/shell/components/SettingsDialog.svelte');
+      const module = await import('$lib/shell/settings/SettingsDialog.svelte');
       if (mounted && generation === loadGeneration) {
         SettingsDialog = module.default;
         dialogOpen = true;
