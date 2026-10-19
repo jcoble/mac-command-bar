@@ -18,7 +18,7 @@ import {
   toggleFolder,
   EXPLORER_FALLBACK_VIEWPORT_HEIGHT,
   EXPLORER_ROW_HEIGHT
-} from '../src/lib/shell/explorer/explorerTree.ts';
+} from '../src/lib/shell/files/explorer/explorerTree.ts';
 
 /** Minimal stand-in for one file the backend scan returned. */
 function record(relativePath) {

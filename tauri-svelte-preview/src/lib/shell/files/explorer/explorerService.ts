@@ -9,8 +9,8 @@ import {
   cancelSourceScanFromTauri,
   isNativeTauriRuntime,
   listSourceDirectoryFromTauri
-} from '../../tauriSource.ts';
-import { countInvoke } from '../devInvokeCounter.svelte.ts';
+} from '../../../tauriSource.ts';
+import { countInvoke } from '../../devInvokeCounter.svelte.ts';
 import {
   applyDirectoryResult,
   beginScan,

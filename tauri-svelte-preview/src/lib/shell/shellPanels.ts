@@ -10,8 +10,8 @@
  *
  * Nothing runs at import — the rail is only read when a loader is about to run.
  */
-import { activate as activateEditor } from "./editor/sourceIntelligence.ts";
-import { activate as activateExplorer } from "./explorer/explorerService.ts";
+import { activate as activateEditor } from "./files/editor/sourceIntelligence.ts";
+import { activate as activateExplorer } from "./files/explorer/explorerService.ts";
 import { gitService } from "./git/gitService.ts";
 import {
   createPanelActivation,

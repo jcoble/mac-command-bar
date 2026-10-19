@@ -42,8 +42,8 @@
     readLanguageServerState,
     statusMessageIsAboutThisFile
   } from './editor/languageServerStatus.ts';
-  import FileIcon from './explorer/FileIcon.svelte';
-  import { canonicalPath } from '$lib/shell/explorer/explorerStore.svelte';
+  import FileIcon from '../../components/explorer/FileIcon.svelte';
+  import { canonicalPath } from '$lib/shell/files/explorer/explorerStore.svelte';
   import {
     isHtmlFile,
     isMarkdownFile,
@@ -53,14 +53,14 @@
   } from './editor/markdownPreview.ts';
   import { buttonVariants } from '$lib/components/ui/button/variants.js';
   import { cn } from '$lib/utils.js';
-  import LanguageIntelligenceControls from './LanguageIntelligenceControls.svelte';
-  import type SourceMarkdownPreview from '$lib/SourceMarkdownPreview.svelte';
+  import LanguageIntelligenceControls from '../../components/LanguageIntelligenceControls.svelte';
+  import type SourceMarkdownPreview from '$lib/shell/files/components/SourceMarkdownPreview.svelte';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
-  import { workspaceKey } from '$lib/shell/editor/languageIntelligenceMode';
+  import { workspaceKey } from '$lib/shell/files/editor/languageIntelligenceMode';
   import {
     clearLanguageIntelligenceBar,
     publishLanguageIntelligenceBar
-  } from '$lib/shell/editor/languageIntelligenceBar.svelte';
+  } from '$lib/shell/files/editor/languageIntelligenceBar.svelte';
   import { onOpenFile, type OpenFileRequest } from '$lib/shell/openFileBus';
   import { onWorkspaceFileChange } from '$lib/shell/workspaceFileChangeBus.ts';
   import { countInvoke } from '$lib/shell/devInvokeCounter.svelte';
@@ -85,14 +85,14 @@
     setEditorFilePreview,
     setEditorFileSaving,
     setEditorSymbols
-  } from '$lib/shell/editor/editorStore.svelte';
-  import { modelPathToDisposeOnClose, needsRead } from '$lib/shell/editor/editorStoreOps';
+  } from '$lib/shell/files/editor/editorStore.svelte';
+  import { modelPathToDisposeOnClose, needsRead } from '$lib/shell/files/editor/editorStoreOps';
   import {
     sourceIntelligence,
     type SourceInlayHintRequest
-  } from '$lib/shell/editor/sourceIntelligence';
+  } from '$lib/shell/files/editor/sourceIntelligence';
   import { settings } from '$lib/settingsStore.svelte';
-  import { sourceRecordFromPath } from '$lib/shell/editor/sourceRecordFromPath';
+  import { sourceRecordFromPath } from '$lib/shell/files/editor/sourceRecordFromPath';
   import {
     dotnetWorkspaceSessionRequest,
     type DotnetWorkspaceAction,
@@ -111,7 +111,7 @@
     warmSourceLspForRootFromTauri,
     writeSourceToTauri
   } from '$lib/tauriSource';
-  import type CodeMirrorSourceEditor from '$lib/CodeMirrorSourceEditor.svelte';
+  import type CodeMirrorSourceEditor from '$lib/shell/files/components/CodeMirrorSourceEditor.svelte';
   import type {
     SourceCodeAction,
     SourceCodeActionLookupRequest,
@@ -675,7 +675,7 @@
 
   async function loadMarkdownPreview(signal: AbortSignal): Promise<void> {
     try {
-      const module = await import('$lib/SourceMarkdownPreview.svelte');
+      const module = await import('$lib/shell/files/components/SourceMarkdownPreview.svelte');
       if (!signal.aborted) MarkdownPreview = module.default;
     } catch (error) {
       if (!signal.aborted) editorLoadError = `Could not start the Markdown preview: ${describeError(error)}`;
@@ -694,7 +694,7 @@
       if (!root) return;
       if (!CodeEditor) {
         if (stopSignal.aborted) return;
-        const module = await import('$lib/CodeMirrorSourceEditor.svelte');
+        const module = await import('$lib/shell/files/components/CodeMirrorSourceEditor.svelte');
         if (stopSignal.aborted) return;
         if (!destroyed) CodeEditor = module.default;
       }
@@ -852,7 +852,7 @@
     if (stopSignal.aborted) return;
     try {
       if (stopSignal.aborted) return;
-      const { setNativeCsharpActiveRoot } = await import('$lib/shell/editor/csharpLanguageClient');
+      const { setNativeCsharpActiveRoot } = await import('$lib/shell/files/editor/csharpLanguageClient');
       if (stopSignal.aborted) return;
       setNativeCsharpActiveRoot(root);
     } catch {

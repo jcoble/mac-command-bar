@@ -3,7 +3,7 @@ import {
   virtualizeSourceTreeRows,
   type SourceTreeRow
 } from '../../../sourceData.ts';
-import type { ExplorerTreeNode } from '../../explorer/explorerStore.svelte.ts';
+import type { ExplorerTreeNode } from '../explorer/explorerStore.svelte.ts';
 
 export type FileTreeNode = ExplorerTreeNode;
 

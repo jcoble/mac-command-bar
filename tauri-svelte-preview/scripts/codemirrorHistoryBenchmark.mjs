@@ -6,7 +6,7 @@ import { EditorState } from '@codemirror/state';
 import {
   limitSavedEditorHistory,
   savedHistoryDepthLimit
-} from '../src/lib/shell/editor/codeMirrorHistory.ts';
+} from '../src/lib/shell/files/editor/codeMirrorHistory.ts';
 
 const encoder = new TextEncoder();
 const DOC_BYTES = 1024 * 1024;
@@ -26,8 +26,8 @@ function representativeTabs(editedDocBytes) {
   return [
     { path: '/workspace/src/large.ts', active: true, language: 'typescript', byteCount: editedDocBytes, line: 1, column: 1 },
     { path: '/workspace/src/routes/+page.svelte', active: false, language: 'svelte', byteCount: 184_000, line: 412, column: 9 },
-    { path: '/workspace/src/lib/shell/editor/editorStore.svelte.ts', active: false, language: 'typescript', byteCount: 41_000, line: 73, column: 3 },
-    { path: '/workspace/src/lib/CodeMirrorSourceEditor.svelte', active: false, language: 'svelte', byteCount: 32_000, line: 419, column: 1 },
+    { path: '/workspace/src/lib/shell/files/editor/editorStore.svelte.ts', active: false, language: 'typescript', byteCount: 41_000, line: 73, column: 3 },
+    { path: '/workspace/src/lib/shell/files/components/CodeMirrorSourceEditor.svelte', active: false, language: 'svelte', byteCount: 32_000, line: 419, column: 1 },
     { path: '/workspace/src-tauri/src/lib.rs', active: false, language: 'rust', byteCount: 24_000, line: 28, column: 1 }
   ];
 }

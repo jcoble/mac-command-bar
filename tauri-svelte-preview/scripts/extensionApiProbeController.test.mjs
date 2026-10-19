@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 const controller = await import(
-  '../src/lib/shell/editor/extensionApiProbeController.ts'
+  '../src/lib/shell/files/editor/extensionApiProbeController.ts'
 );
 
 const log = [];

@@ -3,7 +3,7 @@
  *
  * Run it with:
  *   node --experimental-strip-types \
- *     src/lib/shell/components/editor/editorPanelLanguageServer.test.ts
+ *     src/lib/shell/files/components/editor/editorPanelLanguageServer.test.ts
  *
  * The words on the chip and the waiting rules are tested for real in
  * `languageServerStatus.test.ts`. What cannot be tested that way is the wiring
@@ -33,13 +33,13 @@ import path from 'node:path';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const panelSource = readFileSync(path.join(here, '..', 'EditorPanel.svelte'), 'utf8');
-const chipSource = readFileSync(path.join(here, '..', 'LanguageServerStatusChip.svelte'), 'utf8');
+const chipSource = readFileSync(path.join(here, '..', '..', '..', 'components', 'LanguageServerStatusChip.svelte'), 'utf8');
 const intelligenceSource = readFileSync(
   path.join(here, '..', '..', 'editor', 'sourceIntelligence.ts'),
   'utf8'
 );
 const controlsSource = readFileSync(
-  path.join(here, '..', 'LanguageIntelligenceControls.svelte'),
+  path.join(here, '..', '..', '..', 'components', 'LanguageIntelligenceControls.svelte'),
   'utf8'
 );
 const barSource = readFileSync(

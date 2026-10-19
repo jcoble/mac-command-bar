@@ -4,19 +4,19 @@ import { readFileSync } from 'node:fs';
 import {
   filesPanelActions,
   type FilesPanelActionId
-} from '../src/lib/shell/panels/files/filesPanelActions.ts';
+} from '../src/lib/shell/files/components/filesPanelActions.ts';
 import {
   fileHistoryTarget,
   type FileTreeNode
-} from '../src/lib/shell/panels/files/fileTreeModel.ts';
+} from '../src/lib/shell/files/components/fileTreeModel.ts';
 import { fileIconForName } from '../src/lib/shell/components/explorer/fileIcons.ts';
 
 const filesPanel = readFileSync(
-  new URL('../src/lib/shell/panels/files/FilesPanel.svelte', import.meta.url),
+  new URL('../src/lib/shell/files/components/FilesPanel.svelte', import.meta.url),
   'utf8'
 );
 const fileHistoryPane = readFileSync(
-  new URL('../src/lib/shell/panels/files/FileHistoryPane.svelte', import.meta.url),
+  new URL('../src/lib/shell/files/components/FileHistoryPane.svelte', import.meta.url),
   'utf8'
 );
 const gitHistoryView = readFileSync(

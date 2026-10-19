@@ -19,8 +19,8 @@
 		scanRoot,
 		stopScan,
 		unloadDirectory,
-	} from "$lib/shell/explorer/explorerService";
-	import type { ExplorerTreeNode } from "$lib/shell/explorer/explorerStore.svelte";
+	} from "$lib/shell/files/explorer/explorerService";
+	import type { ExplorerTreeNode } from "$lib/shell/files/explorer/explorerStore.svelte";
 	import {
 		canonicalPath,
 		explorer,
@@ -29,7 +29,7 @@
 		loadedExplorerDirectoryDepth,
 		selectPath,
 		setIncludeExcluded,
-	} from "$lib/shell/explorer/explorerStore.svelte";
+	} from "$lib/shell/files/explorer/explorerStore.svelte";
 		import {
 			FILE_TREE_OVERSCAN_ROWS,
 			FILE_TREE_ROW_HEIGHT,
@@ -40,7 +40,7 @@
 	import { watchFileTree } from "./fileTreeWatch.ts";
 	import { onWorkspaceFileChange, publishWorkspaceFileChange } from "$lib/shell/workspaceFileChangeBus.ts";
 	import { workspaceChangePath } from "$lib/workspacePaths.ts";
-	import { editorState } from "$lib/shell/editor/editorStore.svelte";
+	import { editorState } from "$lib/shell/files/editor/editorStore.svelte";
 	import { gitService } from "$lib/shell/git/gitService";
 	import { openFileInEditor, openFileTimeline } from "$lib/shell/workbenchNavigation";
 	import type { SourceTreeSearchMatch } from "$lib/sourceData";

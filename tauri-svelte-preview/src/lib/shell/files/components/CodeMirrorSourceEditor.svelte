@@ -52,33 +52,33 @@
     setCodeMirrorUndoDepth,
     textBytes
   } from '$lib/shell/resourceDiagnostics.svelte';
-  import { loadCodeMirrorLanguage } from '$lib/shell/editor/codeMirrorLanguage';
+  import { loadCodeMirrorLanguage } from '$lib/shell/files/editor/codeMirrorLanguage';
   import {
     limitSavedEditorHistory,
     savedHistoryDepthLimit
-  } from '$lib/shell/editor/codeMirrorHistory';
+  } from '$lib/shell/files/editor/codeMirrorHistory';
   import {
     codeMirrorCodeLens,
     showCodeMirrorReferences
-  } from '$lib/shell/editor/codeMirrorCodeLens';
+  } from '$lib/shell/files/editor/codeMirrorCodeLens';
   import {
     codeMirrorSemanticTokens,
     semanticTokenDecorations,
     setCodeMirrorSemanticTokens
-  } from '$lib/shell/editor/codeMirrorSemanticTokens';
+  } from '$lib/shell/files/editor/codeMirrorSemanticTokens';
   import {
     codeMirrorThemeForAppearance,
     loadCodeMirrorTheme
-  } from '$lib/shell/editor/codeMirrorTheme';
+  } from '$lib/shell/files/editor/codeMirrorTheme';
   import {
     connectCodeMirrorCsharpClient,
     setNativeCsharpActiveRoot
-  } from '$lib/shell/editor/csharpLanguageClient';
+  } from '$lib/shell/files/editor/csharpLanguageClient';
   import { settings } from '$lib/settingsStore.svelte';
   import type {
     SourceIntelligenceCallbacks,
     SourceLookupRequest
-  } from '$lib/shell/editor/sourceIntelligence';
+  } from '$lib/shell/files/editor/sourceIntelligence';
   import {
     extractSourceSemanticTokens,
     extractSourceSymbols,

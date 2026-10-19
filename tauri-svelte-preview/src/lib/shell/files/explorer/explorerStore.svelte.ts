@@ -1,4 +1,4 @@
-import { parseRemoteWorkspacePath, remoteWorkspacePath } from '../../workspacePaths.ts';
+import { parseRemoteWorkspacePath, remoteWorkspacePath } from '../../../workspacePaths.ts';
 /**
  * State for the lazy /next file explorer.
  *
@@ -6,8 +6,8 @@ import { parseRemoteWorkspacePath, remoteWorkspacePath } from '../../workspacePa
  * its immediate children; collapsing it removes those descendants again. The
  * list is raw because it is replaced as a unit and no row needs a Svelte proxy.
  */
-import type { SourceDirectoryEntry } from '../../sourceData.ts';
-import { setLoadedTreeNodes } from '../resourceDiagnostics.svelte.ts';
+import type { SourceDirectoryEntry } from '../../../sourceData.ts';
+import { setLoadedTreeNodes } from '../../resourceDiagnostics.svelte.ts';
 
 export type ExplorerTreeNode = SourceDirectoryEntry & {
   parentPath: string;

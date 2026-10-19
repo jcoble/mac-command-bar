@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const explorerService = readFileSync(
-  new URL('../src/lib/shell/explorer/explorerService.ts', import.meta.url),
+  new URL('../src/lib/shell/files/explorer/explorerService.ts', import.meta.url),
   'utf8'
 );
 const sourceIntelligence = readFileSync(
-  new URL('../src/lib/shell/editor/sourceIntelligence.ts', import.meta.url),
+  new URL('../src/lib/shell/files/editor/sourceIntelligence.ts', import.meta.url),
   'utf8'
 );
 

@@ -28,7 +28,7 @@
  */
 import { sourceSupportsLanguageIntelligence } from '../../sourceData.ts';
 import { countInvoke } from '../devInvokeCounter.svelte.ts';
-import { editorState } from '../editor/editorStore.svelte.ts';
+import { editorState } from '../files/editor/editorStore.svelte.ts';
 import { listProblemsForRoot, readProblemsForFile } from './problemsBackend.ts';
 import { nativeCsharpDiagnosticsForRoot } from './csharpDiagnosticsAdapter.ts';
 import {

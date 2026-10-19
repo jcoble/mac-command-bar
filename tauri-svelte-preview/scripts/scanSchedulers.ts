@@ -38,7 +38,7 @@ const allowedHits = new Set([
   'src/lib/shell/components/DockPanel.svelte:tick:await tick();',
   // The one-shot WebSocket readiness bridge removes every listener when it
   // settles, and disposing the editor closes the socket so the wait rejects.
-  'src/lib/shell/editor/csharpLanguageClient.ts:new Promise:await new Promise<void>((resolve, reject) => {',
+  'src/lib/shell/files/editor/csharpLanguageClient.ts:new Promise:await new Promise<void>((resolve, reject) => {',
   "src/lib/shell/panels/tasks/TasksPanel.svelte:tick:import { onDestroy, onMount, tick } from 'svelte';",
   'src/lib/shell/panels/tasks/TasksPanel.svelte:tick:await tick();',
   // These one-shot timers are both stopped by the AbortSignal-owning surface.
@@ -71,12 +71,12 @@ const allowedHits = new Set([
   'src/lib/shell/layout/frame.ts:cancelAnimationFrame:cancelAnimationFrame(toolsFrame);',
   // TSK-1424 G: refresh after the panel renders visible; flushSync throws inside an effect. The effect's
   // controller aborts on hide or unmount and the refresh checks it after the tick.
-  'src/lib/shell/panels/files/FilesPanel.svelte:tick:import { onDestroy, tick, untrack } from "svelte";',
-  'src/lib/shell/panels/files/FilesPanel.svelte:tick:await tick();',
+  'src/lib/shell/files/components/FilesPanel.svelte:tick:import { onDestroy, tick, untrack } from "svelte";',
+  'src/lib/shell/files/components/FilesPanel.svelte:tick:await tick();',
   // TSK-1424 G: these return the shared cached promise so the preview's {#await} keeps one identity and an
   // image or formula never blinks back to pending; the reads behind them are named async functions.
-  'src/lib/SourceMarkdownPreview.svelte:loadKatex:function loadKatex(): Promise<KatexComponent> {',
-  'src/lib/SourceMarkdownPreview.svelte:localImageUrl:function localImageUrl(file: string): Promise<string> {',
+  'src/lib/shell/files/components/SourceMarkdownPreview.svelte:loadKatex:function loadKatex(): Promise<KatexComponent> {',
+  'src/lib/shell/files/components/SourceMarkdownPreview.svelte:localImageUrl:function localImageUrl(file: string): Promise<string> {',
   // TSK-1424 C: the turn's one-second elapsed clock. It runs only while the turn runs and the label and
   // window are visible; the effect cleanup clears it when the turn ends, it scrolls out of view or unmounts.
   'src/lib/shell/conversation/components/ConversationTurnElapsed.svelte:setInterval:const timer = setInterval(() => { now = Date.now(); }, 1000);',

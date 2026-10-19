@@ -20,7 +20,7 @@
   } from '$lib/shell/sessionWorkspaces';
 
   import AgentsPanel from '$lib/shell/panels/agents/AgentsPanel.svelte';
-  import FilesPanel from '$lib/shell/panels/files/FilesPanel.svelte';
+  import FilesPanel from '$lib/shell/files/components/FilesPanel.svelte';
   import HistoryPanel from '$lib/shell/history/components/HistoryPanel.svelte';
   import RunPanel from '$lib/shell/panels/run/RunPanel.svelte';
   import SessionContextPanel from '$lib/shell/panels/context/SessionContextPanel.svelte';

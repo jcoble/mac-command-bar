@@ -35,7 +35,7 @@ export const sourceCodeLensIdPrefix = 'mcb-ref-count';
 
 /**
  * How long one counted number is reused before it is asked for again. Same
- * span as the count memory in `shell/editor/sourceIntelligence.ts`, which is
+ * span as the count memory in `shell/files/editor/sourceIntelligence.ts`, which is
  * what the re-ask lands in.
  */
 export const sourceCodeLensCountMemoryMs = 30_000;

@@ -22,7 +22,7 @@
  * PURE: no Svelte, no DOM, no backend — covered by
  * `scripts/explorerFileIcons.test.mjs`.
  */
-import type { SourceLanguage } from '../../../sourceData.ts';
+import type { SourceLanguage } from '../../../../sourceData.ts';
 
 /** What the caller passes in and gets back when nothing here recognises the file. */
 export const UNKNOWN_LANGUAGE: SourceLanguage = 'plain';

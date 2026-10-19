@@ -18,7 +18,7 @@
   import {
     describeLanguageServer,
     type LanguageServerChip
-  } from './editor/languageServerStatus.ts';
+  } from '../files/components/editor/languageServerStatus.ts';
 
   interface Props {
     /** The open file's language, e.g. `csharp`. */

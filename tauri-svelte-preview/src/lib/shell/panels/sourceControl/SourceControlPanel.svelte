@@ -76,7 +76,7 @@
     type DiscardTarget
   } from '$lib/shell/components/git/discardConfirm';
   import { worktreeManager } from '$lib/shell/worktrees/worktreeManagerStore.svelte';
-  import { canonicalPath } from '$lib/shell/explorer/explorerStore.svelte';
+  import { canonicalPath } from '$lib/shell/files/explorer/explorerStore.svelte';
   import { getConversationSession } from '$lib/shell/conversation/conversationStore.svelte';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
   import type {

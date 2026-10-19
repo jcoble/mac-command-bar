@@ -17,7 +17,7 @@ import {
   taskCheckboxOffsets,
   toggleTaskAt,
   toggleTaskCheckbox
-} from '../src/lib/shell/components/editor/markdownPreview.ts';
+} from '../src/lib/shell/files/components/editor/markdownPreview.ts';
 
 // --- which files are Markdown ---------------------------------------------
 

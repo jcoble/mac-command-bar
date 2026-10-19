@@ -6,7 +6,7 @@ import {
 	resetEditorState,
 	restoreEditorFiles,
 	setEditorProjectRoot,
-} from '../editor/editorStore.svelte';
+} from '../files/editor/editorStore.svelte';
 import {
 	captureWorkspace,
 	draftsForCheckout,

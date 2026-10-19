@@ -383,7 +383,7 @@ pub async fn read_resource_sample(
     >,
     projection_streams: State<'_, crate::projection_streams::ProjectionStreams>,
     agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
-    lsp_registry: State<'_, crate::lsp::SourceLspRegistry>,
+    lsp_registry: State<'_, crate::files::lsp::SourceLspRegistry>,
     browser_registry: State<'_, crate::browser::BrowserRegistry>,
 ) -> Result<ResourceSample, String> {
     let system = Arc::clone(&registry.sample_system);
@@ -447,7 +447,7 @@ pub async fn read_resource_totals(
     registry: State<'_, ResourceRegistry>,
     terminal_registry: State<'_, crate::terminal::TerminalRegistry>,
     agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
-    lsp_registry: State<'_, crate::lsp::SourceLspRegistry>,
+    lsp_registry: State<'_, crate::files::lsp::SourceLspRegistry>,
 ) -> Result<ResourceSampleTotals, String> {
     let system = Arc::clone(&registry.sample_system);
     let sampled_process_ids = Arc::clone(&registry.sampled_process_ids);
@@ -541,7 +541,7 @@ pub async fn read_resource_totals(
 fn resource_sample_owners(
     terminal_registry: &crate::terminal::TerminalRegistry,
     agent_runtime: &crate::agent_conversation::manager::AgentRuntimeManager,
-    lsp_registry: &crate::lsp::SourceLspRegistry,
+    lsp_registry: &crate::files::lsp::SourceLspRegistry,
 ) -> Result<Vec<ResourceSampleOwner>, String> {
     let mut sessions = crate::terminal::list_terminal_sessions(terminal_registry)?;
     sessions.sort_by_key(|session| session.started_at);
@@ -647,7 +647,7 @@ fn resource_sample_owners(
 fn resource_diagnostics(
     terminal_registry: &crate::terminal::TerminalRegistry,
     agent_runtime: &crate::agent_conversation::manager::AgentRuntimeManager,
-    lsp_registry: &crate::lsp::SourceLspRegistry,
+    lsp_registry: &crate::files::lsp::SourceLspRegistry,
     native_browser_views: usize,
     transcript_projections: usize,
     projection_streams: crate::projection_streams::ProjectionStreams,
@@ -1591,7 +1591,7 @@ pub async fn stop_resource_process_tree(
     registry: State<'_, ResourceRegistry>,
     terminal_registry: State<'_, crate::terminal::TerminalRegistry>,
     agent_runtime: State<'_, crate::agent_conversation::manager::AgentRuntimeManager>,
-    lsp_registry: State<'_, crate::lsp::SourceLspRegistry>,
+    lsp_registry: State<'_, crate::files::lsp::SourceLspRegistry>,
 ) -> Result<ResourceStopTreeReceipt, String> {
     let system = Arc::clone(&registry.sample_system);
     let terminal_registry = terminal_registry.inner().clone();

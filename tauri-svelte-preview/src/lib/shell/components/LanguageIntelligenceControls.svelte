@@ -3,9 +3,9 @@
   import { onDestroy } from 'svelte';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import { settings } from '$lib/settingsStore.svelte';
-  import { setLanguageServersEnabled } from '$lib/shell/editor/sourceIntelligence';
-  import { readLanguageServerState } from '$lib/shell/components/editor/languageServerStatus';
-  import { languageIntelligenceBar } from '$lib/shell/editor/languageIntelligenceBar.svelte';
+  import { setLanguageServersEnabled } from '$lib/shell/files/editor/sourceIntelligence';
+  import { readLanguageServerState } from '$lib/shell/files/components/editor/languageServerStatus';
+  import { languageIntelligenceBar } from '$lib/shell/files/editor/languageIntelligenceBar.svelte';
 
   let busy = $state(false);
   const stopController = new AbortController();

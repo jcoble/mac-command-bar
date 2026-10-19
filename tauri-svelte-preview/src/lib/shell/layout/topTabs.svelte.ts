@@ -7,7 +7,7 @@
  * `topTabsOps.ts`; this file only makes them reactive.
  */
 import { captureBrowserState } from '../browser/browserStore.svelte.ts';
-import { editorState } from '../editor/editorStore.svelte.ts';
+import { editorState } from '../files/editor/editorStore.svelte.ts';
 import {
   closeTopTab,
   openTopTab,

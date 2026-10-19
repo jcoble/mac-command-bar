@@ -20,9 +20,9 @@ import {
 globalThis.$state = (value) => value;
 const {
 	countingReadinessForStatus
-} = await import('../src/lib/shell/editor/sourceIntelligence.ts');
+} = await import('../src/lib/shell/files/editor/sourceIntelligence.ts');
 const sourceIntelligenceSource = await readFile(
-	new URL('../src/lib/shell/editor/sourceIntelligence.ts', import.meta.url),
+	new URL('../src/lib/shell/files/editor/sourceIntelligence.ts', import.meta.url),
 	'utf8'
 );
 const spot = (symbolName, line, column) => ({ symbolName, line, column });

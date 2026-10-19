@@ -42,15 +42,15 @@ assert.throws(
 );
 
 const codeMirrorLensSource = await readFile(
-  new URL('../src/lib/shell/editor/codeMirrorCodeLens.ts', import.meta.url),
+  new URL('../src/lib/shell/files/editor/codeMirrorCodeLens.ts', import.meta.url),
   'utf8'
 );
 const editorPanelSource = await readFile(
-  new URL('../src/lib/shell/components/EditorPanel.svelte', import.meta.url),
+  new URL('../src/lib/shell/files/components/EditorPanel.svelte', import.meta.url),
   'utf8'
 );
 const codeMirrorEditorSource = await readFile(
-  new URL('../src/lib/CodeMirrorSourceEditor.svelte', import.meta.url),
+  new URL('../src/lib/shell/files/components/CodeMirrorSourceEditor.svelte', import.meta.url),
   'utf8'
 );
 

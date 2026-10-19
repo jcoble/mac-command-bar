@@ -3,7 +3,7 @@ import {
   fileNameFromPath,
   sourceLanguageForOpenPath,
   sourceRecordFromPath
-} from '../src/lib/shell/editor/sourceRecordFromPath.ts';
+} from '../src/lib/shell/files/editor/sourceRecordFromPath.ts';
 
 const root = '/Users/dev/project';
 
