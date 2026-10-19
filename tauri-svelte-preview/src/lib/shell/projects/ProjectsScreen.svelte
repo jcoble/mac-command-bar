@@ -30,7 +30,7 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import { ListRow } from '$lib/components/ui/list-row/index.js';
   import * as Tabs from '$lib/components/ui/tabs/index.js';
-  import RemoteConnections from '$lib/shell/components/RemoteConnections.svelte';
+  import RemoteConnections from '$lib/shell/connections/RemoteConnections.svelte';
   import AddProjectDialog from '$lib/shell/projects/AddProjectDialog.svelte';
   import NewProjectDialog from '$lib/shell/projects/NewProjectDialog.svelte';
   import { hydrateProjects, projectRegistry, refreshRailProjects } from '$lib/shell/projects/projectRegistry.svelte.ts';

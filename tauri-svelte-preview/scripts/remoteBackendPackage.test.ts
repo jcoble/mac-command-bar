@@ -34,7 +34,7 @@ test('builds a deterministic remote backend package contract', async () => {
       schemaVersion: number; version: string; protocolVersion: number; target: string;
       archiveFile: string; bytes: number; sha256: string;
     };
-    const protocolSource = await readFile(new URL('../src-tauri/src/agent_conversation/remote.rs', import.meta.url), 'utf8');
+    const protocolSource = await readFile(new URL('../src-tauri/src/agent_conversation/remote/mod.rs', import.meta.url), 'utf8');
     assert.match(protocolSource, new RegExp(`const PROTOCOL_VERSION: u16 = ${record.protocolVersion};`));
     assert.deepEqual(record, {
       schemaVersion: 1, version: '1.2.3', protocolVersion: record.protocolVersion,
@@ -101,7 +101,7 @@ test('remote download verifier rejects changed, truncated, and unexpected archiv
       binaryPath: path.join(input, 'server'),
       outputDirectory: output, version: '1.2.3', commit: '0123456789abcdef0123456789abcdef01234567'
     });
-    const rust = await readFile(new URL('../src-tauri/src/agent_conversation/remote_install.rs', import.meta.url), 'utf8');
+    const rust = await readFile(new URL('../src-tauri/src/agent_conversation/remote/install.rs', import.meta.url), 'utf8');
     const script = rust.match(/const REMOTE_DOWNLOAD: &str = r#"([\s\S]*?)"#;/)?.[1];
     assert.ok(script, 'remote verifier script exists');
     const run = async (source: string, bytes: number, digest: string) => {

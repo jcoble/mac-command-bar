@@ -104,7 +104,7 @@ async function sha256(filePath: string): Promise<string> {
 }
 
 async function protocolVersion(): Promise<number> {
-  const source = await readFile(fileURLToPath(new URL('../src-tauri/src/agent_conversation/remote.rs', import.meta.url)), 'utf8');
+  const source = await readFile(fileURLToPath(new URL('../src-tauri/src/agent_conversation/remote/mod.rs', import.meta.url)), 'utf8');
   const match = source.match(/const PROTOCOL_VERSION: u16 = (\d+);/g);
   if (!match || match.length !== 1) throw new Error('Remote protocol version source is missing or ambiguous');
   return Number(match[0].match(/\d+(?=;)/)?.[0]);

@@ -4,7 +4,7 @@ use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::agent_conversation::{remote::RemoteConnectionManager, remote_install::ssh_output};
+use crate::agent_conversation::remote::{install::ssh_output, RemoteConnectionManager};
 
 static PENDING_CLI_UPDATES: OnceLock<Mutex<HashSet<(String, String)>>> = OnceLock::new();
 

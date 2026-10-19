@@ -1,5 +1,9 @@
 //! One authenticated WebSocket boundary for conversations owned by a remote machine.
 
+mod history;
+pub(in crate::agent_conversation) mod install;
+mod workspace;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(debug_assertions)]
 use std::collections::VecDeque;
@@ -28,7 +32,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, Message as TungsteniteMessage};
 
 use super::manager::AgentRuntimeManager;
-use super::remote_history::RemoteHistory;
+use self::history::RemoteHistory;
 use crate::projection_streams::ProjectionStreams;
 use crate::terminal::{
     self, TerminalKind, TerminalOutputFrame, TerminalRegistry, TerminalScrollbackSnapshot,
@@ -563,7 +567,7 @@ pub struct RemoteAssemblyEnvironment {
 pub struct RemoteBackendProfileStatus {
     pub profile_id: String,
     #[serde(flatten)]
-    pub backend: super::remote_install::BackendStatus,
+    pub backend: self::install::BackendStatus,
 }
 
 /// What one saved machine's transport is doing. The manager derives it from the
@@ -1024,7 +1028,7 @@ impl RemoteConnectionManager {
                 let _owner = manager.connection_lock.lock().await;
                 let (profile, _, _) = manager.resolve_profile_identity(profile).await?;
                 manager.stop_profile(&profile.id);
-                let receipt = super::remote_install::install_latest(&profile.ssh_target, progress.clone()).await?;
+                let receipt = self::install::install_latest(&profile.ssh_target, progress.clone()).await?;
                 let _ = progress.send(format!("Installed backend {} from {}. Connecting…",
                     receipt.version, &receipt.commit[..12]));
                 manager.connect_profile_inner_locked(profile, progress).await
@@ -1055,7 +1059,7 @@ impl RemoteConnectionManager {
         let _owner = self.connection_lock.lock().await;
         let (profile, _, replaced_profile_id) = self.resolve_profile_identity(profile).await?;
         self.stop_profile(&profile.id);
-        super::remote_install::uninstall(&profile.ssh_target, delete_data).await?;
+        self::install::uninstall(&profile.ssh_target, delete_data).await?;
         if delete_data {
             self.downloads.lock().unwrap().retain(|_, entry| entry.progress.borrow().profile_id != profile.id);
             self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(&profile.id)?;
@@ -2883,13 +2887,13 @@ pub async fn read_remote_backend_statuses(
     for profile in &profiles {
         validate_profile(profile).map_err(super::protocol::CommandError::from)?;
     }
-    let latest_version = super::remote_install::latest_version()
+    let latest_version = self::install::latest_version()
         .await
         .map_err(super::protocol::CommandError::from)?;
     let statuses = join_all(profiles.into_iter().map(|profile| {
         let latest_version = latest_version.clone();
         async move {
-            let backend = super::remote_install::read_status(&profile.ssh_target, &latest_version)
+            let backend = self::install::read_status(&profile.ssh_target, &latest_version)
                 .await?;
             Ok::<_, String>(RemoteBackendProfileStatus {
                 profile_id: profile.id,
@@ -4137,7 +4141,7 @@ async fn execute_remote_command(
         RemoteCommand::Workflow { .. } => Err("Workflow requests need the server's workflow engine".into()),
         RemoteCommand::Messaging { op, args } => super::messaging::answer(manager.store(), Some(manager), &op, &args)
             .map(RemoteResponse::Messaging),
-        RemoteCommand::Workspace { operation, args } => super::remote_workspace::execute(operation, args).await.map(RemoteResponse::Workspace),
+        RemoteCommand::Workspace { operation, args } => self::workspace::execute(operation, args).await.map(RemoteResponse::Workspace),
         RemoteCommand::ProbeProviderConfig { provider, cwd } => manager
             .probe_provider_config(provider, &cwd)
             .await
@@ -5527,7 +5531,7 @@ mod connection_tests {
         shared.upsert_app_setting(REMOTE_SESSION_PROJECTIONS_SETTING_KEY,
             &serde_json::to_string(&[listed.clone()]).unwrap()).unwrap();
         shared.file_remote_sessions("workbox", &serde_json::json!([[
-            super::super::remote_history::RemoteHistory::key("workbox", "large-history"),
+            super::history::RemoteHistory::key("workbox", "large-history"),
             listed.project_id, 90,
             {"remoteProfileId": "workbox", "suspended": false, "activeTurnId": "turn"},
         ]]).to_string()).unwrap();

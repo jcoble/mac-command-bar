@@ -31,7 +31,7 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import PendingFirstMessage from '$lib/shell/components/conversation/PendingFirstMessage.svelte';
-  import RemoteConnections from '$lib/shell/components/RemoteConnections.svelte';
+  import RemoteConnections from '$lib/shell/connections/RemoteConnections.svelte';
   import AddProjectDialog from '$lib/shell/projects/AddProjectDialog.svelte';
   import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
