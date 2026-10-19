@@ -218,7 +218,7 @@ pub(super) enum RemoteResponse {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ServerFrame {
-    HistoryDownloadStart { id: u64, owned_id: String, low_sequence: Option<i64>, high_sequence: Option<i64>, total_bytes: u64, covered_bytes: u64,
+    HistoryDownloadStart { id: u64, owned_id: String, low_sequence: Option<i64>, high_sequence: Option<i64>, row_count: u64, total_bytes: u64, covered_bytes: u64,
         #[serde(deserialize_with = "deserialize_wire_payload")] snapshot: AgentConversationSnapshot },
     HistoryDownloadChunk { id: u64, owned_id: String, oldest_sequence: i64, covered_bytes: u64, gzip_base64: String },
     HistoryDownloadDone { id: u64, owned_id: String },
@@ -456,6 +456,7 @@ struct HistoryDownload {
     epoch: u64,
     low: Option<i64>,
     high: Option<i64>,
+    row_count: u64,
     progress: tokio::sync::watch::Sender<HistoryDownloadProgress>,
 }
 
@@ -2035,7 +2036,7 @@ impl RemoteConnectionManager {
         let progress = HistoryDownloadProgress { profile_id: profile.into(), source_owned_id: owned.into(), workspace_owned_id,
             child_session_id, total_bytes: saved.total_bytes, covered_bytes: saved.covered_bytes,
             phase: "downloading".into(), ready: false, error: None };
-        Ok(HistoryDownload { request_id: Some(id), epoch: history.epoch(profile), low: None, high: None,
+        Ok(HistoryDownload { request_id: Some(id), epoch: history.epoch(profile), low: None, high: None, row_count: 0,
             progress: tokio::sync::watch::channel(progress).0 })
     }
 
@@ -2064,7 +2065,7 @@ impl RemoteConnectionManager {
         let progress = download.progress.borrow().clone();
         // Keep existing receivers across reconnects.
         if let Some(previous) = downloads.get_mut(&key) {
-            previous.request_id = Some(id); previous.epoch = download.epoch; previous.low = None; previous.high = None;
+            previous.request_id = Some(id); previous.epoch = download.epoch; previous.low = None; previous.high = None; previous.row_count = 0;
             previous.progress.send_replace(progress.clone());
         } else { downloads.insert(key.clone(), download); }
         if let Err(error) = sender.try_send(ClientRequest::Download { id, command: RemoteCommand::DownloadHistory { owned_id: owned_id.into(), before_sequence } }) {
@@ -2101,11 +2102,11 @@ impl RemoteConnectionManager {
     }
 
     fn receive_history_start(&self, profile: &str, id: u64, owned: &str, low: Option<i64>, high: Option<i64>,
-        total_bytes: u64, covered_bytes: u64, mut snapshot: AgentConversationSnapshot) -> Result<(), String> {
+        row_count: u64, total_bytes: u64, covered_bytes: u64, mut snapshot: AgentConversationSnapshot) -> Result<(), String> {
         let mut downloads = self.downloads.lock().unwrap();
         let Some(entry) = downloads.get_mut(&RemoteHistory::key(profile, owned)).filter(|entry| entry.request_id == Some(id)) else { return Ok(()); };
-        self.history.lock().unwrap().begin_download(profile, entry.epoch, HistoryDownloadFacts { low_sequence: low, high_sequence: high, total_bytes, covered_bytes }, &mut snapshot)?;
-        entry.low = low; entry.high = high;
+        self.history.lock().unwrap().begin_download(profile, entry.epoch, HistoryDownloadFacts { low_sequence: low, high_sequence: high, row_count, total_bytes, covered_bytes }, &mut snapshot)?;
+        entry.low = low; entry.high = high; entry.row_count = row_count;
         entry.progress.send_modify(|progress| { progress.total_bytes = total_bytes; progress.covered_bytes = covered_bytes;
             progress.ready = covered_bytes >= total_bytes / 5 + u64::from(total_bytes % 5 != 0); });
         let progress = entry.progress.borrow().clone(); drop(downloads); self.publish_download(progress); Ok(())
@@ -2122,14 +2123,17 @@ impl RemoteConnectionManager {
     }
 
     async fn finish_history_download(&self, profile: &str, owned: &str, id: u64) -> Result<(), String> {
-        let (low, high, epoch, covered) = {
+        let (low, high, row_count, epoch, covered) = {
             let downloads = self.downloads.lock().unwrap();
             let Some(entry) = downloads.get(&RemoteHistory::key(profile, owned)).filter(|entry| entry.request_id == Some(id)) else { return Ok(()); };
             let covered = entry.progress.borrow().covered_bytes;
-            (entry.low, entry.high, entry.epoch, covered)
+            (entry.low, entry.high, entry.row_count, entry.epoch, covered)
         };
         if self.history.lock().unwrap().download_state(profile, owned)?.is_some_and(|state| state.complete) { return Ok(()); }
-        let gaps = self.store.remote_history_gaps(&RemoteHistory::key(profile, owned), low, high).map_err(|e| e.to_string())?;
+        let saved_rows = self.store.remote_saved_row_count(&RemoteHistory::key(profile, owned), low, high).map_err(|e| e.to_string())?;
+        let gaps = if saved_rows < row_count {
+            self.store.remote_history_gaps(&RemoteHistory::key(profile, owned), low, high).map_err(|e| e.to_string())?
+        } else { Vec::new() };
         for gap in gaps {
             let mut after = gap.first_sequence.saturating_sub(1);
             while after < gap.last_sequence {
@@ -3333,8 +3337,8 @@ async fn client_loop(
                         frame = other;
                     }
                     match frame {
-                        ServerFrame::HistoryDownloadStart { id, owned_id, low_sequence, high_sequence, total_bytes, covered_bytes, snapshot } => {
-                            if let Err(error) = history_client.0.receive_history_start(&history_client.1, id, &owned_id, low_sequence, high_sequence, total_bytes, covered_bytes, snapshot) {
+                        ServerFrame::HistoryDownloadStart { id, owned_id, low_sequence, high_sequence, row_count, total_bytes, covered_bytes, snapshot } => {
+                            if let Err(error) = history_client.0.receive_history_start(&history_client.1, id, &owned_id, low_sequence, high_sequence, row_count, total_bytes, covered_bytes, snapshot) {
                                 history_client.0.fail_history_download(&history_client.1, id, error);
                                 if send_client_frame(&mut socket, &ClientFrame::Cancel { id }).await.is_err() { break 'connected; }
                             }
@@ -3413,7 +3417,7 @@ async fn client_loop(
                                     let mut downloads = history_client.0.downloads.lock().unwrap();
                                     if let Some(previous) = downloads.get_mut(&key) {
                                         previous.request_id = Some(id); previous.epoch = download.epoch;
-                                        previous.low = None; previous.high = None;
+                                        previous.low = None; previous.high = None; previous.row_count = 0;
                                         previous.progress.send_replace(download.progress.borrow().clone());
                                     } else { downloads.insert(key.clone(), download); }
                                 }
@@ -3680,7 +3684,7 @@ async fn stream_history_download(state: &ServerState, id: u64, owned_id: &str, m
     let snapshot = state.manager.snapshot_since(owned_id, Some(i64::MAX))?.ok_or("Remote session was not found")?;
     let mut covered = facts.covered_bytes;
     let start = ServerFrame::HistoryDownloadStart { id, owned_id: owned_id.into(), low_sequence: facts.low_sequence,
-        high_sequence: facts.high_sequence, total_bytes: facts.total_bytes, covered_bytes: covered, snapshot };
+        high_sequence: facts.high_sequence, row_count: facts.row_count, total_bytes: facts.total_bytes, covered_bytes: covered, snapshot };
     send_history_frame(history_outbound, start).await?;
     if let (Some(low), Some(high)) = (facts.low_sequence, facts.high_sequence) {
         loop {
@@ -4466,7 +4470,7 @@ mod connection_tests {
         assert!(matches!(command, RemoteCommand::DownloadHistory { before_sequence: Some(3), .. }));
         manager.finish_history_download("cache-test", "large-history", id).await.unwrap();
         assert!(!manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
-        manager.receive_history_start("cache-test", restarted, "large-history", Some(1), Some(3), 300, 100,
+        manager.receive_history_start("cache-test", restarted, "large-history", Some(1), Some(3), 3, 300, 100,
             history_snapshot(vec![], 3)).unwrap();
         manager.receive_history_chunk("cache-test", restarted, "large-history", 300,
             encode_history_chunk(&[history_event(2), history_event(1)]).unwrap()).unwrap();
@@ -4486,7 +4490,7 @@ mod connection_tests {
         let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected delete"); };
         reply.send(Ok(RemoteResponse::Bool(true))).unwrap();
         assert!(deletion.await.unwrap().unwrap());
-        manager.receive_history_start("cache-test", id, "large-history", Some(1), Some(1), 100, 0,
+        manager.receive_history_start("cache-test", id, "large-history", Some(1), Some(1), 1, 100, 0,
             history_snapshot(vec![], 1)).unwrap();
         manager.receive_history_chunk("cache-test", id, "large-history", 100,
             encode_history_chunk(&[history_event(1)]).unwrap()).unwrap();
@@ -4627,7 +4631,7 @@ mod connection_tests {
         let ClientRequest::Download { id, command } = requests.recv().await.unwrap() else { panic!("expected child download"); };
         assert!(matches!(command, RemoteCommand::DownloadHistory { owned_id, .. } if owned_id == owned));
         let mut snapshot = history_snapshot(vec![], 0); snapshot.connection.owned_id = owned.clone();
-        manager.receive_history_start("cache-test", id, &owned, None, None, 0, 0, snapshot).unwrap();
+        manager.receive_history_start("cache-test", id, &owned, None, None, 0, 0, 0, snapshot).unwrap();
         manager.finish_history_download("cache-test", &owned, id).await.unwrap();
         let selected = child.await.unwrap().unwrap();
         assert_eq!(selected.history_owned_id, RemoteHistory::key("cache-test", &owned));
@@ -4661,7 +4665,7 @@ mod connection_tests {
         assert_eq!(decode_history_chunk(&encoded).unwrap(), rows);
         let request = ClientFrame::Request { id: 50, command: RemoteCommand::DownloadHistory { owned_id: "large-history".into(), before_sequence: Some(-1) } };
         assert!(matches!(serde_json::from_str::<ClientFrame>(&serde_json::to_string(&request).unwrap()).unwrap(), ClientFrame::Request { id: 50, command: RemoteCommand::DownloadHistory { before_sequence: Some(-1), .. } }));
-        for frame in [ServerFrame::HistoryDownloadStart { id: 50, owned_id: "large-history".into(), low_sequence: Some(-2), high_sequence: Some(3), total_bytes: 100, covered_bytes: 0, snapshot: history_snapshot(vec![], 3) }, ServerFrame::HistoryDownloadChunk { id: 50, owned_id: "large-history".into(), oldest_sequence: -2, covered_bytes: 100, gzip_base64: encoded }, ServerFrame::HistoryDownloadDone { id: 50, owned_id: "large-history".into() }] {
+        for frame in [ServerFrame::HistoryDownloadStart { id: 50, owned_id: "large-history".into(), low_sequence: Some(-2), high_sequence: Some(3), row_count: 2, total_bytes: 100, covered_bytes: 0, snapshot: history_snapshot(vec![], 3) }, ServerFrame::HistoryDownloadChunk { id: 50, owned_id: "large-history".into(), oldest_sequence: -2, covered_bytes: 100, gzip_base64: encoded }, ServerFrame::HistoryDownloadDone { id: 50, owned_id: "large-history".into() }] {
             let json = encode_server_frame(&frame).unwrap();
             assert_eq!(serde_json::to_value(parse_server_frame(TungsteniteMessage::Text(json.into())).unwrap().unwrap()).unwrap(), serde_json::to_value(frame).unwrap());
         }
@@ -4692,7 +4696,7 @@ mod connection_tests {
         assert!(!manager.download_watch("cache-test", "large-history").unwrap().borrow().ready, "placeholder is not authoritative zero-byte history");
         let ClientRequest::Download { id, command } = requests.recv().await.unwrap() else { panic!("expected download"); };
         assert!(matches!(command, RemoteCommand::DownloadHistory { .. }));
-        manager.receive_history_start("cache-test", id, "large-history", low, high, total, 0, history_snapshot(vec![], high.unwrap_or(0))).unwrap();
+        manager.receive_history_start("cache-test", id, "large-history", low, high, low.zip(high).map_or(0, |(low, high)| (high - low + 1) as u64), total, 0, history_snapshot(vec![], high.unwrap_or(0))).unwrap();
         (id, requests)
     }
 
@@ -4732,6 +4736,44 @@ mod connection_tests {
         assert_eq!(manager.saved_cursors("cache-test").unwrap()["large-history"], 3);
         manager.receive_history_chunk("cache-test", id, "large-history", 300, encode_history_chunk(&[history_event(1)]).unwrap()).unwrap();
         assert_eq!(manager.store.remote_saved_minimum(&RemoteHistory::key("cache-test", "large-history")).unwrap(), Some(2));
+    }
+
+    #[tokio::test]
+    async fn download_with_pruned_holes_completes_without_repair_requests() {
+        let manager = download_manager();
+        let (id, mut requests) = begin_test_download(&manager, 400, Some(1), Some(9)).await;
+        manager.receive_history_start("cache-test", id, "large-history", Some(1), Some(9), 4, 400, 0,
+            history_snapshot(vec![], 9)).unwrap();
+        manager.receive_history_chunk("cache-test", id, "large-history", 400,
+            encode_history_chunk(&[history_event(9), history_event(5), history_event(2), history_event(1)]).unwrap()).unwrap();
+        tokio::time::timeout(Duration::from_millis(100),
+            manager.finish_history_download("cache-test", "large-history", id)).await
+            .expect("retained rows must complete without repair").unwrap();
+        assert!(requests.try_recv().is_err(), "pruned holes must not request EventsAfter");
+        assert!(manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
+    }
+
+    #[tokio::test]
+    async fn download_missing_a_row_still_repairs() {
+        let manager = download_manager();
+        let (id, mut requests) = begin_test_download(&manager, 500, Some(1), Some(9)).await;
+        manager.receive_history_start("cache-test", id, "large-history", Some(1), Some(9), 5, 500, 0,
+            history_snapshot(vec![], 9)).unwrap();
+        manager.receive_history_chunk("cache-test", id, "large-history", 500,
+            encode_history_chunk(&[history_event(9), history_event(5), history_event(2), history_event(1)]).unwrap()).unwrap();
+        let finisher = manager.clone();
+        let finish = tokio::spawn(async move { finisher.finish_history_download("cache-test", "large-history", id).await });
+        for after in [2, 5] {
+            let ClientRequest::Execute { command, reply, .. } = tokio::time::timeout(
+                Duration::from_millis(100), requests.recv()).await.expect("missing rows must request repair").unwrap()
+                else { panic!("expected repair"); };
+            assert!(matches!(command, RemoteCommand::EventsAfter { after_sequence, .. } if after_sequence == after));
+            assert!(!manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
+            reply.send(Ok(RemoteResponse::EventPage(AgentConversationEventPage { events: vec![], has_more: false }))).unwrap();
+        }
+        finish.await.unwrap().unwrap();
+        assert!(requests.try_recv().is_err());
+        assert!(manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
     }
 
     #[tokio::test]

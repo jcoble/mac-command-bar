@@ -106,7 +106,7 @@ mod tests {
         // Totals were empty, but metadata was sampled after the first live event.
         let mut metadata = snapshot(2, 1);
         history.begin_download("p", 0, HistoryDownloadFacts {
-            low_sequence: None, high_sequence: None, total_bytes: 0, covered_bytes: 0,
+            low_sequence: None, high_sequence: None, row_count: 0, total_bytes: 0, covered_bytes: 0,
         }, &mut metadata).unwrap();
         history.complete_download("p", 0, "same-session-id", None, None).unwrap();
         let saved = history.read_selection_snapshot("p", "same-session-id", 1024).unwrap().unwrap();
@@ -120,7 +120,7 @@ mod tests {
         history.prepare_download("p", "same-session-id").unwrap();
         let mut metadata = snapshot(1, 3);
         metadata.events.clear();
-        history.begin_download("p", 0, HistoryDownloadFacts { low_sequence: Some(1), high_sequence: Some(3), total_bytes: 300, covered_bytes: 0 }, &mut metadata).unwrap();
+        history.begin_download("p", 0, HistoryDownloadFacts { low_sequence: Some(1), high_sequence: Some(3), row_count: 3, total_bytes: 300, covered_bytes: 0 }, &mut metadata).unwrap();
         let mut rows = vec![event(3), event(2)];
         if let AgentConversationPayload::AssistantMessage { blocks, .. } = &mut rows[0].payload { *blocks = None; }
         history.download_chunk("p", 0, "same-session-id", 200, &mut rows).unwrap();

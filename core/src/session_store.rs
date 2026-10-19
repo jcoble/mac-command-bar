@@ -1028,6 +1028,7 @@ pub struct OlderEvents {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryDownloadFacts {
+    pub row_count: u64,
     pub low_sequence: Option<i64>,
     pub high_sequence: Option<i64>,
     pub total_bytes: u64,
@@ -4075,10 +4076,10 @@ impl SessionStore {
     pub fn history_download_facts(&self, owned_id: &str, before_sequence: Option<i64>) -> Result<HistoryDownloadFacts> {
         self.lock()?.query_row(
             "SELECT MIN(seq), MAX(seq), COALESCE(SUM(LENGTH(CAST(payload AS BLOB))), 0),
-                    COALESCE(SUM(CASE WHEN seq >= ?2 THEN LENGTH(CAST(payload AS BLOB)) ELSE 0 END), 0)
+                    COALESCE(SUM(CASE WHEN seq >= ?2 THEN LENGTH(CAST(payload AS BLOB)) ELSE 0 END), 0), COUNT(*)
              FROM events WHERE owned_id = ?1",
             params![owned_id, before_sequence], |row| Ok(HistoryDownloadFacts {
-                low_sequence: row.get(0)?, high_sequence: row.get(1)?, total_bytes: row.get(2)?, covered_bytes: row.get(3)?,
+                low_sequence: row.get(0)?, high_sequence: row.get(1)?, total_bytes: row.get(2)?, covered_bytes: row.get(3)?, row_count: row.get(4)?,
             }),
         ).map_err(|error| StoreError::sqlite("could not read history download totals", error))
     }
@@ -4113,6 +4114,13 @@ impl SessionStore {
         self.lock()?.query_row("SELECT MIN(seq) FROM events WHERE owned_id = ?1 AND kind = 'remote.cached'",
             [cached_owned_id], |row| row.get(0))
             .map_err(|error| StoreError::sqlite("could not read saved remote minimum", error))
+    }
+
+    pub fn remote_saved_row_count(&self, cached_owned_id: &str, low: Option<i64>, high: Option<i64>) -> Result<u64> {
+        self.lock()?.query_row(
+            "SELECT COUNT(*) FROM events WHERE owned_id = ?1 AND kind = 'remote.cached' AND seq BETWEEN ?2 AND ?3",
+            params![cached_owned_id, low, high], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not count saved remote rows", error))
     }
 
     pub fn remote_incomplete_downloads(&self, profile: &str) -> Result<Vec<String>> {
@@ -5152,6 +5160,19 @@ mod tests {
     }
 
     #[test]
+    fn history_download_facts_reports_retained_row_count() {
+        let store = SessionStore::open_in_memory().unwrap();
+        for name in ["download", "other"] { store.upsert_session(&fixture_session(name, 0)).unwrap(); }
+        for seq in [1, 2, 5, 9] { store.append_event(&fixture_event("download", seq)).unwrap(); }
+        store.append_event(&fixture_event("other", 3)).unwrap();
+        for before in [None, Some(5)] {
+            let facts = store.history_download_facts("download", before).unwrap();
+            assert_eq!((facts.low_sequence, facts.high_sequence, facts.row_count), (Some(1), Some(9), 4));
+        }
+        assert_eq!(store.history_download_facts("empty", None).unwrap().row_count, 0);
+    }
+
+    #[test]
     fn history_download_rows_are_newest_first_and_bounded() {
         let store = SessionStore::open_in_memory().unwrap();
         store.upsert_session(&fixture_session("download", 0)).unwrap();
@@ -5178,6 +5199,10 @@ mod tests {
         let gaps = store.remote_history_gaps("download", Some(-4), Some(4)).unwrap();
         assert_eq!(gaps.iter().map(|gap| (gap.first_sequence, gap.last_sequence)).collect::<Vec<_>>(), [(-4,-3), (0,1), (3,4)]);
         assert_eq!(store.remote_saved_minimum("download").unwrap(), Some(-9));
+        store.append_event(&fixture_event("download", 0)).unwrap();
+        assert_eq!(store.remote_saved_row_count("download", Some(-4), Some(4)).unwrap(), 3);
+        assert_eq!(store.remote_saved_row_count("download", Some(-2), Some(2)).unwrap(), 3);
+        assert_eq!(store.remote_saved_row_count("download", None, None).unwrap(), 0);
         let gaps = store.remote_history_gaps("empty", Some(-4), Some(4)).unwrap();
         assert_eq!((gaps[0].first_sequence, gaps[0].last_sequence), (-4,4));
         assert!(store.remote_history_gaps("download", None, None).unwrap().is_empty());
