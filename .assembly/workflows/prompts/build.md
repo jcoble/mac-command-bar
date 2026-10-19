@@ -4,7 +4,7 @@ ${{ task.body }}
 
 Read the whole task before anything else: `notion-fetch` ${{ task.key }} and read its sections verbatim; the owner's decisions and later corrections are there. If the task has reference screenshots, `Read` each one at the absolute path recorded in the task body (attached screenshots are also saved under `~/dev/work/reports/tsk-ui-base/screenshots/`) and judge the work against them.
 
-Implement this reviewed spec, working through its checklist; if a requirement is `blocked`, stop and report it instead of building around it:
+Implement this reviewed spec, working through its checklist. Build every requirement that is not `blocked`. Leave each `blocked` one out, create a follow-up Notion task for it in the same project (what is blocked, the exact reason, what would unblock it), and list it under `Follow-ups` in your report with its link; if you cannot create Notion tasks, list it there without a link. A blocked requirement never stops the build:
 ${{ steps.spec.summary }}
 
 On redo, fix these review findings: ${{ redo.findings }}

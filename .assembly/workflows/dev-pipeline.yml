@@ -50,8 +50,13 @@ steps:
       - git push -u origin HEAD
       - gh pr create --fill --body-file "${{ run.pr_body }}" || gh pr edit --body-file "${{ run.pr_body }}"
       - evidence publish "${{ task.key }}"
-  final-review:
+  # The repository's review bot reviews the PR; its findings are fixed or answered here.
+  pr-feedback:
     needs: [pr]
+    agent: { provider: codex, model: gpt-6.1-sol }
+    prompt: prompts/pr-feedback.md
+  final-review:
+    needs: [pr-feedback]
     review: { of: build, agent: { provider: codex, model: gpt-6.1-sol }, prompt: prompts/final-review.md }
   # The body is rewritten when a command step starts, so this one carries the final review.
   pr-body:
@@ -62,5 +67,10 @@ steps:
     needs: [pr-body]
     if: "${{ !inputs.i_merge }}"
     run:
-      - gh pr checks --required --watch
-      - ALLOW_MERGE=1 gh pr merge --merge --match-head-commit "$(git rev-parse HEAD)"
+      # One command: the engine runs every listed command even after one fails, so separate
+      # gate commands would not stop the merge. Merge only when the review bot has reviewed
+      # this head with nothing open and the checks pass.
+      - >-
+        node --experimental-strip-types tauri-svelte-preview/scripts/prBotReview.ts
+        && gh pr checks --watch
+        && ALLOW_MERGE=1 gh pr merge --merge --match-head-commit "$(git rev-parse HEAD)"

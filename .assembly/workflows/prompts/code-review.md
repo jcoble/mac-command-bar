@@ -12,7 +12,7 @@ Review this branch's diff against the default branch (`git diff origin/main...HE
 Last round's findings, if this is a later round: ${{ redo.findings }}
 If one of your findings is the same problem as one of those and it is still not fixed, start it with `REPEAT:`. A repeated finding stops the run for the owner; a new finding sends the work back for another round.
 
-The run works without the owner. Settle how the code behaves by reading it, never by asking. Small choices the task leaves open belong to the author; flag a choice only when it is wrong, and say what is right. Every finding must be a fix the author can make alone. Never write a finding that asks the owner to decide.
+The run works without the owner. Settle how the code behaves by reading it, never by asking. Small choices the task leaves open belong to the author; flag a choice only when it is wrong, and say what is right. Every finding must be a fix the author can make alone. Never write a finding that asks the owner to decide. A real problem that is outside this task, or that only the owner can settle, is not a finding: name it in your final reply as a follow-up, and pass or fail on the rest.
 
 Call report_review exactly once: PASS with no findings, or a list of actionable findings, each with `path:line` and the fix. Only a recorded call counts: if the call is rejected or fails, read the reason and call it again.
 
