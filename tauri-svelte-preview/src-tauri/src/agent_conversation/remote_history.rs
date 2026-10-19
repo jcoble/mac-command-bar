@@ -3,7 +3,8 @@
 use super::protocol::{
     AgentConversationConnection, AgentConversationEvent, AgentConversationEventPage,
     AgentConversationItemPage, AgentConversationPayload, AgentConversationSelectionSnapshot,
-    AgentConversationSessionRecord, AgentConversationSnapshot, ApprovalState,
+    AgentConversationSessionRecord, AgentConversationSnapshot, AgentRuntimeState, ApprovalState,
+    ConversationConnectionState,
 };
 use mcb_core::session_store::{EventCoverage, EventRow, SessionRow, SessionStore};
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,12 @@ struct Coverage {
     remote_profile_id: String,
     connection: Option<AgentConversationConnection>,
     suspended: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_state: Option<AgentRuntimeState>,
+    #[serde(default)]
+    pending_permission: bool,
+    #[serde(default)]
+    pending_input: bool,
     oldest: Option<i64>,
     through: Option<i64>,
     start_complete: bool,
@@ -596,13 +603,15 @@ impl RemoteHistory {
     /// project from the start, before any of its events are copied.
     pub fn file_sessions(&self, profile: &str, sessions: &[AgentConversationSessionRecord]) -> Result<(), String> {
         let rows: Vec<_> = sessions.iter()
-            .map(|session| (Self::key(profile, &session.owned_id), &session.project_id, session.last_activity_at_ms))
+            .map(|session| (Self::key(profile, &session.owned_id), &session.project_id, session.last_activity_at_ms,
+                Coverage { remote_profile_id: profile.into(), runtime_state: Some(session.state),
+                    suspended: session.suspended, active_turn_id: session.active_turn_id.clone(),
+                    pending_permission: session.pending_permission, pending_input: session.pending_input,
+                    ..Default::default() }))
             .collect();
-        let coverage = Coverage { remote_profile_id: profile.into(), ..Default::default() };
         self.store
             .file_remote_sessions(
                 profile,
-                &serde_json::to_string(&coverage).map_err(|error| error.to_string())?,
                 &serde_json::to_string(&rows).map_err(|error| error.to_string())?,
             )
             .map_err(|error| error.to_string())
@@ -751,6 +760,14 @@ impl RemoteHistory {
         {
             apply_pending_event(&mut coverage.pending_events, event);
             apply_active_turn(&mut coverage.active_turn_id, event);
+            if let Some(state) = event.runtime_state {
+                coverage.runtime_state = Some(state);
+                coverage.suspended = state == AgentRuntimeState::Suspended;
+            }
+            coverage.pending_permission = coverage.pending_events.iter().any(|event|
+                matches!(event.payload, AgentConversationPayload::Approval { state: ApprovalState::Requested, .. }));
+            coverage.pending_input = coverage.pending_events.iter().any(|event|
+                matches!(event.payload, AgentConversationPayload::UserInputRequested { .. }));
             coverage.pending_sequence = Some(event.sequence);
         }
         coverage.pending_sequence.get_or_insert(confirmed);
@@ -770,7 +787,6 @@ impl RemoteHistory {
         let owned = &snapshot.connection.owned_id;
         let mut coverage = self.coverage(profile, owned)?;
         coverage.connection = Some(snapshot.connection.clone());
-        coverage.suspended = snapshot.suspended;
         coverage.has_earlier_transcript = snapshot.has_earlier_transcript;
         if coverage
             .pending_sequence
@@ -779,6 +795,19 @@ impl RemoteHistory {
             coverage.pending_events.clone_from(&snapshot.pending_events);
             coverage.pending_sequence = Some(snapshot.last_sequence);
             coverage.active_turn_id.clone_from(&snapshot.active_turn_id);
+            coverage.suspended = snapshot.suspended;
+            coverage.pending_permission = snapshot.pending_events.iter().any(|event|
+                matches!(event.payload, AgentConversationPayload::Approval { state: ApprovalState::Requested, .. }));
+            coverage.pending_input = snapshot.pending_events.iter().any(|event|
+                matches!(event.payload, AgentConversationPayload::UserInputRequested { .. }));
+            coverage.runtime_state = Some(if snapshot.connection.state == ConversationConnectionState::Failed {
+                    AgentRuntimeState::Failed
+                }
+                else if snapshot.suspended { AgentRuntimeState::Suspended }
+                else if coverage.pending_permission { AgentRuntimeState::WaitingApproval }
+                else if coverage.pending_input { AgentRuntimeState::WaitingInput }
+                else if snapshot.active_turn_id.is_some() { AgentRuntimeState::Working }
+                else { AgentRuntimeState::Ready });
         }
         if let Some(first) = snapshot.events.first() {
             coverage.oldest = Some(
