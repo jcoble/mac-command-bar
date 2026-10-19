@@ -78,6 +78,16 @@ export function refuseWhileRunning(state: RunState | undefined, isLive: (p: RunS
   }
 }
 
+export function ownerFilesIn(openPaths: string[], ownerDirs: string[]): string[] {
+  return openPaths.filter((f) => ownerDirs.some((d) => f === d || f.startsWith(d + path.sep)));
+}
+
+// The group leader may exit while its children run on. A live group whose leader pid is gone is
+// still ours: Linux does not reuse a pid while a process group with that id exists.
+export function ownsGroup(p: { startedAt: string }, groupIsAlive: boolean, leaderStartTime: string): boolean {
+  return groupIsAlive && (leaderStartTime === p.startedAt || leaderStartTime === '');
+}
+
 const run = (file: string, args: string[], env?: NodeJS.ProcessEnv) =>
   execFileSync(file, args, { encoding: 'utf8', env: env ?? process.env, stdio: ['ignore', 'pipe', 'pipe'] });
 // A display that is still starting makes xwininfo fail; treat that as "not ready yet".
@@ -93,7 +103,18 @@ const newestMtime = (dir: string): number => {
   }
   return newest;
 };
-const ownerMtimes = () => ownerDataPaths.map((p) => (fs.existsSync(p) ? fs.statSync(p).mtimeMs : null));
+const owned = (p: { pid: number; pgid: number; startedAt: string }) => ownsGroup(p, groupAlive(p.pgid), startTime(p.pid));
+// Files held open by every process in the given groups; the owner's own app writes its data all the time,
+// so timestamps can't tell us whether the test app touched it.
+const openFilesInGroups = (pgids: number[]): string[] => {
+  const groups = new Set(pgids.map(String));
+  const pids = run('ps', ['-eo', 'pid=,pgid=']).split('\n').map((l) => l.trim().split(/\s+/)).filter((c) => groups.has(c[1])).map((c) => c[0]);
+  return pids.flatMap((pid) => {
+    try {
+      return fs.readdirSync(`/proc/${pid}/fd`).map((fd) => { try { return fs.readlinkSync(`/proc/${pid}/fd/${fd}`); } catch { return ''; } });
+    } catch { return []; }
+  });
+};
 
 function launch(name: string, file: string, args: string[], cwd: string, log: string, env: NodeJS.ProcessEnv): ProcessInfo {
   const fd = fs.openSync(log, 'a');
@@ -111,7 +132,7 @@ async function start(argv: string[]) {
   const previous = path.join(currentLink, 'state.json');
   refuseWhileRunning(
     fs.existsSync(previous) ? (JSON.parse(fs.readFileSync(previous, 'utf8')) as RunState) : undefined,
-    (p) => groupAlive(p.pgid) && startTime(p.pid) === p.startedAt
+    owned
   );
 
   const available = parseAvailableGb(run('free', ['-g']));
@@ -138,7 +159,6 @@ async function start(argv: string[]) {
   }
   if (!fs.existsSync(dataDir)) throw new Error(`Data folder ${dataDir} does not exist.`);
 
-  const ownerBefore = ownerMtimes();
   const launchedAt = Date.now();
   const processes: ProcessInfo[] = [];
   const writeState = () => {
@@ -183,15 +203,15 @@ async function start(argv: string[]) {
   }
 
   const touched = newestMtime(dataDir) > launchedAt;
-  const ownerUntouched = JSON.stringify(ownerBefore) === JSON.stringify(ownerMtimes());
-  console.log(`Isolation: files written under ${dataDir}: ${touched ? 'yes' : 'NO'}; owner data folders unchanged: ${ownerUntouched ? 'yes' : 'NO'}`);
-  if (!touched || !ownerUntouched) console.log('Isolation check FAILED. Run stop and report this.');
+  const ownerOpen = ownerFilesIn(openFilesInGroups(processes.map((p) => p.pid)), ownerDataPaths);
+  console.log(`Isolation: files written under ${dataDir}: ${touched ? 'yes' : 'NO'}; owner data files open by the test app: ${ownerOpen.length ? ownerOpen.join(', ') : 'none'}`);
+  if (!touched || ownerOpen.length) console.log('Isolation check FAILED. Run stop and report this.');
   console.log(`Screenshot: ${shot}\nRun folder: ${runDir}\nDisplay: ${x}\nDrive: DISPLAY=${x} assembly-native-ui shot|click|key ...\nNext: see docs/operations/four-scenario-check.md. Stop with: node --experimental-strip-types tauri-svelte-preview/scripts/fourScenarios.ts stop`);
 }
 
 async function stop() {
   const state = JSON.parse(fs.readFileSync(path.join(currentLink, 'state.json'), 'utf8')) as ReturnType<typeof buildState>;
-  const mine = [...state.processes].reverse().filter((p) => groupAlive(p.pgid) && startTime(p.pid) === p.startedAt);
+  const mine = [...state.processes].reverse().filter(owned);
   for (const p of mine) { try { process.kill(-p.pgid, 'SIGTERM'); } catch { /* already gone */ } }
   for (let i = 0; i < 10 && mine.some((p) => groupAlive(p.pgid)); i += 1) await sleep(1000);
   for (const p of mine.filter((p) => groupAlive(p.pgid))) { try { process.kill(-p.pgid, 'SIGKILL'); } catch { /* already gone */ } }

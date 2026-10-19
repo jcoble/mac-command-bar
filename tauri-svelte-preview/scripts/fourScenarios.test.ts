@@ -9,6 +9,8 @@ import {
   parseListeningPorts,
   pickFreeDisplay,
   pickFreePort,
+  ownerFilesIn,
+  ownsGroup,
   refuseOwnerData,
   refuseWhileRunning
 } from './fourScenarios.ts';
@@ -70,4 +72,18 @@ test('refuses to start while the previous run still has a live process', () => {
   assert.throws(() => refuseWhileRunning(state, () => true), /still running in \/proof\/old/);
   assert.doesNotThrow(() => refuseWhileRunning(state, () => false));
   assert.doesNotThrow(() => refuseWhileRunning(undefined, () => true));
+});
+
+test('lists only open files under the owner data folders', () => {
+  const owner = ['/home/u/.local/share/assembly'];
+  const open = ['/home/u/.local/share/assembly/sessions.db', '/home/u/assembly-proof/x/data/assembly/sessions.db', '/home/u/.local/share/assembly-server/x', 'socket:[123]'];
+  assert.deepEqual(ownerFilesIn(open, owner), ['/home/u/.local/share/assembly/sessions.db']);
+});
+
+test('a live group still belongs to the run after its launcher exits', () => {
+  const p = { pid: 10, pgid: 10, startedAt: 'Mon 1' };
+  assert.equal(ownsGroup(p, true, 'Mon 1'), true);
+  assert.equal(ownsGroup(p, true, ''), true);
+  assert.equal(ownsGroup(p, true, 'Tue 2'), false);
+  assert.equal(ownsGroup(p, false, 'Mon 1'), false);
 });
