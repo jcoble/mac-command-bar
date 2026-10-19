@@ -27,13 +27,33 @@ function lineCount(source: string): number {
 }
 
 function isTestPath(path: string): boolean {
-  return path.endsWith('.test.ts') || /(^|\/)tests\//.test(path);
+  return path.endsWith('.test.ts') || path.endsWith('_test.dart') || /(^|\/)tests?\//.test(path);
 }
 
 function providerBranchCount(path: string, source: string): number {
   if (path.startsWith(providerFolder) || isTestPath(path)) return 0;
-  const production = path.endsWith('.rs') ? source.split(/#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]/)[0] : source;
+  const production = path.endsWith('.rs') ? withoutTestModules(source) : source;
   return production.split('\n').filter((line) => providerBranch.test(line)).length;
+}
+
+// Drops each `#[cfg(test)] mod name { ... }` block; code after it is still production code.
+function withoutTestModules(source: string): string {
+  const kept: string[] = [];
+  let afterAttribute = false;
+  let inModule = false;
+  let depth = 0;
+  for (const line of source.split('\n')) {
+    if (!inModule && afterAttribute && /^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{/.test(line)) {
+      inModule = true;
+      kept.pop(); // the #[cfg(test)] line
+    }
+    afterAttribute = !inModule && /^\s*#\[cfg\(test\)\]\s*$/.test(line);
+    if (!inModule) { kept.push(line); continue; }
+    const code = line.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])'|\/\/.*$/g, '');
+    depth += (code.match(/\{/g) ?? []).length - (code.match(/\}/g) ?? []).length;
+    if (depth <= 0) { inModule = false; depth = 0; }
+  }
+  return kept.join('\n');
 }
 
 export function checkFiles(files: StagedFile[], baseline: Baseline): string[] {

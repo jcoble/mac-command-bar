@@ -57,11 +57,20 @@ test('provider checks ignore test files and Rust test modules', () => {
   assert.deepEqual(checkFiles([file('#[cfg(test)]\nmod tests {\n' + branch + '\n}', 'src/a.rs')], empty), []);
 });
 
+test('production code after a Rust test-only item is still checked', () => {
+  const later = "if provider == \"codex\" { run(); }";
+  const helper = 'fn root() {\n  #[cfg(test)]\n  let path = test_root();\n}\n' + later;
+  assert.equal(checkFiles([file(helper, 'src/a.rs')], empty).length, 1);
+  const module = '#[cfg(test)]\nmod tests {\n  fn t() { let x = "{"; }\n}\n' + later;
+  assert.equal(checkFiles([file(module, 'src/a.rs')], empty).length, 1);
+});
+
 test('fix subjects require a changed test or an explicit reason', () => {
   for (const subject of ['fix: repair', 'FIX(core): repair', 'Fix the crash']) {
     assert.match(checkFixCommit(subject, [file('const x = 1;')])[0], /test/);
     assert.deepEqual(checkFixCommit(subject, [file('test();', 'src/a.test.ts')]), []);
     assert.deepEqual(checkFixCommit(subject, [file('test();', 'tests/a.rs')]), []);
+    assert.deepEqual(checkFixCommit(subject, [file('test();', 'mobile/test/chat_test.dart')]), []);
   }
   assert.deepEqual(checkFixCommit('feat: add feature', []), []);
   assert.deepEqual(checkFixCommit('fix: docs\n\nNo-test: docs', []), ['No-test: docs']);
