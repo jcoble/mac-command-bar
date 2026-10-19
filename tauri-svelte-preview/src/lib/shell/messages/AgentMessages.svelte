@@ -23,7 +23,7 @@
   import * as Select from '$lib/components/ui/select/index.js';
   import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
   import { adoptSession } from '$lib/shell/conversation/conversationService.ts';
-  import { reloadLimit } from '$lib/shell/panels/agents/agentMessagesModel.svelte.ts';
+  import { reloadLimit } from '$lib/shell/messages/agentMessagesModel.svelte.ts';
   import {
     listAgentMessagesFromTauri,
     listenAgentMessagesChanged,

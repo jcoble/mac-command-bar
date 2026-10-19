@@ -7,7 +7,7 @@
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 
   import { Button } from '$lib/components/ui/button/index.js';
-  import AgentMessages from '$lib/shell/panels/agents/AgentMessages.svelte';
+  import AgentMessages from '$lib/shell/messages/AgentMessages.svelte';
 
   interface Props {
     runId: string | null;

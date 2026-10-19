@@ -75,7 +75,7 @@
 		setMainOrchestratorFromTauri,
 		updateAgentConversationSessionMetaFromTauri
 	} from "$lib/tauriSource";
-	import { createUnreadTracker } from "$lib/shell/panels/agents/agentMessagesModel.svelte.ts";
+	import { createUnreadTracker } from "$lib/shell/messages/agentMessagesModel.svelte.ts";
 	import MessagesScreen from "$lib/shell/messages/MessagesScreen.svelte";
 
 	const selection = new SessionSelectionController();
