@@ -8714,10 +8714,10 @@ fn normalize_codex_composite_config_update(
 mod tests {
     use super::*;
     mod checkout;
+    mod model_effort;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
-
     use crate::agent_conversation::handoff::{
         AgentConversationHistoryBoundary, AgentConversationProcessTreeAssertion,
     };

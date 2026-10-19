@@ -506,8 +506,6 @@ pub struct AcpClient {
     mcp_http: bool,
 }
 
-const CLAUDE_VERIFIED_EXTRA_MODELS: [&str; 3] = ["opus", "claude-opus-5", "claude-fable-5"];
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConversationConfigProtocol {
     Metadata,
@@ -1544,17 +1542,6 @@ fn parse_standard_conversation_config(
     if let Some(model) = config.model.clone().filter(|_| !config.model_efforts.is_empty()) {
         config.model_efforts.insert(model, config.available_efforts.clone());
     }
-    if provider == Some(AgentConversationProvider::Claude) {
-        for model_id in CLAUDE_VERIFIED_EXTRA_MODELS {
-            if !config
-                .available_models
-                .iter()
-                .any(|available| available == model_id)
-            {
-                config.available_models.push(model_id.to_string());
-            }
-        }
-    }
     config
 }
 
@@ -1586,8 +1573,8 @@ pub(crate) mod tests {
     use std::time::{Duration, Instant};
 
     use serde_json::json;
-
     use super::*;
+    mod model_effort;
     use crate::agent_conversation::protocol::{ProviderSource, ProviderTransport};
     use crate::agent_conversation::providers::AgentRuntimeAdapter;
 
