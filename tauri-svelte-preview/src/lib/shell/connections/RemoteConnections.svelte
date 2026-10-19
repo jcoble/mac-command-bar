@@ -135,6 +135,12 @@
         : 'Connected. Your conversations are available in Sessions.';
       onConnected?.(result.profile);
     } catch (reason) {
+      if (import.meta.env.DEV && install && !attempt.signal.aborted) {
+        try {
+          const next = await readRemoteAssemblyEnvironmentFromTauri();
+          if (mounted && !attempt.signal.aborted) apply(next);
+        } catch (refreshError) { console.warn('Could not refresh saved machines', refreshError); }
+      }
       if (!attempt.signal.aborted) await readBackends(environment.profiles);
       if (mounted) {
         status = '';

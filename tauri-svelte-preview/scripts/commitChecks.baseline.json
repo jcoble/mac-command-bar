@@ -21,7 +21,7 @@
     "tauri-svelte-preview/src-tauri/src/agent_conversation/reaper.rs": 679,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/remote/history.rs": 1303,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/remote/install.rs": 750,
-    "tauri-svelte-preview/src-tauri/src/agent_conversation/remote/mod.rs": 6914,
+    "tauri-svelte-preview/src-tauri/src/agent_conversation/remote/mod.rs": 6908,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/transcript/mod.rs": 921,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/transcript_import.rs": 1857,
     "tauri-svelte-preview/src-tauri/src/browser.rs": 2976,

@@ -2,6 +2,7 @@
 
 mod history;
 pub(in crate::agent_conversation) mod install;
+pub(crate) mod install_flow;
 mod workspace;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1028,7 +1029,14 @@ impl RemoteConnectionManager {
                 let _owner = manager.connection_lock.lock().await;
                 let (profile, _, _) = manager.resolve_profile_identity(profile).await?;
                 manager.stop_profile(&profile.id);
-                let receipt = self::install::install_latest(&profile.ssh_target, progress.clone()).await?;
+                let receipt = match self::install::install_latest(&profile.ssh_target, progress.clone()).await {
+                    Ok(receipt) => receipt,
+                    Err(error) if self::install_flow::keep_dev_install_profile(&error, cfg!(debug_assertions)) => {
+                        manager.register_profile(profile)?;
+                        return Err(format!("{error} Machine saved. Use Deploy from this checkout under Saved machines, then Connect."));
+                    }
+                    Err(error) => return Err(error),
+                };
                 let _ = progress.send(format!("Installed backend {} from {}. Connecting…",
                     receipt.version, &receipt.commit[..12]));
                 manager.connect_profile_inner_locked(profile, progress).await
@@ -2774,20 +2782,6 @@ pub async fn connect_remote_assembly(
     profile: RemoteAssemblyProfile, operation_id: String, status: tauri::ipc::Channel<String>,
 ) -> Result<RemoteConnectionResult, super::protocol::CommandError> {
     let result = remote.connect_profile(profile, operation_id, status).await
-        .map_err(super::protocol::CommandError::from)?;
-    let profiles_json = serde_json::to_string(&remote.environment().profiles)
-        .map_err(|error| super::protocol::CommandError::from(error.to_string()))?;
-    manager.write_app_setting(REMOTE_ASSEMBLY_PROFILES_SETTING_KEY, &profiles_json)
-        .map_err(super::protocol::CommandError::from)?;
-    Ok(result)
-}
-
-#[tauri::command]
-pub async fn install_remote_assembly(
-    manager: tauri::State<'_, AgentRuntimeManager>, remote: tauri::State<'_, RemoteConnectionManager>,
-    profile: RemoteAssemblyProfile, operation_id: String, status: tauri::ipc::Channel<String>,
-) -> Result<RemoteConnectionResult, super::protocol::CommandError> {
-    let result = remote.install_and_connect_profile(profile, operation_id, status).await
         .map_err(super::protocol::CommandError::from)?;
     let profiles_json = serde_json::to_string(&remote.environment().profiles)
         .map_err(|error| super::protocol::CommandError::from(error.to_string()))?;
