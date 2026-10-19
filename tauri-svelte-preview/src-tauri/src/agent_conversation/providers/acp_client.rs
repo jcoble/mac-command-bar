@@ -506,8 +506,6 @@ pub struct AcpClient {
     mcp_http: bool,
 }
 
-const CLAUDE_VERIFIED_EXTRA_MODELS: [&str; 3] = ["opus", "claude-opus-5", "claude-fable-5"];
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ConversationConfigProtocol {
     Metadata,
@@ -1533,7 +1531,7 @@ fn parse_standard_conversation_config(
             .collect(),
     };
     if provider == Some(AgentConversationProvider::Codex) {
-        // Codex's legacy model ids are `model[effort]`, one per effort a model has.
+        // Codex ACP 1.13.1/2.2.2 emit model[effort] (codex-1.13.1-isolated.jsonl:6).
         for id in &config.available_models {
             if let Some((model, effort)) = id.strip_suffix(']').and_then(|id| id.rsplit_once('[')) {
                 config.model_efforts.entry(model.to_string()).or_default().push(effort.to_string());
@@ -1543,17 +1541,6 @@ fn parse_standard_conversation_config(
     apply_config_options(value, &mut config);
     if let Some(model) = config.model.clone().filter(|_| !config.model_efforts.is_empty()) {
         config.model_efforts.insert(model, config.available_efforts.clone());
-    }
-    if provider == Some(AgentConversationProvider::Claude) {
-        for model_id in CLAUDE_VERIFIED_EXTRA_MODELS {
-            if !config
-                .available_models
-                .iter()
-                .any(|available| available == model_id)
-            {
-                config.available_models.push(model_id.to_string());
-            }
-        }
     }
     config
 }
@@ -1586,8 +1573,8 @@ pub(crate) mod tests {
     use std::time::{Duration, Instant};
 
     use serde_json::json;
-
     use super::*;
+    mod model_effort;
     use crate::agent_conversation::protocol::{ProviderSource, ProviderTransport};
     use crate::agent_conversation::providers::AgentRuntimeAdapter;
 
@@ -2372,9 +2359,6 @@ done"#,
                     "default".into(),
                     "sonnet".into(),
                     "haiku".into(),
-                    "opus".into(),
-                    "claude-opus-5".into(),
-                    "claude-fable-5".into(),
                 ],
                 reasoning_effort: None,
                 available_efforts: Vec::new(),
@@ -2451,9 +2435,6 @@ done"#,
                 "claude-fable-5[1m]".into(),
                 "sonnet".into(),
                 "haiku".into(),
-                "opus".into(),
-                "claude-opus-5".into(),
-                "claude-fable-5".into(),
             ]
         );
         assert_eq!(started.config.reasoning_effort.as_deref(), Some("xhigh"));

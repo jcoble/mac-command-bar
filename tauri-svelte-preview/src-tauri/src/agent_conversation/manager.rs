@@ -83,13 +83,6 @@ const TITLE_SOURCE_USER: &str = "user";
 const TITLE_INPUT_CHAR_CAP: usize = 1_000;
 const CHILD_ROLLOUT_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
-/// The efforts a Claude conversation can offer before it has an adapter.
-///
-/// A new conversation picks its effort before anything is running, so the
-/// picker needs something to show. Once the adapter has a session it reports
-/// its own effort control, and that report replaces this list.
-const CLAUDE_SESSION_EFFORTS: [&str; 4] = ["low", "medium", "high", "max"];
-
 pub type ConversationEmitter = std::sync::Arc<dyn Fn(AgentConversationEvent) + Send + Sync>;
 pub type BrokerEmitter = std::sync::Arc<dyn Fn(WorkflowBrokerEvent) + Send + Sync>;
 
@@ -1912,18 +1905,7 @@ impl AgentRuntimeManager {
             generation,
             native_session_id,
             state: ConversationConnectionState::Connecting,
-            // Claude's efforts are a fixed list on this side, so the composer can
-            // offer them before the adapter has ever run. Without this the picker
-            // has nothing to show until the first turn, and the choice that is
-            // supposed to be made before the first turn cannot be made at all.
-            config: if request.provider == AgentConversationProvider::Claude {
-                claude_session_config(
-                    AgentConversationConfigState::default(),
-                    reasoning_effort.as_deref(),
-                )
-            } else {
-                AgentConversationConfigState::default()
-            },
+            config: AgentConversationConfigState { reasoning_effort: reasoning_effort.clone(), ..Default::default() },
         };
         let provider_instance_id = format!("{}-{generation}", provider_id(request.provider));
         let created_at_ms = timestamp_millis();
@@ -2308,9 +2290,6 @@ impl AgentRuntimeManager {
         }
         // An adapter that named an effort control owns the effort from now on.
         let adapter_offers_effort = !started.config.available_efforts.is_empty();
-        if provider == AgentConversationProvider::Claude {
-            started.config = claude_session_config(started.config, reasoning_effort.as_deref());
-        }
         if let Some(expected_native_session_id) = expected_native_session_id {
             if started.native_session_id != expected_native_session_id {
                 let _ = self
@@ -3126,11 +3105,8 @@ impl AgentRuntimeManager {
             let session =
                 lifecycle_session_mut(&mut sessions, &request.owned_id, request.generation)?;
             let started = session.native_session_id.is_some();
-            // An adapter that named no effort control has no way to be
-            // re-pointed: it took its effort when its session was created and
-            // only a new session can carry a different one.
+            // Effort mutability comes from the adapter's control, for every provider.
             if started
-                && session.provider == AgentConversationProvider::Claude
                 && update.reasoning_effort.is_some()
                 && !session.adapter_offers_effort
             {
@@ -3223,15 +3199,7 @@ impl AgentRuntimeManager {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session =
                 lifecycle_session_mut(&mut sessions, &request.owned_id, request.generation)?;
-            // Claude's efforts are ours, not the provider's: standard ACP has no
-            // such field, so the reply to any config change comes back with the
-            // list empty. Assigning it whole erased the efforts every time the
-            // model was changed, and the picker then offered only the current one.
-            let config = if session.provider == AgentConversationProvider::Claude {
-                claude_session_config(config, session.spawn_reasoning_effort.as_deref())
-            } else {
-                config
-            };
+            session.adapter_offers_effort = !config.available_efforts.is_empty();
             session.config = config.clone();
             session.connection.config = config.clone();
             persist_session(session)?;
@@ -3889,16 +3857,6 @@ impl AgentRuntimeManager {
             if let Some(effort) = request.effort.as_ref() {
                 session.spawn_reasoning_effort.clone_from(&request.effort);
                 session.config.reasoning_effort = Some(effort.clone());
-            }
-            // Setting the value without the list left the menu showing exactly
-            // one option: the picker falls back to the current value when the
-            // available list is empty, so a session started with "medium" could
-            // only ever offer "medium".
-            if session.provider == AgentConversationProvider::Claude {
-                session.config = claude_session_config(
-                    session.config.clone(),
-                    session.spawn_reasoning_effort.as_deref(),
-                );
             }
             session.connection.config = session.config.clone();
             // A name typed here is the person's own, and nothing overwrites it
@@ -8621,32 +8579,14 @@ fn normalized_optional_id(value: Option<String>) -> Option<String> {
     })
 }
 
-/// How hard a session thinks is the adapter's own setting, asked for through
-/// its effort control. An inherited thinking budget would speak over it, so the
-/// adapter is started without one.
+/// Claude ACP 0.90.0 resolveThinkingConfig maps MAX_THINKING_TOKENS to an SDK budget.
+/// Clear that inherited override so the mutable effort control owns thinking.
+/// Source: claude-0.90.0-thinking-source.txt in the TSK-1508 model-effort receipts.
 fn session_spawn_environment(provider: AgentConversationProvider) -> SidecarEnvironment {
     if provider != AgentConversationProvider::Claude {
         return SidecarEnvironment::default();
     }
     SidecarEnvironment::default().remove(MAX_THINKING_TOKENS_ENV)
-}
-
-/// Fills in the effort a Claude conversation shows while it has no adapter to
-/// ask. An adapter that reports an effort control of its own has already said
-/// what the session is on, and that answer is left alone.
-fn claude_session_config(
-    mut config: AgentConversationConfigState,
-    reasoning_effort: Option<&str>,
-) -> AgentConversationConfigState {
-    if !config.available_efforts.is_empty() {
-        return config;
-    }
-    config.reasoning_effort = reasoning_effort.map(str::to_string);
-    config.available_efforts = CLAUDE_SESSION_EFFORTS
-        .iter()
-        .map(|effort| (*effort).to_string())
-        .collect();
-    config
 }
 
 fn validate_conversation_config_update(
@@ -8678,9 +8618,9 @@ fn validate_conversation_config_update(
     Ok(())
 }
 
-/// A menu opened from an older suspended snapshot may submit Codex's former
-/// composite model shape once. Translate it to the live mutable controls that
-/// activation just negotiated before validating the request.
+/// Older suspended snapshots may submit Codex's composite model shape once.
+/// Codex ACP 1.13.1/2.2.2 still emit it (codex-1.13.1-isolated.jsonl:6).
+/// Translate to the live controls negotiated during activation before validating.
 fn normalize_codex_composite_config_update(
     provider: AgentConversationProvider,
     current: &AgentConversationConfigState,
@@ -8714,10 +8654,10 @@ fn normalize_codex_composite_config_update(
 mod tests {
     use super::*;
     mod checkout;
+    mod model_effort;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
-
     use crate::agent_conversation::handoff::{
         AgentConversationHistoryBoundary, AgentConversationProcessTreeAssertion,
     };
@@ -14350,20 +14290,18 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn changing_the_model_does_not_empty_claude_efforts() {
-        // Standard ACP has no effort field, so the reply to a model change comes
-        // back with the effort list empty. Assigning that whole erased the
-        // efforts, and the picker then offered only whichever one was already
-        // set — the list appeared to shrink each time anything was chosen.
+        // Claude ACP 0.88.0/0.93.0 retain effort on a model change; exercise
+        // those mutable controls rather than an adapter with no effort option.
         let root = temp_root();
-        let log = root.join("standard_config.jsonl");
+        let log = root.join("config_options.jsonl");
         let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
             &log,
-            "standard_config",
+            "config_options",
         );
         let providers = ProviderRegistry::new([(AgentConversationProvider::Claude, manifest)])
             .expect("fixture provider");
         let manager = AgentRuntimeManager::new(providers);
-        let owned_id = "owned-standard_config".to_string();
+        let owned_id = "owned-config_options".to_string();
         let ensure_request = request(
             root.to_str().unwrap(),
             &owned_id,
@@ -14376,8 +14314,8 @@ mod tests {
             .expect("activate");
 
         let before = manager.conversation_config(&owned_id).expect("config");
-        assert_eq!(before.available_efforts, ["low", "medium", "high", "max"]);
-        assert_eq!(before.reasoning_effort, None);
+        assert_eq!(before.available_efforts, ["default", "low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(before.reasoning_effort.as_deref(), Some("xhigh"));
 
         let after = manager
             .set_conversation_config(SetAgentConversationConfigRequest {
@@ -14392,10 +14330,10 @@ mod tests {
         assert_eq!(after.model.as_deref(), Some("sonnet"));
         assert_eq!(
             after.available_efforts,
-            ["low", "medium", "high", "max"],
+            ["default", "low", "medium", "high", "xhigh", "max"],
             "changing the model must not empty the effort list"
         );
-        assert_eq!(after.reasoning_effort, None);
+        assert_eq!(after.reasoning_effort.as_deref(), Some("high"));
 
         manager
             .close(&owned_id, connection.generation)
@@ -14426,12 +14364,8 @@ mod tests {
             AgentConversationProvider::Claude,
         );
         let connection = manager.ensure_inner(ensure_request).expect("ensure").0;
-        // The picker has to be able to offer efforts before the first turn,
-        // which is the only time Claude's effort can be chosen at all.
-        assert_eq!(
-            connection.config.available_efforts,
-            ["low", "medium", "high", "max"]
-        );
+        // Draft placeholders live in the frontend until the adapter answers.
+        assert!(connection.config.available_efforts.is_empty());
 
         let config = manager
             .set_conversation_config(SetAgentConversationConfigRequest {
@@ -15107,10 +15041,9 @@ mod tests {
             .manager
             .conversation_config(&fixture.owned_id)
             .expect("Claude config");
-        // This adapter named no effort control, so the conversation still shows
-        // the efforts it can offer before a session exists.
+        // An absent control must not acquire app-supplied choices.
         assert_eq!(config.reasoning_effort, None);
-        assert_eq!(config.available_efforts, ["low", "medium", "high", "max"]);
+        assert!(config.available_efforts.is_empty());
 
         let error = fixture
             .manager

@@ -87,12 +87,10 @@ const PROVIDER_LABELS: Record<ThreadStartProvider, string> = {
 };
 
 /**
- * What each provider is known to offer, for a draft with no session to ask.
- *
- * The lists a running session reports win whenever there is one. These are
- * the ids the providers actually take — Claude's adapter names its models
- * `sonnet`/`opus`/`haiku` and its access levels `acceptEdits`, not the
- * spellings a draft once made up and had refused at the first send.
+ * Placeholders keep the draft menus nonempty until a live catalogue arrives.
+ * They never extend a live model or effort list, even an empty effort list.
+ * Claude 0.88.0/0.93.0 and Codex 1.13.1 report both controls; raw receipts:
+ * reports/lanes-2026-10-19/tsk-1508-model-effort-receipts/.
  */
 const FALLBACK_MODELS: Record<ThreadStartProvider, readonly string[]> = {
   codex: ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'],
@@ -230,7 +228,8 @@ function configForProvider(
   provider: ThreadStartProvider,
   configs: readonly ThreadStartProviderConfig[]
 ): ThreadStartProviderConfig | null {
-  return configs.find((config) => config.provider === provider) ?? null;
+  return configs.find((config) => config.provider === provider && config.availableModels.length > 0)
+    ?? configs.find((config) => config.provider === provider) ?? null;
 }
 
 function firstConfiguredModel(
@@ -258,7 +257,9 @@ export function defaultThreadStartState(input: {
   const configs = input.providerConfigs ?? [];
   const provider: ThreadStartProvider = input.provider ?? 'codex';
   const config = configForProvider(provider, configs);
+  const accessConfig = configs.find((config) => config.provider === provider);
   const hasLiveCatalog = (config?.availableModels.length ?? 0) > 0;
+  const hasLiveAccessCatalog = (accessConfig?.availableModels.length ?? 0) > 0;
   const effortChoices = effortChoicesFor(provider, configs);
   const accessChoices = accessChoicesFor(provider, configs);
   return {
@@ -272,8 +273,8 @@ export function defaultThreadStartState(input: {
     // refused at the first send and start nothing.
     effort: choiceAmong(config?.reasoningEffort, effortChoices)
       || (hasLiveCatalog ? (effortChoices[0] ?? '') : FALLBACK_EFFORTS[provider]),
-    access: choiceAmong(config?.approvalPolicy, accessChoices)
-      || (hasLiveCatalog ? (accessChoices[0] ?? '') : FALLBACK_ACCESS[provider]),
+    access: choiceAmong(accessConfig?.approvalPolicy, accessChoices)
+      || (hasLiveAccessCatalog ? (accessChoices[0] ?? '') : FALLBACK_ACCESS[provider]),
     projectId: input.projectId ?? null,
     projectPath: tidy(input.projectPath),
     cwd: tidy(input.cwd) || tidy(input.projectPath),
@@ -320,7 +321,7 @@ export function accessChoicesFor(
   provider: ThreadStartProvider,
   configs: readonly ThreadStartProviderConfig[]
 ): string[] {
-  const config = configForProvider(provider, configs);
+  const config = configs.find((config) => config.provider === provider);
   const available = unique(config?.availableApprovalPolicies ?? []);
   if ((config?.availableModels.length ?? 0) > 0) return available;
   return available.length ? available : [...FALLBACK_ACCESS_CHOICES[provider]];
