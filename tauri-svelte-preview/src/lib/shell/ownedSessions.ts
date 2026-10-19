@@ -278,13 +278,13 @@ const KNOWN_RUNTIME_STATES: AgentRuntimeState[] = [
 function defaultMintId(): string {
   return globalThis.crypto.randomUUID();
 }
+
 export function normalizeProvider(provider: string): { agent: AgentKind; viaCmux: boolean } {
   const value = (provider ?? '').trim().toLowerCase();
   const viaCmux = value.startsWith('cmux-');
   const base = (viaCmux ? value.slice('cmux-'.length) : value).replaceAll(/[\s_-]+/g, '');
-  const agent = /claude|anthropic/.test(base) ? 'claude' : /codex|openai/.test(base) ? 'codex' :
-    /antigravity|agy|gemini/.test(base) ? 'antigravity' : (KNOWN_AGENTS as string[]).includes(base) ? (base as AgentKind) : 'other';
-  return { agent, viaCmux };
+  const agent = ['anthropic', 'claudecode'].includes(base) ? 'claude' : base === 'openai' ? 'codex' : base === 'agy' ? 'antigravity' : base;
+  return { agent: (KNOWN_AGENTS as string[]).includes(agent) ? (agent as AgentKind) : 'other', viaCmux };
 }
 
 export function adoptAgentSession(record: AgentSession, mintId: () => string = defaultMintId): OwnedSession {

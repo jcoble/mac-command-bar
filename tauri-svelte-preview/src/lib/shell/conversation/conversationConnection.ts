@@ -699,6 +699,7 @@ function createConnection(selection: ActiveConversation): SubscribeConnectionAda
     }
   };
 }
+
 export function selectConversationChat(
   workspaceOwnedId: string,
   historyOwnedId = workspaceOwnedId,
@@ -714,7 +715,6 @@ export function selectConversationChat(
     disposeChildConversationChat();
     const parent = getConversationSession(workspaceOwnedId);
     if (!parent) throw new Error('The parent conversation is not selected.');
-    // A helper owns its session and provider; a native child shares its parent's.
     const { agent } = normalizeProvider(rail.owned.find((session) => session.ownedId === historyOwnedId)?.agent ?? '');
     ensureConversationSession(historyOwnedId, agent === 'claude' || agent === 'codex' || agent === 'antigravity' ? agent : parent.provider);
     parent.selectedChildHistoryOwnedId = historyOwnedId;

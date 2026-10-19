@@ -299,7 +299,7 @@ assert.equal(legacy.topTabs, undefined);
       const id = `helper-${agent}`;
       rail.owned.push({ ownedId: id, agent });
       api.selectConversationChat('alias-parent', id);
-      assert.equal(states.get(id)?.provider, { antigravity: 'antigravity', gemini: 'antigravity', agy: 'antigravity', anthropic: 'claude', openai: 'codex', claudecode: 'claude' }[agent]);
+      assert.equal(states.get(id)?.provider, { antigravity: 'antigravity', gemini: 'claude', agy: 'antigravity', anthropic: 'claude', openai: 'codex', claudecode: 'claude' }[agent]);
       api.disposeChildConversationChat('alias-parent');
     }
   });

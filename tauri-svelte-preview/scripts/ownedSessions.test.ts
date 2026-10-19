@@ -419,7 +419,7 @@ test('provider aliases resolve the same way at every entry point', () => {
   const service = read('conversation/conversationService.ts');
   const revival = service.slice(service.indexOf('      const provider', service.indexOf('export async function sendStructuredMessage(')), service.indexOf('      const previousGeneration = state.generation;', service.indexOf('export async function sendStructuredMessage(')));
   const failures: string[] = [];
-  for (const [alias, canonical] of Object.entries({ anthropic: 'claude', openai: 'codex', gemini: 'antigravity', agy: 'antigravity', claudecode: 'claude', 'Claude Code': 'claude', 'cmux-openai': 'codex' })) {
+  for (const [alias, canonical] of Object.entries({ anthropic: 'claude', openai: 'codex', agy: 'antigravity', claudecode: 'claude', 'Claude Code': 'claude', 'cmux-openai': 'codex' })) {
     const active = { agent: alias, ownedId: 'session' };
     const conversation = { provider: canonical, generation: 1, connectionState: 'disconnected' };
     const paths = {
@@ -434,6 +434,19 @@ test('provider aliases resolve the same way at every entry point', () => {
     for (const [entry, result] of Object.entries(paths)) if (result !== canonical) failures.push(`${alias} via ${entry}: ${result}`);
   }
   assert.deepEqual(failures, []);
-  assert.deepEqual(normalizeProvider('cmux-gemini'), { agent: 'antigravity', viaCmux: true });
+  assert.deepEqual(normalizeProvider('gemini'), { agent: 'gemini', viaCmux: false });
+  assert.deepEqual(normalizeProvider('cmux-gemini'), { agent: 'gemini', viaCmux: true });
+  assert.deepEqual(normalizeProvider('cmux-codex'), { agent: 'codex', viaCmux: true });
+  for (const agent of ['gemini', 'legacy-agy-tool', 'some-codex-agent', 'not-anthropic']) {
+    assert.equal(new selection().providerFor({ agent }), null, agent);
+    assert.equal(structured(agent), false, agent);
+    assert.equal(child(agent, 'codex'), 'codex', agent);
+  }
   assert.deepEqual(normalizeProvider('opencode'), { agent: 'opencode', viaCmux: false });
+});
+
+test('provider normalization requires exact aliases', () => {
+  for (const agent of ['legacy-agy-tool', 'some-codex-agent', 'not-anthropic']) {
+    assert.deepEqual(normalizeProvider(agent), { agent: 'other', viaCmux: false });
+  }
 });
