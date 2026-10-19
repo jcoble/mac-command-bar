@@ -104,3 +104,8 @@ test('an attribute and module on one line still count as a test module', () => {
   const source = '#[cfg(test)] mod tests {\n  fn works() {\n    assert!(true);\n  }\n}';
   assert.deepEqual(checkFixCommit('fix: repair', [file(source, 'src/a.rs', [3])]), []);
 });
+
+test('platform-gated test modules count as tests and are not production code', () => {
+  const source = 'fn production() {}\n#[cfg(all(test, target_os = "macos"))]\nmod tests {\n  fn works() {\n    assert!(true);\n  }\n}';
+  assert.deepEqual(checkFixCommit('fix: repair', [file(source, 'src/a.rs', [5])]), []);
+});

@@ -36,6 +36,9 @@ function providerBranchCount(path: string, source: string): number {
   return production.split('\n').filter((line) => providerBranch.test(line)).length;
 }
 
+// `#[cfg(test)]`, or a compound such as `#[cfg(all(test, target_os = "macos"))]`.
+const testCfg = /^\s*#\[cfg\((?:test|all\([^\]]*\btest\b[^\]]*\))\)\]/;
+
 // Drops each `#[cfg(test)] mod name { ... }` block; code after it is still production code.
 function withoutTestModules(source: string): string {
   const kept: string[] = [];
@@ -47,7 +50,7 @@ function withoutTestModules(source: string): string {
       inModule = true;
       kept.pop(); // the #[cfg(test)] line
     }
-    afterAttribute = !inModule && /^\s*#\[cfg\(test\)\]\s*$/.test(line);
+    afterAttribute = !inModule && testCfg.test(line) && /\]\s*$/.test(line);
     if (!inModule) { kept.push(line); continue; }
     const code = line.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])'|\/\/.*$/g, '');
     depth += (code.match(/\{/g) ?? []).length - (code.match(/\}/g) ?? []).length;
@@ -82,7 +85,7 @@ function hasRustTestChange(file: StagedFile): boolean {
   let insideTests = false;
   for (const [index, line] of file.source.split('\n').entries()) {
     if (added.has(index + 1) && /#\s*\[\s*(?:test|tokio::test)(?:\s*\([^\]]*\))?\s*\]/.test(line)) return true;
-    if (/^\s*#\[cfg\(test\)\]/.test(line)) awaitingModule = true;
+    if (testCfg.test(line)) awaitingModule = true;
     if (awaitingModule && /\bmod\s+\w+\s*\{/.test(line)) {
       insideTests = true;
       awaitingModule = false;
