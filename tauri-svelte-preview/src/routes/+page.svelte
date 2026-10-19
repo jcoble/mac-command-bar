@@ -79,6 +79,9 @@
 	import MessagesScreen from "$lib/shell/messages/MessagesScreen.svelte";
 
 	const selection = new SessionSelectionController();
+	// A remote session never saved on this Mac waits here until enough of its history has arrived.
+	const historyDownload = $derived(selection.activeOwnedId ? getConversationSession(selection.activeOwnedId)?.historyDownload ?? null : null);
+	const megabytes = (bytes: number) => (bytes / 1_000_000).toFixed(1);
 	const workbench = new WorkbenchController();
 	// Register before the right-panel children are constructed. History reads
 	// this route-owned bridge during its own construction, while the scan itself
@@ -723,6 +726,12 @@
 							>{#if selection.connectingRemote}<WorkingSpinner size={14} />Connecting…{:else}Connect{/if}</Button
 						>
 					{/if}
+				{:else if historyDownload && !historyDownload.ready && (historyDownload.phase === 'downloading' || historyDownload.phase === 'paused')}
+					<div class="history-waiting" role="status">
+						<p>{historyDownload.phase === 'paused' ? 'History download paused · reconnecting'
+							: `Downloading history${historyDownload.totalBytes ? ` · ${megabytes(historyDownload.coveredBytes)} of ${megabytes(historyDownload.totalBytes)} MB · ${Math.floor(historyDownload.coveredBytes * 100 / historyDownload.totalBytes)}%` : ''}`}</p>
+						<progress value={historyDownload.coveredBytes} max={historyDownload.totalBytes || 1}></progress>
+					</div>
 				{:else}<p><WorkingSpinner size={14} /> Loading conversation…</p>{/if}
 			</div>
 		{:else if !selection.activeOwnedId}
@@ -1101,6 +1110,18 @@
 		/* Covers the card it sits in, so it repaints the card's own face. */
 		background: var(--panel-fade), var(--color-surface);
 		background-repeat: no-repeat;
+	}
+
+	.history-waiting p {
+		margin: 0 0 8px;
+		text-align: center;
+	}
+
+	.history-waiting progress {
+		display: block;
+		width: 320px;
+		height: 6px;
+		accent-color: var(--color-accent);
 	}
 
 	.conversation-data-isolation.pending-first-send {
