@@ -87,7 +87,7 @@ function hasRustTestChange(file: StagedFile): boolean {
       insideTests = true;
       awaitingModule = false;
       depth = 0;
-    }
+    } else if (awaitingModule && line.trim() && !/^\s*#\[/.test(line)) awaitingModule = false; // the attribute was on another item
     if (!insideTests) continue;
     if (added.has(index + 1) && line.trim() && !/^\s*(?:\/\/|[{}]\s*$)/.test(line)) return true;
     const code = line.replace(/"(?:\\.|[^"\\])*"|\/\/.*$/g, '');

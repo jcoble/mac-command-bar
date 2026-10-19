@@ -94,3 +94,13 @@ test('existing JavaScript suites and any test-gated Rust module count as tests',
   const source = 'fn production() {}\n#[cfg(test)]\nmod contract_tests {\n  fn works() {\n    assert!(true);\n  }\n}';
   assert.deepEqual(checkFixCommit('fix: repair', [file(source, 'src/a.rs', [5])]), []);
 });
+
+test('a test-only helper does not turn the next production module into test code', () => {
+  const source = '#[cfg(test)]\nfn helper() {}\nmod production {\n  fn run() {\n    work();\n  }\n}';
+  assert.match(checkFixCommit('fix: repair', [file(source, 'src/a.rs', [5])])[0], /test/);
+});
+
+test('an attribute and module on one line still count as a test module', () => {
+  const source = '#[cfg(test)] mod tests {\n  fn works() {\n    assert!(true);\n  }\n}';
+  assert.deepEqual(checkFixCommit('fix: repair', [file(source, 'src/a.rs', [3])]), []);
+});
