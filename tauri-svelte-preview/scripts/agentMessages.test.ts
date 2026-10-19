@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createUnreadTracker, reloadLimit } from '../src/lib/shell/panels/agents/agentMessagesModel.svelte.ts';
+import { createUnreadTracker, reloadLimit } from '../src/lib/shell/messages/agentMessagesModel.svelte.ts';
 
 test('selecting a previously seen session counts messages without another event', async () => {
   const counts = new Map<string, number>();
