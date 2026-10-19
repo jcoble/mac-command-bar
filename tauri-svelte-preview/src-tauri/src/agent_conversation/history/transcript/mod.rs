@@ -1,6 +1,6 @@
 mod claude;
 mod codex;
-
+pub(crate) use codex::holds_session as codex_transcript_holds_session;
 use serde_json::{Map, Value};
 use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File, Metadata};
@@ -548,7 +548,7 @@ fn file_identity(metadata: &Metadata) -> FileIdentity {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    mod codex_resume;
     #[test]
     fn snapshot_text_reports_when_it_discards_the_prefix() {
         let path = std::env::temp_dir().join(format!(

@@ -20,7 +20,21 @@ pub(super) fn discover_path(id: &str) -> Option<PathBuf> {
         home.join(".codex/archived_sessions"),
     ]
     .into_iter()
-    .find_map(|root| find(&root, id))
+    .find_map(|root| find(&root, id).ok().flatten())
+}
+
+/// A missing rollout cannot resume; an I/O error leaves its existence unknown.
+pub(crate) fn holds_session(id: &str) -> Result<bool, String> {
+    holds_session_at(&home_dir()?, &super::safe_session_id(id)?)
+}
+
+pub(super) fn holds_session_at(home: &Path, id: &str) -> Result<bool, String> {
+    for root in [home.join(".codex/sessions"), home.join(".codex/archived_sessions")] {
+        if find(&root, id)?.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(super) fn discover_child_path(parent_id: &str, child_id: &str) -> Option<PathBuf> {
@@ -163,27 +177,42 @@ fn last_turn_ended(path: &Path) -> bool {
     }).unwrap_or(false)
 }
 
-fn find(root: &Path, id: &str) -> Option<PathBuf> {
+fn find(root: &Path, id: &str) -> Result<Option<PathBuf>, String> {
     let suffix = format!("{id}.jsonl");
     let mut pending = vec![root.to_path_buf()];
+    let mut unreadable = None;
     while let Some(directory) = pending.pop() {
-        let Ok(entries) = fs::read_dir(directory) else {
-            continue;
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if directory == root && error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => { unreadable.get_or_insert(error.to_string()); continue; }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => { unreadable.get_or_insert(error.to_string()); continue; }
+            };
             let path = entry.path();
-            if path.is_dir() {
+            let metadata = match path.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) => { unreadable.get_or_insert(error.to_string()); continue; }
+            };
+            if metadata.is_dir() {
                 pending.push(path);
             } else if path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.ends_with(&suffix))
             {
-                return Some(path);
+                if let Err(error) = File::open(&path) {
+                    unreadable.get_or_insert(error.to_string());
+                    continue;
+                }
+                return Ok(Some(path));
             }
         }
     }
-    None
+    unreadable.map_or(Ok(None), Err)
 }
 
 /// The context Codex hands the model at the top of a thread, removed.
