@@ -15276,8 +15276,8 @@ mod tests {
         } else {
             serde_json::from_str(&launch_config).unwrap()
         };
-        assert!(!launch_config.as_object().unwrap().keys().any(|key| key.starts_with("mcp_servers.assembly")),
-            "settings probe added an Assembly server override: {launch_config}");
+        let inherited = std::env::var("CODEX_CONFIG").map_or(json!({}), |value| serde_json::from_str(&value).unwrap());
+        assert_eq!(launch_config, inherited, "settings probe changed the inherited CODEX_CONFIG (Assembly approval override?)");
         // The draft opens on the starting model; the other models' defaults come from one switch each.
         assert_eq!(config.model.as_deref(), Some("gpt-a"));
         assert_eq!(config.available_efforts, ["low", "high"]);
