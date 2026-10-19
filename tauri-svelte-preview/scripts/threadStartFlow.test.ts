@@ -384,3 +384,28 @@ console.log('threadStartFlow.test.ts passed');
 }
 
 console.log('threadStartFlow: draft efforts follow the chosen model');
+
+// A live catalogue takes precedence over a remembered configuration for the
+// same provider, even when the remembered row was loaded first.
+{
+  const remembered = {
+    provider: 'claude', model: 'opus', availableModels: [],
+    reasoningEffort: 'medium', availableEfforts: [],
+    approvalPolicy: null, availableApprovalPolicies: []
+  };
+  const live = {
+    ...remembered, model: 'sonnet', availableModels: ['sonnet', 'haiku'],
+    reasoningEffort: 'high', availableEfforts: ['low', 'high']
+  };
+  const state = defaultThreadStartState({
+    projectPath: '/work/app', provider: 'claude', providerConfigs: [remembered, live]
+  });
+  assert.equal(state.model, 'sonnet');
+  assert.equal(state.effort, 'high');
+  assert.deepEqual(effortChoicesFor('claude', [remembered, live]), ['low', 'high']);
+  const noEffort = { ...live, reasoningEffort: null, availableEfforts: [] };
+  assert.deepEqual(effortChoicesFor('claude', [remembered, noEffort]), []);
+  assert.equal(defaultThreadStartState({
+    projectPath: '/work/app', provider: 'claude', providerConfigs: [remembered, noEffort]
+  }).effort, '');
+}
