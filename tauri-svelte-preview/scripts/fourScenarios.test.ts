@@ -9,6 +9,7 @@ import {
   parseListeningPorts,
   pickFreeDisplay,
   pickFreePort,
+  descendantGroups,
   ownerFilesIn,
   ownsGroup,
   refuseOwnerData,
@@ -86,4 +87,16 @@ test('a live group still belongs to the run after its launcher exits', () => {
   assert.equal(ownsGroup(p, true, ''), true);
   assert.equal(ownsGroup(p, true, 'Tue 2'), false);
   assert.equal(ownsGroup(p, false, 'Mon 1'), false);
+});
+
+test('stop reaches descendants that started their own process group', () => {
+  const rows = [
+    { pid: 10, ppid: 1, pgid: 10 }, // recorded launcher
+    { pid: 11, ppid: 10, pgid: 10 }, // the app, same group
+    { pid: 12, ppid: 11, pgid: 12 }, // agent sidecar in its own group
+    { pid: 13, ppid: 12, pgid: 12 },
+    { pid: 14, ppid: 13, pgid: 14 }, // language server, own group, two levels down
+    { pid: 20, ppid: 1, pgid: 20 } // unrelated
+  ];
+  assert.deepEqual(descendantGroups(rows, [10]).sort((a, b) => a - b), [10, 12, 14]);
 });

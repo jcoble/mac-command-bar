@@ -88,6 +88,19 @@ export function ownsGroup(p: { startedAt: string }, groupIsAlive: boolean, leade
   return groupIsAlive && (leaderStartTime === p.startedAt || leaderStartTime === '');
 }
 
+type PsRow = { pid: number; ppid: number; pgid: number };
+
+// Agent sidecars and language servers start their own process groups, so signalling only the
+// recorded groups would leave them running. Walk the parent links from the recorded roots.
+export function descendantGroups(rows: PsRow[], roots: number[]): number[] {
+  const seen = new Set(roots);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const r of rows) if (seen.has(r.ppid) && !seen.has(r.pid)) { seen.add(r.pid); grew = true; }
+  }
+  return [...new Set(rows.filter((r) => seen.has(r.pid)).map((r) => r.pgid))];
+}
+
 const run = (file: string, args: string[], env?: NodeJS.ProcessEnv) =>
   execFileSync(file, args, { encoding: 'utf8', env: env ?? process.env, stdio: ['ignore', 'pipe', 'pipe'] });
 // A display that is still starting makes xwininfo fail; treat that as "not ready yet".
@@ -212,16 +225,22 @@ async function start(argv: string[]) {
 async function stop() {
   const state = JSON.parse(fs.readFileSync(path.join(currentLink, 'state.json'), 'utf8')) as ReturnType<typeof buildState>;
   const mine = [...state.processes].reverse().filter(owned);
-  for (const p of mine) { try { process.kill(-p.pgid, 'SIGTERM'); } catch { /* already gone */ } }
-  for (let i = 0; i < 10 && mine.some((p) => groupAlive(p.pgid)); i += 1) await sleep(1000);
-  for (const p of mine.filter((p) => groupAlive(p.pgid))) { try { process.kill(-p.pgid, 'SIGKILL'); } catch { /* already gone */ } }
+  const rows = run('ps', ['-eo', 'pid=,ppid=,pgid=']).trim().split('\n').map((l) => {
+    const [pid, ppid, pgid] = l.trim().split(/\s+/).map(Number);
+    return { pid, ppid, pgid };
+  });
+  // Collected before any signal, while the parent links still exist.
+  const groups = [...new Set([...mine.map((p) => p.pgid), ...descendantGroups(rows, mine.map((p) => p.pid))])];
+  for (const g of groups) { try { process.kill(-g, 'SIGTERM'); } catch { /* already gone */ } }
+  for (let i = 0; i < 10 && groups.some(groupAlive); i += 1) await sleep(1000);
+  for (const g of groups.filter(groupAlive)) { try { process.kill(-g, 'SIGKILL'); } catch { /* already gone */ } }
   await sleep(500);
   for (const p of state.processes) {
     const gone = !groupAlive(p.pgid);
     console.log(`${p.name} (process group ${p.pgid}): ${mine.includes(p) ? 'stopped' : 'was not running'}${gone ? ', gone' : ', STILL RUNNING'}`);
   }
-  const groups = new Set(state.processes.map((p) => String(p.pgid)));
-  const left = run('ps', ['-eo', 'pid,pgid,cmd']).split('\n').filter((l) => groups.has(l.trim().split(/\s+/)[1]));
+  const checked = new Set([...groups, ...state.processes.map((p) => p.pgid)].map(String));
+  const left = run('ps', ['-eo', 'pid,pgid,cmd']).split('\n').filter((l) => checked.has(l.trim().split(/\s+/)[1]));
   console.log(left.length ? `STILL RUNNING:\n${left.join('\n')}` : 'ps check: no processes left in the stopped groups');
 }
 
