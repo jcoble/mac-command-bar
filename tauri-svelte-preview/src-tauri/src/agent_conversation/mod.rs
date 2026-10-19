@@ -6,6 +6,7 @@ pub mod capabilities;
 pub mod handoff;
 pub mod manager;
 pub mod messaging;
+mod normalization;
 mod phone;
 pub mod prompt_content;
 pub mod protocol;
@@ -15,7 +16,6 @@ pub mod remote;
 pub mod safe_markdown;
 pub mod terminal_projection;
 pub mod history;
-
 use manager::AgentRuntimeManager;
 use mcb_core::session_store::AnnotationRow;
 use prompt_content::prompt_from_blocks;
