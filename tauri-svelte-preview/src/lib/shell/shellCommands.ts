@@ -10,7 +10,7 @@
  * settings" itself from the callbacks the page passes it; everything here is
  * the panels' own actions.
  */
-import { settings } from '../settingsStore.svelte.ts';
+import { settings } from './settings/settingsStore.svelte.ts';
 import { browser, reloadBrowserFrame } from './browser/browserStore.svelte.ts';
 import { editorState } from './files/editor/editorStore.svelte.ts';
 import { explorer } from './files/explorer/explorerStore.svelte.ts';

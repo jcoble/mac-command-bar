@@ -72,7 +72,7 @@
     type ImageSnippetProps,
     type ListItemSnippetProps
   } from '@humanspeak/svelte-markdown';
-  import { currentTheme } from '../../themes/themeService';
+  import { currentTheme } from '../../settings/themes/themeService';
   import {
     frontmatterRows,
     markdownImageTarget,

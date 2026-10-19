@@ -26,7 +26,7 @@
  * writing it only on the shell would leave the menus and dialogs behind (they
  * are moved to the end of the page when they open). This writes both.
  */
-import { settings, updateSettings } from '../../settingsStore.svelte';
+import { settings, updateSettings } from '../settingsStore.svelte';
 
 import {
   DEFAULT_THEME_ID,

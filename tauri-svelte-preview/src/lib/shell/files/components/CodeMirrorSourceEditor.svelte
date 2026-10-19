@@ -74,7 +74,7 @@
     connectCodeMirrorCsharpClient,
     setNativeCsharpActiveRoot
   } from '$lib/shell/files/editor/csharpLanguageClient';
-  import { settings } from '$lib/settingsStore.svelte';
+  import { settings } from '$lib/shell/settings/settingsStore.svelte';
   import type {
     SourceIntelligenceCallbacks,
     SourceLookupRequest

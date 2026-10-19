@@ -13,7 +13,7 @@
  * (`scanProject(project)`, `loadGitRepositorySummaries(projects)`, …), so a short
  * store name would shadow-collide. `projectStore` is collision-free.
  *
- * Pattern mirrors `src/lib/settingsStore.svelte.ts` / `dockLayoutStore.svelte.ts`.
+ * Pattern mirrors `src/lib/shell/settings/settingsStore.svelte.ts` / `dockLayoutStore.svelte.ts`.
  *
  * SCOPE: values only. All Tauri calls (`validate_project_root`,
  * `list_source_files`, …), every `$effect`, persistence, and the page `$derived`

@@ -21,7 +21,7 @@
 	import Switch from '$lib/components/Switch.svelte';
 	import Button from '$lib/components/Button.svelte';
 	import { Palette, Type, SquareTerminal, SlidersHorizontal, RotateCcw } from '@lucide/svelte';
-	import { settings, resetSettings } from '$lib/settingsStore.svelte';
+	import { settings, resetSettings } from '$lib/shell/settings/settingsStore.svelte';
 
 	interface Props {
 		/** Whether the settings dialog is open. */

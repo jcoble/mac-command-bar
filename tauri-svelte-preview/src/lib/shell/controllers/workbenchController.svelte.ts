@@ -28,7 +28,7 @@ import {
 	type RegionWidthLimits,
 	type ShellRegionId,
 } from '../layout/frame';
-import { settings, type ProblemsLocation } from '../../settingsStore.svelte';
+import { settings, type ProblemsLocation } from '../settings/settingsStore.svelte';
 import { writeAssemblySettingFromTauri } from '../../tauriSource';
 import {
 	captureBrowserState,

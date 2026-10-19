@@ -20,7 +20,7 @@ const stubs: Record<string, string> = {
   '/layout/topTabs.svelte.ts': 'export const topTabs = { activeKind: "diff", reset() {}, restore() {}, capture() { return null; } };',
   '/shell/shellPanels.ts': 'const noop = () => {}; export const shellPanels = { panelShown: noop, sourceControlVisible: noop, filesVisible: noop, worktreesVisible: noop, stacksVisible: noop };',
   '/browser/browserStore.svelte.ts': 'export function captureBrowserState() { return null; } export function releaseBrowserWorkspace() {} export function restoreBrowserState() {}',
-  '/lib/settingsStore.svelte.ts': 'export const settings = { panels: { problemsLocation: "bottom" } };',
+  '/lib/shell/settings/settingsStore.svelte.ts': 'export const settings = { panels: { problemsLocation: "bottom" } };',
   '/layout/frame.ts': 'export const CENTER_MIN_WIDTH = 0, DOCK_HEIGHT = 0, SESSIONS_MAX_WIDTH = 0, SESSIONS_MIN_WIDTH = 0, SESSIONS_STRIP_WIDTH = 0, SESSIONS_WIDTH = 0, TOOLS_MAX_WIDTH = 0, TOOLS_MIN_WIDTH = 0;'
 };
 

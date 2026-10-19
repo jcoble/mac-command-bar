@@ -40,7 +40,7 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
-  import SettingsSelect from '$lib/shell/components/SettingsSelect.svelte';
+  import SettingsSelect from '$lib/shell/settings/SettingsSelect.svelte';
   import ProviderCliUpdateControl from '$lib/shell/providers/ProviderCliUpdateControl.svelte';
   import ProviderUpdateControl from '$lib/shell/providers/ProviderUpdateControl.svelte';
   import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
@@ -54,7 +54,7 @@
     settings,
     type ProblemsLocation,
     type SettingsSection
-  } from '$lib/settingsStore.svelte';
+  } from '$lib/shell/settings/settingsStore.svelte';
   import {
     setLanguageServerEnabled,
     setLanguageServersEnabled,
@@ -70,10 +70,10 @@
     type HelperRoute,
     type HelperVendor
   } from '$lib/tauriSource';
-  import { DEFAULT_THEME_ID } from '$lib/shell/themes/themeRegistry';
-  import { apply as applyTheme, themeChoices } from '$lib/shell/themes/themeService';
-  import { applyUiFont, applyMonoFont } from '$lib/shell/themes/fontService';
-  import { getMonoFont, mergeFontChoices, UI_FONTS, MONO_FONTS } from '$lib/shell/themes/fontRegistry';
+  import { DEFAULT_THEME_ID } from '$lib/shell/settings/themes/themeRegistry';
+  import { apply as applyTheme, themeChoices } from '$lib/shell/settings/themes/themeService';
+  import { applyUiFont, applyMonoFont } from '$lib/shell/settings/themes/fontService';
+  import { getMonoFont, mergeFontChoices, UI_FONTS, MONO_FONTS } from '$lib/shell/settings/themes/fontRegistry';
   import { applyTerminalSettings } from '$lib/shell/terminal/ghosttyFactory';
   import {
     appUpdateState,

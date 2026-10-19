@@ -2,7 +2,7 @@
   /** Compact global Editor/Supercharged switch shown in the editor status bar. */
   import { onDestroy } from 'svelte';
   import { Switch } from '$lib/components/ui/switch/index.js';
-  import { settings } from '$lib/settingsStore.svelte';
+  import { settings } from '$lib/shell/settings/settingsStore.svelte';
   import { setLanguageServersEnabled } from '$lib/shell/files/editor/sourceIntelligence';
   import { readLanguageServerState } from '$lib/shell/files/components/editor/languageServerStatus';
   import { languageIntelligenceBar } from '$lib/shell/files/editor/languageIntelligenceBar.svelte';

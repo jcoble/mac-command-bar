@@ -15,7 +15,7 @@
    */
   import X from '@lucide/svelte/icons/x';
 
-  import { settings, type ProblemsLocation } from '$lib/settingsStore.svelte';
+  import { settings, type ProblemsLocation } from '$lib/shell/settings/settingsStore.svelte';
 
   import ProblemsPanel from './problems/ProblemsPanel.svelte';
 

@@ -31,7 +31,7 @@ import {
   isThemeId,
   listThemes,
   resolveThemeId
-} from '../src/lib/shell/themes/themeRegistry.ts';
+} from '../src/lib/shell/settings/themes/themeRegistry.ts';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relativePath: string): string => readFileSync(resolve(projectRoot, relativePath), 'utf8');
@@ -39,7 +39,7 @@ const read = (relativePath: string): string => readFileSync(resolve(projectRoot,
 const NEXT_TOKENS_PATH = 'src/lib/shell/styles/nextTokens.css';
 const THEME_CHROME_PATH = 'src/lib/shell/styles/themeChrome.css';
 const GHOSTTY_FACTORY_PATH = 'src/lib/shell/terminal/ghosttyFactory.ts';
-const CONTRACT_PATH = 'src/lib/shell/themes/_(themes)-INTEGRATION.md';
+const CONTRACT_PATH = 'src/lib/shell/settings/themes/_(themes)-INTEGRATION.md';
 
 const stripComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, '');
 const tidy = (value: string): string => value.trim().replace(/\s+/g, ' ');
