@@ -570,7 +570,7 @@ impl AcpClient {
             )]));
         }
         if provider == AgentConversationProvider::Codex {
-            // Codex then names each model's default effort on its effort control.
+            // Current policy advertises recommendedValue for Codex default effort; Claude ACP 0.88/0.93 also read it (l9/y3, runtime bytes 82788482/92449895).
             request.client_capabilities.meta = Some(serde_json::Map::from_iter([(
                 "jetbrains".to_string(),
                 json!({"air": {"version": 1, "capabilities": ["recommendedValue"]}}),
@@ -1551,7 +1551,7 @@ fn serialization_error(error: serde_json::Error) -> AgentRuntimeError {
 fn transport_error(message: String) -> AgentRuntimeError {
     AgentRuntimeError::new("transport", message)
 }
-
+// Antigravity 1.2.1 server.py:3264–3268 binds restored tool permissions to realpath(cwd); use its canonical workspace spelling.
 fn provider_session_cwd(
     provider: Option<AgentConversationProvider>,
     cwd: &Path,

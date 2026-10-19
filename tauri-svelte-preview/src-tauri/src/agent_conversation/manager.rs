@@ -4881,7 +4881,7 @@ impl AgentRuntimeManager {
             .map(|session| session.writer_lease.owner)
     }
 }
-
+// Codex watches shared .codex/sessions; Claude watches <parent>/subagents and matches JSON agentId (transcript/codex.rs:47–54, claude.rs:346–364).
 fn child_watch_event_relevant(
     event: &notify::Event,
     known_path: Option<&Path>,
@@ -5922,7 +5922,7 @@ async fn pump_inbound(
                     {
                         break 'update false;
                     }
-                    if session.provider == AgentConversationProvider::Claude {
+                    if session.provider == AgentConversationProvider::Claude { // Claude ACP 0.93 extNotification publishes backgroundTaskCount (runtime byte 92464637).
                         if let Some(count) = params
                             .pointer("/update/_meta/jetbrains/air/backgroundTaskCount")
                             .and_then(Value::as_u64)
@@ -6062,8 +6062,8 @@ async fn pump_inbound(
                     {
                         break 'update reached_quiescence;
                     }
-                    // Claude's own work between prompts, tagged by the adapter,
-                    // is journaled under the autonomous turn.
+                    // Claude ACP 0.93 sessionUpdate publishes outOfTurn (byte 92463882); 0.88 defines xq (byte 82537574).
+                    // Journal this between-prompt output under the autonomous turn; audited Codex/Antigravity have no such field.
                     let out_of_turn = session.provider == AgentConversationProvider::Claude
                         && params.pointer("/update/_meta/jetbrains/air/outOfTurn")
                             == Some(&Value::Bool(true));
@@ -6673,7 +6673,7 @@ fn parse_elicitation_choices(
         })
         .collect()
 }
-
+// Claude ACP 0.88/0.93 replaySessionHistory synthesizes these IDs (runtime bytes 82758328/92413277); they are not native child IDs.
 fn is_claude_replay_session_id(session: &ManagedAgentSession, session_id: &str) -> bool {
     session.provider == AgentConversationProvider::Claude
         && session.native_session_id.as_deref().is_some_and(|root_id| {
@@ -7869,9 +7869,9 @@ fn expect_claude_wake(session: &mut ManagedAgentSession) {
     }
 }
 
-/// The Claude Code state the Claude adapter forwards once the client declared
-/// `backgroundSubagents`: `running` or `requires_action` while Claude works,
-/// `idle` when the current cycle ends; background commands and monitors can remain.
+/// Claude ACP 0.93 foreground hooks publish sessionState running/requires_action/idle
+/// (byte 92464749); 0.88 defines the field beside backgroundSubagents (byte 82537556).
+/// Idle ends the current cycle; background commands and monitors can remain.
 fn claude_session_state<'a>(session: &ManagedAgentSession, params: &'a Value) -> Option<&'a str> {
     if session.provider != AgentConversationProvider::Claude
         || session_update_kind(params) != Some("session_info_update")
