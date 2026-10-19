@@ -10,6 +10,7 @@
  * The rule the whole panel follows: an action is either backed by something
  * real or it is off with a plain-English reason. Nothing pretends.
  */
+import { hasTranscriptReader } from '../sessionHistoryViewModel.ts';
 import { normalizeProvider } from '../../ownedSessions.ts';
 import { resumeCommand } from '../../resumeCommand.ts';
 import type { AgentConversationTranscriptImport } from '../../../tauriSource.ts';
@@ -90,8 +91,7 @@ export function sessionTranscriptImport(
   // row's provider is read the way the rest of the shell reads it rather than
   // being matched literally — `cmux-codex` is a codex transcript.
   const { agent } = normalizeProvider(record.provider);
-  const provider =
-    agent === 'claude' || agent === 'codex' || agent === 'antigravity' ? agent : null;
+  const provider = hasTranscriptReader(agent) ? agent : null;
   const nativeSessionId = record.nativeSessionId?.trim() ?? '';
   const transcriptPath = record.logPath?.trim() ?? '';
   const cwd = record.canonicalCwd?.trim() ?? '';

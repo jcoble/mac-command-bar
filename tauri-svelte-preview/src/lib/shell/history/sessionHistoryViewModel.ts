@@ -404,3 +404,8 @@ export function visibleSessionHistoryRows(
   }
   return rows;
 }
+
+// Backend readers: src-tauri/src/agent_conversation/history/transcript/{codex,claude}.rs.
+export function hasTranscriptReader(provider: string): provider is 'codex' | 'claude' {
+  return ['codex', 'claude'].includes(provider);
+}

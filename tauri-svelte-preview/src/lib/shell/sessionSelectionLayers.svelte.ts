@@ -23,7 +23,7 @@ import {
 } from './conversation/conversationStore.svelte';
 import type { AgentConversationProvider } from './conversation/conversationTypes';
 import { countInvoke } from './devInvokeCounter.svelte';
-import type { OwnedSession } from './ownedSessions';
+import { normalizeProvider, type OwnedSession } from './ownedSessions';
 
 export type SessionSelectionOwner = {
   generation: number;
@@ -171,11 +171,8 @@ export class SessionSelectionLayers {
   }
 
   private providerFor(session: OwnedSession): AgentConversationProvider | null {
-    const raw = (session.agent || '').toLowerCase();
-    if (raw === 'claude' || raw.includes('claude') || raw.includes('anthropic')) return 'claude';
-    if (raw === 'codex' || raw.includes('codex') || raw.includes('openai')) return 'codex';
-    if (raw === 'antigravity' || raw.includes('antigravity') || raw.includes('agy') || raw.includes('gemini')) return 'antigravity';
-    return null;
+    const { agent } = normalizeProvider(session.agent);
+    return agent === 'claude' || agent === 'codex' || agent === 'antigravity' ? agent : null;
   }
 
   private isCurrent(owner: SessionSelectionOwner): boolean {

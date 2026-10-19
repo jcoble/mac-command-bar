@@ -257,7 +257,7 @@ export function defaultThreadStartState(input: {
   providerConfigs?: readonly ThreadStartProviderConfig[];
 }): ThreadStartPickerState {
   const configs = input.providerConfigs ?? [];
-  const provider: ThreadStartProvider = input.provider ?? 'codex';
+  const provider: ThreadStartProvider = input.provider ?? 'codex'; // Codex is the product default.
   const config = configForProvider(provider, configs);
   const accessConfig = configs.find((config) => config.provider === provider && config.availableApprovalPolicies.length > 0)
     ?? config;

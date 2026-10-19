@@ -43,7 +43,8 @@ import {
   type AgentConversationConfigField,
   type AgentConversationConfigState
 } from './conversationConfig.ts';
-import type { AgentExecutionOwner } from '../ownedSessions.ts';
+import { normalizeProvider, type AgentExecutionOwner } from '../ownedSessions.ts';
+import { hasTranscriptReader } from '../history/sessionHistoryViewModel.ts';
 import {
   clearSessionPresence,
   synchronizeSessionPresenceWork
@@ -522,15 +523,8 @@ function normalizeChildProvider(
   rawProvider: unknown,
   fallback: AgentConversationProvider
 ): AgentConversationProvider {
-  const provider = asString(rawProvider)?.toLowerCase().replaceAll(/[\s_-]+/g, '');
-  if (provider === 'codex') return 'codex';
-  if (provider === 'claude' || provider === 'claudecode') return 'claude';
-  if (provider === 'agy' || provider === 'antigravity') return 'antigravity';
-  return fallback;
-}
-
-function childTranscriptAvailable(provider: AgentConversationProvider): boolean {
-  return provider !== 'antigravity';
+  const { agent } = normalizeProvider(asString(rawProvider) ?? '');
+  return agent === 'codex' || agent === 'claude' || agent === 'antigravity' ? agent : fallback;
 }
 
 function isWorkflowChildRecord(value: Record<string, unknown>): boolean {
@@ -588,7 +582,7 @@ function normalizedConversationChild(
     updatedAtMs: typeof value.updatedAtMs === 'number' && Number.isFinite(value.updatedAtMs)
       ? value.updatedAtMs
       : timestampMs,
-    transcriptAvailable: childTranscriptAvailable(childProvider)
+    transcriptAvailable: hasTranscriptReader(childProvider)
   };
 }
 

@@ -1,11 +1,15 @@
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { stripTypeScriptTypes } from 'node:module';
+import { normalizeProvider } from '../src/lib/shell/ownedSessions.ts';
+import * as historyModel from '../src/lib/shell/history/sessionHistoryViewModel.ts';
 import { readFileSync } from 'node:fs';
 
 import {
   sessionHistoryLoadOutcome,
   type RepositoryCheckouts
 } from '../src/lib/shell/history/sessionHistoryLoad.ts';
-import { sessionHistoryActions } from '../src/lib/shell/history/components/sessionHistoryActions.ts';
+import { sessionHistoryActions, sessionTranscriptImport } from '../src/lib/shell/history/components/sessionHistoryActions.ts';
 import type { SessionLibraryRecord } from '../src/lib/shell/history/library/sessionLibraryModel.ts';
 
 function record(key: string): SessionLibraryRecord {
@@ -118,4 +122,23 @@ run('project_and_detail_reads_have_independent_lifecycles', () => {
   assert.match(panel, /function stopHistoryLoads[\s\S]*?historyLoadVersion \+= 1;[\s\S]*?loadingProjectKey = null;/);
   assert.match(panel, /async function loadCardDetails[\s\S]*?\+\+detailLoadVersion/);
   assert.doesNotMatch(panel, /\bloadVersion\b/);
+});
+
+
+test('history import is offered only where a transcript reader exists', () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationStore.svelte.ts', import.meta.url), 'utf8');
+  const childRules = source.slice(source.indexOf('function normalizeChildProvider('), source.indexOf('function normalizedConversationChildren('));
+  const normalizeChild = Function('normalizeProvider', 'hasTranscriptReader', 'asString', 'isRecord',
+    stripTypeScriptTypes(childRules, { mode: 'strip' }) + '; return normalizedConversationChild;'
+  )(normalizeProvider, historyModel.hasTranscriptReader, (value: unknown) => typeof value === 'string' ? value : null,
+    (value: unknown) => value !== null && typeof value === 'object');
+  for (const provider of ['codex', 'claude', 'antigravity', 'gemini', 'agy', 'opencode', 'anthropic', 'openai', 'claudecode']) {
+    const row = { ...record(provider), provider, logPath: '/work/transcript.jsonl' };
+    const canonical = normalizeProvider(provider).agent;
+    const expected = canonical === 'codex' || canonical === 'claude';
+    const child = normalizeChild({ provider, childId: 'child', parentId: 'root' }, null, 'antigravity', 'root', 1, 1, []);
+    assert.equal(child.transcriptAvailable, expected, `${provider} child`);
+    assert.equal(sessionTranscriptImport(row) !== null, expected, provider);
+    assert.equal(sessionHistoryActions(row).find((action) => action.id === 'resume-assembly')?.enabled, expected, provider);
+  }
 });

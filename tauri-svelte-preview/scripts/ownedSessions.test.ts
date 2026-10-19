@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
+import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   normalizeProvider, adoptAgentSession, createFreshSession,
@@ -396,3 +399,41 @@ const scanRecord = {
   assert.ok(reads <= 2 * records.length, `helperOf read ${reads} times for ${records.length} records`);
 }
 console.log('ownedSessions tests passed');
+
+
+test('provider aliases resolve the same way at every entry point', () => {
+  const read = (path: string) => readFileSync(new URL(`../src/lib/shell/${path}`, import.meta.url), 'utf8');
+  const run = (code: string, dependencies: Record<string, unknown>) => Function(
+    ...Object.keys(dependencies), stripTypeScriptTypes(`function exercise() { ${code} }`, { mode: 'strip' }) + '; return exercise();'
+  )(...Object.values(dependencies));
+  const layers = read('sessionSelectionLayers.svelte.ts');
+  const selection = run(`return class Selection { ${layers.slice(layers.indexOf('private providerFor('), layers.indexOf('private isCurrent('))} };`, { normalizeProvider });
+  const store = read('conversation/conversationStore.svelte.ts');
+  const child = run(`${store.slice(store.indexOf('function normalizeChildProvider('), store.indexOf('function isWorkflowChildRecord('))}; return normalizeChildProvider;`, {
+    normalizeProvider, asString: (value: unknown) => typeof value === 'string' ? value : null
+  });
+  const surface = read('conversation/ConversationSurface.svelte');
+  const structured = run(`${surface.match(/  function isStructuredAgent\([\s\S]*?\n  }/)![0]}; return isStructuredAgent;`, { normalizeProvider });
+  const capability = surface.match(/const capabilityTarget = \$derived\(([\s\S]*?)\);/)![1];
+  const configGuard = surface.match(/if \(!structured \|\| !active \|\| !conversation[^\n]*return;/)![0];
+  const service = read('conversation/conversationService.ts');
+  const revival = service.slice(service.indexOf('      const provider', service.indexOf('export async function sendStructuredMessage(')), service.indexOf('      const previousGeneration = state.generation;', service.indexOf('export async function sendStructuredMessage(')));
+  const failures: string[] = [];
+  for (const [alias, canonical] of Object.entries({ anthropic: 'claude', openai: 'codex', gemini: 'antigravity', agy: 'antigravity', claudecode: 'claude', 'Claude Code': 'claude', 'cmux-openai': 'codex' })) {
+    const active = { agent: alias, ownedId: 'session' };
+    const conversation = { provider: canonical, generation: 1, connectionState: 'disconnected' };
+    const paths = {
+      normalizer: normalizeProvider(alias).agent,
+      selection: new selection().providerFor(active),
+      child: child(alias, 'codex'),
+      structured: structured(alias) ? canonical : null,
+      capabilities: run(`return (${capability}) ? conversation.provider : null;`, { structured: true, active, conversation, normalizeProvider, isStructuredAgent: structured }),
+      configuration: run(`${configGuard} return conversation.provider;`, { structured: true, active, conversation, normalizeProvider, isStructuredAgent: structured }),
+      revival: run(`${revival} return provider;`, { owned: active, normalizeProvider })
+    };
+    for (const [entry, result] of Object.entries(paths)) if (result !== canonical) failures.push(`${alias} via ${entry}: ${result}`);
+  }
+  assert.deepEqual(failures, []);
+  assert.deepEqual(normalizeProvider('cmux-gemini'), { agent: 'antigravity', viaCmux: true });
+  assert.deepEqual(normalizeProvider('opencode'), { agent: 'opencode', viaCmux: false });
+});

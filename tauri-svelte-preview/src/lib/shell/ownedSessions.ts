@@ -278,12 +278,12 @@ const KNOWN_RUNTIME_STATES: AgentRuntimeState[] = [
 function defaultMintId(): string {
   return globalThis.crypto.randomUUID();
 }
-
 export function normalizeProvider(provider: string): { agent: AgentKind; viaCmux: boolean } {
   const value = (provider ?? '').trim().toLowerCase();
   const viaCmux = value.startsWith('cmux-');
-  const base = viaCmux ? value.slice('cmux-'.length) : value;
-  const agent = (KNOWN_AGENTS as string[]).includes(base) ? (base as AgentKind) : 'other';
+  const base = (viaCmux ? value.slice('cmux-'.length) : value).replaceAll(/[\s_-]+/g, '');
+  const agent = /claude|anthropic/.test(base) ? 'claude' : /codex|openai/.test(base) ? 'codex' :
+    /antigravity|agy|gemini/.test(base) ? 'antigravity' : (KNOWN_AGENTS as string[]).includes(base) ? (base as AgentKind) : 'other';
   return { agent, viaCmux };
 }
 
