@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { OwnedSession } from './ownedSessions.ts';
-import type { RemoteConnectionState } from './stores/sessionRailStore.svelte.ts';
+import type { OwnedSession } from '../ownedSessions.ts';
+import type { RemoteConnectionState } from '../stores/sessionRailStore.svelte.ts';
 
 type ProviderDownloadProgress = {
   provider: string;

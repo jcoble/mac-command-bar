@@ -10,7 +10,7 @@
     providerUpdateState,
     providerVersionLine,
     type ProviderUpdateState
-  } from '$lib/shell/providerUpdateService.svelte';
+  } from '$lib/shell/providers/providerUpdateService.svelte';
 
   let { profileId, machineName }: { profileId?: string; machineName?: string } = $props();
   const remoteState = $state<ProviderUpdateState>({ phase: 'idle', generation: 0, installingProvider: null, message: '', status: null });

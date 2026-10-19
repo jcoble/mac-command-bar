@@ -8,7 +8,7 @@ Object.defineProperty(window, 'crypto', { value: globalThis.crypto });
 const {
   checkForProviderUpdates, installProviderUpdates, providerUpdateState, restartProviders,
   startRestartCountdown, stepRestartCountdown, sessionsEndedByRestart, restartReconnectStep
-} = await import('../src/lib/shell/providerUpdateService.svelte.ts');
+} = await import('../src/lib/shell/providers/providerUpdateService.svelte.ts');
 const status = {
   target: 'aarch64-apple-darwin', updateAvailable: true, restartRequired: false,
   providers: [{ provider: 'claude', currentVersion: '0.76.0', availableVersion: '0.81.2', updateAvailable: true }]

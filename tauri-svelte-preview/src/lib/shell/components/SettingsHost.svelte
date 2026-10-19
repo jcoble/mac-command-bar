@@ -31,7 +31,7 @@
   import { onDestroy, onMount } from 'svelte';
 
   import type { ProblemsLocation } from '$lib/settingsStore.svelte';
-  import { checkForProviderUpdates } from '$lib/shell/providerUpdateService.svelte';
+  import { checkForProviderUpdates } from '$lib/shell/providers/providerUpdateService.svelte';
   import { checkForAppUpdate } from '$lib/shell/appUpdateService.svelte';
 
   /** The real settings surface, referred to by type only — no load yet. */

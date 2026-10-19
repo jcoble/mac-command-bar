@@ -41,8 +41,8 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import SettingsSelect from '$lib/shell/components/SettingsSelect.svelte';
-  import ProviderCliUpdateControl from '$lib/shell/components/ProviderCliUpdateControl.svelte';
-  import ProviderUpdateControl from '$lib/shell/components/ProviderUpdateControl.svelte';
+  import ProviderCliUpdateControl from '$lib/shell/providers/ProviderCliUpdateControl.svelte';
+  import ProviderUpdateControl from '$lib/shell/providers/ProviderUpdateControl.svelte';
   import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import { Slider } from '$lib/components/ui/slider/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';

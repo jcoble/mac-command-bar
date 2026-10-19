@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { mockIPC, clearMocks } from '@tauri-apps/api/mocks';
-import type { CliStatus, CliUpdateState } from '../src/lib/shell/providerCliUpdateService.svelte.ts';
+import type { CliStatus, CliUpdateState } from '../src/lib/shell/providers/providerCliUpdateService.svelte.ts';
 globalThis.window = {} as Window & typeof globalThis;
 Object.defineProperty(window, 'crypto', { value: globalThis.crypto });
-const { checkProviderClis, updateProviderCli } = await import('../src/lib/shell/providerCliUpdateService.svelte.ts');
+const { checkProviderClis, updateProviderCli } = await import('../src/lib/shell/providers/providerCliUpdateService.svelte.ts');
 const mac: CliUpdateState = { checking: false, updating: null, statuses: [], message: '' };
 const remote: CliUpdateState = { checking: false, updating: null, statuses: [], message: '' };
 const versions: CliStatus[] = [

@@ -36,7 +36,7 @@
   import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import { defaultDraftProjectId, projectBadge, projectMachineLabel, visibleProjects } from '$lib/shell/projects/projects.ts';
-  import { checkForProviderUpdates, installProviderUpdates, type ProviderUpdateState } from '$lib/shell/providerUpdateService.svelte';
+  import { checkForProviderUpdates, installProviderUpdates, type ProviderUpdateState } from '$lib/shell/providers/providerUpdateService.svelte';
   import RestartProvidersButton from '$lib/shell/components/RestartProvidersButton.svelte';
   import ConversationComposer from '$lib/shell/conversation/components/ConversationComposer.svelte';
   import { conversationSessions, setConversationDraft } from '$lib/shell/conversation/conversationStore.svelte';

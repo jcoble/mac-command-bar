@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Button } from '$lib/components/ui/button/index.js';
-  import WorkingSpinner from './feedback/WorkingSpinner.svelte';
-  import { checkProviderClis, updateProviderCli, type CliUpdateState } from '$lib/shell/providerCliUpdateService.svelte';
+  import WorkingSpinner from '../components/feedback/WorkingSpinner.svelte';
+  import { checkProviderClis, updateProviderCli, type CliUpdateState } from '$lib/shell/providers/providerCliUpdateService.svelte';
 
   let { profileId, machineName = 'This Mac' }: { profileId?: string; machineName?: string } = $props();
   const state = $state<CliUpdateState>({ checking: false, updating: null, statuses: [], message: '' });
