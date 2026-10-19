@@ -12,6 +12,7 @@ function record(key: string): SessionLibraryRecord {
   return {
     key,
     source: 'provider',
+    machine: 'local',
     ownedId: null,
     provider: 'test',
     nativeSessionId: key,

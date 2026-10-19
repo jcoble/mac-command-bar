@@ -2006,6 +2006,23 @@ export async function readAgentSessionDetailsFromTauri(
   return invoke<AgentSession[]>('read_agent_session_details', { logPath });
 }
 
+export interface RemoteSavedSessionDetails {
+  turnCount: number | null;
+  firstPrompt: string | null;
+  startComplete: boolean;
+  latestTurns: AgentSessionTurn[];
+}
+
+export async function readRemoteSavedSessionDetailsFromTauri(
+  profileId: string, ownedId: string, signal: AbortSignal
+): Promise<RemoteSavedSessionDetails | null> {
+  if (signal.aborted || !isTauriRuntime()) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  if (signal.aborted) return null;
+  const details = await invoke<RemoteSavedSessionDetails>('read_remote_saved_session_details', { profileId, ownedId });
+  return signal.aborted ? null : details;
+}
+
 /** One checkout of a repository: its own folder, or one of its worktrees. */
 export type RepositoryCheckout = {
   path: string;

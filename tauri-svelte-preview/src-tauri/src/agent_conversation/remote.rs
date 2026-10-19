@@ -657,20 +657,25 @@ fn merge_message_pages(pages: Vec<(String, Vec<serde_json::Value>)>, limit: usiz
 }
 
 fn read_cached_sessions(store: &SessionStore) -> Result<Vec<AgentConversationSessionRecord>, String> {
-    let Some(json) = store
-        .get_app_setting(REMOTE_SESSION_PROJECTIONS_SETTING_KEY)
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(Vec::new());
-    };
-    let sessions: Vec<AgentConversationSessionRecord> = serde_json::from_str(&json)
-        .map_err(|error| format!("Invalid cached remote sessions: {error}"))?;
-    Ok(sessions
-        .into_iter()
-        .filter(|session| {
-            session.execution_environment == ExecutionEnvironment::Remote
-                && session.remote_profile_id.as_deref().is_some_and(|id| !id.is_empty())
-        })
+    // One unreadable saved session must not hide every remote machine's list.
+    Ok(store.remote_session_controls().map_err(|error| error.to_string())?
+        .into_iter().filter_map(|(metadata, controls)| (|| -> Result<AgentConversationSessionRecord, String> {
+            let mut row: serde_json::Value = serde_json::from_str(&metadata).map_err(|e| e.to_string())?;
+            let controls: serde_json::Value = serde_json::from_str(controls.as_deref().unwrap_or("{}"))
+                .map_err(|e| e.to_string())?;
+            for (field, saved, default) in [
+                ("state", "runtimeState", serde_json::json!("suspended")),
+                ("suspended", "suspended", serde_json::json!(true)),
+                ("activeTurnId", "activeTurnId", serde_json::Value::Null),
+                ("pendingPermission", "pendingPermission", serde_json::json!(false)),
+                ("pendingInput", "pendingInput", serde_json::json!(false)),
+            ] {
+                // A list saved before activity moved into the history controls
+                // still carries it; it serves until the next listing replaces it.
+                row[field] = controls.get(saved).or_else(|| row.get(field)).cloned().unwrap_or(default);
+            }
+            serde_json::from_value(row).map_err(|e| e.to_string())
+        })().map_err(|error| eprintln!("Skipped an unreadable saved remote session: {error}")).ok())
         .collect())
 }
 
@@ -766,8 +771,13 @@ impl RemoteConnectionManager {
         &self,
         next: Vec<AgentConversationSessionRecord>,
     ) -> Result<(), String> {
-        let json = serde_json::to_string(&next)
-            .map_err(|error| format!("Could not encode cached remote sessions: {error}"))?;
+        let mut metadata = serde_json::to_value(&next).map_err(|error| error.to_string())?;
+        for row in metadata.as_array_mut().expect("session list") {
+            for field in ["state", "suspended", "activeTurnId", "pendingPermission", "pendingInput"] {
+                row.as_object_mut().expect("session record").remove(field);
+            }
+        }
+        let json = serde_json::to_string(&metadata).map_err(|error| error.to_string())?;
         self.store
             .upsert_app_setting(REMOTE_SESSION_PROJECTIONS_SETTING_KEY, &json)
             .map_err(|error| error.to_string())?;
@@ -5353,6 +5363,176 @@ mod connection_tests {
     }
 
     #[test]
+    fn remote_history_offline_restart_uses_live_controls_after_replay() {
+        use super::super::protocol::{AgentConversationPayload, AgentRuntimeState, ApprovalState, TurnState};
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared.clone()).unwrap();
+        let mut listed = session("large-history", "workbox", 90);
+        listed.state = AgentRuntimeState::WaitingApproval;
+        listed.suspended = false;
+        listed.active_turn_id = Some("turn".into());
+        listed.pending_permission = true;
+        manager.replace_cached_profile_sessions("workbox", &[listed]).unwrap();
+        let mut requested = history_event(90);
+        requested.payload = AgentConversationPayload::Approval {
+            request_id: "permission".into(), state: ApprovalState::Requested, summary: "Run command".into(),
+        };
+        let mut replay = history_snapshot(vec![requested.clone()], 90);
+        replay.suspended = false;
+        replay.active_turn_id = Some("turn".into());
+        replay.pending_events = vec![requested.clone()];
+        manager.complete_replay("workbox", replay, Some(requested), None).unwrap();
+        let mut accepted = history_event(91);
+        accepted.payload = AgentConversationPayload::Approval {
+            request_id: "permission".into(), state: ApprovalState::Accepted, summary: "Run command".into(),
+        };
+        let mut completed = history_event(92);
+        completed.timestamp_ms = 100;
+        completed.runtime_state = Some(AgentRuntimeState::Ready);
+        completed.payload = AgentConversationPayload::Turn { turn_id: "turn".into(), state: TurnState::Completed };
+        manager.history_event_sink("workbox", true)(vec![accepted, completed]).unwrap();
+        let restarted = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
+        let selected = restarted.history.lock().unwrap()
+            .read_selection_snapshot("workbox", "large-history", 1024).unwrap().unwrap();
+        assert!(selected.active_turn_id.is_none());
+        assert!(selected.pending_events.is_empty());
+        let row = restarted.cached_sessions().remove(0);
+        assert_eq!(row.active_turn_id, None);
+        assert!(!row.pending_permission);
+        assert!(!row.pending_input);
+        assert_eq!(row.state, AgentRuntimeState::Ready);
+    }
+
+    #[test]
+    fn remote_history_offline_restart_uses_snapshot_without_saved_head() {
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared.clone()).unwrap();
+        let mut listed = session("large-history", "workbox", 900);
+        listed.state = super::super::protocol::AgentRuntimeState::Working;
+        listed.suspended = false;
+        listed.active_turn_id = Some("old-turn".into());
+        manager.replace_cached_profile_sessions("workbox", &[listed]).unwrap();
+        manager.history.lock().unwrap().snapshot("workbox", 0, None,
+            &mut history_snapshot(vec![], 92)).unwrap();
+        let restarted = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
+        let row = restarted.cached_sessions().remove(0);
+        assert_eq!(row.active_turn_id, None);
+        assert!(row.suspended);
+        assert_eq!(row.state, super::super::protocol::AgentRuntimeState::Suspended);
+    }
+
+    #[test]
+    fn remote_history_offline_restart_uses_listing_before_history() {
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared.clone()).unwrap();
+        let mut listed = session("large-history", "workbox", 90);
+        listed.state = super::super::protocol::AgentRuntimeState::WaitingInput;
+        listed.suspended = false;
+        listed.active_turn_id = Some("turn".into());
+        listed.pending_input = true;
+        manager.replace_cached_profile_sessions("workbox", &[listed.clone()]).unwrap();
+        let saved = shared.get_session(&RemoteHistory::key("workbox", "large-history")).unwrap().unwrap();
+        let controls: serde_json::Value = serde_json::from_str(&saved.extra_json).unwrap();
+        assert_eq!(controls["runtimeState"], "waiting-input");
+        let restarted = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
+        let row = restarted.cached_sessions().remove(0);
+        assert_eq!(row.state, listed.state);
+        assert_eq!(row.active_turn_id, listed.active_turn_id);
+        assert!(row.pending_input);
+        assert!(!row.suspended);
+    }
+
+    #[test]
+    fn remote_history_offline_restart_uses_the_newest_listing_before_history() {
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared.clone()).unwrap();
+        let mut first = session("large-history", "workbox", 90);
+        first.state = super::super::protocol::AgentRuntimeState::WaitingInput;
+        first.suspended = false;
+        first.active_turn_id = Some("turn".into());
+        first.pending_input = true;
+        manager.replace_cached_profile_sessions("workbox", &[first]).unwrap();
+        let mut second = session("large-history", "workbox", 91);
+        second.state = super::super::protocol::AgentRuntimeState::Ready;
+        second.suspended = false;
+        second.active_turn_id = None;
+        second.pending_input = false;
+        manager.replace_cached_profile_sessions("workbox", &[second.clone()]).unwrap();
+        let restarted = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
+        let row = restarted.cached_sessions().remove(0);
+        assert_eq!(row.state, second.state);
+        assert_eq!(row.active_turn_id, None);
+        assert!(!row.pending_input);
+    }
+
+    #[test]
+    fn remote_history_offline_restart_keeps_activity_saved_before_the_upgrade() {
+        let shared = store();
+        let mut listed = session("large-history", "workbox", 90);
+        listed.state = super::super::protocol::AgentRuntimeState::WaitingApproval;
+        listed.suspended = false;
+        listed.active_turn_id = Some("turn".into());
+        listed.pending_permission = true;
+        // The earlier format: activity in the saved list, none in the history controls.
+        shared.upsert_app_setting(REMOTE_SESSION_PROJECTIONS_SETTING_KEY,
+            &serde_json::to_string(&[listed.clone()]).unwrap()).unwrap();
+        shared.file_remote_sessions("workbox", &serde_json::json!([[
+            super::super::remote_history::RemoteHistory::key("workbox", "large-history"),
+            listed.project_id, 90,
+            {"remoteProfileId": "workbox", "suspended": false, "activeTurnId": "turn"},
+        ]]).to_string()).unwrap();
+        let restarted = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
+        let row = restarted.cached_sessions().remove(0);
+        assert_eq!(row.state, super::super::protocol::AgentRuntimeState::WaitingApproval);
+        assert!(row.pending_permission);
+        assert_eq!(row.active_turn_id.as_deref(), Some("turn"));
+    }
+
+    #[test]
+    fn remote_history_offline_restart_keeps_a_failed_session_failed() {
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared.clone()).unwrap();
+        let mut listed = session("large-history", "workbox", 90);
+        listed.state = super::super::protocol::AgentRuntimeState::Working;
+        listed.suspended = false;
+        manager.replace_cached_profile_sessions("workbox", &[listed]).unwrap();
+        let mut failed = history_snapshot(vec![], 90);
+        failed.connection.state = super::super::protocol::ConversationConnectionState::Failed;
+        failed.suspended = false;
+        manager.history.lock().unwrap().snapshot("workbox", 0, None, &mut failed).unwrap();
+        let restarted = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
+        assert_eq!(restarted.cached_sessions().remove(0).state, super::super::protocol::AgentRuntimeState::Failed);
+    }
+
+    #[test]
+    fn remote_history_offline_restart_skips_one_unreadable_session() {
+        let shared = store();
+        let manager = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared.clone()).unwrap();
+        manager.replace_cached_profile_sessions("workbox", &[
+            session("broken", "workbox", 90), session("intact", "workbox", 80),
+        ]).unwrap();
+        let mut row = shared.get_session(&RemoteHistory::key("workbox", "broken")).unwrap().unwrap();
+        row.extra_json = "not json".into();
+        shared.upsert_session(&row).unwrap();
+        let restarted = RemoteConnectionManager::from_environment(
+            Arc::new(|_| {}), Arc::new(|_| {}), shared).unwrap();
+        let listed: Vec<_> = restarted.cached_sessions().into_iter().map(|session| session.owned_id).collect();
+        assert_eq!(listed, ["intact"]);
+    }
+
+    #[test]
     fn listing_files_the_remote_row_under_its_project_before_any_event() {
         let shared = store();
         let manager = RemoteConnectionManager::from_environment(
@@ -5965,8 +6145,7 @@ mod connection_tests {
             manager, data_dir: directory.clone(), token: Arc::from("test"),
             maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
             restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()), events,
-            terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(),
-            phone_chats: Arc::default(),
+            terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(), phone_chats: Arc::default(),
         };
         let (outbound, mut received) = mpsc::channel(8);
         let mut queued = BTreeMap::from([("deleted".into(), 10)]);

@@ -5669,6 +5669,7 @@ fn main() {
             list_agent_sessions,
             list_agent_sessions_for_project,
             read_agent_session_details,
+            commands::agent_sessions::read_remote_saved_session_details,
             list_runtime_contexts,
             list_playwright_sessions,
             kill_playwright_session,

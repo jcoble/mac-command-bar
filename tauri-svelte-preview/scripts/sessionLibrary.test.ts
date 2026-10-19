@@ -90,6 +90,17 @@ function available(id, cwd, extra = {}) {
   assert.equal(rows.at(-1).canonicalCwd, '/three');
 }
 
+// Same native identity and folder on different machines are different sessions.
+{
+  const rows = buildSessionLibrary([
+    owned('local', '/same'),
+    owned('remote', '/same', { executionEnvironment: 'remote', remoteProfileId: 'box', model: 'saved-model' })
+  ], [available('native-1', '/same')]);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => row.machine), ['local', 'box']);
+  assert.equal(rows[1].model, 'saved-model');
+}
+
 // Settled is explicit settledAt semantics; age/title/process fields do not move
 // a record between shelves.
 {
@@ -226,6 +237,37 @@ function available(id, cwd, extra = {}) {
   assert.equal(details[0].latestTurns[0].text, 'Finished.');
   assert.equal(detailReads, 1);
   assert.equal(projectScans, 0);
+}
+
+// Remote cards read only saved data, including when that copy is empty.
+{
+  let reads = 0;
+  const remote = owned('saved', '/same', { executionEnvironment: 'remote', remoteProfileId: 'box', messageCount: 100 });
+  const service = createSessionLibraryService({
+    getOwnedSessions: () => [remote],
+    listProviderSessions: async () => { assert.fail('remote detail scanned local sessions'); },
+    readProviderSessionDetails: async () => { assert.fail('remote detail read local transcript'); },
+    readRemoteSavedSessionDetails: async (profile, id, signal) => {
+      assert.equal(profile, 'box'); assert.equal(id, 'saved'); assert.equal(signal.aborted, false);
+      reads += 1;
+      return reads === 1 ? null : {
+        turnCount: reads === 2 ? null : 3, firstPrompt: null, startComplete: false, latestTurns: []
+      };
+    }
+  });
+  const key = buildSessionLibrary([remote], [])[0].key;
+  const rows = await service.refresh(new Set([key]), undefined, { includeDetails: true, signal: new AbortController().signal });
+  assert.equal(reads, 1);
+  assert.equal(rows[0].messageCount, null);
+  assert.equal(rows[0].startComplete, undefined);
+  assert.equal(rows[0].firstPrompt, null);
+  assert.deepEqual(rows[0].latestTurns, []);
+  const unknown = await service.refresh(new Set([key]), undefined, { includeDetails: true, signal: new AbortController().signal });
+  assert.equal(unknown[0].messageCount, null);
+  assert.equal(unknown[0].startComplete, false);
+  const saved = await service.refresh(new Set([key]), undefined, { includeDetails: true, signal: new AbortController().signal });
+  assert.equal(saved[0].messageCount, 3);
+  assert.equal(saved[0].startComplete, false);
 }
 
 // Center/right placement is one runtime host lease over the same service/store;
