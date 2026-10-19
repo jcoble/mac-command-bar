@@ -109,3 +109,51 @@ test('platform-gated test modules count as tests and are not production code', (
   const source = 'fn production() {}\n#[cfg(all(test, target_os = "macos"))]\nmod tests {\n  fn works() {\n    assert!(true);\n  }\n}';
   assert.deepEqual(checkFixCommit('fix: repair', [file(source, 'src/a.rs', [5])]), []);
 });
+
+
+test('removed module locations cannot be recreated', () => {
+  const root = 'tauri-svelte-preview/';
+  for (const [oldPath, newPath] of [
+    ['src/lib/shell/components/conversation/TimelineItem.svelte', 'src/lib/shell/conversation/components/TimelineItem.svelte'],
+    ['src-tauri/src/agent_conversation/remote_history.rs', 'src-tauri/src/agent_conversation/remote/history.rs'],
+  ]) {
+    assert.deepEqual(checkFiles([file('', root + oldPath)], empty), [
+      `${root + oldPath}: this location was removed by the module refactor (TSK-1512); use ${root + newPath.replace(/[^/]+$/, '')}.`,
+    ]);
+    assert.deepEqual(checkFiles([file('', root + newPath)], empty), []);
+  }
+});
+
+test('feature internals are only imported inside their feature', () => {
+  const root = 'tauri-svelte-preview/src/lib/shell/';
+  const internal = '$lib/shell/terminal/ghosttyFactory';
+  for (const source of [`import x from '${internal}';`, `import '${internal}.ts';`, `import('${internal}');`, "import x from './terminal/../terminal/ghosttyFactory.ts';"]) {
+    assert.deepEqual(checkFiles([file(source, root + 'outside.svelte')], empty), [
+      `${root}outside.svelte: imports ${root}terminal/ghosttyFactory, which is internal to ${root}terminal/.`,
+    ]);
+  }
+  for (const [source, path] of [
+    [`import x from '${internal}';`, 'terminal/inside.ts'],
+    ["import x from './ghosttyFactory.ts';", 'terminal/inside.svelte'],
+    [`import x from '${internal}';`, 'outside.test.ts'],
+  ]) assert.deepEqual(checkFiles([file(source, root + path)], empty), []);
+  for (const [subject, consumer] of [
+    [internal, root + 'settings/SettingsDialog.svelte'],
+    ['$lib/shell/browser/components/browserPanelBounds', 'tauri-svelte-preview/src/routes/+page.svelte'],
+  ]) {
+    assert.deepEqual(checkFiles([file(`import x from '${subject}';`, consumer)], empty), []);
+    assert.equal(checkFiles([file(`import x from '${subject}';`, consumer + '.other.ts')], empty).length, 1);
+  }
+  for (const path of ['browser/components/AnnotationCanvas.svelte', 'browser/components/browserPanelBounds.ts', 'browser/browserBounds.ts', 'conversation/components/TimelineItem.svelte', 'conversation/components/ToolItem.svelte']) {
+    const owner = root + path.split('/')[0] + '/';
+    const resolved = root + path.replace(/\.(ts|svelte)$/, '');
+    assert.deepEqual(checkFiles([file(`import x from '$lib/shell/${path}';`, root + 'outside.ts')], empty), [
+      `${root}outside.ts: imports ${resolved}, which is internal to ${owner}.`,
+    ]);
+  }
+});
+
+test('package and public imports are not boundary errors', () => {
+  const source = "import x from 'svelte';\nimport Terminal from '$lib/shell/terminal/WorkspaceTerminal.svelte';\nimport { send } from '$lib/shell/conversation/conversationService.ts';";
+  assert.deepEqual(checkFiles([file(source, 'tauri-svelte-preview/src/routes/+page.svelte')], empty), []);
+});
