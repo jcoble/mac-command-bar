@@ -1,6 +1,7 @@
 import {
   listAgentSessionsForProjectFromTauri,
   readAgentSessionDetailsFromTauri,
+  readRemoteSavedSessionDetailsFromTauri,
   listAgentSessionsFromLocalBridge,
   listAgentSessionsFromTauri
 } from '$lib/tauriSource.ts';
@@ -41,6 +42,7 @@ export function registerSessionHistoryHost(options: SessionHistoryHostOptions): 
       getOwnedSessions: () => rail.owned,
       getAvailableSessions: () => rail.available,
       listProviderSessions,
+      readRemoteSavedSessionDetails: readRemoteSavedSessionDetailsFromTauri,
       readProviderSessionDetails: async (logPath) =>
         (await readAgentSessionDetailsFromTauri(logPath)) ?? []
     },

@@ -48,13 +48,6 @@ export const SESSION_HISTORY_ACTION_IDS: readonly SessionHistoryActionId[] = [
   'delete'
 ];
 
-/**
- * The more-actions menu shows everything except View Log, which already has its
- * own button in the expanded card's action row.
- */
-export const SESSION_HISTORY_MENU_ACTION_IDS: readonly SessionHistoryActionId[] =
-  SESSION_HISTORY_ACTION_IDS.filter((id) => id !== 'view-log');
-
 const NO_TRANSCRIPT = 'No transcript file was found for this session.';
 const NO_FOLDER = 'This session has no folder recorded.';
 const NO_RESUME_COMMAND = 'This session has no resume command to copy.';
@@ -144,7 +137,7 @@ export function sessionHistoryActions(record: SessionLibraryRecord): SessionHist
         ? NO_FOLDER
         : UNREADABLE_AGENT;
 
-  return [
+  const actions = [
     action('resume-assembly', resumeLabel, Boolean(record.ownedId) || canResumeAssembly, resumeReason),
     action('view-log', 'View Log', hasLog, NO_TRANSCRIPT),
     action(
@@ -161,4 +154,7 @@ export function sessionHistoryActions(record: SessionLibraryRecord): SessionHist
     action('copy-log-path', 'Copy Log Path', hasLog, NO_TRANSCRIPT),
     action('delete', 'Delete', Boolean(record.ownedId), NOT_OURS, true)
   ];
+  return record.machine !== 'local'
+    ? actions.filter((entry) => ['resume-assembly', 'copy-resume-command', 'copy-session-id', 'delete'].includes(entry.id))
+    : actions;
 }

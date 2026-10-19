@@ -42,3 +42,14 @@ pub(crate) async fn read_agent_session_details(
         .await
         .map_err(|error| format!("Agent session detail task failed: {error}"))?
 }
+
+/// Reads the displaying desktop's saved copy only. Never selects or contacts a runtime.
+#[tauri::command]
+pub(crate) async fn read_remote_saved_session_details(
+    manager: tauri::State<'_, AgentRuntimeManager>,
+    profile_id: String,
+    owned_id: String,
+) -> Result<mcb_core::session_store::RemoteSavedSessionDetails, String> {
+    manager.store_handle().remote_saved_session_details(&profile_id, &owned_id)
+        .map_err(|error| error.to_string())
+}
