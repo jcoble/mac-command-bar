@@ -6,7 +6,7 @@
  * The service has no archive, no browser-storage key, and no second rail/runtime
  * authority.
  */
-import type { AgentSession } from '../../tauriSource.ts';
+import type { AgentSession, RemoteSavedSessionDetails } from '../../tauriSource.ts';
 import type { OwnedSession } from '../ownedSessions.ts';
 import {
   buildSessionLibrary,
@@ -29,6 +29,7 @@ export interface SessionLibrarySource {
   listProviderSessions?(projectPath?: string): Promise<AgentSession[]>;
   /** Read one transcript when an expanded card needs its turn text. */
   readProviderSessionDetails?(logPath: string): Promise<AgentSession[]>;
+  readRemoteSavedSessionDetails?(profileId: string, ownedId: string, signal: AbortSignal): Promise<RemoteSavedSessionDetails | null>;
   /** Existing rail authority, read only when refresh is explicitly requested. */
   getOwnedSessions?(): readonly OwnedSession[];
   /** Existing scanner/rail authority, read only when refresh is explicitly requested. */
@@ -40,7 +41,7 @@ export interface SessionLibraryService {
   refresh(
     keys?: ReadonlySet<string>,
     scope?: { projectPath: string },
-    options?: { includeDetails?: boolean }
+    options?: { includeDetails?: boolean; signal?: AbortSignal }
   ): Promise<SessionLibraryRecord[]>;
   release(keys?: ReadonlySet<string>): void;
   resume(record: SessionLibraryRecord): Promise<void>;
@@ -126,7 +127,7 @@ export function createSessionLibraryService(
     async refresh(
       keys?: ReadonlySet<string>,
       scope?: { projectPath: string },
-      options?: { includeDetails?: boolean }
+      options?: { includeDetails?: boolean; signal?: AbortSignal }
     ): Promise<SessionLibraryRecord[]> {
       const owned = source.getOwnedSessions?.() ?? [];
       const current = source.getAvailableSessions?.() ?? [];
@@ -134,6 +135,21 @@ export function createSessionLibraryService(
       const currentSelection = keys
         ? currentRecords.filter((record) => keys.has(record.key))
         : currentRecords;
+      const remote = currentSelection.length === 1 && currentSelection[0].machine !== 'local'
+        ? currentSelection[0] : null;
+      if (remote && options?.includeDetails) {
+        const signal = options.signal;
+        if (!signal || signal.aborted) return [];
+        const details = remote.ownedId && source.readRemoteSavedSessionDetails
+          ? await source.readRemoteSavedSessionDetails(remote.machine, remote.ownedId, signal) : null;
+        if (signal.aborted) return [];
+        remote.firstPrompt = details?.firstPrompt ?? null;
+        remote.latestTurns = details?.latestTurns ?? [];
+        remote.messageCount = details?.turnCount ?? null;
+        remote.startComplete = details?.startComplete;
+        held.set(remote.key, remote);
+        return [remote];
+      }
       const alreadyComplete = keys
         && currentSelection.length === keys.size
         && options?.includeDetails !== true;

@@ -32,6 +32,7 @@ export interface SessionLibraryRecord {
   /** Stable row identity. Owned rows use ownedId; provider rows use a compound key. */
   key: string;
   source: SessionLibrarySource;
+  machine: string;
   ownedId: string | null;
   provider: string;
   nativeSessionId: string | null;
@@ -60,6 +61,7 @@ export interface SessionLibraryRecord {
    */
   logPath: string | null;
   /** These remain null/empty until the backend exposes the complete transcript. */
+  startComplete?: boolean;
   firstPrompt: string | null;
   latestTurns: SessionLibraryTurn[];
   /**
@@ -87,6 +89,7 @@ export interface SessionHistoryFilters extends SessionLibraryFilters {
   scope?: SessionHistoryScope;
   workspacePath?: string | null;
   projectKey?: string | null;
+  machine?: string;
 }
 
 export interface SessionLibraryGroup {
@@ -113,7 +116,7 @@ export function canonicalProvider(value: string | null | undefined): string {
 }
 
 /**
- * Provider identity is `(provider,nativeSessionId,canonicalCwd)`. The title is
+ * Provider identity is `(machine,provider,nativeSessionId,canonicalCwd)`. The title is
  * deliberately absent, and `null` native ids remain meaningful alongside the
  * cwd rather than collapsing every fresh session into one row.
  */
@@ -121,8 +124,10 @@ export function sessionIdentityKey(input: {
   provider: string | null | undefined;
   nativeSessionId: string | null | undefined;
   cwd: string | null | undefined;
+  machine?: string;
 }): string {
   return [
+    input.machine ?? 'local',
     canonicalProvider(input.provider),
     input.nativeSessionId?.trim() || '',
     canonicalCwd(input.cwd)
@@ -177,9 +182,11 @@ export function ownedSessionLibraryRecord(
 ): SessionLibraryRecord {
   const provider = providerForOwned(session);
   const cwd = canonicalCwd(session.cwd);
+  const machine = session.executionEnvironment === 'remote' ? session.remoteProfileId ?? '' : 'local';
   return {
     key: `owned:${session.ownedId}`,
     source: 'owned',
+    machine,
     ownedId: session.ownedId,
     provider,
     nativeSessionId: session.nativeSessionId,
@@ -188,7 +195,7 @@ export function ownedSessionLibraryRecord(
     description: session.latestTurnPreview,
     projectGroupKey: session.projectGroupKey,
     projectGroupLabel: session.projectGroupLabel,
-    model: null,
+    model: session.executionEnvironment === 'remote' ? session.model ?? null : null,
     state: deriveOwnedLibraryState(session),
     runtimeState: session.runtimeState ?? null,
     lastActivity: session.lastActivity,
@@ -213,6 +220,7 @@ export function providerSessionLibraryRecord(
   return {
     key: `provider:${identity}`,
     source: 'provider',
+    machine: 'local',
     ownedId: null,
     provider,
     nativeSessionId: session.id || null,
@@ -255,6 +263,7 @@ export function buildSessionLibrary(
     ownedIds.add(session.ownedId);
     const record = ownedSessionLibraryRecord(session, options.includeDetails === true);
     const identity = sessionIdentityKey({
+      machine: record.machine,
       provider: record.provider,
       nativeSessionId: record.nativeSessionId,
       cwd: record.canonicalCwd
@@ -268,6 +277,7 @@ export function buildSessionLibrary(
     if (!session || !session.id) continue;
     const record = providerSessionLibraryRecord(session, options.includeDetails === true);
     const identity = sessionIdentityKey({
+      machine: record.machine,
       provider: record.provider,
       nativeSessionId: record.nativeSessionId,
       cwd: record.canonicalCwd
