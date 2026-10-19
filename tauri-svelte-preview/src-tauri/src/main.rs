@@ -5337,7 +5337,7 @@ fn main() {
         std::process::exit(1);
     }
     if std::env::args().any(|argument| argument == "--assembly-server") {
-        if let Err(error) = agent_conversation::remote::run_server_from_environment() {
+        if let Err(error) = agent_conversation::remote::server::run_server_from_environment() {
             crate::debug_log::stderr_log!("Assembly remote server failed: {error}");
             std::process::exit(1);
         }

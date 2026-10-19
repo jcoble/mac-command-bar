@@ -29,7 +29,7 @@ use super::protocol::{
     SetAgentConversationConfigRequest, ToolState, TurnState,
 };
 mod push;
-use super::remote::{execute_phone_command, RemoteCommand, RemoteResponse, ServerState};
+use super::remote::{server::execute_phone_command, wire::{RemoteCommand, RemoteResponse}, ServerState};
 use crate::terminal::{self, TerminalKind, TerminalStartRequest};
 use crate::workflow::{WorkflowError, WorkflowNodeState, WorkflowOutputContract, WorkflowRunRecord, WorkflowRunState};
 
@@ -1445,7 +1445,7 @@ mod tests {
 
     use super::super::manager::AgentRuntimeManager;
     use super::super::providers::ProviderRegistry;
-    use super::super::remote::{bind_listeners, server_state, ServerState};
+    use super::super::remote::{server::bind_listeners, server_state, ServerState};
     use super::{answered_elsewhere, execute_phone_command, new_pairing_code, operation, pull_request_rows, redeem_pairing_code, reduce_chat, router, start_listener, RemoteCommand, PAIRING_CODE_LIFETIME_MS};
     use super::super::protocol::{AgentConversationEvent, AgentConversationPayload as Payload, AgentConversationProvider,
         AgentNativeSessionMode, EnsureAgentConversationRequest, ExecutionEnvironment, ToolState, TurnState};
