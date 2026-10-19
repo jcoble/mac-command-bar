@@ -22,13 +22,13 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-
+use self::push::PushSender;
 use super::protocol::{
     AgentConversationEvent, AgentConversationPayload as Payload, AgentNativeSessionMode, EnsureAgentConversationRequest,
     ExecutionEnvironment, RespondAgentConversationPermissionRequest, SendAgentConversationMessageRequest,
     SetAgentConversationConfigRequest, ToolState, TurnState,
 };
-use super::phone_push::PushSender;
+mod push;
 use super::remote::{execute_phone_command, RemoteCommand, RemoteResponse, ServerState};
 use crate::terminal::{self, TerminalKind, TerminalStartRequest};
 use crate::workflow::{WorkflowError, WorkflowNodeState, WorkflowOutputContract, WorkflowRunRecord, WorkflowRunState};
@@ -1994,7 +1994,7 @@ mod tests {
 
     #[tokio::test]
     async fn inbox_push_rings_once_per_new_item() {
-        use super::super::phone_push::tests::{fake_fcm, test_sender};
+        use super::push::tests::{fake_fcm, test_sender};
         let (state, base) = phone_server().await;
         let token = paired(&state, &base).await;
         let set = client(reqwest::Method::POST, &base, "/push-token", &token).json(&json!({"fcmToken": "fcm-1"})).send().await.unwrap();
@@ -2022,7 +2022,7 @@ mod tests {
 
     #[tokio::test]
     async fn phone_turn_push_rings_only_for_sessions_opened_on_the_phone() {
-        use super::super::phone_push::tests::{fake_fcm, test_sender};
+        use super::push::tests::{fake_fcm, test_sender};
         let (state, base) = phone_server().await;
         let token = paired(&state, &base).await;
         let set = client(reqwest::Method::POST, &base, "/push-token", &token).json(&json!({"fcmToken": "fcm-1"})).send().await.unwrap();
