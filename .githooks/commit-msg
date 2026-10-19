@@ -36,6 +36,12 @@ case "$branch" in
     ;;
 esac
 
+repo_root=$(git rev-parse --show-toplevel)
+message_file=$(realpath "$message_file")
+if ! pnpm --dir "$repo_root/tauri-svelte-preview" exec node --experimental-strip-types scripts/commitChecks.ts --commit-msg "$message_file"; then
+  exit 1
+fi
+
 if ! git diff --cached --quiet -- "$guide"; then
   exit 0
 fi
