@@ -1055,7 +1055,7 @@ impl AgentRuntimeManager {
                 manifest,
                 "provider-catalog".into(),
                 cwd.clone(),
-                session_spawn_environment(provider),
+                session_spawn_environment(provider).without_assembly_tool_approval(),
             );
             let result = async {
                 adapter.initialize(InitializeAgentInput { provider }).await?;
@@ -15259,11 +15259,25 @@ mod tests {
     async fn codex_probe_reads_each_models_efforts_and_default() {
         let root = temp_root();
         let log = root.join("codex-catalog.jsonl");
-        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&log, "codex_catalog");
+        let config_log = root.join("codex-config.json");
+        let mut manifest = super::super::providers::acp_client::tests::fixture_manifest_named(&log, "codex_catalog");
+        manifest.id = "codex-acp".into();
+        manifest.args[1] = format!(
+            "printf '%s\\n' \"$CODEX_CONFIG\" > '{}'\n{}",
+            config_log.display().to_string().replace('\'', "'\\''"), manifest.args[1],
+        );
         let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)]).unwrap();
         let manager = AgentRuntimeManager::new(providers);
         let config = manager.probe_provider_config(AgentConversationProvider::Codex, root.to_str().unwrap())
             .await.unwrap();
+        let launch_config = fs::read_to_string(&config_log).unwrap();
+        let launch_config: serde_json::Value = if launch_config.trim().is_empty() {
+            json!({})
+        } else {
+            serde_json::from_str(&launch_config).unwrap()
+        };
+        assert!(!launch_config.as_object().unwrap().keys().any(|key| key.starts_with("mcp_servers.assembly")),
+            "settings probe added an Assembly server override: {launch_config}");
         // The draft opens on the starting model; the other models' defaults come from one switch each.
         assert_eq!(config.model.as_deref(), Some("gpt-a"));
         assert_eq!(config.available_efforts, ["low", "high"]);
