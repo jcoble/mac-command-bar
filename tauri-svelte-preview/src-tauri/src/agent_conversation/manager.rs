@@ -8579,9 +8579,9 @@ fn normalized_optional_id(value: Option<String>) -> Option<String> {
     })
 }
 
-/// How hard a session thinks is the adapter's own setting, asked for through
-/// its effort control. An inherited thinking budget would speak over it, so the
-/// adapter is started without one.
+/// Claude ACP 0.90.0 resolveThinkingConfig maps MAX_THINKING_TOKENS to an SDK budget.
+/// Clear that inherited override so the mutable effort control owns thinking.
+/// Source: claude-0.90.0-thinking-source.txt in the TSK-1508 model-effort receipts.
 fn session_spawn_environment(provider: AgentConversationProvider) -> SidecarEnvironment {
     if provider != AgentConversationProvider::Claude {
         return SidecarEnvironment::default();
@@ -8618,9 +8618,9 @@ fn validate_conversation_config_update(
     Ok(())
 }
 
-/// A menu opened from an older suspended snapshot may submit Codex's former
-/// composite model shape once. Translate it to the live mutable controls that
-/// activation just negotiated before validating the request.
+/// Older suspended snapshots may submit Codex's composite model shape once.
+/// Codex ACP 1.13.1/2.2.2 still emit it (codex-1.13.1-isolated.jsonl:6).
+/// Translate to the live controls negotiated during activation before validating.
 fn normalize_codex_composite_config_update(
     provider: AgentConversationProvider,
     current: &AgentConversationConfigState,

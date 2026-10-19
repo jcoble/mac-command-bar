@@ -1531,7 +1531,7 @@ fn parse_standard_conversation_config(
             .collect(),
     };
     if provider == Some(AgentConversationProvider::Codex) {
-        // Codex's legacy model ids are `model[effort]`, one per effort a model has.
+        // Codex ACP 1.13.1/2.2.2 emit model[effort] (codex-1.13.1-isolated.jsonl:6).
         for id in &config.available_models {
             if let Some((model, effort)) = id.strip_suffix(']').and_then(|id| id.rsplit_once('[')) {
                 config.model_efforts.entry(model.to_string()).or_default().push(effort.to_string());
