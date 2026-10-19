@@ -3,7 +3,7 @@
   import { onDestroy } from 'svelte';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { createTrackedObjectUrl, revokeTrackedObjectUrl } from '$lib/shell/resourceDiagnostics.svelte';
-  import WorkingSpinner from './WorkingSpinner.svelte';
+  import WorkingSpinner from '../../components/feedback/WorkingSpinner.svelte';
 
   let {
     src,

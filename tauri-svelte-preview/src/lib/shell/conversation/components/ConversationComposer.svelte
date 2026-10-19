@@ -20,7 +20,7 @@
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import AgentCommandMenu from './AgentCommandMenu.svelte';
   import AttachmentLightbox from './AttachmentLightbox.svelte';
-  import WorkingSpinner from './WorkingSpinner.svelte';
+  import WorkingSpinner from '../../components/feedback/WorkingSpinner.svelte';
   import ComposerBannerStack, { type ComposerBannerItem } from './ComposerBannerStack.svelte';
   import ComposerConfigMenu from './ComposerConfigMenu.svelte';
   import PlanChip, { type PlanFileChanges } from './PlanChip.svelte';

@@ -25,7 +25,7 @@
   import Drama from '@lucide/svelte/icons/drama';
 
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import { refresh, stopAll, stopSession } from '$lib/shell/processes/playwrightService';
   import {
     playwrightState,

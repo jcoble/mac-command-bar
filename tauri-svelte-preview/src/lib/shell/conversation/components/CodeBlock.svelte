@@ -53,7 +53,7 @@
     fenceLanguage,
     plainHighlightedLines,
     type HighlightedLine
-  } from './codeHighlight.ts';
+  } from '../../markdown/codeHighlight.ts';
 
   interface Props {
     value: string;

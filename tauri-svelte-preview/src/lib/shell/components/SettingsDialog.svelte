@@ -43,7 +43,7 @@
   import SettingsSelect from '$lib/shell/components/SettingsSelect.svelte';
   import ProviderCliUpdateControl from '$lib/shell/components/ProviderCliUpdateControl.svelte';
   import ProviderUpdateControl from '$lib/shell/components/ProviderUpdateControl.svelte';
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import { Slider } from '$lib/components/ui/slider/index.js';
   import { Switch } from '$lib/components/ui/switch/index.js';
   import {

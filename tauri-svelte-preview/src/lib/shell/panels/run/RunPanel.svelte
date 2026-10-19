@@ -1,5 +1,5 @@
 <script lang="ts">
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   /**
    * RunPanel.svelte — the Run tab of the right column.
    *

@@ -24,7 +24,7 @@
   import GitPullRequest from '@lucide/svelte/icons/git-pull-request';
   import RefreshCcwDot from '@lucide/svelte/icons/refresh-ccw-dot';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import {

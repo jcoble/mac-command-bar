@@ -114,7 +114,7 @@ assert.equal(formatFullTime(formatSample), formatSample.toLocaleTimeString());
 
 for (const relativePath of [
   '../src/lib/shell/relativeTime.ts',
-  '../src/lib/shell/components/conversation/TurnMetadata.svelte',
+  '../src/lib/shell/conversation/components/TurnMetadata.svelte',
   '../src/lib/shell/resources/WorkspaceSpaceWorkspace.svelte',
   '../src/lib/shell/assistance/AssistanceProposal.svelte',
   '../src/lib/shell/usage/UsageWorkspace.svelte'

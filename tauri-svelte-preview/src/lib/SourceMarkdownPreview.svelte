@@ -11,7 +11,7 @@
     type CodeHighlighter
   } from '@humanspeak/svelte-markdown/extensions/highlight';
   import { allowHtmlOnly, type RendererComponent, type Renderers } from '@humanspeak/svelte-markdown';
-  import { fenceLanguage, highlightCode } from './shell/components/conversation/codeHighlight';
+  import { fenceLanguage, highlightCode } from './shell/markdown/codeHighlight';
 
   // GitHub-flavoured extras the library ships. Created once so the parser's
   // token cache keys stay stable between renders.

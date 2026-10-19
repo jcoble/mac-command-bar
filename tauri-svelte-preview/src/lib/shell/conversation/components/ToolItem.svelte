@@ -16,7 +16,7 @@
   import { toolFilePath, type ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
   import { sanitizeConversationHref } from '$lib/shell/conversation/conversationMessageSafety.ts';
   import { openUrlInBrowser } from '$lib/shell/workbenchNavigation.ts';
-  import { highlightCode, languageForPath } from './codeHighlight.ts';
+  import { highlightCode, languageForPath } from '../../markdown/codeHighlight.ts';
 
   const disclosure = getContext<ConversationDisclosureContext>(conversationDisclosureContext);
 

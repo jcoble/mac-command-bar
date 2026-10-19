@@ -3,7 +3,7 @@
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import SmartphoneIcon from '@lucide/svelte/icons/smartphone';
-  import WorkingSpinner from './conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from './feedback/WorkingSpinner.svelte';
   import { remoteWorkflowFromTauri, type RemoteAssemblyProfile } from '$lib/tauriSource';
   import { loadPhoneDevices, loadPhonePanel, type PhonePanel } from './phonePairing';
 

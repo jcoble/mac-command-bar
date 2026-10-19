@@ -25,12 +25,12 @@
   import FolderPlus from '@lucide/svelte/icons/folder-plus';
   import MessageCircle from '@lucide/svelte/icons/message-circle';
   import Monitor from '@lucide/svelte/icons/monitor';
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import X from '@lucide/svelte/icons/x';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
-  import PendingFirstMessage from '$lib/shell/components/conversation/PendingFirstMessage.svelte';
+  import PendingFirstMessage from '$lib/shell/conversation/components/PendingFirstMessage.svelte';
   import RemoteConnections from '$lib/shell/connections/RemoteConnections.svelte';
   import AddProjectDialog from '$lib/shell/projects/AddProjectDialog.svelte';
   import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte.ts';
@@ -38,7 +38,7 @@
   import { defaultDraftProjectId, projectBadge, projectMachineLabel, visibleProjects } from '$lib/shell/projects/projects.ts';
   import { checkForProviderUpdates, installProviderUpdates, type ProviderUpdateState } from '$lib/shell/providerUpdateService.svelte';
   import RestartProvidersButton from '$lib/shell/components/RestartProvidersButton.svelte';
-  import ConversationComposer from '$lib/shell/components/conversation/ConversationComposer.svelte';
+  import ConversationComposer from '$lib/shell/conversation/components/ConversationComposer.svelte';
   import { conversationSessions, setConversationDraft } from '$lib/shell/conversation/conversationStore.svelte';
   import { persistConversationSessionDraft, stopStructuredTurn } from '$lib/shell/conversation/conversationService';
   import type { ConversationAttachment } from '$lib/shell/conversation/conversationTypes.ts';
@@ -57,8 +57,8 @@
     type ThreadStartPickerState,
     type ThreadStartProvider,
     type ThreadStartRequest
-  } from '$lib/shell/newSession/threadStartFlow.ts';
-  import { projectRootIsBare } from '$lib/shell/newSession/newSessionBackend.ts';
+  } from '$lib/shell/conversation/newSession/threadStartFlow.ts';
+  import { projectRootIsBare } from '$lib/shell/conversation/newSession/newSessionBackend.ts';
   import { rememberAgentConfigChoice, rememberedAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
   import {
     listFoldersFromTauri,

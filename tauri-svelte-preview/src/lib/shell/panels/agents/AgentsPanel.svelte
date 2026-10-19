@@ -1,8 +1,8 @@
 <!-- Agents > Session owns the list and one bounded child transcript. -->
 <script lang="ts">
   import { createChatUI, UIProvider } from '@tanstack/ai-svelte/ui';
-  import ConversationMessageParts from '$lib/shell/components/conversation/ConversationMessageParts.svelte';
-  import ConversationToolPart from '$lib/shell/components/conversation/ConversationToolPart.svelte';
+  import ConversationMessageParts from '$lib/shell/conversation/components/ConversationMessageParts.svelte';
+  import ConversationToolPart from '$lib/shell/conversation/components/ConversationToolPart.svelte';
   import { setContext, untrack } from 'svelte';
   import Bot from '@lucide/svelte/icons/bot';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
@@ -14,7 +14,7 @@
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
-  import ConversationTimeline from '$lib/shell/components/conversation/ConversationTimeline.svelte';
+  import ConversationTimeline from '$lib/shell/conversation/components/ConversationTimeline.svelte';
   import {
     getConversationSession,
     setConversationSelectedChild,

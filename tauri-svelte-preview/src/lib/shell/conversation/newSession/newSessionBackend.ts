@@ -16,12 +16,12 @@
  * the pane's job. A `null` from a `…FromTauri` wrapper means nothing was
  * invoked at all — see `tauriSource.ts`.
  */
-import { countInvoke } from '../devInvokeCounter.svelte.ts';
+import { countInvoke } from '../../devInvokeCounter.svelte.ts';
 import {
   isNativeTauriRuntime,
   validateProjectRootFromTauri,
   type ProjectRootValidationResult
-} from '../../tauriSource.ts';
+} from '../../../tauriSource.ts';
 
 /**
  * What came back: an answer, "this only works in the desktop app", or a failure

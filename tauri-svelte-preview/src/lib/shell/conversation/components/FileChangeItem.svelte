@@ -4,7 +4,7 @@
   import Check from '@lucide/svelte/icons/check';
   import Copy from '@lucide/svelte/icons/copy';
   import type { ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
-  import { highlightCode, languageForPath, plainHighlightedLines, type HighlightedLine } from './codeHighlight.ts';
+  import { highlightCode, languageForPath, plainHighlightedLines, type HighlightedLine } from '../../markdown/codeHighlight.ts';
 
   interface Props {
     item: Extract<ConversationDisplayItem, { kind: 'file' }>;

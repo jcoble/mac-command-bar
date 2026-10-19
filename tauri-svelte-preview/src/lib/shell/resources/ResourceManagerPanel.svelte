@@ -1,5 +1,5 @@
 <script lang="ts">
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   /**
    * ResourceManagerPanel.svelte — what is running, what it has been doing, and
    * where the disk went.

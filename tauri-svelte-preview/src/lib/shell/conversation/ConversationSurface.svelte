@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createChatUI, UIProvider } from '@tanstack/ai-svelte/ui';
-  import ConversationMessageParts from '$lib/shell/components/conversation/ConversationMessageParts.svelte';
-  import ConversationToolPart from '$lib/shell/components/conversation/ConversationToolPart.svelte';
+  import ConversationMessageParts from '$lib/shell/conversation/components/ConversationMessageParts.svelte';
+  import ConversationToolPart from '$lib/shell/conversation/components/ConversationToolPart.svelte';
   import { setContext } from 'svelte';
   import { conversationMessagesContext, type ConversationMessagesContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import { readRemoteAssemblyEnvironmentFromTauri, type RemoteAssemblyProfile } from '$lib/tauriSource';
@@ -14,8 +14,8 @@
     AgentConversationProvider,
     ConversationAttachment
   } from '$lib/shell/conversation/conversationTypes.ts';
-  import ConversationTimeline from './conversation/ConversationTimeline.svelte';
-  import ConversationComposer from './conversation/ConversationComposer.svelte';
+  import ConversationTimeline from './components/ConversationTimeline.svelte';
+  import ConversationComposer from './components/ConversationComposer.svelte';
   import {
     beginConversationAgentConfigChange,
     confirmConversationAgentConfigChange,

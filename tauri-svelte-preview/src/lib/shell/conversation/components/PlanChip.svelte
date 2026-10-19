@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AgentPlanStep, ConversationDisplayItem } from '$lib/shell/conversation/conversationTimeline.ts';
-  import WorkingSpinner from './WorkingSpinner.svelte';
+  import WorkingSpinner from '../../components/feedback/WorkingSpinner.svelte';
 
   /** How many files the running turn touched, and by how many lines. A turn
    * that changed files without a diff to read has no line counts, and the chip

@@ -24,7 +24,7 @@
 	import type { ChipTone } from "$lib/components/ui/chip/variants.js";
 	import * as Tooltip from "$lib/components/ui/tooltip/index.js";
 	import { AGENT_ICONS, agentDisplayName } from "$lib/shell/agentIcons.ts";
-	import WorkingSpinner from "$lib/shell/components/conversation/WorkingSpinner.svelte";
+	import WorkingSpinner from "$lib/shell/components/feedback/WorkingSpinner.svelte";
 	import {
 		deriveSessionPresence,
 		EMPTY_SESSION_PRESENCE_HISTORY,

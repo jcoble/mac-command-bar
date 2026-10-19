@@ -1,5 +1,5 @@
 <script lang="ts">
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   /**
    * WorktreeRow.svelte — one worktree in the panel's list.
    *

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import WorkingSpinner from './WorkingSpinner.svelte';
+  import WorkingSpinner from '../../components/feedback/WorkingSpinner.svelte';
   let { text, seed }: { text: string; seed?: string } = $props();
 </script>
 <div class="pending-first-message" role="status" aria-label="Sending your message">

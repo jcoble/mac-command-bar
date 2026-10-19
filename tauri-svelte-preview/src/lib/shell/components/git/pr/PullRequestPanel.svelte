@@ -35,7 +35,7 @@
     type PullRequestFlowModel
   } from './prFlow';
   import { cn } from '$lib/utils';
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
 
   interface AgentIdentity {
     ownedId: string;

@@ -31,7 +31,7 @@
     languageForPath,
     plainHighlightedLines,
     type HighlightedLine
-  } from '$lib/shell/components/conversation/codeHighlight';
+  } from '$lib/shell/markdown/codeHighlight';
   import type { DiffLine } from '$lib/shell/git/parseUnifiedDiff';
   import { changedFileTree, parsedDiffOf, splitRows, unifiedRows, type DiffRow, type SplitRow } from '$lib/shell/git/diffRows';
   import type { DiffMode } from '$lib/shell/sessionWorkspaces';

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   /**
    * BranchMenu.svelte — which branch this repository is on, and the moves
    * between branches: switch, create, stash and pop.

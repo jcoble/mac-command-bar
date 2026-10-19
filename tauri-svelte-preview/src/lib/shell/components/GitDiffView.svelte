@@ -18,7 +18,7 @@
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import MultiFileDiff from '$lib/shell/components/git/MultiFileDiff.svelte';
   import { diffTextOf, parsedDiffOf, splitDiffByFile } from '$lib/shell/git/diffRows';
   import { readBranchDiff } from '$lib/shell/git/gitBackendExtra';

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { ChevronDown, RefreshCw, X } from '@lucide/svelte';
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import { formatMonthDay } from '$lib/shell/dateFormat.ts';
   import {
     buildProviderUsageTrend,

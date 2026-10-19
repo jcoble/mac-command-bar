@@ -1,5 +1,5 @@
 <script lang="ts">
-	import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+	import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
 	import ChevronRight from "@lucide/svelte/icons/chevron-right";
 	import FileUp from "@lucide/svelte/icons/file-up";
 	import History from "@lucide/svelte/icons/history";

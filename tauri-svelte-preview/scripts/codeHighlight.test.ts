@@ -15,7 +15,7 @@ import {
   plainHighlightedLines,
   type CodeTokenClass,
   type HighlightedLine
-} from '../src/lib/shell/components/conversation/codeHighlight.ts';
+} from '../src/lib/shell/markdown/codeHighlight.ts';
 
 /** The classes a snippet's text ends up painted with, in source order. */
 const classesIn = (lines: HighlightedLine[]): CodeTokenClass[] =>

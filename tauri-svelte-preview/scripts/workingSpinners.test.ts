@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { DESIGNS, SPINNER_IDS, pickSpinner } from '../src/lib/shell/components/conversation/workingSpinners.ts';
+import { DESIGNS, SPINNER_IDS, pickSpinner } from '../src/lib/shell/components/feedback/workingSpinners.ts';
 
 // Exactly the owner's 16 kept designs, each with something to draw.
 {

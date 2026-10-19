@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
   import RestartProvidersButton from '$lib/shell/components/RestartProvidersButton.svelte';

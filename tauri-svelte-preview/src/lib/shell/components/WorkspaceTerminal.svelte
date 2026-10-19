@@ -1,5 +1,5 @@
 <script lang="ts">
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   /** A single, lazy PTY for the workspace shown in the right panel. */
   import { onDestroy, onMount } from 'svelte';
 
