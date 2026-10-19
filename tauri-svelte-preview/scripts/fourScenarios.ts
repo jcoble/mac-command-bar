@@ -42,9 +42,17 @@ export function parseAvailableGb(freeOutput: string): number {
   return available;
 }
 
+// Resolves symlinks in the longest existing part of the path, so an alias cannot reach the owner's data.
+function canonical(target: string): string {
+  const resolved = path.resolve(target);
+  if (fs.existsSync(resolved)) return fs.realpathSync(resolved);
+  const parent = path.dirname(resolved);
+  return parent === resolved ? resolved : path.join(canonical(parent), path.basename(resolved));
+}
+
 export function refuseOwnerData(dataHome: string, homeDir: string): void {
-  const owner = path.join(homeDir, '.local/share');
-  const resolved = path.resolve(dataHome);
+  const owner = canonical(path.join(homeDir, '.local/share'));
+  const resolved = canonical(dataHome);
   if (resolved === owner || resolved.startsWith(owner + path.sep)) {
     throw new Error(`Refusing: ${resolved} is the owner's data folder (${owner}).`);
   }
@@ -101,11 +109,16 @@ async function start(argv: string[]) {
   const port = pickFreePort(parseListeningPorts(run('ss', ['-H', '-ltn'])));
 
   fs.mkdirSync(runDir, { recursive: true });
-  if (!fs.existsSync(templateDir)) {
-    console.log(`Template ${templateDir} is missing; creating it once from ${templateSource}.`);
-    fs.cpSync(templateSource, templateDir, { recursive: true, preserveTimestamps: true });
+  if (!option('--data')) {
+    if (!fs.existsSync(templateDir)) {
+      if (!fs.existsSync(templateSource)) {
+        throw new Error(`No template data folder at ${templateDir}. Make one: start the app with XDG_DATA_HOME set to an empty folder, add Workbox Test in Settings -> Connections, quit, and copy that folder to ${templateDir}.`);
+      }
+      console.log(`Template ${templateDir} is missing; creating it once from ${templateSource}.`);
+      fs.cpSync(templateSource, templateDir, { recursive: true, preserveTimestamps: true });
+    }
+    fs.cpSync(templateDir, dataDir, { recursive: true, preserveTimestamps: true });
   }
-  if (!option('--data')) fs.cpSync(templateDir, dataDir, { recursive: true, preserveTimestamps: true });
   if (!fs.existsSync(dataDir)) throw new Error(`Data folder ${dataDir} does not exist.`);
 
   const ownerBefore = ownerMtimes();

@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import {
   buildState,
@@ -35,6 +38,19 @@ test('refuses the owner data folder and anything under it', () => {
   assert.throws(() => refuseOwnerData('/home/me/.local/share/assembly', '/home/me'), /owner/);
   assert.throws(() => refuseOwnerData('/home/me/.local/share/../share', '/home/me'), /owner/);
   assert.doesNotThrow(() => refuseOwnerData('/home/me/assembly-proof/run/data', '/home/me'));
+});
+
+test('refuses a data folder that reaches the owner data through a symlink', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'four-scenarios-home-'));
+  try {
+    fs.mkdirSync(path.join(home, '.local/share/assembly'), { recursive: true });
+    fs.symlinkSync(path.join(home, '.local/share'), path.join(home, 'alias'));
+    assert.throws(() => refuseOwnerData(path.join(home, 'alias'), home), /owner/);
+    assert.throws(() => refuseOwnerData(path.join(home, 'alias/assembly/new'), home), /owner/);
+    assert.doesNotThrow(() => refuseOwnerData(path.join(home, 'proof/data'), home));
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test('builds the state file from what start created', () => {
