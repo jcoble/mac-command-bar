@@ -7,6 +7,21 @@ export interface PresentedAgentError {
   detail?: string;
 }
 
+/** Unwrap provider JSON and the JSON-RPC message that can carry it. */
+export function providerErrorMessage(raw: string): string {
+  let message = raw;
+  while (true) {
+    try {
+      const parsed = JSON.parse(message) as { error?: { message?: unknown }; message?: unknown } | null;
+      const next = typeof parsed?.error?.message === 'string' ? parsed.error.message : parsed?.message;
+      if (typeof next !== 'string') return message;
+      message = next;
+    } catch {
+      return message;
+    }
+  }
+}
+
 function errorCode(raw: string): string | null {
   return raw.match(/^\s*([a-z][a-z0-9-]*):/i)?.[1]?.toLowerCase() ?? null;
 }
@@ -34,6 +49,10 @@ function prettyPrintEmbeddedJson(raw: string): string {
 function humanSummary(raw: string): string {
   const normalized = raw.toLowerCase();
   const code = errorCode(raw);
+
+  if (normalized.includes('prompt is too long')) {
+    return 'This conversation is full. Send /compact if this agent offers it, or start a new session.';
+  }
 
   if (normalized.includes('no rollout found')) {
     return "This session's history is missing, so it can't be resumed.";
@@ -129,7 +148,7 @@ function trimmedSummary(raw: string): string {
 }
 
 export function presentAgentError(raw: string): PresentedAgentError {
-  const summary = humanSummary(raw);
+  const summary = humanSummary(providerErrorMessage(raw));
   if (raw.trim().length === 0) return { summary };
 
   return {

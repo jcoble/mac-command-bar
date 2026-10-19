@@ -167,3 +167,28 @@ test('the rail row shows the error summary in its status slot, never the raw tex
   assert.doesNotMatch(worktreeRow, /presentedError\?\.detail/);
   assert.doesNotMatch(worktreeRow, /<details/);
 });
+
+const rejectedModelMessage = "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.";
+const rejectedModelJson = `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}}`;
+
+for (const [name, raw, summary] of [
+  ['provider error body', rejectedModelJson, rejectedModelMessage],
+  ['top-level message', '{"message":"Pick another model."}', 'Pick another model.'],
+  ['JSON-RPC wrapped provider error', JSON.stringify({ code: -32001, message: rejectedModelJson }), rejectedModelMessage],
+  ['nested message takes precedence', '{"error":{"message":"Provider rejected the request."},"message":"Request failed"}', 'Provider rejected the request.'],
+  ['plain sentence', 'Pick another model.', 'Pick another model.'],
+  ['malformed JSON', '{"error":{"message":"Try again"}', '{"error":{"message":"Try again"}'],
+  ['JSON without a message', '{"status":400}', '{"status":400}'],
+  ['non-string messages', '{"error":{"message":400},"message":null}', '{"error":{"message":400},"message":null}'],
+  ['null JSON', 'null', 'null']
+]) {
+  test(`${name} keeps readable error copy`, () => {
+    assert.equal(presentAgentError(raw).summary, summary);
+  });
+}
+
+test('a full conversation tells the reader what to do, in the composer too', () => {
+  const summary = presentAgentError('{"code":-32603,"message":"Internal error: Prompt is too long"}').summary;
+  assert.match(summary, /conversation is full/i);
+  assert.match(summary, /\/compact/);
+});

@@ -71,6 +71,7 @@
   import { requestOpenConversationFile } from '$lib/shell/openFileBus.ts';
   import { clearViewedSession, sessionPresenceHistory, setViewedSession } from '$lib/shell/conversation/sessionPresence.ts';
   import type { ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
+  import { providerErrorMessage } from '$lib/shell/errorPresentation.ts';
   import { rememberAgentConfigChoice } from '$lib/shell/conversation/agentConfigMemory';
 
   interface Props {
@@ -171,8 +172,12 @@
       transcriptMessages,
       previousVisibleTimeline,
       conversation.sentAttachments
-    ).filter((item) => (item.kind !== 'approval' || !conversation.pendingApprovals[item.requestId])
-        && (item.kind !== 'input' || !conversation.pendingInputs[item.requestId]));
+    ).filter((item, index, items) => (item.kind !== 'approval' || !conversation.pendingApprovals[item.requestId])
+        && (item.kind !== 'input' || !conversation.pendingInputs[item.requestId])
+        // The composer owns the latest failed send; keep its stored error for history.
+        && !(item.kind === 'error' && index === items.length - 1
+          && !conversation.selectedHasAfter && !activeTurnId && conversation.sendError
+          && providerErrorMessage(item.text).trim() === providerErrorMessage(conversation.sendError).trim()));
     return previousVisibleTimeline;
   });
   const activePlan = $derived(latestPlan(visibleTimeline));
