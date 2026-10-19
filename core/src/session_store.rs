@@ -681,6 +681,62 @@ SELECT CASE WHEN kind = 'worker' AND ROW_NUMBER() OVER (PARTITION BY base_name, 
             ELSE base_name || ' [' || owned_id || ']' END AS name,
        owned_id, handle, provider, project, state, run_id, step_id, orchestrator, helper_of, run_lead FROM names;";
 
+/// All saved-history facts for one remote session; no provider or filesystem access.
+const REMOTE_SAVED_SESSION_DETAILS_SQL: &str = r#"
+WITH saved AS MATERIALIZED (
+  SELECT seq, turn_id, json_extract(payload,'$.payload.kind') AS kind,
+    json_extract(payload,'$.payload.itemId') AS item,
+    json_extract(payload,'$.payload.text') AS text,
+    json_extract(payload,'$.payload.delta') AS delta
+  FROM events WHERE owned_id=?1 AND kind='remote.cached'
+), coverage AS (
+  SELECT COALESCE((SELECT json_extract(extra,'$.startComplete') FROM sessions WHERE owned_id=?1),0) AS complete
+), latest_turn_ids AS (
+  SELECT turn_id FROM saved WHERE turn_id IS NOT NULL AND turn_id<>''
+  GROUP BY turn_id ORDER BY MAX(seq) DESC LIMIT 2
+), message_ids AS MATERIALIZED (
+  SELECT MIN(seq) AS seq, item,
+    CASE WHEN kind='userMessage' THEN 'user' ELSE 'agent' END AS speaker,
+    MAX(CASE WHEN kind IN ('userMessage','assistantMessage') AND text IS NOT NULL THEN seq END) AS complete_seq
+  FROM saved WHERE kind IN ('userMessage','assistantMessage','assistantDelta')
+    AND (turn_id IS NULL OR turn_id='' OR turn_id IN (SELECT turn_id FROM latest_turn_ids))
+  GROUP BY item, CASE WHEN kind='userMessage' THEN 'user' ELSE 'agent' END
+  HAVING MAX(CASE WHEN trim(COALESCE(text,delta,''))<>'' THEN 1 ELSE 0 END)=1
+  ORDER BY seq DESC LIMIT 4
+), latest AS (
+  SELECT seq,speaker,substr(COALESCE(
+    (SELECT json_extract(payload,'$.payload.text') FROM events
+      WHERE owned_id=?1 AND seq=m.complete_seq),
+    (SELECT group_concat(delta,'') FROM (
+      SELECT json_extract(payload,'$.payload.delta') AS delta
+      FROM events INDEXED BY events_item_idx
+      WHERE owned_id=?1 AND kind='remote.cached' AND item_id=m.item
+        AND json_extract(payload,'$.payload.kind')='assistantDelta' ORDER BY seq
+    ))),1,16000) AS text FROM message_ids m
+)
+SELECT CASE WHEN EXISTS (SELECT 1 FROM saved WHERE turn_id IS NULL OR turn_id='') THEN NULL
+  ELSE (SELECT COUNT(DISTINCT turn_id) FROM saved WHERE turn_id<>'') END,
+  CASE WHEN complete THEN (SELECT substr(text,1,16000) FROM saved WHERE kind='userMessage' ORDER BY seq LIMIT 1) END,
+  complete,
+  (SELECT json_group_array(json_object('speaker',speaker,'text',text)) FROM (SELECT * FROM latest ORDER BY seq))
+FROM coverage
+"#;
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteSavedSessionDetails {
+    pub turn_count: Option<i64>,
+    pub first_prompt: Option<String>,
+    pub start_complete: bool,
+    pub latest_turns: Vec<RemoteSavedSessionTurn>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct RemoteSavedSessionTurn {
+    pub speaker: String,
+    pub text: String,
+}
+
 const ORCHESTRATION_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS orchestration_events (
     id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL,
@@ -3977,6 +4033,16 @@ impl SessionStore {
         })
     }
 
+    pub fn remote_saved_session_details(&self, profile: &str, owned: &str) -> Result<RemoteSavedSessionDetails> {
+        let key = serde_json::to_string(&(profile, owned)).expect("string tuple");
+        let (turn_count, first_prompt, start_complete, turns): (Option<i64>, Option<String>, bool, String) = self.lock()?
+            .query_row(REMOTE_SAVED_SESSION_DETAILS_SQL, [&key], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .map_err(|error| StoreError::sqlite("could not read saved remote session details", error))?;
+        let latest_turns = serde_json::from_str(&turns)
+            .map_err(|_| StoreError::message("could not decode saved turns"))?;
+        Ok(RemoteSavedSessionDetails { turn_count, first_prompt, start_complete, latest_turns })
+    }
+
     /// One saved maximum per remote session; empty sessions have no cursor.
     pub fn remote_saved_maxima(&self, profile_id: &str) -> Result<std::collections::BTreeMap<String, i64>> {
         let connection = self.lock()?;
@@ -5028,6 +5094,77 @@ mod tests {
         }
         assert_eq!(store.workflow_active_agent_counts("two", "claude").unwrap(), (1, 1, 1, 1));
         assert_eq!(store.workflow_active_agent_counts("one", "codex").unwrap(), (1, 0, 0, 1));
+    }
+
+    #[test]
+    fn remote_saved_session_details_come_from_one_query() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let key = r#"["box","session"]"#;
+        let mut session = fixture_session(key, 0);
+        session.extra_json = r#"{"startComplete":true}"#.into();
+        store.cache_remote_events("box", &session, &[]).unwrap();
+        for (seq, turn, kind, text) in [(1, "t1", "userMessage", "First"),
+            (2, "t1", "assistantMessage", "Answer"), (3, "t2", "userMessage", "Next"),
+            (4, "t2", "assistantDelta", "Partial"), (5, "t2", "assistantMessage", "Answer two"),
+            (6, "t3", "userMessage", "Last question"), (7, "t3", "assistantDelta", "Latest"),
+            (8, "t3", "assistantDelta", " answer")] {
+            store.append_event(&item_page_event(key, seq, Some(turn), "remote.cached", 1,
+                serde_json::json!({"kind":kind,"itemId":format!("{turn}-{}", if kind == "assistantDelta" { "assistantMessage" } else { kind }),"text":text,"delta":text}))).unwrap();
+        }
+        let details = store.remote_saved_session_details("box", "session").unwrap();
+        assert_eq!(details.turn_count, Some(3));
+        assert_eq!(details.first_prompt.as_deref(), Some("First"));
+        assert!(details.start_complete);
+        assert_eq!(details.latest_turns.last().unwrap().text, "Latest answer");
+        assert_eq!(details.latest_turns[0].text, "Next");
+        assert_eq!(details.latest_turns.len(), 4);
+        session.extra_json = r#"{"startComplete":false}"#.into();
+        store.cache_remote_events("box", &session, &[]).unwrap();
+        let partial = store.remote_saved_session_details("box", "session").unwrap();
+        assert!(!partial.start_complete);
+        assert_eq!(partial.first_prompt, None);
+        let absent = store.remote_saved_session_details("other", "session").unwrap();
+        assert_eq!(absent.turn_count, Some(0));
+        assert!(!absent.start_complete);
+        assert!(absent.latest_turns.is_empty());
+        let empty_key = r#"["box","empty"]"#;
+        let mut empty = fixture_session(empty_key, 0);
+        empty.extra_json = r#"{"startComplete":false}"#.into();
+        store.cache_remote_events("box", &empty, &[]).unwrap();
+        let empty_details = store.remote_saved_session_details("box", "empty").unwrap();
+        assert_eq!(empty_details.turn_count, Some(0));
+        assert!(empty_details.latest_turns.is_empty());
+        assert!(!empty_details.start_complete);
+        let connection = store.lock().unwrap();
+        let mut statement = connection.prepare(&format!("EXPLAIN QUERY PLAN {}", super::REMOTE_SAVED_SESSION_DETAILS_SQL)).unwrap();
+        let plan = statement.query_map([key], |row| row.get::<_, String>(3)).unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        println!("SQL: {}\nPLAN: {plan:#?}", super::REMOTE_SAVED_SESSION_DETAILS_SQL);
+        assert!(plan.iter().any(|line| line.contains("SEARCH events")));
+        assert!(!plan.iter().any(|line| line.contains("SCAN complete_message") || line == "SCAN events"));
+        assert!(plan.iter().any(|line| line.contains("(owned_id=? AND seq=?)")));
+        assert!(plan.iter().any(|line| line.contains("(owned_id=? AND kind=? AND item_id=?)")));
+    }
+
+    #[test]
+    fn remote_saved_details_include_messages_without_a_turn() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let key = r#"["box","replay"]"#;
+        store.cache_remote_events("box", &fixture_session(key, 0), &[]).unwrap();
+        for seq in 1..=6 {
+            store.append_event(&item_page_event(key, seq, None, "remote.cached", 1,
+                serde_json::json!({"kind":"assistantMessage","itemId":format!("replay-{seq}"),"text":format!("Replay {seq}")}))).unwrap();
+        }
+        let details = store.remote_saved_session_details("box", "replay").unwrap();
+        assert_eq!(details.latest_turns.iter().map(|turn| turn.text.as_str()).collect::<Vec<_>>(),
+            vec!["Replay 3", "Replay 4", "Replay 5", "Replay 6"]);
+        assert_eq!(serde_json::to_value(&details).unwrap()["turnCount"], serde_json::Value::Null);
+        store.append_event(&item_page_event(key, 7, Some("known-turn"), "remote.cached", 1,
+            serde_json::json!({"kind":"userMessage","itemId":"known","text":"New prompt"}))).unwrap();
+        let mixed = store.remote_saved_session_details("box", "replay").unwrap();
+        assert_eq!(mixed.turn_count, None);
+        assert_eq!(mixed.latest_turns.len(), 4);
+        assert_eq!(mixed.latest_turns.last().unwrap().text, "New prompt");
     }
 
     fn fixture_session(owned_id: &str, activity_ms: i64) -> SessionRow {

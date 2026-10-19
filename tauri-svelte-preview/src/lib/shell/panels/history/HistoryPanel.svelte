@@ -2,7 +2,7 @@
   /**
    * HistoryPanel.svelte — the History tab of the right column.
    *
-   * Every session this machine has run, grouped by the project it ran in, most
+   * Known sessions grouped by machine, project and checkout, most
    * recent first. A project with hundreds of sessions in it opens showing the
    * newest twenty-five per checkout and reads the rest as the reader scrolls,
    * because the alternative is a panel that takes a second to draw every time
@@ -64,6 +64,7 @@
   import { warmAgentConversationConfig } from '$lib/shell/conversation/conversationConfig.ts';
   import { setConversationAgentConfigState } from '$lib/shell/conversation/conversationStore.svelte.ts';
   import { ownedSessionFromBackend } from '$lib/shell/ownedSessions.ts';
+  import { projectMachineLabel } from '$lib/shell/projects/projects.ts';
   import { hydrateProjects, projectRegistry } from '$lib/shell/projects/projectRegistry.svelte.ts';
   import { addOwnedSession, rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import {
@@ -129,7 +130,8 @@
     dateTo: sessionLibraryState.dateTo || null,
     scope: sessionLibraryState.scope,
     workspacePath: root.trim() || null,
-    projectKey
+    projectKey,
+    machine: activeRecord?.machine ?? 'local'
   });
   const historyFilterKey = $derived([
     historyFilters.query,
@@ -139,7 +141,8 @@
     historyFilters.dateTo,
     historyFilters.scope,
     historyFilters.workspacePath,
-    historyFilters.projectKey
+    historyFilters.projectKey,
+    historyFilters.machine
   ].join('\0'));
   const summaryRecords = $derived(
     visible ? filterSessionHistoryRecords(summaryLibrary, historyFilters) : []
@@ -158,12 +161,15 @@
   let historyLoadVersion = 0;
   let detailLoadVersion = 0;
   let loadStopController = new AbortController();
-  type SessionHistoryDetail = Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns'>;
+  type SessionHistoryDetail = Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns' | 'messageCount' | 'startComplete'>;
+  let detailStopController = new AbortController();
   let detailsByKey = $state<Record<string, SessionHistoryDetail>>({});
   let detailLoadingKey = $state<string | null>(null);
 
   function releaseDetails(keys?: ReadonlySet<string>): void {
     detailLoadVersion += 1;
+    detailStopController.abort();
+    detailStopController = new AbortController();
     if (!keys) {
       detailsByKey = {};
       detailLoadingKey = null;
@@ -196,7 +202,8 @@
   });
 
   /** The checkouts git lists for a group's folders registered on this Mac, under the group's key. */
-  async function groupCheckouts(key: string): Promise<Record<string, RepositoryCheckout[]> | null> {
+  async function groupCheckouts(key: string, machine: string): Promise<Record<string, RepositoryCheckout[]> | null> {
+    if (machine !== 'local') return null;
     const roots = projectRegistry.projects
       .filter((project) => project.machine === 'local' && project.groupKey === key)
       .map((project) => project.rootPath);
@@ -208,10 +215,8 @@
    * The checkouts each repository still has, asked of git once the sessions have
    * named their repositories.
    *
-   * This is what lets a worktree appear that no session was ever run in — one
-   * that only ever hosted dispatched lanes — and what keeps a checkout that has
-   * since been deleted out. Empty until the answer arrives, and the tree simply
-   * shows the checkouts the sessions name until then.
+   * Match local session subfolders to their existing checkout roots. Only
+   * checkouts containing sessions appear; remote paths never use local Git.
    */
   let checkouts = $state<Record<string, RepositoryCheckout[]>>({});
 
@@ -320,7 +325,7 @@
         fullyHeld
           ? Promise.resolve(heldRecords)
           : host.service.refresh(keys),
-        groupCheckouts(project.key)
+        groupCheckouts(project.key, project.machine)
       ]);
       if (stopSignal.aborted || !visible || version !== historyLoadVersion) {
         if (!fullyHeld) host.service.release(keys);
@@ -599,10 +604,10 @@
     }
     releaseDetails();
     expandedKey = row.record.key;
-    void loadCardDetails(row.record);
+    void loadCardDetails(row.record, detailStopController.signal);
   }
 
-  async function loadCardDetails(record: SessionLibraryRecord): Promise<void> {
+  async function loadCardDetails(record: SessionLibraryRecord, signal: AbortSignal): Promise<void> {
     const key = record.key;
     const version = ++detailLoadVersion;
     detailLoadingKey = key;
@@ -611,9 +616,9 @@
       const refreshed = await host.service.refresh(
         new Set([key]),
         projectPath ? { projectPath } : undefined,
-        { includeDetails: true }
+        { includeDetails: true, signal }
       );
-      if (!visible || version !== detailLoadVersion || expandedKey !== key) {
+      if (signal.aborted || !visible || version !== detailLoadVersion || expandedKey !== key) {
         host.service.release(new Set([key]));
         return;
       }
@@ -621,7 +626,7 @@
       if (detail) {
         detailsByKey = {
           ...detailsByKey,
-          [key]: { firstPrompt: detail.firstPrompt, latestTurns: detail.latestTurns }
+          [key]: { firstPrompt: detail.firstPrompt, latestTurns: detail.latestTurns, messageCount: detail.messageCount, startComplete: detail.startComplete }
         };
       }
       host.service.release(new Set([key]));
@@ -646,7 +651,7 @@
     {/snippet}
     <span data-testid="session-history-host-line" class="flex min-w-0 items-center gap-1.5">
       <Server class="size-[16px] shrink-0" aria-hidden="true" />
-      <span data-testid="session-history-host" class="truncate">{summaryViewModel.totalCount} {summaryViewModel.totalCount === 1 ? 'session' : 'sessions'} from This Mac</span>
+      <span data-testid="session-history-host" class="truncate">{summaryViewModel.totalCount} {summaryViewModel.totalCount === 1 ? 'session' : 'sessions'}{summaryViewModel.machines.length === 1 ? ` on ${projectMachineLabel(summaryViewModel.machines[0].key, rail.remoteProfiles)}` : ''}</span>
     </span>
   </PanelHeader>
   <div data-testid="session-history-scope" class="px-2 py-1">
@@ -724,7 +729,13 @@
       <!-- Groups start collapsed and open one click at a time — mounting every
            card at once is what used to freeze the app. A search is the
            exception: its results are already few, so they all show. -->
-      {#each summaryViewModel.projects as project (project.key)}
+      {#each summaryViewModel.projects as project, projectIndex (project.key)}
+        {#if summaryViewModel.showMachines && (projectIndex === 0 || summaryViewModel.projects[projectIndex - 1].machine !== project.machine)}
+          <h2 class="flex min-h-7 items-center gap-2 bg-card px-3 py-1.5 text-[13px] font-medium text-foreground">
+            <Server class="size-3.5 shrink-0" aria-hidden="true" />
+            {projectMachineLabel(project.machine, rail.remoteProfiles)}
+          </h2>
+        {/if}
         {@const open = isSessionHistoryGroupOpen(collapseState, 'project', project.key)}
         {@const loadedProject = loadedProjects.get(project.key)}
         <Collapsible.Root {open} onOpenChange={() => void toggleProject(project)}>
@@ -784,7 +795,7 @@
                         class={`size-3 shrink-0 transition-transform duration-150 ${worktreeOpen ? 'rotate-90' : ''}`}
                         aria-hidden="true"
                       />
-                      <span class="min-w-0 flex-1 truncate">{worktree.name}</span>
+                      <span class="min-w-0 flex-1 truncate" title={worktree.path}>{worktree.name}</span>
                       <Chip tone="count">{worktree.count}</Chip>
                     </Collapsible.Trigger>
                     <Collapsible.Content>

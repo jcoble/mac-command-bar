@@ -16,6 +16,7 @@ function record(key: string, input: Record<string, unknown> = {}): SessionLibrar
   return {
     key,
     source: 'provider',
+    machine: 'local',
     ownedId: null,
     provider: 'alpha',
     nativeSessionId: key,
@@ -81,6 +82,35 @@ const rows = [
     owned: { state: 'live' }
   })
 ];
+
+// All separates machines; scoped filters never cross machines with identical paths.
+{
+  const local = record('local');
+  const remote = record('remote', { machine: 'box' });
+  const view = buildSessionHistoryViewModel([local, remote]);
+  assert.deepEqual(view.machines.map((machine) => machine.key), ['local', 'box']);
+  assert.equal(view.showMachines, true);
+  assert.equal(view.projects.length, 2);
+  assert.notEqual(view.projects[0].key, view.projects[1].key);
+  assert.equal(buildSessionHistoryViewModel([local]).showMachines, false);
+  for (const scope of ['workspace', 'project'] as const) {
+    assert.deepEqual(filterSessionHistoryRecords([local, remote], {
+      scope, machine: 'box', workspacePath: local.canonicalCwd, projectKey: ATLAS.projectGroupKey
+    }).map((row) => row.key), ['remote']);
+  }
+}
+
+// The shortest unique suffix is used even when three checkouts share a basename.
+{
+  const view = buildSessionHistoryViewModel([
+    record('a', { canonicalCwd: '/one/work/atlas' }),
+    record('b', { canonicalCwd: '/two/work/atlas' }),
+    record('c', { canonicalCwd: '/two/worktrees/atlas' })
+  ]);
+  assert.deepEqual(view.projects[0].worktrees.map((group) => group.name).toSorted(),
+    ['one/work/atlas', 'two/work/atlas', 'worktrees/atlas']);
+  assert.ok(view.projects.every((project) => project.count > 0 && project.worktrees.every((group) => group.count > 0)));
+}
 
 // Projects and worktrees are counted from the filtered rows. Rows group by the
 // key SQL gave them, so a repository's worktrees sit under it, and activity
@@ -177,8 +207,7 @@ const rows = [
   assert.equal(view.projects.length, 1);
   assert.deepEqual(view.projects[0].worktrees.map((worktree) => [worktree.name, worktree.count]), [
     ['atlas', 1],
-    ['deleted-lane', 1],
-    ['live-lane', 0]
+    ['deleted-lane', 1]
   ]);
   assert.equal(view.totalCount, 2);
 }

@@ -9,16 +9,7 @@ export interface SessionHistoryFilterOptions {
   query?: string;
   provider?: string;
   windowState?: SessionHistoryWindowState;
-  /**
-   * The checkouts each project group still has on disk, keyed by the group's
-   * key, as git reported them for the group's registered folders.
-   *
-   * Every live checkout of a group on screen appears even if nothing was ever
-   * run in it, and a session in a folder below a checkout is filed under that
-   * checkout. A group absent from the map shows whichever checkouts its
-   * sessions name, which is what happens for "No project" and for a group with
-   * no registered folder on this Mac.
-   */
+  /** Local Git checkouts, used only to match local session folders. */
   checkouts?: Readonly<Record<string, readonly RepositoryCheckout[]>>;
 }
 
@@ -56,6 +47,7 @@ export interface SessionHistoryWorktreeGroup {
 
 export interface SessionHistoryProjectGroup {
   key: string;
+  machine: string;
   name: string;
   count: number;
   activityTime: number;
@@ -64,6 +56,8 @@ export interface SessionHistoryProjectGroup {
 }
 
 export interface SessionHistoryViewModel {
+  showMachines: boolean;
+  machines: { key: string; projects: SessionHistoryProjectGroup[] }[];
   totalCount: number;
   providers: SessionHistoryProviderOption[];
   projects: SessionHistoryProjectGroup[];
@@ -144,22 +138,31 @@ export function filterSessionHistoryRecords(
   records: readonly SessionLibraryRecord[],
   filters: SessionHistoryFilters = {}
 ): SessionLibraryRecord[] {
-  const { scope = 'all', workspacePath, projectKey, ...libraryFilters } = filters;
+  const { scope = 'all', machine = 'local', workspacePath, projectKey, ...libraryFilters } = filters;
   const filtered = filterSessionLibrary(records, libraryFilters);
   if (scope === 'workspace') {
     const workspace = canonicalPath(workspacePath);
     return workspace
-      ? filtered.filter((record) => canonicalPath(record.canonicalCwd) === workspace)
+      ? filtered.filter((record) => record.machine === machine && canonicalPath(record.canonicalCwd) === workspace)
       : [];
   }
   if (scope === 'project') {
-    return projectKey ? filtered.filter((record) => record.projectGroupKey === projectKey) : [];
+    return projectKey ? filtered.filter((record) => record.machine === machine && record.projectGroupKey === projectKey) : [];
   }
   return filtered;
 }
 
 function pathName(path: string, fallback: string): string {
   return path.split('/').filter(Boolean).at(-1) || fallback;
+}
+
+function uniqueCheckoutName(path: string, paths: string[]): string {
+  const parts = path.split('/').filter(Boolean);
+  for (let length = 1; length <= parts.length; length += 1) {
+    const suffix = parts.slice(-length).join('/');
+    if (paths.every((other) => other === path || (other !== suffix && !other.endsWith(`/${suffix}`)))) return suffix;
+  }
+  return path;
 }
 
 function identifyRow(record: SessionLibraryRecord): RowIdentity {
@@ -285,12 +288,14 @@ export function buildSessionHistoryViewModel(
 
   const projects = new Map<string, {
     name: string;
+    machine: string;
     worktrees: Map<string, { name: string; path: string; rows: SessionHistoryRow[] }>;
   }>();
 
   const known = options.checkouts ?? {};
   for (const row of filtered) {
-    const live = known[row.projectKey];
+    const live = row.record.machine === 'local' ? known[row.projectKey] : undefined;
+    const projectKey = row.record.machine === 'local' ? row.projectKey : JSON.stringify([row.record.machine, row.projectKey]);
     // A session can run in a folder BELOW its checkout root. Match the longest
     // live checkout prefix so `/repo/packages/app` is filed under `/repo`, not
     // presented as a vanished worktree. If the checkout really was deleted,
@@ -303,34 +308,19 @@ export function buildSessionHistoryViewModel(
     const worktreePath = checkoutPath ?? row.worktreePath;
     const worktreeName = pathName(worktreePath, row.worktreeName);
 
-    let project = projects.get(row.projectKey);
+    let project = projects.get(projectKey);
     if (!project) {
-      project = { name: row.projectName, worktrees: new Map() };
-      projects.set(row.projectKey, project);
+      project = { name: row.projectName, machine: row.record.machine, worktrees: new Map() };
+      projects.set(projectKey, project);
     }
 
-    const worktreeKey = `worktree:${worktreePath}`;
+    const worktreeKey = JSON.stringify([projectKey, worktreePath]);
     let worktree = project.worktrees.get(worktreeKey);
     if (!worktree) {
       worktree = { name: worktreeName, path: worktreePath, rows: [] };
       project.worktrees.set(worktreeKey, worktree);
     }
     worktree.rows.push(row);
-  }
-
-  // Then the checkouts git says each group still has, which puts a worktree on
-  // screen when the only thing ever run inside it was a dispatched lane. Only
-  // groups the sessions named: the group's label comes from them.
-  for (const [key, list] of Object.entries(known)) {
-    const project = projects.get(key);
-    if (!project) continue;
-    for (const checkout of list) {
-      const path = canonicalPath(checkout.path);
-      const worktreeKey = `worktree:${path}`;
-      if (!project.worktrees.has(worktreeKey)) {
-        project.worktrees.set(worktreeKey, { name: pathName(path, 'Unknown checkout'), path, rows: [] });
-      }
-    }
   }
 
   // Groups read newest first, with "No project" last as in the rail.
@@ -346,7 +336,7 @@ export function buildSessionHistoryViewModel(
         const rows = allRows.slice(0, visibleRowCount);
         return {
           key: worktreeKey,
-          name: worktree.name,
+          name: uniqueCheckoutName(worktree.path, [...project.worktrees.values()].map((tree) => tree.path)),
           path: worktree.path,
           count: allRows.length,
           activityTime: allRows[0]?.activityTime ?? 0,
@@ -358,6 +348,7 @@ export function buildSessionHistoryViewModel(
     return {
       key,
       name: project.name,
+      machine: project.machine,
       count: worktrees.reduce((total, worktree) => total + worktree.count, 0),
       activityTime: worktrees[0]?.activityTime ?? 0,
       singleCheckout: worktrees.length === 1,
@@ -369,7 +360,10 @@ export function buildSessionHistoryViewModel(
   // whose checkout has been deleted is left out above, and a header claiming it
   // was still there would be wrong by exactly that many.
   const totalCount = projectGroups.reduce((total, project) => total + project.count, 0);
-  return { totalCount, providers, projects: projectGroups };
+  const machineKeys = [...new Set(projectGroups.map((project) => project.machine))]
+    .sort((a, b) => Number(b === 'local') - Number(a === 'local') || a.localeCompare(b));
+  const machines = machineKeys.map((key) => ({ key, projects: projectGroups.filter((project) => project.machine === key) }));
+  return { totalCount, providers, projects: machines.flatMap((machine) => machine.projects), machines, showMachines: machines.length > 1 };
 }
 
 export function createSessionHistoryCollapseState(): SessionHistoryCollapseState {

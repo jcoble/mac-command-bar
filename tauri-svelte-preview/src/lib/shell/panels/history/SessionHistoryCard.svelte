@@ -61,7 +61,7 @@
     /** One line of what was last said, or the session's first prompt. */
     excerpt: string;
     expanded: boolean;
-    detail?: Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns'> | null;
+    detail?: Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns' | 'messageCount' | 'startComplete'> | null;
     detailsLoading?: boolean;
     /** The clock, passed down so forty cards do not keep forty of them. */
     now: Date;
@@ -109,7 +109,7 @@
     return byId.get(id) ?? { id, label: id, enabled: false, disabledReason: null, destructive: false };
   }
 
-  const menuActions = $derived(SESSION_HISTORY_MENU_ACTION_IDS.map(action));
+  const menuActions = $derived(SESSION_HISTORY_MENU_ACTION_IDS.filter((id) => byId.has(id)).map(action));
 
   const agent = $derived(normalizeProvider(record.provider));
   const ProviderIcon = $derived(AGENT_ICONS[agent.agent]);
@@ -117,7 +117,8 @@
   const age = $derived(formatLastActivity(record.updatedAt, now));
   const modelLabel = $derived(record.model?.trim() || DASH);
   const turnsLabel = $derived(
-    record.messageCount && record.messageCount > 0 ? String(record.messageCount) : DASH
+    record.machine !== 'local' ? detail?.messageCount == null ? DASH : String(detail.messageCount)
+      : record.messageCount && record.messageCount > 0 ? String(record.messageCount) : DASH
   );
   const firstPrompt = $derived(detail?.firstPrompt?.trim() ?? '');
   const latestTurns = $derived(detail?.latestTurns ?? []);
@@ -150,7 +151,9 @@
         title: record.updatedAt ? exactLocalTime(record.updatedAt) : undefined
       },
       { label: 'Model', value: modelLabel, title: record.model ?? undefined },
-      { label: 'Turns', value: turnsLabel, title: undefined },
+      ...(record.machine === 'local' || detail?.startComplete !== undefined
+        ? [{ label: record.machine !== 'local' && !detail?.startComplete ? 'Saved turns' : 'Turns', value: turnsLabel, title: undefined }]
+        : []),
       {
         label: 'Subagents',
         value: record.subagents.length > 0 ? String(record.subagents.length) : DASH,
@@ -194,6 +197,7 @@
    * always there and always about this session.
    */
   const closingLine = $derived.by(() => {
+    if (record.machine !== 'local') return 'Showing the copy saved on This Mac.';
     const off = CLUSTER.map((item) => action(item.id)).find(
       (item) => !item.enabled && item.disabledReason
     );
@@ -338,6 +342,7 @@
         {/each}
       </dl>
 
+      {#if record.machine === 'local' || detail?.startComplete !== undefined}
       <section class="flex flex-col gap-(--space-2) px-(--space-3)">
         <div class="flex items-center justify-between">
           <h3 class={SECTION_LABEL}>First prompt</h3>
@@ -352,6 +357,8 @@
         </div>
         {#if detailsLoading}
           <p class={QUIET_LINE}><WorkingSpinner size={12} /> Loading session details…</p>
+        {:else if record.machine !== 'local' && !detail?.startComplete}
+          <p class={QUIET_LINE}>Earliest messages not saved on this Mac yet</p>
         {:else if firstPrompt}
           <ScrollArea type="always" class="first-prompt-scroll">
             <p class="m-0 whitespace-pre-wrap pr-2 text-(length:--text-quiet) leading-relaxed">
@@ -362,6 +369,8 @@
           <p class={QUIET_LINE}>First prompt was not stored for this session.</p>
         {/if}
       </section>
+
+      {/if}
 
       <!-- The conversation, behind a disclosure: the first turn, then the last
            two. The block is here even when the scan kept nothing, because a
@@ -476,7 +485,7 @@
       <section class="flex flex-col gap-(--space-2) px-(--space-3)">
         <h3 class={SECTION_LABEL}>What you can do</h3>
         <div class="flex flex-wrap items-center gap-(--space-1)">
-          {#each CLUSTER as item (item.id)}
+          {#each CLUSTER.filter((item) => byId.has(item.id)) as item (item.id)}
             {@const entry = action(item.id)}
             {@const Icon = item.icon}
             <Button

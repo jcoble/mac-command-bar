@@ -144,7 +144,7 @@ export function sessionHistoryActions(record: SessionLibraryRecord): SessionHist
         ? NO_FOLDER
         : UNREADABLE_AGENT;
 
-  return [
+  const actions = [
     action('resume-assembly', resumeLabel, Boolean(record.ownedId) || canResumeAssembly, resumeReason),
     action('view-log', 'View Log', hasLog, NO_TRANSCRIPT),
     action(
@@ -161,4 +161,7 @@ export function sessionHistoryActions(record: SessionLibraryRecord): SessionHist
     action('copy-log-path', 'Copy Log Path', hasLog, NO_TRANSCRIPT),
     action('delete', 'Delete', Boolean(record.ownedId), NOT_OURS, true)
   ];
+  return record.machine !== 'local'
+    ? actions.filter((entry) => ['resume-assembly', 'copy-resume-command', 'copy-session-id', 'delete'].includes(entry.id))
+    : actions;
 }
