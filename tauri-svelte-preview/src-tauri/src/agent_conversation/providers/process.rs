@@ -157,7 +157,7 @@ impl SidecarProcess {
                     .map_err(|error| format!("Invalid Codex adapter CODEX_CONFIG: {error}"))?,
                 None => serde_json::Map::new(),
             };
-            // The adapter keeps dotted overrides alongside the ACP-provided server entry.
+            // Unattended workers must not stop for Assembly tools: Codex's spelling of acp_client.rs allowedTools; settings probes skip it (TSK-1506).
             config.insert(
                 "mcp_servers.assembly.default_tools_approval_mode".into(),
                 "approve".into(),

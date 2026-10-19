@@ -3250,6 +3250,7 @@ impl AgentRuntimeManager {
             let session = current_session_mut(&mut sessions, owned_id, generation)?;
             if let Some(turn_id) = session.active_turn_id.clone() {
                 session.state = AgentRuntimeState::Interrupting;
+                // Antigravity 1.2.1 server.py:3089–3090 only signals a started SDK; it provides no prompt-completion deadline.
                 let bounded_cancel = session.provider == AgentConversationProvider::Antigravity
                     && session.cancel_deadline.is_none()
                     && matches!(
@@ -3286,6 +3287,7 @@ impl AgentRuntimeManager {
         let claude = {
             let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session_mut(&mut sessions, owned_id, generation)?;
+            // Claude ACP 0.88/0.93 cancelTurns can wait its 30s forceCancelGraceMs; release permissions/children locally now.
             if session.provider == AgentConversationProvider::Claude || turn_id.is_none() {
                 for (request_id, pending) in session.permission_requests.drain().collect::<Vec<_>>() {
                     record_payload_for_session_and_dispatch(session, &self.emitter,
@@ -5302,13 +5304,9 @@ fn record_payload_for_session(
     record_payload_for_session_with_lifecycle(session, payload, lifecycle, None)
 }
 
-/// Whether the provider still holds anything for this session to resume.
-///
-/// Only Claude keeps a transcript this side can read. A Claude session whose
-/// file holds no turn — its process was stopped before it wrote one — is gone
-/// on Claude's side however many turns this store shows for it, and every
-/// resume of it fails the same way. Other providers are taken at their word,
-/// as is a transcript that cannot be read at all.
+/// Claude ACP 0.88/0.93 empty-session resume fails (TSK-1508 empty-resume probe).
+/// Codex also fails without a rollout; its safe missing/unreadable check is pending.
+/// Trust unreadable Claude transcripts; Antigravity precreates its trajectory (1.2.1 server.py:3011–3015).
 fn provider_holds_session(provider: AgentConversationProvider, native_session_id: &str) -> bool {
     match provider {
         AgentConversationProvider::Claude => {
@@ -5889,6 +5887,7 @@ async fn pump_inbound(
                     else {
                         return;
                     };
+                    // Claude is completed locally by cancel_turn; cancelTurns can still emit updates (TSK-1508 cancel probes).
                     if session.suspending || (session.provider == AgentConversationProvider::Claude
                         && session.state == AgentRuntimeState::Interrupting) { break 'update false; }
                     let child_content = is_known_claude_child_inbound(session, &params);
@@ -7268,6 +7267,7 @@ async fn handle_ordered_session_event(
                     return true;
                 }
                 abort_cancel_deadline(session);
+                // Claude cancelTurns retires native children (0.88 finishAll / 0.93 parentCancelled); Codex cancel only interrupts the turn.
                 if cancelled && session.provider == AgentConversationProvider::Claude { session.background_work.clear(); }
                 let pending_permissions =
                     drain_root_permissions(&mut session.permission_requests);

@@ -98,6 +98,8 @@ impl Drop for AuthenticationAttempt {
     }
 }
 
+// This gates automatic oauth-personal recovery, not the shared -32000 code: Codex also returns it.
+// Only Antigravity advertises that method (TSK-1508 initialize receipts); server.py:673,2884 raises auth_required.
 pub(crate) fn required(provider: AgentConversationProvider, error: &str) -> bool {
     provider == AgentConversationProvider::Antigravity
         && error
