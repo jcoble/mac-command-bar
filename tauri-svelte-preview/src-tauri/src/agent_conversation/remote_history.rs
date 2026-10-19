@@ -92,6 +92,21 @@ mod tests {
     }
 
     #[test]
+    fn empty_start_after_a_live_event_keeps_the_saved_event() {
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
+        let history = RemoteHistory::new(store);
+        history.live_batch("p", 0, &mut [event(1)]).unwrap();
+        // Totals were empty, but metadata was sampled after the first live event.
+        let mut metadata = snapshot(2, 1);
+        history.begin_download("p", 0, HistoryDownloadFacts {
+            low_sequence: None, high_sequence: None, total_bytes: 0, covered_bytes: 0,
+        }, &mut metadata).unwrap();
+        history.complete_download("p", 0, "same-session-id", None, None).unwrap();
+        let saved = history.read_selection_snapshot("p", "same-session-id", 1024).unwrap().unwrap();
+        assert_eq!(saved.page.events.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1]);
+    }
+
+    #[test]
     fn download_chunks_save_quietly_and_prepare_markdown() {
         let store = Arc::new(SessionStore::open_in_memory().unwrap());
         let history = RemoteHistory::new(store.clone());
@@ -902,10 +917,11 @@ impl RemoteHistory {
             coverage.pending_events.clone_from(&snapshot.pending_events);
             coverage.active_turn_id.clone_from(&snapshot.active_turn_id);
         }
-        // An empty interval permits metadata-only empty selections immediately.
-        if facts.low_sequence.is_none() {
-            coverage.oldest = Some(snapshot.last_sequence.saturating_add(1));
-            coverage.through = Some(snapshot.last_sequence);
+        // Empty totals must not replace live coverage or use a newer metadata head.
+        if facts.low_sequence.is_none() && coverage.through.is_none() {
+            let head = facts.high_sequence.unwrap_or(0);
+            coverage.oldest = Some(head.saturating_add(1));
+            coverage.through = Some(head);
         }
         coverage.download = Some(HistoryDownloadState { total_bytes: facts.total_bytes, covered_bytes: facts.covered_bytes, complete: false });
         self.write(profile, owned, &coverage, &mut [], 0)

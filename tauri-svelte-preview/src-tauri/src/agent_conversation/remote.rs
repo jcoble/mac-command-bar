@@ -1787,10 +1787,11 @@ impl RemoteConnectionManager {
         max_bytes: u32,
         minimum_generation: Option<u64>,
     ) -> Result<Option<AgentConversationSelectionSnapshot>, String> {
+        let mut cancellations = self.cancelled_requests.subscribe();
         let profile = self.profile_for_owned_id(&owned_id)?;
         if self.connection_state(&profile) == RemoteConnectionState::Connected {
             self.ensure_history_download(&profile, &owned_id).await?;
-            self.wait_history_download_ready(&profile, &owned_id, request_id).await?;
+            self.wait_history_download_ready(&profile, &owned_id, request_id, &mut cancellations).await?;
         }
         let needs_repair = self.saved_history_needs_repair(&profile, &owned_id)?;
         let mut saved = self
@@ -1843,9 +1844,10 @@ impl RemoteConnectionManager {
         request_id: u64,
         max_bytes: u32,
     ) -> Result<Option<AgentConversationSelectionSnapshot>, String> {
+        let mut cancellations = self.cancelled_requests.subscribe();
         if self.connection_state(&profile) == RemoteConnectionState::Connected {
             self.ensure_history_download(&profile, &source_owned_id).await?;
-            self.wait_history_download_ready(&profile, &source_owned_id, request_id).await?;
+            self.wait_history_download_ready(&profile, &source_owned_id, request_id, &mut cancellations).await?;
             if self.saved_history_needs_repair(&profile, &source_owned_id)? {
                 self.save_newer(&profile, &source_owned_id, request_id, false, None).await?;
             }
@@ -2070,10 +2072,10 @@ impl RemoteConnectionManager {
         Ok(())
     }
 
-    async fn wait_history_download_ready(&self, profile: &str, owned: &str, request_id: u64) -> Result<(), String> {
+    async fn wait_history_download_ready(&self, profile: &str, owned: &str, request_id: u64,
+        cancellations: &mut broadcast::Receiver<u64>) -> Result<(), String> {
         if self.history.lock().unwrap().download_state(profile, owned)?.is_some_and(|state| state.complete) { return Ok(()); }
         let mut progress = self.download_watch(profile, owned)?;
-        let mut cancellations = self.cancelled_requests.subscribe();
         loop {
             let state = progress.borrow_and_update().clone();
             if state.phase == "error" { return Err(state.error.unwrap_or_else(|| "History download failed".into())); }
@@ -2083,7 +2085,7 @@ impl RemoteConnectionManager {
             }
             tokio::select! {
                 result = progress.changed() => { result.map_err(|e| e.to_string())?; }
-                _ = wait_for_cancel(&mut cancellations, request_id) => return Err(PAGE_CANCELLED.into()),
+                _ = wait_for_cancel(cancellations, request_id) => return Err(PAGE_CANCELLED.into()),
             }
         }
     }
@@ -2225,6 +2227,11 @@ impl RemoteConnectionManager {
         let RemoteResponse::ImportProgress { added, reached_start } = self.request_for_profile(&profile,
             RemoteCommand::ExtendImport { owned_id: owned_id.clone() }).await?
         else { return Err("Remote Assembly returned the wrong import response".into()); };
+        if added > 0 {
+            let active = self.downloads.lock().unwrap().get_mut(&RemoteHistory::key(&profile, &owned_id))
+                .and_then(|entry| entry.request_id.take());
+            if let Some(id) = active { self.cancel_request(id).await; }
+        }
         {
             let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             history.check(&profile, epoch)?;
@@ -2500,6 +2507,9 @@ impl RemoteConnectionManager {
         };
         if deleted {
             let profile = self.profile_for_owned_id(&owned_id)?;
+            let active = self.downloads.lock().unwrap().remove(&RemoteHistory::key(&profile, &owned_id))
+                .and_then(|entry| entry.request_id);
+            if let Some(id) = active { self.cancel_request(id).await; }
             self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).forget(&profile, &owned_id)?;
             self.forget_cached_session(&owned_id)?;
             self.remote_sessions
@@ -2590,6 +2600,7 @@ impl RemoteConnectionManager {
         request_id: u64,
         max_bytes: u32,
     ) -> Result<AgentConversationChildHistorySelection, String> {
+        let mut cancellations = self.cancelled_requests.subscribe();
         let profile = self.profile_for_owned_id(&parent_owned_id)?;
         let expected_server_child =
             super::transcript_import::child_owned_id(&parent_owned_id, &child_session_id)?;
@@ -2642,7 +2653,7 @@ impl RemoteConnectionManager {
                 &child_session_id,
             )?;
         self.ensure_history_download(&profile, &server_child_owned_id).await?;
-        self.wait_history_download_ready(&profile, &server_child_owned_id, request_id).await?;
+        self.wait_history_download_ready(&profile, &server_child_owned_id, request_id, &mut cancellations).await?;
         if self.saved_history_needs_repair(&profile, &server_child_owned_id)? {
             self.save_newer(&profile, &server_child_owned_id, request_id, false, None).await?;
         }
@@ -4428,6 +4439,74 @@ mod connection_tests {
     }
 
     #[tokio::test]
+    async fn extend_import_during_a_download_restarts_below_the_saved_minimum() {
+        let manager = download_manager();
+        let (id, mut requests) = begin_test_download(&manager, 200, Some(2), Some(3)).await;
+        manager.receive_history_chunk("cache-test", id, "large-history", 100,
+            encode_history_chunk(&[history_event(3)]).unwrap()).unwrap();
+        let extender = manager.clone();
+        let extension = tokio::spawn(async move { extender.extend_import("large-history".into()).await });
+        let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected import"); };
+        reply.send(Ok(RemoteResponse::ImportProgress { added: 1, reached_start: true })).unwrap();
+        extension.await.unwrap().unwrap();
+        assert!(matches!(requests.try_recv(), Ok(ClientRequest::Cancel { id: cancelled }) if cancelled == id),
+            "the frozen download must be cancelled");
+        let ClientRequest::Download { id: restarted, command } = requests.try_recv().expect("restart download") else { panic!("expected download"); };
+        assert_ne!(restarted, id);
+        assert!(matches!(command, RemoteCommand::DownloadHistory { before_sequence: Some(3), .. }));
+        manager.finish_history_download("cache-test", "large-history", id).await.unwrap();
+        assert!(!manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
+        manager.receive_history_start("cache-test", restarted, "large-history", Some(1), Some(3), 300, 100,
+            history_snapshot(vec![], 3)).unwrap();
+        manager.receive_history_chunk("cache-test", restarted, "large-history", 300,
+            encode_history_chunk(&[history_event(2), history_event(1)]).unwrap()).unwrap();
+        manager.finish_history_download("cache-test", "large-history", restarted).await.unwrap();
+        assert_eq!(manager.store.remote_saved_minimum(&RemoteHistory::key("cache-test", "large-history")).unwrap(), Some(1));
+        assert!(manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_session_drops_its_download_and_ignores_late_frames() {
+        let manager = download_manager();
+        let (id, mut requests) = begin_test_download(&manager, 100, Some(1), Some(1)).await;
+        let mut progress = manager.download_watch("cache-test", "large-history").unwrap();
+        progress.borrow_and_update();
+        let deleter = manager.clone();
+        let deletion = tokio::spawn(async move { deleter.delete("large-history".into()).await });
+        let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected delete"); };
+        reply.send(Ok(RemoteResponse::Bool(true))).unwrap();
+        assert!(deletion.await.unwrap().unwrap());
+        manager.receive_history_start("cache-test", id, "large-history", Some(1), Some(1), 100, 0,
+            history_snapshot(vec![], 1)).unwrap();
+        manager.receive_history_chunk("cache-test", id, "large-history", 100,
+            encode_history_chunk(&[history_event(1)]).unwrap()).unwrap();
+        manager.finish_history_download("cache-test", "large-history", id).await.unwrap();
+        assert!(manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().is_none(),
+            "late frames must not recreate the deleted cache");
+        assert!(progress.changed().await.is_err(), "deletion must release waiting readers");
+        assert!(matches!(requests.try_recv(), Ok(ClientRequest::Cancel { id: cancelled }) if cancelled == id));
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_admission_releases_the_read() {
+        let manager = download_manager();
+        manager.history.lock().unwrap().prepare_download("cache-test", "large-history").unwrap();
+        let mut requests = connect(&manager);
+        let reader = manager.clone();
+        let mut read = tokio::spawn(async move {
+            reader.select_child_history("large-history".into(), "child".into(), 73, 1024).await
+        });
+        let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected child identity request"); };
+        let owned = super::super::transcript_import::child_owned_id("large-history", "child").unwrap();
+        reply.send(Ok(RemoteResponse::ChildHistoryId(owned))).unwrap();
+        // No yield: cancellation lands after the identity reply, before admission subscribes.
+        manager.cancel_request(73).await;
+        let result = tokio::time::timeout(Duration::from_millis(100), &mut read).await;
+        read.abort();
+        assert_eq!(result.expect("cancelled read must leave admission").unwrap().unwrap_err(), PAGE_CANCELLED);
+    }
+
+    #[tokio::test]
     async fn completed_download_repairs_a_later_live_gap_on_open() {
         let manager = download_manager();
         let (id, mut requests) = begin_test_download(&manager, 100, Some(1), Some(1)).await;
@@ -4449,7 +4528,8 @@ mod connection_tests {
         let manager = download_manager();
         let (_id, _) = begin_test_download(&manager, 100, Some(1), Some(3)).await;
         let reader = manager.clone();
-        let wait = tokio::spawn(async move { reader.wait_history_download_ready("cache-test", "large-history", 72).await });
+        let mut cancellations = reader.cancelled_requests.subscribe();
+        let wait = tokio::spawn(async move { reader.wait_history_download_ready("cache-test", "large-history", 72, &mut cancellations).await });
         tokio::task::yield_now().await;
         manager.disconnect_profile("cache-test").unwrap();
         let result = tokio::time::timeout(Duration::from_millis(100), wait).await.expect("disconnect must release admission").unwrap();
