@@ -15,6 +15,11 @@ assert.equal(
 // Codex: `codex resume [SESSION_ID]`, per `codex resume --help`.
 assert.equal(resumeCommand('codex', ID, '/work/app'), `cd /work/app && codex resume ${ID}`);
 
+// Antigravity: `agy --help` documents --conversation as resume by ID.
+assert.equal(resumeCommand('antigravity', ID, '/work/app'), `cd /work/app && agy --conversation ${ID}`);
+assert.equal(resumeCommand('antigravity', ID, ''), `agy --conversation ${ID}`);
+assert.equal(resumeCommand('antigravity', null, '/work'), null);
+
 // A folder with spaces or shell characters is single-quoted, quotes escaped.
 assert.equal(
   resumeCommand('claude', ID, "/work/Bob's app"),
