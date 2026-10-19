@@ -9,7 +9,8 @@ import {
   parseListeningPorts,
   pickFreeDisplay,
   pickFreePort,
-  refuseOwnerData
+  refuseOwnerData,
+  refuseWhileRunning
 } from './fourScenarios.ts';
 
 test('picks the first display from :140 that is not taken', () => {
@@ -62,4 +63,11 @@ test('builds the state file from what start created', () => {
   assert.equal(state.port, 5300);
   assert.equal(state.dataDir, '/p/run/data');
   assert.deepEqual(state.processes[0], { name: 'xvfb', pid: 10, pgid: 10, startedAt: 'Mon Oct 19 10:00:00 2026', log: '/p/run/xvfb.log' });
+});
+
+test('refuses to start while the previous run still has a live process', () => {
+  const state = { runDir: '/proof/old', processes: [{ name: 'xvfb', pid: 10, pgid: 10, startedAt: 'a', log: '' }] };
+  assert.throws(() => refuseWhileRunning(state, () => true), /still running in \/proof\/old/);
+  assert.doesNotThrow(() => refuseWhileRunning(state, () => false));
+  assert.doesNotThrow(() => refuseWhileRunning(undefined, () => true));
 });

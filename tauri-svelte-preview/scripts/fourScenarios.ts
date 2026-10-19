@@ -69,8 +69,19 @@ export function buildState(input: StateInput) {
   };
 }
 
+type RunState = { runDir: string; processes: { pgid: number; pid: number; startedAt: string }[] };
+
+// `stop` reads only the current link, so a second start would orphan the first run's processes.
+export function refuseWhileRunning(state: RunState | undefined, isLive: (p: RunState['processes'][number]) => boolean): void {
+  if (state?.processes.some(isLive)) {
+    throw new Error(`A proof run is still running in ${state.runDir}. Stop it first with: node --experimental-strip-types tauri-svelte-preview/scripts/fourScenarios.ts stop`);
+  }
+}
+
 const run = (file: string, args: string[], env?: NodeJS.ProcessEnv) =>
   execFileSync(file, args, { encoding: 'utf8', env: env ?? process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+// A display that is still starting makes xwininfo fail; treat that as "not ready yet".
+const probe = (args: string[]) => { try { return run('xwininfo', args); } catch { return ''; } };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const startTime = (pid: number) => { try { return run('ps', ['-o', 'lstart=', '-p', String(pid)]).trim(); } catch { return ''; } };
 const groupAlive = (pgid: number) => { try { process.kill(-pgid, 0); return true; } catch { return false; } };
@@ -96,6 +107,12 @@ async function start(argv: string[]) {
   const option = (flag: string) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
   const worktree = path.resolve(option('--worktree') ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '../..'));
   const preview = path.join(worktree, 'tauri-svelte-preview');
+
+  const previous = path.join(currentLink, 'state.json');
+  refuseWhileRunning(
+    fs.existsSync(previous) ? (JSON.parse(fs.readFileSync(previous, 'utf8')) as RunState) : undefined,
+    (p) => groupAlive(p.pgid) && startTime(p.pid) === p.startedAt
+  );
 
   const available = parseAvailableGb(run('free', ['-g']));
   if (available <= 6) throw new Error(`Only ${available} GB available; need more than 6 GB. Wait and retry.`);
@@ -135,7 +152,7 @@ async function start(argv: string[]) {
   const x = `:${display}`;
   processes.push(launch('xvfb', 'Xvfb', [x, '-screen', '0', '1710x990x24', '-nolisten', 'tcp'], runDir, log('xvfb'), process.env));
   writeState();
-  for (let i = 0; i < 20 && !run('xwininfo', ['-display', x, '-root']).includes('1710x990'); i += 1) await sleep(500);
+  for (let i = 0; i < 20 && !probe(['-display', x, '-root']).includes('1710x990'); i += 1) await sleep(500);
 
   processes.push(launch('vite', 'pnpm', ['dev', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], preview, log('vite'), process.env));
   writeState();
@@ -152,7 +169,7 @@ async function start(argv: string[]) {
   const app = processes[2];
   const deadline = Date.now() + 10 * 60_000;
   for (;;) {
-    if (run('xwininfo', ['-display', x, '-root', '-tree']).includes('"Assembly"')) break;
+    if (probe(['-display', x, '-root', '-tree']).includes('"Assembly"')) break;
     if (!groupAlive(app.pid)) throw new Error(`The app process exited before a window appeared. See ${app.log}`);
     if (Date.now() > deadline) throw new Error(`No Assembly window after 10 minutes. See ${app.log}`);
     await sleep(5000);
