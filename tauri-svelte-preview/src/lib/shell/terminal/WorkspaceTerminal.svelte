@@ -19,8 +19,8 @@
     createTerminalInput,
     subscribeToTerminalOutput,
     type TerminalOutputSubscription
-  } from '$lib/shell/terminalService';
-  import { loadGhosttyModules, makeTerminalView } from '$lib/shell/ghosttyFactory';
+  } from '$lib/shell/terminal/terminalService';
+  import { loadGhosttyModules, makeTerminalView } from '$lib/shell/terminal/ghosttyFactory';
 
   interface Props {
     root: string;

@@ -1,5 +1,5 @@
 import type { OwnedSession } from '../../ownedSessions.ts';
-import type { OwnedTerminalProbe, TerminalService } from '../../terminalService.ts';
+import type { OwnedTerminalProbe, TerminalService } from '../../terminal/terminalService.ts';
 import {
   acquireExtensionApiProbeScmLease,
   type ExtensionApiProbeScmLease

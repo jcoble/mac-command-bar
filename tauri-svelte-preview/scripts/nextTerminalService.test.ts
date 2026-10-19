@@ -6,7 +6,7 @@ const {
   isTerminalInputCommand,
   subscribeToTerminalOutput,
   tauriTerminalBackend
-} = await import('../src/lib/shell/terminalService.ts');
+} = await import('../src/lib/shell/terminal/terminalService.ts');
 
 /** Let a scheduled one-shot (and the microtasks it queues) actually run. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));

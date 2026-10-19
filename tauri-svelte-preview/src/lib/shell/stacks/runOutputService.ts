@@ -28,7 +28,7 @@ import { appendOutputTail } from '../panels/run/runOutputTail.ts';
 import {
   subscribeToTerminalOutput,
   type TerminalOutputSubscription
-} from '../terminalService.ts';
+} from '../terminal/terminalService.ts';
 
 /**
  * How much of a saved scrollback is read into a fresh tail. The ring behind it

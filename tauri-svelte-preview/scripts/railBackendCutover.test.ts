@@ -23,7 +23,7 @@ const settingsDialog = read('../src/lib/shell/components/SettingsDialog.svelte')
 const settingsStore = read('../src/lib/settingsStore.svelte.ts');
 const codeMirrorTheme = read('../src/lib/shell/files/editor/codeMirrorTheme.ts');
 const codeMirrorSourceEditor = read('../src/lib/shell/files/components/CodeMirrorSourceEditor.svelte');
-const ghosttyFactory = read('../src/lib/shell/ghosttyFactory.ts');
+const ghosttyFactory = read('../src/lib/shell/terminal/ghosttyFactory.ts');
 const ghosttyBundle = read('../node_modules/ghostty-web/dist/ghostty-web.js');
 const rightPanel = read('../src/lib/shell/components/RightPanel.svelte');
 const browserPanel = read('../src/lib/shell/panels/browser/BrowserPanel.svelte');
@@ -32,7 +32,7 @@ const frame = read('../src/lib/shell/layout/frame.ts');
 const workbenchController = read('../src/lib/shell/controllers/workbenchController.svelte.ts');
 const utilityStrip = read('../src/lib/shell/components/UtilityStrip.svelte');
 const dockPanel = read('../src/lib/shell/components/DockPanel.svelte');
-const workspaceTerminal = read('../src/lib/shell/components/WorkspaceTerminal.svelte');
+const workspaceTerminal = read('../src/lib/shell/terminal/WorkspaceTerminal.svelte');
 const palettePanel = read('../src/lib/shell/components/PalettePanel.svelte');
 const sourceControlPanel = read('../src/lib/shell/git/components/sourceControl/SourceControlPanel.svelte');
 

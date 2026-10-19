@@ -27,7 +27,7 @@
   import SourceControlPanel from '$lib/shell/git/components/sourceControl/SourceControlPanel.svelte';
   import WorktreesPanel from '$lib/shell/panels/worktrees/WorktreesPanel.svelte';
   import TasksPanel from '$lib/shell/panels/tasks/TasksPanel.svelte';
-  import WorkspaceTerminal from './WorkspaceTerminal.svelte';
+  import WorkspaceTerminal from '../terminal/WorkspaceTerminal.svelte';
 
   interface Props {
     /** False while the drawer is closed. */

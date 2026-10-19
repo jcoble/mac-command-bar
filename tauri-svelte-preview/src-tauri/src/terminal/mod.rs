@@ -1,3 +1,4 @@
+pub(crate) mod commands;
 pub use crate::agent_conversation::protocol::ToolTerminalIdentity;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -17,7 +18,6 @@ const TERMINAL_SCROLLBACK_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// to the cap would make every subsequent 8 KB read memmove the whole 16 MB; this
 /// way the O(n) drain amortizes over ~4 MB of output.
 const TERMINAL_SCROLLBACK_TRIM_TO_BYTES: usize = TERMINAL_SCROLLBACK_MAX_BYTES / 4 * 3;
-
 #[derive(Debug, Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TerminalKind {

@@ -38,7 +38,7 @@ const read = (relativePath: string): string => readFileSync(resolve(projectRoot,
 
 const NEXT_TOKENS_PATH = 'src/lib/shell/styles/nextTokens.css';
 const THEME_CHROME_PATH = 'src/lib/shell/styles/themeChrome.css';
-const GHOSTTY_FACTORY_PATH = 'src/lib/shell/ghosttyFactory.ts';
+const GHOSTTY_FACTORY_PATH = 'src/lib/shell/terminal/ghosttyFactory.ts';
 const CONTRACT_PATH = 'src/lib/shell/themes/_(themes)-INTEGRATION.md';
 
 const stripComments = (css: string): string => css.replace(/\/\*[\s\S]*?\*\//g, '');

@@ -20,7 +20,6 @@ use workflow::orchestration_commands::*;
 use commands::runtime::*;
 use files::commands::*;
 use git::commands::*;
-use commands::terminal::*;
 use commands::usage::*;
 use workflow::commands::*;
 use mcb_core::reference_counts::{
@@ -5810,12 +5809,12 @@ fn main() {
             agent_conversation::providers::updates::check_provider_updates,
             agent_conversation::providers::updates::install_provider_updates,
             agent_conversation::providers::updates::restart_for_provider_updates,
-            start_terminal_session,
-            list_terminal_sessions,
-            read_terminal_session_scrollback,
-            write_terminal_session,
-            resize_terminal_session,
-            close_terminal_session,
+            terminal::commands::start_terminal_session,
+            terminal::commands::list_terminal_sessions,
+            terminal::commands::read_terminal_session_scrollback,
+            terminal::commands::write_terminal_session,
+            terminal::commands::resize_terminal_session,
+            terminal::commands::close_terminal_session,
             browser::create_browser_tab,
             browser::set_browser_tab_bounds,
             browser::set_browser_tab_viewport,
