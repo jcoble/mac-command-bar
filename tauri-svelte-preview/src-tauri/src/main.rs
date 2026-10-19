@@ -5461,6 +5461,10 @@ fn main() {
                     }),
                     remote_session_store,
                 )?;
+            let history_handle = app.handle().clone();
+            remote_connection.set_history_download_sink(Arc::new(move |progress| {
+                let _ = history_handle.emit("agent-conversation-history-download", progress);
+            }));
             remote_connection.set_terminal_output(projection_streams.clone());
             let messages_handle = app.handle().clone();
             mcb_core::broker::on_messages_changed(move || { let _ = messages_handle.emit(AGENT_MESSAGES_CHANGED_EVENT, ()); });
@@ -5771,6 +5775,7 @@ fn main() {
             agent_conversation::read_agent_conversation_capabilities,
             agent_conversation::close_agent_conversation,
             agent_conversation::delete_agent_conversation_session,
+            agent_conversation::read_agent_conversation_history_download,
             agent_conversation::read_agent_conversation_selection,
             agent_conversation::cancel_agent_conversation_request,
             agent_conversation::list_agent_conversation_sessions,

@@ -818,6 +818,13 @@ pub async fn delete_agent_conversation_session(
 }
 
 #[tauri::command]
+pub fn read_agent_conversation_history_download(
+    remote: tauri::State<'_, RemoteConnectionManager>, owned_id: String,
+) -> CommandResult<Option<remote::HistoryDownloadProgress>> {
+    command_result(remote.history_download_progress(&owned_id))
+}
+
+#[tauri::command]
 /// Reads one complete-item selection from the local journal.
 pub async fn read_agent_conversation_selection(
     manager: tauri::State<'_, AgentRuntimeManager>,

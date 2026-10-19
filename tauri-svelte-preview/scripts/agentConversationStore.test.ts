@@ -899,6 +899,8 @@ test('child history admission rejects stale results and stops the exact native w
   const dependencies = {
     createAgentConversationRequestId: () => ++nextRequestId,
     CHILD_HISTORY_PAGE_BYTES: 512 * 1024,
+    clearConversationHistoryDownload: () => undefined,
+    attachHistoryDownload: async () => undefined,
     readAgentConversationChildHistoryFromTauri: (request: any) => {
       reads.push(request);
       return new Promise((resolve, reject) => pending.set(request.requestId, { resolve, reject }));
@@ -922,7 +924,7 @@ test('child history admission rejects stale results and stops the exact native w
   const first = api.readChildConversationHistory({
     ownedId: 'parent', childId: 'child-a', childSessionId: 'durable-a'
   });
-  await Promise.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
   api.stopChildConversationHistory('parent');
   state.selectedChildId = 'child-b';
   const second = api.readChildConversationHistory({
@@ -938,6 +940,7 @@ test('child history admission rejects stale results and stops the exact native w
   pending.get(1)!.resolve({ historyOwnedId: 'obsolete-history', page });
   assert.equal(await first, null, 'a stale completion cannot steal the newer selection');
   assert.equal(await second, null, 'B is cancelled before it invokes native selection');
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(reads.map((read) => read.requestId), [1, 3], 'only A then current C invoke native selection');
   assert.deepEqual(stops.map(([, requestId]) => requestId), [1, 1, 2, 1],
     'the late A result receives a second exact stop without stopping C');
@@ -948,7 +951,7 @@ test('child history admission rejects stale results and stops the exact native w
   const failed = api.readChildConversationHistory({
     ownedId: 'parent', childId: 'child-c', childSessionId: 'durable-c'
   });
-  await Promise.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
   pending.get(4)!.reject(new Error('refresh failed'));
   await failed.catch(() => undefined);
   assert.deepEqual(failures, [['parent', 'child-c', 'refresh failed']]);
@@ -1320,6 +1323,8 @@ test('file notifications and runtime state do not depend on the selected transcr
     const dependencies = {
       conversationEventsDisposed: false, conversationEventsGeneration: 1,
       admitSelectedConversationEvent: () => selection === 'root',
+      childConversationRead: null,
+      rail: { owned: [{ ownedId }] }, adoptSession: async () => false,
       railActivityEvents: new Map(), selectedConversationRead: selection === 'child' ? { workspaceOwnedId: ownedId, ownedId: 'child-history' } : null,
       displayEventFrom: store.displayEventFrom, shouldClearConversationSending,
       getConversationSession: () => current, selectedEventUsesControlCursor: () => false,
@@ -1611,7 +1616,7 @@ await test('an observed active turn routes Stop to the backend', async () => {
 await test('an inactive terminal event clears send state before finished rail presence', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
   const block = source.slice(source.indexOf('async function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
-  const code = stripTypeScriptTypes(block, { mode: 'strip' });
+  const code = stripTypeScriptTypes(block, { mode: 'strip' }).replace(/^export /gm, '');
   const calls: string[] = [];
   const ownedId = 'inactive-finish';
   const draft = 'Keep this draft';
@@ -1621,6 +1626,7 @@ await test('an inactive terminal event clears send state before finished rail pr
     conversationEventsDisposed: false,
     conversationEventsGeneration: 1,
     selectedConversationRead: null,
+    childConversationRead: null,
     railActivityEvents: new Map(),
     sessionPresenceEventFromConversation,
     synchronizeSessionPresenceWork,
@@ -1628,6 +1634,7 @@ await test('an inactive terminal event clears send state before finished rail pr
     agentItemFromEvent, displayItemFromAgentItem, publishWorkspaceFileChange: assert.fail,
     updateOwnedSession: () => undefined,
     rail: { activeOwnedId: 'another-session', owned: [] },
+    adoptSession: async () => false,
     shouldClearConversationSending,
     get,
     sessionPresenceHistory,
@@ -1682,8 +1689,9 @@ await test('an inactive terminal event clears send state before finished rail pr
 
 await test('remote rail activity reconciles without opening background conversations', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
-  const block = source.slice(source.indexOf('async function refreshRemoteSessionActivity('), source.indexOf('async function handleConversationStreamResync('));
-  const code = stripTypeScriptTypes(block, { mode: 'strip' });
+  const block = source.slice(source.indexOf('async function refreshRemoteSessionActivity('), source.indexOf('// A session an agent started'))
+    + source.slice(source.indexOf('async function handleConversationStreamEnvelope('), source.indexOf('async function handleConversationStreamResync('));
+  const code = stripTypeScriptTypes(block, { mode: 'strip' }).replace(/^export /gm, '');
   const ownedId = 'remote-background-activity';
   const row = {
     ownedId, state: 'background', runtimeState: 'suspended', activeTurnId: null as string | null,
@@ -1694,6 +1702,7 @@ await test('remote rail activity reconciles without opening background conversat
   let finishRead: (records: unknown[]) => void = () => {};
   const dependencies = {
     selectedConversationRead: null,
+    childConversationRead: null,
     rail: { activeOwnedId: 'another-session', owned: [row], remoteConnections: { workbox: 'connected' }, error: null },
     listRemoteAgentConversationSessionsFromTauri: () => new Promise<unknown[]>((resolve) => { finishRead = resolve; }),
     updateOwnedSession: (_id: string, patch: Partial<typeof row>) => Object.assign(row, patch),
@@ -1818,7 +1827,7 @@ await test('an unchanged sidebar row update leaves the row list untouched', asyn
 await test('selected refresh reports failure and releases buffered terminal events', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
   const block = source.slice(source.indexOf('function selectedEventUsesControlCursor'), source.indexOf('async function refreshSelectedConversation'));
-  const code = stripTypeScriptTypes(block, { mode: 'strip' });
+  const code = stripTypeScriptTypes(block, { mode: 'strip' }).replace(/^export /gm, '');
   for (const aborted of [false, true]) {
     const errors: unknown[] = [];
     const delivered: number[] = [];
@@ -2102,4 +2111,32 @@ await test('leaving a session ends every wait on its stream and readiness and wr
   }
   assert.ok(stopped.includes(subscriptions), 'the native watch is stopped');
   assert.deepEqual(writesAfterLeave, [], 'nothing is sent or written after leaving');
+});
+
+
+test('history_download_progress_is_isolated_by_workspace_and_child', () => {
+  store.ensureConversationSession('download-root', 'codex');
+  const root = store.getConversationSession('download-root');
+  const other = store.ensureConversationSession('download-other', 'codex');
+  const progress = { profileId: 'p', sourceOwnedId: 'download-root', workspaceOwnedId: 'download-root', childSessionId: null,
+    totalBytes: 100, coveredBytes: 10, phase: 'downloading', ready: false, error: null };
+  store.setConversationHistoryDownload('download-root', progress);
+  assert.equal(root.historyDownload.coveredBytes, 10);
+  assert.equal(other.historyDownload, null);
+  root.selectedChildId = 'child';
+  store.setConversationHistoryDownload('download-root', { ...progress, sourceOwnedId: 'source-child', childSessionId: 'child' });
+  assert.equal(root.childHistoryDownload.sourceOwnedId, 'source-child');
+  store.setConversationHistoryDownload('download-root', { ...progress, childSessionId: 'another', coveredBytes: 90 });
+  assert.equal(root.childHistoryDownload.coveredBytes, 10);
+});
+
+test('history_download_progress_from_a_released_selection_is_ignored', () => {
+  const root = store.ensureConversationSession('download-released', 'codex');
+  root.selectedChildId = 'new-child';
+  store.setConversationHistoryDownload('download-released', { profileId: 'p', sourceOwnedId: 'old-source', workspaceOwnedId: 'download-released', childSessionId: 'old-child',
+    totalBytes: 100, coveredBytes: 10, phase: 'downloading', ready: false, error: null });
+  assert.equal(root.childHistoryDownload, null);
+  store.setConversationHistoryDownload('download-released', { profileId: 'p', sourceOwnedId: 'wrong-root', workspaceOwnedId: 'wrong-root', childSessionId: null,
+    totalBytes: 100, coveredBytes: 10, phase: 'downloading', ready: false, error: null });
+  assert.equal(root.historyDownload, null);
 });
