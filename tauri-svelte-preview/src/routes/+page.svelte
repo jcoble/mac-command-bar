@@ -30,11 +30,11 @@
 	import ConversationSurface from "$lib/shell/conversation/ConversationSurface.svelte";
 	import DockPanel from "$lib/shell/components/DockPanel.svelte";
 	import EditorPanel from "$lib/shell/files/components/EditorPanel.svelte";
-	import GitHistoryView from "$lib/shell/components/git/GitHistoryView.svelte";
-	import GitDiffView from "$lib/shell/components/GitDiffView.svelte";
+	import GitHistoryView from "$lib/shell/git/components/GitHistoryView.svelte";
+	import GitDiffView from "$lib/shell/git/components/GitDiffView.svelte";
 	import HomeButton from "$lib/shell/components/HomeButton.svelte";
-	import { pullRequestSelection } from "$lib/shell/components/github/pullRequestSelection.svelte";
-	import PullRequestWorkspace from "$lib/shell/components/github/PullRequestWorkspace.svelte";
+	import { pullRequestSelection } from "$lib/shell/git/github/pullRequestSelection.svelte";
+	import PullRequestWorkspace from "$lib/shell/git/github/PullRequestWorkspace.svelte";
 	import RightPanel from "$lib/shell/components/RightPanel.svelte";
 	import RightPanelTabs from "$lib/shell/components/RightPanelTabs.svelte";
 	import { registerSessionRowJumpTarget } from "$lib/shell/components/sessionRowJump.ts";

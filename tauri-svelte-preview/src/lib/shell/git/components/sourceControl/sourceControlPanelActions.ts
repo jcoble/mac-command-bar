@@ -17,7 +17,7 @@
  * Pure: no DOM, no backend, no git. The panel maps these onto the real work.
  */
 
-import type { ProjectGitStatus } from '../../../tauriSource.ts';
+import type { ProjectGitStatus } from '../../../../tauriSource.ts';
 
 export type SourceControlRemoteActionId = 'fetch' | 'pull' | 'push';
 

@@ -19,7 +19,7 @@ import {
   failPullRequestList,
   finishPullRequestListLoad,
   isMissingGhError
-} from '../src/lib/shell/components/git/pr/prList.ts';
+} from '../src/lib/shell/git/components/pr/prList.ts';
 
 function pullRequest(overrides = {}) {
   return {

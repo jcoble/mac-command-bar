@@ -853,10 +853,10 @@ function makeBackend(overrides = {}) {
 // ── the panel's three sections, its remote actions and its scope picker ──────
 {
   const sections = await import(
-    '../src/lib/shell/panels/sourceControl/sourceControlSections.ts'
+    '../src/lib/shell/git/components/sourceControl/sourceControlSections.ts'
   );
   const panelActions = await import(
-    '../src/lib/shell/panels/sourceControl/sourceControlPanelActions.ts'
+    '../src/lib/shell/git/components/sourceControl/sourceControlPanelActions.ts'
   );
 
   const file = (relativePath, indexStatus, worktreeStatus, badge) => ({

@@ -36,7 +36,7 @@
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as Collapsible from '$lib/components/ui/collapsible/index.js';
-  import { buildGitCommitGraphRows } from '$lib/gitGraphViewModel';
+  import { buildGitCommitGraphRows } from '$lib/shell/git/gitGraphViewModel';
   import {
     assignGitGraphLanes,
     gitGraphLaneWidth,

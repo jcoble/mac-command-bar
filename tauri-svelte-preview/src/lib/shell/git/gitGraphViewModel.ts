@@ -11,8 +11,8 @@ import {
   gitRefLabels,
   type GitCommitGraphKind,
   type GitCommitOwnershipBadge
-} from './sourceData.ts';
-import type { GitCommitHistoryEntry, GitRepositorySummary } from './tauriSource.ts';
+} from '../../sourceData.ts';
+import type { GitCommitHistoryEntry, GitRepositorySummary } from '../../tauriSource.ts';
 
 export type GitGraphDirtyTone = 'clean' | 'dirty' | 'error';
 export type GitGraphSyncTone = 'clean' | 'ahead' | 'behind' | 'diverged' | 'no-upstream' | 'error';

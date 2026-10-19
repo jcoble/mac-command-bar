@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-import { pullRequestSearchQuery, sessionProjectFilter } from '../src/lib/shell/components/github/pullRequestSearch.ts';
+import { pullRequestSearchQuery, sessionProjectFilter } from '../src/lib/shell/git/github/pullRequestSearch.ts';
 
 // Every state reaches GitHub as its own qualifier; "all" adds none, so merged
 // and closed pull requests are searchable too.

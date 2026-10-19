@@ -19,12 +19,12 @@
  * work, so this list can be checked in a plain Node test.
  */
 
-import type { ProjectGitFileStatus } from '../../../tauriSource.ts';
+import type { ProjectGitFileStatus } from '../../../../tauriSource.ts';
 import {
   hasGitFileUnstagedChanges,
   isGitFileDeleted,
   isGitFileStaged
-} from '../../git/gitPanelStore.svelte.ts';
+} from '../../gitPanelStore.svelte.ts';
 
 export type SourceControlFileActionId =
   | 'view'

@@ -8,7 +8,7 @@ import {
   gitCommitRefSummary,
   gitRepositoryDirtySummary,
   gitRepositorySyncSummary
-} from '../src/lib/gitGraphViewModel.ts';
+} from '../src/lib/shell/git/gitGraphViewModel.ts';
 
 const dirtyRepo = {
   projectID: 'mac-command-bar',

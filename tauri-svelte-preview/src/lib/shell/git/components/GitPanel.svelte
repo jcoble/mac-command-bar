@@ -17,7 +17,7 @@
    * active session's folder; until then the panes say so and stay quiet, which
    * is what keeps a cold launch free of git calls.
    */
-  import SourceControlPanes from './git/SourceControlPanes.svelte';
+  import SourceControlPanes from './SourceControlPanes.svelte';
 
   interface Props {
     /** A file's changes were picked, so whatever is showing the diff should come

@@ -28,17 +28,17 @@
   import { ListRow } from '$lib/components/ui/list-row/index.js';
   import * as Tooltip from '$lib/components/ui/tooltip/index.js';
   import FileIcon from '$lib/shell/components/explorer/FileIcon.svelte';
-  import SourceControlContextMenu from '$lib/shell/components/git/SourceControlContextMenu.svelte';
+  import SourceControlContextMenu from '$lib/shell/git/components/SourceControlContextMenu.svelte';
   import {
     snapshotSourceControlCommitFileMenu,
     snapshotSourceControlCommitMenu,
     sourceControlContextMenuAnchor,
     type SourceControlContextMenuAction,
     type SourceControlMenuSnapshot
-  } from '$lib/shell/components/git/sourceControlContextMenu';
+  } from '$lib/shell/git/components/sourceControlContextMenu';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
-  import { gitCommitRefSummary } from '$lib/gitGraphViewModel';
+  import { gitCommitRefSummary } from '$lib/shell/git/gitGraphViewModel';
   import type { GitCommitFileChange } from '$lib/shell/git/gitBackendExtra';
   import type { GitCommitFilesService } from '$lib/shell/git/gitCommitFilesService';
   import {

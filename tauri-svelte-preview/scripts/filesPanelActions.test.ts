@@ -20,7 +20,7 @@ const fileHistoryPane = readFileSync(
   'utf8'
 );
 const gitHistoryView = readFileSync(
-  new URL('../src/lib/shell/components/git/GitHistoryView.svelte', import.meta.url),
+  new URL('../src/lib/shell/git/components/GitHistoryView.svelte', import.meta.url),
   'utf8'
 );
 const shellRoute = readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');

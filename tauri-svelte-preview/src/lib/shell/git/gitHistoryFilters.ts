@@ -22,7 +22,7 @@
  * uncommitted work is on whichever branch is checked out.
  */
 import type { ProjectGitStatus } from '../../tauriSource.ts';
-import type { GitGraphCommitRow } from '../../gitGraphViewModel.ts';
+import type { GitGraphCommitRow } from './gitGraphViewModel.ts';
 import { buildGitStatusFileGroups } from './gitPanelStore.svelte.ts';
 
 export interface GitHistoryFilter {

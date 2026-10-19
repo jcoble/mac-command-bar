@@ -67,14 +67,14 @@
     isPlainFolderError
   } from '$lib/shell/git/gitPanelStore.svelte';
   import { gitService as defaultService, type GitService } from '$lib/shell/git/gitService';
-  import BranchMenu from '$lib/shell/components/git/BranchMenu.svelte';
-  import DiscardConfirmDialog from '$lib/shell/components/git/DiscardConfirmDialog.svelte';
-  import AddRemoteDialog from '$lib/shell/components/git/AddRemoteDialog.svelte';
+  import BranchMenu from '$lib/shell/git/components/BranchMenu.svelte';
+  import DiscardConfirmDialog from '$lib/shell/git/components/DiscardConfirmDialog.svelte';
+  import AddRemoteDialog from '$lib/shell/git/components/AddRemoteDialog.svelte';
   import {
     describeDiscardQuestion,
     type DiscardQuestion,
     type DiscardTarget
-  } from '$lib/shell/components/git/discardConfirm';
+  } from '$lib/shell/git/components/discardConfirm';
   import { worktreeManager } from '$lib/shell/worktrees/worktreeManagerStore.svelte';
   import { canonicalPath } from '$lib/shell/files/explorer/explorerStore.svelte';
   import { getConversationSession } from '$lib/shell/conversation/conversationStore.svelte';

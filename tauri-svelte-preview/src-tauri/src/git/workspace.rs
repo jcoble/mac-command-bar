@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::bounded_process;
-use crate::git_pr::{format_gh_spawn_error, format_process_failure, summarize_checks};
+use crate::git::pull_requests::{format_gh_spawn_error, format_process_failure, summarize_checks};
 use crate::{
     project_git_status_sync, run_git_text, run_git_with_paths, validate_git_relative_paths,
     validate_git_root, GitActionResult,

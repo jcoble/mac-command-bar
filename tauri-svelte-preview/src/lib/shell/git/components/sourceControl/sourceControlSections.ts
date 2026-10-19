@@ -13,12 +13,12 @@
  * one of the two would hide half of what is there.
  */
 
-import type { ProjectGitFileStatus, ProjectGitStatus } from '../../../tauriSource.ts';
+import type { ProjectGitFileStatus, ProjectGitStatus } from '../../../../tauriSource.ts';
 import {
   hasGitFileUnstagedChanges,
   isGitFileStaged,
   isGitFileUntracked
-} from '../../git/gitPanelStore.svelte.ts';
+} from '../../gitPanelStore.svelte.ts';
 
 export interface SourceControlSection {
   id: 'staged' | 'changed' | 'untracked';

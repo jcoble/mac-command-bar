@@ -48,7 +48,7 @@
     GitGraphViewModel,
     GitGraphCommitRow,
     GitGraphRepositoryRow
-  } from '$lib/gitGraphViewModel';
+  } from '$lib/shell/git/gitGraphViewModel';
   import type { WorktreePrimaryAction } from '$lib/worktreeSafety';
   import type { ProjectWorktree } from '$lib/tauriSource';
 
