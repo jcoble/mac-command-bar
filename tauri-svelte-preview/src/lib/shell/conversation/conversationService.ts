@@ -543,10 +543,8 @@ export async function loadConversationCapabilities(
     if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) return null;
     if (capabilities.provider !== provider) throw new Error('Capability provider does not match this session');
     setConversationCapabilities(ownedId, generation, capabilities);
-    const record = await findSessionRecord(ownedId, SESSION_READERS, signal ?? adoptController.signal);
-    if (record && !signal?.aborted && conversationGenerationMatches(ownedId, generation)) {
-      updateOwnedSession(ownedId, { canChangeCheckout: record.canChangeCheckout });
-    }
+    // Same negotiated value as provider_supports_changing_checkout in manager.rs, which still rejects unsupported changes.
+    updateOwnedSession(ownedId, { canChangeCheckout: capabilities.session.resume });
     return capabilities;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

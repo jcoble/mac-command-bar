@@ -108,22 +108,23 @@ test('checkout service reports unsupported sessions and accepts supported provid
   }
 });
 
-test('fresh session capability loading refreshes checkout support from the backend record', async () => {
+test('fresh session capability loading takes checkout support from the capability response', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
   const start = source.indexOf('export async function loadConversationCapabilities(');
   const method = source.slice(start, source.indexOf('\n}\n', start) + 3);
   const code = stripTypeScriptTypes(method.replace('export async function', 'async function'));
-  for (const aborted of [false, true]) {
-    const controller = new AbortController();
+  for (const resume of [false, true]) {
     let support: boolean | undefined;
+    let sessionListReads = 0;
     const load = new Function('isTauri', 'getConversationSession', 'readAgentConversationCapabilitiesFromTauri',
-      'conversationGenerationMatches', 'setConversationCapabilities', 'findSessionRecord', 'SESSION_READERS',
-      'adoptController', 'updateOwnedSession', 'setConversationCapabilityError', `${code}; return loadConversationCapabilities;`)(
-      () => true, () => ({ generation: 1 }), async () => ({ provider: 'claude' }), () => true, () => {},
-      async () => { if (aborted) controller.abort(); return { canChangeCheckout: true }; }, {}, controller,
+      'conversationGenerationMatches', 'setConversationCapabilities', 'findSessionRecord',
+      'updateOwnedSession', 'setConversationCapabilityError', `${code}; return loadConversationCapabilities;`)(
+      () => true, () => ({ generation: 1 }), async () => ({ provider: 'claude', session: { resume } }), () => true, () => {},
+      async () => { sessionListReads += 1; return null; },
       (_id: string, patch: { canChangeCheckout: boolean }) => { support = patch.canChangeCheckout; }, () => {}
     );
-    await load('s', 'claude', controller.signal);
-    assert.equal(support, aborted ? undefined : true);
+    await load('s', 'claude');
+    assert.equal(support, resume);
+    assert.equal(sessionListReads, 0, 'checkout support comes from the capability response, not every session list');
   }
 });
