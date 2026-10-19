@@ -715,7 +715,7 @@ export function selectConversationChat(
     disposeChildConversationChat();
     const parent = getConversationSession(workspaceOwnedId);
     if (!parent) throw new Error('The parent conversation is not selected.');
-    const { agent } = normalizeProvider(rail.owned.find((session) => session.ownedId === historyOwnedId)?.agent ?? '');
+    const { agent } = normalizeProvider(rail.owned.find((session) => session.ownedId === historyOwnedId)?.agent ?? ''); // A helper owns its provider; a native child shares its parent's.
     ensureConversationSession(historyOwnedId, agent === 'claude' || agent === 'codex' || agent === 'antigravity' ? agent : parent.provider);
     parent.selectedChildHistoryOwnedId = historyOwnedId;
   } else {
