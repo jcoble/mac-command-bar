@@ -79,17 +79,17 @@ pub(super) async fn execute(operation: String, args: Value) -> Result<Value, Str
         _ => {}
     }
     tokio::task::spawn_blocking(move || {
-        let cancellation = crate::SourceScanCancellation::until(std::time::Instant::now() + std::time::Duration::from_secs(14));
+        let cancellation = crate::files::discovery::SourceScanCancellation::until(std::time::Instant::now() + std::time::Duration::from_secs(14));
         match operation.as_str() {
-            "validate_project_root" => json(crate::validate_project_root_sync_while(path(&args, "path")?, || cancellation.ensure_active().is_ok())),
-            "list_source_directory" => json(crate::list_source_directory_sync_with_cancellation(path(&args, "root")?, path(&args, "directory")?, arg::<Option<bool>>(&args, "includeExcluded")?.unwrap_or(false), cancellation)?),
-            "list_source_files" => json(crate::list_source_files_sync_with_cancellation(path(&args, "root")?, arg::<Option<usize>>(&args, "limit")?.unwrap_or(crate::DEFAULT_SOURCE_LIST_LIMIT), arg(&args, "query")?, cancellation)?),
-            "search_source_tree" => json(crate::search_source_tree_sync(path(&args, "root")?, arg(&args, "query")?, arg(&args, "pageSize")?, arg(&args, "cursor")?, arg::<Option<bool>>(&args, "includeExcluded")?.unwrap_or(false), cancellation)?),
-            "find_source_definitions_in_root" => json(crate::find_source_definitions_in_root_sync(path(&args, "root")?, arg(&args, "symbolName")?, arg(&args, "limit")?)?),
-            "find_source_references_in_root" => json(crate::find_source_references_in_root_sync(path(&args, "root")?, arg(&args, "symbolName")?, arg(&args, "limit")?)?),
-            "read_source_file" => json(Some(crate::read_source_file_sync(path(&args, "path")?)?)),
-            "read_source_image" => json(crate::read_source_image_sync(path(&args, "path")?)?),
-            "write_source_file" => json(crate::write_source_file_sync(path(&args, "path")?, arg(&args, "content")?, arg(&args, "expectedRevision")?)?),
+            "validate_project_root" => json(crate::files::discovery::root::validate_project_root_sync_while(path(&args, "path")?, || cancellation.ensure_active().is_ok())),
+            "list_source_directory" => json(crate::files::discovery::walk::list_source_directory_sync_with_cancellation(path(&args, "root")?, path(&args, "directory")?, arg::<Option<bool>>(&args, "includeExcluded")?.unwrap_or(false), cancellation)?),
+            "list_source_files" => json(crate::files::discovery::walk::list_source_files_sync_with_cancellation(path(&args, "root")?, arg::<Option<usize>>(&args, "limit")?.unwrap_or(crate::files::discovery::DEFAULT_SOURCE_LIST_LIMIT), arg(&args, "query")?, cancellation)?),
+            "search_source_tree" => json(crate::files::discovery::search::search_source_tree_sync(path(&args, "root")?, arg(&args, "query")?, arg(&args, "pageSize")?, arg(&args, "cursor")?, arg::<Option<bool>>(&args, "includeExcluded")?.unwrap_or(false), cancellation)?),
+            "find_source_definitions_in_root" => json(crate::files::discovery::symbols::find_source_definitions_in_root_sync(path(&args, "root")?, arg(&args, "symbolName")?, arg(&args, "limit")?)?),
+            "find_source_references_in_root" => json(crate::files::discovery::references::find_source_references_in_root_sync(path(&args, "root")?, arg(&args, "symbolName")?, arg(&args, "limit")?)?),
+            "read_source_file" => json(Some(crate::files::io::read_source_file_sync(path(&args, "path")?)?)),
+            "read_source_image" => json(crate::files::io::read_source_image_sync(path(&args, "path")?)?),
+            "write_source_file" => json(crate::files::io::write_source_file_sync(path(&args, "path")?, arg(&args, "content")?, arg(&args, "expectedRevision")?)?),
             "workspace_exists" => json(path(&args, "path")?.try_exists().map_err(|e| e.to_string())?),
             "workspace_mkdir" => { std::fs::create_dir(path(&args, "path")?).map_err(|e| e.to_string())?; json(()) },
             "workspace_git_init" => json(crate::project_folders::git_init(&path(&args, "path")?)?),

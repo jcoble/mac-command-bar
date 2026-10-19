@@ -527,7 +527,7 @@ async fn list_files(State(state): State<ServerState>, Path(owned_id): Path<Strin
     let dir = query.get("dir").map_or("", String::as_str);
     let (root, path) = session_path(&state, &owned_id, dir)?;
     if !path.is_dir() { return Err(refuse(StatusCode::BAD_REQUEST, "Not a folder")) }
-    let mut entries: Vec<Value> = crate::list_source_directory_sync_with_cancellation(root, path, true, crate::SourceScanCancellation::none())
+    let mut entries: Vec<Value> = crate::files::discovery::walk::list_source_directory_sync_with_cancellation(root, path, true, crate::files::discovery::SourceScanCancellation::none())
         .map_err(|error| server_error(&error))?.into_iter().filter(|entry| entry.name != ".git").map(|entry| match entry.is_directory {
             true => json!({ "name": entry.name, "kind": "dir" }),
             false => json!({ "name": entry.name, "kind": "file", "size": std::fs::metadata(&entry.path).map_or(0, |meta| meta.len()) }),
@@ -590,7 +590,7 @@ async fn save_file(State(state): State<ServerState>, Path(owned_id): Path<String
         (Some(bytes), _) if file_version(&bytes) == request.version => {}
         _ => return Err(changed()),
     }
-    match crate::write_source_file_sync(path, request.text, request.version) {
+    match crate::files::io::write_source_file_sync(path, request.text, request.version) {
         Ok(_) => Ok(StatusCode::NO_CONTENT.into_response()),
         Err(error) if error.contains("changed on disk") => Err(changed()),
         Err(error) => Err(server_error(&error)),

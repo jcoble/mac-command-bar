@@ -3,18 +3,32 @@ use std::sync::atomic::Ordering;
 use tauri_plugin_fs::FsExt;
 
 use crate::{
-    allow_workspace_root_in_fs_scope, count_source_references_sync,
+    run_path_action, run_source_file_action, run_terminal_command_action,
+    run_terminal_path_action, PathAction, SourceFileAction,
+};
+use crate::files::discovery::{
+    DEFAULT_SOURCE_LIST_LIMIT, SourceScanRegistry, allow_workspace_root_in_fs_scope, source_scan_cancellation_for_command,
+};
+use crate::files::discovery::references::{
+    count_source_references_sync, find_source_references_in_root_sync, find_source_references_sync,
+};
+use crate::files::discovery::root::{
+    ProjectRootValidationOwner, validate_project_root_sync_while,
+};
+use crate::files::discovery::search::{
+    search_source_files_sync, search_source_tree_sync,
+};
+use crate::files::discovery::symbols::{
     find_source_definitions_in_root_sync, find_source_definitions_sync,
-    find_source_references_in_root_sync, find_source_references_sync,
+};
+use crate::files::discovery::walk::{
     list_source_directory_sync_with_cancellation, list_source_files_sync_with_cancellation,
-    read_source_file_sync, read_source_file_sync_while, read_source_image_sync, run_path_action,
-    run_source_file_action, run_terminal_command_action, run_terminal_path_action,
-    search_source_files_sync, search_source_tree_sync, source_scan_cancellation_for_command,
-    validate_project_root_sync_while, write_source_file_sync, PathAction,
-    ProjectRootValidationOwner, ProjectRootValidationResult, SourceDefinitionTarget,
-    SourceDirectoryEntry, SourceFileAction, SourceFileReadOwner, SourcePreview, SourceRecord,
-    SourceReferenceCountResult, SourceReferenceTarget, SourceScanRegistry, SourceScanResult,
-    SourceSearchMatch, SourceTreeSearchPage, DEFAULT_SOURCE_LIST_LIMIT,
+};
+use crate::files::io::{
+    SourceFileReadOwner, read_source_file_sync, read_source_file_sync_while, read_source_image_sync, write_source_file_sync,
+};
+use crate::files::types::{
+    ProjectRootValidationResult, SourceDefinitionTarget, SourceDirectoryEntry, SourcePreview, SourceRecord, SourceReferenceCountResult, SourceReferenceTarget, SourceScanResult, SourceSearchMatch, SourceTreeSearchPage,
 };
 
 #[tauri::command]
