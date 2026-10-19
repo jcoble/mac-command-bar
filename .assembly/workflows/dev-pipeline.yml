@@ -67,5 +67,7 @@ steps:
     needs: [pr-body]
     if: "${{ !inputs.i_merge }}"
     run:
+      # Merge only when the review bot has reviewed this head and nothing it raised is open.
+      - node --experimental-strip-types tauri-svelte-preview/scripts/prBotReview.ts
       - gh pr checks --watch
       - ALLOW_MERGE=1 gh pr merge --merge --match-head-commit "$(git rev-parse HEAD)"

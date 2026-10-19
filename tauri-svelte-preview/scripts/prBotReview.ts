@@ -1,6 +1,7 @@
 // Waits for the Codex review bot to finish reviewing this branch's pull request at its current head,
-// then prints every unresolved bot thread. Exit 0: reviewed with nothing open (or the bot never came).
+// then prints every unresolved bot thread. Exit 0: the head is reviewed and nothing is open.
 // Exit 1: open findings, printed with the commands to reply to and resolve each one.
+// Exit 2: nothing is open, but the bot did not review the head within the wait.
 // Run from the branch's worktree: node --experimental-strip-types tauri-svelte-preview/scripts/prBotReview.ts
 import { execFileSync } from 'node:child_process';
 
@@ -46,22 +47,23 @@ function main(): void {
   }
 
   const deadline = Date.now() + WAIT_MINUTES * 60_000;
-  for (;;) {
+  let reviewed = false;
+  while (!reviewed && Date.now() < deadline) {
     const state = reviewState(botComments());
-    if (state?.commit_sha === head && state.status === 'completed') break;
-    if (Date.now() > deadline) {
-      console.log(`The review bot did not review ${head.slice(0, 9)} within ${WAIT_MINUTES} minutes; continuing without it.`);
-      return;
-    }
-    execFileSync('sleep', [String(POLL_SECONDS)]);
+    reviewed = state?.commit_sha === head && state.status === 'completed';
+    if (!reviewed) execFileSync('sleep', [String(POLL_SECONDS)]);
   }
 
-  const query = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved comments(first:1){nodes{databaseId author{login} path line originalLine body}}}}}}}`;
-  const threads = JSON.parse(gh(['api', 'graphql', '-f', `query=${query}`, '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `number=${pr.number}`]))
-    .data.repository.pullRequest.reviewThreads.nodes as Thread[];
-  const open = openBotThreads(threads);
+  const query = `query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:1){nodes{databaseId author{login} path line originalLine body}}}}}}}`;
+  const pages = JSON.parse(gh(['api', 'graphql', '--paginate', '--slurp', '-f', `query=${query}`, '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `number=${pr.number}`])) as Array<{ data: { repository: { pullRequest: { reviewThreads: { nodes: Thread[] } } } } }>;
+  const open = openBotThreads(pages.flatMap((page) => page.data.repository.pullRequest.reviewThreads.nodes));
   if (open.length === 0) {
-    console.log(`The review bot reviewed ${head.slice(0, 9)} and has no open findings.`);
+    if (reviewed) {
+      console.log(`The review bot reviewed ${head.slice(0, 9)} and has no open findings.`);
+    } else {
+      console.log(`The review bot did not review ${head.slice(0, 9)} within ${WAIT_MINUTES} minutes. Nothing is open, but the head is unreviewed.`);
+      process.exitCode = 2;
+    }
     return;
   }
   console.log(`The review bot has ${open.length} open finding(s) on PR #${pr.number}:\n`);

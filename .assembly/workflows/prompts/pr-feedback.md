@@ -2,7 +2,7 @@ Task ${{ task.key }}: ${{ task.title }}
 
 The pull request for this branch is open. The repository's review bot reviews every push. Your job is to get its review clean without the owner.
 
-1. Run `node --experimental-strip-types tauri-svelte-preview/scripts/prBotReview.ts` from the worktree root. It waits for the bot's review of the current head (up to 30 minutes) and prints each open finding with the commands to reply to and resolve it. Exit 0 means nothing is open; you are done.
+1. Run `node --experimental-strip-types tauri-svelte-preview/scripts/prBotReview.ts` from the worktree root. It waits for the bot's review of the current head (up to 30 minutes) and prints each open finding with the commands to reply to and resolve it. Exit 0 means the head is reviewed and nothing is open; you are done. Exit 2 means nothing is open but the bot never reviewed the head: say so in your report and finish; the merge step checks again before merging.
 2. For each finding, read the code it points at and decide:
    - Real: fix it test-first (a failing test, then the fix), run the targeted tests, and commit (`Task: ${{ task.key }}`, the architecture line, `Committed-by: Codex`, no Co-Authored-By line). Reply with what you changed and the commit hash, then resolve the thread.
    - Not real: reply with the reason, citing `path:line`, then resolve the thread.
