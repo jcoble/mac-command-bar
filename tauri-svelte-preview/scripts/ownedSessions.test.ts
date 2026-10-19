@@ -277,7 +277,7 @@ const scanRecord = {
 }
 { // SQLite list rows project every persisted rail field and the live overlay
   const record = {
-    ownedId: 'owned-db', provider: 'codex' as const, model: 'model-a', effort: 'high',
+    ownedId: 'owned-db', canChangeCheckout: true, provider: 'codex' as const, model: 'model-a', effort: 'high',
     cwd: '/tmp/project/worktree', state: 'waiting-approval' as const, suspended: false,
     createdAtMs: 10, lastActivityAtMs: 20, activeTurnId: 'turn-a',
     pendingPermission: true, pendingInput: false, nativeSessionId: 'native-a',
@@ -290,6 +290,8 @@ const scanRecord = {
   };
   const projected = ownedSessionFromBackend(record);
   assert.equal(projected.runtimeState, 'waiting-approval');
+  assert.equal(projected.canChangeCheckout, true);
+  assert.equal(ownedSessionFromBackend({ ...record, canChangeCheckout: false }).canChangeCheckout, false);
   assert.equal(projected.pendingPermission, true);
   assert.equal(projected.branch, record.branch);
   assert.equal(projected.title, record.title);

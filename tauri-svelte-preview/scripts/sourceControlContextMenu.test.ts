@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
+import { test } from 'node:test';
 
 import {
   snapshotSourceControlCommitFileMenu,
@@ -68,3 +70,61 @@ for (const relativePath of [
 }
 
 console.log('sourceControlContextMenu: commit and commit-file menus passed');
+
+test('checkout availability follows backend support and preserves session safety gates', () => {
+  const source = readFileSync(new URL('../src/lib/shell/panels/sourceControl/SourceControlPanel.svelte', import.meta.url), 'utf8');
+  const body = source.match(/const checkoutDisabledReason = \$derived.by\(\(\) => \{([\s\S]*?)\n  \}\);/)![1];
+  const reason = new Function('readOnlyScope', 'onUseSessionCheckout', 'rail', 'ownedId', 'ownedSession', 'conversation', 'activeTool', body);
+  const conversation = { sending: false, pendingApprovals: {}, pendingInputs: {} };
+  const session = { origin: 'app', executionOwner: 'structured', runtimeState: 'ready', canChangeCheckout: true };
+  const check = (ownedSession = session, chat = conversation) => reason(true, () => {}, { activeOwnedId: 's' }, 's', ownedSession, chat, false);
+  for (const agent of ['codex', 'claude', 'antigravity']) {
+    assert.equal(check({ ...session, agent } as typeof session), null);
+    assert.equal(check({ ...session, agent, canChangeCheckout: false } as typeof session), "This session's agent can't keep its conversation in another checkout.");
+  }
+  assert.match(check({ ...session, origin: 'external' }), /Assembly/);
+  assert.match(check(session, { ...conversation, sending: true }), /active turn/);
+  assert.match(check(session, { ...conversation, pendingApprovals: { one: {} } }), /permission/);
+  assert.match(check(session, { ...conversation, pendingInputs: { one: {} } }), /input/);
+});
+
+test('checkout service reports unsupported sessions and accepts supported providers', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const method = source.slice(source.indexOf('export async function changeStructuredConversationCheckout('), source.indexOf('const preparingSends'));
+  const code = stripTypeScriptTypes(method.replace('export async function', 'async function'));
+  for (const provider of ['codex', 'claude', 'antigravity']) {
+    for (const canChangeCheckout of [false, true]) {
+      let calls = 0;
+      const state = { provider, generation: 1, connectionState: 'connected' };
+      const record = { cwd: '/b', nativeSessionId: 'native', suspended: true };
+      const change = new Function('getConversationSession', 'rail', 'changeAgentConversationCheckoutFromTauri', 'updateOwnedSession', 'setConversationConnection', `${code}; return changeStructuredConversationCheckout;`)(
+        () => state, { owned: [{ ownedId: 's', origin: 'app', canChangeCheckout }] },
+        async () => { calls++; return record; }, () => {}, () => {}
+      );
+      if (canChangeCheckout) assert.equal(await change('s', '/b'), record);
+      else await assert.rejects(change('s', '/b'), /agent can't keep its conversation/);
+      assert.equal(calls, canChangeCheckout ? 1 : 0);
+    }
+  }
+});
+
+test('fresh session capability loading takes checkout support from the capability response', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
+  const start = source.indexOf('export async function loadConversationCapabilities(');
+  const method = source.slice(start, source.indexOf('\n}\n', start) + 3);
+  const code = stripTypeScriptTypes(method.replace('export async function', 'async function'));
+  for (const resume of [false, true]) {
+    let support: boolean | undefined;
+    let sessionListReads = 0;
+    const load = new Function('isTauri', 'getConversationSession', 'readAgentConversationCapabilitiesFromTauri',
+      'conversationGenerationMatches', 'setConversationCapabilities', 'findSessionRecord',
+      'updateOwnedSession', 'setConversationCapabilityError', `${code}; return loadConversationCapabilities;`)(
+      () => true, () => ({ generation: 1 }), async () => ({ provider: 'claude', session: { resume } }), () => true, () => {},
+      async () => { sessionListReads += 1; return null; },
+      (_id: string, patch: { canChangeCheckout: boolean }) => { support = patch.canChangeCheckout; }, () => {}
+    );
+    await load('s', 'claude');
+    assert.equal(support, resume);
+    assert.equal(sessionListReads, 0, 'checkout support comes from the capability response, not every session list');
+  }
+});

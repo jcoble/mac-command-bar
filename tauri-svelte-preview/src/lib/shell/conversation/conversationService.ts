@@ -543,6 +543,8 @@ export async function loadConversationCapabilities(
     if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) return null;
     if (capabilities.provider !== provider) throw new Error('Capability provider does not match this session');
     setConversationCapabilities(ownedId, generation, capabilities);
+    // Same negotiated value as provider_supports_changing_checkout in capabilities.rs; the backend still rejects unsupported changes.
+    updateOwnedSession(ownedId, { canChangeCheckout: capabilities.session.resume });
     return capabilities;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1120,7 +1122,7 @@ async function refreshAdoptedSession(ownedId: string, signal: AbortSignal): Prom
     if (signal.aborted || !record || railActivityEvents.get(ownedId) !== seen) return;
     const fresh = ownedSessionFromBackend(record);
     updateOwnedSession(ownedId, {
-      state: fresh.state,
+      state: fresh.state, canChangeCheckout: fresh.canChangeCheckout,
       runtimeState: fresh.runtimeState,
       activeTurnId: fresh.activeTurnId,
       pendingPermission: fresh.pendingPermission,
@@ -1416,19 +1418,17 @@ async function ensureStructuredConversationOnce(
   }
 }
 
-/** Changes a quiescent Codex session's durable checkout without changing its
+/** Changes a quiescent session's durable checkout without changing its
  * generation. The native command owns the gate and the SQLite transaction. */
 export async function changeStructuredConversationCheckout(
   ownedId: string,
   cwd: string
 ): Promise<AgentConversationSessionRecord | null> {
   const state = getConversationSession(ownedId);
-  if (!state || state.provider !== 'codex' || !cwd.trim()) return null;
-  const record = await changeAgentConversationCheckoutFromTauri({
-    ownedId,
-    generation: state.generation,
-    cwd
-  });
+  const session = rail.owned.find((entry) => entry.ownedId === ownedId);
+  if (!session?.canChangeCheckout) throw new Error("This session's agent can't keep its conversation in another checkout.");
+  if (!state || !cwd.trim()) throw new Error('A connected session and checkout folder are required.');
+  const record = await changeAgentConversationCheckoutFromTauri({ ownedId, generation: state.generation, cwd });
   if (!record) return null;
   updateOwnedSession(ownedId, {
     cwd: record.cwd,

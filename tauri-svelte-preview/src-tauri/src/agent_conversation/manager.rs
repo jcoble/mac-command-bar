@@ -1675,7 +1675,7 @@ impl AgentRuntimeManager {
         Ok(connection)
     }
 
-    /// Changes the durable checkout for one Codex session without replacing
+    /// Changes the durable checkout for one session without replacing
     /// its generation or native session. A running adapter is detached only
     /// after the quiescent gate passes; the checkout marker and the resulting
     /// suspended session row are then committed in the same SQLite transaction.
@@ -1703,17 +1703,14 @@ impl AgentRuntimeManager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = lifecycle_session_mut(&mut sessions, &owned_id, request.generation)?;
-            if session.provider != AgentConversationProvider::Codex {
-                return Err("Only Codex sessions can change checkout".to_string());
+            if !super::capabilities::provider_supports_changing_checkout(&session.capabilities) {
+                return Err("This session's agent can't keep its conversation in another checkout.".to_string());
             }
             if session.cwd == new_cwd {
                 return Err("Session is already using this checkout".to_string());
             }
             if !session_can_change_checkout(session) {
-                return Err(
-                    "Checkout changes are available only while the Codex session is quiescent"
-                        .to_string(),
-                );
+                return Err("Checkout changes are available only while the session is quiescent".to_string());
             }
             let from_cwd = session.cwd.clone();
             if session.runtime.is_some() {
@@ -3683,7 +3680,7 @@ impl AgentRuntimeManager {
                     pending_permission,
                     pending_input,
                     background_work,
-                    native_session_id,
+                    native_session_id, can_change_checkout,
                     mut meta,
                 ) = if let Some(session) = live {
                     (
@@ -3694,6 +3691,7 @@ impl AgentRuntimeManager {
                         !session.user_input_requests.is_empty(),
                         projected_background_work(session),
                         session.native_session_id.clone(),
+                        super::capabilities::provider_supports_changing_checkout(&session.capabilities),
                         session.rail_meta.clone(),
                     )
                 } else {
@@ -3706,6 +3704,7 @@ impl AgentRuntimeManager {
                         false,
                         Vec::new(),
                         row.native_session_id.clone(),
+                        super::capabilities::provider_supports_changing_checkout(&stored.capabilities),
                         stored.rail_meta,
                     )
                 };
@@ -3719,7 +3718,7 @@ impl AgentRuntimeManager {
                     owned_id: row.owned_id,
                     execution_environment: ExecutionEnvironment::Local,
                     remote_profile_id: None,
-                    provider,
+                    provider, can_change_checkout,
                     model: row.model,
                     effort: row.effort,
                     cwd: row.cwd,
@@ -8474,7 +8473,7 @@ fn session_can_change_checkout(session: &ManagedAgentSession) -> bool {
         AgentExecutionOwner::Structured | AgentExecutionOwner::Stopped
     ) && !session.suspending
         && session.native_session_id.is_some()
-        && session.capabilities.session.resume
+        && super::capabilities::provider_supports_changing_checkout(&session.capabilities)
         && (session.runtime.is_some() || session.state == AgentRuntimeState::Suspended)
         && session_is_checkout_quiescent(session)
 }
@@ -8714,6 +8713,7 @@ fn normalize_codex_composite_config_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod checkout;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};

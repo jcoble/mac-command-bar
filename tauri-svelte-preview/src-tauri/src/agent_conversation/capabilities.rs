@@ -52,6 +52,16 @@ pub fn validate_capabilities(capabilities: &AgentCapabilities) -> Result<(), Str
     validate_config_options(&capabilities.config_options)
 }
 
+// Checkout changes detach and resume the same native ID with a new cwd.
+// Claude ACP 0.90.0: dist/acp-agent.js:7625 recreates with cwd +
+// resume ID; dist/resumed-session.js:37 searches transcripts across projects.
+// Official Antigravity ACP 1.4.1: acp_server/server.py:3781 restores
+// the ID's trajectory and supplies the requested cwd; session_store.py:52 keys
+// trajectories by ID, not cwd. All three adapters therefore use negotiated resume.
+pub fn provider_supports_changing_checkout(capabilities: &AgentCapabilities) -> bool {
+    capabilities.session.resume
+}
+
 pub fn validate_config_options(options: &[AgentConfigOption]) -> Result<(), String> {
     let mut ids = HashSet::new();
     for option in options {
@@ -211,5 +221,17 @@ mod tests {
         assert!(validate_manifest(&missing_hash)
             .unwrap_err()
             .contains("SHA-256"));
+    }
+
+    #[test]
+    fn checkout_support_follows_negotiated_resume_for_each_provider() {
+        for provider in [AgentConversationProvider::Codex, AgentConversationProvider::Claude, AgentConversationProvider::Antigravity] {
+            let mut capabilities = capabilities();
+            capabilities.provider = provider;
+            capabilities.session.resume = false;
+            assert!(!provider_supports_changing_checkout(&capabilities), "load alone: {provider:?}");
+            capabilities.session.resume = true;
+            assert!(provider_supports_changing_checkout(&capabilities), "{provider:?}");
+        }
     }
 }
