@@ -9,6 +9,7 @@ use crate::files::types::{
     SourceDirectoryEntry, SourceRecord, SourceScanResult,
 };
 
+#[cfg(test)]
 pub(crate) fn list_source_files_sync(
     root: PathBuf,
     limit: usize,

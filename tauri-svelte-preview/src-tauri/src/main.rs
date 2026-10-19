@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -581,7 +580,6 @@ pub(crate) fn backend_capabilities() -> Vec<String> {
         .collect()
 }
 
-#[cfg(test)]
 fn run_source_file_action(path: PathBuf, action: SourceFileAction) -> Result<(), String> {
     let command = source_file_action_command(&path, action)?;
     let status = Command::new(&command.program)
@@ -3903,6 +3901,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
     use std::time::Instant;
     use crate::files::discovery::{
         DEFAULT_SOURCE_LIST_LIMIT, SourceScanCancellation, SourceScanWalkProgress,
