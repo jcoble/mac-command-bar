@@ -100,6 +100,7 @@ pub(super) fn discover_in(
                 adapter.provider, adapter.version, expected.0, expected.1
             ));
         }
+        // Official .par + localharness_external packaging replaces the incompatible community runtime; scripts/prepareReleaseAdapters.ts:119–121,146–147,170–179.
         if adapter.provider == "antigravity" &&
             semver::Version::parse(&adapter.version).map_err(|e| e.to_string())? <
             semver::Version::parse(AGY_ACP_VERSION).unwrap() {

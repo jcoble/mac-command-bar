@@ -102,6 +102,7 @@ function humanSummary(raw: string): string {
     return 'The agent replied without any text.';
   }
 
+  // Old Claude adapter's pnpm shim parsed as JS on newer Node; recorded signature: scripts/errorPresentation.test.ts (Node 26).
   if (
     normalized.includes('acp sidecar exited')
     && normalized.includes('node_modules/.bin/claude-agent-acp')
