@@ -150,6 +150,8 @@
     return previousItems;
   });
   const error = $derived(transcriptError || conversation?.childTranscriptError || '');
+  const childDownload = $derived(conversation?.childHistoryDownload ?? null);
+  const childDownloadPercent = $derived(childDownload?.totalBytes ? Math.floor(childDownload.coveredBytes * 100 / childDownload.totalBytes) : 0);
 
   function release(parentId: string): void {
     reader?.abort();
@@ -305,6 +307,13 @@
     {#if fileError}<p role="alert" class="px-2 pb-2 text-sm text-muted-foreground">{fileError}</p>{/if}
     {#if error}
       <EmptyState title="Could not load transcript" body={error} data-testid="agent-transcript-error" />
+    {:else if transcriptState === 'loading' && childDownload?.phase === 'error'}
+      <EmptyState title="History download stopped" body={childDownload.error ?? ''} />
+    {:else if transcriptState === 'loading' && childDownload && !childDownload.ready}
+      <EmptyState title={childDownload.phase === 'paused' ? 'History download paused · reconnecting' : 'Downloading history'}
+        body={childDownload.totalBytes ? `${(childDownload.coveredBytes / 1_000_000).toFixed(1)} of ${(childDownload.totalBytes / 1_000_000).toFixed(1)} MB · ${childDownloadPercent}%` : undefined}>
+        {#snippet actions()}<progress class="history-progress" value={childDownload.coveredBytes} max={childDownload.totalBytes || 1}></progress>{/snippet}
+      </EmptyState>
     {:else if transcriptState === 'loading'}
       <EmptyState title="Loading transcript" body="Reading this agent’s saved conversation." data-testid="agent-transcript-loading" />
     {:else if transcriptState === 'unavailable'}
@@ -340,6 +349,7 @@
         newestSequence={childConversation.selectedAfterCursor ?? 0}
         onJumpToLatest={() => jumpSelectedConversationToLatest(ownedId!, historyOwnedId!)}
         onFileLink={openFile}
+        historyDownload={childDownload}
       />
           </UIProvider>
         {/key}
@@ -379,4 +389,5 @@
   .agents-panel :global(article .file-link){display:inline}
   .agents-panel :global(.tool-item summary){padding:2px 4px}
   .agents-panel :global(.tool-item .tool-body){padding:0 6px 8px}
+  .history-progress{width:220px;height:6px;accent-color:var(--color-accent)}
 </style>

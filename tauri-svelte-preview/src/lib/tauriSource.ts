@@ -2123,6 +2123,37 @@ export async function probeAgentProviderConfigFromTauri(
   }
 }
 
+export type HistoryDownloadProgress = {
+  profileId: string;
+  sourceOwnedId: string;
+  workspaceOwnedId: string;
+  childSessionId: string | null;
+  totalBytes: number;
+  coveredBytes: number;
+  phase: 'downloading' | 'paused' | 'complete' | 'error';
+  ready: boolean;
+  error: string | null;
+};
+
+export async function listenHistoryDownloadProgress(handler: (progress: HistoryDownloadProgress) => void, signal: AbortSignal): Promise<void> {
+  if (!isTauriRuntime() || signal.aborted) return;
+  const { listen } = await import('@tauri-apps/api/event');
+  if (signal.aborted) return;
+  const stop = trackTauriListener(await listen<HistoryDownloadProgress>('agent-conversation-history-download', (event) => {
+    if (!signal.aborted) handler(event.payload);
+  }));
+  if (signal.aborted) { stop(); return; }
+  signal.addEventListener('abort', stop, { once: true });
+}
+
+export async function readHistoryDownloadProgressFromTauri(ownedId: string, signal: AbortSignal): Promise<HistoryDownloadProgress | null> {
+  if (!isTauriRuntime() || signal.aborted) return null;
+  const { invoke } = await import('./workspaceInvoke.ts');
+  if (signal.aborted) return null;
+  const progress = await invoke<HistoryDownloadProgress | null>('read_agent_conversation_history_download', { ownedId });
+  return signal.aborted ? null : progress;
+}
+
 export async function readAgentConversationSelectionFromTauri(
   ownedId: string,
   maxBytes: number,
@@ -2164,9 +2195,19 @@ export async function readAgentConversationChildHistoryFromTauri(input: {
   maxBytes: number;
   signal?: AbortSignal;
 }): Promise<AgentConversationChildHistory> {
-  const { invoke } = await import('./workspaceInvoke.ts');
-  if (input.signal?.aborted) return Promise.resolve({} as AgentConversationChildHistory);
-  return invoke<AgentConversationChildHistory>('read_agent_conversation_child_history', input);
+  const signal = input.signal;
+  const cancel = (): void => { void cancelAgentConversationRequestFromTauri(input.requestId); };
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) return {} as AgentConversationChildHistory;
+    const { invoke } = await import('./workspaceInvoke.ts');
+    if (signal?.aborted) return {} as AgentConversationChildHistory;
+    const { signal: _signal, ...args } = input;
+    const result = await invoke<AgentConversationChildHistory>('read_agent_conversation_child_history', args);
+    return signal?.aborted ? {} as AgentConversationChildHistory : result;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
 }
 
 export async function stopAgentConversationChildHistoryFromTauri(

@@ -225,6 +225,8 @@ assert.equal(legacy.topTabs, undefined);
           getConversationSession: dependencies.getConversationSession,
           readChildConversationHistory: panelDependencies.readChildConversationHistory,
           startConversationEvents: async () => {},
+          clearConversationHistoryDownload: () => {},
+          attachHistoryDownload: async () => {},
           readAgentConversationSelectionFromTauri: async (id: string) => {
             snapshots.push(id);
             return { connection: { generation: 1 }, page: { watermark: 1 }, pendingSequence: 1 };

@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(debug_assertions)]
 use std::collections::VecDeque;
 use std::future::IntoFuture;
+use std::io::{Read, Write};
 use std::net::{TcpListener as StdTcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -19,7 +20,7 @@ use axum::routing::get;
 use axum::Router;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use futures_util::{future::join_all, SinkExt, StreamExt};
-use mcb_core::session_store::SessionStore;
+use mcb_core::session_store::{HistoryDownloadFacts, SessionStore};
 use serde::{Deserialize, Serialize};
 #[cfg(debug_assertions)]
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -51,7 +52,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 19;
+pub(super) const PROTOCOL_VERSION: u16 = 20;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -62,8 +63,7 @@ static MESSAGE_CHANGES: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
     std::sync::LazyLock::new(|| tokio::sync::watch::channel(0).0);
 static MESSAGES_CHANGED_SINK: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 const REPLAY_PAGE_BYTES: u32 = 1024 * 1024;
-// The background history copy saves older pages the same size as an opening page.
-const HISTORY_COPY_PAGE_BYTES: u32 = 512 * 1024;
+const HISTORY_DOWNLOAD_CHUNK_BYTES: u32 = 512 * 1024;
 pub const REMOTE_ASSEMBLY_PROFILE_SETTING_KEY: &str = "remote-assembly.profile.v1";
 pub const REMOTE_ASSEMBLY_PROFILES_SETTING_KEY: &str = "remote-assembly.profiles.v1";
 const REMOTE_SESSION_PROJECTIONS_SETTING_KEY: &str = "remote-assembly.session-projections.v1";
@@ -107,11 +107,7 @@ pub(super) enum RemoteCommand {
         parent_owned_id: String,
         request_id: u64,
     },
-    EventsBefore {
-        owned_id: String,
-        before_sequence: i64,
-        max_bytes: u32,
-    },
+    DownloadHistory { owned_id: String, before_sequence: Option<i64> },
     EventsAfter {
         owned_id: String,
         after_sequence: i64,
@@ -222,6 +218,10 @@ pub(super) enum RemoteResponse {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum ServerFrame {
+    HistoryDownloadStart { id: u64, owned_id: String, low_sequence: Option<i64>, high_sequence: Option<i64>, row_count: u64, total_bytes: u64, covered_bytes: u64,
+        #[serde(deserialize_with = "deserialize_wire_payload")] snapshot: AgentConversationSnapshot },
+    HistoryDownloadChunk { id: u64, owned_id: String, oldest_sequence: i64, covered_bytes: u64, gzip_base64: String },
+    HistoryDownloadDone { id: u64, owned_id: String },
     Ready { protocol_version: u16 },
     MessagesChanged,
     ReplayStart { owned_id: String },
@@ -233,6 +233,19 @@ enum ServerFrame {
     TerminalOutput { frame: TerminalOutputFrame },
     /// A session here messaging another machine; the desktop routes it and answers with `RelayReply`.
     RelayRequest { request_id: u64, op: String, args: serde_json::Value },
+}
+
+fn encode_history_chunk(events: &[AgentConversationEvent]) -> Result<String, String> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&serde_json::to_vec(events).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+    Ok(BASE64.encode(encoder.finish().map_err(|error| error.to_string())?))
+}
+
+fn decode_history_chunk(gzip_base64: &str) -> Result<Vec<AgentConversationEvent>, String> {
+    let bytes = BASE64.decode(gzip_base64).map_err(|error| error.to_string())?;
+    let mut json = Vec::new();
+    flate2::read::GzDecoder::new(bytes.as_slice()).read_to_end(&mut json).map_err(|error| error.to_string())?;
+    serde_json::from_slice(&json).map_err(|error| error.to_string())
 }
 
 // Serde's buffered tagged-enum decoder cannot deserialize u128 timestamps.
@@ -412,6 +425,7 @@ impl Drop for PendingAttachment {
 type ClientReply = oneshot::Sender<Result<RemoteResponse, String>>;
 
 enum ClientRequest {
+    Download { id: u64, command: RemoteCommand },
     Execute {
         id: u64,
         command: RemoteCommand,
@@ -421,6 +435,29 @@ enum ClientRequest {
     Cancel {
         id: u64,
     },
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryDownloadProgress {
+    pub profile_id: String,
+    pub source_owned_id: String,
+    pub workspace_owned_id: String,
+    pub child_session_id: Option<String>,
+    pub total_bytes: u64,
+    pub covered_bytes: u64,
+    pub phase: String,
+    pub ready: bool,
+    pub error: Option<String>,
+}
+
+struct HistoryDownload {
+    request_id: Option<u64>,
+    epoch: u64,
+    low: Option<i64>,
+    high: Option<i64>,
+    row_count: u64,
+    progress: tokio::sync::watch::Sender<HistoryDownloadProgress>,
 }
 
 /// This desktop's record of the owner's latest main orchestrator choice: `{machine, owned_id}`.
@@ -439,10 +476,8 @@ pub struct RemoteConnectionManager {
     event_sink: Arc<dyn Fn(AgentConversationEvent) + Send + Sync>,
     status_sink: Arc<dyn Fn(RemoteConnectionStatus) + Send + Sync>,
     connection_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Sessions whose background history copy is running, and the wake-up
-    /// for page reads waiting on one of them.
-    history_copies: Arc<Mutex<HashSet<String>>>,
-    history_copied: Arc<tokio::sync::Notify>,
+    downloads: Arc<Mutex<HashMap<String, HistoryDownload>>>,
+    download_sink: Arc<Mutex<Option<Arc<dyn Fn(HistoryDownloadProgress) + Send + Sync>>>>,
     /// Announces each cancelled frontend request id to page reads waiting on the Mac.
     cancelled_requests: broadcast::Sender<u64>,
     attempts: Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
@@ -672,8 +707,8 @@ impl RemoteConnectionManager {
             event_sink,
             status_sink,
             connection_lock: Arc::new(tokio::sync::Mutex::new(())),
-            history_copies: Arc::new(Mutex::new(HashSet::new())),
-            history_copied: Arc::new(tokio::sync::Notify::new()),
+            downloads: Arc::new(Mutex::new(HashMap::new())),
+            download_sink: Arc::new(Mutex::new(None)),
             cancelled_requests: broadcast::channel(64).0,
             attempts: Arc::new(Mutex::new(HashMap::new())),
             connecting: Arc::new(Mutex::new(HashMap::new())),
@@ -1022,6 +1057,7 @@ impl RemoteConnectionManager {
         self.stop_profile(&profile.id);
         super::remote_install::uninstall(&profile.ssh_target, delete_data).await?;
         if delete_data {
+            self.downloads.lock().unwrap().retain(|_, entry| entry.progress.borrow().profile_id != profile.id);
             self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).purge(&profile.id)?;
             self.replace_cached_profile_sessions(&profile.id, &[])?;
         } else {
@@ -1164,6 +1200,7 @@ impl RemoteConnectionManager {
     pub fn disconnect_profile(&self, profile_id: &str) -> Result<(), String> {
         self.stop_profile(profile_id);
         self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).disconnect(profile_id);
+        self.pause_history_downloads(profile_id);
         Ok(())
     }
 
@@ -1196,7 +1233,7 @@ impl RemoteConnectionManager {
             let previous = history.through(profile, &snapshot.connection.owned_id)?;
             history.snapshot(profile, history.epoch(profile), previous, &mut snapshot)?;
         }
-        self.history_copied.notify_waiters();
+
         if let Some(event) = newest { self.history_event_sink(profile, true)(vec![event])?; }
         Ok(())
     }
@@ -1245,6 +1282,7 @@ impl RemoteConnectionManager {
     }
 
     pub fn remove_profile(&self, profile_id: &str) -> Result<(), String> {
+        self.downloads.lock().unwrap().retain(|_, entry| entry.progress.borrow().profile_id != profile_id);
         // Dropping the attempt token first makes removal authoritative: the
         // state derived below is disconnected even mid-attempt, and the running
         // attempt can no longer install a client for this profile. A later
@@ -1750,7 +1788,6 @@ impl RemoteConnectionManager {
         if self.connection_state(&profile) != RemoteConnectionState::Connected {
             snapshot.connection.state = super::protocol::ConversationConnectionState::Disconnected;
         }
-        self.copy_history(profile, owned_id);
         Ok(Some(snapshot))
     }
 
@@ -1761,14 +1798,20 @@ impl RemoteConnectionManager {
         max_bytes: u32,
         minimum_generation: Option<u64>,
     ) -> Result<Option<AgentConversationSelectionSnapshot>, String> {
+        let mut cancellations = self.cancelled_requests.subscribe();
         let profile = self.profile_for_owned_id(&owned_id)?;
+        if self.connection_state(&profile) == RemoteConnectionState::Connected {
+            self.ensure_history_download(&profile, &owned_id).await?;
+            self.wait_history_download_ready(&profile, &owned_id, request_id, &mut cancellations).await?;
+        }
+        let needs_repair = self.saved_history_needs_repair(&profile, &owned_id)?;
         let mut saved = self
             .history
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .read_selection_snapshot(&profile, &owned_id, max_bytes)?;
         if saved.as_ref().is_some_and(|snapshot| {
-            minimum_generation.is_some_and(|minimum| snapshot.connection.generation < minimum)
+            needs_repair || minimum_generation.is_some_and(|minimum| snapshot.connection.generation < minimum)
         }) && self.connection_state(&profile) == RemoteConnectionState::Connected
         {
             if !self
@@ -1802,7 +1845,6 @@ impl RemoteConnectionManager {
         if self.connection_state(&profile) != RemoteConnectionState::Connected {
             snapshot.connection.state = super::protocol::ConversationConnectionState::Disconnected;
         }
-        self.copy_history(profile, owned_id);
         Ok(Some(snapshot))
     }
 
@@ -1813,10 +1855,13 @@ impl RemoteConnectionManager {
         request_id: u64,
         max_bytes: u32,
     ) -> Result<Option<AgentConversationSelectionSnapshot>, String> {
+        let mut cancellations = self.cancelled_requests.subscribe();
         if self.connection_state(&profile) == RemoteConnectionState::Connected {
-            self.save_newer(&profile, &source_owned_id, request_id, false, None)
-                .await?;
-            self.copy_history(profile.clone(), source_owned_id.clone());
+            self.ensure_history_download(&profile, &source_owned_id).await?;
+            self.wait_history_download_ready(&profile, &source_owned_id, request_id, &mut cancellations).await?;
+            if self.saved_history_needs_repair(&profile, &source_owned_id)? {
+                self.save_newer(&profile, &source_owned_id, request_id, false, None).await?;
+            }
         }
         let mut snapshot = self
             .history
@@ -1841,13 +1886,9 @@ impl RemoteConnectionManager {
         request_id: u64,
     ) -> Result<AgentConversationItemPage, String> {
         let profile = self.profile_for_owned_id(&owned_id)?;
-        let copy_key = RemoteHistory::key(&profile, &owned_id);
+        let mut progress = self.download_watch(&profile, &owned_id).ok();
         let mut cancellations = self.cancelled_requests.subscribe();
-        let mut restarted = false;
         loop {
-            let copied = self.history_copied.notified();
-            tokio::pin!(copied);
-            copied.as_mut().enable();
             let page = self
                 .history
                 .lock()
@@ -1856,21 +1897,13 @@ impl RemoteConnectionManager {
             if let Some(page) = page {
                 return Ok(page);
             }
-            if !self
-                .history_copies
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains(&copy_key)
-            {
-                if restarted {
-                    return Err("This part of the conversation is not saved on this Mac yet".into());
-                }
-                restarted = true;
-                self.copy_history(profile.clone(), owned_id.clone());
-                continue;
+            let progress = progress.as_mut().ok_or("This part of the conversation is not saved on this Mac yet")?;
+            if let Some(error) = progress.borrow().error.clone() { return Err(error); }
+            if progress.borrow().phase == "paused" && self.connection_state(&profile) == RemoteConnectionState::Disconnected {
+                return Err(format!("Remote machine {profile} is not connected"));
             }
             tokio::select! {
-                _ = copied => {}
+                result = progress.changed() => { result.map_err(|e| e.to_string())?; }
                 _ = wait_for_cancel(&mut cancellations, request_id) => return Err(PAGE_CANCELLED.into()),
             }
         }
@@ -1885,13 +1918,9 @@ impl RemoteConnectionManager {
         before: bool,
         request_id: u64,
     ) -> Result<AgentConversationItemPage, String> {
-        let copy_key = RemoteHistory::key(&profile, &source_owned_id);
+        let mut progress = self.download_watch(&profile, &source_owned_id).ok();
         let mut cancellations = self.cancelled_requests.subscribe();
-        let mut restarted = false;
         loop {
-            let copied = self.history_copied.notified();
-            tokio::pin!(copied);
-            copied.as_mut().enable();
             let page = self
                 .history
                 .lock()
@@ -1906,21 +1935,13 @@ impl RemoteConnectionManager {
             if let Some(page) = page {
                 return Ok(page);
             }
-            if !self
-                .history_copies
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains(&copy_key)
-            {
-                if restarted {
-                    return Err("This part of the conversation is not saved on this Mac yet".into());
-                }
-                restarted = true;
-                self.copy_history(profile.clone(), source_owned_id.clone());
-                continue;
+            let progress = progress.as_mut().ok_or("This part of the conversation is not saved on this Mac yet")?;
+            if let Some(error) = progress.borrow().error.clone() { return Err(error); }
+            if progress.borrow().phase == "paused" && self.connection_state(&profile) == RemoteConnectionState::Disconnected {
+                return Err(format!("Remote machine {profile} is not connected"));
             }
             tokio::select! {
-                _ = copied => {}
+                result = progress.changed() => { result.map_err(|e| e.to_string())?; }
                 _ = wait_for_cancel(&mut cancellations, request_id) => return Err(PAGE_CANCELLED.into()),
             }
         }
@@ -1964,7 +1985,7 @@ impl RemoteConnectionManager {
                 }
                 history.snapshot(profile, epoch, after, &mut snapshot)?
             };
-            self.history_copied.notify_waiters();
+
             let head = snapshot.last_sequence;
             newest = snapshot.events.pop().or(newest);
             if end >= head {
@@ -1989,39 +2010,176 @@ impl RemoteConnectionManager {
     /// Copies the rest of one session into the Mac's history in the background:
     /// newer events first, then older pages back to its start. Pages go to
     /// SQLite one at a time; only newer ones reach the open transcript.
-    fn copy_history(&self, profile: String, owned_id: String) {
-        let copy_key = RemoteHistory::key(&profile, &owned_id);
-        if !self.history_copies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(copy_key.clone()) {
-            return;
-        }
-        let manager = self.clone();
-        tokio::spawn(async move {
-            if let Err(error) = manager.copy_history_pages(&profile, &owned_id).await {
-                eprintln!("Remote history copy for {owned_id} stopped: {error}");
-            }
-            manager.history_copies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&copy_key);
-            manager.history_copied.notify_waiters();
-        });
+    pub fn set_history_download_sink(&self, sink: Arc<dyn Fn(HistoryDownloadProgress) + Send + Sync>) {
+        *self.download_sink.lock().unwrap() = Some(sink);
     }
 
-    async fn copy_history_pages(&self, profile: &str, owned_id: &str) -> Result<(), String> {
-        let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        self.save_newer(profile, owned_id, request_id, true, None).await?;
-        loop {
-            let (epoch, before) = {
-                let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                (history.epoch(profile), history.unsaved_older(profile, owned_id)?)
-            };
-            let Some(before) = before else { return Ok(()); };
-            let RemoteResponse::EventPage(mut page) = self.request_with_id(profile, request_id, RemoteCommand::EventsBefore {
-                owned_id: owned_id.into(), before_sequence: before, max_bytes: HISTORY_COPY_PAGE_BYTES,
-            }, None).await?
-            else { return Err("Remote Assembly returned the wrong event-page response".into()); };
-            if page.events.is_empty() && page.has_more { return Err("Remote history copy made no progress".into()); }
-            self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                .page(profile, epoch, owned_id, before, true, &mut page)?;
-            self.history_copied.notify_waiters();
+    fn publish_download(&self, progress: HistoryDownloadProgress) {
+        if let Some(sink) = self.download_sink.lock().unwrap().as_ref() { sink(progress); }
+    }
+
+    fn download_watch(&self, profile: &str, owned: &str) -> Result<tokio::sync::watch::Receiver<HistoryDownloadProgress>, String> {
+        self.downloads.lock().unwrap().get(&RemoteHistory::key(profile, owned)).map(|download| download.progress.subscribe())
+            .ok_or_else(|| "This part of the conversation is not saved on this Mac yet".into())
+    }
+
+    fn create_download(&self, profile: &str, owned: &str, id: u64) -> Result<HistoryDownload, String> {
+        let key = RemoteHistory::key(profile, owned);
+        let child = self.store.private_remote_child_source(&key).map_err(|e| e.to_string())?;
+        let workspace_owned_id = match &child {
+            Some(child) => serde_json::from_str::<(String, String)>(&child.parent_owned_id).map_err(|e| e.to_string())?.1,
+            None => owned.into(),
+        };
+        let child_session_id = if child.is_some() { Some(serde_json::from_str::<(String, String, String)>(owned).map_err(|e| e.to_string())?.2) } else { None };
+        let history = self.history.lock().unwrap();
+        let saved = history.download_state(profile, owned)?.unwrap_or_default();
+        let progress = HistoryDownloadProgress { profile_id: profile.into(), source_owned_id: owned.into(), workspace_owned_id,
+            child_session_id, total_bytes: saved.total_bytes, covered_bytes: saved.covered_bytes,
+            phase: "downloading".into(), ready: false, error: None };
+        Ok(HistoryDownload { request_id: Some(id), epoch: history.epoch(profile), low: None, high: None, row_count: 0,
+            progress: tokio::sync::watch::channel(progress).0 })
+    }
+
+    fn saved_history_needs_repair(&self, profile: &str, owned: &str) -> Result<bool, String> {
+        let history = self.history.lock().unwrap();
+        if !history.download_state(profile, owned)?.is_some_and(|download| download.complete) { return Ok(false); }
+        let through = history.through(profile, owned)?;
+        drop(history);
+        let saved = self.store.latest_seq(&RemoteHistory::key(profile, owned)).map_err(|e| e.to_string())?;
+        Ok(through.is_some_and(|through| saved > through))
+    }
+
+    async fn ensure_history_download(&self, profile: &str, owned_id: &str) -> Result<(), String> {
+        if self.history.lock().unwrap().download_state(profile, owned_id)?.is_some_and(|state| state.complete) { return Ok(()); }
+        let key = RemoteHistory::key(profile, owned_id);
+        let mut downloads = self.downloads.lock().unwrap();
+        if let Some(entry) = downloads.get(&key).filter(|entry| entry.request_id.is_some()) {
+            let progress = entry.progress.borrow().clone(); drop(downloads); self.publish_download(progress); return Ok(());
         }
+        let sender = self.client.lock().unwrap().clients.get(profile).and_then(|client| client.requests.clone())
+            .ok_or_else(|| format!("Remote machine {profile} is not connected"))?;
+        self.history.lock().unwrap().prepare_download(profile, owned_id)?;
+        let before_sequence = self.store.remote_saved_minimum(&key).map_err(|e| e.to_string())?;
+        let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        let download = self.create_download(profile, owned_id, id)?;
+        let progress = download.progress.borrow().clone();
+        // Keep existing receivers across reconnects.
+        if let Some(previous) = downloads.get_mut(&key) {
+            previous.request_id = Some(id); previous.epoch = download.epoch; previous.low = None; previous.high = None; previous.row_count = 0;
+            previous.progress.send_replace(progress.clone());
+        } else { downloads.insert(key.clone(), download); }
+        if let Err(error) = sender.try_send(ClientRequest::Download { id, command: RemoteCommand::DownloadHistory { owned_id: owned_id.into(), before_sequence } }) {
+            let message = error.to_string();
+            let entry = downloads.get_mut(&key).unwrap();
+            entry.request_id = None;
+            entry.progress.send_modify(|progress| { progress.phase = "error".into(); progress.error = Some(message.clone()); });
+            let progress = entry.progress.borrow().clone();
+            drop(downloads);
+            self.publish_download(progress);
+            return Err(message);
+        }
+        drop(downloads);
+        self.publish_download(progress);
+        Ok(())
+    }
+
+    async fn wait_history_download_ready(&self, profile: &str, owned: &str, request_id: u64,
+        cancellations: &mut broadcast::Receiver<u64>) -> Result<(), String> {
+        if self.history.lock().unwrap().download_state(profile, owned)?.is_some_and(|state| state.complete) { return Ok(()); }
+        let mut progress = self.download_watch(profile, owned)?;
+        loop {
+            let state = progress.borrow_and_update().clone();
+            if state.phase == "error" { return Err(state.error.unwrap_or_else(|| "History download failed".into())); }
+            if state.ready { return Ok(()); }
+            if state.phase == "paused" && self.connection_state(profile) == RemoteConnectionState::Disconnected {
+                return Err(format!("Remote machine {profile} is not connected"));
+            }
+            tokio::select! {
+                result = progress.changed() => { result.map_err(|e| e.to_string())?; }
+                _ = wait_for_cancel(cancellations, request_id) => return Err(PAGE_CANCELLED.into()),
+            }
+        }
+    }
+
+    fn receive_history_start(&self, profile: &str, id: u64, owned: &str, low: Option<i64>, high: Option<i64>,
+        row_count: u64, total_bytes: u64, covered_bytes: u64, mut snapshot: AgentConversationSnapshot) -> Result<(), String> {
+        let mut downloads = self.downloads.lock().unwrap();
+        let Some(entry) = downloads.get_mut(&RemoteHistory::key(profile, owned)).filter(|entry| entry.request_id == Some(id)) else { return Ok(()); };
+        self.history.lock().unwrap().begin_download(profile, entry.epoch, HistoryDownloadFacts { low_sequence: low, high_sequence: high, row_count, total_bytes, covered_bytes }, &mut snapshot)?;
+        entry.low = low; entry.high = high; entry.row_count = row_count;
+        entry.progress.send_modify(|progress| { progress.total_bytes = total_bytes; progress.covered_bytes = covered_bytes;
+            progress.ready = covered_bytes >= total_bytes / 5 + u64::from(total_bytes % 5 != 0); });
+        let progress = entry.progress.borrow().clone(); drop(downloads); self.publish_download(progress); Ok(())
+    }
+
+    fn receive_history_chunk(&self, profile: &str, id: u64, owned: &str, covered_bytes: u64, gzip_base64: String) -> Result<(), String> {
+        let mut downloads = self.downloads.lock().unwrap();
+        let Some(entry) = downloads.get_mut(&RemoteHistory::key(profile, owned)).filter(|entry| entry.request_id == Some(id)) else { return Ok(()); };
+        let mut events = decode_history_chunk(&gzip_base64)?;
+        self.history.lock().unwrap().download_chunk(profile, entry.epoch, owned, covered_bytes, &mut events)?;
+        entry.progress.send_modify(|progress| { progress.covered_bytes = covered_bytes;
+            progress.ready = covered_bytes >= progress.total_bytes / 5 + u64::from(progress.total_bytes % 5 != 0); });
+        let progress = entry.progress.borrow().clone(); drop(downloads); self.publish_download(progress); Ok(())
+    }
+
+    async fn finish_history_download(&self, profile: &str, owned: &str, id: u64) -> Result<(), String> {
+        let (low, high, row_count, epoch, covered) = {
+            let downloads = self.downloads.lock().unwrap();
+            let Some(entry) = downloads.get(&RemoteHistory::key(profile, owned)).filter(|entry| entry.request_id == Some(id)) else { return Ok(()); };
+            let covered = entry.progress.borrow().covered_bytes;
+            (entry.low, entry.high, entry.row_count, entry.epoch, covered)
+        };
+        if self.history.lock().unwrap().download_state(profile, owned)?.is_some_and(|state| state.complete) { return Ok(()); }
+        let saved_rows = self.store.remote_saved_row_count(&RemoteHistory::key(profile, owned), low, high).map_err(|e| e.to_string())?;
+        let gaps = if saved_rows < row_count {
+            self.store.remote_history_gaps(&RemoteHistory::key(profile, owned), low, high).map_err(|e| e.to_string())?
+        } else { Vec::new() };
+        for gap in gaps {
+            let mut after = gap.first_sequence.saturating_sub(1);
+            while after < gap.last_sequence {
+                let RemoteResponse::EventPage(mut page) = self.request_for_profile(profile, RemoteCommand::EventsAfter {
+                    owned_id: owned.into(), after_sequence: after, max_bytes: HISTORY_DOWNLOAD_CHUNK_BYTES,
+                }).await? else { return Err("Remote Assembly returned the wrong repair response".into()); };
+                let mut downloads = self.downloads.lock().unwrap();
+                let Some(entry) = downloads.get_mut(&RemoteHistory::key(profile, owned)).filter(|entry| entry.request_id == Some(id)) else { return Ok(()); };
+                let Some(last) = page.events.last() else { break; };
+                if last.sequence <= after { return Err("History repair made no progress".into()); }
+                after = last.sequence;
+                self.history.lock().unwrap().download_chunk(profile, epoch, owned, covered, &mut page.events)?;
+                entry.progress.send_modify(|_| {});
+            }
+        }
+        let mut downloads = self.downloads.lock().unwrap();
+        let Some(entry) = downloads.get_mut(&RemoteHistory::key(profile, owned)).filter(|entry| entry.request_id == Some(id)) else { return Ok(()); };
+        self.history.lock().unwrap().complete_download(profile, epoch, owned, low, high)?;
+        entry.request_id = None;
+        entry.progress.send_modify(|progress| { progress.phase = "complete".into(); progress.ready = true; progress.covered_bytes = progress.total_bytes; });
+        let progress = entry.progress.borrow().clone(); drop(downloads); self.publish_download(progress); Ok(())
+    }
+
+    fn pause_history_downloads(&self, profile: &str) {
+        let mut downloads = self.downloads.lock().unwrap();
+        for entry in downloads.values_mut().filter(|entry| entry.progress.borrow().profile_id == profile && entry.request_id.is_some()) {
+            entry.request_id = None;
+            entry.progress.send_modify(|progress| { progress.phase = "paused".into(); });
+            self.publish_download(entry.progress.borrow().clone());
+        }
+    }
+
+    fn fail_history_download(&self, profile: &str, id: u64, error: String) {
+        let mut downloads = self.downloads.lock().unwrap();
+        if let Some(entry) = downloads.values_mut().find(|entry| entry.progress.borrow().profile_id == profile && entry.request_id == Some(id)) {
+            entry.request_id = None;
+            entry.progress.send_modify(|progress| { progress.phase = "error".into(); progress.error = Some(error); });
+            self.publish_download(entry.progress.borrow().clone());
+        }
+    }
+
+    pub fn history_download_progress(&self, owned_id: &str) -> Result<Option<HistoryDownloadProgress>, String> {
+        let (profile, owned) = if let Some(child) = self.store.private_remote_child_source(owned_id).map_err(|e| e.to_string())? {
+            (child.remote_profile_id, child.source_owned_id)
+        } else if self.owns(owned_id) { (self.profile_for_owned_id(owned_id)?, owned_id.into()) } else { return Ok(None); };
+        Ok(self.downloads.lock().unwrap().get(&RemoteHistory::key(&profile, &owned)).map(|entry| entry.progress.borrow().clone()))
     }
 
     pub async fn cancel_request(&self, request_id: u64) {
@@ -2044,34 +2202,20 @@ impl RemoteConnectionManager {
         self.history_page(owned_id, before_sequence, max_bytes, true).await
     }
 
-    #[cfg(test)]
-    pub async fn events_after(&self, owned_id: String, after_sequence: i64, max_bytes: u32)
-        -> Result<AgentConversationEventPage, String> {
-        self.history_page(owned_id, after_sequence, max_bytes, false).await
-    }
-
-    /// Scrolling reads only the Mac's saved copy. A page the background copy
-    /// has not reached yet waits for its next write; a copy that stopped, for
-    /// example when the connection dropped, starts again once.
+    /// Event paging reads only saved rows and waits for committed chunks.
     async fn history_page(&self, owned_id: String, cursor: i64, max_bytes: u32, before: bool)
         -> Result<AgentConversationEventPage, String> {
         let profile = self.profile_for_owned_id(&owned_id)?;
-        let copy_key = RemoteHistory::key(&profile, &owned_id);
-        let mut restarted = false;
+        let mut progress = self.download_watch(&profile, &owned_id).ok();
         loop {
-            let copied = self.history_copied.notified();
-            tokio::pin!(copied);
-            copied.as_mut().enable();
-            let page = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                .read_page(&profile, &owned_id, cursor, max_bytes, before)?;
+            let page = self.history.lock().unwrap().read_page(&profile, &owned_id, cursor, max_bytes, before)?;
             if let Some(page) = page { return Ok(page); }
-            if !self.history_copies.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&copy_key) {
-                if restarted { return Err("This part of the conversation is not saved on this Mac yet".into()); }
-                restarted = true;
-                self.copy_history(profile.clone(), owned_id.clone());
-                continue;
+            let progress = progress.as_mut().ok_or("This part of the conversation is not saved on this Mac yet")?;
+            if let Some(error) = progress.borrow().error.clone() { return Err(error); }
+            if progress.borrow().phase == "paused" && self.connection_state(&profile) == RemoteConnectionState::Disconnected {
+                return Err(format!("Remote machine {profile} is not connected"));
             }
-            copied.await;
+            progress.changed().await.map_err(|e| e.to_string())?;
         }
     }
 
@@ -2097,13 +2241,17 @@ impl RemoteConnectionManager {
         let RemoteResponse::ImportProgress { added, reached_start } = self.request_for_profile(&profile,
             RemoteCommand::ExtendImport { owned_id: owned_id.clone() }).await?
         else { return Err("Remote Assembly returned the wrong import response".into()); };
+        if added > 0 {
+            let active = self.downloads.lock().unwrap().get_mut(&RemoteHistory::key(&profile, &owned_id))
+                .and_then(|entry| entry.request_id.take());
+            if let Some(id) = active { self.cancel_request(id).await; }
+        }
         {
             let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             history.check(&profile, epoch)?;
             if added > 0 || !reached_start { history.imported_older(&profile, epoch, &owned_id)?; }
         }
-        // The imported rows are older than the saved start; the copy fetches them.
-        if added > 0 || !reached_start { self.copy_history(profile, owned_id); }
+        if added > 0 { self.ensure_history_download(&profile, &owned_id).await?; }
         Ok(super::transcript_import::ExtendedImport { added, reached_start })
     }
 
@@ -2373,6 +2521,9 @@ impl RemoteConnectionManager {
         };
         if deleted {
             let profile = self.profile_for_owned_id(&owned_id)?;
+            let active = self.downloads.lock().unwrap().remove(&RemoteHistory::key(&profile, &owned_id))
+                .and_then(|entry| entry.request_id);
+            if let Some(id) = active { self.cancel_request(id).await; }
             self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).forget(&profile, &owned_id)?;
             self.forget_cached_session(&owned_id)?;
             self.remote_sessions
@@ -2463,6 +2614,7 @@ impl RemoteConnectionManager {
         request_id: u64,
         max_bytes: u32,
     ) -> Result<AgentConversationChildHistorySelection, String> {
+        let mut cancellations = self.cancelled_requests.subscribe();
         let profile = self.profile_for_owned_id(&parent_owned_id)?;
         let expected_server_child =
             super::transcript_import::child_owned_id(&parent_owned_id, &child_session_id)?;
@@ -2514,8 +2666,11 @@ impl RemoteConnectionManager {
                 &server_child_owned_id,
                 &child_session_id,
             )?;
-        self.save_newer(&profile, &server_child_owned_id, request_id, false, None)
-            .await?;
+        self.ensure_history_download(&profile, &server_child_owned_id).await?;
+        self.wait_history_download_ready(&profile, &server_child_owned_id, request_id, &mut cancellations).await?;
+        if self.saved_history_needs_repair(&profile, &server_child_owned_id)? {
+            self.save_newer(&profile, &server_child_owned_id, request_id, false, None).await?;
+        }
         let page = self
             .history
             .lock()
@@ -2523,7 +2678,6 @@ impl RemoteConnectionManager {
             .read_child_selection_snapshot(&profile, &server_child_owned_id, max_bytes)?
             .map(|snapshot| snapshot.page)
             .ok_or_else(|| "Remote child history has no synchronized page".to_string())?;
-        self.copy_history(profile, server_child_owned_id);
         Ok(AgentConversationChildHistorySelection {
             history_owned_id,
             page,
@@ -3074,6 +3228,9 @@ async fn client_loop(
                         return;
                     };
                     match request {
+                        ClientRequest::Download { id, command } => {
+                            if send_client_frame(&mut socket, &ClientFrame::Request { id, command }).await.is_err() { break; }
+                        }
                         ClientRequest::Execute { id, command, reply, progress } => {
                             let frame = ClientFrame::Request { id, command };
                             pending.insert(id, reply);
@@ -3180,6 +3337,26 @@ async fn client_loop(
                         frame = other;
                     }
                     match frame {
+                        ServerFrame::HistoryDownloadStart { id, owned_id, low_sequence, high_sequence, row_count, total_bytes, covered_bytes, snapshot } => {
+                            if let Err(error) = history_client.0.receive_history_start(&history_client.1, id, &owned_id, low_sequence, high_sequence, row_count, total_bytes, covered_bytes, snapshot) {
+                                history_client.0.fail_history_download(&history_client.1, id, error);
+                                if send_client_frame(&mut socket, &ClientFrame::Cancel { id }).await.is_err() { break 'connected; }
+                            }
+                        }
+                        ServerFrame::HistoryDownloadChunk { id, owned_id, covered_bytes, gzip_base64, .. } => {
+                            if let Err(error) = history_client.0.receive_history_chunk(&history_client.1, id, &owned_id, covered_bytes, gzip_base64) {
+                                history_client.0.fail_history_download(&history_client.1, id, error);
+                                if send_client_frame(&mut socket, &ClientFrame::Cancel { id }).await.is_err() { break 'connected; }
+                            }
+                        }
+                        ServerFrame::HistoryDownloadDone { id, owned_id } => {
+                            let (manager, profile) = history_client.clone();
+                            tokio::spawn(async move {
+                                if let Err(error) = manager.finish_history_download(&profile, &owned_id, id).await {
+                                    manager.fail_history_download(&profile, id, error);
+                                }
+                            });
+                        }
                         ServerFrame::ReplayStart { owned_id } => {
                             let saved = resume_cursors.remove(&owned_id).or_else(||
                                 cursors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&owned_id).copied());
@@ -3197,7 +3374,21 @@ async fn client_loop(
                                         command: RemoteCommand::Snapshot { owned_id, request_id: id, after_sequence: None },
                                     }).await.is_err() { break 'connected; }
                                 }
-                                Ok(false) => {}
+                                Ok(false) => {
+                                    match history_client.0.saved_history_needs_repair(&history_client.1, &owned_id) {
+                                        Ok(true) => {
+                                            let (manager, profile) = history_client.clone();
+                                            tokio::spawn(async move {
+                                                let id = manager.next_request_id.fetch_add(1, Ordering::Relaxed);
+                                                if let Err(error) = manager.save_newer(&profile, &owned_id, id, true, None).await {
+                                                    eprintln!("Remote live history repair failed: {error}");
+                                                }
+                                            });
+                                        }
+                                        Ok(false) => {}
+                                        Err(error) => { interruption = error; break 'connected; }
+                                    }
+                                }
                                 Err(error) => { interruption = error; break 'connected; }
                             }
                         }
@@ -3215,7 +3406,24 @@ async fn client_loop(
                                 for (_, reply) in pending.drain() { let _ = reply.send(Err(error.into())); }
                                 return;
                             };
+                            if let Err(error) = history_client.0.replace_cached_profile_sessions(&history_client.1, &sessions) { interruption = error; break 'connected; }
                             ready.store(true, Ordering::Release);
+                            let incomplete = match history_client.0.store.remote_incomplete_downloads(&history_client.1) { Ok(incomplete) => incomplete, Err(error) => { interruption = error.to_string(); break 'connected; } };
+                            for owned in incomplete {
+                                let id = history_client.0.next_request_id.fetch_add(1, Ordering::Relaxed);
+                                let download = match history_client.0.create_download(&history_client.1, &owned, id) { Ok(download) => download, Err(error) => { interruption = error; break 'connected; } };
+                                let key = RemoteHistory::key(&history_client.1, &owned);
+                                {
+                                    let mut downloads = history_client.0.downloads.lock().unwrap();
+                                    if let Some(previous) = downloads.get_mut(&key) {
+                                        previous.request_id = Some(id); previous.epoch = download.epoch;
+                                        previous.low = None; previous.high = None; previous.row_count = 0;
+                                        previous.progress.send_replace(download.progress.borrow().clone());
+                                    } else { downloads.insert(key.clone(), download); }
+                                }
+                                let before_sequence = match history_client.0.store.remote_saved_minimum(&key) { Ok(cursor) => cursor, Err(error) => { interruption = error.to_string(); break 'connected; } };
+                                if send_client_frame(&mut socket, &ClientFrame::Request { id, command: RemoteCommand::DownloadHistory { owned_id: owned, before_sequence } }).await.is_err() { break 'connected; }
+                            }
                             status();
                             if let Some(reply) = initial_ready.take() { let _ = reply.send(Ok(sessions)); }
                         }
@@ -3245,6 +3453,7 @@ async fn client_loop(
                             return;
                         }
                         ServerFrame::Error { id, message } => {
+                            history_client.0.fail_history_download(&history_client.1, id, message.clone());
                             if replacements.remove(&id) { interruption = message; break 'connected; }
                             pending_progress.remove(&id);
                             if let Some(reply) = pending.remove(&id) {
@@ -3276,6 +3485,7 @@ async fn client_loop(
                 }
             }
         }
+        history_client.0.pause_history_downloads(&history_client.1);
         if ready.swap(false, Ordering::AcqRel) { status(); }
         if let Some(reply) = initial_ready.take() {
             let _ = reply.send(Err("Backend disconnected before readiness".into()));
@@ -3448,7 +3658,7 @@ fn encode_server_frame(frame: &ServerFrame) -> Result<String, String> {
     }
     let message = format!("Remote response exceeds the {} MiB transport limit", MAX_SERVER_FRAME_BYTES / 1024 / 1024);
     match frame {
-        ServerFrame::Response { id, .. } => serde_json::to_string(&ServerFrame::Error {
+        ServerFrame::Response { id, .. } | ServerFrame::HistoryDownloadStart { id, .. } | ServerFrame::HistoryDownloadChunk { id, .. } => serde_json::to_string(&ServerFrame::Error {
             id: *id,
             message,
         }).map_err(|error| error.to_string()),
@@ -3456,12 +3666,55 @@ fn encode_server_frame(frame: &ServerFrame) -> Result<String, String> {
     }
 }
 
+async fn next_outbound_frame(outbound: &mut mpsc::Receiver<ServerFrame>, history: &mut mpsc::Receiver<ServerFrame>) -> Option<ServerFrame> {
+    loop {
+        tokio::select! {
+            biased;
+            frame = outbound.recv(), if !outbound.is_closed() || !outbound.is_empty() => { if frame.is_some() { return frame; } }
+            frame = history.recv(), if !history.is_closed() || !history.is_empty() => { if frame.is_some() { return frame; } }
+            else => return None,
+        }
+    }
+}
+
+async fn stream_history_download(state: &ServerState, id: u64, owned_id: &str, mut before_sequence: Option<i64>,
+    history_outbound: &mpsc::Sender<ServerFrame>) -> Result<(), String> {
+    let store = state.manager.store_handle();
+    let facts = store.history_download_facts(owned_id, before_sequence).map_err(|e| e.to_string())?;
+    let snapshot = state.manager.snapshot_since(owned_id, Some(i64::MAX))?.ok_or("Remote session was not found")?;
+    let mut covered = facts.covered_bytes;
+    let start = ServerFrame::HistoryDownloadStart { id, owned_id: owned_id.into(), low_sequence: facts.low_sequence,
+        high_sequence: facts.high_sequence, row_count: facts.row_count, total_bytes: facts.total_bytes, covered_bytes: covered, snapshot };
+    send_history_frame(history_outbound, start).await?;
+    if let (Some(low), Some(high)) = (facts.low_sequence, facts.high_sequence) {
+        loop {
+            let rows = store.history_download_rows(owned_id, low, high, before_sequence, HISTORY_DOWNLOAD_CHUNK_BYTES, covered).map_err(|e| e.to_string())?;
+            let Some(oldest) = rows.events.last().map(|row| row.seq) else { break; };
+            covered = rows.covered_bytes;
+            let events = rows.events.into_iter().map(super::manager::stored_event).collect::<Result<Vec<_>, _>>()?;
+            send_history_frame(history_outbound, ServerFrame::HistoryDownloadChunk { id, owned_id: owned_id.into(), oldest_sequence: oldest,
+                covered_bytes: covered, gzip_base64: encode_history_chunk(&events)? }).await?;
+            before_sequence = Some(oldest);
+        }
+    }
+    history_outbound.send(ServerFrame::HistoryDownloadDone { id, owned_id: owned_id.into() }).await.map_err(|e| e.to_string())
+}
+
+async fn send_history_frame(outbound: &mpsc::Sender<ServerFrame>, frame: ServerFrame) -> Result<(), String> {
+    if serde_json::to_vec(&frame).map_err(|e| e.to_string())?.len() > MAX_SERVER_FRAME_BYTES {
+        return Err("Remote response exceeds the 16 MiB transport limit".into());
+    }
+    outbound.send(frame).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
     let (mut writer, mut reader) = socket.split();
     let (outbound, mut outgoing) = mpsc::channel::<ServerFrame>(OUTBOUND_FRAME_CAPACITY);
+    let (history_outbound, mut history_outgoing) = mpsc::channel::<ServerFrame>(1);
     let restart_flushed = state.restart_flushed.clone();
     let writer_task = tokio::spawn(async move {
-        while let Some(frame) = outgoing.recv().await {
+        while let Some(frame) = next_outbound_frame(&mut outgoing, &mut history_outgoing).await {
             let json = match encode_server_frame(&frame) {
                 Ok(json) => json,
                 Err(error) => {
@@ -3490,7 +3743,7 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
     message_changes.mark_unchanged();
     let mut live_terminals = state.terminals.output.subscribe();
     let mut queued = BTreeMap::<String, i64>::new();
-    let (completed, mut completions) = mpsc::channel::<(u64, Result<RemoteResponse, String>)>(32);
+    let (completed, mut completions) = mpsc::channel::<(u64, Result<Option<RemoteResponse>, String>)>(32);
     let upload = Arc::new(Mutex::new(None::<PendingAttachment>));
     let mut request_tasks = HashMap::new();
     let mut selected_child_watches = HashSet::<(String, u64)>::new();
@@ -3552,7 +3805,8 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
                 let Some((id, response)) = completion else { break; };
                 request_tasks.remove(&id);
                 let frame = match response {
-                    Ok(response) => ServerFrame::Response { id, response },
+                    Ok(Some(response)) => ServerFrame::Response { id, response },
+                    Ok(None) => continue,
                     Err(message) => ServerFrame::Error { id, message },
                 };
                 if outbound.send(frame).await.is_err() { break; }
@@ -3605,12 +3859,18 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
                 let request_upload = upload.clone();
                 let completion_sink = completed.clone();
                 let progress_outbound = outbound.clone();
+                let history_sink = history_outbound.clone();
                 let task = tokio::spawn(async move {
+                    if let RemoteCommand::DownloadHistory { owned_id, before_sequence } = &command {
+                        let result = stream_history_download(&request_state, id, owned_id, *before_sequence, &history_sink).await.map(|()| None);
+                        let _ = completion_sink.send((id, result)).await;
+                        return;
+                    }
                     let progress: super::providers::updates::ProgressSink = Arc::new(move |progress| {
                         let _ = progress_outbound.try_send(ServerFrame::ProviderDownloadProgress { id, progress });
                     });
                     let response = execute_server_command(&request_state, &request_upload, command, progress).await;
-                    let _ = completion_sink.send((id, response)).await;
+                    let _ = completion_sink.send((id, response.map(Some))).await;
                 });
                 if let Some(previous) = request_tasks.insert(id, task.abort_handle()) {
                     previous.abort();
@@ -3658,6 +3918,7 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
         state.manager.stop_child_history(&parent_owned_id, request_id);
     }
     drop(outbound);
+    drop(history_outbound);
     let _ = writer_task.await;
 }
 
@@ -3938,13 +4199,7 @@ async fn execute_remote_command(
         } => Ok(RemoteResponse::Bool(
             manager.stop_child_history(&parent_owned_id, request_id),
         )),
-        RemoteCommand::EventsBefore {
-            owned_id,
-            before_sequence,
-            max_bytes,
-        } => manager
-            .list_events_before(&owned_id, before_sequence, max_bytes)
-            .map(RemoteResponse::EventPage),
+        RemoteCommand::DownloadHistory { .. } => Err("History download requires the stream boundary".into()),
         RemoteCommand::EventsAfter {
             owned_id,
             after_sequence,
@@ -4195,6 +4450,351 @@ mod connection_tests {
     async fn tool(endpoint: &super::super::messaging::MessagingEndpoint, token: &str, call: serde_json::Value) -> serde_json::Value {
         let result = endpoint.handle(token, call).await.unwrap();
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn extend_import_during_a_download_restarts_below_the_saved_minimum() {
+        let manager = download_manager();
+        let (id, mut requests) = begin_test_download(&manager, 200, Some(2), Some(3)).await;
+        manager.receive_history_chunk("cache-test", id, "large-history", 100,
+            encode_history_chunk(&[history_event(3)]).unwrap()).unwrap();
+        let extender = manager.clone();
+        let extension = tokio::spawn(async move { extender.extend_import("large-history".into()).await });
+        let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected import"); };
+        reply.send(Ok(RemoteResponse::ImportProgress { added: 1, reached_start: true })).unwrap();
+        extension.await.unwrap().unwrap();
+        assert!(matches!(requests.try_recv(), Ok(ClientRequest::Cancel { id: cancelled }) if cancelled == id),
+            "the frozen download must be cancelled");
+        let ClientRequest::Download { id: restarted, command } = requests.try_recv().expect("restart download") else { panic!("expected download"); };
+        assert_ne!(restarted, id);
+        assert!(matches!(command, RemoteCommand::DownloadHistory { before_sequence: Some(3), .. }));
+        manager.finish_history_download("cache-test", "large-history", id).await.unwrap();
+        assert!(!manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
+        manager.receive_history_start("cache-test", restarted, "large-history", Some(1), Some(3), 3, 300, 100,
+            history_snapshot(vec![], 3)).unwrap();
+        manager.receive_history_chunk("cache-test", restarted, "large-history", 300,
+            encode_history_chunk(&[history_event(2), history_event(1)]).unwrap()).unwrap();
+        manager.finish_history_download("cache-test", "large-history", restarted).await.unwrap();
+        assert_eq!(manager.store.remote_saved_minimum(&RemoteHistory::key("cache-test", "large-history")).unwrap(), Some(1));
+        assert!(manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_session_drops_its_download_and_ignores_late_frames() {
+        let manager = download_manager();
+        let (id, mut requests) = begin_test_download(&manager, 100, Some(1), Some(1)).await;
+        let mut progress = manager.download_watch("cache-test", "large-history").unwrap();
+        progress.borrow_and_update();
+        let deleter = manager.clone();
+        let deletion = tokio::spawn(async move { deleter.delete("large-history".into()).await });
+        let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected delete"); };
+        reply.send(Ok(RemoteResponse::Bool(true))).unwrap();
+        assert!(deletion.await.unwrap().unwrap());
+        manager.receive_history_start("cache-test", id, "large-history", Some(1), Some(1), 1, 100, 0,
+            history_snapshot(vec![], 1)).unwrap();
+        manager.receive_history_chunk("cache-test", id, "large-history", 100,
+            encode_history_chunk(&[history_event(1)]).unwrap()).unwrap();
+        manager.finish_history_download("cache-test", "large-history", id).await.unwrap();
+        assert!(manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().is_none(),
+            "late frames must not recreate the deleted cache");
+        assert!(progress.changed().await.is_err(), "deletion must release waiting readers");
+        assert!(matches!(requests.try_recv(), Ok(ClientRequest::Cancel { id: cancelled }) if cancelled == id));
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_admission_releases_the_read() {
+        let manager = download_manager();
+        manager.history.lock().unwrap().prepare_download("cache-test", "large-history").unwrap();
+        let mut requests = connect(&manager);
+        let reader = manager.clone();
+        let mut read = tokio::spawn(async move {
+            reader.select_child_history("large-history".into(), "child".into(), 73, 1024).await
+        });
+        let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected child identity request"); };
+        let owned = super::super::transcript_import::child_owned_id("large-history", "child").unwrap();
+        reply.send(Ok(RemoteResponse::ChildHistoryId(owned))).unwrap();
+        // No yield: cancellation lands after the identity reply, before admission subscribes.
+        manager.cancel_request(73).await;
+        let result = tokio::time::timeout(Duration::from_millis(100), &mut read).await;
+        read.abort();
+        assert_eq!(result.expect("cancelled read must leave admission").unwrap().unwrap_err(), PAGE_CANCELLED);
+    }
+
+    #[tokio::test]
+    async fn completed_download_repairs_a_later_live_gap_on_open() {
+        let manager = download_manager();
+        let (id, mut requests) = begin_test_download(&manager, 100, Some(1), Some(1)).await;
+        manager.receive_history_chunk("cache-test", id, "large-history", 100, encode_history_chunk(&[history_event(1)]).unwrap()).unwrap();
+        manager.finish_history_download("cache-test", "large-history", id).await.unwrap();
+        manager.history_event_sink("cache-test", true)(vec![history_event(3)]).unwrap();
+        let reader = manager.clone();
+        let selection = tokio::spawn(async move { reader.selection_snapshot("large-history".into(), 71, 1024, None).await });
+        let ClientRequest::Execute { command, reply, .. } = tokio::time::timeout(Duration::from_millis(100), requests.recv()).await.expect("saved live gap needs catch-up").unwrap() else { panic!("expected snapshot repair"); };
+        assert!(matches!(command, RemoteCommand::Snapshot { after_sequence: Some(1), .. }));
+        reply.send(Ok(RemoteResponse::Snapshot(Some(history_snapshot(vec![history_event(2), history_event(3)], 3))))).unwrap();
+        assert!(selection.await.unwrap().unwrap().is_some());
+        assert_eq!(manager.history.lock().unwrap().through("cache-test", "large-history").unwrap(), Some(3));
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn explicit_disconnect_releases_a_history_admission_wait() {
+        let manager = download_manager();
+        let (_id, _) = begin_test_download(&manager, 100, Some(1), Some(3)).await;
+        let reader = manager.clone();
+        let mut cancellations = reader.cancelled_requests.subscribe();
+        let wait = tokio::spawn(async move { reader.wait_history_download_ready("cache-test", "large-history", 72, &mut cancellations).await });
+        tokio::task::yield_now().await;
+        manager.disconnect_profile("cache-test").unwrap();
+        let result = tokio::time::timeout(Duration::from_millis(100), wait).await.expect("disconnect must release admission").unwrap();
+        assert!(result.unwrap_err().contains("not connected"));
+    }
+
+    #[tokio::test]
+    async fn one_history_request_pushes_all_chunks_newest_first() {
+        let directory = std::env::temp_dir().join(format!("download-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("sessions.db")).unwrap();
+        // Saving through the manager's store gives the stream its normal journal input.
+        manager.store_handle().upsert_session(&mcb_core::session_store::SessionRow {
+            owned_id: "large-history".into(), provider: "codex".into(), native_session_id: None,
+            model: None, effort: None, cwd: directory.to_string_lossy().into(), worktree: None, branch: None,
+            title: None, title_source: None, project: None, project_id: None, state: "suspended".into(), suspended: true,
+            created_at_ms: 0, last_activity_at_ms: 0, extra_json: super::super::manager::imported_session_extra(AgentConversationProvider::Codex).unwrap(),
+        }).unwrap();
+        for sequence in 1..=4 {
+            let event = AgentConversationEvent { sequence, ..large_history_event(300_000) };
+            manager.store_handle().append_event(&mcb_core::session_store::EventRow {
+                owned_id: event.owned_id.clone(), seq: sequence, turn_id: None, kind: "content.delta".into(),
+                payload_json: serde_json::to_string(&event).unwrap(), created_at_ms: 1,
+            }).unwrap();
+        }
+        let state = server_state(manager, directory.clone(), Arc::from("test")).unwrap();
+        let (sender, mut frames) = mpsc::channel(1);
+        let producer = tokio::spawn(async move { stream_history_download(&state, 44, "large-history", None, &sender).await });
+        assert!(matches!(frames.recv().await.unwrap(), ServerFrame::HistoryDownloadStart { id: 44, snapshot, .. } if snapshot.events.is_empty()));
+        let mut received = Vec::new();
+        let mut covered = 0;
+        while let Some(frame) = frames.recv().await {
+            match frame {
+                ServerFrame::HistoryDownloadChunk { gzip_base64, covered_bytes, .. } => {
+                    assert!(covered_bytes > covered); covered = covered_bytes;
+                    received.extend(decode_history_chunk(&gzip_base64).unwrap().iter().map(|event| event.sequence));
+                }
+                ServerFrame::HistoryDownloadDone { id: 44, .. } => break,
+                other => panic!("unexpected frame {other:?}"),
+            }
+        }
+        producer.await.unwrap().unwrap();
+        assert_eq!(received, [4,3,2,1]);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn oversized_download_chunk_returns_error_without_done() {
+        let frame = ServerFrame::HistoryDownloadChunk { id: 55, owned_id: "s".into(), oldest_sequence: 1,
+            covered_bytes: 100, gzip_base64: "x".repeat(MAX_SERVER_FRAME_BYTES) };
+        let encoded = encode_server_frame(&frame).unwrap();
+        assert!(matches!(serde_json::from_str::<ServerFrame>(&encoded).unwrap(), ServerFrame::Error { id: 55, message } if message.contains("16 MiB")));
+    }
+
+    #[tokio::test]
+    async fn history_page_waits_locally_and_cancellation_stops_the_wait() {
+        let manager = download_manager();
+        let (id, mut requests) = begin_test_download(&manager, 300, Some(1), Some(3)).await;
+        manager.receive_history_chunk("cache-test", id, "large-history", 100, encode_history_chunk(&[history_event(3)]).unwrap()).unwrap();
+        let reader = manager.clone();
+        let page = tokio::spawn(async move { reader.item_page("large-history".into(), 3, 1024, true, 90).await });
+        tokio::task::yield_now().await;
+        assert!(!page.is_finished());
+        manager.receive_history_chunk("cache-test", id, "large-history", 200, encode_history_chunk(&[history_event(2)]).unwrap()).unwrap();
+        assert!(page.await.unwrap().is_ok());
+        let reader = manager.clone();
+        let page = tokio::spawn(async move { reader.item_page("large-history".into(), 2, 1024, true, 91).await });
+        tokio::task::yield_now().await;
+        manager.cancel_request(91).await;
+        assert!(page.await.unwrap().is_err());
+        assert!(matches!(requests.try_recv().unwrap(), ClientRequest::Cancel { id: 91 }));
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn child_history_uses_the_same_download_and_exact_profile_key() {
+        let manager = download_manager();
+        manager.history.lock().unwrap().prepare_download("cache-test", "large-history").unwrap();
+        let mut requests = connect(&manager);
+        let reader = manager.clone();
+        let child = tokio::spawn(async move { reader.select_child_history("large-history".into(), "child".into(), 55, 1024).await });
+        let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected identity request"); };
+        let owned = super::super::transcript_import::child_owned_id("large-history", "child").unwrap();
+        reply.send(Ok(RemoteResponse::ChildHistoryId(owned.clone()))).unwrap();
+        let ClientRequest::Download { id, command } = requests.recv().await.unwrap() else { panic!("expected child download"); };
+        assert!(matches!(command, RemoteCommand::DownloadHistory { owned_id, .. } if owned_id == owned));
+        let mut snapshot = history_snapshot(vec![], 0); snapshot.connection.owned_id = owned.clone();
+        manager.receive_history_start("cache-test", id, &owned, None, None, 0, 0, 0, snapshot).unwrap();
+        manager.finish_history_download("cache-test", &owned, id).await.unwrap();
+        let selected = child.await.unwrap().unwrap();
+        assert_eq!(selected.history_owned_id, RemoteHistory::key("cache-test", &owned));
+        assert!(manager.history.lock().unwrap().download_state("other", &owned).unwrap().is_none());
+        manager.client.lock().unwrap().clients.remove("cache-test");
+        assert_eq!(manager.select_child_history("large-history".into(), "child".into(), 56, 1024).await.unwrap().history_owned_id, selected.history_owned_id);
+    }
+
+    #[tokio::test]
+    async fn extend_import_downloads_new_saved_rows_without_rechecking_gaps() {
+        // The amended contract accepts a fresh gap check after each import extension.
+        let manager = download_manager();
+        let (id, mut requests) = begin_test_download(&manager, 100, Some(2), Some(2)).await;
+        manager.receive_history_chunk("cache-test", id, "large-history", 100, encode_history_chunk(&[history_event(2)]).unwrap()).unwrap();
+        manager.finish_history_download("cache-test", "large-history", id).await.unwrap();
+        let extender = manager.clone();
+        let extension = tokio::spawn(async move { extender.extend_import("large-history".into()).await });
+        let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected import"); };
+        assert!(matches!(command, RemoteCommand::ExtendImport { .. }));
+        reply.send(Ok(RemoteResponse::ImportProgress { added: 1, reached_start: true })).unwrap();
+        extension.await.unwrap().unwrap();
+        assert!(matches!(requests.recv().await.unwrap(), ClientRequest::Download { command: RemoteCommand::DownloadHistory { before_sequence: Some(2), .. }, .. }));
+        assert!(!manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
+    }
+
+    #[test]
+    fn history_download_protocol_20_round_trips_compressed_chunks() {
+        assert_eq!(PROTOCOL_VERSION, 20);
+        let rows = vec![history_event(3), history_event(-2)];
+        let encoded = encode_history_chunk(&rows).unwrap();
+        assert_eq!(decode_history_chunk(&encoded).unwrap(), rows);
+        let request = ClientFrame::Request { id: 50, command: RemoteCommand::DownloadHistory { owned_id: "large-history".into(), before_sequence: Some(-1) } };
+        assert!(matches!(serde_json::from_str::<ClientFrame>(&serde_json::to_string(&request).unwrap()).unwrap(), ClientFrame::Request { id: 50, command: RemoteCommand::DownloadHistory { before_sequence: Some(-1), .. } }));
+        for frame in [ServerFrame::HistoryDownloadStart { id: 50, owned_id: "large-history".into(), low_sequence: Some(-2), high_sequence: Some(3), row_count: 2, total_bytes: 100, covered_bytes: 0, snapshot: history_snapshot(vec![], 3) }, ServerFrame::HistoryDownloadChunk { id: 50, owned_id: "large-history".into(), oldest_sequence: -2, covered_bytes: 100, gzip_base64: encoded }, ServerFrame::HistoryDownloadDone { id: 50, owned_id: "large-history".into() }] {
+            let json = encode_server_frame(&frame).unwrap();
+            assert_eq!(serde_json::to_value(parse_server_frame(TungsteniteMessage::Text(json.into())).unwrap().unwrap()).unwrap(), serde_json::to_value(frame).unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn live_outbound_precedes_the_next_history_chunk() {
+        let (live, mut outbound) = mpsc::channel(8);
+        let (history, mut chunks) = mpsc::channel(1);
+        history.send(ServerFrame::HistoryDownloadDone { id: 1, owned_id: "s".into() }).await.unwrap();
+        live.send(ServerFrame::MessagesChanged).await.unwrap();
+        assert!(matches!(next_outbound_frame(&mut outbound, &mut chunks).await, Some(ServerFrame::MessagesChanged)));
+        drop(live);
+        assert!(matches!(next_outbound_frame(&mut outbound, &mut chunks).await, Some(ServerFrame::HistoryDownloadDone { .. })));
+        drop(history);
+        assert!(next_outbound_frame(&mut outbound, &mut chunks).await.is_none());
+    }
+
+    fn download_manager() -> RemoteConnectionManager {
+        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
+        manager.remember("large-history", "cache-test");
+        manager
+    }
+
+    async fn begin_test_download(manager: &RemoteConnectionManager, total: u64, low: Option<i64>, high: Option<i64>) -> (u64, mpsc::Receiver<ClientRequest>) {
+        let mut requests = connect(manager);
+        manager.ensure_history_download("cache-test", "large-history").await.unwrap();
+        assert!(!manager.download_watch("cache-test", "large-history").unwrap().borrow().ready, "placeholder is not authoritative zero-byte history");
+        let ClientRequest::Download { id, command } = requests.recv().await.unwrap() else { panic!("expected download"); };
+        assert!(matches!(command, RemoteCommand::DownloadHistory { .. }));
+        manager.receive_history_start("cache-test", id, "large-history", low, high, low.zip(high).map_or(0, |(low, high)| (high - low + 1) as u64), total, 0, history_snapshot(vec![], high.unwrap_or(0))).unwrap();
+        (id, requests)
+    }
+
+    #[tokio::test]
+    async fn never_saved_history_opens_at_twenty_percent_without_a_cap() {
+        let manager = download_manager();
+        let (id, mut requests) = begin_test_download(&manager, 10_000_000_000, Some(1), Some(3)).await;
+        let reader = manager.clone();
+        let read = tokio::spawn(async move { reader.selection_snapshot("large-history".into(), 51, 1024, None).await });
+        tokio::task::yield_now().await;
+        manager.receive_history_chunk("cache-test", id, "large-history", 1_999_999_999, encode_history_chunk(&[history_event(3)]).unwrap()).unwrap();
+        tokio::task::yield_now().await;
+        assert!(!read.is_finished());
+        manager.receive_history_chunk("cache-test", id, "large-history", 2_000_000_000, encode_history_chunk(&[history_event(2)]).unwrap()).unwrap();
+        assert!(read.await.unwrap().unwrap().is_some());
+        assert!(requests.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn empty_history_download_opens_and_completes() {
+        let manager = download_manager();
+        let (id, _) = begin_test_download(&manager, 0, None, None).await;
+        manager.finish_history_download("cache-test", "large-history", id).await.unwrap();
+        assert!(manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
+        assert!(manager.selection_snapshot("large-history".into(), 1, 1024, None).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn history_download_resumes_from_saved_minimum_after_reconnect() {
+        let manager = download_manager();
+        let (id, _) = begin_test_download(&manager, 300, Some(-1), Some(3)).await;
+        manager.receive_history_chunk("cache-test", id, "large-history", 200, encode_history_chunk(&[history_event(3), history_event(2)]).unwrap()).unwrap();
+        manager.pause_history_downloads("cache-test");
+        let mut requests = connect(&manager);
+        manager.ensure_history_download("cache-test", "large-history").await.unwrap();
+        assert!(matches!(requests.recv().await.unwrap(), ClientRequest::Download { command: RemoteCommand::DownloadHistory { before_sequence: Some(2), .. }, .. }));
+        assert_eq!(manager.saved_cursors("cache-test").unwrap()["large-history"], 3);
+        manager.receive_history_chunk("cache-test", id, "large-history", 300, encode_history_chunk(&[history_event(1)]).unwrap()).unwrap();
+        assert_eq!(manager.store.remote_saved_minimum(&RemoteHistory::key("cache-test", "large-history")).unwrap(), Some(2));
+    }
+
+    #[tokio::test]
+    async fn download_with_pruned_holes_completes_without_repair_requests() {
+        let manager = download_manager();
+        let (id, mut requests) = begin_test_download(&manager, 400, Some(1), Some(9)).await;
+        manager.receive_history_start("cache-test", id, "large-history", Some(1), Some(9), 4, 400, 0,
+            history_snapshot(vec![], 9)).unwrap();
+        manager.receive_history_chunk("cache-test", id, "large-history", 400,
+            encode_history_chunk(&[history_event(9), history_event(5), history_event(2), history_event(1)]).unwrap()).unwrap();
+        tokio::time::timeout(Duration::from_millis(100),
+            manager.finish_history_download("cache-test", "large-history", id)).await
+            .expect("retained rows must complete without repair").unwrap();
+        assert!(requests.try_recv().is_err(), "pruned holes must not request EventsAfter");
+        assert!(manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
+    }
+
+    #[tokio::test]
+    async fn download_missing_a_row_still_repairs() {
+        let manager = download_manager();
+        let (id, mut requests) = begin_test_download(&manager, 500, Some(1), Some(9)).await;
+        manager.receive_history_start("cache-test", id, "large-history", Some(1), Some(9), 5, 500, 0,
+            history_snapshot(vec![], 9)).unwrap();
+        manager.receive_history_chunk("cache-test", id, "large-history", 500,
+            encode_history_chunk(&[history_event(9), history_event(5), history_event(2), history_event(1)]).unwrap()).unwrap();
+        let finisher = manager.clone();
+        let finish = tokio::spawn(async move { finisher.finish_history_download("cache-test", "large-history", id).await });
+        for after in [2, 5] {
+            let ClientRequest::Execute { command, reply, .. } = tokio::time::timeout(
+                Duration::from_millis(100), requests.recv()).await.expect("missing rows must request repair").unwrap()
+                else { panic!("expected repair"); };
+            assert!(matches!(command, RemoteCommand::EventsAfter { after_sequence, .. } if after_sequence == after));
+            assert!(!manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
+            reply.send(Ok(RemoteResponse::EventPage(AgentConversationEventPage { events: vec![], has_more: false }))).unwrap();
+        }
+        finish.await.unwrap().unwrap();
+        assert!(requests.try_recv().is_err());
+        assert!(manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
+    }
+
+    #[tokio::test]
+    async fn download_done_repairs_gaps_with_events_after_then_marks_complete() {
+        let manager = download_manager();
+        let (id, mut requests) = begin_test_download(&manager, 500, Some(1), Some(5)).await;
+        manager.receive_history_chunk("cache-test", id, "large-history", 500, encode_history_chunk(&[history_event(5), history_event(1)]).unwrap()).unwrap();
+        let finisher = manager.clone();
+        let finish = tokio::spawn(async move { finisher.finish_history_download("cache-test", "large-history", id).await });
+        let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected repair"); };
+        assert!(matches!(command, RemoteCommand::EventsAfter { after_sequence: 1, .. }));
+        assert!(!manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
+        reply.send(Ok(RemoteResponse::EventPage(AgentConversationEventPage { events: vec![history_event(2)], has_more: false }))).unwrap();
+        let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected next repair page"); };
+        assert!(matches!(command, RemoteCommand::EventsAfter { after_sequence: 2, .. }));
+        assert!(!manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
+        reply.send(Ok(RemoteResponse::EventPage(AgentConversationEventPage { events: vec![history_event(3), history_event(4)], has_more: false }))).unwrap();
+        finish.await.unwrap().unwrap();
+        assert!(manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
+        manager.finish_history_download("cache-test", "large-history", id).await.unwrap();
+        assert!(requests.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -4480,95 +5080,6 @@ mod connection_tests {
         events.iter().map(|event| event.sequence).collect()
     }
 
-    #[tokio::test]
-    async fn cached_open_tops_up_once_and_pages_from_the_mac_copy() {
-        let published = Arc::new(Mutex::new(Vec::new()));
-        let captured = published.clone();
-        let directory = std::env::temp_dir().join(format!("assembly-disconnect-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&directory).unwrap();
-        let database = directory.join("sessions.db");
-        let shared = Arc::new(SessionStore::open(&database).unwrap());
-        let manager = RemoteConnectionManager::from_environment(
-            Arc::new(move |event: AgentConversationEvent| captured.lock().unwrap().push(event.sequence)),
-            Arc::new(|_| {}), shared.clone(),
-        ).unwrap();
-        manager.replace_cached_profile_sessions(
-            "cache-test",
-            &[session("large-history", "cache-test", 1)],
-        ).unwrap();
-        // An earlier run saved 2..=3; live event 5 then arrived after a missed 4.
-        manager.history.lock().unwrap()
-            .snapshot("cache-test", 0, None, &mut history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
-        manager.history_event_sink("cache-test", true)(vec![history_event(5)]).unwrap();
-        published.lock().unwrap().clear();
-
-        // Offline: the confirmed copy opens and pages; the gap row stays out.
-        let opened = manager.snapshot("large-history".into(), 1).await.unwrap().unwrap();
-        assert_eq!((sequences(&opened.events), opened.last_sequence), (vec![2, 3], 3));
-        let newer = manager.events_after("large-history".into(), 2, 1 << 20).await.unwrap();
-        assert_eq!((sequences(&newer.events), newer.has_more), (vec![3], false));
-        let older = manager.events_before("large-history".into(), 3, 1 << 20).await.unwrap();
-        assert_eq!((sequences(&older.events), older.has_more), (vec![2], true));
-        assert!(manager.events_before("large-history".into(), 2, 1 << 20).await.is_err(),
-            "an unsaved older page must not wait offline");
-
-        let (sender, mut requests) = mpsc::channel(8);
-        manager.client.lock().unwrap().clients.insert("cache-test".into(), RemoteClient {
-            requests: Some(sender), profile: Some(profile("cache-test")), target_key: None,
-            task: None, ready: Arc::new(AtomicBool::new(true)),
-        });
-        // Online: the open still returns the Mac's copy before the server answers.
-        let opened = manager.snapshot("large-history".into(), 2).await.unwrap().unwrap();
-        assert_eq!(sequences(&opened.events), vec![2, 3]);
-        let server = tokio::spawn(async move {
-            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected top-up"); };
-            assert!(matches!(command, RemoteCommand::Snapshot { after_sequence: Some(3), .. }));
-            reply.send(Ok(RemoteResponse::Snapshot(Some(history_snapshot((4..=6).map(history_event).collect(), 6))))).unwrap();
-            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected older page"); };
-            assert!(matches!(command, RemoteCommand::EventsBefore { before_sequence: 2, max_bytes: HISTORY_COPY_PAGE_BYTES, .. }));
-            reply.send(Ok(RemoteResponse::EventPage(AgentConversationEventPage { events: vec![history_event(1)], has_more: false }))).unwrap();
-            requests
-        });
-        // Scrolling up waits for the background copy instead of asking the server.
-        let older = manager.events_before("large-history".into(), 2, 1 << 20).await.unwrap();
-        assert_eq!((sequences(&older.events), older.has_more), (vec![1], false));
-        let mut requests = server.await.unwrap();
-        assert_eq!(*published.lock().unwrap(), vec![6], "the top-up sends only its newest event, once");
-        let newer = manager.events_after("large-history".into(), 3, 1 << 20).await.unwrap();
-        assert_eq!((sequences(&newer.events), newer.has_more), (vec![4, 5, 6], false));
-        assert_eq!(sequences(&manager.history.lock().unwrap().read_snapshot("cache-test", 0, "large-history").unwrap().events),
-            (1..=6).collect::<Vec<_>>());
-        tokio::task::yield_now().await;
-        assert!(requests.try_recv().is_err(), "scrolling must not request pages from the server");
-
-        // Offline again: the whole saved copy still opens and pages.
-        manager.client.lock().unwrap().clients.remove("cache-test");
-        assert_eq!(sequences(&manager.snapshot("large-history".into(), 3).await.unwrap().unwrap().events), (1..=6).collect::<Vec<_>>());
-        assert_eq!(sequences(&manager.events_before("large-history".into(), 4, 1 << 20).await.unwrap().events), vec![1, 2, 3]);
-        let late_sink = manager.history_event_sink("cache-test", true);
-        manager.disconnect_profile("cache-test").unwrap();
-        assert!(late_sink(vec![large_history_event(32)]).is_err());
-        assert_eq!(manager.history.lock().unwrap().through("cache-test", "large-history").unwrap(), Some(6));
-
-        drop(late_sink);
-        drop(requests);
-        drop(manager);
-        drop(shared);
-        let restarted = RemoteConnectionManager::from_environment(
-            Arc::new(|_| {}), Arc::new(|_| {}), Arc::new(SessionStore::open(&database).unwrap()),
-        ).unwrap();
-        assert_eq!(
-            sequences(&restarted.snapshot("large-history".into(), 4).await.unwrap().unwrap().events),
-            (1..=6).collect::<Vec<_>>(),
-        );
-        assert_eq!(
-            sequences(&restarted.events_before("large-history".into(), 4, 1 << 20).await.unwrap().events),
-            vec![1, 2, 3],
-        );
-        drop(restarted);
-        std::fs::remove_dir_all(directory).unwrap();
-    }
-
     fn connect(manager: &RemoteConnectionManager) -> mpsc::Receiver<ClientRequest> {
         let (sender, requests) = mpsc::channel(8);
         manager.client.lock().unwrap().clients.insert("cache-test".into(), RemoteClient {
@@ -4623,78 +5134,6 @@ mod connection_tests {
     }
 
     #[tokio::test]
-    async fn item_page_waiting_on_the_history_copy_stops_when_its_request_is_cancelled() {
-        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
-        manager.remember("large-history", "cache-test");
-        // A copy is running but has not reached this page, so the read waits.
-        manager.history_copies.lock().unwrap().insert(RemoteHistory::key("cache-test", "large-history"));
-        let reader = manager.clone();
-        let page = tokio::spawn(async move { reader.item_page("large-history".into(), 5, 1024, true, 90).await });
-        for _ in 0..3 { tokio::task::yield_now().await; }
-        manager.cancel_request(89).await;
-        for _ in 0..3 { tokio::task::yield_now().await; }
-        assert!(!page.is_finished(), "another request's cancel must not stop this read");
-        manager.cancel_request(90).await;
-        let result = tokio::time::timeout(Duration::from_secs(5), page).await
-            .expect("a cancelled page read must stop waiting").unwrap();
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn empty_remote_child_selection_opens_online_and_offline() {
-        let manager = RemoteConnectionManager::from_environment(
-            Arc::new(|_| {}), Arc::new(|_| {}), store(),
-        ).unwrap();
-        manager.remember("large-history", "cache-test");
-        manager.history.lock().unwrap()
-            .snapshot("cache-test", 0, None, &mut history_snapshot(vec![history_event(1)], 1)).unwrap();
-        let child_owned = super::super::transcript_import::child_owned_id("large-history", "child-empty").unwrap();
-        let history_owned = RemoteHistory::key("cache-test", &child_owned);
-        let mut requests = connect(&manager);
-        let (release, copying) = tokio::sync::oneshot::channel();
-        let server_child = child_owned.clone();
-        let server = tokio::spawn(async move {
-            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected child selection"); };
-            assert!(matches!(command, RemoteCommand::SelectChildHistory { parent_owned_id, child_session_id, request_id: 50 }
-                if parent_owned_id == "large-history" && child_session_id == "child-empty"));
-            reply.send(Ok(RemoteResponse::ChildHistoryId(server_child.clone()))).unwrap();
-            let mut empty = history_snapshot(Vec::new(), 0);
-            empty.connection.owned_id = server_child.clone();
-            empty.connection.native_session_id = Some("child-empty".into());
-            empty.has_earlier_transcript = true;
-            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected child snapshot"); };
-            assert!(matches!(command, RemoteCommand::Snapshot { owned_id, after_sequence: None, .. } if owned_id == server_child));
-            reply.send(Ok(RemoteResponse::Snapshot(Some(empty.clone())))).unwrap();
-            copying.await.unwrap();
-            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected background top-up"); };
-            assert!(matches!(command, RemoteCommand::Snapshot { owned_id, after_sequence: Some(0), .. } if owned_id == server_child));
-            reply.send(Ok(RemoteResponse::Snapshot(Some(empty)))).unwrap();
-            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected start confirmation"); };
-            assert!(matches!(command, RemoteCommand::EventsBefore { owned_id, before_sequence: 1, .. } if owned_id == server_child));
-            reply.send(Ok(RemoteResponse::EventPage(AgentConversationEventPage { events: Vec::new(), has_more: false }))).unwrap();
-        });
-        let selected = manager.select_child_history("large-history".into(), "child-empty".into(), 50, 1024).await.unwrap();
-        assert_eq!(selected.history_owned_id, history_owned);
-        assert!(selected.page.items.is_empty() && selected.page.events.is_empty());
-        assert_eq!(selected.page.watermark, 0);
-        assert!(selected.page.has_before && selected.page.has_earlier_transcript);
-        let copied = manager.history_copied.notified();
-        tokio::pin!(copied);
-        copied.as_mut().enable();
-        release.send(()).unwrap();
-        copied.await;
-        server.await.unwrap();
-        assert!(!manager.history_copies.lock().unwrap().contains(&history_owned));
-        manager.client.lock().unwrap().clients.remove("cache-test");
-        let offline = manager.select_child_history("large-history".into(), "child-empty".into(), 51, 1024).await.unwrap();
-        assert_eq!(offline.history_owned_id, history_owned);
-        assert!(offline.page.items.is_empty() && offline.page.events.is_empty());
-        assert_eq!(offline.page.watermark, 0);
-        assert!(!offline.page.has_before);
-        assert!(offline.page.has_earlier_transcript);
-    }
-
-    #[tokio::test]
     async fn two_page_top_up_of_completed_turns_leaves_no_active_turn() {
         use super::super::protocol::{AgentConversationPayload, TurnState};
         let published = Arc::new(Mutex::new(Vec::new()));
@@ -4724,10 +5163,8 @@ mod connection_tests {
             let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected second page"); };
             assert!(matches!(command, RemoteCommand::Snapshot { after_sequence: Some(5), .. }));
             reply.send(Ok(RemoteResponse::Snapshot(Some(history_snapshot(vec![turn(6, "b", TurnState::Completed)], 6))))).unwrap();
-            let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected older page"); };
-            reply.send(Ok(RemoteResponse::EventPage(AgentConversationEventPage { events: vec![], has_more: false }))).unwrap();
         });
-        manager.snapshot("large-history".into(), 1).await.unwrap().unwrap();
+        manager.save_newer("cache-test", "large-history", 1, true, None).await.unwrap();
         server.await.unwrap();
 
         // The window's event stream is bounded and drops frames under load, so
@@ -4738,34 +5175,6 @@ mod connection_tests {
         assert!(!published.iter().any(|event| matches!(event.payload,
             AgentConversationPayload::Turn { state: TurnState::Started, .. })), "a finished turn must not start again");
         assert_eq!(sequences(&published), vec![6]);
-    }
-
-    #[tokio::test]
-    async fn copy_stopped_by_a_connection_drop_resumes_after_reconnect() {
-        let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
-        manager.remember("large-history", "cache-test");
-        manager.history.lock().unwrap()
-            .snapshot("cache-test", 0, None, &mut history_snapshot(vec![history_event(2), history_event(3)], 3)).unwrap();
-        let mut requests = connect(&manager);
-        manager.snapshot("large-history".into(), 1).await.unwrap().unwrap();
-        let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected top-up"); };
-        reply.send(Err("Connection reset without closing handshake".into())).unwrap();
-        let copy_key = RemoteHistory::key("cache-test", "large-history");
-        while manager.history_copies.lock().unwrap().contains(&copy_key) { tokio::task::yield_now().await; }
-
-        // Reconnected: scrolling past the saved edge waits for the copy to resume.
-        let mut requests = connect(&manager);
-        let server = tokio::spawn(async move {
-            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected top-up"); };
-            assert!(matches!(command, RemoteCommand::Snapshot { after_sequence: Some(3), .. }));
-            reply.send(Ok(RemoteResponse::Snapshot(Some(history_snapshot(vec![], 3))))).unwrap();
-            let ClientRequest::Execute { command, reply, .. } = requests.recv().await.unwrap() else { panic!("expected older page"); };
-            assert!(matches!(command, RemoteCommand::EventsBefore { before_sequence: 2, .. }));
-            reply.send(Ok(RemoteResponse::EventPage(AgentConversationEventPage { events: vec![history_event(1)], has_more: false }))).unwrap();
-        });
-        let older = manager.events_before("large-history".into(), 2, 1 << 20).await.unwrap();
-        assert_eq!((sequences(&older.events), older.has_more), (vec![1], false));
-        server.await.unwrap();
     }
 
     #[tokio::test]
@@ -5610,7 +6019,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn readiness_requires_protocol_and_session_response() {
-        assert_eq!(PROTOCOL_VERSION, 19);
+        assert_eq!(PROTOCOL_VERSION, 20);
         for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();

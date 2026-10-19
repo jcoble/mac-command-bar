@@ -1,3 +1,4 @@
+import type { HistoryDownloadProgress } from '$lib/tauriSource';
 import { displayEventFrom } from './conversationMessages.ts';
 export { displayEventFrom } from './conversationMessages.ts';
 /**
@@ -89,6 +90,8 @@ export interface ConversationWorkspaceState extends ConversationSessionState {
   attachments: ConversationAttachment[];
   metadata: ConversationMetadata;
   children: ConversationChildAgent[];
+  historyDownload: HistoryDownloadProgress | null;
+  childHistoryDownload: HistoryDownloadProgress | null;
   selectedChildId: string | null;
   selectedChildHistoryOwnedId: string | null;
   childTranscriptTruncated: boolean;
@@ -188,6 +191,8 @@ function freshState(
     attachments: [],
     metadata: emptyMetadata(),
     children: [],
+    historyDownload: null,
+    childHistoryDownload: null,
     selectedChildId: null,
     selectedChildHistoryOwnedId: null,
     childTranscriptTruncated: false,
@@ -1041,11 +1046,27 @@ export function setConversationPendingInput(ownedId: string, request: AgentUserI
   }
 }
 
+export function setConversationHistoryDownload(workspaceOwnedId: string, progress: HistoryDownloadProgress): void {
+  const current = conversationSessions[workspaceOwnedId];
+  if (!current || progress.workspaceOwnedId !== workspaceOwnedId) return;
+  if (progress.childSessionId !== null) {
+    if (current.selectedChildId === progress.childSessionId) current.childHistoryDownload = progress;
+  } else if (progress.sourceOwnedId === workspaceOwnedId) current.historyDownload = progress;
+}
+
+export function clearConversationHistoryDownload(workspaceOwnedId: string, child: boolean): void {
+  const current = conversationSessions[workspaceOwnedId];
+  if (!current) return;
+  if (child) current.childHistoryDownload = null;
+  else current.historyDownload = null;
+}
+
 export function setConversationSelectedChild(ownedId: string, childId: string | null): void {
   const current = conversationSessions[ownedId];
   if (!current) return;
   if (current.selectedChildId === childId) return;
   current.selectedChildId = childId;
+  current.childHistoryDownload = null;
   current.childTranscriptTruncated = false;
   current.childTranscriptError = null;
 }

@@ -776,6 +776,7 @@
         onApprovalDecision={onApprovalDecision}
         onFileLink={openConversationFile}
         onPlanOpen={() => composer?.expandPlan()}
+        historyDownload={conversation.historyDownload}
       />
           </UIProvider>
         {/key}

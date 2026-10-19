@@ -1,4 +1,7 @@
 import {
+  listenHistoryDownloadProgress,
+  readHistoryDownloadProgressFromTauri,
+  type HistoryDownloadProgress,
   changeAgentConversationCheckoutFromTauri,
   createAgentConversationRequestId,
   listAgentConversationItemsAfterFromTauri,
@@ -44,6 +47,8 @@ import { invokeConversationCommand as invoke } from './conversationInvoke.ts';
 import { shouldClearConversationSending } from './conversationReducer.ts';
 import { sessionPresenceHistory, sessionPresenceEventFromConversation, synchronizeSessionPresenceWork } from './sessionPresence.ts';
 import {
+  setConversationHistoryDownload,
+  clearConversationHistoryDownload,
   ACTIVE_EVENT_WINDOW_BYTES,
   ACTIVE_EVENT_WINDOW_EVENTS,
   displayEventFrom,
@@ -166,6 +171,7 @@ export async function clearConversationSessionDraft(ownedId: string): Promise<vo
 
 /** Opens one selected child's durable history and owns its native watch. */
 interface ChildHistoryRead {
+  abortController: AbortController;
   requestId: number;
   childSessionId: string;
   active: boolean;
@@ -192,14 +198,17 @@ export async function readChildConversationHistory(input: {
   stopChildConversationHistory(input.ownedId);
   const requestId = createAgentConversationRequestId();
   let readToken: ChildHistoryRead;
+  const abortController = new AbortController();
   const stop = (): void => {
     readToken.active = false;
+    abortController.abort();
+    if (childHistoryReads.get(input.ownedId) === readToken) clearConversationHistoryDownload(input.ownedId, true);
     input.signal?.removeEventListener('abort', abortFromOwner);
     void stopAgentConversationChildHistoryFromTauri(input.ownedId, requestId);
     void forgetChildHistoryRead(input.ownedId, readToken);
   };
   const abortFromOwner = (): void => stop();
-  readToken = { requestId, childSessionId: input.childId, active: true, settled: Promise.resolve(), stop };
+  readToken = { abortController, requestId, childSessionId: input.childId, active: true, settled: Promise.resolve(), stop };
   input.signal?.addEventListener('abort', abortFromOwner, { once: true });
   childHistoryReads.set(input.ownedId, readToken);
   const read = readChildHistoryPage(input, readToken, previous);
@@ -230,11 +239,14 @@ async function readChildHistoryPage(
     await previous?.settled;
     if (!readToken.active || input.signal?.aborted
       || childHistoryReads.get(input.ownedId) !== readToken) return null;
+    await attachHistoryDownload(input.ownedId, input.ownedId, input.childSessionId, input.childId, readToken.abortController.signal);
+    if (readToken.abortController.signal.aborted) return null;
     const result = await readAgentConversationChildHistoryFromTauri({
       parentOwnedId: input.ownedId,
       childSessionId: input.childSessionId,
       requestId: readToken.requestId,
-      maxBytes: CHILD_HISTORY_PAGE_BYTES
+      maxBytes: CHILD_HISTORY_PAGE_BYTES,
+      signal: readToken.abortController.signal
     });
     const current = getConversationSession(input.ownedId);
     if (!readToken.active || input.signal?.aborted || childHistoryReads.get(input.ownedId) !== readToken
@@ -766,6 +778,18 @@ function admitSelectedConversationEvent(event: AgentConversationEvent): boolean 
   return true;
 }
 
+async function attachHistoryDownload(workspaceOwnedId: string, ownedId: string, childSessionId: string | null, childId: string | null, signal: AbortSignal): Promise<void> {
+  const receive = (progress: HistoryDownloadProgress): void => {
+    if (signal.aborted || progress.workspaceOwnedId !== workspaceOwnedId || progress.childSessionId !== childSessionId) return;
+    setConversationHistoryDownload(workspaceOwnedId, { ...progress, childSessionId: childId });
+  };
+  await listenHistoryDownloadProgress(receive, signal);
+  if (signal.aborted) return;
+  const progress = await readHistoryDownloadProgressFromTauri(ownedId, signal);
+  if (signal.aborted) return;
+  if (progress) receive(progress);
+}
+
 async function reloadSelectedConversation(read: SelectedConversationRead): Promise<void> {
   if (!isCurrentConversationRead(read) || read.abortController.signal.aborted) return;
   if (read.reading) {
@@ -857,12 +881,16 @@ export async function subscribeSelectedConversation(input: {
     input.signal?.removeEventListener('abort', abortFromOwner);
     abortController.abort();
     read.events.length = 0;
+    if ((child ? childConversationRead : selectedConversationRead) === read) clearConversationHistoryDownload(input.workspaceOwnedId, child);
     if (selectedConversationRead === read) selectedConversationRead = null;
     if (childConversationRead === read) childConversationRead = null;
   };
   try {
     await startConversationEvents();
-    if (input.signal?.aborted) {
+    if (abortController.signal.aborted) { dispose(); return dispose; }
+    // Initial child resolution owns its progress subscription before the child key exists.
+    if (!child) await attachHistoryDownload(input.workspaceOwnedId, input.ownedId, null, null, abortController.signal);
+    if (abortController.signal.aborted) {
       dispose();
       return dispose;
     }

@@ -15,7 +15,7 @@
   import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import type { ConversationViewState } from '$lib/shell/sessionWorkspaces.ts';
   import { backgroundWorkLabel, backgroundWorkTarget, formatBackgroundElapsed } from '$lib/shell/ownedSessions.ts';
-  import type { BackgroundWorkItem } from '$lib/tauriSource.ts';
+  import type { BackgroundWorkItem, HistoryDownloadProgress } from '$lib/tauriSource.ts';
   import { conversationItemHasVisibleContent } from '$lib/shell/conversation/conversationItemVisibility.ts';
   import { setConversationTimelineDiagnostics } from '$lib/shell/resourceDiagnostics.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
@@ -60,6 +60,8 @@
     onApprovalDecision?(requestId: string, decision: string): void;
     onFileLink?(path: string, provenance?: ConversationFileLinkProvenance): void;
     onPlanOpen?(): void;
+    /** This history's download from its remote machine, if one is running. */
+    historyDownload?: HistoryDownloadProgress | null;
   }
   let {
     items, conversationId, historyOwnedId, renderWindowId = conversationId, timelineRevision,
@@ -68,7 +70,7 @@
     assistantLabel = 'Assistant', emptyText = 'Start the conversation below.', pendingFirstMessage = null,
     hasOlder = false, loadingOlder = false, pageError = '', onLoadOlder, hasNewer = false, loadingNewer = false,
     onLoadNewer, oldestSequence = 0, newestSequence = 0, onJumpToLatest, onApprovalDecision,
-    onFileLink, onPlanOpen
+    onFileLink, onPlanOpen, historyDownload = null
   }: Props = $props();
 
   let host = $state<HTMLDivElement | null>(null);
@@ -92,6 +94,8 @@
   const groups = $derived(conversationTurnGroups(renderedItems, activeTurnId, turnFacts));
   // A boolean, so a child's progress update does not rebuild the rows.
   const hasBackgroundWork = $derived(!!backgroundWork?.length);
+  const download = $derived(historyDownload?.phase === 'complete' ? null : historyDownload);
+  const downloadPercent = $derived(download?.totalBytes ? Math.floor(download.coveredBytes * 100 / download.totalBytes) : 0);
 
   type Row = {
     key: string;
@@ -695,7 +699,9 @@
 
 <div class="timeline-wrap" data-testid="conversation-timeline-wrap" style={`--composer-height:${composerHeight}px`}>
   {#if pageError}<p role="alert" class="px-2 py-2 text-sm text-muted-foreground">{pageError}</p>{/if}
-  {#if loadingOlder}<p class="older-loading" data-testid="conversation-older-loading" role="status"><WorkingSpinner size={12} />Loading earlier messages</p>{/if}
+  {#if download?.phase === 'error'}<p role="alert" class="px-2 py-2 text-sm text-muted-foreground">History download stopped: {download.error}</p>{/if}
+  {#if loadingOlder}<p class="older-loading" data-testid="conversation-older-loading" role="status"><WorkingSpinner size={12} />Loading earlier messages</p>
+  {:else if download?.ready && download.phase !== 'error'}<p class="older-loading" role="status"><span class="download-line">{download.phase === 'paused' ? 'History download paused · reconnecting' : `Downloading earlier messages · ${downloadPercent}%`}</span></p>{/if}
   <div class="timeline-scroll" tabindex="0" data-testid="conversation-timeline-scroll" bind:this={host} bind:clientHeight={hostHeight} onscroll={handleScroll} onwheel={handleWheel} use:readerInput>
     {#if renderedItems.length === 0}
       {#if pendingFirstMessage}<PendingFirstMessage text={pendingFirstMessage} seed={conversationId} />{:else}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
@@ -765,6 +771,8 @@
 <style>
   .timeline-wrap{position:relative;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow:hidden}
   .older-loading{position:absolute;top:calc(var(--center-head-height, 0px) + 6px);left:0;right:0;z-index:2;display:flex;align-items:center;justify-content:center;gap:6px;margin:0;font-size:12px;color:var(--color-text-2);pointer-events:none;animation:older-appear 1ms 300ms backwards}
+  /* Sits over the rows, so it carries its own face to stay readable. */
+  .download-line{padding:2px 8px;border-radius:999px;background:var(--color-elevated)}
   /* A page read from the local copy lands well inside 300 ms; only a slow one shows this. */
   @keyframes older-appear{from{opacity:0}}
   .timeline-scroll{box-sizing:border-box;display:flex;flex-direction:column;width:100%;height:100%;flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;overflow-anchor:none;padding:0 28px;scrollbar-width:thin;scrollbar-color:var(--scrollbar-thumb) transparent;overscroll-behavior:contain}

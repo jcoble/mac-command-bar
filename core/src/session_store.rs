@@ -1026,6 +1026,26 @@ pub struct OlderEvents {
     pub has_more: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryDownloadFacts {
+    pub row_count: u64,
+    pub low_sequence: Option<i64>,
+    pub high_sequence: Option<i64>,
+    pub total_bytes: u64,
+    pub covered_bytes: u64,
+}
+
+pub struct HistoryDownloadRows {
+    pub events: Vec<EventRow>,
+    pub covered_bytes: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct HistorySequenceGap {
+    pub first_sequence: i64,
+    pub last_sequence: i64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EventCoverage {
     pub low: i64,
@@ -4053,6 +4073,90 @@ impl SessionStore {
         })
     }
 
+    pub fn history_download_facts(&self, owned_id: &str, before_sequence: Option<i64>) -> Result<HistoryDownloadFacts> {
+        self.lock()?.query_row(
+            "SELECT MIN(seq), MAX(seq), COALESCE(SUM(LENGTH(CAST(payload AS BLOB))), 0),
+                    COALESCE(SUM(CASE WHEN seq >= ?2 THEN LENGTH(CAST(payload AS BLOB)) ELSE 0 END), 0), COUNT(*)
+             FROM events WHERE owned_id = ?1",
+            params![owned_id, before_sequence], |row| Ok(HistoryDownloadFacts {
+                low_sequence: row.get(0)?, high_sequence: row.get(1)?, total_bytes: row.get(2)?, covered_bytes: row.get(3)?, row_count: row.get(4)?,
+            }),
+        ).map_err(|error| StoreError::sqlite("could not read history download totals", error))
+    }
+
+    pub fn history_download_rows(&self, owned_id: &str, low_sequence: i64, high_sequence: i64,
+        before_sequence: Option<i64>, max_bytes: u32, covered_bytes: u64) -> Result<HistoryDownloadRows> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT owned_id, seq, turn_id, kind, payload, created_at, covered
+             FROM (
+                 SELECT *, SUM(LENGTH(CAST(payload AS BLOB))) OVER (ORDER BY seq DESC) + ?7 AS covered,
+                        COALESCE(SUM(LENGTH(CAST(payload AS BLOB))) OVER (
+                            ORDER BY seq DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS spent
+                 FROM (SELECT owned_id, seq, turn_id, kind, payload, created_at
+                       FROM events WHERE owned_id = ?1 AND seq >= ?2 AND seq <= ?3
+                         AND (?4 IS NULL OR seq < ?4) ORDER BY seq DESC LIMIT ?5)
+             ) WHERE spent < ?6 ORDER BY seq DESC",
+        ).map_err(|error| StoreError::sqlite("could not prepare history download rows", error))?;
+        let rows = statement.query_map(params![owned_id, low_sequence, high_sequence, before_sequence,
+            Self::HISTORY_PAGE_ROW_CEILING, max_bytes.max(1), covered_bytes], |row| Ok((event_from_row(row)?, row.get::<_, u64>(6)?)))
+            .map_err(|error| StoreError::sqlite("could not query history download rows", error))?;
+        let mut result = HistoryDownloadRows { events: Vec::new(), covered_bytes };
+        for row in rows {
+            let (event, covered) = row.map_err(|error| StoreError::sqlite("could not decode history download rows", error))?;
+            result.events.push(event);
+            result.covered_bytes = covered;
+        }
+        Ok(result)
+    }
+
+    pub fn remote_saved_minimum(&self, cached_owned_id: &str) -> Result<Option<i64>> {
+        self.lock()?.query_row("SELECT MIN(seq) FROM events WHERE owned_id = ?1 AND kind = 'remote.cached'",
+            [cached_owned_id], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not read saved remote minimum", error))
+    }
+
+    pub fn remote_saved_row_count(&self, cached_owned_id: &str, low: Option<i64>, high: Option<i64>) -> Result<u64> {
+        self.lock()?.query_row(
+            "SELECT COUNT(*) FROM events WHERE owned_id = ?1 AND kind = 'remote.cached' AND seq BETWEEN ?2 AND ?3",
+            params![cached_owned_id, low, high], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not count saved remote rows", error))
+    }
+
+    pub fn remote_incomplete_downloads(&self, profile: &str) -> Result<Vec<String>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT json_extract(owned_id, '$[1]') FROM sessions
+             WHERE cached_remote_profile_id = ?1 AND json_type(extra, '$.download') = 'object'
+               AND COALESCE(json_extract(extra, '$.download.complete'), 0) = 0",
+        ).map_err(|error| StoreError::sqlite("could not prepare incomplete downloads", error))?;
+        let rows = statement.query_map([profile], |row| row.get(0))
+            .map_err(|error| StoreError::sqlite("could not query incomplete downloads", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read incomplete downloads", error))
+    }
+
+    pub fn remote_history_gaps(&self, cached_owned_id: &str, low: Option<i64>, high: Option<i64>) -> Result<Vec<HistorySequenceGap>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "WITH saved AS (
+                 SELECT seq, LAG(seq) OVER (ORDER BY seq) AS previous FROM events
+                 WHERE owned_id = ?1 AND kind = 'remote.cached' AND seq BETWEEN ?2 AND ?3
+             )
+             SELECT CASE WHEN previous IS NULL THEN ?2 ELSE previous + 1 END AS first_sequence, seq - 1 AS last_sequence
+             FROM saved WHERE seq > CASE WHEN previous IS NULL THEN ?2 ELSE previous + 1 END
+             UNION ALL
+             SELECT COALESCE(MAX(seq) + 1, ?2), ?3 FROM saved
+             HAVING ?2 IS NOT NULL AND ?3 IS NOT NULL AND (MAX(seq) IS NULL OR MAX(seq) < ?3)
+             ORDER BY first_sequence",
+        ).map_err(|error| StoreError::sqlite("could not prepare remote history gaps", error))?;
+        let rows = statement.query_map(params![cached_owned_id, low, high], |row| Ok(HistorySequenceGap {
+            first_sequence: row.get(0)?, last_sequence: row.get(1)?,
+        })).map_err(|error| StoreError::sqlite("could not query remote history gaps", error))?;
+        rows.collect::<rusqlite::Result<_>>()
+            .map_err(|error| StoreError::sqlite("could not read remote history gaps", error))
+    }
+
     pub fn remote_saved_session_details(&self, profile: &str, owned: &str) -> Result<RemoteSavedSessionDetails> {
         let key = serde_json::to_string(&(profile, owned)).expect("string tuple");
         let (turn_count, first_prompt, start_complete, turns): (Option<i64>, Option<String>, bool, String) = self.lock()?
@@ -5040,6 +5144,69 @@ mod tests {
         EvidenceRunDiskUsage, NotionTaskProjection, ProjectRow, RepresentedTurnFacts, SessionRow,
         SessionStore,
     };
+
+    #[test]
+    fn history_download_facts_count_utf8_payload_bytes() {
+        let store = SessionStore::open_in_memory().unwrap();
+        for name in ["download", "other"] { store.upsert_session(&fixture_session(name, 0)).unwrap(); }
+        for (seq, payload) in [(1, "é"), (2, "日本"), (3, "a")] {
+            store.append_event(&EventRow { payload_json: serde_json::to_string(payload).unwrap(), ..fixture_event("download", seq) }).unwrap();
+        }
+        store.append_event(&fixture_event("other", 100)).unwrap();
+        let facts = store.history_download_facts("download", Some(2)).unwrap();
+        assert_eq!((facts.low_sequence, facts.high_sequence, facts.total_bytes, facts.covered_bytes), (Some(1), Some(3), 15, 11));
+        let empty = store.history_download_facts("empty", None).unwrap();
+        assert_eq!((empty.low_sequence, empty.high_sequence, empty.total_bytes), (None, None, 0));
+    }
+
+    #[test]
+    fn history_download_facts_reports_retained_row_count() {
+        let store = SessionStore::open_in_memory().unwrap();
+        for name in ["download", "other"] { store.upsert_session(&fixture_session(name, 0)).unwrap(); }
+        for seq in [1, 2, 5, 9] { store.append_event(&fixture_event("download", seq)).unwrap(); }
+        store.append_event(&fixture_event("other", 3)).unwrap();
+        for before in [None, Some(5)] {
+            let facts = store.history_download_facts("download", before).unwrap();
+            assert_eq!((facts.low_sequence, facts.high_sequence, facts.row_count), (Some(1), Some(9), 4));
+        }
+        assert_eq!(store.history_download_facts("empty", None).unwrap().row_count, 0);
+    }
+
+    #[test]
+    fn history_download_rows_are_newest_first_and_bounded() {
+        let store = SessionStore::open_in_memory().unwrap();
+        store.upsert_session(&fixture_session("download", 0)).unwrap();
+        for seq in -3..=5 { store.append_event(&EventRow { payload_json: "123456".into(), ..fixture_event("download", seq) }).unwrap(); }
+        let rows = store.history_download_rows("download", -3, 3, Some(3), 7, 6).unwrap();
+        assert_eq!(rows.events.iter().map(|row| row.seq).collect::<Vec<_>>(), [2, 1]);
+        assert_eq!(rows.covered_bytes, 18);
+        let single = store.history_download_rows("download", -3, 3, None, 1, 0).unwrap();
+        assert_eq!(single.events[0].seq, 3);
+        assert_eq!(single.events.len(), 1);
+        assert_eq!(single.covered_bytes, 6);
+        let ceiling = i64::from(SessionStore::HISTORY_PAGE_ROW_CEILING);
+        for seq in 6..=ceiling + 6 { store.append_event(&fixture_event("download", seq)).unwrap(); }
+        let capped = store.history_download_rows("download", -3, ceiling + 6, None, u32::MAX, 0).unwrap();
+        assert_eq!(capped.events.len(), ceiling as usize);
+    }
+
+    #[test]
+    fn remote_history_gaps_finds_prefix_interior_and_suffix_gaps() {
+        let store = SessionStore::open_in_memory().unwrap();
+        for name in ["download", "other"] { store.upsert_session(&fixture_session(name, 0)).unwrap(); }
+        for seq in [-9, -2, -1, 2, 8] { store.append_event(&EventRow { kind: "remote.cached".into(), ..fixture_event("download", seq) }).unwrap(); }
+        for seq in -4..=4 { store.append_event(&EventRow { kind: "remote.cached".into(), ..fixture_event("other", seq) }).unwrap(); }
+        let gaps = store.remote_history_gaps("download", Some(-4), Some(4)).unwrap();
+        assert_eq!(gaps.iter().map(|gap| (gap.first_sequence, gap.last_sequence)).collect::<Vec<_>>(), [(-4,-3), (0,1), (3,4)]);
+        assert_eq!(store.remote_saved_minimum("download").unwrap(), Some(-9));
+        store.append_event(&fixture_event("download", 0)).unwrap();
+        assert_eq!(store.remote_saved_row_count("download", Some(-4), Some(4)).unwrap(), 3);
+        assert_eq!(store.remote_saved_row_count("download", Some(-2), Some(2)).unwrap(), 3);
+        assert_eq!(store.remote_saved_row_count("download", None, None).unwrap(), 0);
+        let gaps = store.remote_history_gaps("empty", Some(-4), Some(4)).unwrap();
+        assert_eq!((gaps[0].first_sequence, gaps[0].last_sequence), (-4,4));
+        assert!(store.remote_history_gaps("download", None, None).unwrap().is_empty());
+    }
 
     #[test]
     fn waiting_steps_are_selected_in_sql() {

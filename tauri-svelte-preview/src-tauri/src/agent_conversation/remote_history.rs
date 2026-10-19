@@ -6,7 +6,7 @@ use super::protocol::{
     AgentConversationSessionRecord, AgentConversationSnapshot, AgentRuntimeState, ApprovalState,
     ConversationConnectionState,
 };
-use mcb_core::session_store::{EventCoverage, EventRow, SessionRow, SessionStore};
+use mcb_core::session_store::{EventCoverage, EventRow, HistoryDownloadFacts, SessionRow, SessionStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,6 +14,8 @@ use std::sync::Arc;
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Coverage {
+    #[serde(default)]
+    download: Option<HistoryDownloadState>,
     remote_profile_id: String,
     connection: Option<AgentConversationConnection>,
     suspended: bool,
@@ -34,6 +36,14 @@ struct Coverage {
     pending_sequence: Option<i64>,
     #[serde(default)]
     active_turn_id: Option<String>,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct HistoryDownloadState {
+    pub total_bytes: u64,
+    pub covered_bytes: u64,
+    pub complete: bool,
 }
 
 #[cfg(test)]
@@ -86,6 +96,41 @@ mod tests {
             pending_events: Vec::new(),
             active_turn_id: None,
         }
+    }
+
+    #[test]
+    fn empty_start_after_a_live_event_keeps_the_saved_event() {
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
+        let history = RemoteHistory::new(store);
+        history.live_batch("p", 0, &mut [event(1)]).unwrap();
+        // Totals were empty, but metadata was sampled after the first live event.
+        let mut metadata = snapshot(2, 1);
+        history.begin_download("p", 0, HistoryDownloadFacts {
+            low_sequence: None, high_sequence: None, row_count: 0, total_bytes: 0, covered_bytes: 0,
+        }, &mut metadata).unwrap();
+        history.complete_download("p", 0, "same-session-id", None, None).unwrap();
+        let saved = history.read_selection_snapshot("p", "same-session-id", 1024).unwrap().unwrap();
+        assert_eq!(saved.page.events.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1]);
+    }
+
+    #[test]
+    fn download_chunks_save_quietly_and_prepare_markdown() {
+        let store = Arc::new(SessionStore::open_in_memory().unwrap());
+        let history = RemoteHistory::new(store.clone());
+        history.prepare_download("p", "same-session-id").unwrap();
+        let mut metadata = snapshot(1, 3);
+        metadata.events.clear();
+        history.begin_download("p", 0, HistoryDownloadFacts { low_sequence: Some(1), high_sequence: Some(3), row_count: 3, total_bytes: 300, covered_bytes: 0 }, &mut metadata).unwrap();
+        let mut rows = vec![event(3), event(2)];
+        if let AgentConversationPayload::AssistantMessage { blocks, .. } = &mut rows[0].payload { *blocks = None; }
+        history.download_chunk("p", 0, "same-session-id", 200, &mut rows).unwrap();
+        if let AgentConversationPayload::AssistantMessage { blocks, .. } = &mut rows[0].payload { *blocks = None; }
+        history.download_chunk("p", 0, "same-session-id", 200, &mut rows).unwrap();
+        assert!(matches!(&rows[0].payload, AgentConversationPayload::AssistantMessage { blocks: Some(_), .. }));
+        assert_eq!(store.list_events(&RemoteHistory::key("p", "same-session-id"), 0, 100).unwrap().len(), 2);
+        assert_eq!(history.download_state("p", "same-session-id").unwrap().unwrap().covered_bytes, 200);
+        assert_eq!(history.through("p", "same-session-id").unwrap(), Some(3));
+        assert!(!history.download_state("p", "same-session-id").unwrap().unwrap().complete);
     }
 
     #[test]
@@ -220,10 +265,10 @@ mod tests {
         let older = history.read_page("a", "same-session-id", 3, 1024, true).unwrap().unwrap();
         assert_eq!(older.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), vec![1, 2]);
         // The copy confirms the empty start once; then the top needs no request.
-        assert_eq!(history.unsaved_older("a", "same-session-id").unwrap(), Some(1));
+        assert!(!history.coverage("a", "same-session-id").unwrap().start_complete);
         let mut start = AgentConversationEventPage { events: vec![], has_more: false };
         history.page("a", 0, "same-session-id", 1, true, &mut start).unwrap();
-        assert_eq!(history.unsaved_older("a", "same-session-id").unwrap(), None);
+        assert!(history.coverage("a", "same-session-id").unwrap().start_complete);
         assert!(!history.read_page("a", "same-session-id", 3, 1024, true).unwrap().unwrap().has_more);
     }
 
@@ -878,10 +923,70 @@ impl RemoteHistory {
         self.read_snapshot(profile, self.epoch(profile), owned).map(Some)
     }
 
-    /// Where the next older page must end, until the session's start is saved.
-    pub fn unsaved_older(&self, profile: &str, owned: &str) -> Result<Option<i64>, String> {
-        let coverage = self.coverage(profile, owned)?;
-        Ok(coverage.oldest.filter(|_| !coverage.start_complete))
+    pub fn download_state(&self, profile: &str, owned: &str) -> Result<Option<HistoryDownloadState>, String> {
+        Ok(self.coverage(profile, owned)?.download)
+    }
+
+    pub fn prepare_download(&self, profile: &str, owned: &str) -> Result<(), String> {
+        let mut coverage = self.coverage(profile, owned)?;
+        coverage.download.get_or_insert_with(Default::default).complete = false;
+        self.write(profile, owned, &coverage, &mut [], 0)
+    }
+
+    pub fn begin_download(&self, profile: &str, epoch: u64, facts: HistoryDownloadFacts,
+        snapshot: &mut AgentConversationSnapshot) -> Result<(), String> {
+        self.check(profile, epoch)?;
+        let owned = &snapshot.connection.owned_id;
+        let mut coverage = self.coverage(profile, owned)?;
+        coverage.connection = Some(snapshot.connection.clone());
+        coverage.suspended = snapshot.suspended;
+        coverage.has_earlier_transcript = snapshot.has_earlier_transcript;
+        if coverage.pending_sequence.is_none_or(|sequence| sequence <= snapshot.last_sequence) {
+            coverage.pending_sequence = Some(snapshot.last_sequence);
+            coverage.pending_events.clone_from(&snapshot.pending_events);
+            coverage.active_turn_id.clone_from(&snapshot.active_turn_id);
+        }
+        // Empty totals must not replace live coverage or use a newer metadata head.
+        if facts.low_sequence.is_none() && coverage.through.is_none() {
+            let head = facts.high_sequence.unwrap_or(0);
+            coverage.oldest = Some(head.saturating_add(1));
+            coverage.through = Some(head);
+        }
+        coverage.download = Some(HistoryDownloadState { total_bytes: facts.total_bytes, covered_bytes: facts.covered_bytes, complete: false });
+        self.write(profile, owned, &coverage, &mut [], 0)
+    }
+
+    pub fn download_chunk(&self, profile: &str, epoch: u64, owned: &str, covered_bytes: u64,
+        events: &mut [AgentConversationEvent]) -> Result<(), String> {
+        self.check(profile, epoch)?;
+        let mut coverage = self.coverage(profile, owned)?;
+        if let Some(download) = &mut coverage.download { download.covered_bytes = covered_bytes; }
+        // Inspect sequences only to extend adjacent coverage. Totals and paging stay in SQL.
+        for event in events.iter() {
+            if event.owned_id != owned { return Err("History chunk contains another session".into()); }
+            if coverage.through.is_none() || coverage.oldest > coverage.through {
+                coverage.oldest = Some(event.sequence);
+                coverage.through = Some(event.sequence);
+            } else {
+                if coverage.oldest.and_then(|seq| seq.checked_sub(1)) == Some(event.sequence) { coverage.oldest = Some(event.sequence); }
+                if coverage.through.and_then(|seq| seq.checked_add(1)) == Some(event.sequence) { coverage.through = Some(event.sequence); }
+            }
+        }
+        self.write(profile, owned, &coverage, events, 0)
+    }
+
+    pub fn complete_download(&self, profile: &str, epoch: u64, owned: &str,
+        low: Option<i64>, high: Option<i64>) -> Result<(), String> {
+        self.check(profile, epoch)?;
+        let mut coverage = self.coverage(profile, owned)?;
+        if let Some(download) = &mut coverage.download {
+            download.complete = true;
+            download.covered_bytes = download.total_bytes;
+        }
+        if let Some(low) = low { coverage.oldest = Some(coverage.oldest.map_or(low, |saved| saved.min(low))); }
+        if let Some(high) = high { coverage.through = Some(coverage.through.map_or(high, |saved| saved.max(high))); }
+        coverage.start_complete = true;
+        self.write(profile, owned, &coverage, &mut [], 0)
     }
 
     pub fn read_selection_snapshot(
@@ -1083,9 +1188,11 @@ impl RemoteHistory {
         self.check(profile, epoch)?;
         let mut coverage = self.coverage(profile, owned)?;
         coverage.start_complete = false;
+        if let Some(download) = &mut coverage.download { download.complete = false; }
         self.write(profile, owned, &coverage, &mut [], 0)
     }
 
+    #[cfg(test)]
     pub fn page(
         &self,
         profile: &str,
