@@ -7,7 +7,7 @@ const { createBrowserModel } = await import(
   '../src/lib/shell/browser/browserModel.ts'
 );
 const { hostRectFitsPanel, popupCoversPage } = await import(
-  '../src/lib/shell/panels/browser/browserPanelBounds.ts'
+  '../src/lib/shell/browser/components/browserPanelBounds.ts'
 );
 
 // TSK-1427: only a popup drawn over the page may hide the native page.

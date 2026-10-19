@@ -18,7 +18,7 @@ import {
   numberAnnotations,
   removeAnnotation,
   type BrowserAnnotation
-} from '../src/lib/shell/panels/browser/annotationList.ts';
+} from '../src/lib/shell/browser/components/annotationList.ts';
 
 function element(id: string, tag: string, label = '', role: string | null = null): BrowserAnnotation {
   return {

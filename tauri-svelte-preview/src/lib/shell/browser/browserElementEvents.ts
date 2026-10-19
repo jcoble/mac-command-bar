@@ -7,7 +7,7 @@
  * the model had no caller and Select could never finish. This is the missing
  * half.
  *
- * The event name and payload are the shell's (`src-tauri/src/browser.rs`:
+ * The event name and payload are the shell's (`src-tauri/src/browser/mod.rs`:
  * `BROWSER_ELEMENT_SELECTED_EVENT`, `BrowserElementSelectedEvent`). Outside the
  * desktop build there is no event source, so subscribing is a no-op that
  * answers with a no-op unsubscribe — a caller never has to ask which build it

@@ -10,7 +10,7 @@
  * The geometry here is pure — no DOM — so it can be tested under Node. Only
  * `drawShapes` and `compositeAnnotations` need a canvas.
  */
-import type { BrowserMarkupCapture } from '../../browser/browserTypes.ts';
+import type { BrowserMarkupCapture } from '../browserTypes.ts';
 
 export type AnnotationShape =
   | { kind: 'region'; x: number; y: number; width: number; height: number }
