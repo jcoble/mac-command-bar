@@ -49,8 +49,8 @@
   import AgentRow from './AgentRow.svelte';
   import { AGENT_STATUS_TONE, AGENT_STATUS_WORD, agentActivityRows } from './agentActivityModel.ts';
   import AgentMessages from './AgentMessages.svelte';
-  import OwnerInbox from './OwnerInbox.svelte';
-  import WorkflowRuns from './WorkflowRuns.svelte';
+  import OwnerInbox from '$lib/shell/workflows/components/OwnerInbox.svelte';
+  import WorkflowRuns from '$lib/shell/workflows/components/WorkflowRuns.svelte';
 
   interface Props {
     visible: boolean;

@@ -1,21 +1,21 @@
+pub(crate) mod commands;
+pub(crate) mod orchestration;
+pub(crate) mod orchestration_commands;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::path::{Component, Path};
 use std::sync::{Arc, Mutex};
-
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-
 use crate::agent_conversation::manager::AgentRuntimeManager;
 use crate::agent_conversation::protocol::{
     AgentConversationEvent, AgentConversationPayload, AgentConversationProvider,
     EnsureAgentConversationRequest, TurnState,
 };
 use crate::agent_conversation::providers::AgentPrompt;
-use crate::orchestration::{append_workflow_event_value, read_workflow_run_values};
+use crate::workflow::orchestration::{append_workflow_event_value, read_workflow_run_values};
 use mcb_core::session_store::SessionStore;
-
 pub(crate) const WORKFLOW_DEFINITION_VERSION: u16 = 1;
 
 fn default_definition_version() -> u16 {
@@ -4050,7 +4050,7 @@ mod tests {
         assert_eq!((step_of(&run, "proof").attempt, step_of(&run, "proof").state), (1, WorkflowNodeState::Blocked));
         assert_eq!(run.input_snapshot["redo"]["findings"], json!(["finding 0", "finding 1"]));
         // The earlier attempts stay in the history.
-        let events = crate::orchestration::read_workflow_event_values(&engine.store).unwrap();
+        let events = crate::workflow::orchestration::read_workflow_event_values(&engine.store).unwrap();
         assert!(events.iter().any(|event| event["workflowPayload"]["run"]["nodes"].as_array().unwrap().iter()
             .any(|node| node["nodeId"] == "checks" && node["attempt"] == 1 && node["state"] == "completed")));
     }
@@ -4277,7 +4277,7 @@ mod tests {
         assert_eq!(output["findingCount"], 1);
         assert_eq!(finished.nodes[0].state, WorkflowNodeState::Failed);
         assert!(runtime.dispatched.lock().unwrap().is_empty());
-        let events = crate::orchestration::read_workflow_event_values(&engine.store).unwrap();
+        let events = crate::workflow::orchestration::read_workflow_event_values(&engine.store).unwrap();
         let event = events.iter().find(|event| event["kind"] == "workflow.node.commands-finished").unwrap();
         assert_eq!(event["workflowPayload"]["run"]["nodes"][0]["structuredOutput"], *output);
         println!("SAMPLE_LEDGER_EVENT={event}");
@@ -4308,7 +4308,7 @@ mod tests {
         let history = tauri::async_runtime::block_on(execute_operation(&engine, "history", json!({"runId":run.id}))).unwrap();
         let rows = history.as_array().unwrap();
         let sequences: Vec<_> = rows.iter().map(|row| row["sequence"].as_i64().unwrap()).collect();
-        let ledger: Vec<_> = crate::orchestration::read_workflow_event_values(&engine.store).unwrap().iter()
+        let ledger: Vec<_> = crate::workflow::orchestration::read_workflow_event_values(&engine.store).unwrap().iter()
             .filter(|event| event["runId"] == json!(run.id)).map(|event| event["sequence"].as_i64().unwrap()).collect();
         assert_eq!(sequences, ledger);
         assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
@@ -4375,7 +4375,7 @@ mod tests {
         assert_eq!(paused.state, WorkflowRunState::WaitingInput);
         assert_eq!(paused.nodes[0].failure.as_ref().unwrap().budget.as_deref(), Some("node-timeout"));
         tauri::async_runtime::block_on(engine.dispatch_ready(&run.id)).unwrap();
-        let events = crate::orchestration::read_workflow_event_values(&engine.store).unwrap();
+        let events = crate::workflow::orchestration::read_workflow_event_values(&engine.store).unwrap();
         assert_eq!(events.iter().filter(|event| event["kind"] == "workflow.node.timed-out").count(), 1);
         assert_eq!(runtime.cancelled.load(Ordering::SeqCst), 1);
         assert_eq!(runtime.dispatched.lock().unwrap().len(), 1);
@@ -5464,7 +5464,7 @@ mod tests {
             tauri::async_runtime::block_on(engine.start(&created.id, "start-1")).unwrap();
         assert_eq!(started, repeated);
         assert_eq!(runtime.dispatched.lock().unwrap().len(), 1);
-        let events = crate::orchestration::read_workflow_event_values(&store).unwrap();
+        let events = crate::workflow::orchestration::read_workflow_event_values(&store).unwrap();
         let sequences: Vec<_> = events
             .iter()
             .filter_map(|event| event.get("sequence").and_then(Value::as_u64))

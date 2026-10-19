@@ -16,19 +16,19 @@ static SOURCE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 use commands::agent_sessions::*;
 use commands::application::*;
 use commands::lsp::*;
-use commands::orchestration::*;
+use workflow::orchestration_commands::*;
 use commands::runtime::*;
 use commands::source::*;
 use commands::source_control::*;
 use commands::terminal::*;
 use commands::usage::*;
-use commands::workflow::*;
+use workflow::commands::*;
 use mcb_core::reference_counts::{
     count_reference_lines_across_files, is_source_token_boundary,
     normalized_reference_count_symbols, ReferenceCountFile, ReferenceCountPlan,
     MAX_REFERENCE_SCAN_BYTES,
 };
-use orchestration::import_legacy_orchestration_events;
+use workflow::orchestration::import_legacy_orchestration_events;
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 use tauri_plugin_fs::FsExt;
@@ -49,7 +49,6 @@ mod helper;
 mod lsp;
 mod notion_oauth;
 mod notion_tasks;
-mod orchestration;
 mod product_identity;
 mod project_folders;
 mod projection_streams;

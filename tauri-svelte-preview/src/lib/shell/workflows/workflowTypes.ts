@@ -2,7 +2,7 @@
  * Typed frontend contracts for the WorkflowEngine snapshot.
  *
  * `WorkflowRunRecord` and the related records mirror the serde/camelCase
- * shapes in `src-tauri/src/workflow.rs`.  The `*View` types add only stable
+ * shapes in `src-tauri/src/workflow/mod.rs`.  The `*View` types add only stable
  * presentation identity and provenance; they never replace the engine's
  * state/phase with a client-side guess.
  */
