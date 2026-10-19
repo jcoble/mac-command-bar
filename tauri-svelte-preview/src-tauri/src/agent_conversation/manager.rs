@@ -1562,8 +1562,8 @@ impl AgentRuntimeManager {
             .any(|session| session.runtime.is_some() && !session_is_quiescent(session))
     }
 
-    /// Returns the capability snapshot advertised by the active ACP session. WorkflowEngine uses
-    /// this to map role policy onto provider-owned config options without guessing option ids.
+    /// Returns the capability snapshot advertised by the active ACP session.
+    #[cfg(test)]
     pub fn capabilities(
         &self,
         owned_id: &str,
