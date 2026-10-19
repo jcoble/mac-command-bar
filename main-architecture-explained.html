@@ -1730,7 +1730,7 @@
 
         <h3>Provider transcript import</h3>
         <p>When adopting or migrating provider-owned history, the importer stores a byte-offset cursor in session metadata. Older imported records can receive negative event sequences, leaving zero and positive sequences available for current Assembly activity. When SQLite paging reaches the imported boundary, the frontend can ask Rust to extend the provider transcript import and then query SQLite again.</p>
-        <span class="source"><code>conversationService.ts</code> · <code>conversationStore.svelte.ts</code> · <code>transcript_import.rs:16-29</code> · <code>conversationService.ts</code></span>
+        <span class="source"><code>conversationService.ts</code> · <code>conversationStore.svelte.ts</code> · <code>history/mod.rs:16-29</code> · <code>conversationService.ts</code></span>
 
         <div class="callout conditional">
           <p><strong>History and context can diverge deliberately.</strong> Assembly may show a complete normalized journal even though a provider has internally compacted its native context. Conversely, an imported provider transcript can contain records Assembly has not loaded into the current page. Durable display history is not proof of the provider’s current context window.</p>
@@ -1738,12 +1738,12 @@
 
         <div class="callout current">
           <p><strong>Claude import removes one synthetic artifact:</strong> the importer strips the machine-authored “This session is being continued…” continuation summary from user messages so provider compaction scaffolding is not misrepresented as something the human typed.</p>
-          <span class="source"><code>transcript/claude.rs:66-97</code></span>
+          <span class="source"><code>history/transcript/claude.rs:66-97</code></span>
         </div>
 
         <div class="callout current">
           <p><strong>Provider compactions import as markers.</strong> A Claude <code>compact_boundary</code> record (with its <code>compactMetadata</code> trigger and token counts) and a Codex <code>context_compacted</code> event become the same <code>contextCompaction</code> event the live path records, so an imported transcript shows where the provider cut its context just as a live one does. Their terminal projection payloads also carry <code>kind: contextCompaction</code>, allowing the existing event mapper to recognize the same markers in terminal-backed conversations.</p>
-          <span class="source"><code>transcript/claude.rs:113</code> · <code>transcript/codex.rs:385</code> · <code>terminal_projection.rs:287</code></span>
+          <span class="source"><code>history/transcript/claude.rs:113</code> · <code>history/transcript/codex.rs:385</code> · <code>terminal_projection.rs:287</code></span>
         </div>
       </section>
 
@@ -1870,7 +1870,7 @@
             <span class="badge current">Parsing</span>
             <h3>GFM → typed blocks</h3>
             <p>The displaying desktop uses Rust <code>comrak</code> to turn finished, restored, and imported assistant Markdown into safe typed blocks once, when it saves the event to its own database. Local recording and transcript import save prepare pieces only without the existing <code>--assembly-server</code> process argument. Replay and transcript projection leave the text unconverted. The remote server stores and sends text without pieces; the desktop first reuses pieces saved for the same session and event sequence, then converts only if both incoming and saved pieces are absent. This also prepares already-cached live events before publication and preserves gap-event pieces during catch-up. Reads return the saved pieces without conversion, and pieces supplied by an older remote server stay unchanged. If genuine assistant text arrives after that completed message, the mapper removes the saved blocks before appending it; the renderer parses the current text until another authoritative message supplies matching blocks. Empty or suppressed replay deltas leave valid saved blocks intact. Text still streaming, and replies journaled before finished messages existed (deltas only), use the bounded <code>marked</code> parser fallback. Both paths cover paragraphs, headings, fenced code, block quotes, lists, tables, rules, links, inline code, strong/emphasis, and strike-through.</p>
-            <span class="source"><code>manager.rs:5331-5341,5458-5465</code> · <code>transcript_import.rs:840-886</code> · <code>remote/history.rs:644-795</code> · <code>core/src/session_store.rs:3240-3253</code> · <code>remote/mod.rs:1154-1177</code> · <code>main.rs:5338-5345</code></span>
+            <span class="source"><code>manager.rs:5331-5341,5458-5465</code> · <code>history/mod.rs:840-886</code> · <code>remote/history.rs:644-795</code> · <code>core/src/session_store.rs:3240-3253</code> · <code>remote/mod.rs:1154-1177</code> · <code>main.rs:5338-5345</code></span>
           </article>
           <article class="card">
             <span class="badge current">Rendering</span>
@@ -2212,7 +2212,7 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
           <div class="source-row"><strong>Reducer and types</strong><code>tauri-svelte-preview/src/lib/shell/conversation/conversationReducer.ts</code> · <code>conversationTypes.ts</code></div>
           <div class="source-row"><strong>Timeline rendering</strong><code>tauri-svelte-preview/src/lib/shell/conversation/components/TimelineItem.svelte</code></div>
           <div class="source-row"><strong>Markdown safety</strong><code>tauri-svelte-preview/src/lib/shell/conversation/conversationMessageSafety.ts</code> · <code>ConversationMessage.svelte</code></div>
-          <div class="source-row"><strong>History import</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/transcript_import.rs</code> · <code>transcript/claude.rs</code> · <code>transcript/codex.rs</code></div>
+          <div class="source-row"><strong>History import</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/history/mod.rs</code> · <code>history/transcript/claude.rs</code> · <code>history/transcript/codex.rs</code></div>
           <div class="source-row"><strong>Adapter manifests</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/capabilities.rs</code></div>
           <div class="source-row"><strong>Compaction marker</strong><code>tauri-svelte-preview/src/lib/shell/conversation/components/CompactionItem.svelte</code> · <code>conversationTimeline.ts</code></div>
           <div class="source-row"><strong>Resources</strong><code>tauri-svelte-preview/src-tauri/src/resources.rs</code> · <code>core/src/scanners/resources.rs</code></div>

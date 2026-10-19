@@ -50,7 +50,7 @@ use super::providers::{
     AgentRuntimeAdapter, AgentRuntimeError, GeneratedText, InitializeAgentInput, LoadAgentSession,
     NewAgentSession, PermissionResponse, ProviderRegistry, StructuredRuntimeHandle,
 };
-use super::transcript::{self, CodexChildRollout};
+use super::history::transcript::{self, CodexChildRollout};
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 /// How much of a conversation opening it hands over, in bytes of stored event.
@@ -465,7 +465,7 @@ impl AgentRuntimeManager {
     pub fn open(providers: ProviderRegistry, database_path: &Path) -> Result<Self, String> {
         let store = SessionStore::open(database_path).map_err(|error| error.to_string())?;
         if let Some(directory) = database_path.parent() {
-            super::legacy_import::import_if_store_empty(&store, directory)?;
+            super::history::legacy_import::import_if_store_empty(&store, directory)?;
         }
         Self::with_store(providers, store)
     }
@@ -622,7 +622,7 @@ impl AgentRuntimeManager {
         cwd: &str,
         title: Option<String>,
     ) -> Result<String, String> {
-        let owned_id = super::transcript_import::begin_import_session(
+        let owned_id = super::history::begin_import_session(
             &self.store,
             provider,
             native_session_id,
@@ -641,7 +641,7 @@ impl AgentRuntimeManager {
         max_bytes: u64,
         max_records: usize,
     ) -> Result<usize, String> {
-        let count = super::transcript_import::finish_import_session(
+        let count = super::history::finish_import_session(
             &self.store,
             owned_id,
             max_bytes,
@@ -685,8 +685,8 @@ impl AgentRuntimeManager {
         owned_id: &str,
         max_bytes: u64,
         max_records: usize,
-    ) -> Result<super::transcript_import::ExtendedImport, String> {
-        super::transcript_import::extend_session(&self.store, owned_id, max_bytes, max_records)
+    ) -> Result<super::history::ExtendedImport, String> {
+        super::history::extend_session(&self.store, owned_id, max_bytes, max_records)
     }
 
     pub fn select_child_history(
@@ -770,7 +770,7 @@ impl AgentRuntimeManager {
             .as_deref()
             .ok_or_else(|| "The parent conversation has no provider session".to_string())?;
         let child_owned_id =
-            super::transcript_import::child_owned_id(parent_owned_id, child_session_id)?;
+            super::history::child_owned_id(parent_owned_id, child_session_id)?;
         let saved_page = self
             .store
             .get_session(&child_owned_id)
@@ -5559,7 +5559,7 @@ fn import_selected_child(
     publish: bool,
     stop: Option<&AtomicBool>,
 ) -> Result<String, String> {
-    let child_owned_id = super::transcript_import::ensure_child_import(
+    let child_owned_id = super::history::ensure_child_import(
         store,
         parent_owned_id,
         None,
@@ -5572,7 +5572,7 @@ fn import_selected_child(
         if stop.is_some_and(|stop| stop.load(Ordering::Acquire)) {
             return Ok(child_owned_id);
         }
-        let progress = super::transcript_import::refresh_child_import(
+        let progress = super::history::refresh_child_import(
             store,
             parent_owned_id,
             None,
@@ -12264,7 +12264,7 @@ mod tests {
         let mut parent_row = manager.store.get_session(&parent.owned_id).unwrap().unwrap();
         parent_row.native_session_id = Some("native-parent-before-child-file".into());
         manager.store.upsert_session(&parent_row).unwrap();
-        let child_owned_id = super::super::transcript_import::ensure_child_import(
+        let child_owned_id = super::super::history::ensure_child_import(
             &manager.store,
             &parent.owned_id,
             None,

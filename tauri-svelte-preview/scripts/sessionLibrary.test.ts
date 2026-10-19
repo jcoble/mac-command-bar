@@ -8,14 +8,14 @@ import {
   groupSessionLibrary,
   sessionIdentityKey,
   toggleSessionLibraryExpansion
-} from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
-import { sessionContextMenuRoster } from '../src/lib/shell/sessionLibrary/sessionLibraryContextMenu.ts';
+} from '../src/lib/shell/history/library/sessionLibraryModel.ts';
+import { sessionContextMenuRoster } from '../src/lib/shell/history/library/sessionLibraryContextMenu.ts';
 import {
   createSessionLibraryMountCoordinator,
   createSessionLibraryService,
   registerSessionLibraryHost,
   sessionLibraryHost
-} from '../src/lib/shell/sessionLibrary/sessionLibraryService.ts';
+} from '../src/lib/shell/history/library/sessionLibraryService.ts';
 
 function owned(ownedId, cwd, extra = {}) {
   return {

@@ -6,7 +6,7 @@ use std::path::Path;
 use mcb_core::session_store::{EventRow, SessionRow, SessionStore};
 use serde_json::Value;
 
-use super::protocol::{AgentConversationEvent, AgentEvent};
+use super::super::protocol::{AgentConversationEvent, AgentEvent};
 
 const OWNED_SESSIONS_FILE: &str = "legacy-owned-sessions.json";
 const EVENT_JOURNAL_FILE: &str = "legacy-agent-events.jsonl";
@@ -102,7 +102,7 @@ pub fn import_if_store_empty(store: &SessionStore, directory: &Path) -> Result<u
                 sequence: canonical.sequence,
                 timestamp_ms: canonical.timestamp_ms,
                 turn_id: canonical.turn_id.clone(),
-                payload: super::manager::frontend_payload_from_canonical(&canonical)?,
+                payload: super::super::manager::frontend_payload_from_canonical(&canonical)?,
             };
             let event_type = serde_json::to_value(canonical.event_type)
                 .ok()

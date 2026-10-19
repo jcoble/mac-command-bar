@@ -3,7 +3,7 @@ import {
   filterSessionLibrary,
   type SessionHistoryFilters,
   type SessionLibraryRecord
-} from '../sessionLibrary/sessionLibraryModel.ts';
+} from './library/sessionLibraryModel.ts';
 
 export interface SessionHistoryFilterOptions {
   query?: string;

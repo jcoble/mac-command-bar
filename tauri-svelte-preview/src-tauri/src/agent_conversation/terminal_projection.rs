@@ -10,7 +10,7 @@ use super::manager::AgentRuntimeManager;
 use super::protocol::{
     AgentConversationProvider, AgentRawFrameReference, TerminalProjectionPayload,
 };
-use super::transcript::{self, FileIdentity, ProjectedRecord, TranscriptLocation};
+use super::history::transcript::{self, FileIdentity, ProjectedRecord, TranscriptLocation};
 
 const WATCH_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_INCREMENTAL_BYTES: u64 = 1024 * 1024;

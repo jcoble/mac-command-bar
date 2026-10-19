@@ -11,7 +11,7 @@ const productionProjection = projection.split('#[cfg(test)]')[0];
 const manager = fs.readFileSync(path.join(conversation, 'manager.rs'), 'utf8');
 const main = fs.readFileSync(path.join(root, 'src-tauri/src/main.rs'), 'utf8');
 const projectionStreams = fs.readFileSync(path.join(root, 'src-tauri/src/projection_streams.rs'), 'utf8');
-const transcriptRoot = path.join(conversation, 'transcript');
+const transcriptRoot = path.join(conversation, 'history/transcript');
 
 assert.equal(fs.existsSync(path.join(conversation, 'transcript.rs')), false, 'legacy monolithic transcript reader must be removed');
 for (const file of ['mod.rs', 'codex.rs', 'claude.rs']) {

@@ -39,7 +39,7 @@
   import type {
     SessionLibraryRecord,
     SessionLibraryTurn
-  } from '$lib/shell/sessionLibrary/sessionLibraryModel.ts';
+  } from '$lib/shell/history/library/sessionLibraryModel.ts';
   import { cn } from '$lib/utils.js';
 
   import { sessionHistoryActions, type SessionHistoryActionId } from './sessionHistoryActions.ts';

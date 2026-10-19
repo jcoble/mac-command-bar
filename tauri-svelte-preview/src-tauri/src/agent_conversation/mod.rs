@@ -4,7 +4,6 @@ mod attachments;
 mod broker_status;
 pub mod capabilities;
 pub mod handoff;
-mod legacy_import;
 pub mod manager;
 pub mod messaging;
 mod phone_api;
@@ -16,8 +15,7 @@ pub mod reaper;
 pub mod remote;
 pub mod safe_markdown;
 pub mod terminal_projection;
-mod transcript;
-pub mod transcript_import;
+pub mod history;
 
 use manager::AgentRuntimeManager;
 use mcb_core::session_store::AnnotationRow;
@@ -1153,7 +1151,7 @@ pub async fn extend_agent_conversation_import(
     manager: tauri::State<'_, AgentRuntimeManager>,
     remote: tauri::State<'_, RemoteConnectionManager>,
     owned_id: String,
-) -> CommandResult<transcript_import::ExtendedImport> {
+) -> CommandResult<history::ExtendedImport> {
     match manager.store().private_remote_child_source(&owned_id) {
         Ok(Some(source)) => {
             return command_result(

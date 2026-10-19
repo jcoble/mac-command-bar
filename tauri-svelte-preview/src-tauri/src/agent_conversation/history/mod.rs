@@ -1,17 +1,17 @@
+pub(super) mod legacy_import;
+pub(super) mod transcript;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-
 use mcb_core::session_store::{EventRow, SessionRow, SessionStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
-
 use super::protocol::{
     AgentConversationEvent, AgentConversationPayload, AgentConversationProvider, AgentEventType, AgentRawFrameReference,
     TerminalProjectionPayload,
 };
-use super::transcript::{
+use self::transcript::{
     complete_lines, discover_child, parse_durable_child_line, parse_durable_line, read_range,
     ProjectedRecord,
 };
@@ -217,7 +217,7 @@ pub fn ensure_child_import(
         .get_session(parent_owned_id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Child transcript parent was not found".to_string())?;
-    let provider = super::transcript::parse_provider(&parent.provider)?;
+    let provider = self::transcript::parse_provider(&parent.provider)?;
     let parent_native_session_id = parent
         .native_session_id
         .as_deref()
@@ -300,7 +300,7 @@ pub fn refresh_child_import(
         .child_session_id
         .as_deref()
         .ok_or_else(|| "Child import has no child session id".to_string())?;
-    let provider = super::transcript::parse_provider(&session.provider)?;
+    let provider = self::transcript::parse_provider(&session.provider)?;
     let location = discover_child(provider, parent_native_session_id, child_session_id)?
         .ok_or_else(|| format!("Child transcript {child_session_id} was not found"))?;
     if !cursor.transcript_path.is_empty()
@@ -540,7 +540,7 @@ pub fn finish_import_session(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Imported session was not found".to_string())?;
     let cursor = import_cursor(&session.extra_json)?;
-    let provider = super::transcript::parse_provider(&session.provider)?;
+    let provider = self::transcript::parse_provider(&session.provider)?;
     let native_session_id = session
         .native_session_id
         .clone()
@@ -657,7 +657,7 @@ pub fn extend_session(
             reached_start: true,
         });
     }
-    let provider = super::transcript::parse_provider(&session.provider)?;
+    let provider = self::transcript::parse_provider(&session.provider)?;
     let native_session_id = session
         .native_session_id
         .clone()
@@ -1041,7 +1041,7 @@ mod tests {
             (AgentConversationProvider::Claude,
                 r#"{"type":"assistant","uuid":"a","sessionId":"native","message":{"content":[{"type":"text","text":"**hello**"}]}}"#),
         ] {
-            let records = super::super::transcript::parse_durable_line(provider, "native", line.as_bytes());
+            let records = super::transcript::parse_durable_line(provider, "native", line.as_bytes());
             let record = records.into_iter().find(|record| matches!(record.native,
                 Some(AgentConversationPayload::AssistantMessage { .. }))).unwrap();
             assert!(matches!(record.native,
@@ -1054,7 +1054,7 @@ mod tests {
         if !server {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact",
-                    "agent_conversation::transcript_import::tests::desktop_markdown_import_prepares_only_at_desktop_save",
+                    "agent_conversation::history::tests::desktop_markdown_import_prepares_only_at_desktop_save",
                     "--skip", "--assembly-server", "--nocapture"])
                 .output().unwrap();
             assert!(output.status.success(), "{}\n{}",
@@ -1119,7 +1119,7 @@ mod tests {
     }
 
     fn fixture_provider() -> AgentConversationProvider {
-        super::super::transcript::parse_provider(&["co", "dex"].concat())
+        super::transcript::parse_provider(&["co", "dex"].concat())
             .expect("fixture provider should be supported")
     }
 
@@ -1658,7 +1658,7 @@ mod tests {
         )
         .expect("transcript fixture should be written");
         let store = SessionStore::open_in_memory().expect("store should open");
-        let provider = super::super::transcript::parse_provider("claude")
+        let provider = super::transcript::parse_provider("claude")
             .expect("claude should be a supported provider");
 
         let owned_id = import_session(

@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 
 import { resumeCommand } from '../src/lib/shell/resumeCommand.ts';
 import { sessionRowMenuItems } from '../src/lib/shell/components/sessionRowMenu.ts';
-import { sessionResumeCommand } from '../src/lib/shell/panels/history/sessionHistoryActions.ts';
-import type { SessionLibraryRecord } from '../src/lib/shell/sessionLibrary/sessionLibraryModel.ts';
+import { sessionResumeCommand } from '../src/lib/shell/history/components/sessionHistoryActions.ts';
+import type { SessionLibraryRecord } from '../src/lib/shell/history/library/sessionLibraryModel.ts';
 
 const ID = 'b1334810-309c-4e16-bc00-d1431b83ba4c';
 

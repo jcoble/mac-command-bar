@@ -2231,7 +2231,7 @@ impl RemoteConnectionManager {
         }
     }
 
-    pub async fn extend_import(&self, owned_id: String) -> Result<super::transcript_import::ExtendedImport, String> {
+    pub async fn extend_import(&self, owned_id: String) -> Result<super::history::ExtendedImport, String> {
         let profile = self.profile_for_owned_id(&owned_id)?;
         self.extend_import_from(profile, owned_id).await
     }
@@ -2240,7 +2240,7 @@ impl RemoteConnectionManager {
         &self,
         profile: String,
         source_owned_id: String,
-    ) -> Result<super::transcript_import::ExtendedImport, String> {
+    ) -> Result<super::history::ExtendedImport, String> {
         self.extend_import_from(profile, source_owned_id).await
     }
 
@@ -2248,7 +2248,7 @@ impl RemoteConnectionManager {
         &self,
         profile: String,
         owned_id: String,
-    ) -> Result<super::transcript_import::ExtendedImport, String> {
+    ) -> Result<super::history::ExtendedImport, String> {
         let epoch = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).epoch(&profile);
         let RemoteResponse::ImportProgress { added, reached_start } = self.request_for_profile(&profile,
             RemoteCommand::ExtendImport { owned_id: owned_id.clone() }).await?
@@ -2264,7 +2264,7 @@ impl RemoteConnectionManager {
             if added > 0 || !reached_start { history.imported_older(&profile, epoch, &owned_id)?; }
         }
         if added > 0 { self.ensure_history_download(&profile, &owned_id).await?; }
-        Ok(super::transcript_import::ExtendedImport { added, reached_start })
+        Ok(super::history::ExtendedImport { added, reached_start })
     }
 
     pub async fn capabilities(
@@ -2629,7 +2629,7 @@ impl RemoteConnectionManager {
         let mut cancellations = self.cancelled_requests.subscribe();
         let profile = self.profile_for_owned_id(&parent_owned_id)?;
         let expected_server_child =
-            super::transcript_import::child_owned_id(&parent_owned_id, &child_session_id)?;
+            super::history::child_owned_id(&parent_owned_id, &child_session_id)?;
         let expected_history_id = RemoteHistory::key(&profile, &expected_server_child);
         if self.connection_state(&profile) != RemoteConnectionState::Connected {
             let source = self
@@ -4509,7 +4509,7 @@ mod connection_tests {
             reader.select_child_history("large-history".into(), "child".into(), 73, 1024).await
         });
         let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected child identity request"); };
-        let owned = super::super::transcript_import::child_owned_id("large-history", "child").unwrap();
+        let owned = super::super::history::child_owned_id("large-history", "child").unwrap();
         reply.send(Ok(RemoteResponse::ChildHistoryId(owned))).unwrap();
         // No yield: cancellation lands after the identity reply, before admission subscribes.
         manager.cancel_request(73).await;
@@ -4624,7 +4624,7 @@ mod connection_tests {
         let reader = manager.clone();
         let child = tokio::spawn(async move { reader.select_child_history("large-history".into(), "child".into(), 55, 1024).await });
         let ClientRequest::Execute { reply, .. } = requests.recv().await.unwrap() else { panic!("expected identity request"); };
-        let owned = super::super::transcript_import::child_owned_id("large-history", "child").unwrap();
+        let owned = super::super::history::child_owned_id("large-history", "child").unwrap();
         reply.send(Ok(RemoteResponse::ChildHistoryId(owned.clone()))).unwrap();
         let ClientRequest::Download { id, command } = requests.recv().await.unwrap() else { panic!("expected child download"); };
         assert!(matches!(command, RemoteCommand::DownloadHistory { owned_id, .. } if owned_id == owned));
