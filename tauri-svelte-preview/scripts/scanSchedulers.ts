@@ -44,7 +44,7 @@ const allowedHits = new Set([
   // These one-shot timers are both stopped by the AbortSignal-owning surface.
   'src/lib/shell/notionOAuth.ts:new Promise:await new Promise<void>((resolve, reject) => {',
   'src/lib/shell/notionOAuth.ts:setTimeout:const timeout = window.setTimeout(finish, CLAIM_INTERVAL_MS);',
-  'src/lib/shell/panels/agents/WorkflowRuns.svelte:setTimeout:const timer = window.setTimeout(() => {',
+  'src/lib/shell/workflows/components/WorkflowRuns.svelte:setTimeout:const timer = window.setTimeout(() => {',
   // One five-second shot per active turn; the effect clears it when the turn ends or the composer unmounts.
   'src/lib/shell/conversation/components/ConversationComposer.svelte:setTimeout:const timer = setTimeout(() => (turnSettled = true), 5000);',
   // One ten-second shot while a filter group is open; closing the group or unmounting clears it.
@@ -64,7 +64,7 @@ const allowedHits = new Set([
   'src/lib/shell/git/gitBackendExtra.ts:Promise.race:return await Promise.race([read(signal), aborted]);',
   // TSK-1424 E/H: one one-second clock for every running workflow stage's elapsed time. It runs only
   // while the panel is visible and a stage is running; the effect cleanup clears it on hide, finish or unmount.
-  'src/lib/shell/panels/agents/WorkflowRuns.svelte:setInterval:const timer = window.setInterval(() => (now = Date.now()), 1000);',
+  'src/lib/shell/workflows/components/WorkflowRuns.svelte:setInterval:const timer = window.setInterval(() => (now = Date.now()), 1000);',
   // TSK-1424 G: the tools column's one-frame WebKit invalidation (hide, change the grid next frame, reveal
   // a frame later). The pending frame id is kept; a newer transition and dispose() cancel it.
   'src/lib/shell/layout/frame.ts:requestAnimationFrame:toolsFrame = requestAnimationFrame(() => {',

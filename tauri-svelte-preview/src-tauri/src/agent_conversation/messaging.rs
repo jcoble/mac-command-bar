@@ -852,7 +852,7 @@ mod tests {
         store.set_main_orchestrator(Some("orch")).unwrap();
         for (run, sequence, worker, lead) in [("run-1", 0, "w1a", json!("top1")), ("run-1", 1, "w1b", json!("top1")),
             ("run-2", 0, "w2", Value::Null), ("run-3", 0, "w3", json!("help1"))] {
-            crate::orchestration::append_workflow_event_value(&store, json!({"id":format!("{run}-{worker}"),"runId":run,"kind":"workflow.node.started",
+            crate::workflow::orchestration::append_workflow_event_value(&store, json!({"id":format!("{run}-{worker}"),"runId":run,"kind":"workflow.node.started",
                 "workflowId":"flow","nodeId":worker,"ownedId":worker,"idempotencyKey":worker,
                 "workflowPayload":{"run":{"lastSequence":sequence,"inputSnapshot":{"task":{"key":run},"started_by":lead}}}})).unwrap();
         }
