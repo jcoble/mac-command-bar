@@ -73,7 +73,7 @@ export async function deployRemoteBackendDev(host: string, options: DeployOption
   const verify = `set -eu; trap 'test $? -eq 0 || systemctl --user --no-pager status assembly-remote.service >&2' EXIT; for _ in $(seq 30); do systemctl --user is-active --quiet assembly-remote.service && test -n "$(ss -ltnH 'sport = :7777')" && break; sleep 1; done; systemctl --user is-active --quiet assembly-remote.service; listeners=$(ss -ltnH 'sport = :7777'); test -n "$listeners"; printf '%s\\n' "$listeners" | awk '$4 != "127.0.0.1:7777" { exit 1 } END { if (NR == 0) exit 1 }'; built=$(sha256sum "${targetRoot}/release/${binary}" | awk '{print $1}'); installed=$(sha256sum "$HOME/.local/bin/assembly-remote-server" | awk '{print $1}'); test "$installed" = "$built"; printf '%s\\n' "$installed"`;
 
   log('Development build — not a signed release');
-  await step('Sync sources', rsync, 'rsync', ['-az', '--delete',
+  await step('Sync sources', rsync, 'rsync', ['-rlpcz', '--delete',
     // Ignored files (build output, local secrets) stay on this Mac.
     '--filter=:- .gitignore', '--exclude=.env*', '--exclude=.git', '--exclude=target/',
     '--exclude=node_modules/', '--exclude=build/', '--exclude=remote-backend-release/',
@@ -84,7 +84,9 @@ export async function deployRemoteBackendDev(host: string, options: DeployOption
 }
 
 async function main(): Promise<void> {
-  await deployRemoteBackendDev(process.argv[2] ?? 'agent-workbox');
+  const host = process.argv[2];
+  if (!host) throw new Error('usage: deployRemoteBackendDev.ts <ssh-host>');
+  await deployRemoteBackendDev(host);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

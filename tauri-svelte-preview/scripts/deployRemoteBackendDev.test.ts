@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { deployRemoteBackendDev, type CommandRunner } from './deployRemoteBackendDev.ts';
 
 const ok = async () => ({ stdout: '', stderr: '' });
@@ -37,7 +39,7 @@ test('builds the exact rsync and ssh argument lists', async () => {
     ['cargo', ['metadata', '--no-deps', '--format-version=1', '--manifest-path', '/checkout/tauri-svelte-preview/src-tauri/Cargo.toml']],
     ['git', ['-C', '/checkout', 'rev-parse', '--short=8', 'HEAD']],
     ['git', ['-C', '/checkout', 'status', '--porcelain']],
-    ['rsync', ['-az', '--delete', '--filter=:- .gitignore', '--exclude=.env*', '--exclude=.git', '--exclude=target/', '--exclude=node_modules/',
+    ['rsync', ['-rlpcz', '--delete', '--filter=:- .gitignore', '--exclude=.env*', '--exclude=.git', '--exclude=target/', '--exclude=node_modules/',
       '--exclude=build/', '--exclude=remote-backend-release/', '/checkout/',
       'agent-workbox:~/dev/work/assembly-backend-dev/']],
     ['ssh', ['--', 'agent-workbox', 'set -eu; if test -f "$HOME/.cargo/env"; then . "$HOME/.cargo/env"; fi; cd "$HOME/dev/work/assembly-backend-dev/tauri-svelte-preview"; pnpm install --frozen-lockfile; pnpm build; CARGO_TARGET_DIR="$HOME/.cache/assembly-backend-dev-target" cargo build --locked --release --manifest-path src-tauri/Cargo.toml --bin mac-command-bar-webview-preview']],
@@ -66,4 +68,24 @@ test('does not install or restart when the build fails', async () => {
     checkoutRoot: '/checkout', local: cleanCheckout, rsync: ok, ssh, log: quiet
   }), { message: 'cargo failed exactly\n' });
   assert.equal(sshCalls, 1);
+});
+
+test('syncs changed content without preserving source modification times', async () => {
+  let flags = '';
+  const rsync: CommandRunner = async (_file, args) => { flags = args[0]; return ok(); };
+  await deployRemoteBackendDev('workbox-test', {
+    checkoutRoot: '/checkout', local: cleanCheckout, rsync, ssh: ok, log: quiet
+  });
+  assert.ok(!flags.includes('a'), 'archive mode preserves modification times');
+  assert.ok(!flags.includes('t'), 'modification times must not be preserved');
+  assert.ok(flags.includes('c'), 'compare source content by checksum');
+});
+
+test('requires an explicit SSH host on the command line', () => {
+  const result = spawnSync(process.execPath, [
+    '--experimental-strip-types', fileURLToPath(new URL('./deployRemoteBackendDev.ts', import.meta.url))
+  ], { encoding: 'utf8', env: { ...process.env, PATH: '' } });
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr.trim(), 'usage: deployRemoteBackendDev.ts <ssh-host>');
+  assert.equal(result.stdout, '');
 });
