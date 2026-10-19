@@ -4602,7 +4602,7 @@ mod tests {
         assert!(summary.starts_with("ok") && !summary.contains("warning"), "{summary}");
         let prompts = definition.nodes.iter().filter_map(|node| node.step["prompt"].as_str().or(node.step["review"]["prompt"].as_str()))
             .filter(|prompt| !prompt.trim().is_empty()).count();
-        assert_eq!(prompts, 9);
+        assert_eq!(prompts, 10);
         // The PR gets the body written after the final review, whether or not the run merges.
         let node = |id: &str| definition.nodes.iter().find(|node| node.id == id).unwrap();
         assert_eq!(node("pr-body").depends_on, ["final-review"]);
