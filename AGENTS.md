@@ -1,32 +1,111 @@
-# mac-command-bar
+Assembly
+Assembly is a minimal GUI for coding agents. A Rust server wraps provider ACP adapters and agents (Codex, Claude Code, Antigravity) and serves desktop, and mobile clients.
 
+You can think of Assembly as an open source "bring-your-own-subscription" alternative to apps like Claude Desktop, Codex App, Cursor Glass and Conductor.
+
+What makes Assembly special?
+These are the things that make Assembly different from other agent harnesses. They are the foundation of the project, and the reason we are building it. They are also a
+list of the things we can never compromise on.
+
+1. Open at the core
+Assembly is truly open. We share our roadmap, we share how we think about things, and of course we share all our code. We work in the open, and should strive to stay that way.
+
+2. Performance and low memory usage without compromise
+
+This app is being built because existing tools are slow and heavy. Low CPU, low RAM, low GPU, and a
+snappy UI are the product — every feature is secondary to that. Anything added must prove it does not
+slow the app down or add idle resource cost.
+
+Lots of apps have gotten bogged down with bad tech decisions and "slop". We have not, and we're proud of the performance of Assembly. We regularly audit for performance regressions, often caused by sending too much data over taouri commands, websockets, css animations causing gpu spikes, ticks and timers, not disposing things correctly, no stopping running processes when cancelled (abort signals) and more. Make sure all changes are considerate of performance and memory impact.
+
+3. Remote ready
+The architecture of Assembly's IPC processes, JSON-RPC, and websocket layer enables a lot of awesome remote features. These have become core to the product. Whether users are connecting directly over their local network to a remote backend, using tailscale to connect to the mobile app using Tailscale, we need to make sure new features are properly supported.
+
+4. Multi-surface
+Assembly has 2 key app surfaces: desktop, and mobile.
+
+Desktop is kind of two surfaces, as we have the public facing "app.t3.codes" as well as locally hosting the web app through the npx t3 command. Both need to be supported by all new features where reasonable.
+
+Desktop is the main surface most users install first. It's a full Tauri/Sveltekit/Russt app that bundles the server runner as well. The desktop app can also be used as the host server, allowing remote connections from the remote backend or the mobile app.
+
+Mobile is a Flutter app for Android now and iOS in the future, available on the App Store and Google Play soon. The mobile app allows for connecting to any Assembly server to control work remotely.
+
+A note from Jesse
+I like ambitious ideas, simple systems, and software that feels obvious. Do not preserve complexity just because it already exists. Do not introduce machinery because it looks architecturally impressive. Understand the real constraint, then fight for the smallest model that makes the correct behavior unsurprising.
+
+Channel both "measure twice, cut once" and "yagni". Fight scope creep. Try to honor the dev's intent in both a minimal and realistic fashion.
+
+The rest of this document is meant to help you navigate the codebase and make changes effectively. Think of these instructions less as "hard rules", more as "good defaults". The developer's preferences should be able to override anything here.
+
+A small glossary
+We need to be on the same page with terminology. When communicating, use this language:
+
+you means the agent reading this file and changing Assembly.
+we, us, and maintainer/owner mean Jesse. This is who you are talking to now.
+user means the person using Assembly to direct coding agents.
+agent means the coding agent a user runs inside Assembly. Depending on context, that may also include you.
+provider means the agent runtime or harness Assembly talks to, such as Codex, Claude, or Antigravity.
+client means the desktop, or mobile UI.
+environment means one running Assembly server and the machine, filesystem, provider credentials, and state it owns.
+project means an environment-local workspace record rooted at a directory.
+session means the durable conversation (chat history), project, and files and work history for a project.
+turn means one user-to-agent cycle, including follow-up work such as checkpointing.
+Assembly home means the base data directory. Runtime state normally lives below its userdata directory.
+The three ways to hurt yourself
+Killing by pattern. Never pkill -f, pgrep | kill, or kill a PID you found by matching a name, path, or worktree string. Your own agent process has this worktree's path in its argv, and this machine runs several other dev servers at once. Kill only a PID you captured at spawn, or the owner of your port from ss -H -ltnp after confirming /proc/<pid>/cwd is your worktree.
+ 
+ The owners sqlite db, Reading it and copying from it are fine, and a good way to get real test data (see Test data). Never start a server against it, never open it read-write, never clean it up.
+URemote scenarios run on the test machine "Workbox Test" (SSH alias `workbox-test`, see `tools/workbox-test/README.md`), added in the proof app's Settings → Connections with **Install and connect**. Lanes never connect a proof app to the owner's machines ("Agent Workbox" or any other saved machine), because their sessions land in the owner's session list.  All testing must contain the 4 parts of the testingn matrix before every PR, or it will not be merged.  Both Claude Code and Codex must test what was just implmemented against the local test app, and then both Claude Code and Codex must test what was just implemnted against the remote server test box on the workbox in the container. 
+
+Anything that changes the chat (history, turn folds, tool calls and their grouping, live versus stored rows, the composer) must work the same for Claude Code and Codex, each on a local and a remote session. Verify all four in a running app before calling it done, and report a four-row table (provider × local/remote: pass/fail + evidence). A scenario you cannot run is reported as blocked with the exact error, never skipped silently.
+
+Hit every surface
+The most common defect in this repo is a change that works on the path you tested and is missing everywhere else. Before calling frontend work done, walk this list and say which entries applied:
+
+Entry points. A behavior reachable from the chat view is usually also reachable from Settings. Fixing one is not fixing the feature.
+Clients, desktop (wraps svelte web, adds Tauri shell/IPC), and mobile (Flutter, separate navigation). Shared logic lives in packages/client-runtime
+Providers. Codex, Claude, Agy each have an adapter. They get downloaded and packeged/released/signed at 7:30 AM Eastern everyday, if the upstream adapter is a newer version. They get packaged with provider specific configurations. Provider-shaped features need a decision per adapter, even if the decision is "not supported here".
+Agents. A capability a user can trigger is usually one an agent should reach through tools, and scheduled tasks run the same paths. That only works when it is a service method, not handler code.
+Contracts. Anything crossing the wire is typed in packages/contracts. Change the schema and the server, mobile, and desktop all follow.
+Reverse states. If you added a way in, add the way out and the way to see it. Snooze needs unsnooze. Close needs reopen. A one-way door is a bug.
+Connection modes. Local, remote/relay, and tunnel behave differently. Multi-device and multi-environment cases are real.
+
+Stop what you started, by the PID you tracked. See rule 1.
+Test data
+An empty database is a bad test. Seed your worktree's db with a copy of real data instead of pointing at live state:
+
+Data flows one way: into your sandbox, never back out.
+Verifying
+Smallest proof that the change works. svelte check test run <files> for the tests you touched, targeted backend tests and typecheck for the scope you changed.
+Test meaningful logic or observable behavior. Do not render components to static markup to assert props or attributes, or add tests that merely assert callback wiring or mirror the implementation.
+Do not run repo-wide checks. CI owns the full suite.
+Backend behavior changes ship with focused tests for that behavior.
+The server is event-sourced, and side effects run after the command commits. Never wait on sleeps or polling. A test that needs a timeout to pass is wrong.
+Upon request, user-visible frontend changes should get one integrated pass in a real client: test-assembly-app for desktop, test-assembly-mobile for mobile. The primary agent does this once after integrating. Subagents do not launch their own dev servers.
+
+Pull requests
+Never make a PR unless the developer explicitly asks you to do so.
+Conventional commit titles, plain language: fix(web): new threads no longer spike CPU.
+Body: the problem in a sentence or two, then how you fixed it. End with the model and harness that did the work.
+UI changes need before/after images. Motion or timing needs a short video.
+Upload PR evidence to Google Drive. Never commit PR-only screenshots or assets such as .github/pr-assets/.
+One request is one PR. Split it only when the maintainer asks. Outside contributions follow the stricter one problem per PR rule.
+When babysitting: poll checks and comments newer than the last push, verify each bot finding against the source, fix real ones, dismiss false positives with a written reason. Stay quiet when nothing is new. Stop when the bots are green on the latest commit.
+Documentation
 ## ⛔ `main-architecture-explained.html` is the architecture source of truth (2026-08-19, owner)
-
 The page at the repository root, `main-architecture-explained.html`, is the single description of how
 the app works: boundaries, provider adapters, session/prompt/suspend lifecycle, storage, wire formats,
 frontend projection, native surfaces. It is the only architecture description that is kept current;
 there is no second copy anywhere in the tree (not under `docs/`, not in a plan).
 
-Any commit that changes what the page describes — a Tauri command, an event or payload, a table, an
-adapter version or protocol call, a lifecycle rule, a file's responsibility, a new subsystem — updates
-the page IN THE SAME COMMIT: fix the sections it touches, keep the `file:line` receipts true, and add a
-row to the change log in section 01 (commit, what changed, sections). A commit that changes nothing the
-page describes (styling, copy, tests, tooling) says so with the line `Architecture: unchanged` in its
-message body.
 
-Enforced by `.githooks/commit-msg`: a commit that neither stages the page nor carries that line is
-refused. One-time setup per clone: `git config core.hooksPath .githooks` (already set for this
-repository's worktrees). Paste this rule into every dispatch that may commit.
+All new frontend/tooling code is TypeScript — including one-off scripts, test scripts, and probes
+(`node --experimental-strip-types` runs `.ts` directly, so there is no excuse for `.mjs`).
 
-## ⛔ Test chat behaviour in all four scenarios (2026-10-09, owner; Antigravity dropped 2026-10-10)
-
-Anything that changes the chat (history, turn folds, tool calls and their grouping, live versus stored rows, the composer) must work the same for Claude Code and Codex, each on a local and a remote session. Verify all four in a running app before calling it done, and report a four-row table (provider × local/remote: pass/fail + evidence). A scenario you cannot run is reported as blocked with the exact error, never skipped silently. Antigravity is no longer a required scenario (owner, 2026-10-10: likely to be removed); do not spend lane time on it.
-
-Remote scenarios run on the test machine "Workbox Test" (SSH alias `workbox-test`, see `tools/workbox-test/README.md`), added in the proof app's Settings → Connections with **Install and connect**. Lanes never connect a proof app to the owner's machines ("Agent Workbox" or any other saved machine), because their sessions land in the owner's session list.
-
-## ⛔ ACP runtimes stop when quiescent; Assembly sessions do not own model context (2026-08-21, owner)
-
-Keep these three lifetimes separate in every diagnosis and implementation:
+main-architecture-explained.html is for architectural decisions and their reasons, constraints that span components, and implementation traps that are hard to discover from the source. Before adding a paragraph, ask what a maintainer would get wrong without it. 
+Do not document every feature, enumerate fields or methods, narrate control flow, maintain file catalogs, or append PR summaries. Types, tests, and code already record the implementation. The glossary defines shared vocabulary; it is not a feature index.
+Keep a local implementation explanation in a nearby code comment. Use an internal doc when the reasoning crosses boundaries or needs context the code cannot carry well. Link to the relevant source instead of copying it.
+When a documented decision or constraint changes, rewrite or remove the affected text. Do not append another account of the new behavior. A new internal page needs a distinct, durable reason to exist.
 
 - The Assembly session (`ownedId`) is the durable SQLite/UI record: normalized journal, draft,
   attachments, workspace state and rail metadata.
@@ -39,128 +118,7 @@ Keep these three lifetimes separate in every diagnosis and implementation:
   ACP session and stops the sidecar process group when its pool has no other members. The next send
   launches the adapter and resumes or loads the same provider-native ID.
 
-Never describe suspended/disconnected rows as live ACP sessions or leave idle ACP runtimes resident
-for quick switching. Session selection changes only the large frontend projection; it neither
-interrupts a live turn nor pins an idle adapter. A resource audit must distinguish lightweight
-suspended records from actual adapter/agent process trees and should expect the latter to return to
-zero when every turn is quiescent.
-
-## ⛔ Every UI dispatch carries the Notion task and the screenshot paths (2026-08-17, owner)
-
-A sub-agent starts cold. It cannot see the conversation, the owner's messages, or any image the
-owner pasted — images live in the controller's context, not on the agent's disk. Whatever the
-controller retypes from memory is the entire world the agent gets, and a paraphrase silently drops
-requirements. That is exactly how a composer restyle shipped with no `+` button, a send button on an
-empty field, and unstyled menus, when all three were written down.
-
-Do not paraphrase the owner's decisions. Hand over the two artifacts that already hold them:
-
-1. **The Notion task id**, with instructions to `notion-fetch` it and read the relevant sections
-   verbatim. The Command Center task is where the owner's decisions accumulate, in their words,
-   including later corrections the controller has forgotten.
-2. **Absolute paths to the reference screenshots**, with instructions to `Read` each one before
-   touching a file. Screenshots attached to a Notion task are also saved under
-   `~/dev/work/reports/tsk-ui-base/screenshots/` — check there first. Recent pastes live in
-   `~/.claude/image-cache/<session-id>/`, but that cache is evicted, so a task's images must be
-   copied somewhere durable and the path recorded in the task body.
-
-The dispatch then requires the agent to reply with a requirement-by-requirement checklist —
-`already done` / `will fix` / `blocked` — BEFORE it edits anything, so a misread surfaces in one
-message instead of in a diff the owner has to review by eye.
-
-Corrections go to the SAME agent via `SendMessage` when the fix depends on what it already built.
-A fresh agent re-reads everything and repeats the mistakes it cannot see.
-
-## ⛔ Never write a CSS `:has()` selector (purged 2026-08-13, commit `ccd3cc1`)
-
-Not a style preference. Profiling the live app's startup freeze found the WebContent main
-thread spending SECONDS inside `:has()` invalidation while the transcript inserted its DOM.
-Once any `:has` rule is registered anywhere, WebKit re-checks it on every DOM mutation in the
-whole document — so one careless selector taxes every keystroke and every streamed token in
-the app, not just the component that declared it.
-
-Every relational selector was replaced with a state class set where the state originates:
-`.menu-open` set by whatever owns the open state, `.next-shell-document` toggled by the route
-lifecycle, explicit props (`iconPosition`, `hasFooter`, `hasMedia`, `hasKbd`) instead of
-descendant inspection. Third-party CSS was not exempt: a vite transform rewrites dockview's
-and Monaco's selectors and patches the paired class toggles, keyed to exact source markers so
-a dependency upgrade FAILS THE BUILD rather than quietly restoring the cost.
-
-Write the state instead: a class on the element that owns it, a custom property inherited
-down, or a pseudo-class scoped to the element that actually has it (`.group:focus-within`,
-never `.region:has(:focus)`). Tailwind's `has-[...]` variants compile to `:has()` and are
-banned by the same rule. `src` currently greps zero `:has(` — keep it that way.
-
-## ⛔ No UI regression tests until the owner says otherwise (2026-08-17, owner)
-
-Do not write, restore, or re-add any test that asserts on component structure, layout, panels,
-menus, styling, colour tokens or contrast. The UI is being reshaped daily and those tests only go
-red and get "fixed" to match whatever the UI happens to be, which proves nothing and wastes the
-owner's time. Thirty-eight of them were deleted on 2026-08-17 for exactly that reason.
-
-This applies to every lane and sub-agent — paste it into every dispatch. If a change seems to need
-one, say so and move on without writing it; the owner will lift this when the UI settles.
-
-Still expected: tests for logic and data — parsing, reducers, view models, stores, protocol
-contracts, Rust backend behaviour. A test that would survive a total restyle is fine.
-
-## ⛔ Performance is the reason this app exists
-
-This app is being built because existing tools are slow and heavy. Low CPU, low RAM, low GPU, and a
-snappy UI are the product — every feature is secondary to that. Anything added must prove it does not
-slow the app down or add idle resource cost.
-
-Rules for all work in this repo:
-
-- **Animations are welcome — every one must END.** Finite, interaction-driven animation (hover
-  fades, menu pops, 150-250ms slides on transform/opacity) costs nothing once finished; use it
-  generously to make the app feel alive. What is forbidden is animation without an end: infinite
-  time-based loops at rest (pulsing dots, shimmer, spinner loops, animated gradients) force the
-  compositor to draw every frame forever. A loop is allowed only while tied to real activity (a
-  working indicator during an actual turn) and pauses when offscreen or hidden
-  (`content-visibility`, IntersectionObserver, or removing the class). Animate transform/opacity,
-  never layout properties (width/height/top).
-- **No idle timers doing visual work.** Intervals that re-render (sparklines, tickers) must be
-  single-flight, scoped to the smallest component (one `<span>`, not a row), and stopped when the
-  element is not visible. Prefer event-driven updates over polling.
-- **GPU cost is real cost.** `backdrop-filter`, large `blur()`, big `box-shadow` stacks, and
-  always-on `transform` layers keep the compositor busy. Use sparingly; never on many elements in a
-  scrolling list.
-- **Lists must be cheap offscreen.** Long lists (session rail, transcripts) use
-  `content-visibility: auto` with `contain-intrinsic-size`, or virtualization.
-- **Measure before shipping anything animated or periodic.** Minimum receipt: with the feature idle
-  on screen, the WebView content process and app process sit near 0% CPU (`ps -o %cpu -p <pid>`
-  sampled over ~10s) and no animation is running (`document.getAnimations().length` at rest,
-  long-task count from PerformanceObserver). Interaction latency: clicking a session must stay
-  under ~350ms to interactive.
-- A correct feature that makes the app feel slower is a defect. Fix or remove it.
-
-## ⛔ Async lifecycle: every timer and async call has an owner that stops it (2026-10-10, owner)
-
-`pnpm --dir tauri-svelte-preview test:async-lifecycle` (`tauri-svelte-preview/scripts/scanSchedulers.ts`)
-enforces this. It fails on any of these in `tauri-svelte-preview/src` unless the exact line is on its
-allow-list: `setTimeout`, `setInterval`, `requestAnimationFrame`, `requestIdleCallback`,
-`queueMicrotask`, Svelte `tick`, `.then`/`.catch`/`.finally`, `new Promise`, `Promise.race`,
-`Promise.withResolvers`, an anonymous `async () =>` run on the spot, and a function that returns a
-`Promise` without being `async`. Never add a hit; TSK-1424 is rewriting the ones on main.
-
-- **Promise chains become `async`/`await` with an `AbortSignal`.** Write a named `async` function that
-  takes `signal: AbortSignal` from its owner, `await`s each step, and checks `signal.aborted` after
-  every `await` before touching state. Errors go in `try`/`catch`, not `.catch`. Fire-and-forget is
-  `void doThing(signal)`, where `doThing` catches its own errors.
-- **Timers stop when they should, and on destroy.** The owner clears every timer in its teardown (the
-  `$effect` cleanup, `onDestroy`, or the controller's `dispose()`) and as soon as the thing it waits
-  for has happened. A stopped owner leaves no timer, listener, or closure holding its memory. Prefer
-  events to polling.
-- **The backend can abort too.** A Tauri command that does real work (git, files, SSH, network, a
-  long stream) takes a request id, and its frontend wrapper takes the signal and sends the cancel
-  command when it aborts. Follow `listRemoteAgentConversationSessionsFromTauri` in `tauriSource.ts`
-  with `cancel_agent_conversation_request`. A cheap settings or SQLite call may just drop its result.
-- **Exceptions need a really good reason and proof.** Rewrite first. If a hit must stay, add its exact
-  line to `allowedHits` in `scanSchedulers.ts` with a comment naming who stops it and when, and show
-  in the PR that it stops on destroy.
-
-## ⛔ One way only — never old and new side by side
+  ## ⛔ One way only — never old and new side by side
 
 A change is finished only when the old way is deleted. Never leave two mechanisms for the same job in
 the tree: no compatibility bridges, no "legacy" fallback paths, no adapters kept just in case, no
@@ -169,7 +127,20 @@ truth. A migration cuts over and removes the old path in the same wave — if th
 deleted yet, the change isn't done, and the work does not merge. When you find an existing old/new
 split, deleting one side is part of whatever task touched it.
 
-## ⛔ KISS and YAGNI are load-bearing rules
+  Do not write, restore, or re-add any test that asserts on component structure, layout, panels,
+menus, styling, colour tokens or contrast. The UI is being reshaped daily and those tests only go red and get "fixed" to match whatever the UI happens to be, which proves nothing and wastes the owner's time.
+
+Never describe suspended/disconnected rows as live ACP sessions or leave idle ACP runtimes resident
+for quick switching. Session selection changes only the large frontend projection; it neither
+interrupts a live turn nor pins an idle adapter.
+
+A sub-agent starts cold. It cannot see the conversation, the owner's messages, or any image the
+owner pasted — images live in the controller's context, not on the agent's disk. Whatever the
+controller retypes from memory is the entire world the agent gets, and a paraphrase silently drops
+requirements.
+
+
+# ⛔ KISS and YAGNI are load-bearing rules
 
 - **Keep it simple.** The simplest design that does the job wins. One store, one path, one obvious
   place for each responsibility. If explaining a design takes more than a few sentences, simplify the
@@ -178,43 +149,36 @@ split, deleting one side is part of whatever task touched it.
   no config for things nobody configures, no generalizing a function that has one caller. Add
   flexibility on the day it is actually needed, not before.
 
-## Explain in HTML, not walls of text
+  - **Animations are welcome — every one must END.** Finite, interaction-driven animation (hover
+  fades, menu pops, 150-250ms slides on transform/opacity) costs nothing once finished; use it
+  generously to make the app feel alive. What is forbidden is animation without an end: infinite
+  time-based loops at rest (pulsing dots, shimmer, spinner loops, animated gradients) force the
+  compositor to draw every frame forever. A loop is allowed only while tied to real activit
 
-Anything beyond a simple explanation gets a self-contained HTML page — a diagram, a mockup, a
-before/after, an annotated flow — instead of paragraphs. Plans and especially specs should be written
-as (or paired with) an HTML page under `docs/`; they are far easier to read and review. A mockup HTML
-page is the approval artifact for any visual change.
-
-## TypeScript over JavaScript, always
-
-All new frontend/tooling code is TypeScript — including one-off scripts, test scripts, and probes
-(`node --experimental-strip-types` runs `.ts` directly, so there is no excuse for `.mjs`). Existing
-`.mjs` files under `tauri-svelte-preview/scripts/` convert to `.ts` when a task touches them (one-way
-rule: the rename and the change land together). Never add a new `.js`/`.mjs` file.
-`any` is a last resort: type things properly — real interfaces, unions, generics, `unknown` with
-narrowing — and reach for `any` only when a correct type is genuinely impractical (say why in the
-one place it's used).
-
-## Browser viewport — 1710x990, every Playwright/browser session, no exceptions
-
-The desktop testing viewport is 1710x990 (this Mac's 2880x1864 Retina in "More Space" = 1710x1107
-points, minus ~117 for menu bar + browser chrome). Half-width screenshots have invalidated whole
-test runs; every browser mechanism must pin and VERIFY it:
-
-- playwright-cli: `open <url>`, then `resize 1710 990`, then verify with
-  `eval "() => window.innerWidth + 'x' + window.innerHeight"` — must print "1710x990"; resize
-  again if not, and re-run after any browser restart.
-- Raw playwright scripts: `chromium.launch(...)` + context/page viewport `{ width: 1710, height: 990 }`,
-  then the same innerWidth verification before any screenshot or measurement.
-- Playwright test-runner configs: pin `viewport: { width: 1710, height: 990 }` INSIDE each
-  project's `use` block AFTER any `...devices[...]` spread — the spread otherwise silently drops
-  it to 1280x720.
-
-## Notion task delivery record
+  ## Notion task delivery record
 
 For implementation of a Notion-tracked task, use the shared `work-tasks` skill at
 `.claude/skills/work-tasks/SKILL.md` (also exposed at `.codex/skills/work-tasks`).
 Keep the small plan, Eastern-dated owner/location and commit updates, direct proof,
 and one combined code/spec review in the task page. Review the plan before editing.
 Link that task and its proof from the PR. The commit hook checks the task link on
-`tsk-*` branches, a final `Committed-by:` line, and no `Co-Authored-By` trailer.
+`tsk-*` branches, a final `Committed-by:` line, and no `Co-Authored-By` trailer. -->
+
+
+## Explain in HTML, not walls of text
+
+Anything beyond a simple explanation gets a self-contained HTML page — a diagram, a mockup, a
+before/after, an annotated flow — instead of paragraphs.
+
+docs/user/ helps users accomplish tasks. Give each major feature a concise section explaining what it does, how to start, and anything unintuitive. A settings path is useful; descriptions of visible buttons, icons, layouts, animations, or every UI state are not. Before adding text, ask what task or decision it helps the user with.
+Keep user docs in the shipped product's voice, without implementation details or contributor tooling. Update the relevant feature section when how to use it changes. A UI tweak does not need a documentation entry, and a new control does not need its own page.
+docs/operations/ holds maintainer setup, release, and debugging procedures. Keep instructions for operating an installed Assembly server in the user guides.
+Plans and work artifacts
+Do not commit implementation plans, research notes, or agent scratch files. Keep temporary working material outside the worktree. .plans/ is gitignored only as a safety net for legacy tooling.
+Track active maintainer work in the GitHub issue or project item that owns it. External proposals follow CONTRIBUTING.md and belong in Ideas discussions.
+A merged PR is the implementation record. Close or update its tracking item when the work lands; do not preserve a second checklist in the repository.
+
+Taste
+Complexity belongs at the adapter boundary. Orchestration stays pure, UI stays dumb.
+
+
