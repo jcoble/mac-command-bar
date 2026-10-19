@@ -6,7 +6,7 @@
   import { conversationMessagesContext, type ConversationMessagesContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import { readRemoteAssemblyEnvironmentFromTauri, type RemoteAssemblyProfile } from '$lib/tauriSource';
   import { untrack } from 'svelte';
-  import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
+  import { normalizeProvider, type OwnedSession } from '$lib/shell/ownedSessions.ts';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import type {
     AgentConfigValue,
@@ -128,9 +128,8 @@
   const origin = $derived(activeOrigin ?? active?.origin ?? 'external');
   const appOwned = $derived(origin === 'app');
   function isStructuredAgent(agent: string | undefined): boolean {
-    if (!agent) return false;
-    const a = agent.toLowerCase();
-    return a === 'codex' || a === 'claude' || a === 'antigravity' || a === 'anthropic' || a === 'openai' || a === 'gemini' || a === 'agy';
+    const { agent: provider } = normalizeProvider(agent ?? '');
+    return ['codex', 'claude', 'antigravity'].includes(provider);
   }
   const structured = $derived(!!active && isStructuredAgent(active.agent) && (appOwned || conversation?.mode !== 'raw'));
   const transcriptChat = $derived.by(() => {
@@ -237,7 +236,7 @@
   const sendError = $derived(conversation?.sendError ?? '');
   const providerNotice = $derived(conversation?.providerNotice ?? '');
   const capabilityTarget = $derived(structured && active && conversation
-    && ['claude', 'codex', 'antigravity'].includes(active.agent)
+    && isStructuredAgent(active.agent)
     ? `${active.ownedId}:${conversation.generation}:${conversation.provider}:${conversation.connectionState}:${conversation.nativeSessionId ?? ''}`
     : '');
   let configRequest = '';
@@ -305,7 +304,7 @@
 
   $effect(() => {
     if (pendingFirstMessage || remoteDisconnected) return;
-    if (!structured || !active || !conversation || (active.agent !== 'claude' && active.agent !== 'codex' && active.agent !== 'antigravity')) return;
+    if (!structured || !active || !conversation || !isStructuredAgent(active.agent)) return;
     const ownedId = active.ownedId;
     const generation = conversation.generation;
     const key = `${ownedId}:${generation}:${conversation.connectionState}`;

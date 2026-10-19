@@ -1,3 +1,5 @@
+import { test } from 'node:test';
+import { normalizeProvider } from '../src/lib/shell/ownedSessions.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
@@ -104,6 +106,7 @@ assert.equal(legacy.topTabs, undefined);
   const disposed: string[] = [];
   const dependencies = {
     rail,
+    normalizeProvider,
     getConversationSession: (id: string) => states.get(id),
     ensureConversationSession: (id: string, provider: string) => {
       if (states.get(id)?.provider !== provider) states.set(id, { provider, generation: 1, selectedChildHistoryOwnedId: null });
@@ -290,6 +293,16 @@ assert.equal(legacy.topTabs, undefined);
     }
   }
 
+  await test('a selected antigravity helper keeps its own provider', () => {
+    dependencies.ensureConversationSession('alias-parent', 'claude');
+    for (const agent of ['antigravity', 'gemini', 'agy', 'anthropic', 'openai', 'claudecode']) {
+      const id = `helper-${agent}`;
+      rail.owned.push({ ownedId: id, agent });
+      api.selectConversationChat('alias-parent', id);
+      assert.equal(states.get(id)?.provider, { antigravity: 'antigravity', gemini: 'claude', agy: 'antigravity', anthropic: 'claude', openai: 'codex', claudecode: 'claude' }[agent]);
+      api.disposeChildConversationChat('alias-parent');
+    }
+  });
 }
 
 console.log('conversation session isolation tests passed');

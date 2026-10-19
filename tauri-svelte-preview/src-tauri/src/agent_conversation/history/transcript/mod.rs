@@ -77,7 +77,7 @@ pub fn discover(
     let path = match provider {
         AgentConversationProvider::Codex => codex::discover_path(&id),
         AgentConversationProvider::Claude => claude::discover_path(&id)?,
-        AgentConversationProvider::Antigravity => None,
+        AgentConversationProvider::Antigravity => None, // No Antigravity transcript reader yet; parity is tracked by TSK-1297.
     };
     path.map(location).transpose()
 }
@@ -92,7 +92,7 @@ pub fn discover_child(
     let path = match provider {
         AgentConversationProvider::Codex => codex::discover_child_path(&parent_id, &child_id),
         AgentConversationProvider::Claude => claude::discover_child_path(&parent_id, &child_id)?,
-        AgentConversationProvider::Antigravity => None,
+        AgentConversationProvider::Antigravity => None, // No Antigravity transcript reader yet; parity is tracked by TSK-1297.
     };
     path.map(location).transpose()
 }
@@ -108,8 +108,8 @@ pub fn child_watch_directory(
         AgentConversationProvider::Codex => codex::child_watch_directory(&parent_id, &child_id),
         AgentConversationProvider::Claude => claude::child_watch_directory(&parent_id)?
             .ok_or_else(|| format!("Parent transcript {parent_id} was not found")),
-        AgentConversationProvider::Antigravity => {
-            Err("Transcript provider is unsupported".to_string())
+        AgentConversationProvider::Antigravity => { // No Antigravity transcript reader yet; parity is tracked by TSK-1297.
+            Err("Antigravity has no transcript reader yet.".to_string())
         }
     }
 }
@@ -147,7 +147,7 @@ pub fn parse_durable_line(
     match provider {
         AgentConversationProvider::Codex => codex::project(&value, line),
         AgentConversationProvider::Claude => claude::project(&value, line, native_session_id),
-        AgentConversationProvider::Antigravity => Vec::new(),
+        AgentConversationProvider::Antigravity => Vec::new(), // No Antigravity transcript reader yet; parity is tracked by TSK-1297.
     }
 }
 
@@ -165,7 +165,7 @@ pub fn parse_durable_child_line(
         AgentConversationProvider::Claude => {
             claude::project_child(&value, line, parent_native_session_id, child_session_id)
         }
-        AgentConversationProvider::Antigravity => Vec::new(),
+        AgentConversationProvider::Antigravity => Vec::new(), // No Antigravity transcript reader yet; parity is tracked by TSK-1297.
     }
 }
 

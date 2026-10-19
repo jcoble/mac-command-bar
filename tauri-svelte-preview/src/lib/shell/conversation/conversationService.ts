@@ -32,7 +32,7 @@ import { sessionTitleFromPrompt } from '../sessionStrip.ts';
 import { publishWorkspaceFileChange } from '../workspaceFileChangeBus.ts';
 import { agentItemFromEvent, displayItemFromAgentItem } from './conversationTimeline.ts';
 import { addOwnedSession, rail, setRemoteConnection, updateOwnedSession } from '../stores/sessionRailStore.svelte';
-import { findSessionRecord, ownedSessionFromBackend } from '../ownedSessions.ts';
+import { normalizeProvider, findSessionRecord, ownedSessionFromBackend } from '../ownedSessions.ts';
 import type { RemoteConnectionState } from '../stores/sessionRailStore.svelte';
 import {
   decideConversationActivation,
@@ -1514,14 +1514,13 @@ export async function sendStructuredMessage(
         generation: state.generation
       })
     ) {
-      const provider: AgentConversationProvider | null =
-        owned.agent === 'codex' || owned.agent === 'claude' || owned.agent === 'antigravity'
-          ? owned.agent
-          : null;
-      if (!provider) throw new Error('This stopped session cannot be revived as a conversation');
+      const provider = normalizeProvider(owned.agent).agent;
+      if (provider !== 'codex' && provider !== 'claude' && provider !== 'antigravity') {
+        throw new Error('This stopped session cannot be revived as a conversation');
+      }
 
       const previousGeneration = state.generation;
-      const activation = decideConversationActivation(owned, state);
+      const activation = decideConversationActivation({ ...owned, agent: provider }, state);
       if (activation.kind === 'terminal') {
         throw new Error('This stopped session must be started from its session row');
       }

@@ -1,3 +1,4 @@
+import { normalizeProvider } from '../src/lib/shell/ownedSessions.ts';
 import assert from 'node:assert/strict';
 import { readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
@@ -23,6 +24,7 @@ let readStarted = deferred();
 const reads: string[] = [];
 const writes: string[] = [];
 const dependencies: Record<string, unknown> = {
+  normalizeProvider,
   ...runtime, dev: false, onDestroy: noop,
   ensureConversationSession: () => ({ viewByHistoryId: {} }),
   rail: { owned: ['A', 'B'].map((ownedId) => ({ ownedId, agent: 'codex', root })), activeOwnedId: null },

@@ -282,9 +282,9 @@ function defaultMintId(): string {
 export function normalizeProvider(provider: string): { agent: AgentKind; viaCmux: boolean } {
   const value = (provider ?? '').trim().toLowerCase();
   const viaCmux = value.startsWith('cmux-');
-  const base = viaCmux ? value.slice('cmux-'.length) : value;
-  const agent = (KNOWN_AGENTS as string[]).includes(base) ? (base as AgentKind) : 'other';
-  return { agent, viaCmux };
+  const base = (viaCmux ? value.slice('cmux-'.length) : value).replaceAll(/[\s_-]+/g, '');
+  const agent = ['anthropic', 'claudecode'].includes(base) ? 'claude' : base === 'openai' ? 'codex' : base === 'agy' ? 'antigravity' : base;
+  return { agent: (KNOWN_AGENTS as string[]).includes(agent) ? (agent as AgentKind) : 'other', viaCmux };
 }
 
 export function adoptAgentSession(record: AgentSession, mintId: () => string = defaultMintId): OwnedSession {

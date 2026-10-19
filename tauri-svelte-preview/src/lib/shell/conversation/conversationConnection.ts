@@ -1,3 +1,4 @@
+import { normalizeProvider } from '../ownedSessions.ts';
 import { EventType, type StreamChunk } from '@tanstack/ai/client';
 import {
   createChat,
@@ -714,9 +715,8 @@ export function selectConversationChat(
     disposeChildConversationChat();
     const parent = getConversationSession(workspaceOwnedId);
     if (!parent) throw new Error('The parent conversation is not selected.');
-    // A helper is its own session on either provider; a native child shares its parent's.
-    const agent = rail.owned.find((session) => session.ownedId === historyOwnedId)?.agent;
-    ensureConversationSession(historyOwnedId, agent === 'claude' || agent === 'codex' ? agent : parent.provider);
+    const { agent } = normalizeProvider(rail.owned.find((session) => session.ownedId === historyOwnedId)?.agent ?? ''); // A helper owns its provider; a native child shares its parent's.
+    ensureConversationSession(historyOwnedId, agent === 'claude' || agent === 'codex' || agent === 'antigravity' ? agent : parent.provider);
     parent.selectedChildHistoryOwnedId = historyOwnedId;
   } else {
     disposeSelectedConversationChat();
