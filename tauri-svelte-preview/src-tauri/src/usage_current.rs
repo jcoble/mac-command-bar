@@ -44,6 +44,7 @@ pub async fn read_current_provider_usage(
 ) -> Result<ProviderUsageSnapshot, String> {
     let provider = provider.unwrap_or_else(|| "unknown".to_string());
     let instance_id = instance_id.unwrap_or_else(|| "unknown".to_string());
+    // Claude quota is authenticated /api/oauth/usage, not transcript tokens; see usage_remote::tests::usage_remote_401_refresh_persists_rotation_and_retries_once.
     if provider.eq_ignore_ascii_case("claude") {
         let snapshot = match usage_remote::read_claude_quota().await {
             Ok(quota) => ProviderUsageSnapshot {

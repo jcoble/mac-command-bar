@@ -639,8 +639,8 @@ struct UsageQuery {
     parameters: Vec<SqlValue>,
 }
 
-// Codex transcripts report cached input as a subset of input_tokens. Other
-// indexed provider transcripts report new input and cache buckets separately.
+// Codex cache is included in input_tokens; Claude buckets are separate (usage_sources.rs:235–238,309–312).
+// Proven by tests::token_breakdown_filters_the_range_and_separates_cached_codex_input.
 // Keep the source rows lossless, then normalize "new input" inside every
 // analytics aggregate so cache is neither double-counted nor double-billed.
 const NORMALIZED_INPUT_SQL: &str = "CASE WHEN provider = 'codex' THEN MAX(input_tokens - cache_read_tokens - cache_write_tokens, 0) ELSE input_tokens END";

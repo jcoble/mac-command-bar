@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createWorkspaceSessionSnapshotPlan, workspaceSnapshotProviderForSession } from '../src/lib/workspaceSnapshotPlan.ts';
 import { createDefaultSourceDockLayout } from '../src/lib/sourceDockLayout.ts';
 import {
   createWorkspaceSnapshot,
@@ -484,3 +486,36 @@ assert.deepEqual(
   },
   'restore readiness should describe snapshots without a resume command'
 );
+
+for (const provider of ['antigravity', 'gemini'] as const) {
+  test(provider + ' snapshot keeps its provider through planning and storage', () => {
+    const plan = createWorkspaceSessionSnapshotPlan({
+      selectedProject: snapshot.project,
+      session: { provider, id: 'provider-session', title: 'Provider snapshot', model: null,
+        projectPath: snapshot.cwd, resumeCommands: [] }
+    });
+    assert.equal(plan.snapshot.provider, provider);
+    const restored = parseStoredWorkspaceSnapshot(JSON.parse(JSON.stringify(plan.snapshot)));
+    assert.equal(restored?.provider, provider);
+    assert.equal(restored?.id, provider + ':provider-session');
+  });
+}
+
+test('snapshot ownership accepts known providers and normalizes aliases', () => {
+  for (const [provider, expected] of Object.entries({
+    codex: 'codex', claude: 'claude', antigravity: 'antigravity', gemini: 'gemini',
+    opencode: 'opencode', agy: 'antigravity', anthropic: 'claude', openai: 'codex',
+    'cmux-gemini': 'cmux', cmux: 'cmux', unknown: 'manual'
+  })) {
+    assert.equal(workspaceSnapshotProviderForSession({ provider, id: 'session', title: 'Snapshot',
+      model: null, projectPath: null, resumeCommands: [] }), expected);
+  }
+});
+
+test('snapshot validation accepts every known provider plus cmux and manual', () => {
+  for (const provider of ['codex', 'claude', 'antigravity', 'gemini', 'opencode', 'cmux', 'manual'] as const) {
+    const stored = createWorkspaceSnapshot({ ...snapshot, provider });
+    assert.equal(parseStoredWorkspaceSnapshot(JSON.parse(JSON.stringify(stored)))?.provider, provider);
+  }
+  assert.equal(parseStoredWorkspaceSnapshot({ ...snapshot, provider: 'unknown' }), null);
+});

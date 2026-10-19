@@ -44,9 +44,9 @@ pub struct UsageSourceContext {
     pub model: Option<String>,
 }
 
-/// Discover the two provider transcript stores that exist on this machine.
-/// The walk is bounded to the provider-owned roots and never scans the home
-/// directory broadly.
+/// Only Claude/Codex have local usage readers; no Gemini source is registered here.
+/// Inspected Antigravity ACP 1.2.1 server.py:3004–3065 persists trajectories/cwd metadata;
+/// no local usage/quota writer is exposed (4833–4845 only formats quota failures).
 pub fn discover_local_usage_sources() -> Vec<UsageSourceFile> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return Vec::new();
@@ -481,9 +481,9 @@ fn days_from_civil(mut year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-/// Read the latest provider-published quota window from local Codex records.
-/// If the source has no rate-limit payload, callers receive `None` and can
-/// present one clean unavailable state instead of fabricated zero values.
+/// Only Codex publishes event_msg.token_count.rate_limits in these local JSONL stores
+/// (live_quota_record_is_cleanly_available_or_unavailable below); Claude uses usage_remote.
+/// Missing rate_limits returns None, so callers show unavailable instead of fabricated zero.
 pub fn read_latest_local_quota(provider: &str) -> Option<LocalQuotaSnapshot> {
     if !provider.eq_ignore_ascii_case("codex") {
         return None;

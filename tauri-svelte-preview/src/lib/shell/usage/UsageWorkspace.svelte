@@ -32,6 +32,7 @@
   }: Props = $props();
 
   type RollupRange = 'today' | 'yesterday' | '30-days';
+  // Only Codex/Claude have usage readers: usage_sources.rs::discover_local_usage_sources and usage_current.rs::read_current_provider_usage.
   const providerNames = ['codex', 'claude'] as const;
   const rollupRanges: ReadonlyArray<{ value: RollupRange; label: string }> = [
     { value: 'today', label: 'Today' },

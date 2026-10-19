@@ -353,12 +353,12 @@ fn measure_workspace_section(label: &str, root: &Path) -> DiskUsageSection {
     }
 }
 
-/// The stores the app itself reads or writes: agent transcripts and the usage
-/// database. Shown so their growth is visible; never offered for removal.
+/// Stores read by history/transcript/{codex,claude}.rs, plus the usage database.
+/// Antigravity has no transcript reader; these stores are never offered for removal.
 fn measure_app_store_section(database_path: Option<PathBuf>) -> DiskUsageSection {
     let mut entries = Vec::new();
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        for relative in [".claude/projects", ".codex/sessions"] {
+        for relative in [".claude/projects", ".codex/sessions", ".codex/archived_sessions"] {
             let path = home.join(relative);
             if path.is_dir() {
                 entries.push(entry_for(
@@ -500,8 +500,8 @@ fn validate_reclaim_path(path: &Path, category: DiskUsageCategory) -> Result<Pat
 
 #[cfg(test)]
 mod tests {
+    mod archived_sessions;
     use super::*;
-
     fn fixture_root(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "mcb-disk-{label}-{}-{}",

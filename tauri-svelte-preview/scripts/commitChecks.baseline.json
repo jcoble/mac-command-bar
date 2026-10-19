@@ -85,7 +85,7 @@
     "tauri-svelte-preview/src/lib/sourceData.ts": 2922,
     "tauri-svelte-preview/src/lib/sourceDockviewWorkspace.ts": 1188,
     "tauri-svelte-preview/src/lib/tauriSource.ts": 3510,
-    "tauri-svelte-preview/src/lib/workspaceSnapshot.ts": 616,
+    "tauri-svelte-preview/src/lib/workspaceSnapshot.ts": 613,
     "tauri-svelte-preview/src/lib/worktreeCleanupRunbook.ts": 878,
     "tauri-svelte-preview/src/lib/worktreeSafety.ts": 1141,
     "tauri-svelte-preview/src/routes/+page.svelte": 1131
@@ -116,8 +116,6 @@
     "tauri-svelte-preview/src/lib/shell/sessionSelectionLayers.svelte.ts": 1,
     "tauri-svelte-preview/src/lib/shell/usage/UsagePopover.svelte": 1,
     "tauri-svelte-preview/src/lib/shell/usage/UsageWorkspace.svelte": 1,
-    "tauri-svelte-preview/src/lib/workspaceSnapshot.ts": 1,
-    "tauri-svelte-preview/src/lib/workspaceSnapshotPlan.ts": 1,
     "tauri-svelte-preview/src/routes/+page.svelte": 1
   }
 }

@@ -1,14 +1,11 @@
 import type { ProjectRoot } from './sourceData.ts';
+import { normalizeProvider, type AgentKind } from './shell/ownedSessions.ts';
 import { normalizeBrowserUrl } from './shell/browser/normalizeBrowserUrl.ts';
-import {
-  createDefaultSourceDockLayout,
-  normalizeSourceDockLayout,
-  type SourceDockLayout
-} from './sourceDockLayout.ts';
+import { createDefaultSourceDockLayout, normalizeSourceDockLayout, type SourceDockLayout } from './sourceDockLayout.ts';
 
 export const snapshotStorageKey = 'mac-command-bar.workspace-snapshots';
 
-export type WorkspaceSnapshotProvider = 'codex' | 'claude' | 'cmux' | 'manual';
+export type WorkspaceSnapshotProvider = Exclude<AgentKind, 'other'> | 'cmux' | 'manual';
 export type WorkspaceSnapshotActivityMode =
   | 'files'
   | 'clipboard'
@@ -390,7 +387,7 @@ function pathIsInsideWorktree(path: string | null | undefined, normalizedWorktre
 }
 
 function isWorkspaceSnapshotProvider(value: unknown): value is WorkspaceSnapshotProvider {
-  return value === 'codex' || value === 'claude' || value === 'cmux' || value === 'manual';
+  return typeof value === 'string' && (value === 'cmux' || value === 'manual' || (value !== 'other' && normalizeProvider(value).agent === value));
 }
 
 function isWorkspaceSnapshotActivityMode(value: unknown): value is WorkspaceSnapshotActivityMode {

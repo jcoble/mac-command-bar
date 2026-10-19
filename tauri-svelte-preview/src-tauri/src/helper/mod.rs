@@ -93,7 +93,7 @@ pub enum HelperRoute {
     Api,
 }
 
-// Model ids taken from each vendor's own published model list on 2026-08-19
+// Product scope: the helper supports only OpenAI/Anthropic models. Model lists as of 2026-08-19
 // (developers.openai.com/api/docs/models and
 // platform.claude.com/docs/en/about-claude/models). Cheapest per million
 // tokens first, since a job of this size is billed almost entirely by the

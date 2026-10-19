@@ -1,3 +1,4 @@
+import { normalizeProvider } from './shell/ownedSessions.ts';
 import {
   createProjectRoot,
   normalizeProjectPath,
@@ -151,10 +152,10 @@ export function createWorkspaceSessionSnapshotPlan(
 export function workspaceSnapshotProviderForSession(
   session: WorkspaceSnapshotPlanningSession | null | undefined
 ): WorkspaceSnapshotProvider {
-  const provider = session?.provider.trim().toLowerCase();
-  if (provider?.startsWith('cmux-')) return 'cmux';
-  if (provider === 'codex' || provider === 'claude' || provider === 'cmux') return provider;
-  return 'manual';
+  const provider = session?.provider.trim().toLowerCase() ?? '';
+  const { agent, viaCmux } = normalizeProvider(provider);
+  if (viaCmux || provider === 'cmux') return 'cmux';
+  return agent === 'other' ? 'manual' : agent;
 }
 
 export function workspaceSnapshotSessionIDForSession(session: WorkspaceSnapshotPlanningSession): string {

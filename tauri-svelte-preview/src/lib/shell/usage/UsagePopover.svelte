@@ -18,6 +18,7 @@
 
   interface Props { provider?: string | null; instanceId?: string | null; }
   let { provider = null, instanceId = null }: Props = $props();
+  // Only Codex/Claude have usage readers: usage_sources.rs::discover_local_usage_sources and usage_current.rs::read_current_provider_usage.
   const providerNames = ['codex', 'claude'] as const;
   let open = $state(false);
   let fullOpen = $state(false);

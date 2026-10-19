@@ -45,6 +45,7 @@ pub struct CliStatus {
     error: Option<String>,
 }
 
+// Antigravity ships agy_acp_server.par + localharness_external with its adapter, not a separate CLI (scripts/prepareReleaseAdapters.ts:119–121,170–179).
 fn cli_command(provider: &str, update: bool) -> Result<String, String> {
     match provider {
         "codex" | "claude" => Ok(format!(
@@ -145,6 +146,7 @@ pub async fn check_provider_clis(
     profile_id: Option<String>,
 ) -> Result<Vec<CliStatus>, String> {
     let target = saved_target(&remote, profile_id)?;
+    // Same separately installed CLI contract as cli_command; Antigravity updates with its bundle.
     let (codex, claude) = tokio::join!(
         cli_status(target.as_deref(), "codex"),
         cli_status(target.as_deref(), "claude")

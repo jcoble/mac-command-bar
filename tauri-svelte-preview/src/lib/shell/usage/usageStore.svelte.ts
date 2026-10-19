@@ -59,6 +59,7 @@ export async function refreshCurrentUsage(provider: string | null, instanceId: s
   usageState.currentLoading = true;
   usageState.error = null;
   try {
+    // Only Codex/Claude have usage readers: usage_sources.rs::discover_local_usage_sources and usage_current.rs::read_current_provider_usage.
     const providers = provider ? [provider] : ['codex', 'claude'];
     const results = await Promise.allSettled(
       providers.map((name) => settleUsageRequest(usageService.readCurrent(name, instanceId ?? 'local')))
