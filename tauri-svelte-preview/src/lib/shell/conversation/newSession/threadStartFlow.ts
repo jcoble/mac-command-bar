@@ -128,11 +128,13 @@ const FALLBACK_EFFORT_CHOICES: Record<ThreadStartProvider, readonly string[]> = 
   antigravity: []
 };
 
+// Historical placeholders only; a live mode catalogue owns its IDs and current value.
 const FALLBACK_ACCESS: Record<ThreadStartProvider, string> = {
+  // Codex read-only uses on-request internally (AgentMode.ReadOnly, ACP 1.13.1).
   codex: 'on-request',
+  // Claude ACP 0.88.0/0.93.0 advertises the native acceptEdits mode.
   claude: 'acceptEdits',
-  // Antigravity has one setting and no way to change it: its adapter cannot
-  // pass a permission question on, so it runs everything without asking.
+  // Placeholder spelling; Antigravity 1.2.1 calls full access yolo (config_options.py).
   antigravity: 'bypassPermissions'
 };
 
@@ -257,9 +259,11 @@ export function defaultThreadStartState(input: {
   const configs = input.providerConfigs ?? [];
   const provider: ThreadStartProvider = input.provider ?? 'codex';
   const config = configForProvider(provider, configs);
-  const accessConfig = configs.find((config) => config.provider === provider);
+  const accessConfig = configs.find((config) => config.provider === provider && config.availableApprovalPolicies.length > 0)
+    ?? config;
   const hasLiveCatalog = (config?.availableModels.length ?? 0) > 0;
-  const hasLiveAccessCatalog = (accessConfig?.availableModels.length ?? 0) > 0;
+  const hasLiveAccessCatalog = (accessConfig?.availableApprovalPolicies.length ?? 0) > 0
+    || (accessConfig?.availableModels.length ?? 0) > 0;
   const effortChoices = effortChoicesFor(provider, configs);
   const accessChoices = accessChoicesFor(provider, configs);
   return {
@@ -321,7 +325,8 @@ export function accessChoicesFor(
   provider: ThreadStartProvider,
   configs: readonly ThreadStartProviderConfig[]
 ): string[] {
-  const config = configs.find((config) => config.provider === provider);
+  const config = configs.find((config) => config.provider === provider && config.availableApprovalPolicies.length > 0)
+    ?? configForProvider(provider, configs);
   const available = unique(config?.availableApprovalPolicies ?? []);
   if ((config?.availableModels.length ?? 0) > 0) return available;
   return available.length ? available : [...FALLBACK_ACCESS_CHOICES[provider]];
@@ -376,10 +381,7 @@ export function buildThreadStartRequest(
     provider: state.provider,
     model: tidy(state.model) || null,
     reasoningEffort: tidy(state.effort) || null,
-    // Antigravity's access is a statement, not a choice: its adapter offers no
-    // approval control, and a session asked to change one refuses the message
-    // that carried the request.
-    approvalPolicy: state.provider === 'antigravity' ? null : (tidy(state.access) || null),
+    approvalPolicy: tidy(state.access) || null,
     projectId: state.projectId ?? null,
     projectPath: tidy(state.projectPath) || null,
     cwd: tidy(state.cwd),
