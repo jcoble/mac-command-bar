@@ -13,7 +13,7 @@
     type UsageDisplayMode
   } from './usageCurrent.ts';
   import UsageWorkspace from './UsageWorkspace.svelte';
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import type { ProviderUsageSnapshot } from './usageTypes.ts';
 
   interface Props { provider?: string | null; instanceId?: string | null; }

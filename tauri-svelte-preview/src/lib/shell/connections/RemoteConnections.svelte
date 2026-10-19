@@ -3,7 +3,7 @@
   import PairPhonePanel from '../components/PairPhonePanel.svelte';
   import ProviderCliUpdateControl from '../components/ProviderCliUpdateControl.svelte';
   import ProviderUpdateControl from '../components/ProviderUpdateControl.svelte';
-  import WorkingSpinner from '../components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '../components/feedback/WorkingSpinner.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { hydrateOwned, rail } from '$lib/shell/stores/sessionRailStore.svelte';

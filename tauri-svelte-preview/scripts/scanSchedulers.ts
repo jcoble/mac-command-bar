@@ -46,7 +46,7 @@ const allowedHits = new Set([
   'src/lib/shell/notionOAuth.ts:setTimeout:const timeout = window.setTimeout(finish, CLAIM_INTERVAL_MS);',
   'src/lib/shell/panels/agents/WorkflowRuns.svelte:setTimeout:const timer = window.setTimeout(() => {',
   // One five-second shot per active turn; the effect clears it when the turn ends or the composer unmounts.
-  'src/lib/shell/components/conversation/ConversationComposer.svelte:setTimeout:const timer = setTimeout(() => (turnSettled = true), 5000);',
+  'src/lib/shell/conversation/components/ConversationComposer.svelte:setTimeout:const timer = setTimeout(() => (turnSettled = true), 5000);',
   // One ten-second shot while a filter group is open; closing the group or unmounting clears it.
   'src/lib/components/ui/filter-pills/filter-pills.svelte:setTimeout:timer = window.setTimeout(close, AUTO_CLOSE_MS);',
   // A jump re-aligns its file two frames later, after its neighbours are drawn; the next
@@ -79,7 +79,7 @@ const allowedHits = new Set([
   'src/lib/SourceMarkdownPreview.svelte:localImageUrl:function localImageUrl(file: string): Promise<string> {',
   // TSK-1424 C: the turn's one-second elapsed clock. It runs only while the turn runs and the label and
   // window are visible; the effect cleanup clears it when the turn ends, it scrolls out of view or unmounts.
-  'src/lib/shell/components/conversation/ConversationTurnElapsed.svelte:setInterval:const timer = setInterval(() => { now = Date.now(); }, 1000);',
+  'src/lib/shell/conversation/components/ConversationTurnElapsed.svelte:setInterval:const timer = setInterval(() => { now = Date.now(); }, 1000);',
   // TSK-1424 C: waitFor, the 300 ms wait before a local image send reads its bytes and the wait between
   // lookups of a session the rail lacks. Its timer is cleared and its abort listener removed when it ends;
   // Stop aborts the send's signal and stopConversationEvents the lookups' signal, which ends it at once.
@@ -97,16 +97,16 @@ const allowedHits = new Set([
   // TSK-1424 A: scroll work that must wait for the next render inside an effect, where flushSync throws.
   // Each waiting function takes the timeline's signal, which unmounting aborts, and checks it and the
   // render window after the tick. Click handlers use flushSync instead.
-  "src/lib/shell/components/conversation/ConversationTimeline.svelte:tick:import { flushSync, onDestroy, tick, untrack, setContext } from 'svelte';",
-  'src/lib/shell/components/conversation/ConversationTimeline.svelte:tick:await tick();',
+  "src/lib/shell/conversation/components/ConversationTimeline.svelte:tick:import { flushSync, onDestroy, tick, untrack, setContext } from 'svelte';",
+  'src/lib/shell/conversation/components/ConversationTimeline.svelte:tick:await tick();',
   // TSK-1424 A: the background line's one-second clock. It runs only while the line is on screen and the
   // window is visible; going off screen, hiding the window or the action's destroy on unmount clears it.
-  'src/lib/shell/components/conversation/ConversationTimeline.svelte:setInterval:let timer: ReturnType<typeof setInterval> | null = null;',
-  'src/lib/shell/components/conversation/ConversationTimeline.svelte:setInterval:timer = setInterval(() => { backgroundNow = Date.now(); }, 1000);',
+  'src/lib/shell/conversation/components/ConversationTimeline.svelte:setInterval:let timer: ReturnType<typeof setInterval> | null = null;',
+  'src/lib/shell/conversation/components/ConversationTimeline.svelte:setInterval:timer = setInterval(() => { backgroundNow = Date.now(); }, 1000);',
   // TSK-1424 A: a running tool group's first scroll to its newest row waits for the first render inside an
   // effect; unmounting aborts the group's signal, which the wait checks after the tick.
-  "src/lib/shell/components/conversation/ConversationToolGroup.svelte:tick:import { getContext, onDestroy, setContext, tick, untrack } from 'svelte';",
-  'src/lib/shell/components/conversation/ConversationToolGroup.svelte:tick:await tick();'
+  "src/lib/shell/conversation/components/ConversationToolGroup.svelte:tick:import { getContext, onDestroy, setContext, tick, untrack } from 'svelte';",
+  'src/lib/shell/conversation/components/ConversationToolGroup.svelte:tick:await tick();'
 ]);
 
 interface Hit {

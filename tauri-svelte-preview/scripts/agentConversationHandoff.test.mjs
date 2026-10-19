@@ -79,7 +79,7 @@ function testDistinctUiLabels() {
 }
 
 function testNoPassiveProjectionTrigger() {
-  const surfacePath = path.join(process.cwd(), 'src/lib/shell/components/ConversationSurface.svelte');
+  const surfacePath = path.join(process.cwd(), 'src/lib/shell/conversation/ConversationSurface.svelte');
   const surface = fs.readFileSync(surfacePath, 'utf8');
   assert.equal(
     surface.includes('startConversationTerminalProjection({'),

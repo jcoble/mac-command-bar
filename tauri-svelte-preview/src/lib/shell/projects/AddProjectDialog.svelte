@@ -23,7 +23,7 @@
   import { Button } from '$lib/components/ui/button/index.js';
   import * as Command from '$lib/components/ui/command/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
-  import { pickProjectFolder } from '$lib/shell/newSession/newSessionBackend.ts';
+  import { pickProjectFolder } from '$lib/shell/conversation/newSession/newSessionBackend.ts';
   import { addProject } from '$lib/shell/projects/projectRegistry.svelte.ts';
   import { isNewFolderPath, projectMachineLabel } from '$lib/shell/projects/projects.ts';
   import { listFoldersFromTauri, type FolderListing, type ProjectRecord, type RemoteAssemblyProfile } from '$lib/tauriSource.ts';

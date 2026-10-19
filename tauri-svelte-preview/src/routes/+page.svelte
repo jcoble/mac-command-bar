@@ -25,9 +25,9 @@
 		queueBrowserPageTab,
 		selectBrowserPageTab,
 	} from "$lib/shell/browser/browserStore.svelte";
-	import PendingFirstMessage from "$lib/shell/components/conversation/PendingFirstMessage.svelte";
-	import WorkingSpinner from "$lib/shell/components/conversation/WorkingSpinner.svelte";
-	import ConversationSurface from "$lib/shell/components/ConversationSurface.svelte";
+	import PendingFirstMessage from "$lib/shell/conversation/components/PendingFirstMessage.svelte";
+	import WorkingSpinner from "$lib/shell/components/feedback/WorkingSpinner.svelte";
+	import ConversationSurface from "$lib/shell/conversation/ConversationSurface.svelte";
 	import DockPanel from "$lib/shell/components/DockPanel.svelte";
 	import EditorPanel from "$lib/shell/components/EditorPanel.svelte";
 	import GitHistoryView from "$lib/shell/components/git/GitHistoryView.svelte";
@@ -59,8 +59,8 @@
 	import { gitPanel } from "$lib/shell/git/gitPanelStore.svelte";
 	import { gitService } from "$lib/shell/git/gitService";
 	import { registerSessionHistoryHost } from "$lib/shell/history/sessionHistoryHost";
-	import DraftSessionSurface from "$lib/shell/newSession/DraftSessionSurface.svelte";
-	import type { ThreadStartRequest } from "$lib/shell/newSession/threadStartFlow";
+	import DraftSessionSurface from "$lib/shell/conversation/newSession/DraftSessionSurface.svelte";
+	import type { ThreadStartRequest } from "$lib/shell/conversation/newSession/threadStartFlow";
 	import { ownedSessionMetaForBackend, type OwnedSession } from "$lib/shell/ownedSessions";
 	import ProjectsScreen from "$lib/shell/projects/ProjectsScreen.svelte";
 	import { projectRegistry } from "$lib/shell/projects/projectRegistry.svelte";

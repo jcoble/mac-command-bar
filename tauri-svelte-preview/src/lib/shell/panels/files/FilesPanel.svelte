@@ -1,5 +1,5 @@
 <script lang="ts">
-	import WorkingSpinner from "$lib/shell/components/conversation/WorkingSpinner.svelte";
+	import WorkingSpinner from "$lib/shell/components/feedback/WorkingSpinner.svelte";
 		import { dev } from "$app/environment";
 	import { Button } from "$lib/components/ui/button/index.js";
 	import * as ContextMenu from "$lib/components/ui/context-menu/index.js";

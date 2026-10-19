@@ -6,7 +6,7 @@ import {
 	setConversationSendError,
 } from '../conversation/conversationStore.svelte';
 import { ensureStructuredConversation, flushConversationSessionDraft, persistConversationSessionDraft, saveConversationClipboardImage, sendStructuredMessage } from '../conversation/conversationService';
-import type { ThreadStartRequest } from '../newSession/threadStartFlow';
+import type { ThreadStartRequest } from '../conversation/newSession/threadStartFlow';
 import {
 	createFreshSession,
 	ownedSessionMetaForBackend,

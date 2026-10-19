@@ -32,7 +32,7 @@
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { agentDisplayName } from '$lib/shell/agentIcons.ts';
-  import AttachmentLightbox from '$lib/shell/components/conversation/AttachmentLightbox.svelte';
+  import AttachmentLightbox from '$lib/shell/conversation/components/AttachmentLightbox.svelte';
   import { cleanupConversationAttachmentPreview, restoreAttachmentList, type SavedAttachment } from '$lib/shell/conversation/conversationService';
   import { getConversationSession } from '$lib/shell/conversation/conversationStore.svelte';
   import { openFileInEditor } from '$lib/shell/workbenchNavigation';

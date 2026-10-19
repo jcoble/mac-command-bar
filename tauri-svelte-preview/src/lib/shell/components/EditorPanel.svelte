@@ -1,5 +1,5 @@
 <script lang="ts">
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import { parseRemoteWorkspacePath, workspaceChangePath } from '$lib/workspacePaths';
   /**
    * EditorPanel.svelte — the /next code-reading panel.

@@ -7,8 +7,8 @@
  * request sent on the first message.
  */
 
-import { sessionTitleFromPrompt } from '../sessionStrip.ts';
-import type { ExecutionEnvironment } from '../../tauriSource.ts';
+import { sessionTitleFromPrompt } from '../../sessionStrip.ts';
+import type { ExecutionEnvironment } from '../../../tauriSource.ts';
 
 export type ThreadStartProvider = 'codex' | 'claude' | 'antigravity';
 

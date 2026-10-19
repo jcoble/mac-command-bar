@@ -26,7 +26,7 @@
    * row only reads.
    */
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import X from '@lucide/svelte/icons/x';
 
   import { Chip } from '$lib/components/ui/chip/index.js';

@@ -35,7 +35,7 @@
   import { normalizeProvider } from '$lib/shell/ownedSessions.ts';
   import { formatMonthDayTime } from '$lib/shell/dateFormat.ts';
   import { exactLocalTime, formatAge } from '$lib/shell/relativeTime.ts';
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import type {
     SessionLibraryRecord,
     SessionLibraryTurn

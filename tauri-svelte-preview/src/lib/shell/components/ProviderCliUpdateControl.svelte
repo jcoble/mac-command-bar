@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Button } from '$lib/components/ui/button/index.js';
-  import WorkingSpinner from './conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from './feedback/WorkingSpinner.svelte';
   import { checkProviderClis, updateProviderCli, type CliUpdateState } from '$lib/shell/providerCliUpdateService.svelte';
 
   let { profileId, machineName = 'This Mac' }: { profileId?: string; machineName?: string } = $props();

@@ -38,7 +38,7 @@
   import { absolutePathWithin, type GitService } from '$lib/shell/git/gitService';
   import { requestOpenFile } from '$lib/shell/openFileBus';
   import { cn } from '$lib/utils';
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import type { ProjectGitFileStatus } from '$lib/tauriSource';
 
   interface Props {

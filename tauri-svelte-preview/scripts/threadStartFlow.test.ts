@@ -11,7 +11,7 @@ import {
   projectCwd,
   titleFromPrompt,
   validateThreadStart
-} from '../src/lib/shell/newSession/threadStartFlow.ts';
+} from '../src/lib/shell/conversation/newSession/threadStartFlow.ts';
 import { sessionTitleFromPrompt } from '../src/lib/shell/sessionStrip.ts';
 
 // The draft's project travels to the first send.

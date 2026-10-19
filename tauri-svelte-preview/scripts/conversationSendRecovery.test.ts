@@ -271,7 +271,7 @@ assert.match(
 
 // A send failure belongs to one session and must be visible beside its composer.
 const surfaceSource = readFileSync(
-  new URL('../src/lib/shell/components/ConversationSurface.svelte', import.meta.url),
+  new URL('../src/lib/shell/conversation/ConversationSurface.svelte', import.meta.url),
   'utf8'
 );
 assert.match(surfaceSource, /const sendError = \$derived\(conversation\?\.sendError \?\? ''\)/);
@@ -279,7 +279,7 @@ assert.doesNotMatch(surfaceSource, /let sendError = \$state/);
 assert.match(surfaceSource, /setConversationSendError\(ownedId, ''\);[\s\S]*?await sendStructuredMessage/);
 assert.match(surfaceSource, /setConversationSendError\(ownedId, error instanceof Error/);
 // const composerSource = readFileSync(
-//   new URL('../src/lib/shell/components/conversation/ConversationComposer.svelte', import.meta.url),
+//   new URL('../src/lib/shell/conversation/components/ConversationComposer.svelte', import.meta.url),
 //   'utf8'
 // );
 // assert.match(

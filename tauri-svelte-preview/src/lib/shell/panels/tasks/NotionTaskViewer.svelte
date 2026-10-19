@@ -1,6 +1,6 @@
 <script lang="ts">
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
-  import ConversationMessage from '$lib/shell/components/conversation/ConversationMessage.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
+  import ConversationMessage from '$lib/shell/conversation/components/ConversationMessage.svelte';
   import ArrowLeft from '@lucide/svelte/icons/arrow-left';
   import Check from '@lucide/svelte/icons/check';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';

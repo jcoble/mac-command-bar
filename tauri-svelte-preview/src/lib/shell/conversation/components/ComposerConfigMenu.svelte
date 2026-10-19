@@ -21,7 +21,7 @@
   Every label comes from `agentConfigLabels.ts`; nothing here invents wording.
 -->
 <script lang="ts">
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import Check from '@lucide/svelte/icons/check';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ShieldCheck from '@lucide/svelte/icons/shield-check';

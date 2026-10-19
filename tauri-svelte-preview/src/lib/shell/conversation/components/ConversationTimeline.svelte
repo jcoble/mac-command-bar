@@ -24,7 +24,7 @@
   import ConversationTurnElapsed from './ConversationTurnElapsed.svelte';
   import TurnFileCard from './TurnFileCard.svelte';
   import PendingFirstMessage from './PendingFirstMessage.svelte';
-  import WorkingSpinner from './WorkingSpinner.svelte';
+  import WorkingSpinner from '../../components/feedback/WorkingSpinner.svelte';
 
   interface Props {
     items: readonly ConversationDisplayItem[];

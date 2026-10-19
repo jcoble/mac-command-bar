@@ -31,7 +31,7 @@
   import { PanelHeader } from '$lib/components/ui/panel-header/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
   import { SegmentedControl } from '$lib/components/ui/segmented-control/index.js';
-  import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
+  import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import {
     buildSessionHistoryViewModel,
     createSessionHistoryCollapseState,

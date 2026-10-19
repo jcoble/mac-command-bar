@@ -17,7 +17,7 @@ import {
   defaultThreadStartState,
   type ThreadStartPickerState,
   type ThreadStartRequest
-} from '../src/lib/shell/newSession/threadStartFlow.ts';
+} from '../src/lib/shell/conversation/newSession/threadStartFlow.ts';
 
 const page = readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
 const controller = readFileSync(
@@ -29,11 +29,11 @@ const selectionController = readFileSync(
   'utf8'
 );
 const surface = readFileSync(
-  new URL('../src/lib/shell/newSession/DraftSessionSurface.svelte', import.meta.url),
+  new URL('../src/lib/shell/conversation/newSession/DraftSessionSurface.svelte', import.meta.url),
   'utf8'
 );
 const composer = readFileSync(
-  new URL('../src/lib/shell/components/conversation/ConversationComposer.svelte', import.meta.url),
+  new URL('../src/lib/shell/conversation/components/ConversationComposer.svelte', import.meta.url),
   'utf8'
 );
 const overlays = readFileSync(

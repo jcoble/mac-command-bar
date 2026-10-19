@@ -15,7 +15,7 @@ const panel = readFileSync(
   'utf8'
 );
 const draft = readFileSync(
-  new URL('../src/lib/shell/newSession/DraftSessionSurface.svelte', import.meta.url),
+  new URL('../src/lib/shell/conversation/newSession/DraftSessionSurface.svelte', import.meta.url),
   'utf8'
 );
 const overlays = readFileSync(

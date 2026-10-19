@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import {
   buildThreadStartRequest,
   validateThreadStart
-} from '../src/lib/shell/newSession/threadStartFlow.ts';
+} from '../src/lib/shell/conversation/newSession/threadStartFlow.ts';
 
 const page = readFileSync(new URL('../src/routes/+page.svelte', import.meta.url), 'utf8');
 const controller = readFileSync(
@@ -12,15 +12,15 @@ const controller = readFileSync(
   'utf8'
 );
 const surface = readFileSync(
-  new URL('../src/lib/shell/newSession/DraftSessionSurface.svelte', import.meta.url),
+  new URL('../src/lib/shell/conversation/newSession/DraftSessionSurface.svelte', import.meta.url),
   'utf8'
 );
 const conversationSurface = readFileSync(
-  new URL('../src/lib/shell/components/ConversationSurface.svelte', import.meta.url),
+  new URL('../src/lib/shell/conversation/ConversationSurface.svelte', import.meta.url),
   'utf8'
 );
 const backend = readFileSync(
-  new URL('../src/lib/shell/newSession/newSessionBackend.ts', import.meta.url),
+  new URL('../src/lib/shell/conversation/newSession/newSessionBackend.ts', import.meta.url),
   'utf8'
 );
 const nativeSource = readFileSync(
