@@ -26,9 +26,15 @@ pub(crate) const STOP_GRACE: Duration = Duration::from_secs(3);
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SidecarEnvironment {
     values: BTreeMap<String, Option<String>>,
+    skip_assembly_tool_approval: bool,
 }
 
 impl SidecarEnvironment {
+    pub fn without_assembly_tool_approval(mut self) -> Self {
+        self.skip_assembly_tool_approval = true;
+        self
+    }
+
     pub fn remove(mut self, name: impl Into<String>) -> Self {
         self.values.insert(name.into(), None);
         self
@@ -141,7 +147,7 @@ impl SidecarProcess {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         environment.apply(&mut command);
-        if manifest.id == "codex-acp" {
+        if manifest.id == "codex-acp" && !environment.skip_assembly_tool_approval {
             let inherited = match environment.values.get("CODEX_CONFIG") {
                 Some(value) => value.clone(),
                 None => std::env::var("CODEX_CONFIG").ok(),
@@ -347,6 +353,7 @@ mod tests {
         });
         let environment = SidecarEnvironment {
             values: BTreeMap::from([("CODEX_CONFIG".into(), Some(original.to_string()))]),
+            ..Default::default()
         };
         for provider in ["codex-acp", "claude-agent-acp"] {
             let manifest = fixture_manifest(provider, "printf '%s\\n' \"$CODEX_CONFIG\"".into());
@@ -364,6 +371,24 @@ mod tests {
                 assert_eq!(actual, original);
             }
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_probe_launch_carries_no_assembly_server_override() {
+        let original = serde_json::json!({"model": "configured-model"});
+        let environment = SidecarEnvironment {
+            values: BTreeMap::from([("CODEX_CONFIG".into(), Some(original.to_string()))]),
+            ..Default::default()
+        }.without_assembly_tool_approval();
+        let manifest = fixture_manifest("codex-acp", "printf '%s\\n' \"$CODEX_CONFIG\"".into());
+        let process = SidecarProcess::spawn_with_environment(
+            &manifest, &std::env::temp_dir(), "owned-probe", &environment,
+        ).unwrap();
+        let (mut reader, _writer, mut handle) = process.split();
+        let actual = reader.next_json().await.unwrap();
+        handle.stop().await;
+        assert_eq!(actual, original);
+        assert!(!actual.as_object().unwrap().keys().any(|key| key.starts_with("mcp_servers.assembly")));
     }
 
     #[tokio::test(flavor = "current_thread")]
