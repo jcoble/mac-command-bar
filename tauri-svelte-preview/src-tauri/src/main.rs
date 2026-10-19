@@ -5724,7 +5724,7 @@ fn main() {
             agent_conversation::ensure_agent_conversation,
             agent_conversation::remote::read_remote_assembly_environment,
             agent_conversation::remote::connect_remote_assembly,
-            agent_conversation::remote::install_remote_assembly,
+            agent_conversation::remote::install_flow::install_remote_assembly,
             #[cfg(debug_assertions)]
             agent_conversation::remote::deploy_remote_backend_dev,
             agent_conversation::remote::read_remote_backend_statuses,

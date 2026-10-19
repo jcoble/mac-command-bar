@@ -699,9 +699,9 @@ mod tests {
             archive_file: name, bytes: 12, sha256: "0".repeat(64) };
         assert!(validate_record(&record, &archive, "1.2.3").is_ok());
         record.protocol_version += 1;
-        assert!(validate_record(&record, &archive, "1.2.3").unwrap_err().contains("Update or rebuild Assembly"));
+        let newer = validate_record(&record, &archive, "1.2.3").unwrap_err(); assert!(newer.contains("Update or rebuild Assembly") && !super::super::install_flow::keep_dev_install_profile(&newer, true));
         record.protocol_version -= 2;
-        assert!(validate_record(&record, &archive, "1.2.3").unwrap_err().contains("has not been published yet"));
+        let older = validate_record(&record, &archive, "1.2.3").unwrap_err(); assert!(older.contains("has not been published yet") && super::super::install_flow::keep_dev_install_profile(&older, true));
         record.protocol_version += 2;
         record.protocol_version -= 1;
         record.bytes -= 1;
