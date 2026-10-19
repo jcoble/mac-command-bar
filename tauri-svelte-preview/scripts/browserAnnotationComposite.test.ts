@@ -17,8 +17,8 @@ import {
   scaleShapes,
   shapeAtPoint,
   type AnnotationShape
-} from '../src/lib/shell/panels/browser/annotationComposite.ts';
-import { formatAnnotationRequest } from '../src/lib/shell/panels/browser/browserAttachmentNote.ts';
+} from '../src/lib/shell/browser/components/annotationComposite.ts';
+import { formatAnnotationRequest } from '../src/lib/shell/browser/components/browserAttachmentNote.ts';
 
 // ── liveShapes ───────────────────────────────────────────────────────────────
 

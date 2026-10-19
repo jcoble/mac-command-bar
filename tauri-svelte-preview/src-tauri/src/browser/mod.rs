@@ -23,7 +23,7 @@ use tauri::webview::PageLoadEvent;
 use tauri::{Emitter, Manager, WebviewBuilder, WebviewUrl};
 use uuid::Uuid;
 
-const BROWSER_INSPECTOR_SCRIPT: &str = include_str!("browser_inspector.js");
+const BROWSER_INSPECTOR_SCRIPT: &str = include_str!("inspector.js");
 const BROWSER_INSPECTOR_POLL_SCRIPT: &str =
     "JSON.stringify(window.__mcbBrowserInspector?.take?.() ?? null)";
 const BROWSER_INSPECTOR_POLL_INTERVAL: Duration = Duration::from_millis(80);

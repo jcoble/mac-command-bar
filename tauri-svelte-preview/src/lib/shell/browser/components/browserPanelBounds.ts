@@ -16,8 +16,8 @@ import {
   browserBoundsEqual,
   clampBrowserFloatingBounds,
   type BrowserWindowSize
-} from '../../browser/browserBounds.ts';
-import type { BrowserFloatingBounds } from '../../browser/browserTypes.ts';
+} from '../browserBounds.ts';
+import type { BrowserFloatingBounds } from '../browserTypes.ts';
 
 export type PanelRect = BrowserFloatingBounds;
 

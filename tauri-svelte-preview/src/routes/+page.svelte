@@ -49,8 +49,8 @@
 	import { editorState, pinEditorFile } from "$lib/shell/files/editor/editorStore.svelte";
 	import { topTabs } from "$lib/shell/layout/topTabs.svelte";
 	import { parseTopTabKey } from "$lib/shell/layout/topTabsOps";
-	import BrowserPanel from "$lib/shell/panels/browser/BrowserPanel.svelte";
-	import { popupCoversPage } from "$lib/shell/panels/browser/browserPanelBounds";
+	import BrowserPanel from "$lib/shell/browser/components/BrowserPanel.svelte";
+	import { popupCoversPage } from "$lib/shell/browser/components/browserPanelBounds";
 	import { parseRemoteWorkspacePath } from "$lib/workspacePaths";
 
 	import { SessionSelectionController } from "$lib/shell/controllers/sessionSelectionController.svelte";
