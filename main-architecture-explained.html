@@ -1402,7 +1402,7 @@
 
         <h3>The ordered event path</h3>
         <p>Tool normalization reads Claude’s <code>_meta.claudeCode.toolName</code>, ACP kind, and <code>rawInput</code> before persistence. The existing summary field carries input detail, including the complete multiline shell command and a Notion fetch’s ID; output never supplies a title. Completion titles are ignored because they can contain results. An output-only completion leaves absent identity and input fields untouched in the canonical transcript. Complete provider console fences are unwrapped for the existing code renderer. The shell row shortens only its preview and copies the complete command; a single-call run draws its row directly, while multiple calls retain their group.</p>
-        <span class="source"><code>manager.rs:6344-6456</code> · <code>conversationTimeline.ts</code> · <code>components/conversation/ToolRunItem.svelte</code></span>
+        <span class="source"><code>agent_conversation/normalization/tools.rs:36-175</code> · <code>conversationTimeline.ts</code> · <code>components/conversation/ToolRunItem.svelte</code></span>
         <div class="mini-flow" aria-label="Event path">
           <div>Adapter frame<small>ACP update or agent-to-client request.</small></div>
           <div>Rust normalizer<small>Provider vocabulary becomes canonical <code>AgentEvent</code>.</small></div>
@@ -2193,7 +2193,7 @@ UNIQUE (owned_id, through_sequence, source_hash)</code></pre>
           <div class="source-row"><strong>ACP transport</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/providers/acp_client.rs</code></div>
           <div class="source-row"><strong>Adapter boundary</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/providers/mod.rs</code></div>
           <div class="source-row"><strong>Process lifecycle</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/providers/process.rs</code></div>
-          <div class="source-row"><strong>Event protocol</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/protocol.rs</code></div>
+          <div class="source-row"><strong>Event protocol</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/protocol.rs</code> · <code>agent_conversation/normalization/mod.rs</code> · <code>agent_conversation/normalization/tools.rs</code></div>
           <div class="source-row"><strong>SQLite store</strong><code>tauri-svelte-preview/core/src/session_store.rs</code></div>
           <div class="source-row"><strong>Projects</strong><code>tauri-svelte-preview/src-tauri/src/project_folders.rs</code> (folders, new-session worktrees) · <code>src/lib/shell/projects/projects.ts</code> · <code>projectRegistry.svelte.ts</code> · <code>AddProjectDialog.svelte</code> · <code>NewProjectDialog.svelte</code></div>
           <div class="source-row"><strong>Attachments</strong><code>tauri-svelte-preview/src-tauri/src/agent_conversation/attachments.rs</code></div>
