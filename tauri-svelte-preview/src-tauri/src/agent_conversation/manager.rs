@@ -2236,17 +2236,13 @@ impl AgentRuntimeManager {
                 return Err(error.to_string());
             }
         };
-        // The model and effort chosen for this conversation are asked of the
-        // adapter now that it has a session, and its answer is what the session
-        // reports from here on. Only what differs is sent: a session that
-        // already starts on the wanted settings needs no call, and a request
-        // the adapter resolves to something else must not be reported as if it
-        // had been honoured.
+        // The live session controls apply model before effort. A model change can reset effort,
+        // so keep the explicit effort even when it matched the initial model's current value.
+        let model_changed = requested_model.as_deref().is_some_and(|model| Some(model) != started.config.model.as_deref());
         let mut requested = AgentConversationConfigUpdate {
-            model: requested_model
-                .filter(|model| Some(model.as_str()) != started.config.model.as_deref()),
+            model: requested_model.filter(|_| model_changed),
             reasoning_effort: reasoning_effort.clone().filter(|effort| {
-                Some(effort.as_str()) != started.config.reasoning_effort.as_deref()
+                model_changed || Some(effort.as_str()) != started.config.reasoning_effort.as_deref()
             }),
             approval_policy: requested_approval_policy.filter(|policy| {
                 Some(policy.as_str()) != started.config.approval_policy.as_deref()
@@ -8500,9 +8496,9 @@ fn projected_background_work(session: &ManagedAgentSession) -> Vec<BackgroundWor
     work
 }
 
-/// The permission mode a helper on `to` starts in, given its parent's `mode` on `from`. The same
-/// provider keeps the mode; across providers the owner's levels match: Claude Auto is Codex
-/// "Approve for me", Bypass Permissions is "Full access", and anything else asks.
+/// Helpers keep same-provider modes. Claude auto = Codex agent (auto_review);
+/// bypassPermissions = agent-full-access (full_access): matching mode kinds in
+/// Claude ACP 0.88.0/0.93.0 and Codex 1.13.1/2.2.2 session/new; other modes ask.
 fn helper_mode(mode: Option<&str>, from: AgentConversationProvider, to: AgentConversationProvider) -> Option<String> {
     let mode = mode?;
     if from == to { return Some(mode.to_string()); }

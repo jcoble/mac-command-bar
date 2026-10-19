@@ -994,9 +994,9 @@ impl AcpClient {
         known_session_id: Option<&str>,
     ) -> Result<StartedAgentSession, AgentRuntimeError> {
         let mut request = serde_json::to_value(request).map_err(serialization_error)?;
-        // Claude asks before every MCP tool call; Assembly's own tools
-        // (report_review, send_message, ...) are pre-allowed so unattended
-        // workflow sessions don't stall on a prompt nobody is watching.
+        // Claude's allowedTools is its wire spelling of Assembly-tool pre-approval; Codex gets the same
+        // through providers/process.rs (default_tools_approval_mode=approve). Antigravity's gap is
+        // TSK-1522; unattended workers must not stop for Assembly's own tools.
         if self.provider == Some(AgentConversationProvider::Claude)
             && request["mcpServers"].as_array().is_some_and(|servers| !servers.is_empty())
         {

@@ -640,9 +640,9 @@ pub(crate) trait AgentRuntimePort: Send + Sync {
 
 fn worker_permission(provider: AgentConversationProvider, chosen: Option<String>) -> Option<String> {
     chosen.or_else(|| match provider {
-        AgentConversationProvider::Claude => Some("auto".into()),
-        AgentConversationProvider::Codex => Some("agent".into()),
-        _ => None,
+        AgentConversationProvider::Claude => Some("auto".into()), // Unattended auto review; Claude 0.88/0.93 mode kind=auto_review.
+        AgentConversationProvider::Codex => Some("agent".into()), // Same auto_review kind in Codex 1.13.1/2.2.2.
+        _ => None, // Antigravity has no auto-review mode; its Assembly-tool approval gap is TSK-1522.
     })
 }
 
@@ -675,9 +675,6 @@ impl AgentRuntimePort for AgentRuntimeManager {
                     )))
                 }
             };
-            let spawn_reasoning_effort = (provider == AgentConversationProvider::Claude)
-                .then(|| request.effort.clone())
-                .flatten();
             let connection = self
                 .ensure_async(EnsureAgentConversationRequest {
                     owned_id: request.owned_id.clone(),
@@ -689,7 +686,7 @@ impl AgentRuntimePort for AgentRuntimeManager {
                     native_session_id: None,
                     native_session_mode:
                         crate::agent_conversation::protocol::AgentNativeSessionMode::Resume,
-                    reasoning_effort: spawn_reasoning_effort,
+                    reasoning_effort: None,
                     // The step's worktree shares its git directory with the project's root.
                     project_id: crate::project_folders::match_local_folders(&self.store_handle(), &[request.cwd.clone()])
                         .map_err(WorkflowError::Runtime)?
@@ -707,11 +704,13 @@ impl AgentRuntimePort for AgentRuntimeManager {
                     request.provider
                 )));
             }
+            // Stage both together: activation applies model, then its advertised effort control.
+            self.apply_conversation_config(crate::agent_conversation::protocol::SetAgentConversationConfigRequest {
+                owned_id: connection.owned_id.clone(), generation: connection.generation,
+                model: request.model.clone(), reasoning_effort: request.effort.clone(), approval_policy: None,
+            }, true).await.map_err(WorkflowError::Runtime)?;
             self.activate(&connection.owned_id, connection.generation)
                 .await
-                .map_err(WorkflowError::Runtime)?;
-            let capabilities = self
-                .capabilities(&connection.owned_id, connection.generation)
                 .map_err(WorkflowError::Runtime)?;
             // The model and mode are set the way the chat sets them. The adapter names its modes when the
             // session starts, not in the capabilities it reports at initialize, so a worker cannot be judged
@@ -719,27 +718,14 @@ impl AgentRuntimePort for AgentRuntimeManager {
             let starter_mode = request.starter.as_deref().map(|id|
                 self.conversation_config(id).ok().and_then(|config| config.approval_policy));
             let permission = capped_permission(request.permission.clone(), starter_mode.as_ref().map(|mode| mode.as_deref()), provider);
-            if request.model.is_some() || permission.is_some() {
+            if permission.is_some() {
                 self.apply_conversation_config(crate::agent_conversation::protocol::SetAgentConversationConfigRequest {
                     owned_id: connection.owned_id.clone(), generation: connection.generation,
-                    model: request.model.clone(), reasoning_effort: None, approval_policy: permission.clone(),
+                    model: None, reasoning_effort: None, approval_policy: permission.clone(),
                 // A refused mode leaves an adapter with no turn to end it, so it is stopped here.
                 }, true).await.map_err(|error| WorkflowError::Runtime(format!(
                     "Provider {} could not start the worker on model {:?} and mode {:?}: {error}",
                     request.provider, request.model, permission)))?;
-            }
-            if let Some(effort) = request.effort.as_deref().filter(|_| provider != AgentConversationProvider::Claude) {
-                let option = capabilities
-                    .config_options
-                    .iter()
-                    .find(|option| ["thought_level", "effort"].iter().any(|category| option.category.eq_ignore_ascii_case(category)))
-                    .ok_or_else(|| WorkflowError::PolicyDenied(format!(
-                        "Provider {} did not advertise the requested thought_level capability",
-                        request.provider
-                    )))?;
-                self.set_config(&connection.owned_id, connection.generation, &option.id, json!(effort))
-                    .await
-                    .map_err(WorkflowError::Runtime)?;
             }
             self.prompt(
                 &connection.owned_id,
@@ -3595,7 +3581,7 @@ fn pr_body(task_key: &str, outputs: &[(String, String)], artifacts: &[String]) -
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    mod permissions;
     #[test]
     fn pr_body_stays_under_the_github_limit_and_names_every_step() {
         let outputs: Vec<(String, String)> = (0..14).map(|n| (format!("step-{n}"), "x".repeat(20_000))).collect();

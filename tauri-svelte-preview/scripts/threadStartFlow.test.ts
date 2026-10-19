@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { test } from 'node:test';
 
 import {
   accessChoicesFor,
@@ -195,10 +196,8 @@ const providerConfigs = [
   assert.deepEqual(effortChoicesFor('codex', []), ['low', 'medium', 'high', 'xhigh', 'max']);
 }
 
-// Antigravity has no separate effort control — its speed tiers are separate
-// models — and one access level that states what it does rather than offering
-// a choice. The draft says so, and sends no approval policy: the adapter has
-// none to set, and a session asked for one refuses the message that asked.
+// Before a catalogue arrives, Antigravity keeps its model/access placeholders
+// and has no separate effort control.
 {
   const antigravity = groupProviderModels([]).find((group) => group.provider === 'antigravity');
   const ids = antigravity?.models.map((model) => model.id) ?? [];
@@ -220,7 +219,6 @@ const providerConfigs = [
   const request = buildThreadStartRequest({ ...state, prompt: 'say hi in five words' });
   assert.equal(request?.model, 'Gemini 3.7 Flash (High)');
   assert.equal(request?.reasoningEffort, null);
-  assert.equal(request?.approvalPolicy, null);
 }
 
 // Opening a thread is a draft only; the pure default is already usable once a
@@ -402,11 +400,6 @@ console.log('threadStartFlow: draft efforts follow the chosen model');
   });
   assert.equal(state.model, 'sonnet');
   assert.equal(state.effort, 'high');
-  const priorPermissions = defaultThreadStartState({
-    projectPath: '/work/app', provider: 'claude', providerConfigs: [remembered]
-  });
-  assert.equal(state.access, priorPermissions.access);
-  assert.deepEqual(accessChoicesFor('claude', [remembered, live]), accessChoicesFor('claude', [remembered]));
   assert.deepEqual(effortChoicesFor('claude', [remembered, live]), ['low', 'high']);
   const noEffort = { ...live, reasoningEffort: null, availableEfforts: [] };
   assert.deepEqual(effortChoicesFor('claude', [remembered, noEffort]), []);
@@ -414,3 +407,40 @@ console.log('threadStartFlow: draft efforts follow the chosen model');
     projectPath: '/work/app', provider: 'claude', providerConfigs: [remembered, noEffort]
   }).effort, '');
 }
+
+
+test('live permission catalogues replace remembered placeholders for every provider', () => {
+  for (const [provider, current, modes] of [
+    ['claude', 'default', ['default', 'auto']],
+    ['codex', 'agent', ['read-only', 'workspace-write', 'agent']],
+    ['antigravity', 'default', ['default', 'auto_edit', 'yolo']]
+  ] as const) {
+    const remembered = {
+      provider, model: null, availableModels: [], reasoningEffort: null, availableEfforts: [],
+      approvalPolicy: modes[1], availableApprovalPolicies: []
+    };
+    // Mode controls are usable even when no model catalogue has arrived.
+    const live = { ...remembered, approvalPolicy: current, availableApprovalPolicies: [...modes] };
+    assert.deepEqual(accessChoicesFor(provider, [remembered, live]), modes);
+    assert.equal(defaultThreadStartState({
+      projectPath: '/work/app', provider, providerConfigs: [remembered, live]
+    }).access, current);
+  }
+});
+
+test('a live session without permission choices does not revive placeholders', () => {
+  const remembered = {
+    provider: 'claude', model: null, availableModels: [], reasoningEffort: null, availableEfforts: [],
+    approvalPolicy: 'bypassPermissions', availableApprovalPolicies: []
+  };
+  const live = { ...remembered, model: 'sonnet', availableModels: ['sonnet'], approvalPolicy: null };
+  assert.deepEqual(accessChoicesFor('claude', [remembered, live]), []);
+  assert.equal(defaultThreadStartState({
+    projectPath: '/work/app', provider: 'claude', providerConfigs: [remembered, live]
+  }).access, '');
+});
+
+test('an Antigravity permission choice reaches the first send', () => {
+  const state = defaultThreadStartState({ projectPath: '/work/app', provider: 'antigravity' });
+  assert.equal(buildThreadStartRequest({ ...state, prompt: 'hello', access: 'auto_edit' })?.approvalPolicy, 'auto_edit');
+});

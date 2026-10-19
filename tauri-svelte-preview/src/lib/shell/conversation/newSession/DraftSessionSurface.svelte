@@ -200,7 +200,6 @@
       stopSignal.removeEventListener('abort', cancel);
     };
   });
-
   /** Asks the draft's machine which models it offers. The effect's signal stops it. */
   async function loadCatalog(
     key: string,
@@ -217,7 +216,8 @@
         ...draft,
         model,
         effort: draftEffortFor(config, model, remembered?.reasoningEffort).effort,
-        access: offeredChoice(remembered?.approvalPolicy, config.approvalPolicy, config.availableApprovalPolicies)
+        // A new draft starts on the live adapter mode, not a remembered permission.
+        access: offeredChoice(null, config.approvalPolicy, config.availableApprovalPolicies)
       };
       catalogConfig = config;
       catalogKey = key;
@@ -397,7 +397,7 @@
     }
     if (!currentCatalog || !currentCatalog.availableModels.includes(draft.model)
       || (draft.effort && !draftEfforts.includes(draft.effort))
-      || (draft.provider !== 'antigravity' && draft.access && !currentCatalog.availableApprovalPolicies.includes(draft.access))) {
+      || (draft.access && !currentCatalog.availableApprovalPolicies.includes(draft.access))) {
       submitError = catalogError || 'Wait for this machine’s model choices before sending.';
       return;
     }
