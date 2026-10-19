@@ -34,7 +34,7 @@
   import SquareTerminal from '@lucide/svelte/icons/square-terminal';
   import Type from '@lucide/svelte/icons/type';
   import Server from '@lucide/svelte/icons/server';
-  import RemoteConnections from './RemoteConnections.svelte';
+  import RemoteConnections from '../connections/RemoteConnections.svelte';
   import Download from '@lucide/svelte/icons/download';
 
   import { Button } from '$lib/components/ui/button/index.js';

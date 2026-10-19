@@ -1,6 +1,6 @@
 //! Remote history uses the local SQLite event journal and paging code.
 //! An explicit source column keeps cached sessions out of local runtime startup.
-use super::protocol::{
+use super::super::protocol::{
     AgentConversationConnection, AgentConversationEvent, AgentConversationEventPage,
     AgentConversationItemPage, AgentConversationPayload, AgentConversationSelectionSnapshot,
     AgentConversationSessionRecord, AgentConversationSnapshot, AgentRuntimeState, ApprovalState,
@@ -48,10 +48,10 @@ pub(super) struct HistoryDownloadState {
 
 #[cfg(test)]
 mod tests {
-    use super::super::protocol::{
+    use super::super::super::protocol::{
         AgentConversationPayload, AgentConversationProvider, ConversationConnectionState,
     };
-    use super::super::safe_markdown::parse_safe_markdown;
+    use super::super::super::safe_markdown::parse_safe_markdown;
     use super::*;
 
     fn event(sequence: i64) -> AgentConversationEvent {
@@ -382,7 +382,7 @@ mod tests {
                         11,
                         AgentConversationPayload::Turn {
                             turn_id: "root-turn".into(),
-                            state: super::super::protocol::TurnState::Completed,
+                            state: super::super::super::protocol::TurnState::Completed,
                         },
                     ),
                     event(12),
@@ -467,7 +467,7 @@ mod tests {
         // boundary, even though its physical sequence is below the item cursor.
         let mut controls = snapshot(200, 201);
         controls.events[0] = control_event(200, AgentConversationPayload::Turn {
-            turn_id: "turn".into(), state: super::super::protocol::TurnState::Started,
+            turn_id: "turn".into(), state: super::super::super::protocol::TurnState::Started,
         });
         history.forget("a", "same-session-id").unwrap();
         history.snapshot("a", 0, None, &mut controls).unwrap();
@@ -726,7 +726,7 @@ impl RemoteHistory {
             if let AgentConversationPayload::AssistantMessage { text, blocks, .. } = &mut event.payload {
                 if blocks.is_none() {
                     *blocks = Some(saved_blocks.get(&event.sequence).cloned()
-                        .unwrap_or_else(|| super::safe_markdown::parse_safe_markdown(text)));
+                        .unwrap_or_else(|| super::super::safe_markdown::parse_safe_markdown(text)));
                 }
             }
         }
@@ -1039,7 +1039,7 @@ impl RemoteHistory {
                 }),
             )
             .map_err(|error| error.to_string())?;
-        let mut page = super::manager::selected_item_page(page)?;
+        let mut page = super::super::manager::selected_item_page(page)?;
         page.has_before |= !coverage.start_complete;
         page.has_earlier_transcript = coverage.has_earlier_transcript;
         Ok(Some(AgentConversationSelectionSnapshot {
@@ -1120,7 +1120,7 @@ impl RemoteHistory {
         if page.items.is_empty() && !start_complete && (before || cursor < low) {
             return Ok(None);
         }
-        let mut page = super::manager::selected_item_page(page)?;
+        let mut page = super::super::manager::selected_item_page(page)?;
         page.has_before |= before && !start_complete;
         page.has_earlier_transcript = has_earlier_transcript;
         Ok(Some(page))
@@ -1290,10 +1290,10 @@ fn apply_active_turn(active_turn_id: &mut Option<String>, event: &AgentConversat
         return;
     };
     match state {
-        super::protocol::TurnState::Started => active_turn_id.clone_from(&Some(turn_id.clone())),
-        super::protocol::TurnState::Completed
-        | super::protocol::TurnState::Interrupted
-        | super::protocol::TurnState::Failed
+        super::super::protocol::TurnState::Started => active_turn_id.clone_from(&Some(turn_id.clone())),
+        super::super::protocol::TurnState::Completed
+        | super::super::protocol::TurnState::Interrupted
+        | super::super::protocol::TurnState::Failed
             if active_turn_id.as_deref() == Some(turn_id) =>
         {
             *active_turn_id = None;

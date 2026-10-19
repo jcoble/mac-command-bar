@@ -229,7 +229,7 @@ pub async fn install_latest(
     ssh_target: &str,
     status: Channel<String>,
 ) -> Result<InstallReceipt, String> {
-    super::remote::validate_ssh_target(ssh_target)?;
+    super::validate_ssh_target(ssh_target)?;
     let _ = status.send("Finding the latest signed backend…".into());
     let (archive_asset, record) = verified_latest_release().await?;
 
@@ -271,7 +271,7 @@ pub async fn read_status(
     ssh_target: &str,
     latest_version: &str,
 ) -> Result<BackendStatus, String> {
-    super::remote::validate_ssh_target(ssh_target)?;
+    super::validate_ssh_target(ssh_target)?;
     let home = remote_home(ssh_target).await?;
     let binary = shell_quote(&format!("{home}/.local/bin/assembly-remote-server"));
     let manifest = shell_quote(&format!(
@@ -324,7 +324,7 @@ fn parse_status_output(output: &str, latest_version: &str) -> Result<BackendStat
 }
 
 pub async fn uninstall(ssh_target: &str, delete_data: bool) -> Result<(), String> {
-    super::remote::validate_ssh_target(ssh_target)?;
+    super::validate_ssh_target(ssh_target)?;
     let home = remote_home(ssh_target).await?;
     let service = shell_quote(&format!(
         "{home}/.config/systemd/user/assembly-remote.service"
@@ -455,7 +455,7 @@ fn validate_record(record: &DownloadRecord, archive: &GithubAsset, version: &str
         || !record.sha256.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
         return Err("Signed backend download record does not match this release".into());
     }
-    let client_protocol = super::remote::PROTOCOL_VERSION;
+    let client_protocol = super::PROTOCOL_VERSION;
     if record.protocol_version < client_protocol {
         return Err(format!("The latest published backend ({}) uses protocol {}, but this Assembly requires {}. A matching backend release has not been published yet. Check for backend updates after the release build finishes; reinstalling the current release will not help.", record.version, record.protocol_version, client_protocol));
     }
@@ -629,8 +629,8 @@ mod tests {
 
     #[test]
     fn ssh_targets_accept_hosts_but_reject_options_and_shell_syntax() {
-        assert!(super::super::remote::validate_ssh_target("agent-workbox").is_ok());
-        assert!(super::super::remote::validate_ssh_target("person@server.example").is_ok());
+        assert!(super::super::validate_ssh_target("agent-workbox").is_ok());
+        assert!(super::super::validate_ssh_target("person@server.example").is_ok());
         for target in [
             "",
             "-oProxyCommand=false",
@@ -638,7 +638,7 @@ mod tests {
             "host;false",
             "$(false)",
         ] {
-            assert!(super::super::remote::validate_ssh_target(target).is_err());
+            assert!(super::super::validate_ssh_target(target).is_err());
         }
     }
 
@@ -695,7 +695,7 @@ mod tests {
         let archive = GithubAsset { name: name.clone(), size: 12,
             browser_download_url: format!("https://github.com/jcoble/mac-command-bar/releases/download/assembly-backend-v1.2.3/{name}") };
         let mut record = DownloadRecord { schema_version: 1, version: "1.2.3".into(),
-            protocol_version: super::super::remote::PROTOCOL_VERSION, target: TARGET.into(),
+            protocol_version: super::super::PROTOCOL_VERSION, target: TARGET.into(),
             archive_file: name, bytes: 12, sha256: "0".repeat(64) };
         assert!(validate_record(&record, &archive, "1.2.3").is_ok());
         record.protocol_version += 1;

@@ -84,7 +84,7 @@ const selectionLayers = readFileSync(
 );
 const tauriSource = readFileSync(new URL('../src/lib/tauriSource.ts', import.meta.url), 'utf8');
 const remoteConversation = readFileSync(
-  new URL('../src-tauri/src/agent_conversation/remote.rs', import.meta.url),
+  new URL('../src-tauri/src/agent_conversation/remote/mod.rs', import.meta.url),
   'utf8'
 );
 assert.match(
