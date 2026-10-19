@@ -3,7 +3,7 @@
  *
  * Run it with:
  *   node --experimental-strip-types \
- *     src/lib/shell/components/editor/languageServerStatus.test.ts
+ *     src/lib/shell/files/components/editor/languageServerStatus.test.ts
  *
  * Two things here can quietly lie and so are pinned down:
  *  1. A build that does not report a state, and a browser tab with no desktop

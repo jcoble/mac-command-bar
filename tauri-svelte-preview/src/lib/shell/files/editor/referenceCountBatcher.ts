@@ -26,7 +26,7 @@
  * for either machine. The source-intelligence owner clears it when the active
  * file or project changes, so no answer survives the view that owns it.
  */
-import type { SourceReferenceCountResult } from '../../sourceData.ts';
+import type { SourceReferenceCountResult } from '../../../sourceData.ts';
 
 /**
  * One symbol's number for the margin. `atLeast` is true when the pass that

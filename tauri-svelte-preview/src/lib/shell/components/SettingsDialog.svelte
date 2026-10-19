@@ -59,7 +59,7 @@
     setLanguageServerEnabled,
     setLanguageServersEnabled,
     type LanguageServerId
-  } from '$lib/shell/editor/sourceIntelligence';
+  } from '$lib/shell/files/editor/sourceIntelligence';
   import {
     readHelperSettingsFromTauri,
     listInstalledFontFamiliesFromTauri,

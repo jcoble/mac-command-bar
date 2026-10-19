@@ -29,7 +29,7 @@
 	import WorkingSpinner from "$lib/shell/components/feedback/WorkingSpinner.svelte";
 	import ConversationSurface from "$lib/shell/conversation/ConversationSurface.svelte";
 	import DockPanel from "$lib/shell/components/DockPanel.svelte";
-	import EditorPanel from "$lib/shell/components/EditorPanel.svelte";
+	import EditorPanel from "$lib/shell/files/components/EditorPanel.svelte";
 	import GitHistoryView from "$lib/shell/components/git/GitHistoryView.svelte";
 	import GitDiffView from "$lib/shell/components/GitDiffView.svelte";
 	import HomeButton from "$lib/shell/components/HomeButton.svelte";
@@ -46,7 +46,7 @@
 	import UtilityStrip from "$lib/shell/components/UtilityStrip.svelte";
 	import { sendStructuredMessage } from "$lib/shell/conversation/conversationService";
 	import { getConversationSession, setConversationAttachments, setConversationSelectedChild } from "$lib/shell/conversation/conversationStore.svelte";
-	import { editorState, pinEditorFile } from "$lib/shell/editor/editorStore.svelte";
+	import { editorState, pinEditorFile } from "$lib/shell/files/editor/editorStore.svelte";
 	import { topTabs } from "$lib/shell/layout/topTabs.svelte";
 	import { parseTopTabKey } from "$lib/shell/layout/topTabsOps";
 	import BrowserPanel from "$lib/shell/panels/browser/BrowserPanel.svelte";

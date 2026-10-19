@@ -16,7 +16,7 @@ import {
   patchOpenFile,
   revealLineInOpenFile,
   upsertOpenFile
-} from '../src/lib/shell/editor/editorStoreOps.ts';
+} from '../src/lib/shell/files/editor/editorStoreOps.ts';
 
 const recordFor = (name) => ({
   path: `/p/src/${name}`,
@@ -164,7 +164,7 @@ console.log('editorStore tests passed');
 
 // A refresh must preserve a local draft without inventing a disk conflict.
 globalThis.$state = <T>(value: T): T => value;
-const store = await import('../src/lib/shell/editor/editorStore.svelte.ts');
+const store = await import('../src/lib/shell/files/editor/editorStore.svelte.ts');
 {
   const record = recordFor('refresh-draft.ts');
   const preview = { ...record, content: 'saved', lineCount: 1 };

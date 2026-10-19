@@ -7398,7 +7398,7 @@ mod tests {
         // A real server is what this test is about, so the workspace is in full
         // mode — the mode a person would have put it in to get these answers.
         set_language_intelligence(&root.display().to_string(), true);
-        let file_path = root.join("src/lib/CodeMirrorSourceEditor.svelte");
+        let file_path = root.join("src/lib/shell/files/components/CodeMirrorSourceEditor.svelte");
         let content = match std::fs::read_to_string(&file_path) {
             Ok(content) => content,
             Err(error) => {
@@ -7421,7 +7421,7 @@ mod tests {
             .expect("currentThemeKey use");
         let preview = SourceLspPreview {
             path: file_path.display().to_string(),
-            relative_path: "src/lib/CodeMirrorSourceEditor.svelte".to_string(),
+            relative_path: "src/lib/shell/files/components/CodeMirrorSourceEditor.svelte".to_string(),
             file_name: "CodeMirrorSourceEditor.svelte".to_string(),
             language: "svelte".to_string(),
             byte_count: content.len() as u64,

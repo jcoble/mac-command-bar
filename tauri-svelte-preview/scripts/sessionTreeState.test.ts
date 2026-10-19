@@ -92,7 +92,7 @@ try {
   dependencies.SessionSelectionLayers = (await load('src/lib/shell/sessionSelectionLayers.svelte.ts')).SessionSelectionLayers;
   const { SessionSelectionController } = await load('src/lib/shell/controllers/sessionSelectionController.svelte.ts');
   const controller = new SessionSelectionController();
-  const { default: FilesPanel } = await load('src/lib/shell/panels/files/FilesPanel.svelte', true);
+  const { default: FilesPanel } = await load('src/lib/shell/files/components/FilesPanel.svelte', true);
   let panel!: { openPaths(): string[]; toggle(path: string): void };
   destroy = runtime.effect_root(() => {
     panel = FilesPanel(null, {

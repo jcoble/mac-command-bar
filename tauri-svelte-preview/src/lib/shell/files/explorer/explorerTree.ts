@@ -22,7 +22,7 @@ import {
   type SourceRecord,
   type SourceTreeRow,
   type VirtualSourceTreeRows
-} from '../../sourceData.ts';
+} from '../../../sourceData.ts';
 
 /** Height of one tree row in pixels. The CSS and the maths must agree exactly:
  * the windowing below places rows by multiplying this number, so a row that

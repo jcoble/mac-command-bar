@@ -1,9 +1,9 @@
-import type { OwnedSession } from '../ownedSessions.ts';
-import type { OwnedTerminalProbe, TerminalService } from '../terminalService.ts';
+import type { OwnedSession } from '../../ownedSessions.ts';
+import type { OwnedTerminalProbe, TerminalService } from '../../terminalService.ts';
 import {
   acquireExtensionApiProbeScmLease,
   type ExtensionApiProbeScmLease
-} from '../extensions/extensionApiProbeScmAdapter.ts';
+} from '../../extensions/extensionApiProbeScmAdapter.ts';
 import {
   createProbeWorkspaceContext,
   type McbProbeWorkspaceContext

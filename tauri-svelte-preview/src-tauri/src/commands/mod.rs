@@ -1,8 +1,6 @@
 pub(crate) mod agent_sessions;
 pub(crate) mod application;
-pub(crate) mod lsp;
 pub(crate) mod runtime;
-pub(crate) mod source;
 pub(crate) mod source_control;
 pub(crate) mod terminal;
 pub(crate) mod usage;

@@ -55,7 +55,7 @@ import {
   type SourceSemanticToken,
   type SourceSignatureHelp,
   type SourceSymbol
-} from '../../sourceData.ts';
+} from '../../../sourceData.ts';
 import {
   countSourceReferencesFromTauri,
   findSourceDefinitionsInRootFromTauri,
@@ -72,9 +72,9 @@ import {
   readSourceFromTauri,
   readSourceLspDiagnosticsFromTauri,
   readSourceLspStatusFromTauri
-} from '../../tauriSource.ts';
-import { hasBackendCapability } from '../backendCapabilities.ts';
-import { countInvoke } from '../devInvokeCounter.svelte.ts';
+} from '../../../tauriSource.ts';
+import { hasBackendCapability } from '../../backendCapabilities.ts';
+import { countInvoke } from '../../devInvokeCounter.svelte.ts';
 import { activateEditor } from './editorStore.svelte.ts';
 import {
   createReferenceCountBatcher,
@@ -91,7 +91,7 @@ import {
   setSourceIntelligenceDiagnostics,
   trackTauriListener,
   trackTauriSubscriber
-} from '../resourceDiagnostics.svelte.ts';
+} from '../../resourceDiagnostics.svelte.ts';
 import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 
 // ── Budgets (from the old shell, except where the margin counts changed) ─────

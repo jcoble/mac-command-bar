@@ -12,7 +12,7 @@
  * No IO, no Svelte, no mutation of the arrays passed in: every function
  * returns a new array.
  */
-import type { SourceLanguage, SourcePreview, SourceRecord } from '../../sourceData.ts';
+import type { SourceLanguage, SourcePreview, SourceRecord } from '../../../sourceData.ts';
 
 /** One file open in the editor strip. */
 export interface OpenEditorFile {

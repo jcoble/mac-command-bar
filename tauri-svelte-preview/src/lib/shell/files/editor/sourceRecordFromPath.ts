@@ -16,7 +16,7 @@
  *  - a missing project root is tolerated: the record then carries just the
  *    file name as its relative path.
  */
-import { normalizeProjectPath, type SourceLanguage, type SourceRecord } from '../../sourceData.ts';
+import { normalizeProjectPath, type SourceLanguage, type SourceRecord } from '../../../sourceData.ts';
 
 /** Last path segment, or the word "file" when the path has no segments. */
 export function fileNameFromPath(path: string): string {

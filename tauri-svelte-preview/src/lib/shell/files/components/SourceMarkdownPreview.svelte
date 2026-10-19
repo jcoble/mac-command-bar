@@ -11,7 +11,7 @@
     type CodeHighlighter
   } from '@humanspeak/svelte-markdown/extensions/highlight';
   import { allowHtmlOnly, type RendererComponent, type Renderers } from '@humanspeak/svelte-markdown';
-  import { fenceLanguage, highlightCode } from './shell/markdown/codeHighlight';
+  import { fenceLanguage, highlightCode } from '../../markdown/codeHighlight';
 
   // GitHub-flavoured extras the library ships. Created once so the parser's
   // token cache keys stay stable between renders.
@@ -72,7 +72,7 @@
     type ImageSnippetProps,
     type ListItemSnippetProps
   } from '@humanspeak/svelte-markdown';
-  import { currentTheme } from './shell/themes/themeService';
+  import { currentTheme } from '../../themes/themeService';
   import {
     frontmatterRows,
     markdownImageTarget,
@@ -81,9 +81,9 @@
     taskCheckboxOffsets,
     toggleTaskAt,
     type MarkdownBlockToken
-  } from './shell/components/editor/markdownPreview';
-  import { readSourceImageFromTauri } from './tauriSource';
-  import { openUrlInBrowser } from './shell/workbenchNavigation';
+  } from './editor/markdownPreview';
+  import { readSourceImageFromTauri } from '../../../tauriSource';
+  import { openUrlInBrowser } from '../../workbenchNavigation';
 
   /**
    * A Markdown file rendered by @humanspeak/svelte-markdown. It never rewrites

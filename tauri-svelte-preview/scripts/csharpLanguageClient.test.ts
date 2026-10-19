@@ -2,15 +2,15 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const client = await readFile(
-  new URL('../src/lib/shell/editor/csharpLanguageClient.ts', import.meta.url),
+  new URL('../src/lib/shell/files/editor/csharpLanguageClient.ts', import.meta.url),
   'utf8'
 );
 const editor = await readFile(
-  new URL('../src/lib/CodeMirrorSourceEditor.svelte', import.meta.url),
+  new URL('../src/lib/shell/files/components/CodeMirrorSourceEditor.svelte', import.meta.url),
   'utf8'
 );
 const panel = await readFile(
-  new URL('../src/lib/shell/components/EditorPanel.svelte', import.meta.url),
+  new URL('../src/lib/shell/files/components/EditorPanel.svelte', import.meta.url),
   'utf8'
 );
 

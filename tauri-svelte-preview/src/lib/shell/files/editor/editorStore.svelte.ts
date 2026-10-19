@@ -15,7 +15,7 @@
  * SQLite persists only lightweight tab metadata, dirty drafts and view state.
  * Clean file contents are still read from disk only when their tab is shown.
  */
-import type { SourcePreview, SourceRecord, SourceSymbol } from '../../sourceData.ts';
+import type { SourcePreview, SourceRecord, SourceSymbol } from '../../../sourceData.ts';
 import {
   activePathAfterClose,
   closeOpenFile,
@@ -31,7 +31,7 @@ import { sourceRecordFromPath } from './sourceRecordFromPath.ts';
 import {
   setOpenTabDocumentBytes,
   textBytes
-} from '../resourceDiagnostics.svelte.ts';
+} from '../../resourceDiagnostics.svelte.ts';
 
 export type { OpenEditorFile } from './editorStoreOps.ts';
 

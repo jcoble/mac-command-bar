@@ -15,7 +15,7 @@ import {
   createReferenceCountBatcher,
   createReferenceCountStore,
   createSemanticReferenceCountScheduler
-} from '../src/lib/shell/editor/referenceCountBatcher.ts';
+} from '../src/lib/shell/files/editor/referenceCountBatcher.ts';
 
 const resultFor = (counts, approximate = false) => ({
   counts,

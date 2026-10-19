@@ -3,7 +3,7 @@
  *
  * Run it with:
  *   node --experimental-strip-types \
- *     src/lib/shell/components/editor/editorModesWiring.test.ts
+ *     src/lib/shell/files/components/editor/editorModesWiring.test.ts
  *
  * The rules themselves are tested in `languageIntelligenceMode.test.ts` and in
  * the Rust registry. What cannot be tested that way is the wiring inside Svelte
@@ -25,11 +25,11 @@ import path from 'node:path';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const panelSource = readFileSync(path.join(here, '..', 'EditorPanel.svelte'), 'utf8');
 const editorSessionSource = readFileSync(
-  path.join(here, '..', '..', 'controllers', 'editorSessionController.svelte.ts'),
+  path.join(here, '..', '..', '..', 'controllers', 'editorSessionController.svelte.ts'),
   'utf8'
 );
 const controlsSource = readFileSync(
-  path.join(here, '..', 'LanguageIntelligenceControls.svelte'),
+  path.join(here, '..', '..', '..', 'components', 'LanguageIntelligenceControls.svelte'),
   'utf8'
 );
 

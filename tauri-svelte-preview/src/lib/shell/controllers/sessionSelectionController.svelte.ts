@@ -10,7 +10,7 @@ import {
 	setActiveOwned
 } from '../stores/sessionRailStore.svelte';
 import { SessionSelectionLayers, type SessionSelectionOwner } from '../sessionSelectionLayers.svelte';
-import { canonicalPath } from '../explorer/explorerStore.svelte';
+import { canonicalPath } from '../files/explorer/explorerStore.svelte';
 import { countInvoke } from '../devInvokeCounter.svelte';
 import {
 	readAgentConversationWorkspaceExpandedPathsFromTauri,
@@ -24,7 +24,7 @@ import {
 import { ownedSessionFromBackend, type OwnedSession } from '../ownedSessions';
 import { removeOwnedSession } from '../stores/sessionRailStore.svelte';
 import { shellPanels } from '../shellPanels';
-import { refresh as refreshExplorer } from '../explorer/explorerService.ts';
+import { refresh as refreshExplorer } from '../files/explorer/explorerService.ts';
 import { NewSessionController } from './newSessionController.svelte';
 import { EditorSessionController, type EditorPanelLifecycle } from './editorSessionController.svelte';
 import {

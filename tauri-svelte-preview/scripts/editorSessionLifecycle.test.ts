@@ -11,7 +11,7 @@ const editor = readFileSync(
   'utf8'
 );
 const panel = readFileSync(
-  new URL('../src/lib/shell/components/EditorPanel.svelte', import.meta.url),
+  new URL('../src/lib/shell/files/components/EditorPanel.svelte', import.meta.url),
   'utf8'
 );
 const draft = readFileSync(

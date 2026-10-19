@@ -12,9 +12,9 @@
  */
 import { settings } from '../settingsStore.svelte.ts';
 import { browser, reloadBrowserFrame } from './browser/browserStore.svelte.ts';
-import { editorState } from './editor/editorStore.svelte.ts';
-import { explorer } from './explorer/explorerStore.svelte.ts';
-import { refresh as refreshFileList, stopScan } from './explorer/explorerService.ts';
+import { editorState } from './files/editor/editorStore.svelte.ts';
+import { explorer } from './files/explorer/explorerStore.svelte.ts';
+import { refresh as refreshFileList, stopScan } from './files/explorer/explorerService.ts';
 import { gitPanel } from './git/gitPanelStore.svelte.ts';
 import { gitService } from './git/gitService.ts';
 import type { SidebarViewId } from './layout/sidebarViews.ts';
