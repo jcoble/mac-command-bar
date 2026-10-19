@@ -12,7 +12,7 @@
     type ProviderUpdateState,
     type RestartCountdown,
     type RestartReconnect
-  } from '$lib/shell/providerUpdateService.svelte';
+  } from '$lib/shell/providers/providerUpdateService.svelte';
   import { rail } from '$lib/shell/stores/sessionRailStore.svelte';
 
   // Stays mounted while its owner shows provider updates, so the re-check

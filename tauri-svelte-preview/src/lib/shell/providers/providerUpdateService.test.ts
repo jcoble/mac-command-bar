@@ -1,4 +1,4 @@
-// Run: node --import ./scripts/svelteRuneTestSetup.ts --experimental-strip-types src/lib/shell/providerUpdateService.test.ts
+// Run: node --import ./scripts/svelteRuneTestSetup.ts --experimental-strip-types src/lib/shell/providers/providerUpdateService.test.ts
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { providerVersionLine } from './providerUpdateService.svelte.ts';

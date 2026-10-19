@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import PairPhonePanel from '../components/PairPhonePanel.svelte';
-  import ProviderCliUpdateControl from '../components/ProviderCliUpdateControl.svelte';
-  import ProviderUpdateControl from '../components/ProviderUpdateControl.svelte';
+  import ProviderCliUpdateControl from '../providers/ProviderCliUpdateControl.svelte';
+  import ProviderUpdateControl from '../providers/ProviderUpdateControl.svelte';
   import WorkingSpinner from '../components/feedback/WorkingSpinner.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';

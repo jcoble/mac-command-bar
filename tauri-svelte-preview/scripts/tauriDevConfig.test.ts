@@ -10,7 +10,7 @@ const providerCapabilitiesSource = await readFile(
   'utf8'
 );
 const providerUpdateServiceSource = await readFile(
-  new URL('../src/lib/shell/providerUpdateService.svelte.ts', import.meta.url),
+  new URL('../src/lib/shell/providers/providerUpdateService.svelte.ts', import.meta.url),
   'utf8'
 );
 const cargoManifest = await readFile(new URL('../src-tauri/Cargo.toml', import.meta.url), 'utf8');
