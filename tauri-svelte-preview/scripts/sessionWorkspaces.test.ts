@@ -512,8 +512,8 @@ test('a checkout change moves unsaved files only when the session is shown at th
   const code = stripTypeScriptTypes(method.getText(parsed).replace('async useSessionCheckout', 'async function useSessionCheckout'));
   const projects = [{ id: 'p1', machine: 'local', rootPath: '/code/assembly' }];
 
-  async function resetRoots(projectId: string | null): Promise<string[]> {
-    const session = { ownedId: 's', agent: 'codex', origin: 'app', executionEnvironment: 'local', cwd: '/code/assembly', projectId };
+  async function resetRoots(projectId: string | null, agent = 'codex', canChangeCheckout = true): Promise<string[]> {
+    const session = { ownedId: 's', agent, canChangeCheckout, origin: 'app', executionEnvironment: 'local', cwd: '/code/assembly', projectId };
     const roots: string[] = [];
     const useSessionCheckout = new Function(
       'rail', 'canonicalPath', 'parseRemoteWorkspacePath', 'countInvoke', 'validateProjectRootFromTauri',
@@ -531,7 +531,7 @@ test('a checkout change moves unsaved files only when the session is shown at th
       editorSessions: { resetForCheckoutChange: async (_signal: AbortSignal, root: string) => { roots.push(root); } },
       sessionSelectionLayers: { clearTreeView: () => undefined }, materializeSelection: async () => undefined
     };
-    assert.equal(await useSessionCheckout.call(selection, '/worktrees/feature'), true);
+    assert.equal(await useSessionCheckout.call(selection, '/worktrees/feature'), canChangeCheckout);
     return roots;
   }
 
@@ -539,6 +539,9 @@ test('a checkout change moves unsaved files only when the session is shown at th
   assert.deepEqual(await resetRoots('p1'), ['/code/assembly']);
   // Without a project the session is shown at the new checkout, and its drafts move there.
   assert.deepEqual(await resetRoots(null), ['/worktrees/feature']);
+  assert.deepEqual(await resetRoots(null, 'claude'), ['/worktrees/feature']);
+  assert.deepEqual(await resetRoots(null, 'antigravity'), ['/worktrees/feature']);
+  assert.deepEqual(await resetRoots(null, 'codex', false), []);
 });
 
 test('a tree whose folder was missing still counts as moved when its project moves', () => {

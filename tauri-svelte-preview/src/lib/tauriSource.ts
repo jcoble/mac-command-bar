@@ -529,6 +529,7 @@ export type BackgroundWorkItem = {
 };
 
 export type AgentConversationSessionRecord = AgentConversationSessionMeta & {
+  canChangeCheckout: boolean;
   ownedId: string;
   executionEnvironment: ExecutionEnvironment;
   remoteProfileId: string | null;

@@ -269,8 +269,8 @@ export class SessionSelectionController {
 	async useSessionCheckout(requestedRoot: string): Promise<boolean> {
 		const ownedId = this.activeOwnedId;
 		const selected = rail.owned.find((session) => session.ownedId === ownedId);
-		if (!ownedId || !selected || selected.agent !== 'codex' || selected.origin !== 'app') {
-			rail.error = 'Only the active Codex Assembly session can change checkout.';
+		if (!ownedId || !selected?.canChangeCheckout || selected.origin !== 'app') {
+			rail.error = 'Only the active supported Assembly session can change checkout.';
 			return false;
 		}
 

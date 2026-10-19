@@ -889,6 +889,8 @@ pub struct AgentConversationSessionRecord {
     #[serde(default)]
     pub remote_profile_id: Option<String>,
     pub provider: AgentConversationProvider,
+    #[serde(default)]
+    pub can_change_checkout: bool,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub cwd: String,
@@ -970,6 +972,7 @@ mod contract_tests {
 
         let record = AgentConversationSessionRecord {
             owned_id: "owned-local".into(),
+            can_change_checkout: true,
             execution_environment: ExecutionEnvironment::Local,
             remote_profile_id: None,
             provider: AgentConversationProvider::Codex,
@@ -1003,6 +1006,7 @@ mod contract_tests {
         };
         let value = serde_json::to_value(&record).unwrap();
         assert_eq!(value["projectId"], "p1");
+        assert_eq!(value["canChangeCheckout"], true);
         assert_eq!(value["backgroundWork"][0]["id"], "background-task:task-1");
         assert_eq!(value["backgroundWork"][0]["kind"], "command");
         assert_eq!(value["backgroundWork"][0]["label"], "Run checks");
@@ -1010,6 +1014,11 @@ mod contract_tests {
         assert!(value.get("meta").is_none());
         // Ungrouped, as a remote server sends it: the protocol-13 wire has no group fields.
         assert!(value.get("projectGroupKey").is_none() && value.get("projectGroupLabel").is_none());
+        let mut cached = value.clone();
+        cached.as_object_mut().unwrap().remove("canChangeCheckout");
+        let cached: AgentConversationSessionRecord = serde_json::from_value(cached)
+            .expect("saved remote sessions predate checkout support");
+        assert!(!cached.can_change_checkout);
         let read_back: AgentConversationSessionRecord = serde_json::from_value(value).unwrap();
         assert_eq!(read_back.project_id.as_deref(), Some("p1"));
         assert_eq!(read_back.background_work[0].kind, BackgroundWorkKind::Command);

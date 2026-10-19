@@ -12,7 +12,7 @@
    * which is READ-ONLY: on somebody else's worktree the commit box, the two
    * buttons, the remote actions and the per-file write actions are all gone,
    * and a line says which folder is on screen. Selecting another checkout is
-   * always read-only; Codex Assembly sessions get a separate action to make
+   * always read-only; supported Assembly sessions get a separate action to make
    * that folder their durable session checkout.
    *
    * THIS PANEL IS THE ONLY PLACE A DISCARD IS ASKED ABOUT. A row can request
@@ -179,20 +179,15 @@
   let checkoutBusy = $state(false);
   const checkoutDisabledReason = $derived.by(() => {
     if (!readOnlyScope) return null;
-    if (!onUseSessionCheckout) return 'Checkout changes are unavailable from this surface.';
     if (rail.activeOwnedId !== ownedId) return 'Select this session before changing its checkout.';
-    if (ownedSession?.agent === 'claude') {
-      return 'Claude Code sessions cannot change checkout; this action is Codex-only.';
+    if (!ownedSession?.canChangeCheckout) {
+      return "This session's agent can't keep its conversation in another checkout.";
     }
-    if (ownedSession?.agent === 'antigravity') {
-      return 'Antigravity (agy) sessions cannot change checkout; this action is Codex-only.';
+    if (ownedSession.origin !== 'app') {
+      return 'Only Assembly sessions can change the session checkout.';
     }
-    if (ownedSession?.agent !== 'codex' || ownedSession.origin !== 'app') {
-      return 'Only Codex Assembly sessions can change the session checkout.';
-    }
-    if (!conversation || conversation.provider !== 'codex') {
-      return 'The Codex Assembly session is not connected yet.';
-    }
+    if (!onUseSessionCheckout) return 'Checkout changes are unavailable from this surface.';
+    if (!conversation) return 'The Assembly session is not connected yet.';
     if (ownedSession.executionOwner !== 'structured') {
       return 'Checkout changes require the structured Assembly writer.';
     }
@@ -210,7 +205,7 @@
       ownedSession.runtimeState !== undefined
       && !['ready', 'suspended'].includes(ownedSession.runtimeState)
     ) {
-      return 'Wait for the Codex session to become quiescent before changing checkout.';
+      return 'Wait for the session to become quiescent before changing checkout.';
     }
     return null;
   });
@@ -219,8 +214,8 @@
   );
   const checkoutHint = $derived(
     checkoutBusy
-      ? 'Changing the Codex session checkout…'
-      : checkoutDisabledReason ?? 'Use this linked worktree as the Codex session checkout.'
+      ? 'Changing the session checkout…'
+      : checkoutDisabledReason ?? 'Use this linked worktree as the session checkout.'
   );
 
   /** A different session means a different repository: the old pick is dropped. */

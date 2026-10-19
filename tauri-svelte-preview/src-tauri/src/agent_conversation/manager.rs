@@ -1675,7 +1675,7 @@ impl AgentRuntimeManager {
         Ok(connection)
     }
 
-    /// Changes the durable checkout for one Codex session without replacing
+    /// Changes the durable checkout for one session without replacing
     /// its generation or native session. A running adapter is detached only
     /// after the quiescent gate passes; the checkout marker and the resulting
     /// suspended session row are then committed in the same SQLite transaction.
@@ -1703,15 +1703,15 @@ impl AgentRuntimeManager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = lifecycle_session_mut(&mut sessions, &owned_id, request.generation)?;
-            if session.provider != AgentConversationProvider::Codex {
-                return Err("Only Codex sessions can change checkout".to_string());
+            if !provider_supports_changing_checkout(&session.capabilities) {
+                return Err("This session's agent can't keep its conversation in another checkout.".to_string());
             }
             if session.cwd == new_cwd {
                 return Err("Session is already using this checkout".to_string());
             }
             if !session_can_change_checkout(session) {
                 return Err(
-                    "Checkout changes are available only while the Codex session is quiescent"
+                    "Checkout changes are available only while the session is quiescent"
                         .to_string(),
                 );
             }
@@ -3684,6 +3684,7 @@ impl AgentRuntimeManager {
                     pending_input,
                     background_work,
                     native_session_id,
+                    can_change_checkout,
                     mut meta,
                 ) = if let Some(session) = live {
                     (
@@ -3694,6 +3695,7 @@ impl AgentRuntimeManager {
                         !session.user_input_requests.is_empty(),
                         projected_background_work(session),
                         session.native_session_id.clone(),
+                        provider_supports_changing_checkout(&session.capabilities),
                         session.rail_meta.clone(),
                     )
                 } else {
@@ -3706,6 +3708,7 @@ impl AgentRuntimeManager {
                         false,
                         Vec::new(),
                         row.native_session_id.clone(),
+                        provider_supports_changing_checkout(&stored.capabilities),
                         stored.rail_meta,
                     )
                 };
@@ -3720,6 +3723,7 @@ impl AgentRuntimeManager {
                     execution_environment: ExecutionEnvironment::Local,
                     remote_profile_id: None,
                     provider,
+                    can_change_checkout,
                     model: row.model,
                     effort: row.effort,
                     cwd: row.cwd,
@@ -8468,13 +8472,23 @@ fn session_can_suspend(session: &ManagedAgentSession) -> bool {
         && session_is_quiescent(session)
 }
 
+// Checkout changes detach and resume the same native ID with a new cwd.
+// Claude ACP 0.90.0: dist/acp-agent.js:7625 recreates with cwd +
+// resume ID; dist/resumed-session.js:37 searches transcripts across projects.
+// Official Antigravity ACP 1.4.1: acp_server/server.py:3781 restores
+// the ID's trajectory and supplies the requested cwd; session_store.py:52 keys
+// trajectories by ID, not cwd. All three adapters therefore use negotiated resume.
+fn provider_supports_changing_checkout(capabilities: &AgentCapabilities) -> bool {
+    capabilities.session.resume
+}
+
 fn session_can_change_checkout(session: &ManagedAgentSession) -> bool {
     matches!(
         session.owner,
         AgentExecutionOwner::Structured | AgentExecutionOwner::Stopped
     ) && !session.suspending
         && session.native_session_id.is_some()
-        && session.capabilities.session.resume
+        && provider_supports_changing_checkout(&session.capabilities)
         && (session.runtime.is_some() || session.state == AgentRuntimeState::Suspended)
         && session_is_checkout_quiescent(session)
 }
@@ -8736,6 +8750,61 @@ mod tests {
             timestamp_ms: 1,
             turn_id: Some("turn-pending".into()),
             payload,
+        }
+    }
+
+    #[test]
+    fn checkout_support_follows_negotiated_resume_for_each_provider() {
+        for provider in [
+            AgentConversationProvider::Codex,
+            AgentConversationProvider::Claude,
+            AgentConversationProvider::Antigravity,
+        ] {
+            let mut capabilities = empty_capabilities(provider);
+            assert!(!provider_supports_changing_checkout(&capabilities), "{provider:?}");
+            capabilities.session.load = true;
+            assert!(!provider_supports_changing_checkout(&capabilities), "load alone: {provider:?}");
+            capabilities.session.resume = true;
+            assert!(provider_supports_changing_checkout(&capabilities), "{provider:?}");
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn checkout_preserves_native_id_and_resumes_each_provider_in_new_cwd() {
+        for provider in [
+            AgentConversationProvider::Codex,
+            AgentConversationProvider::Claude,
+            AgentConversationProvider::Antigravity,
+        ] {
+            let fixture = fixture_manager_with_provider("suspend_checkout", provider, None).await;
+            let native_id = fixture.manager.list_sessions().unwrap()[0].native_session_id.clone();
+            let cwd = fixture.root.join("second");
+            fs::create_dir(&cwd).unwrap();
+            let change = || ChangeAgentConversationCheckoutRequest {
+                owned_id: fixture.owned_id.clone(),
+                generation: fixture.generation,
+                cwd: cwd.display().to_string(),
+            };
+            fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
+                .active_turn_id = Some("busy".into());
+            assert!(fixture.manager.change_checkout(change()).await.unwrap_err().contains("quiescent"));
+            fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
+                .active_turn_id = None;
+            let moved = fixture.manager.change_checkout(change()).await.unwrap();
+            assert!(moved.can_change_checkout);
+            assert!(moved.suspended);
+            assert_eq!(moved.native_session_id, native_id);
+            assert_eq!(moved.cwd, cwd.display().to_string());
+            fixture.manager.ensure_async(request(cwd.to_str().unwrap(), &fixture.owned_id, provider)).await.unwrap();
+            let resumed = fixture.manager.activate(&fixture.owned_id, fixture.generation).await.unwrap();
+            assert_eq!(resumed.native_session_id, native_id);
+            let log = fs::read_to_string(fixture.root.join("suspend_checkout.jsonl")).unwrap();
+            let resume = log.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .find(|entry| entry["method"] == "session/resume").expect("same resume path");
+            assert_eq!(resume["params"]["cwd"], cwd.display().to_string());
+            assert_eq!(resume["params"]["sessionId"], native_id.unwrap());
+            fixture.manager.close(&fixture.owned_id, fixture.generation).await.unwrap();
+            fs::remove_dir_all(fixture.root).unwrap();
         }
     }
 
