@@ -2859,13 +2859,11 @@ mod tests {
         let response = client(reqwest::Method::GET, &base, "/sessions/lane/config", &token).send().await.unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let config: Value = response.json().await.unwrap();
-        // The adapter's three, then the Claude models Assembly adds, as the desktop's picker lists them.
+        // Exactly the adapter's models and efforts; this fixture adapter offers no effort control.
         let models: Vec<(&str, &Value)> = config["models"].as_array().unwrap().iter()
             .map(|model| (model["id"].as_str().unwrap(), &model["label"])).collect();
-        assert_eq!(models, [("default", &Value::Null), ("sonnet", &Value::Null), ("haiku", &Value::Null), ("opus", &Value::Null),
-            ("claude-opus-5", &Value::Null), ("claude-fable-5", &Value::Null)], "{config}");
-        assert_eq!((&config["model"], &config["efforts"], &config["effort"]),
-            (&json!("default"), &json!(["low", "medium", "high", "max"]), &Value::Null));
+        assert_eq!(models, [("default", &Value::Null), ("sonnet", &Value::Null), ("haiku", &Value::Null)], "{config}");
+        assert_eq!((&config["model"], &config["efforts"], &config["effort"]), (&json!("default"), &json!([]), &Value::Null));
         assert_eq!(config.as_object().unwrap().len(), 4, "no approval policy goes to the phone: {config}");
         let unknown = client(reqwest::Method::GET, &base, "/sessions/nobody/config", &token).send().await.unwrap();
         assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);

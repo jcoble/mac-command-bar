@@ -14,7 +14,7 @@
     "tauri-svelte-preview/src-tauri/src/agent_conversation/manager.rs": 16731,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/messaging.rs": 1068,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/mod.rs": 1418,
-    "tauri-svelte-preview/src-tauri/src/agent_conversation/phone/mod.rs": 3023,
+    "tauri-svelte-preview/src-tauri/src/agent_conversation/phone/mod.rs": 3021,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/protocol.rs": 958,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/providers/acp_client.rs": 2718,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/providers/updates.rs": 1033,
