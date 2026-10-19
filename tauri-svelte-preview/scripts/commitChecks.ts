@@ -1,12 +1,53 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 type Baseline = { fileSize: Record<string, number>; providerBranches: Record<string, number> };
 type StagedFile = { path: string; source: string; addedLines?: number[] };
 const baselinePath = 'tauri-svelte-preview/scripts/commitChecks.baseline.json';
 const providerFolder = 'tauri-svelte-preview/src-tauri/src/agent_conversation/providers/';
+const removedLocations = [
+  ['src-tauri/src/agent_conversation/remote_history.rs', 'src-tauri/src/agent_conversation/remote/'],
+  ['src-tauri/src/agent_conversation/remote_install.rs', 'src-tauri/src/agent_conversation/remote/'],
+  ['src-tauri/src/agent_conversation/remote_workspace.rs', 'src-tauri/src/agent_conversation/remote/'],
+  ['src-tauri/src/agent_conversation/phone_api.rs', 'src-tauri/src/agent_conversation/phone/'],
+  ['src-tauri/src/agent_conversation/phone_push.rs', 'src-tauri/src/agent_conversation/phone/'],
+  ['src-tauri/src/git_workspace.rs', 'src-tauri/src/git/'],
+  ['src-tauri/src/git_pr.rs', 'src-tauri/src/git/'],
+  ['src-tauri/src/github.rs', 'src-tauri/src/git/'],
+  ['src-tauri/src/git_diff_models.rs', 'src-tauri/src/git/'],
+  ['src-tauri/src/orchestration.rs', 'src-tauri/src/workflow/'],
+  ['src-tauri/src/commands/workflow.rs', 'src-tauri/src/workflow/'],
+  ['src-tauri/src/commands/orchestration.rs', 'src-tauri/src/workflow/'],
+  ['src/lib/shell/components/conversation/', 'src/lib/shell/conversation/components/'],
+  ['src/lib/shell/newSession/', 'src/lib/shell/conversation/newSession/'],
+  ['src/lib/shell/panels/agents/AgentMessages', 'src/lib/shell/messages/'],
+] as const;
+const featureInternals: { path: string; owner: string; consumers?: string[] }[] = [
+  // Settings applies saved terminal settings with applyTerminalSettings.
+  { path: 'terminal/ghosttyFactory', owner: 'terminal/', consumers: ['tauri-svelte-preview/src/lib/shell/settings/SettingsDialog.svelte'] },
+  { path: 'browser/components/AnnotationCanvas', owner: 'browser/' },
+  // Shell composition calls popupCoversPage to check browser bounds.
+  { path: 'browser/components/browserPanelBounds', owner: 'browser/', consumers: ['tauri-svelte-preview/src/routes/+page.svelte'] },
+  { path: 'browser/browserBounds', owner: 'browser/' },
+  { path: 'conversation/components/TimelineItem', owner: 'conversation/' },
+  { path: 'conversation/components/UserMessageItem', owner: 'conversation/' },
+  { path: 'conversation/components/AssistantMessageItem', owner: 'conversation/' },
+  { path: 'conversation/components/ReasoningItem', owner: 'conversation/' },
+  { path: 'conversation/components/TaskListItem', owner: 'conversation/' },
+  { path: 'conversation/components/CommandItem', owner: 'conversation/' },
+  { path: 'conversation/components/FileChangeItem', owner: 'conversation/' },
+  { path: 'conversation/components/FileEditsItem', owner: 'conversation/' },
+  { path: 'conversation/components/SubagentSection', owner: 'conversation/' },
+  { path: 'conversation/components/ApprovalItem', owner: 'conversation/' },
+  { path: 'conversation/components/UserInputItem', owner: 'conversation/' },
+  { path: 'conversation/components/ErrorItem', owner: 'conversation/' },
+  { path: 'conversation/components/CompactionItem', owner: 'conversation/' },
+  { path: 'conversation/components/ToolItem', owner: 'conversation/' },
+  { path: 'conversation/components/TurnFileCard', owner: 'conversation/' },
+  { path: 'conversation/components/TurnMetadata', owner: 'conversation/' },
+];
 const providerName = `(?:['"](?:codex|claude|antigravity)['"]|(?:\\w+::)+(?:Codex|Claude|Antigravity))`;
 const providerBranch = new RegExp(
   `[!=]==?\\s*${providerName}|${providerName}\\s*[!=]==?|\\bcase\\s+${providerName}\\s*:|${providerName}[^=\\n]*=>|\\bmatches!\\s*\\([^\\n]*${providerName}`
@@ -73,6 +114,27 @@ export function checkFiles(files: StagedFile[], baseline: Baseline): string[] {
     const branches = providerBranchCount(path, source);
     const allowed = baseline.providerBranches[path] ?? 0;
     if (branches > allowed) errors.push(`${path}: provider branch count is ${branches}; the limit outside provider folders is ${allowed}.`);
+    for (const [prefix, destination] of removedLocations) {
+      if (path.startsWith(`tauri-svelte-preview/${prefix}`)) {
+        errors.push(`${path}: this location was removed by the module refactor (TSK-1512); use tauri-svelte-preview/${destination}.`);
+      }
+    }
+    if (path.endsWith('.rs') || isTestPath(path)) continue;
+    for (const match of source.matchAll(/\b(?:from\s*|import\s*(?:\(\s*)?)['"]([^'"]+)['"]/g)) {
+      const specifier = match[1];
+      const resolved = specifier.startsWith('$lib/')
+        ? posix.normalize('tauri-svelte-preview/src/lib/' + specifier.slice(5))
+        : specifier.startsWith('.') ? posix.join(posix.dirname(path), specifier) : null;
+      if (!resolved) continue;
+      const imported = resolved.replace(/\.(ts|svelte)$/, '');
+      for (const internal of featureInternals) {
+        const owner = 'tauri-svelte-preview/src/lib/shell/' + internal.owner;
+        if (imported === 'tauri-svelte-preview/src/lib/shell/' + internal.path
+          && !path.startsWith(owner) && !internal.consumers?.includes(path)) {
+          errors.push(`${path}: imports ${imported}, which is internal to ${owner}.`);
+        }
+      }
+    }
   }
   return errors;
 }
