@@ -36,9 +36,7 @@ export type AgentRuntimeState =
   | 'closed';
 
 export interface OwnedAgentRuntimeFields {
-  /** Backend-reported provider support; checkout quiescence is checked separately. */
-  canChangeCheckout: boolean;
-  executionOwner: AgentExecutionOwner;
+  executionOwner: AgentExecutionOwner; canChangeCheckout: boolean; // Provider support only; quiescence is checked separately.
   runtimeState: AgentRuntimeState;
   providerInstanceId: string | null;
   nativeSessionId: string | null;
@@ -403,8 +401,7 @@ export function ownedSessionFromBackend(record: AgentConversationSessionRecord):
   const { agent, viaCmux: providerViaCmux } = normalizeProvider(record.provider);
   const terminalOwned = record.origin === 'external' && record.ptySessionId !== null;
   return {
-    ownedId: record.ownedId,
-    canChangeCheckout: record.canChangeCheckout,
+    ownedId: record.ownedId, canChangeCheckout: record.canChangeCheckout,
     executionEnvironment: record.executionEnvironment,
     remoteProfileId: record.remoteProfileId,
     agent,

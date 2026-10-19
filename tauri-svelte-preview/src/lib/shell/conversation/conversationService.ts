@@ -543,7 +543,7 @@ export async function loadConversationCapabilities(
     if (signal?.aborted || !conversationGenerationMatches(ownedId, generation)) return null;
     if (capabilities.provider !== provider) throw new Error('Capability provider does not match this session');
     setConversationCapabilities(ownedId, generation, capabilities);
-    // Same negotiated value as provider_supports_changing_checkout in manager.rs, which still rejects unsupported changes.
+    // Same negotiated value as provider_supports_changing_checkout in capabilities.rs; the backend still rejects unsupported changes.
     updateOwnedSession(ownedId, { canChangeCheckout: capabilities.session.resume });
     return capabilities;
   } catch (error) {
@@ -1122,8 +1122,7 @@ async function refreshAdoptedSession(ownedId: string, signal: AbortSignal): Prom
     if (signal.aborted || !record || railActivityEvents.get(ownedId) !== seen) return;
     const fresh = ownedSessionFromBackend(record);
     updateOwnedSession(ownedId, {
-      state: fresh.state,
-      canChangeCheckout: fresh.canChangeCheckout,
+      state: fresh.state, canChangeCheckout: fresh.canChangeCheckout,
       runtimeState: fresh.runtimeState,
       activeTurnId: fresh.activeTurnId,
       pendingPermission: fresh.pendingPermission,
@@ -1427,15 +1426,9 @@ export async function changeStructuredConversationCheckout(
 ): Promise<AgentConversationSessionRecord | null> {
   const state = getConversationSession(ownedId);
   const session = rail.owned.find((entry) => entry.ownedId === ownedId);
-  if (!session?.canChangeCheckout) {
-    throw new Error("This session's agent can't keep its conversation in another checkout.");
-  }
+  if (!session?.canChangeCheckout) throw new Error("This session's agent can't keep its conversation in another checkout.");
   if (!state || !cwd.trim()) throw new Error('A connected session and checkout folder are required.');
-  const record = await changeAgentConversationCheckoutFromTauri({
-    ownedId,
-    generation: state.generation,
-    cwd
-  });
+  const record = await changeAgentConversationCheckoutFromTauri({ ownedId, generation: state.generation, cwd });
   if (!record) return null;
   updateOwnedSession(ownedId, {
     cwd: record.cwd,

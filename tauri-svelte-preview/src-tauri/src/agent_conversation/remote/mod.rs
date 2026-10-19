@@ -5341,8 +5341,7 @@ mod connection_tests {
 
     fn session(owned_id: &str, profile_id: &str, last_activity_at_ms: i64) -> AgentConversationSessionRecord {
         AgentConversationSessionRecord {
-            can_change_checkout: true,
-            owned_id: owned_id.into(),
+            owned_id: owned_id.into(), can_change_checkout: true,
             execution_environment: ExecutionEnvironment::Remote,
             remote_profile_id: Some(profile_id.into()),
             provider: super::super::protocol::AgentConversationProvider::Codex,
