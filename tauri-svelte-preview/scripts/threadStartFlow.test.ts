@@ -402,6 +402,11 @@ console.log('threadStartFlow: draft efforts follow the chosen model');
   });
   assert.equal(state.model, 'sonnet');
   assert.equal(state.effort, 'high');
+  const priorPermissions = defaultThreadStartState({
+    projectPath: '/work/app', provider: 'claude', providerConfigs: [remembered]
+  });
+  assert.equal(state.access, priorPermissions.access);
+  assert.deepEqual(accessChoicesFor('claude', [remembered, live]), accessChoicesFor('claude', [remembered]));
   assert.deepEqual(effortChoicesFor('claude', [remembered, live]), ['low', 'high']);
   const noEffort = { ...live, reasoningEffort: null, availableEfforts: [] };
   assert.deepEqual(effortChoicesFor('claude', [remembered, noEffort]), []);

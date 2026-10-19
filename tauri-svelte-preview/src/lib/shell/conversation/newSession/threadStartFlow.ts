@@ -257,7 +257,9 @@ export function defaultThreadStartState(input: {
   const configs = input.providerConfigs ?? [];
   const provider: ThreadStartProvider = input.provider ?? 'codex';
   const config = configForProvider(provider, configs);
+  const accessConfig = configs.find((config) => config.provider === provider);
   const hasLiveCatalog = (config?.availableModels.length ?? 0) > 0;
+  const hasLiveAccessCatalog = (accessConfig?.availableModels.length ?? 0) > 0;
   const effortChoices = effortChoicesFor(provider, configs);
   const accessChoices = accessChoicesFor(provider, configs);
   return {
@@ -271,8 +273,8 @@ export function defaultThreadStartState(input: {
     // refused at the first send and start nothing.
     effort: choiceAmong(config?.reasoningEffort, effortChoices)
       || (hasLiveCatalog ? (effortChoices[0] ?? '') : FALLBACK_EFFORTS[provider]),
-    access: choiceAmong(config?.approvalPolicy, accessChoices)
-      || (hasLiveCatalog ? (accessChoices[0] ?? '') : FALLBACK_ACCESS[provider]),
+    access: choiceAmong(accessConfig?.approvalPolicy, accessChoices)
+      || (hasLiveAccessCatalog ? (accessChoices[0] ?? '') : FALLBACK_ACCESS[provider]),
     projectId: input.projectId ?? null,
     projectPath: tidy(input.projectPath),
     cwd: tidy(input.cwd) || tidy(input.projectPath),
@@ -319,7 +321,7 @@ export function accessChoicesFor(
   provider: ThreadStartProvider,
   configs: readonly ThreadStartProviderConfig[]
 ): string[] {
-  const config = configForProvider(provider, configs);
+  const config = configs.find((config) => config.provider === provider);
   const available = unique(config?.availableApprovalPolicies ?? []);
   if ((config?.availableModels.length ?? 0) > 0) return available;
   return available.length ? available : [...FALLBACK_ACCESS_CHOICES[provider]];
