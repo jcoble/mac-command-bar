@@ -655,7 +655,7 @@ impl AcpClient {
         self.provider = Some(provider);
         Ok(capabilities)
     }
-
+    // Antigravity 1.2.1 initialize advertises oauth-personal; Claude advertises none, Codex api-key/chat-gpt (TSK-1508 receipts).
     pub(crate) async fn authenticate_personal(&mut self) -> Result<(), AgentRuntimeError> {
         self.initialize(AgentConversationProvider::Antigravity).await?;
         if !self.personal_authentication {

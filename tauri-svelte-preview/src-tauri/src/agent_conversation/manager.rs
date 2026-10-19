@@ -3250,6 +3250,7 @@ impl AgentRuntimeManager {
             let session = current_session_mut(&mut sessions, owned_id, generation)?;
             if let Some(turn_id) = session.active_turn_id.clone() {
                 session.state = AgentRuntimeState::Interrupting;
+                // Antigravity 1.2.1 server.py:3089–3090 only signals a started SDK; it provides no prompt-completion deadline.
                 let bounded_cancel = session.provider == AgentConversationProvider::Antigravity
                     && session.cancel_deadline.is_none()
                     && matches!(
@@ -3286,6 +3287,7 @@ impl AgentRuntimeManager {
         let claude = {
             let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let session = current_session_mut(&mut sessions, owned_id, generation)?;
+            // Claude ACP 0.88/0.93 cancelTurns can wait its 30s forceCancelGraceMs; release permissions/children locally now.
             if session.provider == AgentConversationProvider::Claude || turn_id.is_none() {
                 for (request_id, pending) in session.permission_requests.drain().collect::<Vec<_>>() {
                     record_payload_for_session_and_dispatch(session, &self.emitter,
@@ -5302,19 +5304,13 @@ fn record_payload_for_session(
     record_payload_for_session_with_lifecycle(session, payload, lifecycle, None)
 }
 
-/// Whether the provider still holds anything for this session to resume.
-///
-/// Only Claude keeps a transcript this side can read. A Claude session whose
-/// file holds no turn — its process was stopped before it wrote one — is gone
-/// on Claude's side however many turns this store shows for it, and every
-/// resume of it fails the same way. Other providers are taken at their word,
-/// as is a transcript that cannot be read at all.
+/// Claude needs a native turn and Codex a rollout to resume (TSK-1508 empty-resume probes).
+/// Trust unreadable history; Antigravity precreates its trajectory (1.2.1 server.py:3011–3015).
 fn provider_holds_session(provider: AgentConversationProvider, native_session_id: &str) -> bool {
     match provider {
-        AgentConversationProvider::Claude => {
-            transcript::claude_transcript_holds_a_turn(native_session_id).unwrap_or(true)
-        }
-        AgentConversationProvider::Codex | AgentConversationProvider::Antigravity => true,
+        AgentConversationProvider::Claude => transcript::claude_transcript_holds_a_turn(native_session_id).unwrap_or(true),
+        AgentConversationProvider::Codex => transcript::codex_transcript_holds_session(native_session_id).unwrap_or(true),
+        _ => true,
     }
 }
 
@@ -5889,6 +5885,7 @@ async fn pump_inbound(
                     else {
                         return;
                     };
+                    // Claude is completed locally by cancel_turn; cancelTurns can still emit updates (TSK-1508 cancel probes).
                     if session.suspending || (session.provider == AgentConversationProvider::Claude
                         && session.state == AgentRuntimeState::Interrupting) { break 'update false; }
                     let child_content = is_known_claude_child_inbound(session, &params);
@@ -7268,6 +7265,7 @@ async fn handle_ordered_session_event(
                     return true;
                 }
                 abort_cancel_deadline(session);
+                // Claude cancelTurns retires native children (0.88 finishAll / 0.93 parentCancelled); Codex cancel only interrupts the turn.
                 if cancelled && session.provider == AgentConversationProvider::Claude { session.background_work.clear(); }
                 let pending_permissions =
                     drain_root_permissions(&mut session.permission_requests);
@@ -7998,6 +7996,7 @@ mod tests {
     use crate::agent_conversation::protocol::AgentCommandDescriptor;
     mod checkout;
     mod model_effort;
+    mod codex_resume;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
@@ -12818,66 +12817,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn resume_failure_with_user_history_stays_suspended() {
-        let root = temp_root();
-        let log = root.join("resume-failure-with-history.jsonl");
-        let manifest = super::super::providers::acp_client::tests::fixture_manifest_named(
-            &log,
-            "resume_failure",
-        );
-        let providers = ProviderRegistry::new([(AgentConversationProvider::Codex, manifest)])
-            .expect("fixture provider");
-        let manager = AgentRuntimeManager::new(providers);
-        let mut ensure = request(
-            root.to_str().unwrap(),
-            "owned-resume-failure-with-history",
-            AgentConversationProvider::Codex,
-        );
-        ensure.native_session_id = Some("missing-native".into());
-        let connection = manager.ensure_inner(ensure).unwrap().0;
-        {
-            let mut sessions = manager.sessions.lock().unwrap();
-            let session = sessions.get_mut(&connection.owned_id).unwrap();
-            record_payload_for_session(
-                session,
-                AgentConversationPayload::UserMessage {
-                    item_id: "stored-user-message".into(),
-                    text: "Earlier message".into(),
-                    completed: true,
-                    attachment_ids: Vec::new(),
-                },
-            )
-            .unwrap();
-        }
-
-        assert!(manager
-            .activate(&connection.owned_id, connection.generation)
-            .await
-            .unwrap_err()
-            .contains("could not be resumed"));
-        let snapshot = manager.snapshot(&connection.owned_id).unwrap().unwrap();
-        assert!(snapshot.suspended);
-        // The card has to name the cause, not just report that a resume failed.
-        let resume_error = snapshot
-            .events
-            .iter()
-            .find_map(|event| match &event.payload {
-                AgentConversationPayload::Error { code, message, .. }
-                    if code == "session-resume-failed" =>
-                {
-                    Some(message.clone())
-                }
-                _ => None,
-            })
-            .expect("resume failure is recorded");
-        assert!(resume_error.starts_with("The stored provider session could not be resumed: "));
-        assert!(resume_error.len() > "The stored provider session could not be resumed: ".len());
-        let requests = fs::read_to_string(&log).unwrap();
-        assert!(requests.contains(r#""method":"session/resume""#));
-        assert!(!requests.contains(r#""method":"session/new""#));
-        fs::remove_dir_all(root).unwrap();
-    }
 
     // Claude keeps a transcript this side can read. When it holds no turn — the
     // process was stopped before it wrote one — there is nothing on Claude's
