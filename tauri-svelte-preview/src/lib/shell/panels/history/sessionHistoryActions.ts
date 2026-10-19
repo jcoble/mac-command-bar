@@ -48,13 +48,6 @@ export const SESSION_HISTORY_ACTION_IDS: readonly SessionHistoryActionId[] = [
   'delete'
 ];
 
-/**
- * The more-actions menu shows everything except View Log, which already has its
- * own button in the expanded card's action row.
- */
-export const SESSION_HISTORY_MENU_ACTION_IDS: readonly SessionHistoryActionId[] =
-  SESSION_HISTORY_ACTION_IDS.filter((id) => id !== 'view-log');
-
 const NO_TRANSCRIPT = 'No transcript file was found for this session.';
 const NO_FOLDER = 'This session has no folder recorded.';
 const NO_RESUME_COMMAND = 'This session has no resume command to copy.';

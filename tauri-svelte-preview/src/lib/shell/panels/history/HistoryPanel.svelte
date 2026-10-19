@@ -10,11 +10,12 @@
    *
    * The panel owns running the actions, since it is the only thing here holding
    * the session service and the confirm dialog. Deciding WHICH actions a
-   * session supports is `sessionHistoryActions`'s job, and drawing a card is
-   * `SessionHistoryCard`'s.
+   * session supports is `sessionHistoryActions`'s job, and drawing a session's
+   * row is `SessionHistoryCard`'s.
    */
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import History from '@lucide/svelte/icons/history';
+  import Laptop from '@lucide/svelte/icons/laptop';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
   import Search from '@lucide/svelte/icons/search';
   import Server from '@lucide/svelte/icons/server';
@@ -23,7 +24,6 @@
 
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
-  import { Chip } from '$lib/components/ui/chip/index.js';
   import * as Collapsible from '$lib/components/ui/collapsible/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
@@ -301,6 +301,7 @@
     stopHistoryLoads();
     const stopSignal = loadStopController.signal;
     releaseDetails();
+    expandedKey = null;
     const closing = !reload
       && isSessionHistoryGroupOpen(collapseState, 'project', project.key);
     const version = ++historyLoadVersion;
@@ -649,9 +650,19 @@
         <RefreshCw />
       </IconButton>
     {/snippet}
-    <span data-testid="session-history-host-line" class="flex min-w-0 items-center gap-1.5">
-      <Server class="size-[16px] shrink-0" aria-hidden="true" />
-      <span data-testid="session-history-host" class="truncate">{summaryViewModel.totalCount} {summaryViewModel.totalCount === 1 ? 'session' : 'sessions'}{summaryViewModel.machines.length === 1 ? ` on ${projectMachineLabel(summaryViewModel.machines[0].key, rail.remoteProfiles)}` : ''}</span>
+    <span data-testid="session-history-host-line" class="flex min-w-0 items-center gap-1.5 text-xs text-[var(--color-text-3)]">
+      <span data-testid="session-history-host" class="shrink-0">{summaryViewModel.totalCount} {summaryViewModel.totalCount === 1 ? 'session' : 'sessions'}</span>
+      <!-- One machine in view: the header names it, and no machine heading is drawn. -->
+      {#if summaryViewModel.machines.length === 1}
+        {@const machine = summaryViewModel.machines[0].key}
+        <span aria-hidden="true">·</span>
+        {#if machine === 'local'}
+          <Laptop class="size-[13px] shrink-0" aria-hidden="true" />
+        {:else}
+          <Server class="size-[13px] shrink-0" aria-hidden="true" />
+        {/if}
+        <span class="truncate">{projectMachineLabel(machine, rail.remoteProfiles)}</span>
+      {/if}
     </span>
   </PanelHeader>
   <div data-testid="session-history-scope" class="px-2 py-1">
@@ -659,6 +670,7 @@
       items={SCOPE_OPTIONS}
       value={sessionLibraryState.scope}
       size="sm"
+      class="grid w-full grid-cols-3"
       aria-label="Session history scope"
       onValueChange={setScope}
     />
@@ -682,7 +694,7 @@
       <SessionHistoryCard
         record={row.record}
         title={row.displayTitle}
-        excerpt={row.excerpt}
+        machineLabel={projectMachineLabel(row.record.machine, rail.remoteProfiles)}
         expanded={expandedKey === row.record.key}
         {now}
         onToggle={() => toggleCard(row)}
@@ -731,20 +743,28 @@
            exception: its results are already few, so they all show. -->
       {#each summaryViewModel.projects as project, projectIndex (project.key)}
         {#if summaryViewModel.showMachines && (projectIndex === 0 || summaryViewModel.projects[projectIndex - 1].machine !== project.machine)}
-          <h2 class="flex min-h-7 items-center gap-2 bg-card px-3 py-1.5 text-[13px] font-medium text-foreground">
-            <Server class="size-3.5 shrink-0" aria-hidden="true" />
-            {projectMachineLabel(project.machine, rail.remoteProfiles)}
+          {@const machineCount = summaryViewModel.machines
+            .find((machine) => machine.key === project.machine)
+            ?.projects.reduce((total, group) => total + group.count, 0)}
+          <h2 class="sticky top-0 z-20 mt-1 flex h-7 items-center gap-1.5 bg-card px-3.5 text-[11px]
+                     font-semibold tracking-[0.04em] text-[var(--color-text-3)] uppercase">
+            {#if project.machine === 'local'}
+              <Laptop class="size-[13px] shrink-0" aria-hidden="true" />
+            {:else}
+              <Server class="size-[13px] shrink-0" aria-hidden="true" />
+            {/if}
+            <span class="min-w-0 flex-1 truncate">{projectMachineLabel(project.machine, rail.remoteProfiles)}</span>
+            <span class="text-xs font-normal tracking-normal tabular-nums">{machineCount}</span>
           </h2>
         {/if}
         {@const open = isSessionHistoryGroupOpen(collapseState, 'project', project.key)}
         {@const loadedProject = loadedProjects.get(project.key)}
         <Collapsible.Root {open} onOpenChange={() => void toggleProject(project)}>
-          <h2 class="sticky top-0 z-10 bg-card">
+          <h2 class={`sticky z-10 bg-card px-1.5 ${summaryViewModel.showMachines ? 'top-7' : 'top-0'}`}>
             <Collapsible.Trigger
-              class="flex min-h-7 w-full items-center gap-2 px-3 py-1.5 text-left
-                     text-[13px] leading-tight font-medium text-foreground outline-none
-                     transition-colors hover:bg-accent/60 focus-visible:ring-3
-                     focus-visible:ring-ring/50"
+              class="flex h-7 w-full items-center gap-1.5 rounded-[var(--radius-sm)] px-2 text-left
+                     text-[13px] font-medium text-foreground outline-none transition-colors
+                     hover:bg-[var(--color-hover)] focus-visible:shadow-(--focus-ring)"
             >
               {#if loadingProjectKey === project.key}
                 <WorkingSpinner size={14} />
@@ -755,7 +775,7 @@
                 />
               {/if}
               <span class="min-w-0 flex-1 truncate">{project.name}</span>
-              <Chip tone="count">{project.count}</Chip>
+              <span class="pl-2 text-xs font-normal text-[var(--color-text-3)] tabular-nums">{project.count}</span>
             </Collapsible.Trigger>
           </h2>
 
@@ -770,11 +790,9 @@
             {:else}
             {#if loadedProject}
             <!-- One checkout means no second heading to sit under, so its
-                 sessions stay at the project's own depth. Everything else steps
-                 in once per level it is nested, against a rail — without it a
-                 worktree heading and the sessions of the worktree above it
-                 shared a left edge and the tree read as one flat list. -->
-            <div class="history-nest">
+                 sessions stay one step in from the project. Under a checkout
+                 heading they step in once more. -->
+            <div>
               {#each loadedProject.worktrees as worktree (worktree.key)}
                 {@const worktreeOpen =
                   loadedProject.singleCheckout
@@ -786,22 +804,24 @@
                     open={worktreeOpen}
                     onOpenChange={() => toggleWorktree(worktree.key)}
                   >
+                    {@const branch = worktree.rows
+                      .map((row) => row.record.owned?.branch ?? row.record.available?.branchHint)
+                      .find(Boolean)}
                     <Collapsible.Trigger
-                      class="flex min-h-6 w-full items-center gap-2 py-1 pr-3 pl-2 text-left text-sm
-                             leading-tight text-muted-foreground outline-none transition-colors
-                             hover:bg-accent/60 focus-visible:ring-3 focus-visible:ring-ring/50"
+                      class="mx-1.5 flex h-[26px] w-[calc(100%-12px)] items-center gap-1.5 rounded-[var(--radius-sm)]
+                             pr-2 pl-[22px] text-left text-xs text-[var(--color-text-2)] outline-none
+                             transition-colors hover:bg-[var(--color-hover)] focus-visible:shadow-(--focus-ring)"
+                      title={branch ? `${worktree.path} · branch ${branch}` : worktree.path}
                     >
                       <ChevronRight
-                        class={`size-3 shrink-0 transition-transform duration-150 ${worktreeOpen ? 'rotate-90' : ''}`}
+                        class={`size-3 shrink-0 text-[var(--color-text-3)] transition-transform duration-150 ${worktreeOpen ? 'rotate-90' : ''}`}
                         aria-hidden="true"
                       />
-                      <span class="min-w-0 flex-1 truncate" title={worktree.path}>{worktree.name}</span>
-                      <Chip tone="count">{worktree.count}</Chip>
+                      <span class="min-w-0 truncate">{worktree.name}</span>
+                      <span class="ml-auto pl-2 text-[var(--color-text-3)] tabular-nums">{worktree.count}</span>
                     </Collapsible.Trigger>
-                    <Collapsible.Content>
-                      <div class="history-nest">
-                        {@render sessionRows(worktree)}
-                      </div>
+                    <Collapsible.Content style="--indent: 36px">
+                      {@render sessionRows(worktree)}
                     </Collapsible.Content>
                   </Collapsible.Root>
                 {/if}
@@ -864,21 +884,6 @@
 </AlertDialog.Root>
 
 <style>
-  /*
-    One step in per level of nesting, against a rail that runs the height of the
-    group. Everything used to sit at the same left edge — a worktree heading, the
-    sessions inside it, and the next heading below — so the tree read as a flat
-    list and there was no way to see what belonged to what.
-
-    The rail is drawn on the container rather than on each row so it stays
-    unbroken between a heading and the cards under it.
-  */
-  .history-nest {
-    margin-left: var(--space-3);
-    padding-left: var(--space-2);
-    border-left: 1px solid color-mix(in srgb, var(--color-text) 12%, transparent);
-  }
-
   /*
     The kit's scroll thumb is a 7% hairline, which on this surface is a
     scrollbar nobody can see. The bar is the only thing telling a reader that a

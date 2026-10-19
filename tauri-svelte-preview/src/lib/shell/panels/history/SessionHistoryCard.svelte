@@ -2,33 +2,28 @@
   /**
    * SessionHistoryCard.svelte — one past session in the History panel.
    *
-   * Every card draws the same zones in the same order, whether the scan found
-   * a model, a folder, turns, agents or none of them: the row that names the
-   * session, five labelled facts, the turns it kept, the agents it ran, what
-   * can be done about it, and one line saying why. A value the scan did not
-   * have is an em dash in the muted colour and its zone stays where it was —
-   * a card that drops a block reads as a different design rather than as the
-   * same card with less in it, which is why forty sessions used to look like
-   * forty different layouts.
+   * A single 32 px line: the agent's mark, the title and how long ago the
+   * session was active. Clicking the line opens the session. The chevron that
+   * takes the time's place on hover or keyboard focus opens the details right
+   * under the line: the latest message, the facts the session has, and what can
+   * be done with it. A fact the session does not have is left out, not shown
+   * as a dash.
    *
-   * The card decides nothing. Which actions a session supports, and what to
-   * say about the ones it does not, comes from `sessionHistoryActions`;
-   * running them belongs to the panel, which owns the service and the confirm
-   * dialog. That split is what lets the roster be tested without a browser.
+   * The card decides nothing. Which actions a session supports comes from
+   * `sessionHistoryActions`; running them belongs to the panel, which owns the
+   * service and the confirm dialog.
    */
-  import ChevronDown from '@lucide/svelte/icons/chevron-down';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
-  import ChevronUp from '@lucide/svelte/icons/chevron-up';
   import Copy from '@lucide/svelte/icons/copy';
   import Ellipsis from '@lucide/svelte/icons/ellipsis';
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
+  import FileText from '@lucide/svelte/icons/file-text';
   import FolderOpen from '@lucide/svelte/icons/folder-open';
   import Play from '@lucide/svelte/icons/play';
+  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import Trash2 from '@lucide/svelte/icons/trash-2';
-  import type { Component } from 'svelte';
 
   import { Button } from '$lib/components/ui/button/index.js';
-  import { Card } from '$lib/components/ui/card/index.js';
   import { Chip } from '$lib/components/ui/chip/index.js';
   import * as Collapsible from '$lib/components/ui/collapsible/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
@@ -36,10 +31,10 @@
   import { IconButton } from '$lib/components/ui/icon-button/index.js';
   import { ListRow } from '$lib/components/ui/list-row/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
-  import { Separator } from '$lib/components/ui/separator/index.js';
   import { AGENT_ICONS, agentDisplayName } from '$lib/shell/agentIcons.ts';
   import { normalizeProvider } from '$lib/shell/ownedSessions.ts';
-  import { exactLocalTime, formatLastActivity } from '$lib/shell/relativeTime.ts';
+  import { formatMonthDayTime } from '$lib/shell/dateFormat.ts';
+  import { exactLocalTime, formatAge } from '$lib/shell/relativeTime.ts';
   import WorkingSpinner from '$lib/shell/components/conversation/WorkingSpinner.svelte';
   import type {
     SessionLibraryRecord,
@@ -47,23 +42,18 @@
   } from '$lib/shell/sessionLibrary/sessionLibraryModel.ts';
   import { cn } from '$lib/utils.js';
 
-  import {
-    SESSION_HISTORY_MENU_ACTION_IDS,
-    sessionHistoryActions,
-    type SessionHistoryAction,
-    type SessionHistoryActionId
-  } from './sessionHistoryActions.ts';
+  import { sessionHistoryActions, type SessionHistoryActionId } from './sessionHistoryActions.ts';
 
   interface Props {
     record: SessionLibraryRecord;
     /** The title shown, worked out by the history view model. */
     title: string;
-    /** One line of what was last said, or the session's first prompt. */
-    excerpt: string;
+    /** The name of the machine the session ran on. */
+    machineLabel: string;
     expanded: boolean;
     detail?: Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns' | 'messageCount' | 'startComplete'> | null;
     detailsLoading?: boolean;
-    /** The clock, passed down so forty cards do not keep forty of them. */
+    /** The clock, passed down so forty rows do not keep forty of them. */
     now: Date;
     onToggle(): void;
     onAction(id: SessionHistoryActionId): void;
@@ -76,7 +66,7 @@
   let {
     record,
     title,
-    excerpt,
+    machineLabel,
     expanded,
     detail = null,
     detailsLoading = false,
@@ -87,80 +77,57 @@
     onOpenLog
   }: Props = $props();
 
-  let menuOpen = $state(false);
-  /** The turns are behind a disclosure and start closed, the way "Why" does. */
+  /** The turns are behind a disclosure and start closed. */
   let turnsOpen = $state(false);
-
-  /** What an unknown value reads as, everywhere on the card. */
-  const DASH = '—';
 
   /** The two lines of small-caps section label, so they cannot drift apart. */
   const SECTION_LABEL =
     'm-0 text-xs leading-normal font-semibold tracking-wide uppercase text-muted-foreground';
 
-  /** A quiet sentence: the closing line, and every "nothing here" line. */
+  /** A quiet sentence: every "nothing here" line. */
   const QUIET_LINE = 'm-0 text-(length:--text-quiet) leading-normal text-muted-foreground';
 
-  const actions = $derived(sessionHistoryActions(record));
-  const byId = $derived(new Map(actions.map((item) => [item.id, item])));
+  /** The less common actions, in the "…" menu beside the icon buttons. */
+  const MENU_ACTION_IDS: readonly SessionHistoryActionId[] = [
+    'open-log',
+    'reveal-log',
+    'copy-session-id',
+    'copy-log-path'
+  ];
 
-  function action(id: SessionHistoryActionId): SessionHistoryAction {
-    // Every id in the union is in the roster, so this only guards a typo.
-    return byId.get(id) ?? { id, label: id, enabled: false, disabledReason: null, destructive: false };
+  /** Text as a person reads it: tags, emphasis marks and headings taken out, runs of space closed up. */
+  function readable(value: string | null | undefined): string {
+    return (value ?? '')
+      .replace(/<\/?[a-z][\w:-]*(?:\s[^>]*)?\/?>/gi, ' ')
+      .replace(/\*\*|__|`|^#+\s/gm, '')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
-  const menuActions = $derived(SESSION_HISTORY_MENU_ACTION_IDS.filter((id) => byId.has(id)).map(action));
+  /** The last few folders of a path: enough to place it, short enough to read. */
+  function shortPath(value: string): string {
+    const parts = value.split('/').filter(Boolean);
+    return parts.length > 3 ? parts.slice(-3).join('/') : value;
+  }
+
+  const actions = $derived(new Map(sessionHistoryActions(record).map((item) => [item.id, item])));
+  const can = (id: SessionHistoryActionId): boolean => actions.get(id)?.enabled ?? false;
 
   const agent = $derived(normalizeProvider(record.provider));
   const ProviderIcon = $derived(AGENT_ICONS[agent.agent]);
   const providerName = $derived(agentDisplayName(agent.agent, agent.viaCmux));
-  const age = $derived(formatLastActivity(record.updatedAt, now));
-  const modelLabel = $derived(record.model?.trim() || DASH);
-  const turnsLabel = $derived(
-    record.machine !== 'local' ? detail?.messageCount == null ? DASH : String(detail.messageCount)
-      : record.messageCount && record.messageCount > 0 ? String(record.messageCount) : DASH
+  const markColour = $derived(
+    agent.agent === 'claude'
+      ? 'text-[var(--agent-mark-claude)]'
+      : agent.agent === 'codex'
+        ? 'text-[var(--agent-mark-codex)]'
+        : 'text-muted-foreground'
   );
-  const firstPrompt = $derived(detail?.firstPrompt?.trim() ?? '');
-  const latestTurns = $derived(detail?.latestTurns ?? []);
-
-  /**
-   * A folder path, shortened from the middle so both ends survive: the repo is
-   * at the front and the folder's own name is at the back, and it is the
-   * stretch between them nobody reads. The whole path stays on the title.
-   */
-  function shortenPath(value: string): string {
-    const budget = 42;
-    if (value.length <= budget) return value;
-    const head = Math.ceil((budget - 1) / 2);
-    const tail = budget - 1 - head;
-    return `${value.slice(0, head)}…${value.slice(value.length - tail)}`;
-  }
-
-  /** The five labelled facts, in this order on every card, dash when unknown. */
-  const facts = $derived.by(() => {
-    const folder = record.canonicalCwd.trim();
-    return [
-      {
-        label: 'Folder',
-        value: folder ? shortenPath(folder) : DASH,
-        title: folder || undefined
-      },
-      {
-        label: 'Last activity',
-        value: age || DASH,
-        title: record.updatedAt ? exactLocalTime(record.updatedAt) : undefined
-      },
-      { label: 'Model', value: modelLabel, title: record.model ?? undefined },
-      ...(record.machine === 'local' || detail?.startComplete !== undefined
-        ? [{ label: record.machine !== 'local' && !detail?.startComplete ? 'Saved turns' : 'Turns', value: turnsLabel, title: undefined }]
-        : []),
-      {
-        label: 'Subagents',
-        value: record.subagents.length > 0 ? String(record.subagents.length) : DASH,
-        title: undefined
-      }
-    ];
-  });
+  const shownTitle = $derived(readable(title) || 'Untitled session');
+  const age = $derived(formatAge(record.updatedAt, now));
+  const latest = $derived(readable((detail?.latestTurns ?? record.latestTurns).at(-1)?.text));
+  const firstPrompt = $derived(readable(detail?.firstPrompt ?? record.firstPrompt));
+  const menuActions = $derived(MENU_ACTION_IDS.flatMap((id) => actions.get(id) ?? []));
 
   /**
    * Everything the scan kept of the conversation, in order: the first prompt,
@@ -168,9 +135,9 @@
    * when the window already opens with it, so it is never shown twice.
    */
   const turns = $derived.by(() => {
-    const first = firstPrompt;
+    const first = detail?.firstPrompt?.trim() ?? '';
     const list: SessionLibraryTurn[] = first ? [{ speaker: 'user', text: first }] : [];
-    for (const turn of latestTurns) {
+    for (const turn of detail?.latestTurns ?? []) {
       const text = turn.text.trim();
       if (!text || text === first) continue;
       list.push({ speaker: turn.speaker, text });
@@ -183,105 +150,207 @@
   /** How many sit between the first turn and the final pair. */
   const elidedTurns = $derived(turns.length < 4 ? 0 : turns.length - 3);
 
-  /** The four actions offered as words, in the order a person reads them. */
-  const CLUSTER: readonly { id: SessionHistoryActionId; icon: Component }[] = [
-    { id: 'resume-assembly', icon: Play },
-    { id: 'view-log', icon: FileCode2 },
-    { id: 'open-working-directory', icon: FolderOpen },
-    { id: 'delete', icon: Trash2 }
-  ];
-
-  /**
-   * One sentence at the foot of every card. It says why a button is off when
-   * one is, and otherwise says what this card is not showing — so the line is
-   * always there and always about this session.
-   */
-  const closingLine = $derived.by(() => {
-    if (record.machine !== 'local') return 'Showing the copy saved on This Mac.';
-    const off = CLUSTER.map((item) => action(item.id)).find(
-      (item) => !item.enabled && item.disabledReason
-    );
-    if (off?.disabledReason) return off.disabledReason;
-    if (detailsLoading) return 'Loading session details…';
-    if (turns.length === 0) return 'No turns were stored for this session.';
-    return `Started with ${providerName}. Everything the scan kept is shown above.`;
+  /** The facts this session has, in a fixed order. Unknown ones are left out. */
+  const facts = $derived.by(() => {
+    const folder = record.canonicalCwd.trim();
+    const branch = record.owned?.branch ?? record.available?.branchHint ?? '';
+    const remote = record.machine !== 'local';
+    const turns = remote ? detail?.messageCount ?? 0 : record.messageCount ?? 0;
+    const list: { label: string; value: string; title?: string }[] = [
+      { label: 'Session', value: record.ownedId ? `Assembly, ${providerName}` : `${providerName} transcript` },
+      { label: 'Machine', value: machineLabel }
+    ];
+    if (folder) list.push({ label: 'Folder', value: shortPath(folder), title: folder });
+    if (branch) list.push({ label: 'Branch', value: branch });
+    if (record.model?.trim()) list.push({ label: 'Model', value: record.model.trim() });
+    if (turns > 0) {
+      list.push({ label: remote && !detail?.startComplete ? 'Saved turns' : 'Turns', value: String(turns) });
+    }
+    const active = new Date(record.updatedAt ?? '');
+    if (!Number.isNaN(active.getTime())) {
+      list.push({ label: 'Last active', value: formatMonthDayTime(active), title: exactLocalTime(record.updatedAt) });
+    }
+    return list;
   });
+  const startMissing = $derived(record.machine !== 'local' && detail?.startComplete === false);
 
-  function run(id: SessionHistoryActionId): void {
-    if (!action(id).enabled) return;
-    onAction(id);
+  /** Clicking the line opens the session; one that cannot be opened shows its details instead. */
+  function openRow(): void {
+    if (can('resume-assembly')) onAction('resume-assembly');
+    else onToggle();
   }
 </script>
 
-<article
-  class="session-card px-(--space-2) pt-(--space-4) last:pb-(--space-4)"
-  data-testid="session-history-card"
->
-  <!-- A card is told apart from the panel by its own fill and a shadow. It
-       carries no outline: a border here would be signalling state, which the
-       kit reserves for sheets that float over the page. -->
-  <Card
-    class={cn(
-      'gap-(--space-3) border-0 bg-foreground/5 py-(--space-2) shadow-sm',
-      expanded && 'bg-foreground/10',
-      menuOpen && 'menu-open'
-    )}
+<div class="history-row" class:expanded data-testid="session-history-card">
+  <button type="button" class="row-open" title={shownTitle} onclick={openRow}>
+    <ProviderIcon class={`size-3.5 shrink-0 ${markColour}`} aria-hidden="true" />
+    <span class="row-title">{shownTitle}</span>
+    <span class="row-when" title={exactLocalTime(record.updatedAt)}>{age}</span>
+  </button>
+  <button
+    type="button"
+    class="row-disclose"
+    aria-label={expanded ? 'Hide details' : 'Show details'}
+    aria-expanded={expanded}
+    title={expanded ? 'Hide details' : 'Show details'}
+    onclick={onToggle}
   >
-    <!-- The row that names the session. The title is what the reader scans
-         for, so it is the one thing that never gives way: it takes the row
-         and wraps to a second line before anything is allowed to hide it.
-         Chips are context, not identity - one with nothing to say is left
-         out here entirely (the facts grid below is where absence is shown). -->
-    <ListRow onclick={onToggle} selected={expanded} actionsLabel="Session actions" class="pr-24">
-      <ChevronRight
-        class={cn(
-          'size-4 shrink-0 text-muted-foreground transition-transform',
-          expanded && 'rotate-90'
-        )}
-        aria-hidden="true"
-      />
-      <ProviderIcon class="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-      <span class="line-clamp-2 min-w-0 flex-1 font-medium leading-snug break-words" title={title}
-        >{title}</span
-      >
-      <span class="flex shrink-0 items-center gap-(--space-1)">
-        {#if record.model?.trim()}
-          <Chip class="h-6 max-w-32 px-2 font-normal" data-testid="session-history-model">
-            <span class="truncate" title={record.model}>{modelLabel}</span>
-          </Chip>
-        {/if}
-        {#if turnsLabel !== DASH}
-          <Chip tone="count" class="h-6 px-2 font-normal">{turnsLabel}</Chip>
-        {/if}
-      </span>
+    <ChevronRight class="size-3.5" aria-hidden="true" />
+  </button>
+</div>
 
-      {#snippet actions()}
-        <HoverActionButton
-          label={action('resume-assembly').enabled
-            ? action('resume-assembly').label
-            : (action('resume-assembly').disabledReason ?? action('resume-assembly').label)}
-          tone="primary"
-          disabled={!action('resume-assembly').enabled}
-          onclick={() => run('resume-assembly')}
+<!-- The details are written into the page only while open: keeping every
+     session's text mounted is what used to freeze the shell. -->
+{#if expanded}
+  <div class="history-detail">
+    {#if detailsLoading}
+      <p class="detail-note"><WorkingSpinner size={12} /> Loading details…</p>
+    {:else if latest}
+      <p class="detail-latest">{latest}</p>
+    {/if}
+    <dl class="detail-facts">
+      {#each facts as fact (fact.label)}
+        <dt>{fact.label}</dt>
+        <dd title={fact.title}>{fact.value}</dd>
+      {/each}
+      {#if startMissing}
+        <dt>First prompt</dt>
+        <dd class="wrap note">Earliest messages not saved on this Mac yet</dd>
+      {:else if firstPrompt && !detailsLoading}
+        <dt>First prompt</dt>
+        <dd class="wrap" title={firstPrompt}>{firstPrompt}</dd>
+      {/if}
+    </dl>
+
+    <!-- The conversation, behind a disclosure: the first turn, then the last two. -->
+    <div class="detail-section">
+      <Collapsible.Root bind:open={turnsOpen}>
+        <Collapsible.Trigger
+          class="flex w-fit items-center gap-1 rounded-lg py-(--space-1)
+                 text-(length:--text-quiet) leading-normal text-muted-foreground
+                 transition-colors outline-none hover:text-foreground
+                 focus-visible:ring-3 focus-visible:ring-ring/50"
         >
-          <Play />
-        </HoverActionButton>
-        <HoverActionButton label={expanded ? 'Hide details' : 'Show details'} onclick={onToggle}>
-          {#if expanded}<ChevronUp />{:else}<ChevronDown />{/if}
-        </HoverActionButton>
+          {#if detailsLoading}
+            <WorkingSpinner size={14} />
+            Loading turns…
+          {:else}
+            <ChevronRight
+              class={cn('size-3.5 transition-transform', turnsOpen && 'rotate-90')}
+              aria-hidden="true"
+            />
+            Turns ({turns.length})
+          {/if}
+        </Collapsible.Trigger>
+        <Collapsible.Content>
+          <div class="flex flex-col gap-(--space-2) pt-(--space-2)">
+            {#if detailsLoading}
+              <p class={QUIET_LINE}><WorkingSpinner size={12} /> Loading turns…</p>
+            {:else if turns.length === 0}
+              <p class={QUIET_LINE}>No turns were stored for this session.</p>
+            {:else}
+              {#each shownTurns as turn, index (index)}
+                {#if index === 1 && elidedTurns > 0}
+                  <p class={QUIET_LINE}>… {elidedTurns} earlier turns</p>
+                {/if}
+                <!-- Each turn scrolls inside its own box, so one long answer
+                     cannot push the next session off the panel. -->
+                <div class="turn-block overflow-hidden rounded-lg bg-background">
+                  <div
+                    class="flex items-center gap-(--space-2) border-b px-(--space-2) py-1"
+                    class:speaker-user={turn.speaker === 'user'}
+                    class:speaker-agent={turn.speaker !== 'user'}
+                  >
+                    <p class="m-0 flex-1 text-xs font-semibold tracking-wide uppercase">
+                      {turn.speaker === 'user' ? 'You' : 'Agent'}
+                    </p>
+                    <IconButton label="Copy this turn" size="xs" onclick={() => onCopyText(turn.text)}>
+                      <Copy />
+                    </IconButton>
+                  </div>
+                  <ScrollArea type="always">
+                    <p
+                      class="m-0 px-(--space-2) py-(--space-2) text-(length:--text-quiet)
+                             leading-relaxed whitespace-pre-wrap text-foreground"
+                    >
+                      {turn.text}
+                    </p>
+                  </ScrollArea>
+                </div>
+              {/each}
+            {/if}
+          </div>
+        </Collapsible.Content>
+      </Collapsible.Root>
+    </div>
 
-        <DropdownMenu.Root bind:open={menuOpen}>
+    <!-- Who the session ran for itself, each with its own transcript. -->
+    <!-- Shown only when agents were found; an empty list may just mean none were read. -->
+    {#if record.subagents.length > 0}
+    <section class="detail-section flex flex-col gap-(--space-2)">
+      <h3 class={SECTION_LABEL}>Agents this session ran</h3>
+        {#each record.subagents as subagent, index (index)}
+          <ListRow class="bg-background" actionsLabel="Agent actions">
+            <span class="min-w-0 flex-1 truncate">{subagent.name}</span>
+            {#if subagent.kind}<Chip class="h-6 px-2 font-normal">{subagent.kind}</Chip>{/if}
+            {#if subagent.messageCount}
+              <Chip tone="count" class="h-6 px-2 font-normal">{subagent.messageCount}</Chip>
+            {/if}
+            {#snippet actions()}
+              <HoverActionButton
+                label={subagent.logPath
+                  ? 'View log'
+                  : 'No transcript file was found for this agent.'}
+                tone="info"
+                disabled={!subagent.logPath}
+                onclick={() => subagent.logPath && onOpenLog(subagent.logPath)}
+              >
+                <FileCode2 />
+              </HoverActionButton>
+            {/snippet}
+          </ListRow>
+        {/each}
+    </section>
+    {/if}
+
+    <div class="detail-actions">
+      {#if can('resume-assembly')}
+        <Button
+          size="xs"
+          class="mr-1 rounded-full bg-[var(--color-good-bg)] px-3 font-semibold text-[var(--color-accent)]
+                 hover:bg-[color-mix(in_srgb,var(--color-accent)_20%,transparent)]"
+          onclick={() => onAction('resume-assembly')}
+        >
+          {#if record.ownedId}<Play aria-hidden="true" /> Open{:else}<RotateCcw aria-hidden="true" /> Resume{/if}
+        </Button>
+      {/if}
+      {#if can('copy-resume-command')}
+        <IconButton label="Copy resume command" size="xs" onclick={() => onAction('copy-resume-command')}>
+          <Copy />
+        </IconButton>
+      {/if}
+      {#if can('view-log')}
+        <IconButton label="View log" size="xs" onclick={() => onAction('view-log')}>
+          <FileText />
+        </IconButton>
+      {/if}
+      {#if can('open-working-directory')}
+        <IconButton label="Open folder" size="xs" onclick={() => onAction('open-working-directory')}>
+          <FolderOpen />
+        </IconButton>
+      {/if}
+      {#if menuActions.length > 0}
+        <DropdownMenu.Root>
           <DropdownMenu.Trigger>
             {#snippet child({ props })}
               <!-- Button, not IconButton: IconButton drops the trigger's props, which left the menu off-screen. -->
               <Button
                 {...props}
                 variant="ghost"
-                size="icon-sm"
+                size="icon-xs"
                 aria-label="More actions"
                 title="More actions"
-                class="rounded-md bg-transparent text-[var(--color-text)] shadow-none
-                       hover:bg-accent/60 hover:text-foreground"
+                class="min-h-7 min-w-7"
               >
                 <Ellipsis />
               </Button>
@@ -292,258 +361,189 @@
               <DropdownMenu.Item
                 disabled={!item.enabled}
                 title={item.disabledReason ?? undefined}
-                class={item.destructive ? 'text-[var(--color-bad)]' : undefined}
-                onSelect={() => run(item.id)}
+                onSelect={() => item.enabled && onAction(item.id)}
               >
                 {item.label}
               </DropdownMenu.Item>
             {/each}
           </DropdownMenu.Content>
         </DropdownMenu.Root>
-      {/snippet}
-    </ListRow>
-
-    {#if !expanded}
-      <p class="truncate px-(--space-3) text-(length:--text-quiet) text-muted-foreground">
-        {excerpt || DASH}
-      </p>
-    {/if}
-
-    <!-- The body is written into the page only while the card is open. A
-         history tab that keeps every session's transcript mounted is what used
-         to freeze the shell, so this stays a real removal rather than a hidden
-         subtree. -->
-    {#if expanded}
-      <!-- The plain facts, one labelled line each, on a hairline the eye can
-           run along. Every row is here on every card; a value the scan did not
-           have is a dash rather than a missing line. -->
-      <dl class="m-0 grid grid-cols-[auto_minmax(0,1fr)] px-(--space-3)">
-        {#each facts as fact, index (fact.label)}
-          {@const ruled = index < facts.length - 1 && 'border-b border-border'}
-          {@const unknown = fact.value === DASH}
-          <dt
-            class={cn(
-              'm-0 flex items-center py-(--space-2) pr-(--space-2) text-(length:--text-quiet) leading-normal text-muted-foreground',
-              ruled
-            )}
-          >
-            {fact.label}
-          </dt>
-          <dd
-            class={cn(
-              'm-0 flex min-w-0 items-center justify-end py-(--space-2) text-(length:--text-body) leading-normal',
-              unknown ? 'text-muted-foreground' : 'text-foreground',
-              ruled
-            )}
-            title={fact.title}
-          >
-            <span class="truncate">{fact.value}</span>
-          </dd>
-        {/each}
-      </dl>
-
-      {#if record.machine === 'local' || detail?.startComplete !== undefined}
-      <section class="flex flex-col gap-(--space-2) px-(--space-3)">
-        <div class="flex items-center justify-between">
-          <h3 class={SECTION_LABEL}>First prompt</h3>
-          <IconButton
-            label="Copy first prompt"
-            size="xs"
-            disabled={!firstPrompt}
-            onclick={() => onCopyText(firstPrompt)}
-          >
-            <Copy />
-          </IconButton>
-        </div>
-        {#if detailsLoading}
-          <p class={QUIET_LINE}><WorkingSpinner size={12} /> Loading session details…</p>
-        {:else if record.machine !== 'local' && !detail?.startComplete}
-          <p class={QUIET_LINE}>Earliest messages not saved on this Mac yet</p>
-        {:else if firstPrompt}
-          <ScrollArea type="always" class="first-prompt-scroll">
-            <p class="m-0 whitespace-pre-wrap pr-2 text-(length:--text-quiet) leading-relaxed">
-              {firstPrompt}
-            </p>
-          </ScrollArea>
-        {:else}
-          <p class={QUIET_LINE}>First prompt was not stored for this session.</p>
-        {/if}
-      </section>
-
       {/if}
-
-      <!-- The conversation, behind a disclosure: the first turn, then the last
-           two. The block is here even when the scan kept nothing, because a
-           card that sometimes has a turns section and sometimes does not is
-           the thing this rebuild exists to end. -->
-      <div class="flex flex-col px-(--space-3)">
-        <Collapsible.Root bind:open={turnsOpen}>
-          <Collapsible.Trigger
-            class="flex w-fit items-center gap-1 rounded-lg py-(--space-1)
-                   text-(length:--text-quiet) leading-normal text-muted-foreground
-                   transition-colors outline-none hover:text-foreground
-                   focus-visible:ring-3 focus-visible:ring-ring/50"
-          >
-            {#if detailsLoading}
-              <WorkingSpinner size={14} />
-              Loading turns…
-            {:else}
-              <ChevronRight
-                class={cn('size-3.5 transition-transform', turnsOpen && 'rotate-90')}
-                aria-hidden="true"
-              />
-              Turns ({turns.length})
-            {/if}
-          </Collapsible.Trigger>
-          <Collapsible.Content>
-            <div class="flex flex-col gap-(--space-2) pt-(--space-2)">
-              {#if detailsLoading}
-                <p class={QUIET_LINE}><WorkingSpinner size={12} /> Loading turns…</p>
-              {:else if turns.length === 0}
-                <p class={QUIET_LINE}>No turns were stored for this session.</p>
-              {:else}
-                {#each shownTurns as turn, index (index)}
-                  {#if index === 1 && elidedTurns > 0}
-                    <p class={QUIET_LINE}>… {elidedTurns} earlier turns</p>
-                  {/if}
-                  <!--
-                    Each turn scrolls inside its own box. An agent's last answer
-                    runs to thousands of characters, and letting one of them
-                    grow to its full height pushed the next session off the
-                    panel entirely.
-                  -->
-                  <div class="turn-block overflow-hidden rounded-lg bg-background">
-                    <div
-                      class="flex items-center gap-(--space-2) border-b px-(--space-2) py-1"
-                      class:speaker-user={turn.speaker === 'user'}
-                      class:speaker-agent={turn.speaker !== 'user'}
-                    >
-                      <p class="m-0 flex-1 text-xs font-semibold tracking-wide uppercase">
-                        {turn.speaker === 'user' ? 'You' : 'Agent'}
-                      </p>
-                      <IconButton
-                        label="Copy this turn"
-                        size="xs"
-                        onclick={() => onCopyText(turn.text)}
-                      >
-                        <Copy />
-                      </IconButton>
-                    </div>
-                    <ScrollArea type="always">
-                      <p
-                        class="m-0 px-(--space-2) py-(--space-2) text-(length:--text-quiet)
-                               leading-relaxed whitespace-pre-wrap text-foreground"
-                      >
-                        {turn.text}
-                      </p>
-                    </ScrollArea>
-                  </div>
-                {/each}
-              {/if}
-            </div>
-          </Collapsible.Content>
-        </Collapsible.Root>
-      </div>
-
-      <!-- Who the session ran for itself. Named, because "2 subagents" in the
-           facts above is not enough to open one of their transcripts. -->
-      <section class="flex flex-col gap-(--space-2) px-(--space-3)">
-        <h3 class={SECTION_LABEL}>Agents this session ran</h3>
-        {#if record.subagents.length === 0}
-          <p class={QUIET_LINE}>No agents were recorded for this session.</p>
-        {:else}
-          {#each record.subagents as subagent, index (index)}
-            <ListRow class="bg-background" actionsLabel="Agent actions">
-              <span class="min-w-0 flex-1 truncate">{subagent.name}</span>
-              {#if subagent.kind}<Chip class="h-6 px-2 font-normal">{subagent.kind}</Chip>{/if}
-              {#if subagent.messageCount}
-                <Chip tone="count" class="h-6 px-2 font-normal">{subagent.messageCount}</Chip>
-              {/if}
-              {#snippet actions()}
-                <HoverActionButton
-                  label={subagent.logPath
-                    ? 'View log'
-                    : 'No transcript file was found for this agent.'}
-                  tone="info"
-                  disabled={!subagent.logPath}
-                  onclick={() => subagent.logPath && onOpenLog(subagent.logPath)}
-                >
-                  <FileCode2 />
-                </HoverActionButton>
-              {/snippet}
-            </ListRow>
-          {/each}
-        {/if}
-      </section>
-
-      <Separator />
-
-      <!-- What can be done about this session. Resume is the one filled
-           button; the rest are offered as words. An action that is not backed
-           by something real is switched off and dimmed rather than removed,
-           and the line underneath says which one and why. -->
-      <section class="flex flex-col gap-(--space-2) px-(--space-3)">
-        <h3 class={SECTION_LABEL}>What you can do</h3>
-        <div class="flex flex-wrap items-center gap-(--space-1)">
-          {#each CLUSTER.filter((item) => byId.has(item.id)) as item (item.id)}
-            {@const entry = action(item.id)}
-            {@const Icon = item.icon}
-            <Button
-              variant={item.id === 'resume-assembly' ? 'default' : 'ghost'}
-              class={cn(
-                'rounded-full text-(length:--text-quiet)',
-                item.id === 'resume-assembly'
-                  ? 'px-4'
-                  : 'px-3 text-muted-foreground hover:text-foreground',
-                entry.destructive && 'hover:text-[var(--color-bad)]'
-              )}
-              disabled={!entry.enabled}
-              title={entry.disabledReason ?? undefined}
-              onclick={() => run(item.id)}
-            >
-              <Icon aria-hidden="true" />
-              {entry.label}
-            </Button>
-          {/each}
-        </div>
-        <p class={QUIET_LINE}>{closingLine}</p>
-      </section>
-    {/if}
-  </Card>
-</article>
+      {#if can('delete')}
+        <IconButton
+          label="Delete"
+          size="xs"
+          class="ml-auto hover:bg-[var(--color-bad-bg)] hover:text-[var(--color-bad)]"
+          onclick={() => onAction('delete')}
+        >
+          <Trash2 />
+        </IconButton>
+      {/if}
+    </div>
+  </div>
+{/if}
 
 <style>
-  /*
-    The kit's row is sized for a dense file list. A session row is the thing a
-    decision is made about, so it takes the shell's body size and the same
-    12 by 16 inset the cards use, and its hover cluster moves in to match.
-  */
-  .session-card :global([data-slot='list-row'] > button) {
-    gap: var(--space-2);
-    padding: var(--space-3) var(--space-4);
-    font-size: var(--text-body);
-  }
-  .session-card :global([data-slot='hover-actions']) {
-    right: var(--space-3);
+  .history-row {
+    position: relative;
+    margin: 0 6px;
   }
 
-  /*
-    While the more-actions menu is open the pointer is over the menu, not the
-    row, so the row's hover cluster would fade out and take its own trigger with
-    it. Hold it in place until the menu closes. Nothing moves and nothing
-    rebuilds — this is the same rest state the hover already ends at.
-  */
-  .session-card.menu-open :global([data-slot='hover-actions']) {
+  .row-open {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    height: 32px;
+    padding: 0 10px 0 var(--indent, 22px);
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    color: var(--color-text);
+    text-align: left;
+    outline: none;
+  }
+  .history-row:hover .row-open {
+    background: var(--color-hover);
+  }
+  .row-open:focus-visible,
+  .row-disclose:focus-visible {
+    box-shadow: var(--focus-ring);
+  }
+
+  .row-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .row-when {
+    flex: none;
+    min-width: 26px;
+    text-align: right;
+    font-size: 12px;
+    color: var(--color-text-3);
+    font-variant-numeric: tabular-nums;
+    transition: opacity 100ms;
+  }
+
+  /* The details chevron takes the time's place on hover, on keyboard focus and while open. */
+  .row-disclose {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border-radius: var(--radius-xs);
+    color: var(--color-text-2);
+    opacity: 0;
+    outline: none;
+    transition: opacity 100ms;
+  }
+  .row-disclose:hover {
+    background: color-mix(in srgb, var(--color-text) 10%, transparent);
+    color: var(--color-text);
+  }
+  .history-row:hover .row-disclose,
+  .history-row:focus-within .row-disclose,
+  .history-row.expanded .row-disclose {
     opacity: 1;
-    pointer-events: auto;
-    transform: none;
+  }
+  .history-row:hover .row-when,
+  .history-row:focus-within .row-when,
+  .history-row.expanded .row-when {
+    opacity: 0;
+  }
+  .row-disclose :global(svg) {
+    transition: transform 120ms ease;
+  }
+  .history-row.expanded .row-disclose :global(svg) {
+    transform: rotate(90deg);
+    color: var(--color-text);
   }
 
-  /*
-    Who said it, told apart at a glance. Both headers were the same muted grey,
-    so two stacked turns read as one block of text and the whole point of
-    showing a pair — seeing the question against the answer — was lost.
-  */
+  /* Open: the whole title shows, and the line joins the details under it. */
+  .history-row.expanded .row-open {
+    align-items: flex-start;
+    height: auto;
+    min-height: 32px;
+    padding-top: 7px;
+    padding-bottom: 7px;
+    background: var(--color-selected);
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  }
+  .history-row.expanded .row-title {
+    padding-right: 22px;
+    white-space: normal;
+  }
+  .history-row.expanded .row-open :global(svg) {
+    margin-top: 2px;
+  }
+
+  .history-detail {
+    margin: 0 6px 6px;
+    padding: 8px 10px 10px var(--indent, 22px);
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
+    background: var(--color-elevated);
+    font-size: 12px;
+  }
+
+  .detail-latest {
+    display: -webkit-box;
+    margin: 0;
+    overflow: hidden;
+    color: var(--color-text-2);
+    line-height: 1.45;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    user-select: text;
+  }
+
+  .detail-note {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    color: var(--color-text-3);
+  }
+
+  .detail-facts {
+    display: grid;
+    grid-template-columns: 78px minmax(0, 1fr);
+    gap: 4px 8px;
+    margin: 8px 0 0;
+  }
+  .detail-facts dt {
+    color: var(--color-text-3);
+  }
+  .detail-facts dd {
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    color: var(--color-text-2);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .detail-facts dd.note {
+    color: var(--color-text-3);
+  }
+  .detail-facts dd.wrap {
+    display: -webkit-box;
+    white-space: normal;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+
+  .detail-section {
+    margin-top: 10px;
+  }
+
+  /* Who said it, told apart at a glance. */
   .turn-block .speaker-user {
     background: color-mix(in srgb, var(--color-accent) 22%, transparent);
     color: var(--color-text);
@@ -555,27 +555,19 @@
   }
 
   /*
-    The height limit belongs on the element that scrolls.
-
-    Setting it on the scroll area's outer box did nothing: that box is only a
-    positioning parent, and the viewport inside it is `height: 100%`. A
-    percentage height measured against a parent whose own height is `auto` — a
-    max-height does not change that — resolves to `auto` as well, so the viewport
-    grew to the full height of the turn, never overflowed itself, and never had
-    anything to scroll. The text simply ran past the box and was cut off by an
-    ancestor, with no scrollbar anywhere.
-
-    Bounding the viewport instead gives it something to scroll, and leaves a
-    short turn its natural height rather than a fixed box with empty space under
-    it.
+    The height limit belongs on the element that scrolls: the scroll area's
+    viewport is `height: 100%` of a parent with no height, so a limit on the
+    outer box never gave it anything to scroll.
   */
   .turn-block :global([data-slot='scroll-area-viewport']) {
     height: auto;
     max-height: 16rem;
   }
 
-  .first-prompt-scroll :global([data-slot='scroll-area-viewport']) {
-    height: auto;
-    max-height: 12rem;
+  .detail-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-top: 10px;
   }
 </style>
