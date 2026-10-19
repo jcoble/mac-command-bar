@@ -275,8 +275,8 @@ pub(super) struct ServerState {
     pub(super) workflow: crate::workflow::WorkflowEngine,
     pub(super) terminals: RemoteTerminals,
     relay: Arc<RelayLink>,
-    /// The one phone pairing code that works right now (`phone_api`).
-    pub(super) pairing: Arc<Mutex<Option<super::phone_api::PairingCode>>>,
+    /// The one phone pairing code that works right now (`phone`).
+    pub(super) pairing: Arc<Mutex<Option<super::phone::PairingCode>>>,
     /// Sessions whose chat the phone has read or written since this backend started; only these ring it.
     pub(super) phone_chats: Arc<Mutex<std::collections::HashSet<String>>>,
 }
@@ -3619,7 +3619,7 @@ pub fn run_server_from_environment() -> Result<(), String> {
 /// address that overlaps it is the one that is skipped, never the desktop.
 pub(super) async fn bind_listeners(bind: &str, phone_bind: Option<&str>, state: &ServerState) -> Result<tokio::net::TcpListener, String> {
     let listener = tokio::net::TcpListener::bind(bind).await.map_err(|error| error.to_string())?;
-    super::phone_api::start_listener(phone_bind, state.clone()).await;
+    super::phone::start_listener(phone_bind, state.clone()).await;
     Ok(listener)
 }
 
@@ -4105,7 +4105,7 @@ async fn execute_server_command(state: &ServerState, upload: &Arc<Mutex<Option<P
     }
     if let RemoteCommand::Workflow { operation, args } = command {
         // Phone pairing needs this server's pairing code and database, not the engine.
-        if let Some(answer) = super::phone_api::operation(state, &operation, &args) {
+        if let Some(answer) = super::phone::operation(state, &operation, &args) {
             return answer.map(RemoteResponse::Workflow);
         }
         // A dropped socket or a client cancel aborts this request's task; the engine
