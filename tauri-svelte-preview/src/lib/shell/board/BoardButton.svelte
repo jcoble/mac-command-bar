@@ -1,6 +1,7 @@
 <!-- The top bar's Board button: a badge with what needs the owner, and the board drop-down. -->
 <script lang="ts">
   import Columns2 from '@lucide/svelte/icons/columns-2';
+  import { untrack } from 'svelte';
 
   import { buttonVariants } from '$lib/components/ui/button/index.js';
   import * as Popover from '$lib/components/ui/popover/index.js';
@@ -18,8 +19,12 @@
   let version = $state(0);
   const waiting = $derived(rail.owned.filter(sessionWaitsOnYou));
   const badge = $derived(counted + waiting.length);
+  /** The connected machines; a change counts again and reloads an open board. */
+  const connected = $derived(Object.keys(rail.remoteConnections).filter((id) => rail.remoteConnections[id] === 'connected').join(','));
 
   $effect(() => {
+    void connected;
+    untrack(() => (version += 1));
     const life = new AbortController();
     let request: AbortController | null = null;
     let timer = 0;
@@ -32,7 +37,7 @@
         const result = await countBoard(Date.now(), current.signal);
         if (!result || current.signal.aborted) return;
         counted = result.count;
-        if (result.snoozed_until_ms) timer = window.setTimeout(() => void recount(), Math.max(0, result.snoozed_until_ms - Date.now()));
+        if (result.snoozed_until_ms) timer = window.setTimeout(() => { version += 1; void recount(); }, Math.max(0, result.snoozed_until_ms - Date.now()));
       } catch {
         // The next change counts again; until then the badge keeps its last number.
       }

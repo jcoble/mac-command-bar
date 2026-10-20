@@ -45,8 +45,8 @@ const allowedHits = new Set([
   'src/lib/shell/notionOAuth.ts:new Promise:await new Promise<void>((resolve, reject) => {',
   'src/lib/shell/notionOAuth.ts:setTimeout:const timeout = window.setTimeout(finish, CLAIM_INTERVAL_MS);',
   'src/lib/shell/workflows/components/WorkflowRuns.svelte:setTimeout:const timer = window.setTimeout(() => {',
-  // The Board badge's one timer: it recounts when the earliest snoozed card wakes; each recount and unmounting clear it.
-  'src/lib/shell/board/BoardButton.svelte:setTimeout:if (result.snoozed_until_ms) timer = window.setTimeout(() => void recount(), Math.max(0, result.snoozed_until_ms - Date.now()));',
+  // The Board badge's one timer: when the earliest snoozed card wakes it recounts and reloads an open board; each recount and unmounting clear it.
+  'src/lib/shell/board/BoardButton.svelte:setTimeout:if (result.snoozed_until_ms) timer = window.setTimeout(() => { version += 1; void recount(); }, Math.max(0, result.snoozed_until_ms - Date.now()));',
   // One five-second shot per active turn; the effect clears it when the turn ends or the composer unmounts.
   'src/lib/shell/conversation/components/ConversationComposer.svelte:setTimeout:const timer = setTimeout(() => (turnSettled = true), 5000);',
   // One ten-second shot while a filter group is open; closing the group or unmounting clears it.
