@@ -2040,14 +2040,14 @@ export type RepositoryCheckout = {
  * appears. Deleted checkouts are left out by the backend.
  */
 export async function listRepositoryCheckoutsFromTauri(
-  roots: readonly string[]
+  roots: readonly string[], signal?: AbortSignal
 ): Promise<Record<string, RepositoryCheckout[]> | null> {
   if (!isTauriRuntime() || roots.length === 0) {
     return null;
   }
 
   const { invoke } = await import('./workspaceInvoke.ts');
-  return invoke<Record<string, RepositoryCheckout[]>>('list_repository_checkouts', { roots });
+  return invoke<Record<string, RepositoryCheckout[]>>('list_repository_checkouts', { roots }, undefined, signal);
 }
 
 export async function readAgentConversationCapabilitiesFromTauri(

@@ -8,6 +8,7 @@
   import FolderSearch from '@lucide/svelte/icons/folder-search';
   import Laptop from '@lucide/svelte/icons/laptop';
   import Lock from '@lucide/svelte/icons/lock';
+  import { onDestroy } from 'svelte';
 
   import { Button, buttonVariants } from '$lib/components/ui/button/index.js';
   import * as Command from '$lib/components/ui/command/index.js';
@@ -31,7 +32,9 @@
 
   let open = $state(false);
   let checkouts = $state.raw<Record<string, readonly RepositoryCheckout[]>>({});
-  let loadGeneration = 0;
+  /** The worktree listing for the current picker open; closing, reopening or unmounting cancels it. */
+  let loading: AbortController | null = null;
+  onDestroy(() => loading?.abort());
   const groups = $derived(otherProjectGroups(projectRegistry.projects, rail.remoteProfiles, rail.remoteConnections, checkouts));
   const viewedOption = $derived(groups.flatMap((group) => group.options).find((option) => option.path === viewedRoot) ?? null);
   const viewedName = $derived(viewedOption?.label ?? viewedRoot?.replace(/\/+$/, '').split('/').at(-1) ?? '');
@@ -39,11 +42,13 @@
 
   /** One worktree listing per machine; a machine that fails just shows its projects. */
   async function loadWorktrees(): Promise<void> {
-    const generation = ++loadGeneration;
+    loading?.abort();
+    const controller = new AbortController();
+    loading = controller;
     const roots = otherProjectGroups(projectRegistry.projects, rail.remoteProfiles, rail.remoteConnections, {})
       .map((group) => group.options.map((option) => option.path));
-    const answers = await Promise.allSettled(roots.map((machineRoots) => listRepositoryCheckoutsFromTauri(machineRoots)));
-    if (generation !== loadGeneration) return;
+    const answers = await Promise.allSettled(roots.map((machineRoots) => listRepositoryCheckoutsFromTauri(machineRoots, controller.signal)));
+    if (controller.signal.aborted) return;
     checkouts = Object.assign({}, ...answers.map((answer) => (answer.status === 'fulfilled' ? answer.value ?? {} : {})));
   }
 
@@ -60,7 +65,7 @@
 
 <div class={cn('mx-3 mt-1 mb-2 flex min-w-0 flex-none flex-col gap-1', viewedRoot && 'rounded-lg bg-secondary p-1')}>
   <div class="flex min-w-0 items-center gap-1">
-    <Popover.Root bind:open onOpenChange={(next) => { if (next) void loadWorktrees(); }}>
+    <Popover.Root bind:open onOpenChange={(next) => { if (next) void loadWorktrees(); else loading?.abort(); }}>
       <Popover.Trigger class={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'min-w-0 shrink justify-start text-[13px]')}>
         <FolderSearch class="size-[14px] text-muted-foreground" aria-hidden="true" />
         <span class="min-w-0 truncate">{viewedRoot ? `Viewing ${viewedName} on ${viewedMachine}` : 'Open another project'}</span>
