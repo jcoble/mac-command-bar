@@ -51,6 +51,7 @@
     loadingOlder?: boolean;
     pageError?: string;
     onLoadOlder?(): void;
+    onReturnToLatest?(): void;
     hasNewer?: boolean;
     loadingNewer?: boolean;
     onLoadNewer?(): void;
@@ -69,7 +70,7 @@
     turnFacts = [], localTurnActive = false, activityLabel = null, backgroundWork, onOpenChild, composerHeight = 0,
     assistantLabel = 'Assistant', emptyText = 'Start the conversation below.', pendingFirstMessage = null,
     hasOlder = false, loadingOlder = false, pageError = '', onLoadOlder, hasNewer = false, loadingNewer = false,
-    onLoadNewer, oldestSequence = 0, newestSequence = 0, onJumpToLatest, onApprovalDecision,
+    onLoadNewer, oldestSequence = 0, newestSequence = 0, onJumpToLatest, onReturnToLatest, onApprovalDecision,
     onFileLink, onPlanOpen, historyDownload = null
   }: Props = $props();
 
@@ -385,8 +386,7 @@
 
   function restoreAnchor(anchor: NonNullable<ConversationViewState['anchor']>): boolean {
     const index = anchorRowIndex(rows, anchor.itemId);
-    if (index < 0) return false;
-    return positionRow(rows[index].key, anchor.offsetPx);
+    return index >= 0 && positionRow(rows[index].key, anchor.offsetPx);
   }
 
   $effect(() => {
@@ -551,7 +551,7 @@
     const direction = dragging ? (host.scrollTop < lastScrollTop ? 'older' : 'newer') : userDirection;
     lastScrollTop = host.scrollTop;
     if (direction === 'older') follow = false;
-    else if (direction === 'newer' && !hasNewer && atEnd()) follow = true;
+    else if (direction === 'newer' && !hasNewer && atEnd()) { follow = true; onReturnToLatest?.(); }
     userDirection = null;
     saveView();
     if (direction) requestPage(direction === 'older');
@@ -568,7 +568,7 @@
       saveView();
       requestPage(true);
     } else if (event.deltaY > 0) {
-      if (!hasNewer && atEnd()) follow = true;
+      if (!hasNewer && atEnd()) { follow = true; onReturnToLatest?.(); }
       saveView();
       requestPage(false);
     }
@@ -630,7 +630,7 @@
     try {
       if (hasNewer) await onJumpToLatest?.();
       if (windowId !== renderWindowId) return;
-      follow = true;
+      follow = true; onReturnToLatest?.();
       savedAnchor = undefined;
       flushSync();
       if (windowId !== renderWindowId) return;
