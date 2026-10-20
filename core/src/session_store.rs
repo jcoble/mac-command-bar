@@ -10,7 +10,7 @@ use rusqlite::{
 };
 use serde::Serialize;
 
-mod board;
+mod board; mod helpers;
 mod evidence;
 mod lookup;
 mod phone;

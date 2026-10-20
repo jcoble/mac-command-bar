@@ -3407,11 +3407,11 @@ fn main() {
                 agent_conversation::providers::ProviderRegistry::bundled_from_environment_at(Some(
                     &app_data_dir,
                 ))
-                .map_err(|error| {
-                    format!("Packaged ACP adapter configuration is invalid: {error}")
+                .map_err(|error| { format!("Packaged ACP adapter configuration is invalid: {error}")
                 })?,
                 &session_db_path,
             )?;
+            agent_runtime.start_closing_finished_helpers();
             project_folders::import_saved_project_roots(&agent_runtime)?;
             // Before any list: older local sessions join projects added since the last run.
             project_folders::backfill_local_session_projects(agent_runtime.store())?;

@@ -17,6 +17,7 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js';
   import SettingsSelect from '$lib/shell/settings/SettingsSelect.svelte';
+  import HelperSessionSettings from '$lib/shell/settings/HelperSessionSettings.svelte';
   import ProviderCliUpdateControl from '$lib/shell/providers/ProviderCliUpdateControl.svelte';
   import ProviderUpdateControl from '$lib/shell/providers/ProviderUpdateControl.svelte';
   import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
@@ -37,8 +38,6 @@
     type LanguageServerId
   } from '$lib/shell/files/editor/sourceIntelligence';
   import {
-    readAssemblySettingFromTauri,
-    writeAssemblySettingFromTauri,
     readHelperSettingsFromTauri,
     listInstalledFontFamiliesFromTauri,
     setHelperKeyFromTauri,
@@ -131,6 +130,8 @@
    * to type that the row does not itself say.
    */
   const rows = [
+    { id: 'helper_auto_done_minutes', section: 'agents', card: 'Helper sessions', title: 'Mark finished helpers Done after',
+      description: 'Minutes to wait on this machine; 0 means Never.', keywords: 'agents helpers sessions minutes done never' },
     { id: 'helpers_per_session', section: 'agents', card: 'Helper sessions', title: 'Helpers per session',
       description: 'Maximum unfinished helpers for each session on this machine.', keywords: 'agents helpers sessions limit' },
     { id: 'remote-connections', section: 'connections', card: 'Remote machines', title: 'Saved connections',
@@ -497,27 +498,11 @@
     ).map((id) => ({ value: id, label: id }))
   );
 
-  let helpersPerSession = $state(5);
-  let helperLimitLoaded = $state(false);
-  let helperLimitNote = $state<string | null>(null);
-
-  async function saveHelperLimit(event: Event): Promise<void> {
-    const input = event.currentTarget as HTMLInputElement;
-    if (!input.checkValidity()) { input.reportValidity(); return; }
-    try {
-      await writeAssemblySettingFromTauri('helpers_per_session', input.valueAsNumber);
-      helpersPerSession = input.valueAsNumber;
-      helperLimitNote = null;
-    } catch (error) { helperLimitNote = String(error); }
-  }
-
   async function loadHelper(): Promise<void> {
     try {
-      helpersPerSession = (await readAssemblySettingFromTauri('helpers_per_session') as number | null) ?? 5;
-      helperLimitLoaded = true;
       helper = await readHelperSettingsFromTauri();
     } catch (error) {
-      helperLimitNote = helperNote = String(error);
+      helperNote = String(error);
     }
   }
 
@@ -861,6 +846,8 @@
                       {@render settingRow(id, providerUpdateControl, true)}
                     {:else if id === 'provider-cli-updates'}
                       {@render settingRow(id, providerCliUpdateControl, true)}
+                    {:else if id === 'helper_auto_done_minutes'}
+                      {@render settingRow(id, helperAutoDoneControl)}
                     {:else if id === 'helpers_per_session'}
                       {@render settingRow(id, helperLimitControl)}
                     {:else if id === 'helper-route'}
@@ -1138,14 +1125,9 @@
   />
 {/snippet}
 
-{#snippet helperLimitControl()}
-  <div class="flex w-full flex-col gap-1.5">
-    <Input type="number" min={1} max={10} step={1} required
-      aria-label="Helpers per session" value={helpersPerSession}
-      disabled={!helperLimitLoaded} onchange={saveHelperLimit} />
-    {#if helperLimitNote}<p role="alert">{helperLimitNote}</p>{/if}
-  </div>
-{/snippet}
+{#snippet helperAutoDoneControl()}<HelperSessionSettings setting="helper_auto_done_minutes" />{/snippet}
+
+{#snippet helperLimitControl()}<HelperSessionSettings setting="helpers_per_session" />{/snippet}
 
 {#snippet helperRouteControl()}
   <SettingsSelect

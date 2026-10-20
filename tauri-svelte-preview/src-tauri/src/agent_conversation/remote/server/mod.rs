@@ -58,6 +58,7 @@ pub fn run_server_from_environment() -> Result<(), String> {
             ProviderRegistry::bundled_from_environment_at(Some(&data_dir))?,
             &data_dir.join("sessions.db"),
         )?;
+        manager.start_closing_finished_helpers();
         let state = server_state(manager, data_dir.clone(), Arc::from(token))?;
         // This machine's sessions reach other machines through a connected desktop.
         crate::agent_conversation::messaging::endpoint()?.set_relay(state.relay.relay());
