@@ -11,6 +11,15 @@ export function parseRemoteWorkspacePath(path: string): { profileId: string; pat
   return { profileId: decodeURIComponent(path.slice(remotePrefix.length, slash)), path: path.slice(slash) };
 }
 
+/** The path as its own machine knows it, for copying; a Mac path comes back unchanged. */
+export function nativeWorkspacePath(path: string): string {
+  return parseRemoteWorkspacePath(path)?.path ?? path;
+}
+/** Finder only shows files on this Mac, so a remote file says why Reveal is off. */
+export function revealDisabledReason(path: string): string | null {
+  return parseRemoteWorkspacePath(path) ? 'This file is on a remote machine, so Finder cannot show it.' : null;
+}
+
 /** Resolve a provider file-edit path against the session folder that owns it. */
 export function workspaceChangePath(root: string, path: string): string {
   const trimmed = path.trim();

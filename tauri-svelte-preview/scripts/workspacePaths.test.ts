@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertSaveAllowed, mapWorkspaceSnapshotPaths, parseRemoteWorkspacePath, qualifyWorkspaceResult, remoteWorkspacePath, remoteWorkspaceRequest, sessionWorkspaceRoot, workspaceChangePath } from '../src/lib/workspacePaths.ts';
+import { assertSaveAllowed, mapWorkspaceSnapshotPaths, nativeWorkspacePath, parseRemoteWorkspacePath, revealDisabledReason, qualifyWorkspaceResult, remoteWorkspacePath, remoteWorkspaceRequest, sessionWorkspaceRoot, workspaceChangePath } from '../src/lib/workspacePaths.ts';
 
 test('a workspace keeps its machine even when another session is selected', () => {
   const first = remoteWorkspacePath('workbox', '/home/me/project/a.ts');
@@ -131,4 +131,11 @@ test('moved project changes browse root without changing cwd', () => {
     assert.equal(sessionWorkspaceRoot(session, projects), executionEnvironment === 'local' ? '/projects/b' : 'assembly-remote://box/projects/b');
     assert.equal(session.cwd, '/original');
   }
+});
+test('copy path gives the path on the owning machine, and reveal is off for remote files', () => {
+  const remote = remoteWorkspacePath('workbox', '/home/me/project/a.ts');
+  assert.equal(nativeWorkspacePath(remote), '/home/me/project/a.ts');
+  assert.equal(nativeWorkspacePath('/Users/me/project/a.ts'), '/Users/me/project/a.ts');
+  assert.match(revealDisabledReason(remote) ?? '', /remote machine/);
+  assert.equal(revealDisabledReason('/Users/me/project/a.ts'), null);
 });

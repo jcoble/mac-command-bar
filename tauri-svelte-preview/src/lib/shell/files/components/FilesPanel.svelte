@@ -39,7 +39,7 @@
 		} from "./fileTreeModel.ts";
 	import { watchFileTree } from "./fileTreeWatch.ts";
 	import { onWorkspaceFileChange, publishWorkspaceFileChange } from "$lib/shell/workspaceFileChangeBus.ts";
-	import { workspaceChangePath } from "$lib/workspacePaths.ts";
+	import { nativeWorkspacePath, revealDisabledReason, workspaceChangePath } from "$lib/workspacePaths.ts";
 	import { editorState } from "$lib/shell/files/editor/editorStore.svelte";
 	import { gitService } from "$lib/shell/git/gitService";
 	import { openFileInEditor, openFileTimeline } from "$lib/shell/workbenchNavigation";
@@ -937,7 +937,7 @@
 				beginEntry(node, id);
 			} else if (id === "copy-path") {
 				const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
-				await writeText(node.path);
+				await writeText(nativeWorkspacePath(node.path));
 			} else if (id === "reveal-in-finder") {
 				const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
 				await revealItemInDir(node.path);
@@ -1044,12 +1044,8 @@
 				title: mutationReason,
 				onselect: () => void runAction(node, "delete"),
 			},
-			{
-				id: "reveal-in-finder",
-				label: "Reveal in Finder",
-				separatorBefore: true,
-				onselect: () => void runAction(node, "reveal-in-finder"),
-			},
+			{ id: "reveal-in-finder", label: "Reveal in Finder", separatorBefore: true, disabled: revealDisabledReason(node.path) !== null,
+				title: revealDisabledReason(node.path) ?? undefined, onselect: () => void runAction(node, "reveal-in-finder") },
 			{
 				id: "toggle-excluded",
 				label: explorer.includeExcluded ? "Hide Excluded Files" : "Show Excluded Files",
