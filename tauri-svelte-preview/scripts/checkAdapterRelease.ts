@@ -13,7 +13,7 @@ export type NpmRelease = {
   _npmUser?: string;
   maintainers?: string[];
   scripts?: Record<string, string>;
-  dist?: { attestations?: unknown };
+  dist?: { attestations?: { provenance?: unknown } };
 };
 
 export function releaseConcerns(previous: NpmRelease, next: NpmRelease): string[] {
@@ -34,7 +34,9 @@ export function releaseConcerns(previous: NpmRelease, next: NpmRelease): string[
       concerns.push(`adds a ${script} script: ${next.scripts[script]}`);
     }
   }
-  if (previous.dist?.attestations && !next.dist?.attestations) {
+  // npm also issues a publish attestation for manual publishes; only `provenance` ties a release to
+  // the CI build that made it.
+  if (previous.dist?.attestations?.provenance && !next.dist?.attestations?.provenance) {
     concerns.push('has no npm provenance, but the previous release did');
   }
   return concerns;

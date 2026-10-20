@@ -44,9 +44,11 @@ test('an install script the previous release already had passes', () => {
 });
 
 test('losing npm provenance fails, but never having it does not', () => {
-  const concerns = releaseConcerns(previous, { ...previous, dist: {} });
-  assert.equal(concerns.length, 1);
-  assert.match(concerns[0], /provenance/);
+  for (const dist of [{}, { attestations: { url: 'https://registry.npmjs.org/-/npm/v1/attestations/x' } }]) {
+    const concerns = releaseConcerns(previous, { ...previous, dist });
+    assert.equal(concerns.length, 1);
+    assert.match(concerns[0], /provenance/);
+  }
   const unsigned = { ...previous, dist: {} };
   assert.deepEqual(releaseConcerns(unsigned, unsigned), []);
 });
