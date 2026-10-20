@@ -1,6 +1,7 @@
 //! One authenticated WebSocket boundary for conversations owned by a remote machine.
 
 mod history;
+mod relay_trust;
 mod transcripts;
 pub(in crate::agent_conversation) mod install;
 pub(crate) mod install_flow;
@@ -1200,11 +1201,10 @@ impl RemoteConnectionManager {
         })
     }
 
-    /// Carries one messaging operation from a session on `source` to the machines it concerns.
-    /// The desktop is the only router: remote machines reach each other through it. A sender's
-    /// label gets `@source` after its handle, so the receiver can answer it from anywhere.
-    async fn route_message(&self, source: &str, op: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+    /// Routes messages across machines with a replyable label identifying their source.
+    async fn route_message(&self, source: &str, op: &str, mut args: serde_json::Value) -> Result<serde_json::Value, String> {
         use serde_json::json;
+        relay_trust::prepare(&self.store, source, op, &mut args)?;
         match op {
             "directory" => {
                 let mut entries = Vec::new();
@@ -1233,10 +1233,10 @@ impl RemoteConnectionManager {
                     }
                 };
                 let sender = args["sender"].as_str().unwrap_or_default();
-                let sender = match sender.split_once(" · ") {
+                let sender = if source != LOCAL_MACHINE { format!("{source}: {sender}") } else { match sender.split_once(" · ") {
                     Some((handle, label)) => format!("{handle}@{source} · {label}"),
                     None => format!("{sender}@{source}"),
-                };
+                }};
                 let id = self.message_machine(&machine, "enqueue",
                     json!({"to": name, "text": args["text"], "from": args["from"], "sender": sender, "role": args["role"]}), None).await?;
                 Ok(json!(format!("{machine}:{}", id.as_str().unwrap_or_default())))
@@ -3346,7 +3346,7 @@ mod connection_tests {
     use super::*;
     use super::super::protocol::{BackgroundWorkItem, BackgroundWorkKind};
 
-    fn add_session(manager: &AgentRuntimeManager, owned_id: &str, title: &str) {
+    pub(super) fn add_session(manager: &AgentRuntimeManager, owned_id: &str, title: &str) {
         manager.store().upsert_session(&mcb_core::session_store::SessionRow {
             owned_id: owned_id.into(), native_session_id: None, provider: "codex".into(), model: None,
             effort: None, cwd: "/work".into(), worktree: None, branch: None, title: Some(title.into()),
@@ -3357,7 +3357,7 @@ mod connection_tests {
     }
 
     /// A message's sender label and text, read from the store file, whatever delivery did to it since.
-    fn stored_message(database: &std::path::Path, id: &str) -> (String, String) {
+    pub(super) fn stored_message(database: &std::path::Path, id: &str) -> (String, String) {
         rusqlite::Connection::open(database).unwrap().query_row(
             "SELECT sender_name, body FROM workflow_messages WHERE id = ?", [id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
     }
@@ -3765,7 +3765,7 @@ mod connection_tests {
         assert!(id.starts_with("mac:"), "{sent}");
         let (sender, body) = stored_message(&directory.join("desktop.db"), &id["mac:".len()..]);
         let there_handle = remote.store().directory_name("there").unwrap().unwrap().0;
-        assert_eq!(sender, format!("{there_handle}@workbox-test · There"));
+        assert_eq!(sender, format!("workbox-test: {there_handle} · There"));
         assert_eq!(body, "hello from there");
         // These test machines run no agent, so delivery may already have failed it.
         let status = tool(&there, &there_token, json!({"name":"message_status","arguments":{"id":id}})).await;
