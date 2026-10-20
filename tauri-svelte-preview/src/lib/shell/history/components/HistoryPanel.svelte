@@ -503,7 +503,7 @@
         console.error('[resume]', rail.error);
         return;
       }
-      addOwnedSession(ownedSessionFromBackend(imported));
+      if (!rail.owned.some((session) => session.ownedId === ownedId)) addOwnedSession(ownedSessionFromBackend(imported));
       await host.service.open({ ...record, ownedId });
       // A session you asked to resume is one you want to look at, so bring it
       // forward the same way adopting a scanned session does.

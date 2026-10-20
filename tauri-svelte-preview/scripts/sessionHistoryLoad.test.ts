@@ -157,6 +157,13 @@ run('project_and_detail_reads_have_independent_lifecycles', () => {
   assert.doesNotMatch(panel, /\bloadVersion\b/);
 });
 
+run('a_rebuilt_resume_does_not_add_a_session_the_rail_already_holds', () => {
+  const panel = readFileSync(new URL('../src/lib/shell/history/components/HistoryPanel.svelte', import.meta.url), 'utf8');
+  const resume = panel.slice(panel.indexOf('async function resumeAsAssemblySession'), panel.indexOf('async function runAction'));
+  assert.match(resume, /if \(!rail\.owned\.some\(\(session\) => session\.ownedId === ownedId\)\) addOwnedSession\(/);
+  assert.equal(resume.match(/addOwnedSession\(/g)?.length, 1);
+});
+
 
 test('history import is offered only where a transcript reader exists', () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationStore.svelte.ts', import.meta.url), 'utf8');
