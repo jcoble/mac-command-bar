@@ -123,18 +123,18 @@
      768px measure with no box around it, a prompt is a narrow bubble on the
      right. That asymmetry is the only role marking in the transcript. */
   article{max-width:768px;user-select:text;-webkit-user-select:text}
-  .turn-body{font-size:14px;line-height:1.58}
+  .turn-body{font-size:14px;line-height:1.5}
 
-  /* The transcript's scale, inside a message: 10px between blocks, 5px between
-     the rows of a list, and 14px above a heading so it reads as owning the
+  /* The transcript's scale, inside a message: 6px between blocks, 2px between
+     the rows of a list, and 10px above a heading so it reads as owning the
      section under it rather than floating between two. */
-  .turn-body p{margin:0 0 10px;white-space:pre-wrap}
+  .turn-body p{margin:0 0 6px;white-space:pre-wrap}
   .turn-body p:last-child,
   .turn-body ul:last-child,
   .turn-body ol:last-child,
   .turn-body blockquote:last-child,
   .turn-body .table-scroll:last-child{margin-bottom:0}
-  .heading{margin:14px 0 8px;font-weight:640;line-height:1.4;letter-spacing:-.01em}
+  .heading{margin:10px 0 4px;font-weight:640;line-height:1.4;letter-spacing:-.01em}
   .heading:first-child{margin-top:0}
   .heading.level-1{font-size:18px}
   .heading.level-2{font-size:16px}
@@ -143,9 +143,9 @@
 
   /* A quote is marked by the rule down its side and the quieter text, and by
      nothing else. */
-  .turn-body blockquote{margin:0 0 10px;padding:3px 0 3px 14px;border-left:2px solid color-mix(in srgb,var(--color-accent) 42%,var(--color-border));color:var(--color-text-2)}
-  .turn-body ul,.turn-body ol{margin:0 0 10px;padding-left:24px}
-  .turn-body li{margin-bottom:5px;padding-left:4px}
+  .turn-body blockquote{margin:0 0 6px;padding:3px 0 3px 14px;border-left:2px solid color-mix(in srgb,var(--color-accent) 42%,var(--color-border));color:var(--color-text-2)}
+  .turn-body ul,.turn-body ol{margin:0 0 6px;padding-left:24px}
+  .turn-body li{margin-bottom:2px;padding-left:4px}
   .turn-body li:last-child{margin-bottom:0}
   .turn-body li::marker{color:var(--color-text-3)}
   .turn-body li.task-row{list-style:none;margin-left:-18px;padding-left:0}
@@ -155,7 +155,7 @@
   .file-link :global(svg){align-self:center;flex:none}
   .inline-code{padding:2px 6px;border-radius:5px;background:color-mix(in srgb,var(--color-surface) 78%,var(--color-bg));font:13px/1.4 var(--font-mono)}
 
-  .turn-body.folded{max-height:calc(10 * 1.58em);overflow:hidden;-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent);mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent)}
+  .turn-body.folded{max-height:calc(10 * 1.5em);overflow:hidden;-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent);mask-image:linear-gradient(to bottom,#000 calc(100% - 26px),transparent)}
   .fold-row{display:flex;margin-top:6px}
   .fold-chevron{display:grid;place-items:center;color:var(--color-text-3)}
   .fold-chevron.open{transform:rotate(90deg)}
@@ -163,7 +163,7 @@
 
   .user{width:fit-content;max-width:80%;margin-left:auto;padding:10px 16px;border-radius:18px;background:var(--color-elevated);font-size:14px;line-height:1.55}
 
-  .table-scroll{overflow:auto;margin-bottom:12px;border:1px solid color-mix(in srgb,var(--color-border) 70%,transparent);border-radius:8px}
+  .table-scroll{overflow:auto;margin-bottom:8px;border:1px solid color-mix(in srgb,var(--color-border) 70%,transparent);border-radius:8px}
   .table-scroll table{border-collapse:collapse;min-width:100%;font-size:13px}
   .table-scroll th,.table-scroll td{padding:7px 10px;border-bottom:1px solid color-mix(in srgb,var(--color-border) 55%,transparent);text-align:left;vertical-align:top}
   .table-scroll tr:last-child td{border-bottom:0}
@@ -177,8 +177,8 @@
   .turn-body input[type=checkbox]:checked::after{content:'';width:6px;height:3px;border:1.6px solid var(--color-bg);border-top:0;border-right:0;transform:translateY(-1px) rotate(-45deg)}
   /* A sub-list is one step in, and gives up the gap under its parent row so the
      two read as one group rather than two lists. */
-  .turn-body li > :global(ul),.turn-body li > :global(ol){margin:8px 0 0}
-  .turn-body hr{margin:16px 0;border:0;border-top:1px solid color-mix(in srgb,var(--color-border) 70%,transparent)}
+  .turn-body li > :global(ul),.turn-body li > :global(ol){margin:2px 0 0}
+  .turn-body hr{margin:10px 0;border:0;border-top:1px solid color-mix(in srgb,var(--color-border) 70%,transparent)}
   .turn-body del{color:var(--color-text-3);text-decoration-thickness:1px}
 
 </style>

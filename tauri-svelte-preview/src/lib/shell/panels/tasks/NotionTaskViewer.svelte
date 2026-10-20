@@ -371,10 +371,10 @@
   </header>
 
   <ScrollArea class="min-h-0 flex-1">
-    <article class="selectable task-page mx-auto w-full min-w-0 max-w-[820px] px-(--space-6) pt-(--space-6) pb-(--space-6) outline-none" tabindex="-1" onpaste={pasteImage}>
+    <article class="selectable task-page mx-auto w-full min-w-0 max-w-[820px] px-(--space-4) pt-(--space-4) pb-(--space-5) outline-none" tabindex="-1" onpaste={pasteImage}>
       {#if title.key}<p class="font-mono text-(length:--text-quiet) text-muted-foreground">{title.key}</p>{/if}
       <h1
-        class="mt-1 rounded-(--radius-sm) text-[28px] leading-tight font-semibold text-foreground outline-none [overflow-wrap:anywhere] focus:bg-muted/40"
+        class="mt-0.5 rounded-(--radius-sm) text-[20px] leading-snug font-semibold text-foreground outline-none [overflow-wrap:anywhere] focus:bg-muted/40"
         contenteditable="plaintext-only"
         spellcheck="false"
         aria-label="Task title"
@@ -389,14 +389,14 @@
       {#if loading}
         <p class="mt-(--space-5) text-(length:--text-heading) text-muted-foreground"><WorkingSpinner size={14} /> Loading task…</p>
       {:else if detail}
-        <dl class="mt-(--space-4) grid grid-cols-[minmax(7rem,11rem)_minmax(0,1fr)] gap-x-4 gap-y-2 text-[13px]">
+        <dl class="mt-(--space-3) grid grid-cols-[fit-content(9rem)_minmax(0,1fr)] gap-x-(--space-3) gap-y-0.5 text-[13px]">
           {#each detail.properties as property (property.name)}
             <dt class="truncate leading-6 text-muted-foreground">{property.name}</dt>
             <dd class="flex min-h-6 min-w-0 items-center text-foreground [overflow-wrap:anywhere]">{@render propertyValue(property)}</dd>
           {/each}
         </dl>
 
-        <hr class="my-(--space-4) border-border" />
+        <hr class="my-(--space-3) border-border" />
 
         {#if detail.body.length === 0}
           <p class="text-(length:--text-heading) text-muted-foreground">This task has no additional notes.</p>
