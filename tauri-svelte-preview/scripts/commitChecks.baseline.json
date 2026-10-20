@@ -21,7 +21,7 @@
     "tauri-svelte-preview/src-tauri/src/agent_conversation/reaper.rs": 679,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/remote/history.rs": 1303,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/remote/install.rs": 750,
-    "tauri-svelte-preview/src-tauri/src/agent_conversation/remote/mod.rs": 5826,
+    "tauri-svelte-preview/src-tauri/src/agent_conversation/remote/mod.rs": 5825,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/history/transcript/mod.rs": 921,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/history/mod.rs": 1837,
     "tauri-svelte-preview/src-tauri/src/browser/mod.rs": 2976,
@@ -87,7 +87,7 @@
     "tauri-svelte-preview/src/lib/workspaceSnapshot.ts": 613,
     "tauri-svelte-preview/src/lib/worktreeCleanupRunbook.ts": 878,
     "tauri-svelte-preview/src/lib/worktreeSafety.ts": 1141,
-    "tauri-svelte-preview/src/routes/+page.svelte": 1129
+    "tauri-svelte-preview/src/routes/+page.svelte": 1128
   },
   "providerBranches": {
     "core/src/scanners/sessions.rs": 6,

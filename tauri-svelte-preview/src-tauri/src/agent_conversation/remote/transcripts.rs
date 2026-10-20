@@ -118,6 +118,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_read_again_on_its_machine_keeps_the_project_it_was_moved_to_here() {
+        let manager = download_manager();
+        for id in ["a", "b"] {
+            manager.store.insert_or_get_project(&mcb_core::session_store::ProjectRow {
+                id: id.into(), machine: "cache-test".into(), root_path: format!("/work/{id}"), title: id.into(),
+                repo_key: String::new(), created_at_ms: 0, group_key: String::new(), pinned_at_ms: None, last_used_ms: None,
+            }).unwrap();
+        }
+        let key = RemoteHistory::key("cache-test", "large-history");
+        let listed = |numbered_after| [AgentConversationSessionRecord { numbered_after, project_id: Some("a".into()), ..session("large-history", "cache-test", 1) }];
+        manager.replace_cached_profile_sessions("cache-test", &listed(None)).unwrap();
+        assert!(manager.store.move_session_project(&key, "b").unwrap());
+        manager.replace_cached_profile_sessions("cache-test", &listed(Some(3))).unwrap();
+        assert_eq!(manager.store.session_projects(&serde_json::json!([key]).to_string()).unwrap(), vec![Some("b".to_string())]);
+    }
+
+    #[tokio::test]
     async fn a_download_running_when_another_mac_reads_the_session_again_saves_nothing_more() {
         let manager = download_manager();
         let (id, _requests) = begin_test_download(&manager, 100, Some(1), Some(2)).await;

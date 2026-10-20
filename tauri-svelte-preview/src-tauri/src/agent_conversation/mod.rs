@@ -311,13 +311,13 @@ fn project_record(row: mcb_core::session_store::ProjectRow) -> protocol::Project
     }
 }
 
-/// Puts each record's project group on it, from one SQL statement over the
-/// records' project ids. Remote records use the ids their server stored,
-/// joined to the projects this Mac registered for that machine.
+/// Applies saved desktop assignments and groups in two batched SQL reads.
+/// Remote records join this desktop's projects for their machine.
 pub(crate) fn attach_project_groups(
     store: &mcb_core::session_store::SessionStore,
     sessions: &mut [AgentConversationSessionRecord],
 ) -> Result<(), String> {
+    manager::session_project::apply_saved_projects(store, sessions)?;
     let pairs: Vec<(&str, Option<&str>)> = sessions
         .iter()
         .map(|session| (session.owned_id.as_str(), session.project_id.as_deref()))

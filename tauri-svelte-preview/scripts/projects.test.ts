@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
 import {
+  moveProjectDestinations,
   defaultDraftProjectId,
   filterProjects,
   isNewFolderPath,
@@ -163,3 +165,10 @@ const project = (id: string, machine: string): ProjectRecord => ({
 }
 
 console.log('projects.test.ts passed');
+
+test('move destinations stay on the session machine', () => {
+  const projects = [project('a', 'local'), project('b', 'box'), project('c', 'other')];
+  assert.deepEqual(moveProjectDestinations(projects, { executionEnvironment: 'local' }).map(p => p.id), ['a']);
+  assert.deepEqual(moveProjectDestinations(projects, { executionEnvironment: 'remote', remoteProfileId: 'box' }).map(p => p.id), ['b']);
+  assert.deepEqual(moveProjectDestinations(projects, { executionEnvironment: 'remote', remoteProfileId: null }), []);
+});

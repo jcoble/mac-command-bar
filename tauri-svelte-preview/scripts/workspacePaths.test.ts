@@ -119,3 +119,16 @@ test('a save outside the session folder is refused while a running session works
   assert.doesNotThrow(() => assertSaveAllowed('/work/other/a.ts', '/work/mine', [remote]));
   assert.throws(() => assertSaveAllowed('assembly-remote://workbox-test/work/other/a.ts', '/work/mine', [remote]), /Another session is working/);
 });
+
+test('moved project changes browse root without changing cwd', () => {
+  for (const executionEnvironment of ['local', 'remote']) {
+    const machine = executionEnvironment === 'local' ? 'local' : 'box';
+    const session = { cwd: '/original', projectId: 'a', executionEnvironment, remoteProfileId: 'box' };
+    const projects = ['a', 'b'].map(id => ({ id, machine, rootPath: `/projects/${id}` }));
+    const before = sessionWorkspaceRoot(session, projects);
+    session.projectId = 'b';
+    assert.notEqual(sessionWorkspaceRoot(session, projects), before);
+    assert.equal(sessionWorkspaceRoot(session, projects), executionEnvironment === 'local' ? '/projects/b' : 'assembly-remote://box/projects/b');
+    assert.equal(session.cwd, '/original');
+  }
+});
