@@ -418,15 +418,15 @@ function snapshotChunks(
   }
   pushMessagesSnapshot(selection, messages, push);
   push({ type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: selection.historyOwnedId } as StreamChunk);
-  void restorePageAttachments(
-    selection,
-    pageAttachments(snapshot.page.events),
-    snapshot.connection.generation,
-    messages.map((message) => message.id)
-  );
-  if (pending?.receipt && snapshot.page.turns.some((turn) =>
+  void restorePageAttachments(selection, pageAttachments(snapshot.page.events),
+    snapshot.connection.generation, messages.map((message) => message.id));
+  if (pending?.receipt && ((!snapshot.activeTurnId && (
+    snapshot.connection.generation > pending.receipt.generation
+    || (snapshot.connection.generation === pending.receipt.generation
+      && snapshot.pendingSequence >= pending.receipt.admittedSequence)
+  )) || snapshot.page.turns.some((turn) =>
     turn.turnId === pending.receipt?.turnId && turn.terminalState
-  )) {
+  ))) {
     push({
       type: EventType.RUN_FINISHED,
       threadId: selection.historyOwnedId,

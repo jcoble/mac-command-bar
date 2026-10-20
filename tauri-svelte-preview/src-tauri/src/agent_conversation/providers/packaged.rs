@@ -193,4 +193,39 @@ mod tests {
         assert!(claude.is_some() && antigravity.is_some());
         std::fs::remove_dir_all(directory).unwrap();
     }
+
+    /// One adapter on disk, described by a manifest with the given version.
+    fn single_adapter_manifest(provider: &str, id: &str, version: &str) -> std::path::PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("mcb-packaged-version-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join(id), provider.as_bytes()).unwrap();
+        let hash = file_sha256(&directory.join(id)).unwrap();
+        let manifest = serde_json::json!({ "schemaVersion": 1, "adapters": [{
+            "provider": provider, "id": id, "version": version, "executable": id,
+            "files": [{ "path": id, "sha256": hash }]
+        }] });
+        std::fs::write(directory.join("manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        directory
+    }
+
+    // Protects 8d667ad02: the app never launches an adapter older than the one
+    // it was built against, and the retired community Antigravity adapter is
+    // refused even from a downloaded (not bundled) install.
+    #[test]
+    fn older_bundled_adapters_and_the_community_antigravity_adapter_are_refused() {
+        let older_claude = single_adapter_manifest("claude", "claude-agent-acp", "0.1.0");
+        assert!(discover_in(&older_claude, true).unwrap_err().contains("expected claude-agent-acp"));
+        let (_, claude, _) = discover_in(&older_claude, false).unwrap();
+        assert!(claude.is_some(), "a downloaded install is not held to the bundled version");
+        std::fs::remove_dir_all(older_claude).unwrap();
+
+        let community = single_adapter_manifest("antigravity", "agy-acp", "0.1.0");
+        assert!(discover_in(&community, false).unwrap_err().contains("community Antigravity"));
+        std::fs::remove_dir_all(community).unwrap();
+
+        let renamed = single_adapter_manifest("codex", "some-other-acp", CODEX_ACP_VERSION);
+        assert!(discover_in(&renamed, false).is_err(), "the adapter id must match its provider");
+        std::fs::remove_dir_all(renamed).unwrap();
+    }
 }
