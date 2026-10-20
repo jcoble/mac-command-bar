@@ -470,10 +470,13 @@ async fn helper_cannot_start_helper() {
 }
 
 #[tokio::test]
-async fn fourth_unfinished_helper_is_refused() {
+async fn sixth_unfinished_helper_is_refused() {
     use mcb_core::session_store::SessionRow;
     let store = hierarchy();
-    for (id, state) in [("h1", "working"), ("h2", "waiting-approval"), ("h3", "starting"), ("h4", "ready")] {
+    let (endpoint, tokens, _) = relayed(&store, &["top2", "top1"]);
+    let start = json!({"name":"start_session","arguments":{"provider":"codex","name":"Helper","prompt":"Look"}});
+    for (id, state) in [("h1", "working"), ("h2", "waiting-approval"), ("h3", "starting"), ("h4", "working"), ("h5", "waiting-approval")] {
+        assert_eq!(endpoint.handle(&tokens[0], start.clone()).await.unwrap_err(), "Sessions cannot be started from here");
         store.upsert_session(&SessionRow {
             owned_id: id.into(), native_session_id: None, provider: "codex".into(), model: None,
             effort: None, cwd: "/work".into(), worktree: None, branch: None, title: Some(id.into()),
@@ -481,17 +484,14 @@ async fn fourth_unfinished_helper_is_refused() {
             created_at_ms: 1, last_activity_at_ms: 1, extra_json: r#"{"helperOf":"top2"}"#.into(),
         }).unwrap();
     }
-    let (endpoint, tokens, _) = relayed(&store, &["top2", "top1"]);
-    let start = json!({"name":"start_session","arguments":{"provider":"codex","name":"Helper","prompt":"Look"}});
-    assert_eq!(endpoint.handle(&tokens[0], start.clone()).await.unwrap_err(), "at most 3 unfinished helpers");
-    // top1 has one idle helper, so it passes the limit and fails only for want of a manager here.
+    assert_eq!(endpoint.handle(&tokens[0], start.clone()).await.unwrap_err(), "at most 5 unfinished helpers");
     assert_eq!(endpoint.handle(&tokens[1], start.clone()).await.unwrap_err(), "Sessions cannot be started from here");
     // Helpers still starting count too, so parallel starts cannot pass the limit together.
-    endpoint.starting_helpers.lock().unwrap().insert("top1".into(), 3);
-    assert_eq!(endpoint.handle(&tokens[1], start.clone()).await.unwrap_err(), "at most 3 unfinished helpers");
-    endpoint.starting_helpers.lock().unwrap().insert("top1".into(), 2);
+    endpoint.starting_helpers.lock().unwrap().insert("top1".into(), 5);
+    assert_eq!(endpoint.handle(&tokens[1], start.clone()).await.unwrap_err(), "at most 5 unfinished helpers");
+    endpoint.starting_helpers.lock().unwrap().insert("top1".into(), 4);
     assert_eq!(endpoint.handle(&tokens[1], start).await.unwrap_err(), "Sessions cannot be started from here");
-    assert_eq!(endpoint.starting_helpers.lock().unwrap().get("top1"), Some(&2), "a finished start releases its place");
+    assert_eq!(endpoint.starting_helpers.lock().unwrap().get("top1"), Some(&4), "a finished start releases its place");
 }
 
 #[tokio::test]

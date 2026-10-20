@@ -105,7 +105,7 @@ pub(crate) fn quote_labels(text: &str) -> String {
     quoted
 }
 
-const HELPER_LIMIT: i64 = 3;
+const HELPER_LIMIT: i64 = 5;
 
 /// What each session is starting now, by session: it counts toward the session's limit before the store knows it.
 type Starting = Arc<Mutex<HashMap<String, i64>>>;
@@ -380,7 +380,7 @@ impl MessagingEndpoint {
                 }
                 let _place = StartPlace::take(&self.starting_helpers, &owned_id, HELPER_LIMIT,
                     || store.unfinished_helpers_of(&owned_id).map_err(|error| error.to_string()),
-                    "at most 3 unfinished helpers")?;
+                    "at most 5 unfinished helpers")?;
                 let model = args["model"].as_str().map(str::to_string);
                 let manager = manager.ok_or("Sessions cannot be started from here")?;
                 let helper = manager.start_helper(&owned_id, provider, model, name, prompt).await?;
