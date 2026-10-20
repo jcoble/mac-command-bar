@@ -57,10 +57,8 @@
     onView(path === sessionRoot ? null : path);
   }
 
-  async function newSessionHere(): Promise<void> {
-    if (!viewedOption) await loadWorktrees();
-    if (viewedOption) onNewSessionHere?.(viewedOption.projectId);
-  }
+  /** Only a project's root: a session can't start inside a linked worktree from here yet. */
+  const newSessionProjectId = $derived(viewedOption && !viewedOption.worktree ? viewedOption.projectId : null);
 </script>
 
 <div class={cn('mx-3 mt-1 mb-2 flex min-w-0 flex-none flex-col gap-1', viewedRoot && 'rounded-lg bg-secondary p-1')}>
@@ -106,8 +104,8 @@
   {/if}
   {#if viewedRoot}
     <div class="flex min-w-0 flex-wrap items-center justify-end gap-1">
-      {#if readOnlyReason && onNewSessionHere}
-        <Button size="sm" variant="outline" class="text-[13px]" onclick={newSessionHere}>New session here</Button>
+      {#if readOnlyReason && onNewSessionHere && newSessionProjectId}
+        <Button size="sm" variant="outline" class="text-[13px]" onclick={() => onNewSessionHere(newSessionProjectId)}>New session here</Button>
       {/if}
       <Button size="sm" variant="ghost" class="text-[13px]" onclick={() => onView(null)}>Back to session</Button>
     </div>
