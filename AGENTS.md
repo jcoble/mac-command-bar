@@ -54,6 +54,12 @@ thorough. Find the real constraint first, then change only what the task needs.
    `/Users/blackcolours/Library/Application Support/dev.blackcolours.MacCommandBarWebviewPreview`) and
    `~/.local/share/assembly` on any machine are in use. You may read or copy from them. Never open
    them read-write, start a server against them, or clean them up. Copy test data in; never symlink.
+   Test apps start from a copy of real data, not an empty database: an empty database is a bad
+   test. Copy with `sqlite3 -readonly <sessions.db> ".backup <dst>"` (never a raw copy of a live
+   database) into the test app's own data folder; `fourScenarios.ts start --seed` does this on the
+   workbox. Data flows one way, into the copy. Before the first launch, delete every saved machine
+   except Workbox Test and the cached remote chats (see `docs/operations/four-scenario-check.md`),
+   because Settings → Connections signs in by SSH to every saved machine just by opening.
 3. **Connecting to the owner's machines.** Remote tests use only the "Workbox Test" container (SSH
    alias `workbox-test`, see `tools/workbox-test/README.md`). **Install and connect** is fine from
    the test app, against Workbox Test only. Never connect a test app to "Agent Workbox", "SD" or any
