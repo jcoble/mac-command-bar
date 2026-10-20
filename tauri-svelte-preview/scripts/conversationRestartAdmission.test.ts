@@ -8,8 +8,14 @@ import { EventType } from '@tanstack/ai/client';
 const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
 const block = source.slice(source.indexOf('function snapshotChunks('), source.indexOf('function admitInitialSnapshot('));
 
-for (const activeTurnId of [undefined, 'old-turn']) {
-  await test(`reconnect ${activeTurnId ? 'keeps a running send busy' : 'admits the next send after restart'}`, async () => {
+for (const [name, activeTurnId, generation, pendingSequence, ended] of [
+  ['restart admits next send', undefined, 1, 10, true],
+  ['network drop keeps running send busy', 'old-turn', 1, 20, false],
+  ['snapshot taken before admission keeps send busy', undefined, 1, 9, false],
+  ['older generation keeps send busy', undefined, 0, 20, false],
+  ['newer backend generation releases lost run', undefined, 2, 0, true]
+] as const) {
+  await test(name, async () => {
     const chunks: any[] = [];
     let wake: (() => void) | undefined;
     let observed = Promise.withResolvers<void>();
@@ -32,7 +38,7 @@ for (const activeTurnId of [undefined, 'old-turn']) {
       },
       async send(_messages: unknown, _data: unknown, _signal: unknown, context: { runId: string }) {
         sends++;
-        selection.pendingSend = { runId: context.runId, receipt: { turnId: 'old-turn' } };
+        selection.pendingSend = { runId: context.runId, receipt: { turnId: 'old-turn', generation: 1, admittedSequence: 10 } };
         observed.resolve();
         if (sends > 1) {
           chunks.push({ type: EventType.RUN_FINISHED, runId: context.runId });
@@ -44,14 +50,14 @@ for (const activeTurnId of [undefined, 'old-turn']) {
       const first = client.sendMessage('Long running turn');
       await observed.promise;
       observed = Promise.withResolvers<void>();
-      snapshotChunks(selection, { connection: { generation: 1 }, page: { turns: [], events: [] }, pendingEvents: [], activeTurnId }, (chunk: unknown) => chunks.push(chunk));
+      snapshotChunks(selection, { connection: { generation }, pendingSequence, page: { turns: [], events: [] }, pendingEvents: [], activeTurnId }, (chunk: unknown) => chunks.push(chunk));
       chunks.push({ type: EventType.CUSTOM, name: 'barrier' });
       wake?.();
       await observed.promise;
-      assert.equal(client.getIsLoading(), !!activeTurnId);
-      if (!activeTurnId) await first;
+      assert.equal(client.getIsLoading(), !ended);
+      if (ended) await first;
       await client.sendMessage('RESTART_RECOVERED');
-      assert.equal(sends, activeTurnId ? 1 : 2, 'a backend restart must release the client send gate');
+      assert.equal(sends, ended ? 2 : 1, 'a backend restart must release the client send gate');
     } finally { client.dispose(); }
   });
 }
