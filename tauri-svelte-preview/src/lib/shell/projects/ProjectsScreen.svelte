@@ -35,7 +35,7 @@
   import NewProjectDialog from '$lib/shell/projects/NewProjectDialog.svelte';
   import { hydrateProjects, projectRegistry, refreshRailProjects } from '$lib/shell/projects/projectRegistry.svelte.ts';
   import { ownedSessionFromBackend } from '$lib/shell/ownedSessions';
-  import { hydrateOwned, rail, removeOwnedSession } from '$lib/shell/stores/sessionRailStore.svelte.ts';
+  import { rail, removeOwnedSession, replaceConnectedRemoteRows } from '$lib/shell/stores/sessionRailStore.svelte.ts';
   import {
     filterProjects,
     projectCountsByMachine,
@@ -127,9 +127,7 @@
       }
       const result = await connectRemoteAssemblyFromTauri(profile, stop.signal, () => {});
       if (stop.signal.aborted) return;
-      const replaced = new Set([result.profile.id, result.replacedProfileId]);
-      hydrateOwned([...rail.owned.filter((session) => !replaced.has(session.remoteProfileId ?? '')),
-        ...result.sessions.map(ownedSessionFromBackend)]);
+      replaceConnectedRemoteRows([result.profile.id, result.replacedProfileId], result.sessions.map(ownedSessionFromBackend));
       await readMachines(stop.signal);
     } catch (error) {
       if (!stop.signal.aborted) machinesError = error instanceof Error ? error.message : String(error);
