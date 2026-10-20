@@ -626,7 +626,7 @@
     const windowId = renderWindowId;
     jumping = true;
     anchoredSendItemId = null;
-    pageRequest = null;
+    pageRequest = null; userDirection = null; // A wheel at the top left a direction no scroll consumed.
     try {
       if (hasNewer) await onJumpToLatest?.();
       if (windowId !== renderWindowId) return;
