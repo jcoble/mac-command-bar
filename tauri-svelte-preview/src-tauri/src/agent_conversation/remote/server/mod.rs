@@ -14,6 +14,7 @@ use self::socket::upgrade_remote_socket;
 use super::{server_state, PendingAttachment, ServerState, ATTACHMENT_CHUNK_BYTES};
 use super::wire::{RemoteCommand, RemoteResponse};
 use crate::agent_conversation::attachments;
+use mcb_core::scanners::sessions::AgentSessionRecord;
 use crate::agent_conversation::manager::AgentRuntimeManager;
 use crate::agent_conversation::prompt_content::prompt_from_blocks;
 use crate::agent_conversation::protocol::ExecutionEnvironment;
@@ -330,6 +331,20 @@ pub(super) async fn execute_remote_command(
         RemoteCommand::ExtendImport { owned_id } => {
             let progress = manager.extend_imported_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES, crate::agent_conversation::IMPORT_MAX_RECORDS)?;
             Ok(RemoteResponse::ImportProgress { added: progress.added, reached_start: progress.reached_start })
+        }
+        RemoteCommand::ScanTranscripts { log_path } => tokio::task::spawn_blocking(move || match log_path {
+            Some(path) => mcb_core::scanners::sessions::scan_session_details(&path),
+            // The desktop keeps no turn text from the full list, so it is not sent.
+            None => mcb_core::scanners::sessions::scan_sessions().into_iter()
+                .map(|session| AgentSessionRecord { latest_turns: Vec::new(), ..session }).collect(),
+        }).await.map(RemoteResponse::Transcripts).map_err(|error| error.to_string()),
+        RemoteCommand::BeginImport { provider, native_session_id, transcript_path, cwd, title, project_id } => {
+            // Filed under this Mac's project for the folder, which is how its rail groups it, even if the machine has its own.
+            let (owned_id, rebuilt) = manager.begin_import_transcript_session(provider, &native_session_id,
+                std::path::Path::new(&transcript_path), &cwd, title, project_id).await?;
+            // The rest of the transcript is read in by the history download, as it streams.
+            manager.finish_import_transcript_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES, crate::agent_conversation::IMPORT_MAX_RECORDS)?;
+            Ok(RemoteResponse::Imported { owned_id, rebuilt })
         }
         RemoteCommand::SelectChildHistory {
             parent_owned_id,

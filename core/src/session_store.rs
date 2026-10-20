@@ -2576,17 +2576,17 @@ impl SessionStore {
     }
 
     /// Each folder in `folders_json` (a JSON array of paths) that sits in a
-    /// local project, as `(folder, project_id)`: the project rooted exactly
+    /// project on `machine`, as `(folder, project_id)`: the project rooted exactly
     /// there, else the deepest root above it (an exact root is the deepest),
     /// ties going to the oldest project.
-    pub fn match_folders_by_path(&self, folders_json: &str) -> Result<Vec<(String, String)>> {
+    pub fn match_folders_by_path(&self, folders_json: &str, machine: &str) -> Result<Vec<(String, String)>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
                 "SELECT folder, project_id FROM (
                     SELECT f.value AS folder, (
                         SELECT p.id FROM projects p
-                        WHERE p.machine = 'local'
+                        WHERE p.machine = ?2
                           AND (f.value = p.root_path OR substr(f.value, 1, length(p.root_path) + 1) = p.root_path || '/')
                         ORDER BY length(p.root_path) DESC, p.created_at, p.id
                         LIMIT 1
@@ -2596,7 +2596,7 @@ impl SessionStore {
             )
             .map_err(|error| StoreError::sqlite("could not prepare the folder match", error))?;
         let rows = statement
-            .query_map([folders_json], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map(params![folders_json, machine], |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|error| StoreError::sqlite("could not match folders to projects", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not match folders to projects", error))
@@ -5959,7 +5959,7 @@ mod tests {
         let matched = store.match_folders_by_path(&serde_json::json!([
             "/work/repo", "/work/repo/src", "/work/repo/packages/app", "/work/repo/packages/app/ui",
             "/work/repository", "/home/me/repo", "/elsewhere"
-        ]).to_string()).unwrap();
+        ]).to_string(), "local").unwrap();
         assert_eq!(matched, vec![
             ("/work/repo".to_owned(), "repo".to_owned()),
             ("/work/repo/src".to_owned(), "repo".to_owned()),

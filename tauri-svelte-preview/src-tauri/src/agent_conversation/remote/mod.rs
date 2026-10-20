@@ -1,6 +1,7 @@
 //! One authenticated WebSocket boundary for conversations owned by a remote machine.
 
 mod history;
+mod transcripts;
 pub(in crate::agent_conversation) mod install;
 pub(crate) mod install_flow;
 mod workspace;
@@ -63,7 +64,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 20;
+pub(super) const PROTOCOL_VERSION: u16 = 21;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -621,11 +622,18 @@ impl RemoteConnectionManager {
         profile_id: &str,
         sessions: &[AgentConversationSessionRecord],
     ) -> Result<(), String> {
-        let incoming_ids = sessions
-            .iter()
-            .map(|session| session.owned_id.as_str())
-            .collect::<std::collections::HashSet<_>>();
+        let incoming_ids = sessions.iter().map(|session| session.owned_id.as_str()).collect::<std::collections::HashSet<_>>();
         let mut next = self.cached_sessions();
+        // Read again from its transcript there, a session is numbered on above its old head: a copy saved here before
+        // that would show every turn twice. A server too old to say leaves the copy alone.
+        for session in sessions.iter().filter(|session| session.numbered_after.is_some()) {
+            if next.iter().any(|old| old.owned_id == session.owned_id && old.remote_profile_id.as_deref() == Some(profile_id)
+                && old.numbered_after != session.numbered_after) {
+                // A download still running is of the replaced journal: its chunks are dropped, and the next one starts afresh.
+                self.downloads.lock().unwrap().remove(&RemoteHistory::key(profile_id, &session.owned_id));
+                self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).forget(profile_id, &session.owned_id)?;
+            }
+        }
         next.retain(|session| {
             session.remote_profile_id.as_deref() != Some(profile_id)
                 && !incoming_ids.contains(session.owned_id.as_str())
@@ -635,21 +643,10 @@ impl RemoteConnectionManager {
             session.remote_profile_id = Some(profile_id.to_string());
             session
         }));
-        next.sort_by(|left, right| {
-            right
-                .last_activity_at_ms
-                .cmp(&left.last_activity_at_ms)
-                .then_with(|| left.owned_id.cmp(&right.owned_id))
-        });
+        next.sort_by(|left, right| right.last_activity_at_ms.cmp(&left.last_activity_at_ms).then_with(|| left.owned_id.cmp(&right.owned_id)));
         self.save_cached_sessions(next)?;
-        self.history
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .file_sessions(profile_id, sessions)?;
-        let mut routing = self
-            .remote_sessions
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).file_sessions(profile_id, sessions)?;
+        let mut routing = self.remote_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         routing.retain(|_, stored_profile_id| stored_profile_id != profile_id);
         routing.extend(
             sessions
@@ -2051,42 +2048,6 @@ impl RemoteConnectionManager {
             }
             progress.changed().await.map_err(|e| e.to_string())?;
         }
-    }
-
-    pub async fn extend_import(&self, owned_id: String) -> Result<super::history::ExtendedImport, String> {
-        let profile = self.profile_for_owned_id(&owned_id)?;
-        self.extend_import_from(profile, owned_id).await
-    }
-
-    pub async fn extend_child_import(
-        &self,
-        profile: String,
-        source_owned_id: String,
-    ) -> Result<super::history::ExtendedImport, String> {
-        self.extend_import_from(profile, source_owned_id).await
-    }
-
-    async fn extend_import_from(
-        &self,
-        profile: String,
-        owned_id: String,
-    ) -> Result<super::history::ExtendedImport, String> {
-        let epoch = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).epoch(&profile);
-        let RemoteResponse::ImportProgress { added, reached_start } = self.request_for_profile(&profile,
-            RemoteCommand::ExtendImport { owned_id: owned_id.clone() }).await?
-        else { return Err("Remote Assembly returned the wrong import response".into()); };
-        if added > 0 {
-            let active = self.downloads.lock().unwrap().get_mut(&RemoteHistory::key(&profile, &owned_id))
-                .and_then(|entry| entry.request_id.take());
-            if let Some(id) = active { self.cancel_request(id).await; }
-        }
-        {
-            let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            history.check(&profile, epoch)?;
-            if added > 0 || !reached_start { history.imported_older(&profile, epoch, &owned_id)?; }
-        }
-        if added > 0 { self.ensure_history_download(&profile, &owned_id).await?; }
-        Ok(super::history::ExtendedImport { added, reached_start })
     }
 
     pub async fn capabilities(
@@ -3613,8 +3574,8 @@ mod connection_tests {
     }
 
     #[test]
-    fn history_download_protocol_20_round_trips_compressed_chunks() {
-        assert_eq!(PROTOCOL_VERSION, 20);
+    fn history_download_protocol_21_round_trips_compressed_chunks() {
+        assert_eq!(PROTOCOL_VERSION, 21);
         let rows = vec![history_event(3), history_event(-2)];
         let encoded = encode_history_chunk(&rows).unwrap();
         assert_eq!(decode_history_chunk(&encoded).unwrap(), rows);
@@ -3639,13 +3600,13 @@ mod connection_tests {
         assert!(next_outbound_frame(&mut outbound, &mut chunks).await.is_none());
     }
 
-    fn download_manager() -> RemoteConnectionManager {
+    pub(super) fn download_manager() -> RemoteConnectionManager {
         let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
         manager.remember("large-history", "cache-test");
         manager
     }
 
-    async fn begin_test_download(manager: &RemoteConnectionManager, total: u64, low: Option<i64>, high: Option<i64>) -> (u64, mpsc::Receiver<ClientRequest>) {
+    pub(super) async fn begin_test_download(manager: &RemoteConnectionManager, total: u64, low: Option<i64>, high: Option<i64>) -> (u64, mpsc::Receiver<ClientRequest>) {
         let mut requests = connect(manager);
         manager.ensure_history_download("cache-test", "large-history").await.unwrap();
         assert!(!manager.download_watch("cache-test", "large-history").unwrap().borrow().ready, "placeholder is not authoritative zero-byte history");
@@ -4015,7 +3976,7 @@ mod connection_tests {
         assert_eq!(*delivered.lock().unwrap(), vec![event]);
     }
 
-    fn history_event(sequence: i64) -> AgentConversationEvent {
+    pub(super) fn history_event(sequence: i64) -> AgentConversationEvent {
         AgentConversationEvent { sequence, ..large_history_event(32) }
     }
 
@@ -4296,7 +4257,7 @@ mod connection_tests {
         RemoteAssemblyProfile { id: id.into(), name: "Workbox".into(), ssh_target: "agent-workbox".into(), source_root: String::new(), default_cwd: String::new() }
     }
 
-    fn session(owned_id: &str, profile_id: &str, last_activity_at_ms: i64) -> AgentConversationSessionRecord {
+    pub(super) fn session(owned_id: &str, profile_id: &str, last_activity_at_ms: i64) -> AgentConversationSessionRecord {
         AgentConversationSessionRecord {
             owned_id: owned_id.into(), can_change_checkout: true,
             execution_environment: ExecutionEnvironment::Remote,
@@ -4327,7 +4288,7 @@ mod connection_tests {
             helper_of: None,
             run_id: None,
             run_label: None,
-            run_lead: None,
+            run_lead: None, numbered_after: None,
             meta: super::super::protocol::AgentConversationSessionMeta {
                 title: Some(format!("Session {owned_id}")),
                 ..Default::default()
@@ -4974,7 +4935,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn readiness_requires_protocol_and_session_response() {
-        assert_eq!(PROTOCOL_VERSION, 20);
+        assert_eq!(PROTOCOL_VERSION, 21);
         for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();

@@ -92,7 +92,7 @@ fn to_json(value: &impl Serialize) -> Result<String, String> {
 /// unmatched then join a project whose root shares their git common directory,
 /// again in SQL, after reading git's files for each such folder and local root.
 pub(crate) fn match_local_folders(store: &SessionStore, folders: &[String]) -> Result<Vec<(String, String)>, String> {
-    let mut matches = store.match_folders_by_path(&to_json(&folders)?).map_err(|error| error.to_string())?;
+    let mut matches = store.match_folders_by_path(&to_json(&folders)?, "local").map_err(|error| error.to_string())?;
     let matched: HashSet<&str> = matches.iter().map(|(folder, _)| folder.as_str()).collect();
     let leftovers: Vec<(&str, String)> = folders
         .iter()
@@ -141,10 +141,10 @@ pub(crate) fn backfill_local_session_projects(store: &SessionStore) -> Result<()
     Ok(())
 }
 
-/// Puts each scanned session's project group on it: its folder matched the
-/// same way as the back-fill, then the group from one SQL statement over the
-/// distinct folders. A session with no folder gets the group of no project.
-pub(crate) fn attach_scanned_project_groups(store: &SessionStore, sessions: &mut [AgentSessionRecord]) -> Result<(), String> {
+/// Puts each scanned session's project group on it: its folder matched as the back-fill does on
+/// this Mac, and by path only on another machine, whose git files cannot be read from here; then
+/// the group from one SQL statement over the distinct folders. No folder gets no project.
+pub(crate) fn attach_scanned_project_groups(store: &SessionStore, machine: &str, sessions: &mut [AgentSessionRecord]) -> Result<(), String> {
     let folders: Vec<String> = sessions
         .iter()
         .filter_map(|session| session.project_path.clone())
@@ -152,7 +152,7 @@ pub(crate) fn attach_scanned_project_groups(store: &SessionStore, sessions: &mut
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
-    let matches: HashMap<String, String> = match_local_folders(store, &folders)?.into_iter().collect();
+    let matches: HashMap<String, String> = if machine == "local" { match_local_folders(store, &folders)? } else { store.match_folders_by_path(&to_json(&folders)?, machine).map_err(|error| error.to_string())? }.into_iter().collect();
     let pairs: Vec<(&str, Option<&str>)> = folders
         .iter()
         .map(|folder| (folder.as_str(), matches.get(folder).map(String::as_str)))

@@ -607,43 +607,23 @@ impl AgentRuntimeManager {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     /// Names an imported session without reading a single record of it, so the
     /// rail has something to show while the transcript is still being read.
-    pub fn begin_import_transcript_session(
-        &self,
-        provider: AgentConversationProvider,
-        native_session_id: &str,
-        path: &Path,
-        cwd: &str,
-        title: Option<String>,
-    ) -> Result<String, String> {
-        let owned_id = super::history::begin_import_session(
-            &self.store,
-            provider,
-            native_session_id,
-            path,
-            cwd,
-            title,
-        )?;
-        Ok(owned_id)
+    /// Also answers whether a session already here was cleared to be read again from its transcript.
+    pub async fn begin_import_transcript_session(&self, provider: AgentConversationProvider, native_session_id: &str,
+        path: &Path, cwd: &str, title: Option<String>, project_id: Option<String>) -> Result<(String, bool), String> {
+        // Activation holds the same guard, so the session cannot start between the check and the read-again.
+        let existing = super::history::existing_import_session(&self.store, provider, native_session_id)?;
+        let _lifecycle = match &existing { Some(row) => Some(self.lifecycle_guard(&row.owned_id).await?), None => None };
+        let open = existing.is_some_and(|row| self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(&row.owned_id));
+        let _one_at_a_time = import_reading();
+        super::history::begin_import_session(&self.store, provider, native_session_id, path, cwd, title, project_id, open)
     }
 
     /// Reads the newest page of an imported transcript into a session that has
     /// already been named, and returns how many records it gained.
-    pub fn finish_import_transcript_session(
-        &self,
-        owned_id: &str,
-        max_bytes: u64,
-        max_records: usize,
-    ) -> Result<usize, String> {
-        let count = super::history::finish_import_session(
-            &self.store,
-            owned_id,
-            max_bytes,
-            max_records,
-        )?;
-        Ok(count)
+    pub fn finish_import_transcript_session(&self, owned_id: &str, max_bytes: u64, max_records: usize) -> Result<usize, String> {
+        super::history::finish_import_session(&self.store, owned_id, max_bytes, max_records)
     }
 
     /// Hydrate the disposable runtime overlay only for an operation that needs
@@ -676,12 +656,8 @@ impl AgentRuntimeManager {
         Ok(true)
     }
 
-    pub fn extend_imported_session(
-        &self,
-        owned_id: &str,
-        max_bytes: u64,
-        max_records: usize,
-    ) -> Result<super::history::ExtendedImport, String> {
+    pub fn extend_imported_session(&self, owned_id: &str, max_bytes: u64, max_records: usize) -> Result<super::history::ExtendedImport, String> {
+        let _one_at_a_time = import_reading();
         super::history::extend_session(&self.store, owned_id, max_bytes, max_records)
     }
 
@@ -2043,11 +2019,7 @@ impl AgentRuntimeManager {
                 // What the session is on now, which a live change has already
                 // written. Only a session that has never reported an effort
                 // falls back to the one it was created with.
-                session
-                    .config
-                    .reasoning_effort
-                    .clone()
-                    .or_else(|| session.spawn_reasoning_effort.clone()),
+                session.config.reasoning_effort.clone().or_else(|| session.spawn_reasoning_effort.clone()),
                 session.config.model.clone(),
                 // The policy the session is on now, which a live change has
                 // already written. A restarted adapter comes back on its own
@@ -2056,6 +2028,8 @@ impl AgentRuntimeManager {
                 session.state == AgentRuntimeState::Suspended,
             )
         };
+        // Before the adapter loads it and writes to the transcript itself.
+        if let Err(error) = super::history::follow_imported_length(&self.store, owned_id, true) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
         let mut expected_native_session_id = native_session_id.clone();
         let never_had_a_turn = self
             .store
@@ -3695,10 +3669,8 @@ impl AgentRuntimeManager {
                     suspended: state == AgentRuntimeState::Suspended,
                     created_at_ms: row.created_at_ms,
                     last_activity_at_ms: row.last_activity_at_ms,
-                    active_turn_id,
-                    pending_permission,
-                    pending_input,
-                    background_work,
+                    active_turn_id, pending_permission, pending_input, background_work,
+                    numbered_after: super::history::optional_import_cursor(&row.extra_json)?.map(|cursor| cursor.numbered_after).filter(|head| *head > 0),
                     native_session_id,
                     project_id: row.project_id,
                     handle,
@@ -4162,7 +4134,7 @@ impl AgentRuntimeManager {
             }
             return Err(error);
         }
-
+        if let Err(error) = super::history::follow_imported_length(&self.store, owned_id, false) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
         let mut sessions = self
             .sessions
             .lock()
@@ -4289,7 +4261,7 @@ impl AgentRuntimeManager {
             }
             return Err(error);
         }
-
+        if let Err(error) = super::history::follow_imported_length(&self.store, owned_id, false) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
         let mut sessions = self
             .sessions
             .lock()
@@ -5087,6 +5059,13 @@ fn connection_state_for_runtime_state(state: AgentRuntimeState) -> ConversationC
         AgentRuntimeState::Failed => ConversationConnectionState::Failed,
         _ => ConversationConnectionState::Disconnected,
     }
+}
+
+/// Older pages read into an import, and a session cleared to be read again, go one at a time: two downloads would read
+/// the same page in twice, and a page read across a clearing would land in the journal that replaced it.
+fn import_reading() -> std::sync::MutexGuard<'static, ()> {
+    static READING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    READING.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Rebuilds the disposable runtime overlay only when a mutating ACP operation
@@ -7230,9 +7209,8 @@ async fn handle_ordered_session_event(
             true
         }
         OrderedSessionEvent::PromptResult { turn_id, result } => {
-            manager
-                .finish_child_rollout_scan(owned_id, generation, &turn_id)
-                .await;
+            manager.finish_child_rollout_scan(owned_id, generation, &turn_id).await;
+            if let Err(error) = super::history::follow_imported_length(&manager.store, owned_id, false) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
             let cancelled = result
                 .as_ref()
                 .ok()
@@ -7996,7 +7974,7 @@ mod tests {
     use crate::agent_conversation::protocol::AgentCommandDescriptor;
     mod checkout;
     mod model_effort;
-    mod codex_resume;
+    mod codex_resume; mod import_length;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
