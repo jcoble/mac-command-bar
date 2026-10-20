@@ -25,6 +25,14 @@ const anonymousAsyncIifePattern =
   /\b(void|[A-Za-z_$][\w$]*(?:\s*\?\?=|\s*=))\s*\(\s*async\s*\(\s*\)\s*=>/g;
 const cssHasPattern = /:has\s*\(/gi;
 const tailwindHasPattern = /\b(?:(?:group|peer)-)?has-(?:\[[^\]\r\n]+\]|[A-Za-z][\w-]*)(?:\/[\w-]+)?:/g;
+// Animations end (AGENTS.md): an endless loop repaints every frame, so CSS, inline styles and the
+// Tailwind loop classes may not repeat forever. Only the files below are exempt, each with its reason.
+const endlessAnimationAllowedFiles = new Set([
+  // Owner-chosen working indicator (TSK-1391); pauses off screen, in a hidden window and with reduced
+  // motion; motion pending the owner's decision in TSK-1564.
+  'src/lib/shell/components/feedback/WorkingSpinner.svelte'
+]);
+const endlessAnimationPattern = /\banimation(?:-iteration-count)?\s*[:=][^;{}]*\binfinite\b|\banimate-(?:spin|pulse|ping|bounce)\b/gi;
 
 const allowedHits = new Set([
   'src/lib/shell/components/UtilityStrip.svelte:setInterval:const refreshInterval = window.setInterval(() => {',
@@ -126,7 +134,8 @@ interface Hit {
     | 'anonymous-async-iife'
     | 'non-async-promise-implementation'
     | 'css-has-selector'
-    | 'tailwind-has-variant';
+    | 'tailwind-has-variant'
+    | 'endless-animation';
   term: string;
   text: string;
 }
@@ -222,7 +231,8 @@ function scanCssText(rel: string, source: string): Hit[] {
     const text = lines[index];
     for (const [pattern, category, term] of [
       [cssHasPattern, 'css-has-selector', ':has()'],
-      [tailwindHasPattern, 'tailwind-has-variant', 'has-*']
+      [tailwindHasPattern, 'tailwind-has-variant', 'has-*'],
+      [endlessAnimationPattern, 'endless-animation', 'infinite']
     ] as const) {
       pattern.lastIndex = 0;
       if (pattern.test(text)) hits.push({ file: rel, line: index + 1, category, term, text: text.trim() });
@@ -300,7 +310,8 @@ function run(): void {
   const sourceFiles = staged ? [] : files(srcRoot).sort();
   const scan = staged ? scanStagedFiles() : { count: sourceFiles.length, hits: sourceFiles.flatMap(scanFile) };
   const hits = scan.hits.filter((hit) =>
-    hit.category.startsWith('css-')
+    hit.category === 'endless-animation' ? !endlessAnimationAllowedFiles.has(hit.file)
+    : hit.category.startsWith('css-')
     || hit.category === 'tailwind-has-variant'
     || !allowedHits.has(`${hit.file}:${hit.term}:${hit.text}`)
   );
@@ -317,6 +328,7 @@ function run(): void {
   console.log(`non-async Promise implementation hits: ${count('non-async-promise-implementation')}`);
   console.log(`CSS :has() hits: ${count('css-has-selector')}`);
   console.log(`Tailwind has variant hits: ${count('tailwind-has-variant')}`);
+  console.log(`endless animation hits: ${count('endless-animation')}`);
   console.log(`total prohibited hits: ${hits.length}`);
   for (const hit of hits) {
     console.log(`${hit.file}:${hit.line}: ${hit.category}:${hit.term}: ${hit.text}`);

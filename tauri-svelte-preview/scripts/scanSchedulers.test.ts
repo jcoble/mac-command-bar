@@ -47,6 +47,32 @@ test('rejects CSS :has selectors and Tailwind has variants', () => {
   assert.equal(hits.filter((hit) => hit.category === 'tailwind-has-variant').length, 6);
 });
 
+test('rejects animations that never end', () => {
+  const source = `
+.a { animation: spin 1s linear infinite; }
+.b { animation-iteration-count: INFINITE; }
+<span style:animation="pulse 2s infinite"></span>
+<span style="animation: fade 1s ease-in infinite alternate"></span>
+<div class="animate-spin"></div>
+<div class="motion-safe:animate-pulse"></div>
+<div class="animate-ping"></div>
+<div class="animate-bounce"></div>
+`;
+  const hits = scanSource('src/fixture.svelte', source);
+  assert.deepEqual(hits.map((hit) => [hit.line, hit.category]), [2, 3, 4, 5, 6, 7, 8, 9].map((line) => [line, 'endless-animation']));
+  assert.equal(scanSource('src/fixture.css', '.a { animation: spin 1s infinite; }')[0]?.category, 'endless-animation');
+});
+
+test('allows animations that end', () => {
+  const source = `
+.pop { animation: pop 200ms ease-out; }
+.twice { animation-iteration-count: 2; }
+/* this used to be animation: spin 1s infinite */
+<div class="animate-in fade-in"></div>
+`;
+  assert.deepEqual(scanSource('src/fixture.svelte', source), []);
+});
+
 test('allows async implementations, Promise interfaces and ordinary CSS', () => {
   const source = `
 interface Loader { load(): Promise<string>; }
