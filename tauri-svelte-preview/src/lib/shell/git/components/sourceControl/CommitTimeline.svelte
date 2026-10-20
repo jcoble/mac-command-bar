@@ -66,8 +66,10 @@
     service: GitService;
     commitFiles: GitCommitFilesService;
     commitFilesState: GitCommitFilesState;
+    /** Files open read-only: another session is working in this folder. */
+    readOnly?: boolean;
   }
-  let { panel, service, commitFiles, commitFilesState }: Props = $props();
+  let { panel, service, commitFiles, commitFilesState, readOnly = false }: Props = $props();
   let contextMenu = $state.raw<SourceControlMenuSnapshot | null>(null);
   const interaction = $derived(gitCommitFilesView(commitFilesState, 'compact'));
 
@@ -161,7 +163,8 @@
     else if (action === 'open-current-file' && panel.root) {
       openFileInEditor({
         path: absolutePathWithin(panel.root, menu.target.file.relativePath),
-        projectRoot: panel.root
+        projectRoot: panel.root,
+        readOnly
       });
     } else if (action === 'copy-commit-path') {
       await copyText(

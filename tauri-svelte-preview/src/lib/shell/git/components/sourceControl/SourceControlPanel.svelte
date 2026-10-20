@@ -903,7 +903,7 @@
           </section>
         {/each}
 
-        <CommitTimeline {panel} {service} {commitFiles} {commitFilesState} />
+        <CommitTimeline {panel} {service} {commitFiles} {commitFilesState} readOnly={Boolean(readOnlyReason)} />
       </div>
     </ScrollArea>
     {/if}
