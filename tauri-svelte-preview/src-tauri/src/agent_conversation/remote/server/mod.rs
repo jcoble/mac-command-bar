@@ -21,12 +21,18 @@ use crate::agent_conversation::protocol::ExecutionEnvironment;
 use crate::agent_conversation::providers::ProviderRegistry;
 use crate::terminal::{self, TerminalKind};
 
+/// Takes the backend token out of the environment before any child process starts.
+fn take_server_token() -> Result<String, String> {
+    let token = std::env::var("ASSEMBLY_SERVER_TOKEN");
+    std::env::remove_var("ASSEMBLY_SERVER_TOKEN");
+    token.map_err(|_| "ASSEMBLY_SERVER_TOKEN is required".to_string())
+}
+
 /// Runs the resident remote server instead of starting a Tauri window.
 pub fn run_server_from_environment() -> Result<(), String> {
     let bind =
         std::env::var("ASSEMBLY_SERVER_BIND").unwrap_or_else(|_| "127.0.0.1:7777".to_string());
-    let token = std::env::var("ASSEMBLY_SERVER_TOKEN")
-        .map_err(|_| "ASSEMBLY_SERVER_TOKEN is required".to_string())?;
+    let token = take_server_token()?;
     if token.len() < 32 {
         return Err("ASSEMBLY_SERVER_TOKEN must contain at least 32 characters".to_string());
     }
@@ -558,5 +564,15 @@ pub(super) async fn execute_remote_command(
         | RemoteCommand::TerminalScrollback { .. } | RemoteCommand::TerminalClose { .. } => {
             Err("Terminal command needs the server's terminals".into())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn server_token_is_removed_from_the_environment_after_reading() {
+        std::env::set_var("ASSEMBLY_SERVER_TOKEN", "test-token");
+        assert_eq!(super::take_server_token().unwrap(), "test-token");
+        assert!(std::env::var_os("ASSEMBLY_SERVER_TOKEN").is_none());
     }
 }
