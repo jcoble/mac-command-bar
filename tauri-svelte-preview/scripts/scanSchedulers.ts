@@ -32,7 +32,7 @@ const endlessAnimationAllowedFiles = new Set([
   // motion; motion pending the owner's decision in TSK-1564.
   'src/lib/shell/components/feedback/WorkingSpinner.svelte'
 ]);
-const endlessAnimationPattern = /\banimation(?:-iteration-count)?\s*[:=][^;{}]*\binfinite\b|\banimate-(?:spin|pulse|ping|bounce)\b/gi;
+const endlessAnimationPattern = /\banimation(?:-iteration-count)?\s*[:=][^;{}]*?\binfinite\b|\banimate-(?:spin|pulse|ping|bounce)\b/gi;
 
 const allowedHits = new Set([
   'src/lib/shell/components/UtilityStrip.svelte:setInterval:const refreshInterval = window.setInterval(() => {',
@@ -231,12 +231,16 @@ function scanCssText(rel: string, source: string): Hit[] {
     const text = lines[index];
     for (const [pattern, category, term] of [
       [cssHasPattern, 'css-has-selector', ':has()'],
-      [tailwindHasPattern, 'tailwind-has-variant', 'has-*'],
-      [endlessAnimationPattern, 'endless-animation', 'infinite']
+      [tailwindHasPattern, 'tailwind-has-variant', 'has-*']
     ] as const) {
       pattern.lastIndex = 0;
       if (pattern.test(text)) hits.push({ file: rel, line: index + 1, category, term, text: text.trim() });
     }
+  }
+  // A declaration can wrap across lines, so the loop check reads the whole text and reports the line it starts on.
+  for (const match of withoutComments.matchAll(endlessAnimationPattern)) {
+    const line = withoutComments.slice(0, match.index).split(/\r?\n/).length;
+    hits.push({ file: rel, line, category: 'endless-animation', term: 'infinite', text: lines[line - 1].trim() });
   }
   return hits;
 }
