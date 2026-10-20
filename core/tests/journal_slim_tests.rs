@@ -85,7 +85,7 @@ fn payload(row: &EventRow) -> Value {
 }
 
 #[test]
-fn fifty_updates_to_one_tool_keep_one_row_with_the_final_state() {
+fn fifty_updates_to_one_tool_keep_the_first_row_and_one_with_the_final_state() {
     let (_directory, _path, store) = open_store();
     write_live(&store, &tool(1, "tool-a", serde_json::json!({ "name": "shell", "state": "running" })));
     let mut output = String::new();
@@ -96,8 +96,9 @@ fn fifty_updates_to_one_tool_keep_one_row_with_the_final_state() {
     write_live(&store, &tool(50, "tool-a", serde_json::json!({ "state": "completed" })));
 
     let rows = store.list_events("session-a", i64::MIN, 1_000).expect("list events");
-    assert_eq!(rows.iter().map(|row| row.seq).collect::<Vec<_>>(), [50]);
-    let last = payload(&rows[0]);
+    // The first row keeps the tool's place for readers of raw events, such as the phone.
+    assert_eq!(rows.iter().map(|row| row.seq).collect::<Vec<_>>(), [1, 50]);
+    let last = payload(&rows[1]);
     assert_eq!(last["payload"]["name"], "shell");
     assert_eq!(last["payload"]["output"], output.as_str());
     assert_eq!(last["payload"]["state"], "completed");
@@ -125,15 +126,16 @@ fn live_tool_updates_leave_other_tools_and_streamed_words_alone() {
         delta(2),
         tool(3, "tool-b", serde_json::json!({ "name": "read", "state": "running" })),
         delta(4),
-        tool(5, "tool-a", serde_json::json!({ "state": "completed", "output": "a done" })),
+        tool(5, "tool-a", serde_json::json!({ "state": "running", "output": "a half" })),
         delta(6),
         tool(7, "tool-b", serde_json::json!({ "state": "completed", "output": "b done" })),
         delta(8),
+        tool(9, "tool-a", serde_json::json!({ "state": "completed", "output": "a done twice" })),
     ] {
         write_live(&store, &row);
     }
 
-    assert_eq!(sequences(&store), [2, 4, 5, 6, 7, 8]);
+    assert_eq!(sequences(&store), [1, 2, 3, 4, 6, 7, 8, 9]);
 }
 
 #[test]
@@ -180,7 +182,7 @@ fn opening_a_version_21_journal_prunes_superseded_rows_once() {
 
     let store = SessionStore::open(&path).expect("upgrade database");
     let kept = store.list_events("session-a", i64::MIN, 1_000).expect("list events");
-    let expected = [&rows[4], &rows[7], &rows[11], &rows[12], &rows[13], &rows[14]]
+    let expected = [&rows[0], &rows[4], &rows[7], &rows[11], &rows[12], &rows[13], &rows[14]]
         .into_iter()
         .cloned()
         .collect::<Vec<_>>();

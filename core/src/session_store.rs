@@ -4409,38 +4409,32 @@ fn insert_chronological_event(connection: &Connection, row: &EventRow) -> Result
 }
 
 /// Deletes the rows `row` replaces: older rows of a `SUPERSEDED_BY_NEWER` kind
-/// and older updates of the same tool. Runs in the writer's transaction, so the
-/// database is never briefly missing the value they carried.
+/// and the updates of the same tool between its first and newest (the first
+/// keeps the tool's place for raw-event readers: the phone, remote replay).
+/// Runs in the writer's transaction, so the database never lacks their value.
 fn drop_superseded_events(connection: &Connection, row: &EventRow) -> Result<()> {
     if SUPERSEDED_BY_NEWER.contains(&row.kind.as_str()) {
         connection
-            .execute(
-                "DELETE FROM events
-                 WHERE owned_id = ? AND kind = ? AND seq < ?",
-                params![row.owned_id, row.kind, row.seq],
-            )
+            .execute("DELETE FROM events WHERE owned_id = ? AND kind = ? AND seq < ?", params![row.owned_id, row.kind, row.seq])
             .map_err(|error| StoreError::sqlite("could not drop the superseded events", error))?;
     }
     if row.kind == "item.updated" {
         connection
             .execute(
                 "DELETE FROM events
-                 WHERE owned_id = ?
-                   AND kind = 'item.updated'
-                   AND item_id = json_extract(?, '$.payload.itemId')
-                   AND json_extract(payload, '$.payload.kind') = 'tool'
-                   AND json_extract(?, '$.payload.kind') = 'tool'
-                   AND seq < ?",
+                 WHERE owned_id = ? AND kind = 'item.updated' AND item_id = json_extract(?, '$.payload.itemId')
+                   AND json_extract(payload, '$.payload.kind') = 'tool' AND json_extract(?, '$.payload.kind') = 'tool'
+                   AND seq < ? AND seq > (SELECT MIN(first.seq) FROM events AS first
+                       WHERE first.owned_id = events.owned_id AND first.kind = 'item.updated' AND first.item_id = events.item_id)",
                 params![row.owned_id, row.payload_json, row.payload_json, row.seq],
             )
-            .map_err(|error| {
-                StoreError::sqlite("could not drop the superseded tool updates", error)
-            })?;
+            .map_err(|error| StoreError::sqlite("could not drop the superseded tool updates", error))?;
     }
     Ok(())
 }
 
-/// Keeps only the newest row of each superseded kind, per session.
+/// Keeps only the newest row of each superseded kind, per session, and the
+/// first and newest update of each tool.
 ///
 /// Runs on the caller's connection or transaction, so an upgrade can do it as
 /// part of the same durable change that records the new schema version.
@@ -4472,7 +4466,10 @@ fn clear_superseded_events(connection: &Connection) -> Result<()> {
                      AND newest.kind = events.kind
                      AND newest.item_id = events.item_id
                      AND json_extract(newest.payload, '$.payload.kind') = 'tool'
-               )",
+               )
+               AND seq > (SELECT MIN(first.seq) FROM events AS first
+                   WHERE first.owned_id = events.owned_id AND first.kind = events.kind
+                     AND first.item_id = events.item_id)",
             [],
         )
         .map_err(|error| {
@@ -6161,8 +6158,8 @@ mod tests {
         let events = store
             .list_events("session-a", i64::MIN, 10)
             .expect("read tool history");
-        let payload: serde_json::Value = serde_json::from_str(&events[0].payload_json).expect("parse completion");
-        assert_eq!(events.iter().map(|event| event.seq).collect::<Vec<_>>(), [9]);
+        let payload: serde_json::Value = serde_json::from_str(&events[1].payload_json).expect("parse completion");
+        assert_eq!(events.iter().map(|event| event.seq).collect::<Vec<_>>(), [7, 9]);
         assert_eq!(payload["sequence"], 9);
         assert_eq!(payload["timestampMs"], 20_009);
         assert_eq!(payload["payload"]["name"], "shell");
@@ -6275,9 +6272,8 @@ mod tests {
         let events = store
             .list_events("session-a", i64::MIN, 100)
             .expect("list events");
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].seq, 3);
-        assert!(events[0].payload_json.contains(r#""status":"finished""#));
+        assert_eq!(events.iter().map(|event| event.seq).collect::<Vec<_>>(), [1, 3, 4]);
+        assert!(events[1].payload_json.contains(r#""status":"finished""#));
     }
 
     #[test]
@@ -6291,6 +6287,7 @@ mod tests {
             tool_event("session-a", 2, "item.updated", "tool-b", "started"),
             tool_event("session-a", 3, "item.updated", "tool-a", "finished"),
             tool_event("session-a", 4, "item.updated", "tool-b", "finished"),
+            tool_event("session-a", 5, "item.updated", "tool-a", "reported"),
         ] {
             store.append_event(&event).expect("append tool update");
         }
@@ -6300,7 +6297,7 @@ mod tests {
             .expect("list events");
         assert_eq!(
             events.iter().map(|event| event.seq).collect::<Vec<_>>(),
-            [3, 4]
+            [1, 2, 4, 5]
         );
     }
 
@@ -6362,7 +6359,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v14_open_repairs_latest_tools_and_drops_superseded_updates() {
+    fn schema_v14_open_repairs_latest_tools_without_compacting_history() {
         let (_directory, path, store) = open_temp_store();
         store
             .upsert_session(&fixture_session("session-a", 10_000))
@@ -6394,10 +6391,10 @@ mod tests {
         let events = store
             .list_events("session-a", i64::MIN, 10)
             .expect("read repaired tools");
-        let latest: serde_json::Value = serde_json::from_str(&events[0].payload_json).expect("parse repaired tool");
+        let latest: serde_json::Value = serde_json::from_str(&events[1].payload_json).expect("parse repaired tool");
         let imported: serde_json::Value =
-            serde_json::from_str(&events[1].payload_json).expect("parse imported tool");
-        assert_eq!(events.iter().map(|event| event.seq).collect::<Vec<_>>(), [2, 3]);
+            serde_json::from_str(&events[2].payload_json).expect("parse imported tool");
+        assert_eq!(events.iter().map(|event| event.seq).collect::<Vec<_>>(), [1, 2, 3]);
         assert_eq!(latest["payload"]["name"], "shell");
         assert_eq!(latest["payload"]["output"], "partial");
         assert_eq!(latest["payload"]["firstSequence"], 1);
@@ -6465,10 +6462,10 @@ mod tests {
             .expect("list upgraded events");
         assert_eq!(
             events.iter().map(|event| event.seq).collect::<Vec<_>>(),
-            [3, 4]
+            [1, 3, 4]
         );
         let tool: serde_json::Value =
-            serde_json::from_str(&events[0].payload_json).expect("parse compacted tool");
+            serde_json::from_str(&events[1].payload_json).expect("parse compacted tool");
         assert_eq!(tool["payload"]["name"], "shell");
         assert_eq!(tool["payload"]["state"], "completed");
         assert_eq!(tool["payload"]["summary"], "working");
