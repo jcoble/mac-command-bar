@@ -67,19 +67,20 @@ const project = (id: string, machine: string): ProjectRecord => ({
 }
 
 // A typed path names a folder to create when its parent is the listed folder
-// and nothing of that name is listed there; anything else is not new.
+// and the direct path check confirms it is absent.
 {
   const listing = { path: '/Users/me/dev', directories: ['app', 'site'], truncated: false };
-  assert.equal(isNewFolderPath('/Users/me/dev/new-app', listing), true);
-  assert.equal(isNewFolderPath(' /Users/me/dev/new-app ', listing), true);
-  assert.equal(isNewFolderPath('/Users/me/dev/app', listing), false);
-  assert.equal(isNewFolderPath('/Users/me/dev/new-app/', listing), true);
-  assert.equal(isNewFolderPath('/Users/me/dev/app/', listing), false);
-  assert.equal(isNewFolderPath('/Users/me/dev/', listing), false);
-  assert.equal(isNewFolderPath('/Users/me/dev/..', listing), false);
-  assert.equal(isNewFolderPath('/Users/me/other/new-app', listing), false);
-  assert.equal(isNewFolderPath('/Users/me/dev/new-app', null), false);
-  assert.equal(isNewFolderPath('/fresh', { path: '/', directories: ['Users'], truncated: false }), true);
+  assert.equal(isNewFolderPath('/Users/me/dev/new-app', listing, false), true);
+  assert.equal(isNewFolderPath(' /Users/me/dev/new-app ', listing, false), true);
+  assert.equal(isNewFolderPath('/Users/me/dev/app', listing, true), false);
+  assert.equal(isNewFolderPath('/Users/me/dev/new-app/', listing, false), true);
+  assert.equal(isNewFolderPath('/Users/me/dev/app/', listing, true), false);
+  assert.equal(isNewFolderPath('/Users/me/dev/', listing, false), false);
+  assert.equal(isNewFolderPath('/Users/me/dev/..', listing, false), false);
+  assert.equal(isNewFolderPath('/Users/me/other/new-app', listing, false), false);
+  assert.equal(isNewFolderPath('/Users/me/dev/new-app', null, false), false);
+  assert.equal(isNewFolderPath('/fresh', { path: '/', directories: ['Users'], truncated: false }, false), true);
+  assert.equal(isNewFolderPath('/Users/me/dev/existing-past-cap', { ...listing, truncated: true }, true), false);
 }
 
 // The Projects screen narrows the list by the chosen machine and by a search

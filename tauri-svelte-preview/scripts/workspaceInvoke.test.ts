@@ -16,7 +16,7 @@ const pending: Array<(value: unknown) => void> = [];
   }
 };
 const { invoke } = await import('../src/lib/workspaceInvoke.ts');
-const { remoteWorkflowFromTauri, startTerminalSessionFromTauri } = await import('../src/lib/tauriSource.ts');
+const { remoteWorkflowFromTauri, startTerminalSessionFromTauri, validateProjectRootFromTauri } = await import('../src/lib/tauriSource.ts');
 const remoteArgs = { root: 'assembly-remote://box/repo', path: 'assembly-remote://box/repo/a.ts' };
 const release = (): void => { for (const resolve of pending.splice(0)) resolve({}); };
 const settle = async (): Promise<void> => { await setImmediate(); await setImmediate(); };
@@ -93,4 +93,20 @@ test('remote_workflow_abort_sends_cancel_with_request_id', async () => {
   calls.length = 0;
   assert.equal(await remoteWorkflowFromTauri('box', 'history', {}, AbortSignal.abort()), null);
   assert.equal(calls.length, 0);
+});
+
+
+test('changing a remote project path cancels its validation on that machine', async () => {
+  calls.length = 0;
+  const controller = new AbortController();
+  const read = validateProjectRootFromTauri('assembly-remote://box/repo', controller.signal);
+  await settle();
+  const sent = calls.find((call) => call.command === 'remote_workspace');
+  assert.equal(typeof sent?.args.requestId, 'number');
+  controller.abort();
+  await settle();
+  const cancel = calls.find((call) => call.command === 'cancel_agent_conversation_request');
+  assert.deepEqual(cancel?.args, { requestId: sent?.args.requestId });
+  release();
+  assert.equal(await read, null);
 });
