@@ -227,9 +227,9 @@ Focused logic tests are the `test:*` scripts in [`tauri-svelte-preview/package.j
 
 [CONTRIBUTING.md](CONTRIBUTING.md) has the commit message format and pull request rules.
 
-### Proving a chat change: the four-scenario check
+### Proving a change: the four-scenario check
 
-Any change to the chat must be shown working in the running native app for Claude Code and Codex, each on a local session and on a remote session on Workbox Test. [docs/operations/four-scenario-check.md](docs/operations/four-scenario-check.md) describes the script that sets up and tears down the test app, the steps for each scenario, and the report table.
+Every change must be shown working in the running native app for Claude Code and Codex, each on a local session and on a remote session on Workbox Test. [docs/operations/four-scenario-check.md](docs/operations/four-scenario-check.md) describes the script that sets up and tears down the test app, the steps for each scenario, and the report table.
 
 ### Build the remote backend
 
@@ -288,7 +288,7 @@ To try your current checkout (including uncommitted changes) on a machine, run `
 
 Assembly is used daily by its author and changes quickly. Known limits today:
 
-- The desktop app runs on macOS only. The remote backend targets Linux x86-64 only.
+- Desktop releases are built for macOS only (development builds also run on Linux, which is how changes are tested on remote machines). The remote backend targets Linux x86-64 only.
 - Importing Antigravity history written outside Assembly is not supported.
 - The phone app is Android only and is built from source.
 
