@@ -347,13 +347,14 @@
 		return () => popups.disconnect();
 	});
 
-	// Follow the active session's project assignment and its registered folder.
-	// A background move must not select that session.
+	// Follow the active session's project assignment, its registered folder, and its
+	// machine connecting after it was opened. A background move must not select that session.
 	$effect(() => {
 		void selection.durableSessionRoot;
+		const reconnected = selection.reconnectedProfileId;
 		untrack(() => {
-			const ownedId = selection.activeOwnedId;
-			if (ownedId && selection.treeRootMoved) void openSession(ownedId);
+			if (selection.activeOwnedId && selection.treeRootMoved) void openSession(selection.activeOwnedId);
+			else if (reconnected) void refreshRemoteConnection(reconnected);
 		});
 	});
 
@@ -489,8 +490,7 @@
 	}
 
 	async function refreshRemoteConnection(profileId: string): Promise<void> {
-		if (!(await selection.refreshRemoteConnection(profileId))) return;
-		await restoreSelectedWorkbench();
+		if (await selection.refreshRemoteConnection(profileId)) await restoreSelectedWorkbench();
 	}
 
 	async function restoreSelectedWorkbench(): Promise<void> {

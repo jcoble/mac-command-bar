@@ -163,8 +163,8 @@ test('failed remote selection releases outgoing tabs and preserves its active fi
     editorSessions: { restoreEditorWorkspaceForSession: restore, releaseOwnership: () => { released += 1; } }
   };
   let released = 0;
-  const select = new Function('captureConversationWorkspace', 'shellPanels', `${methodCode}; return materializeSelection;`)(
-    () => null, { sessionPicked: () => {} }
+  const select = new Function('captureConversationWorkspace', 'shellPanels', 'rail', `${methodCode}; return materializeSelection;`)(
+    () => null, { sessionPicked: () => {} }, { remoteConnections: {} }
   ) as (this: typeof state, session: typeof remote, root: string, owner: { signal: AbortSignal }, displayedId: string) => Promise<void>;
   await assert.rejects(select.call(state, remote, remote.root, owner, 'hello'), /remote machine is not connected/);
   assert.deepEqual(restores, [['remote', remote.root, false, owner.signal]]);
