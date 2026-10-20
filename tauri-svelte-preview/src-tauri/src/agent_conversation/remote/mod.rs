@@ -1209,6 +1209,9 @@ impl RemoteConnectionManager {
         use serde_json::json;
         relay_trust::prepare(&self.store, source, op, &mut args)?;
         match op {
+            "project_root" => self.store.project_root(if source == LOCAL_MACHINE { "local" } else { source },
+                args["project"].as_str().ok_or("project must be a project folder or title")?)
+                .map(|root| json!(root)).map_err(|error| error.to_string()),
             "directory" => {
                 let mut entries = Vec::new();
                 for machine in self.message_machines(source) {
@@ -3678,23 +3681,15 @@ mod connection_tests {
         use super::super::messaging::MessagingEndpoint;
         let directory = std::env::temp_dir().join(format!("assembly-message-relay-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).unwrap();
-        // The remote machine and its session.
         let remote = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("remote.db")).unwrap();
         add_session(&remote, "there", "There");
-        let state = ServerState {
-            workflow: crate::workflow::WorkflowEngine::managed(remote.clone(), remote.store_handle()),
-            manager: remote.clone(), data_dir: directory.clone(), token: Arc::from("test-token"),
-            maintenance: Arc::new(tokio::sync::RwLock::new(())), restarting: Arc::new(AtomicBool::new(false)),
-            restart_requested: Arc::new(tokio::sync::Notify::new()), restart_flushed: Arc::new(tokio::sync::Notify::new()),
-            events: broadcast::channel(2).0, terminals: RemoteTerminals::new(), relay: Arc::default(), pairing: Arc::default(), phone_chats: Arc::default(),
-        };
+        let state = server_state(remote.clone(), directory.clone(), Arc::from("test-token")).unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(axum::serve(listener, Router::new().route("/assembly", get(upgrade_remote_socket)).with_state(state.clone())).into_future());
         // The desktop and its session, connected to that machine as `workbox-test`.
         let desktop = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("desktop.db")).unwrap();
         add_session(&desktop, "here", "Here");
-        // Top-level sessions reach each other only through the main orchestrator.
         desktop.store().set_main_orchestrator(Some("here")).unwrap();
         let connections = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), desktop.store_handle()).unwrap();
         connections.set_message_host(desktop.clone());
@@ -3709,13 +3704,24 @@ mod connection_tests {
         ready_answer.await.unwrap().unwrap();
         connections.client.lock().unwrap().clients.insert("workbox-test".into(), RemoteClient {
             requests: Some(requests), profile: Some(profile("workbox-test")), target_key: None, task: None, ready });
-
         connections.remember("there", "workbox-test");
-        // The remote session finds the desktop's session by its title, through the desktop.
         let there = MessagingEndpoint::start().unwrap();
         there.set_relay(state.relay.relay());
         let there_token = there.issue("there").token;
         there.bind_store(&there_token, &remote.store_handle(), None);
+        // The backend has no projects; the desktop owns registrations for each machine.
+        let root = directory.join(".assembly/workflows");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("flow.yml"), "name: Remote\nsteps:\n  check: { run: [ls] }\n").unwrap();
+        for (machine, path) in [("workbox-test", directory.display().to_string()), ("local", "/wrong/local".into()), ("other", "/wrong/other".into())] {
+            desktop.store().insert_or_get_project(&crate::project_folders::new_project_row(machine.into(),
+                crate::project_folders::ProjectFolderInspection { root_path: path, title: "remote-project".into(), repo_key: String::new(), is_git: false })).unwrap();
+        }
+        assert!(remote.store().project_roots("local").unwrap().is_empty());
+        for project in ["remote-project", directory.to_str().unwrap()] {
+            let checked = there.handle(&there_token, json!({"name":"check_workflow","arguments":{"project":project,"path":".assembly/workflows/flow.yml"}})).await.unwrap();
+            assert_eq!(checked["content"][0]["text"], "ok\ncheck run");
+        }
         let listing = tool(&there, &there_token, json!({"name":"list_sessions"})).await;
         let machine_of = |owned_id: &str| listing.as_array().unwrap().iter()
             .find(|entry| entry["ownedId"] == owned_id).map(|entry| entry["machine"].clone());
@@ -3732,11 +3738,8 @@ mod connection_tests {
         assert_eq!(traffic.len(), 1);
         assert_eq!(traffic[0]["fromOwnedId"], "workbox-test:there");
         assert_eq!(connections.count_messages("there", 0, 91).await, 1);
-        // These test machines run no agent, so delivery may already have failed it.
         let status = tool(&there, &there_token, json!({"name":"message_status","arguments":{"id":id}})).await;
         assert!(["queued", "delivered", "failed"].contains(&status["status"].as_str().unwrap()), "{status}");
-
-        // The desktop session answers the label it was given, and the reply lands in the remote store.
         let here = MessagingEndpoint::start().unwrap();
         here.set_relay(connections.message_relay(LOCAL_MACHINE));
         let here_token = here.issue("here").token;
@@ -3751,9 +3754,7 @@ mod connection_tests {
         assert_eq!(connections.count_messages("here", 0, 92).await, 2);
         let status = tool(&here, &here_token, json!({"name":"message_status","arguments":{"id":reply_id}})).await;
         assert!(["queued", "delivered", "failed"].contains(&status["status"].as_str().unwrap()), "{status}");
-
-        // A machine that was away while the owner chose an orchestrator keeps its older mark
-        // until it connects; then the owner's latest choice is put back there.
+        // Reconnecting restores the latest orchestrator choice.
         connections.set_main_orchestrator(LOCAL_MACHINE, Some("here")).await.unwrap();
         remote.store().set_main_orchestrator(Some("there")).unwrap();
         connections.restore_orchestrator_choice("workbox-test").await;
@@ -3770,7 +3771,6 @@ mod connection_tests {
             connections.restore_orchestrator_choice("workbox-test"));
         chosen.unwrap();
         assert_eq!(remote.store().main_orchestrator().unwrap().map(|(id, _)| id).as_deref(), Some("there"));
-
         connections.client.lock().unwrap().clients.clear();
         actor.await.unwrap();
         server.abort();

@@ -14,6 +14,7 @@ mod board; mod helpers;
 mod evidence;
 mod lookup;
 mod phone;
+mod projects;
 const SCHEMA_VERSION: i64 = 22;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);
@@ -2641,19 +2642,6 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not match folders by git common dir", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not match folders by git common dir", error))
-    }
-
-    /// The registered project roots on one machine.
-    pub fn project_roots(&self, machine: &str) -> Result<Vec<String>> {
-        let connection = self.lock()?;
-        let mut statement = connection
-            .prepare("SELECT root_path FROM projects WHERE machine = ?1 ORDER BY created_at, id")
-            .map_err(|error| StoreError::sqlite("could not prepare the project roots", error))?;
-        let rows = statement
-            .query_map([machine], |row| row.get(0))
-            .map_err(|error| StoreError::sqlite("could not list the project roots", error))?;
-        rows.collect::<rusqlite::Result<_>>()
-            .map_err(|error| StoreError::sqlite("could not list the project roots", error))
     }
 
     /// The distinct folders of local sessions that have no project yet.

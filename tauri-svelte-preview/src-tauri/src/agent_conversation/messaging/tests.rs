@@ -249,7 +249,7 @@ async fn check_workflow_warns_when_a_redone_step_cannot_see_why() {
 }
 
 #[tokio::test]
-async fn workflow_authoring_check_uses_callers_project() {
+async fn workflow_authoring_check_uses_callers_or_named_project() {
     let first = project("first", BUILD);
     let second = project("second", "  other: { run: [ls] }\n");
     let endpoint = MessagingEndpoint::start().unwrap();
@@ -262,14 +262,14 @@ async fn workflow_authoring_check_uses_callers_project() {
     let path = ".assembly/workflows/flow.yml";
     assert_eq!(tool_text(&endpoint, &a.token, check(path)).await.unwrap(), "ok\nbuild agent");
     assert_eq!(tool_text(&endpoint, &b.token, check(path)).await.unwrap(), "ok\nother run");
-    // Another project or session named in the arguments is ignored.
-    let other = json!({"name":"check_workflow","arguments":{"path":path,"root":second,"owned_id":"owned-b"}});
-    assert_eq!(tool_text(&endpoint, &a.token, other).await.unwrap(), "ok\nbuild agent");
+    // Another project is reached by naming one added on this machine, by its folder or title; a folder alone is refused.
+    store.insert_or_get_project(&crate::project_folders::new_project_row("local".into(), crate::project_folders::ProjectFolderInspection { root_path: second.display().to_string(), title: "second".into(), repo_key: String::new(), is_git: false })).unwrap();
+    let named = |project: &str, path: &str| json!({"name":"check_workflow","arguments":{"path":path,"project":project}});
+    for project in ["second", second.to_str().unwrap()] { assert_eq!(tool_text(&endpoint, &a.token, named(project, path)).await.unwrap(), "ok\nother run"); }
+    assert_eq!(tool_text(&endpoint, &c.token, named(first.to_str().unwrap(), path)).await.unwrap_err(), format!("No single project added on this machine has the folder or title {}", first.display()));
     assert_eq!(tool_text(&endpoint, &c.token, check(path)).await.unwrap_err(), "This session has no project folder");
-    let absolute = second.join(path).display().to_string();
-    for bad in [absolute.as_str(), "../flow.yml", ".assembly/workflows/../workflows/flow.yml", ".assembly/flow.yml", ".assembly/workflows/flow.yaml"] {
-        assert!(tool_text(&endpoint, &a.token, check(bad)).await.is_err(), "{bad}");
-    }
+    let absolute = first.join(path).display().to_string();
+    for bad in [absolute.as_str(), "../flow.yml", ".assembly/workflows/../workflows/flow.yml", ".assembly/flow.yml", ".assembly/workflows/flow.yaml"] { assert!(tool_text(&endpoint, &a.token, named("second", bad)).await.is_err(), "{bad}"); }
     std::os::unix::fs::symlink(second.join(".assembly/workflows/prompts/build.md"), first.join(".assembly/workflows/prompts/linked.md")).unwrap();
     std::fs::write(first.join(".assembly/workflows/flow.yml"), "name: Flow\nsteps:\n  build: { agent: { provider: codex }, prompt: prompts/linked.md }\n").unwrap();
     assert_eq!(tool_text(&endpoint, &a.token, check(path)).await.unwrap_err(), "File path escapes its directory");
