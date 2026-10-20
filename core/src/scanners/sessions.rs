@@ -1515,17 +1515,15 @@ const AGENT_LAUNCH_ENTRYPOINT_PREFIXES: &[&str] = &["sdk"];
 ///
 /// Verified 2026-07-28 across 1073 transcripts on this machine: every one of the
 /// 888 dispatched helper runs was `sdk-…` and every human session was `cli` or
-/// `claude-vscode`. A session Assembly started (`sdk-ts`) and the user carried on
-/// in the CLI mixes them, and that is the user's own work.
+/// `claude-vscode`. The exception is Assembly's own adapter, which writes `sdk-ts`:
+/// the rail shows those sessions, so History lists them too, whoever carried them on.
 ///
 /// This deliberately replaces the "does the first message read like a dispatch
 /// prompt?" idea: the user's real sessions often open with pasted logs and
 /// instruction-shaped text, and the scanner reads a tail window that usually
 /// does not even contain the first message.
 fn is_agent_launch_entrypoint(entrypoint: &str) -> bool {
-    AGENT_LAUNCH_ENTRYPOINT_PREFIXES
-        .iter()
-        .any(|prefix| entrypoint.starts_with(prefix))
+    entrypoint != "sdk-ts" && AGENT_LAUNCH_ENTRYPOINT_PREFIXES.iter().any(|prefix| entrypoint.starts_with(prefix))
 }
 
 /// The same question asked of a file instead of a parsed record, so the scan can
@@ -1548,7 +1546,7 @@ fn claude_transcript_file_is_agent_launched(path: &Path) -> bool {
     claude_transcript_head_is_agent_launched(&format!("{head}\n{tail}"))
 }
 
-/// True when one program wrote every entrypoint here. A line without the field
+/// True when one helper program (`claude -p`, the Python SDK) wrote every entrypoint here. A line without the field
 /// says nothing either way — older transcripts predate it — so it is not evidence.
 pub fn claude_transcript_head_is_agent_launched(text: &str) -> bool {
     let mut entrypoints = text.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
@@ -3011,6 +3009,7 @@ mod tests {
         // The entrypoint is the whole rule: `sdk-*` launched it programmatically.
         assert!(is_agent_launch_entrypoint("sdk-cli"));
         assert!(is_agent_launch_entrypoint("sdk-py"));
+        assert!(!is_agent_launch_entrypoint("sdk-ts"), "Assembly's own sessions are listed");
         assert!(!is_agent_launch_entrypoint("cli"));
         assert!(!is_agent_launch_entrypoint("claude-vscode"));
         assert!(!is_agent_launch_entrypoint(""));
@@ -3097,19 +3096,20 @@ mod tests {
 
     }
 
-    /// Assembly's adapter writes `sdk-ts`. A session it started and the user carried on in the CLI, typed or
-    /// with `claude -p`, is the user's; a transcript only one program ever wrote is a helper run.
+    /// Assembly's adapter writes `sdk-ts`, and those sessions are listed whoever carried them on. Only a run one
+    /// other program wrote alone, `claude -p` or the Python SDK, is a one-shot helper run and left out.
     #[test]
-    fn claude_scan_keeps_a_session_continued_outside_the_program_that_started_it() {
+    fn claude_scan_lists_assembly_sessions_and_leaves_out_one_shot_runs() {
         let line = |entrypoint: &str| format!(r#"{{"type":"user","entrypoint":"{entrypoint}","sessionId":"S9","message":{{"role":"user","content":"hi"}}}}"#);
         let transcript = |entrypoints: &[&str]| entrypoints.iter().map(|entrypoint| line(entrypoint)).collect::<Vec<_>>().join("\n");
         assert!(!claude_transcript_head_is_agent_launched(&transcript(&["sdk-ts", "cli"])));
         assert!(!claude_transcript_head_is_agent_launched(&transcript(&["sdk-ts", "sdk-cli"])));
-        assert!(claude_transcript_head_is_agent_launched(&transcript(&["sdk-ts", "sdk-ts"])));
-        assert_eq!(parse_claude_jsonl(&transcript(&["sdk-ts", "cli"]), "/w").len(), 1);
-        // The file probe reads the end too: the CLI turns come after a long opening written by Assembly.
+        assert!(!claude_transcript_head_is_agent_launched(&transcript(&["sdk-ts", "sdk-ts"])));
+        for helper_run in [&["sdk-cli", "sdk-cli"][..], &["sdk-py"]] { assert!(claude_transcript_head_is_agent_launched(&transcript(helper_run))); }
+        assert_eq!(parse_claude_jsonl(&transcript(&["sdk-ts", "sdk-ts"]), "/w").len(), 1);
+        // The file probe reads the end too: the CLI turns come after a long opening written by `claude -p`.
         let path = std::env::temp_dir().join(format!("scan-continued-{}.jsonl", std::process::id()));
-        let opening = vec![line("sdk-ts"); CLAUDE_SESSION_LAUNCH_PROBE_BYTES / 64].join("\n");
+        let opening = vec![line("sdk-cli"); CLAUDE_SESSION_LAUNCH_PROBE_BYTES / 64].join("\n");
         std::fs::write(&path, format!("{opening}\n{}\n", line("cli"))).unwrap();
         assert!(!claude_transcript_file_is_agent_launched(&path));
         std::fs::write(&path, format!("{opening}\n")).unwrap();
