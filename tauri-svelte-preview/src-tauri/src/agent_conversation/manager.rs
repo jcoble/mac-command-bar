@@ -1,4 +1,4 @@
-#[path = "session_project.rs"] pub mod session_project;
+#[path = "session_project.rs"] pub mod session_project; mod helper_close;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -7600,7 +7600,7 @@ fn canonical_event(
             state: ConversationConnectionState::Closed,
             ..
         } => AgentEventType::SessionClosed,
-        AgentConversationPayload::Connection { .. } => AgentEventType::SessionStateChanged,
+        AgentConversationPayload::Connection { .. } | AgentConversationPayload::SessionCompleted { .. } => AgentEventType::SessionStateChanged,
         AgentConversationPayload::UserMessage { .. } => AgentEventType::ItemCompleted,
         AgentConversationPayload::AssistantDelta { .. } => AgentEventType::ContentDelta,
         AgentConversationPayload::AssistantMessage { .. } => AgentEventType::ItemCompleted,
@@ -7612,8 +7612,7 @@ fn canonical_event(
         AgentConversationPayload::Plan { .. } => AgentEventType::PlanUpdated,
         AgentConversationPayload::AvailableCommandsUpdate { .. } => AgentEventType::CommandsUpdated,
         AgentConversationPayload::Turn {
-            state: super::protocol::TurnState::Started,
-            ..
+            state: super::protocol::TurnState::Started, ..
         } => AgentEventType::TurnStarted,
         AgentConversationPayload::Turn {
             state: super::protocol::TurnState::Interrupted,
@@ -7971,7 +7970,7 @@ mod tests {
     use crate::agent_conversation::protocol::AgentCommandDescriptor;
     mod checkout;
     mod model_effort;
-    mod codex_resume; mod import_length; mod helper_folder;
+    mod codex_resume; mod import_length; mod helper_folder; mod helper_close;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
@@ -8570,6 +8569,7 @@ mod tests {
             AgentConversationPayload::Usage { .. } => "usage",
             AgentConversationPayload::ContextCompaction { .. } => "contextCompaction",
             AgentConversationPayload::CheckoutChanged { .. } => "checkoutChanged",
+            AgentConversationPayload::SessionCompleted { .. } => "sessionCompleted",
             AgentConversationPayload::TerminalProjection(_) => "terminalProjection",
             AgentConversationPayload::Error { .. } => "error",
         }

@@ -1258,7 +1258,7 @@ export function agentItemFromEvent(event: ConversationEvent): AgentItem | null {
 
   const payloadKind = normalizedPayloadKind(payload);
   if (payloadKind === 'permissionRequest' || payloadKind === 'approval') return null;
-  if (payloadKind === 'connection' || payloadKind === 'turn' || payloadKind === 'usage') return null;
+  if (payloadKind === 'connection' || payloadKind === 'turn' || payloadKind === 'usage' || payloadKind === 'sessionCompleted') return null;
   // A sub-agent's progress belongs to the agent tree, which reads it from the
   // session's children. As a transcript row it had nothing to show.
   if (payloadKind === 'childUpdate') return null;

@@ -1034,7 +1034,7 @@ async function refreshRemoteSessionActivity(streamGeneration: number): Promise<v
         activeTurnId: record.activeTurnId,
         pendingPermission: record.pendingPermission,
         pendingInput: record.pendingInput,
-        backgroundWork: record.backgroundWork
+        backgroundWork: record.backgroundWork, completedAt: record.completedAt
       });
       synchronizeSessionPresenceWork(record.ownedId, record.activeTurnId, false, null);
       const current = getConversationSession(record.ownedId);
@@ -1231,7 +1231,7 @@ async function handleConversationStreamEnvelope(
   if (row?.kind === 'tool' && row.state === 'completed' && row.path && row.diff) {
     publishWorkspaceFileChange({ ownedId: payload.ownedId, path: row.path });
   }
-  // A sub-agent of any provider, or a helper, is background work of its parent.
+  if (payload.payload.kind === 'sessionCompleted') updateOwnedSession(payload.ownedId, { completedAt: payload.payload.completedAt });
   if (payload.payload.kind === 'childUpdate') {
     const owned = rail.owned.find((session) => session.ownedId === payload.ownedId);
     if (owned) {
