@@ -90,12 +90,14 @@
     }
   }
 
-  const cards = $derived(boards.flatMap((board) => board.value.cards));
+  /** Counted in SQL on each machine, so cards past the 40-card limit are included. */
+  const count = (state: 'running' | 'in_review' | 'done'): number =>
+    boards.reduce((sum, board) => sum + (board.value.counts[state] ?? 0), 0);
   const tally = $derived([
     { label: 'need you', count: badge, dot: 'bg-(--color-attention)' },
-    { label: 'running', count: cards.filter((card) => card.state === 'running').length, dot: 'bg-(--color-live)' },
-    { label: 'in review', count: cards.filter((card) => card.state === 'in_review').length, dot: 'bg-(--color-merged)' },
-    { label: 'done today', count: cards.filter((card) => card.state === 'done').length, dot: 'bg-(--color-good)' }
+    { label: 'running', count: count('running'), dot: 'bg-(--color-live)' },
+    { label: 'in review', count: count('in_review'), dot: 'bg-(--color-merged)' },
+    { label: 'done today', count: count('done'), dot: 'bg-(--color-good)' }
   ]);
   const time = (ms: number): string => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 </script>

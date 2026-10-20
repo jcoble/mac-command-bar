@@ -60,6 +60,17 @@
       Number(snoozed(a.card)) - Number(snoozed(b.card)) || b.card.updated_at_ms - a.card.updated_at_ms);
   }
 
+  /** A state's cards on every machine, past the 40-card limit, less those dropped before the reload. */
+  function total(state: BoardCard['state']): number {
+    return boards.reduce((sum, board) => sum + (board.value.counts[state] ?? 0), 0)
+      - entries.filter((entry) => entry.card.state === state && isDropped(entry)).length;
+  }
+
+  /** Cards the machines counted but did not send. */
+  function notShown(state: BoardCard['state'], list: Entry[]): number {
+    return total(state) - list.filter((entry) => !isDropped(entry)).length;
+  }
+
   function when(ms: number): string {
     const date = new Date(ms);
     return date.toDateString() === new Date().toDateString()
@@ -115,6 +126,10 @@
 {#snippet heading(label: string, count: number, dot: string)}
   <span class={`size-1.5 flex-none rounded-full ${dot}`}></span>{label}
   <span class="font-normal text-muted-foreground tabular-nums">{count}</span>
+{/snippet}
+
+{#snippet more(count: number)}
+  {#if count > 0}<p class="px-1 text-[13px] text-muted-foreground">{count} more not shown. Mark cards done or drop them to see the rest.</p>{/if}
 {/snippet}
 
 {#snippet cardRow(entry: Entry)}
@@ -225,16 +240,17 @@
   {/if}
   {#each SECTIONS as section (section.state)}
     {@const list = inState(section.state)}
-    {#if list.length}
+    {#if list.length || total(section.state)}
       <section class="flex min-w-0 flex-col gap-2">
-        <h3 class={HEADING}>{@render heading(section.label, list.filter((entry) => !isDropped(entry)).length, section.dot)}</h3>
+        <h3 class={HEADING}>{@render heading(section.label, total(section.state), section.dot)}</h3>
         <ul class="m-0 flex list-none flex-col p-0 gap-2">
           {#each list as entry (entry.id)}{@render cardRow(entry)}{/each}
         </ul>
+        {@render more(notShown(section.state, list))}
       </section>
     {/if}
   {/each}
-  {#if done.length}
+  {#if done.length || total('done')}
     <section class="flex min-w-0 flex-col gap-2">
       <div class="flex items-center gap-2">
         <h3 class="min-w-0 flex-1">
@@ -244,7 +260,7 @@
             aria-expanded={doneOpen}
             onclick={() => (doneOpen = !doneOpen)}
           >
-            {@render heading('Done today', done.filter((entry) => !isDropped(entry)).length, 'bg-(--color-good)')}
+            {@render heading('Done today', total('done'), 'bg-(--color-good)')}
             <ChevronRight class={cn('size-4 text-muted-foreground transition-transform', doneOpen && 'rotate-90')} aria-hidden="true" />
           </button>
         </h3>
@@ -254,6 +270,7 @@
         <ul class="m-0 flex list-none flex-col p-0 gap-2">
           {#each done as entry (entry.id)}{@render cardRow(entry)}{/each}
         </ul>
+        {@render more(notShown('done', done))}
       {/if}
     </section>
   {/if}

@@ -9,7 +9,7 @@ export type BoardCard = {
   written_by: string; created_by: string; writer_name: string | null;
   created_at_ms: number; updated_at_ms: number; snoozed_until_ms: number | null;
   run_state: string | null; run_step: string | null; session_state: string | null;
-  notes: BoardNote[]; stale: number; state_count: number;
+  notes: BoardNote[]; stale: number;
 };
 export type BoardRun = {
   id: string; name: string | null; task_title: string | null; task_key: string | null;
@@ -26,6 +26,8 @@ export type MachineBoard = {
   machine: string;
   value: {
     cards: BoardCard[]; runs: BoardRun[]; steps: BoardStep[];
+    /** Every card per state, including those past the 40-card limit. */
+    counts: Partial<Record<BoardCard['state'], number>>;
     session_notes: Array<{ target: string; notes: BoardNote[] }>;
   };
 };
