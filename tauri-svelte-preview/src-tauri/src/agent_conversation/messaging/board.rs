@@ -36,8 +36,13 @@ pub(super) fn update(store: &SessionStore, caller: &str, role: &str, mut args: V
         return Err("helpers cannot post to the board".into());
     }
     if let Some(session) = args["session"].as_str() {
-        let owned_id = store.resolve_session_name_for(session, caller, "local")
-            .map_err(|error| error.to_string())?;
+        // The directory leaves out the caller, so its own handle or name is matched here.
+        let own = store.directory_name(caller).map_err(|error| error.to_string())?;
+        let is_caller = session == caller || own.is_some_and(|(handle, name)|
+            session == name || session.split(" · ").next() == Some(handle.as_str()));
+        let owned_id = if is_caller { caller.to_string() } else {
+            store.resolve_session_name_for(session, caller, "local").map_err(|error| error.to_string())?
+        };
         args["session"] = json!(owned_id);
     }
     let key = args["key"].as_str().ok_or("key must be a string")?;

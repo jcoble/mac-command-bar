@@ -591,3 +591,10 @@ async fn board_update_resolves_the_session_argument_by_name() {
     assert!(error.contains("Unknown session name"), "{error}");
     assert_eq!(store.board(0, 1).unwrap()["cards"][0]["session_owned_id"], "owned-b");
 }
+#[tokio::test]
+async fn board_update_accepts_the_callers_own_name() {
+    let endpoint = MessagingEndpoint::start().unwrap(); let store = store();
+    let caller = endpoint.issue("caller"); endpoint.bind_store(&caller.token, &store, None);
+    endpoint.handle(&caller.token, json!({"name":"board_update","arguments":{"key":"work","title":"Build","state":"running","session":"Caller"}})).await.unwrap();
+    assert_eq!(store.board(0, 1).unwrap()["cards"][0]["session_owned_id"], "caller");
+}
