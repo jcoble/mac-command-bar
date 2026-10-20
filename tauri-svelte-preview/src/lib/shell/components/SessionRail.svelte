@@ -13,9 +13,10 @@
 	import { onMount } from "svelte";
 
 	import { Badge } from "$lib/components/ui/badge";
+	import { Chip } from "$lib/components/ui/chip/index.js";
 	import { railRowStatuses, type OwnedSession, type RailRowStatus } from "$lib/shell/ownedSessions";
 	import { rail } from "$lib/shell/stores/sessionRailStore.svelte";
-	import { projectBadge } from "$lib/shell/projects/projects";
+	import { projectBadge, projectMachineLabel } from "$lib/shell/projects/projects";
 	import { deriveOwnedLibraryState } from "$lib/shell/history/library/sessionLibraryModel";
 	import {
 		buildMyWorkGroups,
@@ -274,6 +275,10 @@
 					</Badge>
 				{/if}
 				<span class="name">{group.label}</span>
+				<!-- A project lives on one machine, so its first session names it, as on the Projects screen. -->
+				{#if projectHeading && allSessions[0] && group.key !== "none" && !group.key.endsWith("::none")}
+					<Chip class="text-xs">{projectMachineLabel(allSessions[0].executionEnvironment === "remote" ? (allSessions[0].remoteProfileId ?? "") : "local", rail.remoteProfiles)}</Chip>
+				{/if}
 				<span data-testid="session-rail-section-count" class="count">{allSessions.length}</span>
 				{#if needsYouCount > 0}
 					<span
