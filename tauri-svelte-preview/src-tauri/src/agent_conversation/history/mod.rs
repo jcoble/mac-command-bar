@@ -181,8 +181,8 @@ pub fn existing_import_session(store: &SessionStore, provider: AgentConversation
 pub fn follow_imported_length(store: &SessionStore, owned_id: &str, starting: bool) -> Result<(), String> {
     let Some(mut row) = store.get_session(owned_id).map_err(|error| error.to_string())? else { return Ok(()) };
     let Some(mut cursor) = optional_import_cursor(&row.extra_json)?.filter(|cursor| cursor.imported_length.is_some()) else { return Ok(()) };
-    // A session tracked from its start learns where its transcript is once Claude has written it.
-    if cursor.transcript_path.is_empty() { cursor.transcript_path = row.native_session_id.as_deref().map(|id| self::transcript::discover(AgentConversationProvider::Claude, id))
+    // A session tracked from its start learns where its transcript is once its agent has written it.
+    if cursor.transcript_path.is_empty() { cursor.transcript_path = row.native_session_id.as_deref().map(|id| self::transcript::parse_provider(&row.provider).and_then(|provider| self::transcript::discover(provider, id)))
         .transpose()?.flatten().map(|location| location.canonical_path.to_string_lossy().into_owned()).unwrap_or_default(); }
     let Ok(metadata) = std::fs::metadata(&cursor.transcript_path) else { return Ok(()) };
     if starting && cursor.imported_length.is_some_and(|length| metadata.len() <= length) { return Ok(()); }
@@ -190,8 +190,8 @@ pub fn follow_imported_length(store: &SessionStore, owned_id: &str, starting: bo
     store.upsert_session(&row).map_err(|error| error.to_string())
 }
 
-/// A Claude session Assembly starts is tracked from then: its transcript's length is saved (nothing until Claude writes
-/// the file), so History reads it again only for turns taken elsewhere. Sessions from before this are never guessed at.
+/// A session Assembly starts is tracked from then: its transcript's length is saved (nothing until its agent writes the
+/// file), so History reads it again only for turns taken elsewhere. Sessions from before this are never guessed at.
 pub fn track_new_transcript(store: &SessionStore, owned_id: &str, transcript: Option<&Path>) -> Result<(), String> {
     let Some(mut row) = store.get_session(owned_id).map_err(|error| error.to_string())? else { return Ok(()) };
     if optional_import_cursor(&row.extra_json)?.is_some() { return Ok(()); }

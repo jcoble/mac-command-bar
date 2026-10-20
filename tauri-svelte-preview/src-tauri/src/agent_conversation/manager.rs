@@ -2329,7 +2329,7 @@ impl AgentRuntimeManager {
         )?;
         let connection = session.connection.clone();
         drop(sessions);
-        if started_new && provider == AgentConversationProvider::Claude {
+        if started_new {
             let transcript = super::history::transcript::discover(provider, connection.native_session_id.as_deref().unwrap_or_default()).ok().flatten();
             if let Err(error) = super::history::track_new_transcript(&self.store, owned_id, transcript.as_ref().map(|location| location.canonical_path.as_path())) { crate::debug_log::stderr_log!("Could not track the new transcript: {error}"); }
         }
