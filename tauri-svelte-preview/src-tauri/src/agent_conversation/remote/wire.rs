@@ -23,6 +23,7 @@ use crate::terminal::{TerminalOutputFrame, TerminalScrollbackSnapshot, TerminalS
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(super) enum ClientFrame {
+    Authenticate { proof: String },
     Request { id: u64, command: RemoteCommand },
     Cancel { id: u64 },
     Resume { cursors: BTreeMap<String, i64> },
@@ -178,7 +179,7 @@ pub(super) enum ServerFrame {
         #[serde(deserialize_with = "deserialize_wire_payload")] snapshot: AgentConversationSnapshot },
     HistoryDownloadChunk { id: u64, owned_id: String, oldest_sequence: i64, covered_bytes: u64, gzip_base64: String },
     HistoryDownloadDone { id: u64, owned_id: String },
-    Ready { protocol_version: u16 },
+    Ready { protocol_version: u16, proof: String, challenge: String },
     MessagesChanged,
     ReplayStart { owned_id: String },
     ReplayComplete { owned_id: String, head: i64, #[serde(deserialize_with = "deserialize_wire_payload")] snapshot: AgentConversationSnapshot },
