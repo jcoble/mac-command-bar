@@ -1,5 +1,26 @@
 use super::{PhoneDevice, Result, SessionStore, StoreError};
-use rusqlite::params;
+use rusqlite::{params, Connection};
+
+/// Phones paired with this backend, and the id and name it gives them (phone spec §5.2).
+/// Only a SHA-256 of each device token is kept.
+const PHONE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS phone_machine (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS phone_devices (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    fcm_token TEXT,
+    created_at INTEGER NOT NULL,
+    last_seen_at INTEGER,
+    revoked_at INTEGER
+);";
+
+pub(super) fn add_phone_schema(connection: &Connection) -> Result<()> {
+    connection.execute_batch(PHONE_SCHEMA)
+        .map_err(|error| StoreError::sqlite("could not create the phone tables", error))
+}
 
 impl SessionStore {
     /// Names this machine for paired phones, creating its id from `new_id` the
