@@ -248,3 +248,9 @@ pub(super) fn encode_server_frame(frame: &ServerFrame) -> Result<String, String>
         _ => Err(message),
     }
 }
+
+// Regression tests for connecting, reconnecting and catching up over these frames. They live
+// beside the frames because remote/mod.rs is at its size ceiling.
+#[cfg(test)]
+#[path = "connection_pin_tests.rs"]
+mod connection_pin_tests;
