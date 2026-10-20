@@ -57,9 +57,11 @@ test('rejects animations that never end', () => {
 <div class="motion-safe:animate-pulse"></div>
 <div class="animate-ping"></div>
 <div class="animate-bounce"></div>
+<span style:animation={"spin 1s infinite"}></span>
+<span style:animation-iteration-count={'infinite'}></span>
 `;
   const hits = scanSource('src/fixture.svelte', source);
-  assert.deepEqual(hits.map((hit) => [hit.line, hit.category]), [2, 3, 4, 5, 6, 7, 8, 9].map((line) => [line, 'endless-animation']));
+  assert.deepEqual(hits.map((hit) => [hit.line, hit.category]), [2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((line) => [line, 'endless-animation']));
   assert.equal(scanSource('src/fixture.css', '.a { animation: spin 1s infinite; }')[0]?.category, 'endless-animation');
   const wrapped = '.a {\n  animation:\n    spin 1s infinite;\n}\n.b {\n  animation-iteration-count:\n    infinite;\n}';
   assert.deepEqual(scanSource('src/fixture.css', wrapped).map((hit) => [hit.line, hit.category]), [[2, 'endless-animation'], [6, 'endless-animation']]);
