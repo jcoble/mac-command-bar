@@ -50,6 +50,8 @@ export class SessionSelectionLayers {
   /** The root the last tree fill asked for, kept even when that folder was missing. */
   treeRequestedRoot = $state('');
   hasTreeProjection = $state(false);
+  /** The last tree fill could not check the folder, so the session's files were never shown. */
+  treeCheckFailed = false;
   chatOwnedId = $state<string | null>(null);
   hasChatProjection = $state(false);
   private selectionGeneration = 0;
@@ -75,6 +77,7 @@ export class SessionSelectionLayers {
     if (!this.isCurrent(owner)) return;
     const root = sessionWorkspaceRoot(session, projectRegistry.projects);
     this.treeRequestedRoot = root;
+    this.treeCheckFailed = false;
 
     if (!root || (session.executionEnvironment === 'remote'
       && rail.remoteConnections[session.remoteProfileId ?? ''] !== 'connected')) {
@@ -88,6 +91,7 @@ export class SessionSelectionLayers {
     countInvoke('validate_project_root');
     const validation = await unlessUnreachable(session, validateProjectRootFromTauri(root, owner.signal));
     if (!this.isCurrent(owner)) return;
+    this.treeCheckFailed = validation === undefined;
     if (validation === undefined || (validation && (!validation.exists || !validation.isDirectory))) {
       this.hasTreeProjection = true;
       this.treeOwnedId = session.ownedId;
