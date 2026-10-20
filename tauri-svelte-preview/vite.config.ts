@@ -18,6 +18,7 @@ import {
   validateLocalProjectRoot,
   writeLocalSourceFile,
 } from "./src/lib/server/localSourceFs";
+import { isOwnPageRequest } from "./src/lib/server/sourceBridgeRequest";
 import type { SourceRecord } from "./src/lib/sourceData";
 
 function localSourceBridgePlugin(): Plugin {
@@ -161,6 +162,10 @@ function createLocalSourceBridgeMiddleware() {
 
     if (request.method !== "POST") {
       sendJSON(response, 405, { error: "Method not allowed" });
+      return;
+    }
+    if (!isOwnPageRequest(request.headers)) {
+      sendJSON(response, 403, { error: "The source bridge only answers this dev server's own pages" });
       return;
     }
 
