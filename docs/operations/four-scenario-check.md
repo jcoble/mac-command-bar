@@ -18,7 +18,20 @@ S="node --experimental-strip-types tauri-svelte-preview/scripts/fourScenarios.ts
 nohup $S start > /tmp/four.log 2>&1 &
 ```
 
-- `start [--worktree <path>] [--data <existing data dir>]` refuses when `free -g` shows 6 GB or less available. It makes `~/assembly-proof/<timestamp>/` with a fresh copy of `~/assembly-proof/template` as `data/` (the template has Workbox Test saved), starts Xvfb (1710x990), Vite and the native app detached, saves `state.json`, links `~/assembly-proof/current`, and screenshots `00-started.png`. It prints whether files landed in the private data folder and whether the owner's `~/.local/share/assembly` stayed untouched; if either says NO, stop and report it.
+- `start [--worktree <path>] [--data <existing data dir>] [--seed <source data folder>]` refuses when `free -g` shows 6 GB or less available. It makes `~/assembly-proof/<timestamp>/` with a fresh copy of `~/assembly-proof/template` as `data/` (the template has Workbox Test saved), starts Xvfb (1710x990), Vite and the native app detached, saves `state.json`, links `~/assembly-proof/current`, and screenshots `00-started.png`. It prints whether files landed in the private data folder and whether the owner's `~/.local/share/assembly` stayed untouched; if either says NO, stop and report it.
+- `start --seed <source data folder>` replaces the template with a copy of real data: it copies `<source>/sessions.db` (and `conversation-attachments/`, if present) with `sqlite3 -readonly ... ".backup"` (the source is only read) and, on the copy, deletes cached remote chats, every saved machine except Workbox Test, remote projects and phone devices. It stops if any remote entry is left. The workbox source is `~/.local/share/dev.blackcolours.MacCommandBarWebviewPreview`. Do not combine it with `--data`.
+- On the Mac, seed the test app's data folder by hand: `.backup` the real `sessions.db` into it, then run this on the copy before the first launch (skip the last line if the copy has no `phone_devices` table):
+
+  ```
+  PRAGMA foreign_keys=ON;
+  DELETE FROM sessions WHERE cached_remote_profile_id IS NOT NULL;
+  DELETE FROM app_settings WHERE setting_key IN ('remote-assembly.profile.v1','remote-assembly.session-projections.v1');
+  UPDATE app_settings SET value_json=(SELECT json_group_array(json(value)) FROM json_each(value_json) WHERE json_extract(value,'$.sshTarget')='workbox-test') WHERE setting_key='remote-assembly.profiles.v1';
+  DELETE FROM projects WHERE machine <> 'local';
+  DELETE FROM phone_devices;
+  ```
+
+- Never sign out (`codex logout`, `claude logout`) to test sign-in. Signing out revokes the login on the provider's side, and restoring the old file does not bring it back.
 - `stop` stops exactly the process groups in `current/state.json` and prints a `ps` check. Run it when finished, and also after a failed start.
 - `offline-ssh` prints a folder whose `ssh` exits 255. Start with `PATH="$($S offline-ssh):$PATH" $S start --data <dir>` to make the remote unreachable.
 

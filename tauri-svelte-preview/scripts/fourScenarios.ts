@@ -129,6 +129,31 @@ const openFilesInGroups = (pgids: number[]): string[] => {
   });
 };
 
+// Copies the source sessions.db into the private data folder (the source is only read), then removes
+// remote data from the copy: the app signs in by SSH to every saved machine, and only Workbox Test is ours.
+export function seedData(source: string, dataDir: string): void {
+  refuseOwnerData(dataDir, home);
+  const folder = path.join(dataDir, 'dev.blackcolours.MacCommandBarWebviewPreview');
+  const db = path.join(folder, 'sessions.db');
+  fs.mkdirSync(folder, { recursive: true });
+  run('sqlite3', ['-readonly', path.join(source, 'sessions.db'), `.backup '${db}'`]);
+  const attachments = path.join(source, 'conversation-attachments');
+  if (fs.existsSync(attachments)) fs.cpSync(attachments, path.join(folder, 'conversation-attachments'), { recursive: true });
+  // phone_devices only exists once the app has created it.
+  const phone = run('sqlite3', [db, "SELECT count(*) FROM sqlite_master WHERE name='phone_devices'"]).trim() === '1';
+  run('sqlite3', [db, `PRAGMA foreign_keys=ON;
+DELETE FROM sessions WHERE cached_remote_profile_id IS NOT NULL;
+DELETE FROM app_settings WHERE setting_key IN ('remote-assembly.profile.v1','remote-assembly.session-projections.v1');
+UPDATE app_settings SET value_json=(SELECT json_group_array(json(value)) FROM json_each(value_json) WHERE json_extract(value,'$.sshTarget')='workbox-test') WHERE setting_key='remote-assembly.profiles.v1';
+DELETE FROM projects WHERE machine <> 'local';
+${phone ? 'DELETE FROM phone_devices;' : ''}`]);
+  const left = run('sqlite3', [db, `SELECT
+(SELECT count(*) FROM app_settings, json_each(value_json) WHERE setting_key='remote-assembly.profiles.v1' AND json_extract(value,'$.sshTarget') IS NOT 'workbox-test'),
+(SELECT count(*) FROM sessions WHERE cached_remote_profile_id IS NOT NULL),
+(SELECT count(*) FROM projects WHERE machine <> 'local')`]).trim();
+  if (left !== '0|0|0') throw new Error(`Seed check failed in ${db}: remote profiles|remote sessions|remote projects left = ${left}`);
+}
+
 function launch(name: string, file: string, args: string[], cwd: string, log: string, env: NodeJS.ProcessEnv): ProcessInfo {
   const fd = fs.openSync(log, 'a');
   const child = spawn(file, args, { cwd, env, detached: true, stdio: ['ignore', fd, fd] });
@@ -141,6 +166,7 @@ async function start(argv: string[]) {
   const option = (flag: string) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
   const worktree = path.resolve(option('--worktree') ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '../..'));
   const preview = path.join(worktree, 'tauri-svelte-preview');
+  const seed = option('--seed');
 
   const previous = path.join(currentLink, 'state.json');
   refuseWhileRunning(
@@ -160,7 +186,9 @@ async function start(argv: string[]) {
   const port = pickFreePort(parseListeningPorts(run('ss', ['-H', '-ltn'])));
 
   fs.mkdirSync(runDir, { recursive: true });
-  if (!option('--data')) {
+  if (seed && option('--data')) throw new Error('Use either --seed or --data, not both.');
+  if (seed) seedData(path.resolve(seed), dataDir);
+  else if (!option('--data')) {
     if (!fs.existsSync(templateDir)) {
       if (!fs.existsSync(templateSource)) {
         throw new Error(`No template data folder at ${templateDir}. Make one: start the app with XDG_DATA_HOME set to an empty folder, add Workbox Test in Settings -> Connections, quit, and copy that folder to ${templateDir}.`);
@@ -255,6 +283,6 @@ function offlineSsh() {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [command, ...rest] = process.argv.slice(2);
   const commands: Record<string, () => unknown> = { start: () => start(rest), stop, 'offline-ssh': offlineSsh };
-  if (!commands[command]) { console.error('usage: fourScenarios.ts start [--worktree <path>] [--data <existing data dir>] | stop | offline-ssh'); process.exit(2); }
+  if (!commands[command]) { console.error('usage: fourScenarios.ts start [--worktree <path>] [--data <existing data dir> | --seed <source data folder>] | stop | offline-ssh'); process.exit(2); }
   Promise.resolve(commands[command]()).catch((error) => { console.error(error instanceof Error ? error.message : error); process.exit(1); });
 }
