@@ -23,6 +23,7 @@
     "test:agent-session-focus": "node --experimental-strip-types scripts/agentSessionFocus.test.mjs",
     "test:agent-conversation-protocol": "node --experimental-strip-types scripts/agentConversationProtocol.test.ts",
     "test:agent-conversation-store": "node --import ./scripts/svelteRuneTestSetup.ts --experimental-strip-types scripts/agentConversationStore.test.ts",
+    "test:remote-activity-after-restart": "node --experimental-strip-types scripts/remoteActivityAfterRestart.test.ts",
     "test:conversation-drafts": "node --experimental-strip-types src/lib/shell/conversation/conversationDraftPersistence.test.ts",
     "test:agent-conversation-handoff": "node --experimental-strip-types scripts/agentConversationHandoff.test.mjs",
     "test:conversation-send-recovery": "node --experimental-strip-types scripts/conversationSendRecovery.test.ts",
