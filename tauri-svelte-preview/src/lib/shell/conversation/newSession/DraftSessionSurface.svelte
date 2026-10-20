@@ -27,7 +27,7 @@
   import Monitor from '@lucide/svelte/icons/monitor';
   import WorkingSpinner from '$lib/shell/components/feedback/WorkingSpinner.svelte';
   import X from '@lucide/svelte/icons/x';
-
+  import { Chip } from '$lib/components/ui/chip/index.js';
   import { Button } from '$lib/components/ui/button/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import PendingFirstMessage from '$lib/shell/conversation/components/PendingFirstMessage.svelte';
@@ -468,7 +468,7 @@
         >
           <span class="draft-project-badge" aria-hidden="true">{projectBadge(project.title)}</span>
           <span class="draft-machine-name">{project.title}</span>
-          {#if project.machine !== 'local'}<Cloud aria-label="Remote machine" class="size-3.5 opacity-70" />{/if}
+          <Chip>{projectMachineLabel(project.machine, remoteAssembly.profiles)}</Chip>
           <span class="draft-check">{#if draft.projectId === project.id}<Check aria-hidden="true" class="size-3.5" />{/if}</span>
         </DropdownMenu.Item>
       {/each}
