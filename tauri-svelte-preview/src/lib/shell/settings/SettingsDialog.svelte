@@ -508,7 +508,7 @@
 
   /** The models the chosen service offers, cheapest first. */
   const helperModelItems = $derived(
-    (helper === null
+    (helper?.vendor == null
       ? []
       : helper.vendor === 'anthropic'
         ? helper.anthropicModels
@@ -580,7 +580,7 @@
 
   /** Saving hands the key to the Keychain and forgets it here. */
   async function saveHelperKey(): Promise<void> {
-    if (!helper) return;
+    if (!helper?.vendor) { helperNote = 'Choose a service first.'; return; }
     const removing = helperKey.trim().length === 0;
     try {
       await setHelperKeyFromTauri(helper.vendor, helperKey);
@@ -1141,7 +1141,7 @@
 {#snippet helperVendorControl()}
   <SettingsSelect
     items={helperVendorItems}
-    value={helper?.vendor ?? 'openai'}
+    value={helper?.vendor ?? ''}
     ariaLabel="Helper service"
     onChange={(value) => void chooseHelperVendor(value)}
   />
