@@ -155,6 +155,32 @@ run('a_session_running_outside_assembly_waits_until_it_stops', () => {
   assert.deepEqual([resume?.enabled, resume?.disabledReason], [false, 'Running outside Assembly']);
 });
 
+// Pins 80db568aa: a cmux-run Codex row is read as the Codex transcript it is, and the card's title travels with the
+// import (trimmed, none when blank) so the database, not only the screen, holds the name.
+run('an_import_request_reads_cmux_rows_as_their_agent_and_carries_the_title', () => {
+  const row = record('cmux-row');
+  row.provider = 'cmux-codex';
+  row.logPath = ' /logs/cmux-row.jsonl ';
+  row.title = '  Fix the rail  ';
+  assert.deepEqual(sessionTranscriptImport(row),
+    { provider: 'codex', nativeSessionId: 'cmux-row', transcriptPath: '/logs/cmux-row.jsonl', cwd: '/work/project', title: 'Fix the rail' });
+  row.title = '   ';
+  assert.equal(sessionTranscriptImport(row)?.title, null);
+});
+
+// Pins 417f21bbc: a resume that cannot run says which piece is missing, most specific first.
+run('a_resume_that_cannot_run_names_what_is_missing', () => {
+  const reason = (change: Partial<SessionLibraryRecord>) => {
+    const row = { ...record('missing'), provider: 'claude', logPath: '/logs/missing.jsonl', ...change };
+    return sessionHistoryActions(row).find((action) => action.id === 'resume-assembly')?.disabledReason;
+  };
+  assert.equal(reason({}), null);
+  assert.equal(reason({ nativeSessionId: ' ', logPath: null }), 'This session has no provider session id to read a transcript for.');
+  assert.equal(reason({ logPath: null, canonicalCwd: null }), 'No transcript file was found for this session.');
+  assert.equal(reason({ canonicalCwd: ' ' }), 'This session has no folder recorded.');
+  assert.equal(reason({ provider: 'opencode' }), 'This app cannot read transcripts written by this agent.');
+});
+
 const remoteScan = {
   provider: 'claude', id: 'native-1', title: 'Can you hear me', model: null, projectPath: '/home/me/dev/work/EdiPlatform',
   lastActivity: null, resumeCommands: [], logPath: '/home/me/.claude/projects/edi/native-1.jsonl', machine: 'box'

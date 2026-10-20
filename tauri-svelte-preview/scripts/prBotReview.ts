@@ -1,13 +1,15 @@
 // Waits for the Codex review bot to finish reviewing this branch's pull request at its current head,
 // then prints every unresolved bot thread. Exit 0: the head is reviewed and nothing is open.
 // Exit 1: open findings, printed with the commands to reply to and resolve each one.
-// Exit 2: nothing is open, but the bot did not review the head within the wait.
+// Exit 2: nothing is open, but the bot did not review the head, even after one fresh request.
 // Run from the branch's worktree: node --experimental-strip-types tauri-svelte-preview/scripts/prBotReview.ts
 import { execFileSync } from 'node:child_process';
 
 const BOT = 'chatgpt-codex-connector';
-const WAIT_MINUTES = 30;
+// Two waits of 15 minutes keep the whole run near 30 minutes, well inside the workflow step timeouts.
+const WAIT_MINUTES = 15;
 const POLL_SECONDS = 30;
+const POLLS = (WAIT_MINUTES * 60) / POLL_SECONDS;
 
 type ReviewState = { commit_sha: string | null; status: string | null };
 type Thread = { id: string; isResolved: boolean; comments: { nodes: Array<{ databaseId: number; author: { login: string } | null; path: string; line: number | null; originalLine: number | null; body: string }> } };
@@ -39,19 +41,28 @@ function main(): void {
     .filter((comment: { user: { login: string } }) => comment.user.login.startsWith(BOT))
     .map((comment: { body: string }) => comment.body) as string[];
 
-  // A new PR is reviewed on its own; a later push needs an explicit request.
-  const before = reviewState(botComments());
-  if (before && before.commit_sha !== head) {
+  const askForReview = () => {
     gh(['pr', 'comment', String(pr.number), '--body', '@codex review']);
     console.log(`Asked the review bot to review ${head.slice(0, 9)}.`);
-  }
+  };
+  const waitForReview = () => {
+    for (let poll = 0; poll < POLLS; poll++) {
+      const state = reviewState(botComments());
+      if (state?.commit_sha === head && state.status === 'completed') return true;
+      execFileSync('sleep', [String(POLL_SECONDS)]);
+    }
+    return false;
+  };
 
-  const deadline = Date.now() + WAIT_MINUTES * 60_000;
-  let reviewed = false;
-  while (!reviewed && Date.now() < deadline) {
-    const state = reviewState(botComments());
-    reviewed = state?.commit_sha === head && state.status === 'completed';
-    if (!reviewed) execFileSync('sleep', [String(POLL_SECONDS)]);
+  // A new PR is reviewed on its own; a later push needs an explicit request.
+  const before = reviewState(botComments());
+  if (before && before.commit_sha !== head) askForReview();
+  let reviewed = waitForReview();
+  // The bot sometimes stays "running" on a head and never posts; one fresh request usually gets it going.
+  if (!reviewed) {
+    console.log(`The review bot did not finish ${head.slice(0, 9)} within ${WAIT_MINUTES} minutes.`);
+    askForReview();
+    reviewed = waitForReview();
   }
 
   const query = `query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:1){nodes{databaseId author{login} path line originalLine body}}}}}}}`;
@@ -61,7 +72,7 @@ function main(): void {
     if (reviewed) {
       console.log(`The review bot reviewed ${head.slice(0, 9)} and has no open findings.`);
     } else {
-      console.log(`The review bot did not review ${head.slice(0, 9)} within ${WAIT_MINUTES} minutes. Nothing is open, but the head is unreviewed.`);
+      console.log(`The review bot did not review ${head.slice(0, 9)} after a second request and ${WAIT_MINUTES} more minutes. Nothing is open, but the head is unreviewed.`);
       process.exitCode = 2;
     }
     return;

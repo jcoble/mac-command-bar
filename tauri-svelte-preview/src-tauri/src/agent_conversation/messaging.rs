@@ -105,8 +105,6 @@ pub(crate) fn quote_labels(text: &str) -> String {
     quoted
 }
 
-const HELPER_LIMIT: i64 = 3;
-
 /// What each session is starting now, by session: it counts toward the session's limit before the store knows it.
 type Starting = Arc<Mutex<HashMap<String, i64>>>;
 
@@ -378,9 +376,12 @@ impl MessagingEndpoint {
                     "helper" => return Err("helpers cannot start helpers".into()),
                     _ => {}
                 }
-                let _place = StartPlace::take(&self.starting_helpers, &owned_id, HELPER_LIMIT,
+                let helper_limit = store.get_app_setting("helpers_per_session").map_err(|error| error.to_string())?
+                    .map(|value| serde_json::from_str::<i64>(&value)).transpose()
+                    .map_err(|error| format!("helpers_per_session must be an integer: {error}"))?.unwrap_or(5);
+                let _place = StartPlace::take(&self.starting_helpers, &owned_id, helper_limit,
                     || store.unfinished_helpers_of(&owned_id).map_err(|error| error.to_string()),
-                    "at most 3 unfinished helpers")?;
+                    &format!("at most {helper_limit} unfinished helpers"))?;
                 let folder = match args.get("folder") {
                     None => None,
                     Some(value) => Some(value.as_str().ok_or("folder must be an absolute path")?),

@@ -12,8 +12,8 @@ use serde::Serialize;
 
 mod board; mod helpers;
 mod evidence;
+mod lookup;
 mod phone;
-
 const SCHEMA_VERSION: i64 = 21;
 
 static SESSION_STORE_OPEN_HANDLES: AtomicUsize = AtomicUsize::new(0);

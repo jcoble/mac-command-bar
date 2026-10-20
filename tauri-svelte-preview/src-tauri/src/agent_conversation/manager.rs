@@ -7970,7 +7970,7 @@ mod tests {
     use crate::agent_conversation::protocol::AgentCommandDescriptor;
     mod checkout;
     mod model_effort;
-    mod codex_resume; mod import_length; mod helper_folder; mod helper_close;
+    mod codex_resume; mod import_length; mod turn_answers; mod rail_meta; mod helper_folder; mod helper_close;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};

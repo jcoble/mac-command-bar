@@ -1017,17 +1017,17 @@ async function setupConversationEvents(streamGeneration: number): Promise<void> 
 }
 
 /** Reconcile compact runtime records after reconnect, without loading transcripts. */
-async function refreshRemoteSessionActivity(streamGeneration: number): Promise<void> {
+async function refreshRemoteSessionActivity(streamGeneration: number, readAgain = true): Promise<void> {
   const read = ++remoteActivityRead;
   const observed = new Map(railActivityEvents);
+  let raced = false;
   try {
     const records = await listRemoteAgentConversationSessionsFromTauri();
     if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || read !== remoteActivityRead) return;
     for (const record of records ?? []) {
-      // A live event received during the read is newer than its inventory reply.
-      if (observed.get(record.ownedId) !== railActivityEvents.get(record.ownedId)) continue;
-      if (rail.remoteConnections[record.remoteProfileId ?? ''] !== 'connected') continue;
-      if (preparingSends.has(record.ownedId)) continue;
+      // An event during the read is newer than this reply. Read again: after a restart it may be a replay.
+      if (observed.get(record.ownedId) !== railActivityEvents.get(record.ownedId)) { raced = true; continue; }
+      if (rail.remoteConnections[record.remoteProfileId ?? ''] !== 'connected' || preparingSends.has(record.ownedId)) continue;
       updateOwnedSession(record.ownedId, {
         state: record.activeTurnId ? 'live' : 'background',
         runtimeState: record.suspended ? 'suspended' : record.state,
@@ -1044,9 +1044,9 @@ async function refreshRemoteSessionActivity(streamGeneration: number): Promise<v
         if (!record.activeTurnId) setConversationSending(record.ownedId, false);
       }
     }
+    if (raced && readAgain) void refreshRemoteSessionActivity(streamGeneration, false);
   } catch (error) {
-    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration) return;
-    if (read !== remoteActivityRead) return;
+    if (conversationEventsDisposed || streamGeneration !== conversationEventsGeneration || read !== remoteActivityRead) return;
     rail.error = `Could not refresh remote turn activity: ${error instanceof Error ? error.message : String(error)}`;
   }
 }

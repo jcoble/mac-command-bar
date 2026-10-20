@@ -30,3 +30,4 @@ jobs:
           pnpm exec node --experimental-strip-types scripts/scanSchedulers.test.ts
           pnpm test:workspace-invoke
           pnpm test:git-diff-timeout
+          pnpm test:regressions
