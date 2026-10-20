@@ -11,7 +11,7 @@
   import Sparkles from '@lucide/svelte/icons/sparkles';
   import type { AgentConversationTurnFacts } from '$lib/shell/conversation/conversationTypes.ts';
   import { anchorRowIndex, continueHistoryPaging, conversationTurnGroups, foldToolRuns, summarizeCompletedWork, toolFilePath, turnRows, type ConversationTurnGroup, type ConversationDisplayItem, type ConversationFileLinkProvenance } from '$lib/shell/conversation/conversationTimeline.ts';
-  import { USER_SEND_ANCHOR_OFFSET_PX, sendTurnRunning, type ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
+  import { USER_SEND_ANCHOR_OFFSET_PX, estimateRowHeight, sendTurnRunning, type ConversationSendAnchorRequest } from '$lib/shell/conversation/conversationScrollAnchor.ts';
   import { conversationDisclosureContext, type ConversationDisclosureContext } from '$lib/shell/conversation/conversationChatUI.ts';
   import type { ConversationViewState } from '$lib/shell/sessionWorkspaces.ts';
   import { backgroundWorkLabel, backgroundWorkTarget, formatBackgroundElapsed } from '$lib/shell/ownedSessions.ts';
@@ -172,7 +172,7 @@
   });
   // A new key function makes the virtualizer rebuild every row position, so these are replaced only when row keys
   // change. Each pair reads its own rows: the virtualizer reads its old layout through the old pair while switching.
-  const rowFunctions = (rows: Row[]) => ({ key: (index: number) => rows[index].key, size: (index: number) => rows[index].run || rows[index].item?.kind === 'tool' ? 36 : 90 });
+  const rowFunctions = (rows: Row[]) => ({ key: (index: number) => rows[index].key, size: (index: number) => estimateRowHeight(rows[index]) });
   let keyedRows: Row[] = [];
   let rowFns = rowFunctions(keyedRows);
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
