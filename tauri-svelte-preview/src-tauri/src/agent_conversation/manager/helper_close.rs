@@ -22,6 +22,7 @@ impl AgentRuntimeManager {
                 // The candidate may have received work while we waited for this lock.
                 if store_timestamp(session.last_activity_ms) > now_ms.saturating_sub(quiet_ms)
                     || session.rail_meta.completed_at.is_some()
+                    || (session.state == AgentRuntimeState::Ready && !session_is_quiescent(session))
                     || matches!(session.state, AgentRuntimeState::Starting | AgentRuntimeState::Working
                         | AgentRuntimeState::Interrupting | AgentRuntimeState::WaitingApproval | AgentRuntimeState::WaitingInput)
                 { return Ok(false); }

@@ -105,3 +105,25 @@ fn helper_close_restores_metadata_when_the_completion_write_fails() {
     drop(manager);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn helper_close_waits_for_a_running_native_sub_agent() {
+    let fixture = fixture_manager_with_acp_session("multiplex").await;
+    {
+        let mut sessions = fixture.manager.sessions.lock().unwrap();
+        let session = sessions.get_mut(&fixture.owned_id).unwrap();
+        session.helper_of = Some("parent".into());
+        session.codex_children.insert("child".into(), CodexChildRollout {
+            child_id: "child".into(), label: "probe".into(),
+            state: "running".into(), latest_activity: "Running".into(),
+        });
+        persist_session(session).unwrap();
+    }
+    let now = store_timestamp(timestamp_millis()) + HELPER_CLOSE_AFTER_MS + 1;
+    assert_eq!(fixture.manager.close_finished_helpers(now).unwrap(), 0);
+    fixture.manager.sessions.lock().unwrap().get_mut(&fixture.owned_id).unwrap()
+        .codex_children.get_mut("child").unwrap().state = "finished".into();
+    assert_eq!(fixture.manager.close_finished_helpers(now).unwrap(), 1);
+    fixture.manager.close(&fixture.owned_id, fixture.generation).await.unwrap();
+    fs::remove_dir_all(fixture.root).unwrap();
+}
