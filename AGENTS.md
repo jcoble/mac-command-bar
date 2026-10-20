@@ -136,6 +136,9 @@ one next to it doesn't. Before calling work done, name which of these you covere
 
 ## The workbox
 
+- Jesse works in Assembly's own Terminal tab on the workbox: the shell is started by the Assembly
+  backend there and reached over the app's one SSH tunnel, and it ends whenever that backend
+  restarts. How it works and what can go wrong: `docs/remote-terminal.md`.
 - Run `free -g` before a Rust build, a Tauri build or an app launch. If `available` is 6 GB or less,
   wait. One heavy job at a time per lane; prefer `cargo test <name>` to whole crates.
 - `/tmp` is a RAM disk: never put a cargo target folder or other big build output there.
