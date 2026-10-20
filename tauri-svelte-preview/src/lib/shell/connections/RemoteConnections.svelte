@@ -6,7 +6,7 @@
   import WorkingSpinner from '../components/feedback/WorkingSpinner.svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
-  import { hydrateOwned, rail } from '$lib/shell/stores/sessionRailStore.svelte';
+  import { hydrateOwned, rail, replaceConnectedRemoteRows } from '$lib/shell/stores/sessionRailStore.svelte';
   import { ownedSessionFromBackend } from '$lib/shell/ownedSessions';
   import {
     connectRemoteAssemblyFromTauri, deployRemoteBackendDev, disconnectRemoteAssemblyFromTauri,
@@ -118,12 +118,7 @@
         else { transfer = null; status = `Download complete. Verifying and unpacking the backend on ${selected.name}…`; }
       });
       if (!mounted || attempt.signal.aborted) return;
-      const replacedProfileIds = new Set([result.profile.id, result.replacedProfileId]);
-      const incomingOwnedIds = new Set(result.sessions.map((session) => session.ownedId));
-      hydrateOwned([...rail.owned.filter((session) =>
-        !replacedProfileIds.has(session.remoteProfileId ?? '') &&
-        !(session.executionEnvironment === 'remote' && incomingOwnedIds.has(session.ownedId))),
-        ...result.sessions.map(ownedSessionFromBackend)]);
+      replaceConnectedRemoteRows([result.profile.id, result.replacedProfileId], result.sessions.map(ownedSessionFromBackend));
       const next = await readRemoteAssemblyEnvironmentFromTauri();
       if (!mounted || attempt.signal.aborted) return;
       apply(next);
