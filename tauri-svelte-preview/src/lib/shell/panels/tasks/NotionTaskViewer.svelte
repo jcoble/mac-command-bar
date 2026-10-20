@@ -316,7 +316,7 @@
 {/snippet}
 
 {#snippet propertyValue(property: NotionTaskProperty)}
-  {#if property.kind === 'status'}
+  {#if property.name === 'Status' && (property.kind === 'status' || property.kind === 'select')}
     <Select.Root type="single" value={status} onValueChange={(value) => void changeStatus(value)} disabled={savingStatus}>
       <Select.Trigger size="sm" class="h-auto border-0 bg-transparent p-0 hover:bg-transparent dark:bg-transparent" aria-label="Change task status">
         {#if savingStatus}<WorkingSpinner size={12} />Saving…{:else}<Chip tone={taskStatusTone(status)}>{status}</Chip>{/if}
