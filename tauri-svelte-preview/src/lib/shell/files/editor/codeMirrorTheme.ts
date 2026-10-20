@@ -58,9 +58,10 @@ export function codeMirrorThemeForAppearance(
         borderLeftColor: 'var(--color-accent, #82aaff)'
       },
       '.cm-selectionBackground, ::selection': {
-        backgroundColor: '#ad5dca44 !important'
+        backgroundColor: 'var(--color-text-selection) !important'
       },
-      '.cm-activeLine': { backgroundColor: 'var(--muted)' },
+      // Translucent so the selection layer underneath still shows on the cursor's line.
+      '.cm-activeLine': { backgroundColor: 'color-mix(in srgb, var(--color-text) 5%, transparent)' },
       '.cm-gutters': {
         backgroundColor: 'var(--card)',
         color: '#545864',

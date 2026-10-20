@@ -132,7 +132,8 @@ export const PALETTE_TOKEN_NAMES = [
   '--color-bad-bg',
   '--color-bad-bg-strong',
   '--color-attention-bg',
-  '--color-scrim'
+  '--color-scrim',
+  '--color-text-selection'
 ] as const;
 
 /**
@@ -156,22 +157,16 @@ export const TOKEN_NAMES: string[] = [...PALETTE_TOKEN_NAMES, ...CHROME_TOKEN_NA
 // ── The terminal palette ────────────────────────────────────────────────────
 
 /**
- * The terminal's authoritative palette. `ghosttyFactory.ts` applies the active
- * theme from this registry instead of keeping a second copy.
- *
- * EVERY theme uses these, on purpose. The terminal in this app has been painted
- * in Dracula's colors since long before themes existed, in the old shell and
- * the new one, so every theme keeps exactly those colors — otherwise simply
- * switching themes would repaint every terminal on screen. Giving a theme a
- * terminal palette of its own is a real design decision and a
- * visible change; it belongs in its own change, not in this one.
+ * The terminal's palette, applied by `ghosttyFactory.ts`. Every theme keeps these
+ * Dracula colors on purpose, so switching themes never repaints a terminal.
+ * Ghostty draws selected cells in `selectionBackground` with its default dark text.
  */
 const DRACULA_TERMINAL: TerminalTheme = {
   background: '#282a36',
   foreground: '#f8f8f2',
   cursor: '#f8f8f2',
   cursorAccent: '#282a36',
-  selectionBackground: '#44475a',
+  selectionBackground: '#ff79c6',
   black: '#000000',
   red: '#ff5555',
   green: '#50fa7b',
@@ -229,6 +224,7 @@ const HOUSTON: ShellTheme = {
     '--color-bad-bg-strong': 'rgba(255, 109, 145, 0.2)',
     '--color-attention-bg': 'rgba(255, 212, 147, 0.12)',
     '--color-scrim': 'rgba(0, 0, 0, 0.6)',
+    '--color-text-selection': 'rgba(84, 185, 255, 0.5)',
     '--color-section-header-text': '#a0a6b4',
     '--color-section-focus-ring': '#4bf3c8',
     '--color-tab-unfocused-surface': '#17191e',
@@ -393,6 +389,7 @@ const DRACULA: ShellTheme = {
     '--color-bad-bg-strong': 'rgba(255, 85, 85, 0.2)',
     '--color-attention-bg': 'rgba(241, 250, 140, 0.12)',
     '--color-scrim': 'rgba(0, 0, 0, 0.6)',
+    '--color-text-selection': 'rgba(255, 121, 198, 0.6)',
     '--color-section-header-text': '#a3a8c6',
     '--color-section-focus-ring': '#bd93f9',
     '--color-tab-unfocused-surface': '#282a36',
@@ -561,6 +558,7 @@ const ASSEMBLY: ShellTheme = {
     '--color-bad-bg-strong': 'rgba(241, 94, 108, 0.2)',
     '--color-attention-bg': 'rgba(243, 201, 105, 0.12)',
     '--color-scrim': 'rgba(0, 0, 0, 0.6)',
+    '--color-text-selection': 'rgba(255, 56, 152, 0.6)',
     '--color-section-header-text': '#a7a7a7',
     '--color-section-focus-ring': '#1ed760',
     '--color-tab-unfocused-surface': '#121212',
@@ -606,6 +604,7 @@ const TOKYO_NIGHT: ShellTheme = {
     '--color-bad-bg-strong': 'rgba(247, 118, 142, 0.2)',
     '--color-attention-bg': 'rgba(224, 175, 104, 0.12)',
     '--color-scrim': 'rgba(0, 0, 0, 0.6)',
+    '--color-text-selection': 'rgba(187, 154, 247, 0.55)',
     '--color-section-header-text': '#9aa5ce',
     '--color-section-focus-ring': '#7aa2f7',
     '--color-tab-unfocused-surface': '#1a1b26',
@@ -651,6 +650,7 @@ const GRAPHITE: ShellTheme = {
     '--color-bad-bg-strong': 'rgba(240, 97, 109, 0.2)',
     '--color-attention-bg': 'rgba(232, 194, 104, 0.12)',
     '--color-scrim': 'rgba(0, 0, 0, 0.6)',
+    '--color-text-selection': 'rgba(232, 194, 104, 0.45)',
     '--color-section-header-text': '#8f9096',
     '--color-section-focus-ring': '#ededed',
     '--color-tab-unfocused-surface': '#141416',
