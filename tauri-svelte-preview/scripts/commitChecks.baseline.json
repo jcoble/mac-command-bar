@@ -83,7 +83,7 @@
     "tauri-svelte-preview/src/lib/shell/worktrees/worktreeManagerRows.ts": 691,
     "tauri-svelte-preview/src/lib/sourceData.ts": 2922,
     "tauri-svelte-preview/src/lib/sourceDockviewWorkspace.ts": 1188,
-    "tauri-svelte-preview/src/lib/tauriSource.ts": 3509,
+    "tauri-svelte-preview/src/lib/tauriSource.ts": 3508,
     "tauri-svelte-preview/src/lib/workspaceSnapshot.ts": 613,
     "tauri-svelte-preview/src/lib/worktreeCleanupRunbook.ts": 878,
     "tauri-svelte-preview/src/lib/worktreeSafety.ts": 1141,
