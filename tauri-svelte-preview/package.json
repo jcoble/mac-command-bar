@@ -134,7 +134,8 @@
     "test:notion-project-match": "node --experimental-strip-types src/lib/shell/notionProjectMatch.test.ts",
     "test:conversation-turn-stream": "node --import ./scripts/svelteRuneTestSetup.ts --experimental-strip-types scripts/conversationTurnStream.test.ts",
     "test:explorer-service": "node --experimental-strip-types scripts/explorerService.test.ts",
-    "test:session-history-host": "node --experimental-strip-types scripts/sessionHistoryHost.test.ts"
+    "test:session-history-host": "node --experimental-strip-types scripts/sessionHistoryHost.test.ts",
+    "test:tasks-view": "node --experimental-strip-types scripts/tasksView.test.ts"
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.90.0",
