@@ -9,10 +9,8 @@ use std::path::{Path, PathBuf};
 const CLAUDE_GENERIC_SESSION_TITLE: &str = "Claude session";
 const CLAUDE_SESSION_FILE_LIMIT: usize = 512;
 const CLAUDE_SESSION_TAIL_BYTES: usize = 256 * 1024;
-/// How far into a transcript to look for the entrypoint that launched it. The
-/// field rides on every `user`, `assistant` and `attachment` record, so it turns
-/// up early; across 1091 transcripts here 64 KB reaches it in 1050 of them, and
-/// the rest are kept and settled when the file is parsed in full.
+/// How much of each end of a transcript to read for the entrypoints that wrote it. The field rides
+/// on every `user`, `assistant` and `attachment` record; across 1091 transcripts here 64 KB reaches it in 1050.
 const CLAUDE_SESSION_LAUNCH_PROBE_BYTES: usize = 64 * 1024;
 const CODEX_GENERIC_SESSION_TITLE: &str = "Codex session";
 const CODEX_UNTITLED_INDEX_TITLE: &str = "Untitled Codex session";
@@ -1327,12 +1325,10 @@ pub fn parse_claude_jsonl(input: &str, project_path: &str) -> Vec<AgentSessionRe
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .enumerate()
     {
-        // One such entry condemns the whole transcript: these files are what
-        // they are end to end, so anything already collected from one is an
-        // agent's turn, not a session the user can resume. Both checks answer
-        // the same question — "is this a top-level session?" — from different
-        // evidence: a subagent's sidechain flag, or a helper's entrypoint.
-        if is_claude_sidechain_entry(&value) || is_claude_agent_launched_entry(&value) {
+        // One sidechain entry condemns the whole transcript: a subagent's file is
+        // one end to end. Helper runs are settled by the file probe, which sees
+        // both ends; this tail cannot tell a session carried on with `claude -p`.
+        if is_claude_sidechain_entry(&value) {
             return Vec::new();
         }
 
@@ -1518,9 +1514,9 @@ const AGENT_LAUNCH_ENTRYPOINT_PREFIXES: &[&str] = &["sdk"];
 /// `sdk-py`) where a session the user typed into is `cli` or `claude-vscode`.
 ///
 /// Verified 2026-07-28 across 1073 transcripts on this machine: every one of the
-/// 888 dispatched helper runs was `sdk-…`, every human session was `cli` or
-/// `claude-vscode`, and no transcript ever mixed the two families. 1072 of the
-/// 1073 carry the field within the 256 KB tail this scanner reads.
+/// 888 dispatched helper runs was `sdk-…` and every human session was `cli` or
+/// `claude-vscode`. A session Assembly started (`sdk-ts`) and the user carried on
+/// in the CLI mixes them, and that is the user's own work.
 ///
 /// This deliberately replaces the "does the first message read like a dispatch
 /// prompt?" idea: the user's real sessions often open with pasted logs and
@@ -1530,16 +1526,6 @@ fn is_agent_launch_entrypoint(entrypoint: &str) -> bool {
     AGENT_LAUNCH_ENTRYPOINT_PREFIXES
         .iter()
         .any(|prefix| entrypoint.starts_with(prefix))
-}
-
-/// Reads that entrypoint off one transcript line. A line without the field says
-/// nothing either way — older transcripts predate it — so it is not evidence of
-/// a helper and the transcript is kept.
-fn is_claude_agent_launched_entry(value: &Value) -> bool {
-    value
-        .get("entrypoint")
-        .and_then(Value::as_str)
-        .is_some_and(is_agent_launch_entrypoint)
 }
 
 /// The same question asked of a file instead of a parsed record, so the scan can
@@ -1552,21 +1538,22 @@ fn is_claude_agent_launched_entry(value: &Value) -> bool {
 /// user's own sessions out of the scan entirely: 6 of 24 survived. Nothing was
 /// wrong with the rule; it just ran too late to matter.
 ///
-/// Reads a bounded head rather than the whole file. Anything unreadable, or
-/// whose entrypoint sits past the probe, is kept and settled when the file is
-/// parsed in full — the same direction to fail as every other check here.
+/// Reads a bounded head and tail rather than the whole file: a session carried on
+/// in the CLI shows it at the end. Anything unreadable, or with no entrypoint in
+/// either window, is kept — the same direction to fail as every other check here.
 fn claude_transcript_file_is_agent_launched(path: &Path) -> bool {
-    let Ok(head) = read_head_utf8(path, CLAUDE_SESSION_LAUNCH_PROBE_BYTES) else {
+    let (Ok(head), Ok(tail)) = (read_head_utf8(path, CLAUDE_SESSION_LAUNCH_PROBE_BYTES), read_tail_utf8(path, CLAUDE_SESSION_LAUNCH_PROBE_BYTES)) else {
         return false;
     };
-
-    claude_transcript_head_is_agent_launched(&head)
+    claude_transcript_head_is_agent_launched(&format!("{head}\n{tail}"))
 }
 
-pub fn claude_transcript_head_is_agent_launched(head: &str) -> bool {
-    head.lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .any(|value| is_claude_agent_launched_entry(&value))
+/// True when one program wrote every entrypoint here. A line without the field
+/// says nothing either way — older transcripts predate it — so it is not evidence.
+pub fn claude_transcript_head_is_agent_launched(text: &str) -> bool {
+    let mut entrypoints = text.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|value| value.get("entrypoint").and_then(Value::as_str).map(str::to_owned));
+    entrypoints.next().is_some_and(|first| is_agent_launch_entrypoint(&first) && entrypoints.all(|other| other == first))
 }
 
 /// Claude Code records its own generated session title on a `type: "ai-title"`
@@ -3028,10 +3015,7 @@ mod tests {
         assert!(!is_agent_launch_entrypoint("claude-vscode"));
         assert!(!is_agent_launch_entrypoint(""));
 
-        assert_eq!(
-            parse_claude_jsonl(HELPER_AGENT_JSONL, "/Users/dev/work/mac-command-bar"),
-            Vec::new()
-        );
+        assert!(claude_transcript_head_is_agent_launched(HELPER_AGENT_JSONL));
 
         // A real session that opens with pasted log output and the very phrases
         // a dispatch prompt uses ("You are ", "Review this change", "Your final
@@ -3067,20 +3051,14 @@ mod tests {
     /// Locks in why there is no "does this read like a dispatch prompt?" rule.
     ///
     /// The security reviewers that fill the rail are launched programmatically
-    /// like every other helper, so the entrypoint already answers for them —
-    /// checked here at both the probe and the parse. Guessing from the text
+    /// like every other helper, so the entrypoint already answers for them at
+    /// the probe. Guessing from the text
     /// instead would cost real sessions: the second fixture opens with a
     /// machine-written summary and IS the user's own work, and the third opens
     /// with the words "Review this change" typed by the user.
     #[test]
     fn claude_scan_reads_how_a_run_was_launched_not_what_it_says() {
-        assert!(claude_transcript_head_is_agent_launched(
-            SECURITY_REVIEW_AGENT_JSONL
-        ));
-        assert_eq!(
-            parse_claude_jsonl(SECURITY_REVIEW_AGENT_JSONL, "/Users/dev/work/mac-command-bar"),
-            Vec::new()
-        );
+        assert!(claude_transcript_head_is_agent_launched(SECURITY_REVIEW_AGENT_JSONL));
 
         for (fixture, id) in [
             (REAL_SESSION_RESUMED_FROM_A_SUMMARY_JSONL, "S8"),
@@ -3117,11 +3095,26 @@ mod tests {
         ));
         assert!(!claude_transcript_head_is_agent_launched(""));
 
-        // And the rule the probe applies is the one the parse applies.
-        assert_eq!(
-            parse_claude_jsonl(API_BATCH_JOB_JSONL, "/private/var/folders/rp/T"),
-            Vec::new()
-        );
+    }
+
+    /// Assembly's adapter writes `sdk-ts`. A session it started and the user carried on in the CLI, typed or
+    /// with `claude -p`, is the user's; a transcript only one program ever wrote is a helper run.
+    #[test]
+    fn claude_scan_keeps_a_session_continued_outside_the_program_that_started_it() {
+        let line = |entrypoint: &str| format!(r#"{{"type":"user","entrypoint":"{entrypoint}","sessionId":"S9","message":{{"role":"user","content":"hi"}}}}"#);
+        let transcript = |entrypoints: &[&str]| entrypoints.iter().map(|entrypoint| line(entrypoint)).collect::<Vec<_>>().join("\n");
+        assert!(!claude_transcript_head_is_agent_launched(&transcript(&["sdk-ts", "cli"])));
+        assert!(!claude_transcript_head_is_agent_launched(&transcript(&["sdk-ts", "sdk-cli"])));
+        assert!(claude_transcript_head_is_agent_launched(&transcript(&["sdk-ts", "sdk-ts"])));
+        assert_eq!(parse_claude_jsonl(&transcript(&["sdk-ts", "cli"]), "/w").len(), 1);
+        // The file probe reads the end too: the CLI turns come after a long opening written by Assembly.
+        let path = std::env::temp_dir().join(format!("scan-continued-{}.jsonl", std::process::id()));
+        let opening = vec![line("sdk-ts"); CLAUDE_SESSION_LAUNCH_PROBE_BYTES / 64].join("\n");
+        std::fs::write(&path, format!("{opening}\n{}\n", line("cli"))).unwrap();
+        assert!(!claude_transcript_file_is_agent_launched(&path));
+        std::fs::write(&path, format!("{opening}\n")).unwrap();
+        assert!(claude_transcript_file_is_agent_launched(&path));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

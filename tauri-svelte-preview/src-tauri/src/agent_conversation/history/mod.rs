@@ -98,15 +98,8 @@ pub fn import_session(
 /// it. It is written here, with the row, because the database is what the rail
 /// reads: a title held only in the front end survived until the next reload and
 /// then the row went back to showing a raw owned id.
-pub fn begin_import_session(
-    store: &SessionStore,
-    provider: AgentConversationProvider,
-    native_session_id: &str,
-    path: &Path,
-    cwd: &str,
-    title: Option<String>,
-    open: bool,
-) -> Result<(String, bool), String> {
+pub fn begin_import_session(store: &SessionStore, provider: AgentConversationProvider, native_session_id: &str,
+    path: &Path, cwd: &str, title: Option<String>, open: bool) -> Result<(String, bool), String> {
     let metadata = path.metadata().map_err(|error| format!("Could not inspect transcript: {error}"))?;
     if let Some(mut row) = existing_import_session(store, provider, native_session_id)? {
         // The transcript is the whole conversation. A session never read from it (one
@@ -138,14 +131,9 @@ pub fn begin_import_session(
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .and_then(|since| i64::try_from(since.as_millis()).ok())
         .unwrap_or_else(now_millis);
-    let cursor = ImportCursor {
-        transcript_path: path.to_string_lossy().into_owned(),
-        cutoff_offset: metadata.len(),
-        imported_length: Some(metadata.len()),
-        ..ImportCursor::default()
-    };
-    let extra_json =
-        merge_import_cursor(&super::manager::imported_session_extra(provider)?, &cursor)?;
+    let cursor = ImportCursor { transcript_path: path.to_string_lossy().into_owned(), cutoff_offset: metadata.len(),
+        imported_length: Some(metadata.len()), ..ImportCursor::default() };
+    let extra_json = merge_import_cursor(&super::manager::imported_session_extra(provider)?, &cursor)?;
     // The folder's project as of now, matched like the back-fill: a project added
     // after History scanned this transcript still counts.
     let project_id = crate::project_folders::match_local_folders(store, &[cwd.to_string()])?
@@ -185,6 +173,16 @@ pub fn existing_import_session(store: &SessionStore, provider: AgentConversation
     let stored_provider = enum_storage_value(provider)?;
     Ok(store.list_sessions().map_err(|error| error.to_string())?.into_iter()
         .find(|row| row.native_session_id.as_deref() == Some(native_session_id) && row.provider == stored_provider))
+}
+
+/// Assembly's own run of an imported session writes to its transcript too (Claude adds bookkeeping lines on every
+/// load and turn), so after each turn and on suspend the saved length follows the file: only growth from outside reads it again.
+pub fn follow_imported_length(store: &SessionStore, owned_id: &str) -> Result<(), String> {
+    let Some(mut row) = store.get_session(owned_id).map_err(|error| error.to_string())? else { return Ok(()) };
+    let Some(cursor) = optional_import_cursor(&row.extra_json)?.filter(|cursor| cursor.imported_length.is_some()) else { return Ok(()) };
+    let Ok(metadata) = std::fs::metadata(&cursor.transcript_path) else { return Ok(()) };
+    row.extra_json = merge_import_cursor(&row.extra_json, &ImportCursor { imported_length: Some(metadata.len()), ..cursor })?;
+    store.upsert_session(&row).map_err(|error| error.to_string())
 }
 
 pub fn ensure_child_import(

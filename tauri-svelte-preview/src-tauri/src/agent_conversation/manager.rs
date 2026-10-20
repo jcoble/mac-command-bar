@@ -4152,7 +4152,7 @@ impl AgentRuntimeManager {
             }
             return Err(error);
         }
-
+        if let Err(error) = super::history::follow_imported_length(&self.store, owned_id) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
         let mut sessions = self
             .sessions
             .lock()
@@ -7220,9 +7220,8 @@ async fn handle_ordered_session_event(
             true
         }
         OrderedSessionEvent::PromptResult { turn_id, result } => {
-            manager
-                .finish_child_rollout_scan(owned_id, generation, &turn_id)
-                .await;
+            manager.finish_child_rollout_scan(owned_id, generation, &turn_id).await;
+            if let Err(error) = super::history::follow_imported_length(&manager.store, owned_id) { crate::debug_log::stderr_log!("Could not follow the imported transcript: {error}"); }
             let cancelled = result
                 .as_ref()
                 .ok()
@@ -7986,7 +7985,7 @@ mod tests {
     use crate::agent_conversation::protocol::AgentCommandDescriptor;
     mod checkout;
     mod model_effort;
-    mod codex_resume;
+    mod codex_resume; mod import_length;
     use serde_json::json;
     use std::fs;
     use std::time::{Duration, Instant};
