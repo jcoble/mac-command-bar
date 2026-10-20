@@ -9,7 +9,7 @@ import { stripTypeScriptTypes } from 'node:module';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { compileModule } from 'svelte/compiler';
-import { EventType } from '@tanstack/ai/client';
+import { EventType, StreamProcessor } from '@tanstack/ai/client';
 import * as conversationMessages from '../src/lib/shell/conversation/conversationMessages.ts';
 import { usageDropIsCompaction } from '../src/lib/shell/conversation/conversationReducer.ts';
 
@@ -59,20 +59,22 @@ function loadConnection() {
   const body = source.slice(source.indexOf('const PAGE_BYTES')).replace(/^export /gm, '');
   const olderCursors: number[] = [];
   let admitSend: (receipt: unknown) => void = () => undefined;
+  let liveEvent: (event: unknown) => void = () => undefined;
   const createChat = (options: any) => {
+    const processor = new StreamProcessor();
     const chat = {
-      messages: [] as any[],
+      get messages() { return processor.getMessages(); },
       dispose: () => undefined,
-      setMessages: (messages: any[]) => { chat.messages = messages; },
+      setMessages: (messages: any[]) => processor.setMessages(messages),
       async sendMessage(message: any) {
-        chat.messages = [...chat.messages, { id: 'optimistic', role: 'user', parts: message.content, metadata: message.metadata }];
+        processor.setMessages([...chat.messages, { id: 'optimistic', role: 'user', parts: message.content, metadata: message.metadata }]);
         await options.connection.send(chat.messages, undefined, undefined, { runId: 'run' });
       }
     };
     void (async () => {
       for await (const chunk of options.connection.subscribe()) {
-        if (chunk.type === EventType.MESSAGES_SNAPSHOT) chat.messages = chunk.messages;
-        else if (chunk.type === EventType.CUSTOM) options.onCustomEvent(chunk.name, chunk.value);
+        if (chunk.type === EventType.CUSTOM) options.onCustomEvent(chunk.name, chunk.value);
+        else processor.processChunk(chunk);
       }
     })();
     return chat;
@@ -93,6 +95,7 @@ function loadConnection() {
     restoreAttachmentList: async (_id: string, saved: { id: string }[]) => saved.map(({ id }) => ({ id, name: id, previewUrl: `data:${id}` })),
     sendStructuredMessage: () => new Promise((resolve) => { admitSend = resolve; }),
     subscribeSelectedConversation: async (options: any) => {
+      liveEvent = options.onEvent;
       options.onSnapshot({ page: page(21, 30, true), pendingEvents: [], pendingSequence: 30, suspended: false,
         connection: { generation: 1, provider: 'codex', state: 'connected' } });
       return () => undefined;
@@ -107,7 +110,7 @@ function loadConnection() {
     return { selectConversationChat, selectedConversationChatReady, pageSelectedConversation,
       trimSelectedConversationToLatest, sendSelectedConversationMessage };
   `)(...Object.values(dependencies));
-  return { api, olderCursors, admitSend: (receipt: unknown) => admitSend(receipt) };
+  return { api, olderCursors, admitSend: (receipt: unknown) => admitSend(receipt), liveEvent: (event: unknown) => liveEvent(event) };
 }
 
 /** Lets the attachment reads a page started finish. */
@@ -153,4 +156,14 @@ test('trim_waits_while_a_send_is_pending', async () => {
   assert.deepEqual(ids(chat.messages), [...range(1, 30, 'u'), 'optimistic'], 'nothing is dropped while a send is pending');
   admitSend({ turnId: 'turn-new', userItemId: 'u31', generation: 1, admittedSequence: 31 });
   await send;
+});
+
+test('trim_keeps_live_output_queued_before_it', async () => {
+  const { api, chat, liveEvent } = await openAndPageTwice('streaming');
+  // A turn started elsewhere streams while the reader returns; the trim must not overwrite its reply.
+  liveEvent({ ownedId: 'streaming', provider: 'codex', generation: 1, sequence: 31, timestampMs: 31,
+    payload: { kind: 'assistantMessage', itemId: 'live', turnId: 't30', text: 'still streaming', completed: true } });
+  await api.trimSelectedConversationToLatest();
+  await settle();
+  assert.deepEqual(ids(chat.messages), [...range(22, 30, 'u'), 'live'], 'the reply that arrived first is kept');
 });

@@ -54,7 +54,7 @@ const PAGE_BYTES = 512 * 1024;
 const encoder = new TextEncoder();
 
 type Direction = 'older' | 'newer';
-type QueueItem = StreamChunk | { nativeEvent: AgentConversationEvent } | { error: unknown };
+type QueueItem = StreamChunk | { nativeEvent: AgentConversationEvent } | { error: unknown } | { trimTo: number };
 
 interface PendingSend {
   runId: string;
@@ -257,6 +257,8 @@ function enqueueFactory(signal: AbortSignal, selection: ActiveConversation): {
                 yield chunk;
               }
               recordLiveMessages(selection, changedIds, replaced);
+            } else if ('trimTo' in item) {
+              yield* conversationSnapshotChunks(trimmedMessages(selection, item.trimTo));
             } else {
               yield item;
             }
@@ -526,16 +528,8 @@ function emitEvent(
     }
   }
   const showingLatest = !getConversationSession(selection.historyOwnedId)?.selectedHasAfter;
-  const displayEvents = event.payload.kind === 'usage'
-    && usageDropIsCompaction(previousUsedTokens, event.payload.usedTokens)
-    ? [{
-        ...event,
-        payload: {
-          kind: 'contextCompaction' as const,
-          preTokens: previousUsedTokens,
-          postTokens: event.payload.usedTokens
-        }
-      }, event]
+  const displayEvents = event.payload.kind === 'usage' && usageDropIsCompaction(previousUsedTokens, event.payload.usedTokens)
+    ? [{ ...event, payload: { kind: 'contextCompaction' as const, preTokens: previousUsedTokens, postTokens: event.payload.usedTokens } }, event]
     : [event];
   const pending = selection.pendingSend;
   if (pending && !pending.receipt) {
@@ -970,18 +964,25 @@ export async function trimSelectedConversationToLatest(historyOwnedId?: string):
     || !keep || selection.chat.messages.length <= keep || selection.resolveReady || selection.pendingSend
     || selection.pendingAdmission || selection.anchorAdmission || current.selectedLoadingOlder || current.selectedLoadingNewer
     || Object.keys(current.pendingApprovals).length || Object.keys(current.pendingInputs).length) return;
-  const kept = selection.chat.messages.slice(-keep);
-  selection.beforeCursor = historyPosition(kept.find((message) => historyPosition(message) !== undefined)) ?? selection.beforeCursor;
-  // The older-page lock holds until the chat takes the snapshot, so no page merges into the old list.
+  // The older-page lock holds until the chat takes the trimmed snapshot, so no page merges into the old list.
   current.selectedHasBefore = true;
-  current.selectedBeforeCursor = selection.beforeCursor;
   setSelectedConversationPageLoading(selection.historyOwnedId, 'older', true);
   resetReady(selection);
-  pushMessagesSnapshot(selection, kept, selection.push);
-  applySelectedConversationLiveWindow(selection.historyOwnedId, kept.flatMap((message) =>
-    typeof message.metadata?.turnId === 'string' ? [message.metadata.turnId] : []), selection.graphBytes);
-  restoreSelectedConversationAttachments(selection.historyOwnedId, {}, current.generation, kept.map((message) => message.id));
+  selection.push({ trimTo: keep });
   selection.push({ type: EventType.CUSTOM, name: 'assembly:snapshot-ready', value: selection.historyOwnedId } as StreamChunk);
   await ignoreLeftSelection(selection.ready);
   if (isCurrent(selection)) setSelectedConversationPageLoading(selection.historyOwnedId, 'older', false);
+}
+
+/** Runs in delivery order, so live output queued before the trim is already in the chat it cuts. */
+function trimmedMessages(selection: ActiveConversation, keep: number): UIMessage[] {
+  const kept = selection.chat.messages.slice(-keep);
+  const current = getConversationSession(selection.historyOwnedId);
+  selection.beforeCursor = historyPosition(kept.find((message) => historyPosition(message) !== undefined)) ?? selection.beforeCursor;
+  if (current) current.selectedBeforeCursor = selection.beforeCursor;
+  resetMessageBytes(selection, kept);
+  applySelectedConversationLiveWindow(selection.historyOwnedId, kept.flatMap((message) =>
+    typeof message.metadata?.turnId === 'string' ? [message.metadata.turnId] : []), selection.graphBytes);
+  restoreSelectedConversationAttachments(selection.historyOwnedId, {}, current?.generation ?? 0, kept.map((message) => message.id));
+  return kept;
 }
