@@ -132,6 +132,11 @@ one next to it doesn't. Before calling work done, name which of these you covere
   no exemption for changes that look small: Claude Code and Codex, each on a local session and on
   Workbox Test. Several changes may share one run if it exercises each of them. Report the four-row
   table with evidence; a scenario you can't run is reported blocked with the exact error.
+  Each worktree has its own test-app run: `fourScenarios.ts start --worktree <path>` and
+  `stop --worktree <path>` use `~/assembly-proof/current-<worktree folder name>`. Without
+  `--worktree`, commands use the current directory's Git worktree. Different worktrees may run
+  together when more than 6 GB of RAM is available; starting the same worktree twice is refused.
+  Stopping one worktree leaves the others running.
 - That check and any UI proof use the real native app with real test data, driven the way a
   person uses it. On Linux the app runs under Xvfb at 1710x990, driven with `assembly-native-ui`
   (screenshots, clicks, keys); Codex may use its computer-use tool. A browser preview is not proof:
