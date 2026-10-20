@@ -488,16 +488,6 @@ mod tests {
     }
 
     #[test]
-    fn skipped_reports_only_sessions_past_their_saved_maximum() {
-        let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
-        history.snapshot("a", 0, None, &mut snapshot(1, 3)).unwrap();
-        assert!(history.skipped("a", &[event(4)]).unwrap().is_empty());
-        assert_eq!(history.skipped("a", &[event(6), event(7)]).unwrap(), BTreeMap::from([("same-session-id".to_string(), 3)]));
-        let unsaved = AgentConversationEvent { owned_id: "other".into(), ..event(9) };
-        assert!(history.skipped("a", &[unsaved]).unwrap().is_empty());
-    }
-
-    #[test]
     fn remote_history_caches_live_messages_before_a_snapshot_and_bounds_reads() {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
         for sequence in 1..=10 {
@@ -642,14 +632,22 @@ impl RemoteHistory {
             .map(|_| physical)
     }
 
-    /// Sessions whose first event in this pushed batch skips past their saved maximum, with that maximum.
+    /// Sessions whose pushed batch skips a sequence, with their original saved maximum.
     pub fn skipped(&self, profile: &str, events: &[AgentConversationEvent]) -> Result<BTreeMap<String, i64>, String> {
-        let mut first = BTreeMap::new();
-        for event in events { first.entry(event.owned_id.as_str()).or_insert(event.sequence); }
+        let mut batches = BTreeMap::new();
+        for event in events { batches.entry(event.owned_id.as_str()).or_insert_with(Vec::new).push(event.sequence); }
         let mut skipped = BTreeMap::new();
-        for (owned, sequence) in first {
+        for (owned, sequences) in batches {
             let (_, saved) = self.bounds(profile, owned)?;
-            if let Some(saved) = saved.filter(|saved| sequence > saved.saturating_add(1)) { skipped.insert(owned.to_string(), saved); }
+            let Some(saved) = saved else { continue; };
+            let mut highest = saved;
+            for sequence in sequences {
+                if sequence > highest.saturating_add(1) {
+                    skipped.insert(owned.to_string(), saved);
+                    break;
+                }
+                highest = highest.max(sequence);
+            }
         }
         Ok(skipped)
     }

@@ -85,6 +85,27 @@ fn only_the_sentinel(after: &[ClientFrame]) -> bool {
     matches!(after, [ClientFrame::Request { id: 900, .. }])
 }
 
+#[test]
+fn skipped_reports_only_sessions_past_their_saved_maximum() {
+    let history = RemoteHistory::new(store());
+    history.snapshot("box", 0, None,
+        &mut history_snapshot((1..=3).map(history_event).collect(), 3)).unwrap();
+    assert!(history.skipped("box", &[history_event(4)]).unwrap().is_empty());
+    assert_eq!(history.skipped("box", &[history_event(6), history_event(7)]).unwrap(),
+        BTreeMap::from([("large-history".to_string(), 3)]));
+    let unsaved = AgentConversationEvent { owned_id: "other".into(), ..history_event(9) };
+    assert!(history.skipped("box", &[unsaved]).unwrap().is_empty());
+}
+
+#[test]
+fn a_contiguous_first_event_does_not_hide_a_later_skip_in_the_batch() {
+    let history = RemoteHistory::new(store());
+    history.snapshot("box", 0, None,
+        &mut history_snapshot((1..=3).map(history_event).collect(), 3)).unwrap();
+    assert_eq!(history.skipped("box", &[history_event(4), history_event(6)]).unwrap(),
+        BTreeMap::from([("large-history".to_string(), 3)]));
+}
+
 #[tokio::test]
 async fn a_skipped_sequence_asks_for_the_skipped_range_once() {
     let (published, saved, after) = run(|mut socket| async move {
