@@ -10,7 +10,8 @@ impl AgentRuntimeManager {
             .and_then(|value| serde_json::from_str::<i64>(&value).ok())
             .filter(|minutes| *minutes >= 0).unwrap_or(HELPER_CLOSE_AFTER_MS / 60_000);
         if minutes == 0 { return Ok(0); }
-        let due = self.store.finished_helpers_due(now_ms, minutes.saturating_mul(60_000))
+        let quiet_ms = minutes.saturating_mul(60_000);
+        let due = self.store.finished_helpers_due(now_ms, quiet_ms)
             .map_err(|error| error.to_string())?;
         let mut count = 0;
         for owned_id in due {
@@ -18,6 +19,12 @@ impl AgentRuntimeManager {
                 self.hydrate_overlay_from_store(&owned_id)?;
                 let mut sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let Some(session) = sessions.get_mut(&owned_id) else { return Ok(false) };
+                // The candidate may have received work while we waited for this lock.
+                if store_timestamp(session.last_activity_ms) > now_ms.saturating_sub(quiet_ms)
+                    || session.rail_meta.completed_at.is_some()
+                    || matches!(session.state, AgentRuntimeState::Starting | AgentRuntimeState::Working
+                        | AgentRuntimeState::Interrupting | AgentRuntimeState::WaitingApproval | AgentRuntimeState::WaitingInput)
+                { return Ok(false); }
                 let completed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
                 session.rail_meta.completed_at = Some(completed_at.clone());
                 record_payload_for_session_and_dispatch(session, &self.emitter,

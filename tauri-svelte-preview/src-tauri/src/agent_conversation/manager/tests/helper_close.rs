@@ -59,3 +59,21 @@ async fn helper_close_reads_the_minutes_setting_each_sweep_and_zero_disables_it(
     fixture.manager.close(&fixture.owned_id, fixture.generation).await.unwrap();
     fs::remove_dir_all(fixture.root).unwrap();
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn helper_close_preserves_a_candidate_that_has_new_live_activity() {
+    let fixture = fixture_manager_with_acp_session("multiplex").await;
+    let now = store_timestamp(timestamp_millis());
+    {
+        let mut sessions = fixture.manager.sessions.lock().unwrap();
+        let session = sessions.get_mut(&fixture.owned_id).unwrap();
+        session.helper_of = Some("parent".into());
+        persist_session(session).unwrap();
+        // The SQL selection saw the quiet row before this new activity arrived.
+        session.last_activity_ms = (now + 2 * HELPER_CLOSE_AFTER_MS) as u128;
+    }
+    assert_eq!(fixture.manager.close_finished_helpers(now + HELPER_CLOSE_AFTER_MS + 1).unwrap(), 0);
+    assert!(fixture.manager.sessions.lock().unwrap().get(&fixture.owned_id).unwrap().rail_meta.completed_at.is_none());
+    fixture.manager.close(&fixture.owned_id, fixture.generation).await.unwrap();
+    fs::remove_dir_all(fixture.root).unwrap();
+}
