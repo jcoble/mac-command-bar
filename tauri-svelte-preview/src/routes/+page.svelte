@@ -586,10 +586,10 @@
 		if (ownedId) selection.persistWorkspaceState(ownedId, workbench.captureSessionState());
 	}
 
-	function openNewSession(projectId: string | null = null): void {
+	function openNewSession(projectId: string | null = null, folder: string | null = null): void {
 		projectsOpen = false;
 		messagesOpen = false;
-		selection.newSession.open(projectId);
+		selection.newSession.open(projectId, folder);
 		selectCenterTab("session");
 	}
 
@@ -740,7 +740,7 @@
 			{#key selection.newSession.stopSignal}
 			<DraftSessionSurface
 				stopSignal={selection.newSession.stopSignal}
-				projectId={selection.newSession.projectId}
+				projectId={selection.newSession.projectId} folder={selection.newSession.folder}
 				startingOwnedId={selection.newSession.pendingFirstMessage?.ownedId ?? null}
 				onSend={startNewSession}
 				onClose={() => selection.newSession.close()}

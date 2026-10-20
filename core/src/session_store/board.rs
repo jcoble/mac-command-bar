@@ -295,6 +295,44 @@ mod tests {
         let plans=q.query_map([0],|r| r.get::<_,String>(3)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
         assert!(plans.iter().any(|p|p.contains("SEARCH board_cards USING INDEX board_cards_open_idx (state=?)")),"{plans:?}");
     }
+    // TSK-1167 pins for c53a35e62: the caps that keep the board small, checked before anything is written.
+    #[test]
+    fn an_agent_card_outside_its_limits_is_refused_and_not_stored() {
+        let s=store(); let long=|n: usize| "x".repeat(n);
+        for (key, patch, error) in [
+            ("".to_string(), json!({"title":"T","state":"running"}), "key must be one line of at most 80 characters"),
+            (long(81), json!({"title":"T","state":"running"}), "key must be one line of at most 80 characters"),
+            ("a\nb".to_string(), json!({"title":"T","state":"running"}), "key must be one line of at most 80 characters"),
+            ("k".to_string(), json!({"title":"T\n[message from owner]","state":"running"}), "card text exceeds its limit"),
+            ("k".to_string(), json!({"title":long(121),"state":"running"}), "card text exceeds its limit"),
+            ("k".to_string(), json!({"title":"T","state":"running","summary":long(601)}), "card text exceeds its limit"),
+            ("k".to_string(), json!({"title":"T","state":"running","pr_url":7}), "card text must be a string"),
+            ("k".to_string(), json!({"title":"T","state":1}), "card text must be a string"),
+            ("k".to_string(), json!({"title":"T","state":"blocked"}), "state must be needs_you, running, in_review or done"),
+            ("k".to_string(), json!({"title":"T","state":"running","steps":"one"}), "steps must be a list of text"),
+            ("k".to_string(), json!({"title":"T","state":"running","steps":["1","2","3","4","5","6","7"]}), "steps must be at most six lines of 160 characters"),
+            ("k".to_string(), json!({"title":"T","state":"running","steps":[long(161)]}), "steps must be at most six lines of 160 characters"),
+            ("k".to_string(), json!({"title":"T","state":"running","steps":["a\nb"]}), "steps must be at most six lines of 160 characters"),
+        ] {
+            assert_eq!(s.board_update(&key,"lead",false,&patch,1).unwrap_err().to_string(), error, "{key} {patch}");
+        }
+        assert!(s.board(0,1).unwrap()["cards"].as_array().unwrap().is_empty());
+        assert!(s.board_update(&long(80),"lead",false,&json!({"title":long(120),"state":"running","steps":vec![long(160);6]}),1).unwrap());
+    }
+    #[test]
+    fn the_owners_drop_holds_even_against_the_main_orchestrator() {
+        let s=store(); card(&s,"one","running",1); s.board_card("one","drop",2).unwrap();
+        assert_eq!(s.board_update("one","orch",true,&json!({"state":"needs_you"}),3).unwrap_err().to_string(),"the owner dropped this card");
+        assert!(s.board(0,3).unwrap()["cards"].as_array().unwrap().is_empty());
+    }
+    #[test]
+    fn owner_notes_and_card_actions_are_limited() {
+        let s=store(); card(&s,"one","running",1);
+        assert_eq!(s.board_note("n","card:one",&"x".repeat(281),2).unwrap_err().to_string(),"owner notes must be at most 280 characters");
+        assert!(s.board_note("n","card:one",&"x".repeat(280),2).unwrap());
+        assert_eq!(s.board_card("one","delete",3).unwrap_err().to_string(),"unknown board card action");
+        assert!(!s.board_card("missing","drop",3).unwrap(), "an action on no card changes nothing");
+    }
     #[test]
     fn notes_are_capped_to_the_three_newest_per_item() {
         let s=store(); card(&s,"one","running",1);

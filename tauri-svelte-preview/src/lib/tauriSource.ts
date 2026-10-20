@@ -791,7 +791,7 @@ export async function validateProjectRootFromTauri(
     const result = await invoke<ProjectRootValidationResult | null>('validate_project_root', {
       path,
       generation
-    });
+    }, undefined, signal);
     return signal?.aborted ? null : result;
   } finally {
     signal?.removeEventListener('abort', cancel);

@@ -188,10 +188,11 @@
     return 'text-[var(--color-attention)]';
   }
 
-  /** A branch or tag name. Capped so a long branch name cannot push the commit
-   * subject — the thing you are actually reading — off the end of the row. */
+  /** A branch or tag name. Pills shrink and cut their text short, and the
+   * subject keeps at least half the row, so a commit with several branch names
+   * still shows what it says. */
   const PILL =
-    'inline-flex max-w-[45%] shrink-0 items-center truncate rounded-[4px] px-1 text-[12px] leading-[16px]';
+    'min-w-[3em] max-w-[45%] truncate rounded-[4px] px-1 text-[12px] leading-[16px]';
 </script>
 
 <section
@@ -312,7 +313,7 @@
                       {label}
                     </span>
                   {/each}
-                  <span class="min-w-0 truncate text-[13px] leading-[17px]">
+                  <span class="min-w-[50%] truncate text-[13px] leading-[17px]">
                     {commit.subject || '(no message)'}
                   </span>
                 </span>
