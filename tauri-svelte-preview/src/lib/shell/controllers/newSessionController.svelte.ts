@@ -24,6 +24,8 @@ export class NewSessionController {
 	draftOpen = $state(false);
 	/** The project the draft opens in; null lets the draft choose its default. */
 	projectId = $state<string | null>(null);
+	/** The folder of that project the draft starts in, such as one of its worktrees; null is its root. */
+	folder = $state<string | null>(null);
 
 	// State so the surface follows a re-open: a new signal is a new draft.
 	private draftWork = $state.raw(new AbortController());
@@ -34,12 +36,13 @@ export class NewSessionController {
 		return this.draftWork.signal;
 	}
 
-	/** An open draft is kept, typing and all, unless a different project is asked for. */
-	open(projectId: string | null = null): void {
-		if (this.draftOpen && (projectId === null || projectId === this.projectId)) return;
+	/** An open draft is kept, typing and all, unless a different project or folder is asked for. */
+	open(projectId: string | null = null, folder: string | null = null): void {
+		if (this.draftOpen && (projectId === null || (projectId === this.projectId && folder === this.folder))) return;
 		this.stopDraftWork();
 		this.draftWork = new AbortController();
 		this.projectId = projectId;
+		this.folder = folder;
 		this.draftOpen = true;
 	}
 

@@ -29,6 +29,7 @@
   import { describeGitFileChange, gitFileTitle } from '$lib/shell/git/gitPanelStore.svelte';
   import { openDiffForFile, openFileInEditor } from '$lib/shell/workbenchNavigation';
   import { revealPathFromTauri } from '$lib/tauriSource';
+  import { nativeWorkspacePath } from '$lib/workspacePaths.ts';
   import type { ProjectGitFileStatus } from '$lib/tauriSource';
   import { splitRepositoryPath } from '$lib/shell/git/gitCommitFilesStore.svelte';
 
@@ -137,7 +138,7 @@
     else if (id === 'stage') onStage(file);
     else if (id === 'unstage') onUnstage(file);
     else if (id === 'discard') onRequestDiscard(file);
-    else if (id === 'copy-path') copy(absolutePath);
+    else if (id === 'copy-path') copy(nativeWorkspacePath(absolutePath));
     else if (id === 'copy-relative-path') copy(file.relativePath);
     else if (id === 'open-in-editor') openFileInEditor({ path: absolutePath, projectRoot: root });
     else if (id === 'reveal-in-finder') void revealPathFromTauri(absolutePath);

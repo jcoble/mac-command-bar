@@ -2403,7 +2403,7 @@ fn open_external_url(url: &str) -> Result<(), BrowserCommandError> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
+    mod navigation;
     #[derive(Default)]
     struct FakeView {
         close_calls: AtomicUsize,

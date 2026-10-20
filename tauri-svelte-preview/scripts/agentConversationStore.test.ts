@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { compileModule } from 'svelte/compiler';
 import { get } from 'svelte/store';
+import { normalizeProvider } from '../src/lib/shell/ownedSessions.ts';
 import { EventType, StreamProcessor, type StreamChunk } from '@tanstack/ai/client';
 import { shouldClearConversationSending } from '../src/lib/shell/conversation/conversationReducer.ts';
 import { conversationChunksFromEvent, conversationDisplayItems, conversationMessagesAfterCustom, conversationMessagesFromEvents, conversationSnapshotChunks } from '../src/lib/shell/conversation/conversationMessages.ts';
@@ -42,9 +43,7 @@ const storePath = fileURLToPath(
 const outputPath = fileURLToPath(
   new URL('../src/lib/shell/conversation/.conversationStore.test.mjs', import.meta.url)
 );
-// The store imports the runes module that holds the resource counters. Node
-// cannot run that file as written, so it is compiled beside it and the store's
-// import is pointed at the compiled copy.
+// Compile the resource-counter runes module and point the store at that copy.
 const diagnosticsPath = fileURLToPath(
   new URL('../src/lib/shell/resourceDiagnostics.svelte.ts', import.meta.url)
 );
@@ -70,7 +69,8 @@ writeFileSync(
   compileForTest(diagnosticsPath, 'resourceDiagnostics.svelte.js')
 );
 
-let store;
+globalThis.$state = (value) => value;
+export let store;
 try {
   store = await import(`${outputPath}?test=${Date.now()}`);
 } finally {
@@ -1090,7 +1090,7 @@ await test('start-up registers the event stream before it opens the remembered s
 await test('ensure refresh requires the confirmed generation before admitting cached history', async () => {
   const source = readFileSync(new URL('../src/lib/shell/conversation/conversationService.ts', import.meta.url), 'utf8');
   const reload = source.slice(source.indexOf('async function reloadSelectedConversation('), source.indexOf('export async function subscribeSelectedConversation('));
-  const ensure = source.slice(source.indexOf('async function ensureStructuredConversationOnce('), source.indexOf('/** Changes a quiescent Codex session'));
+  const ensure = source.slice(source.indexOf('async function ensureStructuredConversationOnce('), source.indexOf('/** Changes a quiescent session'));
   const ownedId = 'ensured-generation';
   for (const priorMinimum of [undefined, 3]) {
     const state = { generation: 0 };
@@ -1492,7 +1492,7 @@ await test('Stop during revival prevents dispatch and releases the prepared runt
   const dependencies = {
     getConversationSession: () => state,
     setConversationSending: (_id: string, sending: boolean) => { state.sending = sending; },
-    get,
+    get, normalizeProvider,
     sessionPresenceHistory,
     rail: { owned: [{ ownedId: 'cancel-test', agent: 'antigravity', cwd: '/tmp', nativeSessionId: 'native-original' }] },
     shouldReviveBeforeSend: () => true,
