@@ -16,6 +16,13 @@ pub(crate) fn apply_saved_projects(store: &SessionStore, sessions: &mut [AgentCo
     Ok(())
 }
 
+/// The project this desktop filed a remote session under, kept while its stale cached copy is dropped.
+pub(crate) fn saved_project(store: &SessionStore, profile: &str, owned_id: &str) -> Result<Option<(String, String)>, String> {
+    let key = stored_session_id(owned_id, Some(profile));
+    let saved = store.session_projects(&serde_json::json!([key]).to_string()).map_err(|error| error.to_string())?;
+    Ok(saved.into_iter().next().flatten().map(|project| (key, project)))
+}
+
 #[tauri::command]
 pub async fn set_session_project(
     manager: tauri::State<'_, AgentRuntimeManager>,

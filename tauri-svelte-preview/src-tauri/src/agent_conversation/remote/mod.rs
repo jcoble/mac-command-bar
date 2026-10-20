@@ -624,6 +624,7 @@ impl RemoteConnectionManager {
     ) -> Result<(), String> {
         let incoming_ids = sessions.iter().map(|session| session.owned_id.as_str()).collect::<std::collections::HashSet<_>>();
         let mut next = self.cached_sessions();
+        let mut moved = Vec::new();
         // Read again from its transcript there, a session is numbered on above its old head: a copy saved here before
         // that would show every turn twice. A server too old to say leaves the copy alone.
         for session in sessions.iter().filter(|session| session.numbered_after.is_some()) {
@@ -631,6 +632,7 @@ impl RemoteConnectionManager {
                 && old.numbered_after != session.numbered_after) {
                 // A download still running is of the replaced journal: its chunks are dropped, and the next one starts afresh.
                 self.downloads.lock().unwrap().remove(&RemoteHistory::key(profile_id, &session.owned_id));
+                moved.extend(crate::agent_conversation::manager::session_project::saved_project(&self.store, profile_id, &session.owned_id)?);
                 self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).forget(profile_id, &session.owned_id)?;
             }
         }
@@ -646,13 +648,10 @@ impl RemoteConnectionManager {
         next.sort_by(|left, right| right.last_activity_at_ms.cmp(&left.last_activity_at_ms).then_with(|| left.owned_id.cmp(&right.owned_id)));
         self.save_cached_sessions(next)?;
         self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).file_sessions(profile_id, sessions)?;
+        for (key, project) in moved { self.store.move_session_project(&key, &project).map_err(|e| e.to_string())?; }
         let mut routing = self.remote_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         routing.retain(|_, stored_profile_id| stored_profile_id != profile_id);
-        routing.extend(
-            sessions
-                .iter()
-                .map(|session| (session.owned_id.clone(), profile_id.to_string())),
-        );
+        routing.extend(sessions.iter().map(|session| (session.owned_id.clone(), profile_id.to_string())));
         Ok(())
     }
 
