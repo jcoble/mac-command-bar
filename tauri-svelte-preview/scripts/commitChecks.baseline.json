@@ -1,6 +1,5 @@
 {
   "fileSize": {
-    "core/src/broker.rs": 643,
     "core/src/scanners/sessions.rs": 3269,
     "core/src/session_store.rs": 8308,
     "core/src/source.rs": 923,
@@ -11,7 +10,7 @@
     "tauri-svelte-preview/scripts/localSourceFs.test.ts": 874,
     "tauri-svelte-preview/scripts/nextTerminalService.test.ts": 1106,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/attachments.rs": 704,
-    "tauri-svelte-preview/src-tauri/src/agent_conversation/manager.rs": 15860,
+    "tauri-svelte-preview/src-tauri/src/agent_conversation/manager.rs": 15807,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/mod.rs": 1418,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/phone/mod.rs": 3021,
     "tauri-svelte-preview/src-tauri/src/agent_conversation/protocol.rs": 958,

@@ -4,6 +4,8 @@ use rusqlite::{params, Connection, Params, Row, TransactionBehavior};
 
 use crate::session_store::{Result, SessionStore, StoreError};
 
+mod messages;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MessageKind {
     Message,
@@ -164,8 +166,9 @@ const SCOPED_DIRECTORY: &str = "SELECT d.* FROM session_directory d
       -- A worker: its own run, and the session that started it (the main orchestrator when the owner did).
       WHEN me.run_id IS NOT NULL THEN d.run_id = me.run_id OR d.owned_id IS COALESCE(me.run_lead,
           (SELECT json_extract(value_json,'$') FROM app_settings WHERE setting_key = 'orchestrator.main'))
-      -- A helper: its parent, and workers of runs it started.
-      WHEN me.helper_of IS NOT NULL THEN d.owned_id = me.helper_of OR (d.run_id IS NOT NULL AND d.run_lead IS ?1)
+      -- A helper: its parent, siblings, and workers of runs it started.
+      WHEN me.helper_of IS NOT NULL THEN d.owned_id = me.helper_of OR d.helper_of = me.helper_of
+          OR (d.run_id IS NOT NULL AND d.run_lead IS ?1)
       -- The main orchestrator: every top-level session, its helpers, and workers of runs it or the owner started.
       WHEN me.orchestrator THEN (d.run_id IS NULL AND d.helper_of IS NULL) OR d.helper_of IS ?1
           OR (d.run_id IS NOT NULL AND (d.run_lead IS ?1 OR d.run_lead IS NULL))
@@ -234,6 +237,15 @@ impl SessionStore {
                     WHEN orchestrator THEN 'orchestrator' ELSE 'top' END
              FROM session_directory WHERE owned_id = ?", [owned_id], |row| row.get(0)).optional())?;
         Ok(role.unwrap_or_else(|| "top".into()))
+    }
+
+    /// The common parent of two helpers, when both belong to that same session.
+    pub fn sibling_parent(&self, from: &str, to: &str) -> Result<Option<String>> {
+        let connection = self.lock()?;
+        db("could not read sibling parent", connection.query_row(
+            "SELECT (SELECT d.helper_of FROM session_directory d JOIN session_directory r ON r.owned_id=?2
+                WHERE d.owned_id=?1 AND d.helper_of IS NOT NULL AND d.helper_of=r.helper_of)",
+            params![from, to], |row| row.get(0)))
     }
 
     /// Helpers of `parent` that are starting, working or waiting on the owner.
@@ -355,77 +367,6 @@ impl SessionStore {
         Ok(group_id)
     }
 
-    pub fn append_message(
-        &self,
-        group_id: &str,
-        from: &str,
-        to: &str,
-        kind: MessageKind,
-        body: &str,
-    ) -> Result<Envelope> {
-        self.append_message_as(group_id, from, to, kind, body, None)
-    }
-
-    /// `append_message` with the sender's label given, for a message from a
-    /// session on another machine, which this machine's directory does not know.
-    pub fn append_message_as(
-        &self,
-        group_id: &str,
-        from: &str,
-        to: &str,
-        kind: MessageKind,
-        body: &str,
-        sender_name: Option<&str>,
-    ) -> Result<Envelope> {
-        let connection = self.lock_write()?;
-        let id = new_id(&connection)?;
-        let created_at_ms = now_ms()?;
-        let (sender_name, run_id): (String, Option<String>) = db("could not name message sender", connection.query_row(
-            // A message takes the sender's run, or else the receiver's, so a reply to a worker
-            // stays with its run. A workflow's own notices come from `workflow:<run id>`.
-            "SELECT COALESCE(?2, d.handle || ' · ' || d.name, ?1),
-                    COALESCE(d.run_id, CASE WHEN ?1 LIKE 'workflow:%' THEN substr(?1, 10) END, r.run_id)
-             FROM (SELECT 1) LEFT JOIN session_directory d ON d.owned_id = ?1
-             LEFT JOIN session_directory r ON r.owned_id = ?3",
-            params![from, sender_name, to], |row| Ok((row.get(0)?, row.get(1)?))))?;
-        db(
-            "could not append the workflow message",
-            connection.execute(
-                "INSERT INTO workflow_messages
-                 (id, group_id, from_owned_id, to_owned_id, sender_name, run_id, kind, body, receipt,
-                  created_at_ms, updated_at_ms)
-                 VALUES (?, NULLIF(?,''), ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
-                params![
-                    id,
-                    group_id,
-                    from,
-                    to,
-                    sender_name,
-                    run_id,
-                    kind.as_str(),
-                    body,
-                    created_at_ms,
-                    created_at_ms
-                ],
-            ),
-        )?;
-        drop(connection);
-        messages_changed();
-        Ok(Envelope {
-            id,
-            group_id: group_id.to_owned(),
-            from_agent: from.to_owned(),
-            to_agent: to.to_owned(),
-            sender_name,
-            run_id,
-            kind,
-            body: body.to_owned(),
-            receipt: Receipt::Queued,
-            created_at_ms,
-            updated_at_ms: created_at_ms,
-        })
-    }
-
     pub fn set_receipt(&self, message_id: &str, receipt: Receipt) -> Result<()> {
         let connection = self.lock_write()?;
         let changed = db(
@@ -496,14 +437,15 @@ impl SessionStore {
         self.pending_for_sender(to, None)
     }
 
-    /// Busy helpers read only their parent's queue; idle sessions read every sender.
+    /// Busy helpers read their parent's and siblings' messages; idle sessions read every sender.
     pub fn pending_for_sender(&self, to: &str, sender: Option<&str>) -> Result<Option<Envelope>> {
         use rusqlite::OptionalExtension;
         let connection = self.lock()?;
         db("could not read target queue", connection.query_row(
             "SELECT id, COALESCE(group_id,''), from_owned_id, to_owned_id, kind, body, receipt,
                     created_at_ms, updated_at_ms, sender_name, run_id FROM workflow_messages
-             WHERE to_owned_id = ?1 AND receipt = 'queued' AND (?2 IS NULL OR from_owned_id = ?2)
+             WHERE to_owned_id = ?1 AND receipt = 'queued' AND (?2 IS NULL OR from_owned_id = ?2
+                 OR from_owned_id IN (SELECT owned_id FROM session_directory WHERE helper_of = ?2))
              ORDER BY created_at_ms,id LIMIT 1",
             params![to, sender], envelope_from_row).optional())
     }

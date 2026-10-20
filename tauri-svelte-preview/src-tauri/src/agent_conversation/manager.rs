@@ -1383,7 +1383,7 @@ impl AgentRuntimeManager {
             sessions.get(owned_id).filter(|session| session.active_turn_id.is_some()
                 && session.capabilities.session.steering).and_then(|session| session.helper_of.clone())
         };
-        // An unrelated queued sender must not hold back the helper's own parent.
+        // An unrelated sender must not hold back the helper's parent or siblings.
         // Expired messages fail in order, so the first live one is sent.
         let message = loop {
             let Some(message) = self
@@ -1401,11 +1401,15 @@ impl AgentRuntimeManager {
                 .map_err(|error| error.to_string())?;
         };
 
+        let sibling_parent = self.store.sibling_parent(&message.from_agent, owned_id)
+            .map_err(|error| error.to_string())?;
         let steering = {
             let sessions = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             sessions.get(owned_id).is_some_and(|session| session.active_turn_id.is_some()
                 && session.capabilities.session.steering
-                && session.helper_of.as_deref() == Some(message.from_agent.as_str()))
+                && session.helper_of.is_some()
+                && (session.helper_of.as_deref() == Some(message.from_agent.as_str())
+                    || session.helper_of == sibling_parent))
         };
         if !steering && self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(owned_id)
             && self.idle_generation(owned_id).is_none()
@@ -11865,63 +11869,6 @@ mod tests {
         assert_eq!(log.matches(r#""method":"session/new""#).count(), 1);
         assert_eq!(log.matches(r#""method":"session/resume""#).count(), 1);
         assert_eq!(log.matches(r#""method":"session/prompt""#).count(), 1);
-
-        fixture
-            .manager
-            .close(&fixture.owned_id, fixture.generation)
-            .await
-            .unwrap();
-        fs::remove_dir_all(fixture.root).unwrap();
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn queued_message_delivers_when_session_goes_quiescent() {
-        let fixture = fixture_manager_with_acp_session("queued_message_feed").await;
-        let message = fixture
-            .manager
-            .store
-            .append_message(
-                "",
-                "worker-a",
-                &fixture.owned_id,
-                mcb_core::broker::MessageKind::Message,
-                "Review the patch",
-            )
-            .expect("queue message");
-        let prompts = || {
-            fs::read_to_string(fixture.root.join("queued_message_feed.jsonl"))
-                .unwrap()
-                .matches(r#""method":"session/prompt""#)
-                .count()
-        };
-        let receipt = || {
-            fixture.manager.store.pending_for(&fixture.owned_id).unwrap().map(|pending| pending.id)
-        };
-
-        fixture
-            .manager
-            .prompt(&fixture.owned_id, fixture.generation, test_prompt("finish current turn"))
-            .await
-            .expect("prompt starts");
-        let end_first_turn = prompt_result(&fixture).await;
-        fixture.manager.deliver_if_idle(&fixture.owned_id).await;
-        assert_eq!(receipt(), Some(message.id.clone()), "a busy session keeps the message queued");
-        assert_eq!(prompts(), 1);
-
-        feed(&fixture, &[end_first_turn]);
-        wait_until(|| prompts() == 2).await;
-        wait_until(|| receipt().is_none()).await;
-        assert_eq!(fixture.manager.store.message_status(&message.id, "worker-a").unwrap(), "delivered");
-        let expected = "[message from worker-a]\nReview the patch";
-        let snapshot = fixture
-            .manager
-            .snapshot(&fixture.owned_id)
-            .expect("read snapshot")
-            .expect("session exists");
-        assert_eq!(snapshot.events.iter().filter(|event| matches!(
-            &event.payload,
-            AgentConversationPayload::UserMessage { text, .. } if text == expected
-        )).count(), 1);
 
         fixture
             .manager

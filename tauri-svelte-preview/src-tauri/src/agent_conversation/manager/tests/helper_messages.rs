@@ -223,3 +223,98 @@ async fn steering_not_consumed_preserves_the_existing_turn_and_journal() {
     }
 }
 
+
+#[tokio::test(flavor = "current_thread")]
+async fn sibling_steering_uses_the_same_authority_and_delivery_path() {
+    let fixture = busy_helper("steering", AgentConversationProvider::Codex).await;
+    let mut row = fixture.manager.store.get_session(&fixture.owned_id).unwrap().unwrap();
+    row.owned_id = "sibling".into(); row.title = Some("Sibling".into());
+    fixture.manager.store.upsert_session(&row).unwrap();
+    let message = fixture.manager.store.append_message("", "sibling", &fixture.owned_id,
+        mcb_core::broker::MessageKind::Message, "agent advice").unwrap();
+    fixture.manager.deliver_if_idle(&fixture.owned_id).await;
+    assert_eq!(fixture.manager.store.message_status(&message.id, "sibling").unwrap(), "delivered");
+    let events = fixture.manager.list_events(&fixture.owned_id, 0).unwrap();
+    assert!(events.iter().any(|event| matches!(&event.payload,
+        AgentConversationPayload::UserMessage { text, .. }
+        if text.starts_with("[message from ") && text.ends_with(" · Sibling]\nagent advice"))));
+    fixture.manager.close(&fixture.owned_id, fixture.generation).await.unwrap();
+    fs::remove_dir_all(fixture.root).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_sibling_copy_waits_for_the_orchestrator_turn_to_end() {
+    let fixture = busy_helper("steering", AgentConversationProvider::Codex).await;
+    for id in ["sender-helper", "recipient-helper"] {
+        let mut row = fixture.manager.store.get_session(&fixture.owned_id).unwrap().unwrap();
+        row.owned_id = id.into(); row.title = Some(id.into());
+        row.extra_json = json!({"helperOf":fixture.owned_id}).to_string();
+        fixture.manager.store.upsert_session(&row).unwrap();
+    }
+    fixture.manager.store.append_message("", "sender-helper", "recipient-helper",
+        mcb_core::broker::MessageKind::Message, "copy to parent").unwrap();
+    fixture.manager.deliver_if_idle(&fixture.owned_id).await;
+    let copy = fixture.manager.store.pending_for(&fixture.owned_id).unwrap().unwrap();
+    assert!(copy.body.starts_with("[copy: "));
+    assert_eq!(copy.receipt, mcb_core::broker::Receipt::Queued);
+    assert!(!fs::read_to_string(fixture.root.join("steering.jsonl")).unwrap().contains("_session/steering"));
+    fixture.manager.close(&fixture.owned_id, fixture.generation).await.unwrap();
+    fs::remove_dir_all(fixture.root).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn queued_message_delivers_when_session_goes_quiescent() {
+    let fixture = fixture_manager_with_acp_session("queued_message_feed").await;
+    let message = fixture
+        .manager
+        .store
+        .append_message(
+            "",
+            "worker-a",
+            &fixture.owned_id,
+            mcb_core::broker::MessageKind::Message,
+            "Review the patch",
+        )
+        .expect("queue message");
+    let prompts = || {
+        fs::read_to_string(fixture.root.join("queued_message_feed.jsonl"))
+            .unwrap()
+            .matches(r#""method":"session/prompt""#)
+            .count()
+    };
+    let receipt = || {
+        fixture.manager.store.pending_for(&fixture.owned_id).unwrap().map(|pending| pending.id)
+    };
+
+    fixture
+        .manager
+        .prompt(&fixture.owned_id, fixture.generation, test_prompt("finish current turn"))
+        .await
+        .expect("prompt starts");
+    let end_first_turn = prompt_result(&fixture).await;
+    fixture.manager.deliver_if_idle(&fixture.owned_id).await;
+    assert_eq!(receipt(), Some(message.id.clone()), "a busy session keeps the message queued");
+    assert_eq!(prompts(), 1);
+
+    feed(&fixture, &[end_first_turn]);
+    wait_until(|| prompts() == 2).await;
+    wait_until(|| receipt().is_none()).await;
+    assert_eq!(fixture.manager.store.message_status(&message.id, "worker-a").unwrap(), "delivered");
+    let expected = "[message from worker-a]\nReview the patch";
+    let snapshot = fixture
+        .manager
+        .snapshot(&fixture.owned_id)
+        .expect("read snapshot")
+        .expect("session exists");
+    assert_eq!(snapshot.events.iter().filter(|event| matches!(
+        &event.payload,
+        AgentConversationPayload::UserMessage { text, .. } if text == expected
+    )).count(), 1);
+
+    fixture
+        .manager
+        .close(&fixture.owned_id, fixture.generation)
+        .await
+        .unwrap();
+    fs::remove_dir_all(fixture.root).unwrap();
+}
