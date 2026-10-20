@@ -150,9 +150,14 @@ const project = (id: string, machine: string): ProjectRecord => ({
   assert.equal(sessionWorkingIn('/work/A/', [working]), working);
   assert.equal(sessionWorkingIn('/work/A', [session('/work/A', 'suspended'), session('/work/A', 'failed'), session('/work/A', 'closed'), session('/work/A', 'ready', 'exited')]), null);
   assert.equal(sessionWorkingIn('/work/A-wt', [session('/work/A', 'working')]), null);
+  // A viewed folder inside a running session's folder is read-only too.
+  assert.equal(sessionWorkingIn('/work/A/sub/package', [working]), working);
+  assert.equal(sessionWorkingIn('/work/A/sub-2', [working]), null);
   const remote = session('/work/B', 'working', 'live', 'workbox');
   assert.equal(sessionWorkingIn('assembly-remote://workbox/work/B', [remote]), remote);
   assert.equal(sessionWorkingIn('/work/B', [remote]), null);
+  assert.equal(sessionWorkingIn('assembly-remote://workbox/work/B/package', [remote]), remote);
+  assert.equal(sessionWorkingIn('/work/B/package', [remote]), null);
   const terminal = session('/work/C', undefined);
   assert.equal(sessionWorkingIn('/work/C', [terminal]), terminal);
 }

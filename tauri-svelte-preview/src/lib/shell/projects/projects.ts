@@ -130,7 +130,7 @@ export function otherProjectGroups(
   }).filter((group) => group.options.length > 0);
 }
 
-/** The running session whose working folder is `folder` or inside it, on the same machine; null when there is none. */
+/** The running session whose working folder is `folder`, inside it, or holds it, on the same machine; null when there is none. */
 export function sessionWorkingIn<S extends { cwd: string; executionEnvironment: string; remoteProfileId?: string | null; state: string; runtimeState?: string }>(
   folder: string,
   sessions: readonly S[]
@@ -138,6 +138,6 @@ export function sessionWorkingIn<S extends { cwd: string; executionEnvironment: 
   const target = trimSlash(folder);
   return sessions.find((session) => {
     const cwd = runningSessionFolder(session);
-    return cwd !== null && (cwd === target || cwd.startsWith(`${target}/`));
+    return cwd !== null && (cwd === target || cwd.startsWith(`${target}/`) || target.startsWith(`${cwd}/`));
   }) ?? null;
 }
