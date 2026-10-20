@@ -80,7 +80,7 @@ const TITLE_SOURCE_PROMPT: &str = "prompt";
 const TITLE_SOURCE_HELPER: &str = "helper";
 const TITLE_SOURCE_USER: &str = "user";
 
-/// How much of the first prompt, and of the reply to it, the helper model is
+/// How much of the first prompt, and of the reply to it, the utility model is
 /// given to name a session by. A name comes from the shape of an exchange, not
 /// from all of it, and the call is billed by the token.
 const TITLE_INPUT_CHAR_CAP: usize = 1_000;
@@ -89,7 +89,7 @@ const MAX_THINKING_TOKENS_ENV: &str = "MAX_THINKING_TOKENS";
 pub type ConversationEmitter = std::sync::Arc<dyn Fn(AgentConversationEvent) + Send + Sync>;
 pub type BrokerEmitter = std::sync::Arc<dyn Fn(WorkflowBrokerEvent) + Send + Sync>;
 
-/// Asks the helper model to name one session from its first exchange. Set once
+/// Asks the utility model to name one session from its first exchange. Set once
 /// at launch; with none set the helper is not involved and a session keeps the
 /// name taken from its first prompt.
 pub type SessionNamer =
@@ -245,7 +245,7 @@ pub struct ManagedAgentSession {
     codex_children: HashMap<String, CodexChildRollout>,
     claude_children: HashMap<String, ClaudeChildSession>,
     rail_meta: AgentConversationSessionMeta,
-    /// Where the current name came from: the first prompt, the helper model, or
+    /// Where the current name came from: the first prompt, the utility model, or
     /// the person. A session recovered from a row written before this was
     /// recorded carries none, and counts as the first prompt.
     title_source: Option<String>,
@@ -3931,7 +3931,7 @@ impl AgentRuntimeManager {
         Ok(())
     }
 
-    /// Replaces the provisional name of a session with one the helper model
+    /// Replaces the provisional name of a session with one the utility model
     /// writes from the first exchange, in the background.
     ///
     /// The provisional name is the first line the person typed, which is rarely
@@ -8359,7 +8359,7 @@ mod tests {
             .and_then(|row| row.title_source)
     }
 
-    /// A namer that answers from memory instead of from a helper model, and
+    /// A namer that answers from memory instead of from a utility model, and
     /// counts how many times it was asked.
     fn counting_namer(calls: &Arc<Mutex<usize>>, answer: &'static str) -> SessionNamer {
         let calls = Arc::clone(calls);

@@ -197,7 +197,7 @@ fn a_refusal_carries_the_status_and_what_the_vendor_said() {
 
 #[test]
 fn no_key_reads_as_the_sentence_settings_shows() {
-    assert_eq!(HelperError::NoKey.sentence(), "No key — helper off");
+    assert_eq!(HelperError::NoKey.sentence(), "No key — utility model off");
 }
 
 #[test]
@@ -261,7 +261,7 @@ fn a_job_with_no_provider_chosen_says_so() {
     let seen = RefCell::new(Vec::new());
     let error = job_vendor(&cli_settings(None, HelperRoute::Cli), installed(&["codex", "claude"], &seen)).unwrap_err();
     assert_eq!(error, HelperError::NoProvider);
-    assert_eq!(error.sentence(), "No helper provider is set up. Choose one in Settings → Helper model.");
+    assert_eq!(error.sentence(), "No utility model provider is set up. Choose one in Settings → Utility model.");
 }
 
 #[test]

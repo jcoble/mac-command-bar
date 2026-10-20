@@ -290,7 +290,7 @@
 					{/if}
 					{#if status.helpers}
 						{@render statusIcon("helpers", "worktree-agent-helpers", "live", Bot, status.helpers,
-							`${status.helpers} ${status.helpers === 1 ? "helper or sub-agent" : "helpers and sub-agents"} running`)}
+							`${status.helpers} ${status.helpers === 1 ? "helper session or sub-agent" : "helper sessions and sub-agents"} running`)}
 					{/if}
 					{#if status.runs}
 						{@render statusIcon("runs", "worktree-agent-runs", "live", Workflow, status.runs,

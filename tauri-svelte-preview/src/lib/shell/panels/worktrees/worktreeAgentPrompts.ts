@@ -10,7 +10,7 @@
  *
  * The third button, Inspect, starts nothing. Looking at a folder does not need
  * a whole session in it: `worktreeInspectFacts` writes down what this list
- * already knows and the panel asks the app's own small helper model about it,
+ * already knows and the panel asks the app's own small utility model about it,
  * which reads nothing and changes nothing.
  *
  * WHY THE PROMPT IS THE SAFETY MECHANISM: a worktree is somebody's unfinished
@@ -137,7 +137,7 @@ function knownFacts(row: WorktreeManagerRow): string {
 }
 
 /**
- * What the helper model is told about one worktree, as plain lines.
+ * What the utility model is told about one worktree, as plain lines.
  *
  * The helper cannot read anything: it sees these sentences and nothing else, so
  * everything the answer can be based on has to be here. That also makes this

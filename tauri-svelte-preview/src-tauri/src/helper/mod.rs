@@ -148,20 +148,20 @@ impl HelperError {
     /// its status line, so it reads as English rather than as a variant name.
     pub fn sentence(&self) -> String {
         match self {
-            Self::NoKey => "No key — helper off".to_string(),
-            Self::Timeout => "The helper model did not answer in time.".to_string(),
+            Self::NoKey => "No key — utility model off".to_string(),
+            Self::Timeout => "The utility model did not answer in time.".to_string(),
             Self::Transport(detail) => {
-                format!("The helper model could not be reached: {detail}")
+                format!("The utility model could not be reached: {detail}")
             }
             Self::Vendor { status, message } => {
-                format!("The helper model refused the call ({status}): {message}")
+                format!("The utility model refused the call ({status}): {message}")
             }
             Self::BadResponse(detail) => {
-                format!("The helper model's answer could not be read: {detail}")
+                format!("The utility model's answer could not be read: {detail}")
             }
-            Self::Settings(detail) => format!("The helper settings could not be used: {detail}"),
-            Self::NoProvider => "No helper provider is set up. Choose one in Settings → Helper model.".to_string(),
-            Self::Unavailable(cli) => format!("The {cli} CLI is not installed on this machine, or it does not run. Choose another provider in Settings → Helper model, or use an API key."),
+            Self::Settings(detail) => format!("The utility model settings could not be used: {detail}"),
+            Self::NoProvider => "No utility model provider is set up. Choose one in Settings → Utility model.".to_string(),
+            Self::Unavailable(cli) => format!("The {cli} CLI is not installed on this machine, or it does not run. Choose another provider in Settings → Utility model, or use an API key."),
         }
     }
 }
@@ -222,7 +222,7 @@ impl Default for HelperSettings {
 /// Whether `program --version` runs and exits cleanly. A binary that exists
 /// but fails is not installed. Spawned the same way a helper job spawns it.
 fn cli_runs(program: &str) -> bool {
-    crate::bounded_process::output_with_input(Command::new(program).arg("--version"), "Helper CLI check", crate::bounded_process::LOCAL_COMMAND_TIMEOUT, None)
+    crate::bounded_process::output_with_input(Command::new(program).arg("--version"), "Utility model CLI check", crate::bounded_process::LOCAL_COMMAND_TIMEOUT, None)
         .is_ok_and(|output| output.status.success())
 }
 
@@ -429,7 +429,7 @@ fn complete_cli(vendor: HelperVendor, model: &str, request: &HelperRequest) -> R
     command.current_dir(std::env::temp_dir());
     let output = crate::bounded_process::output_with_input(
         &mut command,
-        "Helper CLI",
+        "Utility model CLI",
         crate::bounded_process::NETWORK_COMMAND_TIMEOUT,
         Some(prompt.as_bytes()),
     ).map_err(|error| HelperError::Transport(error.to_string()))?;

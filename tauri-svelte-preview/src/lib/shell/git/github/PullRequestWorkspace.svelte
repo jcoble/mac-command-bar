@@ -589,7 +589,7 @@
       <textarea aria-label="Line review comment" rows="3" placeholder="Write a comment for this line" bind:value={lineBody}></textarea>
       <div class="composer-actions">
         <Button variant="secondary" size="sm" disabled={!lineBody.trim()} onclick={saveLineDraft}>Add to review</Button>
-        <Button variant="ghost" size="sm" disabled={helperDrafting} onclick={() => void draftWithHelper('line')}>{helperDrafting ? 'Drafting…' : 'Draft with Helper'}</Button>
+        <Button variant="ghost" size="sm" disabled={helperDrafting} onclick={() => void draftWithHelper('line')}>{helperDrafting ? 'Drafting…' : 'Draft with utility model'}</Button>
         <Button variant="ghost" size="sm" onclick={() => { lineTarget = null; lineBody = ''; }}>Cancel</Button>
       </div>
     </div>
@@ -679,7 +679,7 @@
                 {/each}
                 <div class="composer-actions">
                   <Button variant="secondary" size="sm" disabled={!draftSummary.trim() || posting || postUncertain} onclick={previewPost}>{draftLines.length ? `Post review · ${draftLines.length} line ${draftLines.length === 1 ? 'comment' : 'comments'}` : 'Comment'}</Button>
-                  <Button variant="ghost" size="sm" disabled={helperDrafting} onclick={() => void draftWithHelper('overall')}>{helperDrafting ? 'Drafting…' : 'Draft with Helper'}</Button>
+                  <Button variant="ghost" size="sm" disabled={helperDrafting} onclick={() => void draftWithHelper('overall')}>{helperDrafting ? 'Drafting…' : 'Draft with utility model'}</Button>
                   {#if draftSummary.trim() || draftLines.length}<Button variant="ghost" size="sm" onclick={cancelDraft}>Discard</Button>{/if}
                 </div>
               </section>

@@ -21,7 +21,7 @@
    *
    * Inspect is the exception, and starts nothing: a whole session in a folder is
    * a lot to set up for a question about facts this panel already has. It hands
-   * those facts to the app's small helper model and shows the answer under the
+   * those facts to the app's small utility model and shows the answer under the
    * row. So an answer here is about what the list last read, not about the
    * folder as it is this second — the removals are the ones that go and look.
    *
@@ -97,17 +97,17 @@
   /** Why a session could not be started. '' when the last one was. */
   let startError = $state('');
 
-  /** The path of the row the helper is being asked about, or ''. */
+  /** The path of the row the utility model is being asked about, or ''. */
   let inspecting = $state('');
   /**
-   * What the helper said about a worktree, by folder. It stays on the row it
+   * What the utility model said about a worktree, by folder. It stays on the row it
    * belongs to for as long as the row is listed, so opening another row and
    * coming back does not lose the answer.
    */
   let inspected = $state<Record<string, { text: string; failed: boolean }>>({});
 
   /** What the backend says when no key is stored, word for word. */
-  const HELPER_OFF = 'No key — helper off';
+  const HELPER_OFF = 'No key — utility model off';
 
   const rows = $derived(
     buildWorktreeManagerRows({
@@ -175,7 +175,7 @@
       inspected = {
         ...inspected,
         [row.path]: {
-          text: answer.trim() || 'The helper had nothing to say about this worktree.',
+          text: answer.trim() || 'The utility model had nothing to say about this worktree.',
           failed: false
         }
       };
@@ -186,7 +186,7 @@
         [row.path]: {
           text:
             sentence === HELPER_OFF
-              ? 'Helper unavailable — add a key in Settings → Helper'
+              ? 'Utility model unavailable — add a key in Settings → Utility model'
               : sentence,
           failed: true
         }

@@ -1178,19 +1178,19 @@ export async function testHelperFromTauri(): Promise<HelperTestResult | null> {
 }
 
 /**
- * Ask the helper model to do one small job and give back its answer.
+ * Ask the utility model to do one small job and give back its answer.
  *
  * Unlike its neighbours this cannot answer with `null`: an empty answer and a
- * helper that is switched off would look the same to the caller. Away from the
- * desktop app there is no helper at all, so this rejects with the sentence to
+ * utility model that is switched off would look the same to the caller. Away
+ * from the desktop app there is no utility model at all, so this rejects with the sentence to
  * show instead. The backend rejects the same way — one plain-English sentence,
- * "No key — helper off" among them.
+ * "No key — utility model off" among them.
  */
 export async function runHelperJobFromTauri(
   job: 'title' | 'inspect' | 'review',
   input: string
 ): Promise<string> {
-  if (!isTauriRuntime()) throw new Error('The helper only runs in the desktop app.');
+  if (!isTauriRuntime()) throw new Error('The utility model only runs in the desktop app.');
   const { invoke } = await import('./workspaceInvoke.ts');
   return invoke<string>('run_helper_job', { job, input });
 }
