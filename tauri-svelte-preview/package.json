@@ -75,6 +75,7 @@
     "test:source-code-lens-keys": "node --experimental-strip-types scripts/sourceCodeLensKeys.test.ts",
     "test:csharp-language-client": "node --experimental-strip-types scripts/csharpLanguageClient.test.ts",
     "test:codemirror-language": "node --experimental-strip-types src/lib/shell/files/editor/codeMirrorLanguage.test.ts",
+    "test:codemirror-theme": "node --experimental-strip-types src/lib/shell/files/editor/codeMirrorTheme.test.ts",
     "test:workspace-invoke": "node --experimental-strip-types --test-timeout=5000 scripts/workspaceInvoke.test.ts",
     "test:workspace-code-lens": "node --experimental-strip-types scripts/workspaceCodeLens.test.ts",
     "test:git-panel-store": "node --experimental-strip-types scripts/gitPanelStore.test.ts",
