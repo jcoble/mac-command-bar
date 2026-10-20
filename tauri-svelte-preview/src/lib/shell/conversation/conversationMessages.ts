@@ -292,6 +292,45 @@ export function conversationMessagesAfterCustom(
   return [...messages];
 }
 
+type TextDelta = AgentConversationEvent & { payload: { kind: 'assistantDelta'; itemId: string; delta: string } };
+
+function textDeltaOf(item: object | undefined): TextDelta | null {
+  const event = item && 'nativeEvent' in item ? (item as { nativeEvent: AgentConversationEvent }).nativeEvent : null;
+  return event?.payload.kind === 'assistantDelta' ? event as TextDelta : null;
+}
+
+/** Waits for the next frame, or 50 ms when the window draws no frames (hidden), or abort. */
+async function nextFrame(signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const done = (): void => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    const frame = requestAnimationFrame(done);
+    const timer = setTimeout(done, 50);
+    signal.addEventListener('abort', done, { once: true });
+  });
+}
+
+/** Takes the next queued item for the chat. Streamed text waits for the next frame,
+ * and the text that reached one message meanwhile comes out as one delta, so the
+ * chat updates once per frame and the text still streams in. Anything else keeps
+ * its place in the queue and goes out at once. */
+export async function takeStreamItem<T extends object>(items: T[], signal: AbortSignal): Promise<T | undefined> {
+  const first = textDeltaOf(items[0]);
+  if (!first) return items.shift();
+  await nextFrame(signal);
+  let text = '';
+  for (let next = textDeltaOf(items[0]); next && next.payload.itemId === first.payload.itemId
+    && next.turnId === first.turnId && next.generation === first.generation; next = textDeltaOf(items[0])) {
+    text += next.payload.delta;
+    items.shift();
+  }
+  return { nativeEvent: { ...first, payload: { ...first.payload, delta: text } } } as T;
+}
+
 /** Bounded history replay uses the same native-to-TanStack mapping as live events. */
 function applyMessageEvent(processor: StreamProcessor, event: AgentConversationEvent | AgentEvent): boolean {
   const chunks = conversationChunksFromEvent(processor.getMessages(), event);

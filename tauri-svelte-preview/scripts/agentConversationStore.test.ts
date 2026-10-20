@@ -651,7 +651,7 @@ test('history gaps withhold live content and admitted messages stay retained', a
     source.indexOf('function enqueueFactory('), source.indexOf('function resetReady(')
   );
   const enqueueFactory = Function(
-    'conversationChunksFromEvent', 'recordLiveMessages', 'EventType',
+    'conversationChunksFromEvent', 'recordLiveMessages', 'EventType', 'takeStreamItem',
     `${stripTypeScriptTypes(enqueueBlock, { mode: 'strip' })}\nreturn enqueueFactory;`
   )(
     (_messages: unknown[], nativeEvent: AgentConversationEvent) => [{
@@ -660,7 +660,7 @@ test('history gaps withhold live content and admitted messages stay retained', a
       delta: nativeEvent.payload.delta
     }],
     () => undefined,
-    EventType
+    EventType, (items: unknown[]) => items.shift()
   );
   const controller = new AbortController();
   const queued = enqueueFactory(controller.signal, { chat: { messages: [] }, pendingSend: null });
@@ -2042,7 +2042,7 @@ await test('leaving a session ends every wait on its stream and readiness and wr
   let connection: any;
   const session = { provider: 'claude', generation: 1, selectedHasAfter: true, selectedChildHistoryOwnedId: null };
   const dependencies = {
-    conversationChunksFromEvent: () => [],
+    conversationChunksFromEvent: () => [], takeStreamItem: (items: unknown[]) => items.shift(),
     recordLiveMessages: write('live messages'),
     EventType,
     PAGE_BYTES: 1024,
