@@ -110,9 +110,9 @@ pub fn begin_import_session(store: &SessionStore, provider: AgentConversationPro
         if cursor.and_then(|cursor| cursor.imported_length).is_some_and(|length| metadata.len() <= length) {
             return Ok((row.owned_id, false));
         }
-        if open {
-            return Err("Close this session before importing the turns taken outside Assembly.".into());
-        }
+        if open { return Err("Close this session before importing the turns taken outside Assembly.".into()); }
+        // Its saved events go next, so a transcript that cannot be read now leaves them standing.
+        std::fs::File::open(path).map_err(|error| format!("Could not read transcript: {error}"))?;
         let head = store.latest_seq(&row.owned_id).map_err(|error| error.to_string())?;
         store.enforce_event_cap(&row.owned_id, 0).map_err(|error| error.to_string())?;
         let cursor = ImportCursor { transcript_path: path.to_string_lossy().into_owned(), cutoff_offset: metadata.len(),

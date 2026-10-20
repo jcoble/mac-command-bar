@@ -552,6 +552,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unreadable_grown_transcript_keeps_the_saved_conversation() {
+        use std::os::unix::fs::PermissionsExt;
+        let (directory, path, manager, owned_id) = imported(3, 100).await;
+        let saved = manager.store_handle().history_download_facts(&owned_id, None).unwrap().row_count;
+        std::fs::write(&path, format!("{}{{}}\n", std::fs::read_to_string(&path).unwrap())).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let again = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native", &path,
+            &directory.to_string_lossy(), None).await;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(again.is_err(), "{again:?}");
+        assert_eq!(manager.store_handle().history_download_facts(&owned_id, None).unwrap().row_count, saved);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[tokio::test]
     async fn importing_again_waits_for_the_session_lifecycle() {
         let (directory, path, manager, owned_id) = imported(3, 100).await;
         let lifecycle = manager.lifecycle_guard(&owned_id).await.unwrap();
