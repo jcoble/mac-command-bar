@@ -18,6 +18,7 @@ import test, { after } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // The client runtime the compiled store uses; plain 'svelte' resolves to the
 // server build in node, where flushSync does nothing.
+// @ts-expect-error Svelte exposes this runtime entry point without type declarations.
 import { flush as flushSync } from 'svelte/internal/client';
 import { compileModule } from 'svelte/compiler';
 
@@ -53,6 +54,7 @@ async function freshStore(read: Backend['read'] = async () => null) {
   testGlobal.settingsTestBackend = backend;
   copies += 1;
   const store = await import(`${pathToFileURL(`${outputDir}settingsStore.mjs`).href}?copy=${copies}`);
+  after(() => store.disposeSettingsStore());
   const memoryPath = `${outputDir}agentConfigMemory-${copies}.mjs`;
   writeFileSync(memoryPath, memorySource.replace(
     /(['"])\.\.\/settings\/settingsStore\.svelte\1/, `'./settingsStore.mjs?copy=${copies}'`
