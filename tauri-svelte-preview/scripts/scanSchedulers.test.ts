@@ -72,6 +72,7 @@ test('allows animations that end', () => {
   const source = `
 .pop { animation: pop 200ms ease-out; }
 .twice { animation-iteration-count: 2; }
+.named { animation: infinite-scroll 200ms var(--infinite-easing); }
 /* this used to be animation: spin 1s infinite */
 <span style:animation="pop 200ms ease-out" title="Infinite scroll">Infinite scroll</span>
 <div class="animate-in fade-in"></div>
