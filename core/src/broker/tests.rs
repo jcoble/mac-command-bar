@@ -322,3 +322,48 @@ fn pending_returns_only_queued_for_recipient() {
         Some(first)
     );
 }
+
+#[test]
+fn messages_list_includes_helper_and_sibling_messages_of_every_status() {
+    use super::TrafficQuery;
+    let store = SessionStore::open_in_memory().unwrap();
+    store.lock_write().unwrap().execute_batch(r#"INSERT INTO sessions
+        (owned_id,provider,cwd,state,suspended,created_at,last_activity_at,extra,title) VALUES
+        ('parent','codex','/work','ready',0,1,1,'{}','Parent'),
+        ('helper-a','claude','/work','ready',0,1,1,'{"helperOf":"parent"}','Helper A'),
+        ('helper-b','codex','/work','ready',0,1,1,'{"helperOf":"parent"}','Helper B'),
+        ('worker','codex','/work','ready',0,1,1,'{}','Worker');
+        INSERT INTO orchestration_events (id,run_id,kind,timestamp,sequence,payload_json) VALUES
+        ('e','run-1','workflow.node.started','1',1,
+        '{"ownedId":"worker","nodeId":"build","workflowPayload":{"run":{"inputSnapshot":{"started_by":"parent"}}}}');"#).unwrap();
+    assert_eq!(store.session_role("worker").unwrap(), "worker");
+    let mut expected = std::collections::BTreeMap::new();
+    for (from, to) in [("parent", "helper-a"), ("helper-a", "parent"),
+        ("helper-a", "helper-b"), ("worker", "parent")] {
+        for receipt in [Receipt::Queued, Receipt::Delivered, Receipt::Failed] {
+            let message = store.append_message("", from, to, MessageKind::Message, "visible to owner").unwrap();
+            if receipt != Receipt::Queued { store.set_receipt(&message.id, receipt).unwrap(); }
+            expected.insert(message.id, (from, to, receipt.as_str()));
+        }
+    }
+    let mut cursor: Option<(i64, String)> = None;
+    let mut seen = std::collections::BTreeSet::new();
+    loop {
+        let page = store.list_messages(&TrafficQuery { limit: 2,
+            before: cursor.as_ref().map(|(at, id)| (*at, id.as_str())), ..Default::default() }).unwrap();
+        assert!(page.len() <= 2);
+        let Some(last) = page.last() else { break };
+        cursor = Some((last.created_at_ms, last.id.clone()));
+        for row in page {
+            assert!(seen.insert(row.id.clone()), "a message appears on exactly one page");
+            if let Some((from, to, receipt)) = expected.remove(&row.id) {
+                assert_eq!((row.from_owned_id.as_str(), row.to_owned_id.as_str(), row.receipt.as_str()), (from, to, receipt));
+            } else {
+                assert!(row.body.starts_with("[copy: "));
+                assert_eq!(row.to_owned_id, "parent");
+            }
+        }
+    }
+    assert!(expected.is_empty(), "all directions and statuses reach the owner's SQL pages");
+    assert_eq!(seen.len(), 15, "twelve originals and three sibling copies");
+}
