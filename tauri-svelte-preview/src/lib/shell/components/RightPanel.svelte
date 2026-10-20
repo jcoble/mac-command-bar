@@ -136,6 +136,7 @@
         checkoutDiscoveryRoots={viewing ? [] : checkoutDiscoveryRoots}
         onUseSessionCheckout={viewing ? undefined : onUseSessionCheckout}
         {readOnlyReason}
+        {viewing}
       />
     </div>
     {#if visible && activeId === 'source-control'}
@@ -151,6 +152,7 @@
           onWorkspaceStateChange={onSourceControlWorkspaceChange}
           onUseSessionCheckout={viewing ? undefined : onUseSessionCheckout}
           {readOnlyReason}
+          {viewing}
         />
       </div>
     {:else if visible && activeId === 'worktrees'}
