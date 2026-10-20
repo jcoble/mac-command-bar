@@ -217,7 +217,7 @@
 				],
 	);
 	const scopeValue = $derived(projectRoot || sessionRoot);
-	/** The picker shows the session's own folder by its bare name; the list still marks it "(session)". */
+	/** The picker shows the session's own folder by its bare name; the list marks it "(session)" unless it is only being viewed. */
 	const scopeLabel = $derived.by(() => {
 		const option = scopeOptions.find((candidate) => canonicalPath(candidate.path) === canonicalPath(scopeValue));
 		if (!option) return "Session folder";
