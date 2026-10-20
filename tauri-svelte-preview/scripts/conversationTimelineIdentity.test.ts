@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { stripTypeScriptTypes } from 'node:module';
 import {
   reuseConversationDisplayItems,
   type ConversationDisplayItem
@@ -83,6 +85,19 @@ test('streamed_text_deltas_in_one_frame_reach_the_chat_as_one_update', async () 
   const last = await takeStreamItem(queue, signal) as { nativeEvent: { payload: { delta: string } } };
   assert.equal(last.nativeEvent.payload.delta, ' four');
   assert.equal(queue.length, 0);
+});
+
+test('a_push_while_the_stream_takes_from_an_empty_queue_is_delivered', async () => {
+  const source = readFileSync(new URL('../src/lib/shell/conversation/conversationConnection.ts', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('function enqueueFactory('), source.indexOf('function resetReady('));
+  const enqueueFactory = Function('conversationChunksFromEvent', 'recordLiveMessages', 'EventType', 'takeStreamItem',
+    `${stripTypeScriptTypes(block, { mode: 'strip' })}\nreturn enqueueFactory;`
+  )((_messages: unknown, event: { sequence: number }) => [{ type: 'probe', sequence: event.sequence }], () => undefined, EventType, takeStreamItem);
+  const queue = enqueueFactory(new AbortController().signal, { chat: { messages: [] }, pendingSend: null });
+  const next = queue.stream()[Symbol.asyncIterator]().next();
+  queue.push({ nativeEvent: { ownedId: 'owner', provider: 'claude', generation: 1, sequence: 7, timestampMs: 7, payload: { kind: 'usage', usedTokens: 1 } } });
+  const delivered = await Promise.race([next, new Promise((resolve) => setTimeout(() => resolve('still waiting'), 200))]);
+  assert.deepEqual(delivered, { value: { type: 'probe', sequence: 7 }, done: false });
 });
 
 console.log('conversation timeline identity tests passed');

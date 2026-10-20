@@ -260,7 +260,7 @@ function enqueueFactory(signal: AbortSignal, selection: ActiveConversation): {
             }
             continue;
           }
-          await new Promise<void>((resolve) => { wake = resolve; });
+          if (!items.length && !signal.aborted) await new Promise<void>((resolve) => { wake = resolve; });
         }
       } finally {
         signal.removeEventListener('abort', abort);

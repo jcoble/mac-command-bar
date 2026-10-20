@@ -94,7 +94,7 @@ const allowedHits = new Set([
   'src/lib/shell/conversation/conversationService.ts:setTimeout:const timer = setTimeout(finish, ms);',
   // TSK-1424 B: the chat stream's wait for the next native event. Leaving the session aborts the
   // stream's signal, whose listener wakes the wait; the stream's finally removes that listener.
-  'src/lib/shell/conversation/conversationConnection.ts:new Promise:await new Promise<void>((resolve) => { wake = resolve; });',
+  'src/lib/shell/conversation/conversationConnection.ts:new Promise:if (!items.length && !signal.aborted) await new Promise<void>((resolve) => { wake = resolve; });',
   // TSK-1561: streamed text waits one frame so a frame's deltas reach the chat as one update. The
   // frame, the 50 ms fallback for a window that draws no frames, and leaving the session (abort)
   // each settle the wait, and settling cancels the other two.
