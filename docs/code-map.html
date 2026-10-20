@@ -1,0 +1,764 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Assembly code map, after the module refactor (2026-10-20)</title>
+<style>
+  :root {
+    --ink: #1d2330;
+    --muted: #5a6475;
+    --line: #d9dee7;
+    --paper: #fbfbf8;
+    --card: #ffffff;
+    --accent: #2f5fb3;
+    --rust: #a5481c;
+    --web: #2c7a4b;
+    --remote: #6a3fa0;
+    --phone: #9a6a00;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1180px; margin: 0 auto; padding: 32px 28px 64px; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  h2 { font-size: 21px; margin: 44px 0 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 24px 0 8px; }
+  p { margin: 8px 0; }
+  a { color: var(--accent); }
+  code { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: #eef1f6; padding: 1px 4px; border-radius: 3px; }
+  .sub { color: var(--muted); margin: 0 0 18px; }
+  nav ol { columns: 2; margin: 8px 0 0; padding-left: 20px; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 16px; background: var(--card); font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 7px 9px; border: 1px solid var(--line); }
+  th { background: #f0f2f6; font-weight: 600; }
+  td:first-child { white-space: nowrap; }
+  .note { background: #fff7e0; border: 1px solid #ecd9a0; border-radius: 6px; padding: 10px 14px; margin: 12px 0; }
+  .tag { display: inline-block; font-size: 12px; padding: 0 6px; border-radius: 9px; color: #fff; }
+  .tag.rust { background: var(--rust); }
+  .tag.web { background: var(--web); }
+  .tag.remote { background: var(--remote); }
+  .tag.phone { background: var(--phone); }
+
+  /* Diagram: plain boxes in a grid, no images, no script. */
+  .diagram { display: grid; grid-template-columns: 1.1fr 1.3fr 1fr; gap: 16px; margin: 14px 0; }
+  .col { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .col > h4 { margin: 0 0 8px; font-size: 14px; }
+  .box { border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 5px; padding: 7px 9px; margin: 0 0 6px; font-size: 13px; background: #fdfdfd; }
+  .box.web { border-left-color: var(--web); }
+  .box.rust { border-left-color: var(--rust); }
+  .box.remote { border-left-color: var(--remote); }
+  .box.phone { border-left-color: var(--phone); }
+  .box b { display: block; font-size: 13.5px; }
+  .box small { color: var(--muted); }
+  .down { text-align: center; color: var(--muted); font-size: 12px; margin: -2px 0 4px; }
+  ol.steps li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<main>
+<h1>Assembly code map</h1>
+<p class="sub">What lives where after the module refactor, the rules that keep it that way, and what merged from 2026-10-18 to 2026-10-20. Written against <code>origin/main</code> at commit 946086741.</p>
+
+<nav>
+<ol>
+  <li><a href="#read">How to read this</a></li>
+  <li><a href="#picture">The big picture</a></li>
+  <li><a href="#where">What lives where, and why</a></li>
+  <li><a href="#rules">Rules that keep it that way</a></li>
+  <li><a href="#changed">What changed 2026-10-18 to 2026-10-20</a></li>
+  <li><a href="#know">Things you should know</a></li>
+  <li><a href="#next">Where to look next</a></li>
+</ol>
+</nav>
+
+<h2 id="read">1. How to read this</h2>
+<p>Paths are relative to the repository root unless a table says otherwise. Every path named here was checked against <code>origin/main</code>.</p>
+<p>Sections 2 to 4 describe the code as it is now. Section 5 lists what merged in the last three days. Section 6 lists open problems and limits.</p>
+<p>This page says <em>where</em> things are. For <em>how</em> they work (session lifecycle, storage, wire formats) read <a href="../main-architecture-explained.html">main-architecture-explained.html</a>, which stays the one architecture description.</p>
+
+<h2 id="picture">2. The big picture</h2>
+<p>There is one Rust program. Started normally it is the desktop app: a Tauri window with a Svelte web view inside. Started with <code>--assembly-server</code> on another machine it is the remote backend, with no window (<code>tauri-svelte-preview/src-tauri/src/main.rs</code>, in <code>fn main</code>). Each provider (Codex, Claude Code, Antigravity) runs as a separate ACP adapter process that Assembly starts and stops. The Android phone app is a separate Flutter program in <code>mobile/</code>.</p>
+
+<div class="diagram">
+  <div class="col">
+    <h4><span class="tag web">web view</span> Svelte, inside the Tauri window</h4>
+    <div class="box web"><b>Composer</b><small>shell/conversation/components/ConversationComposer.svelte</small></div>
+    <div class="down">calls</div>
+    <div class="box web"><b>Conversation service</b><small>shell/conversation/conversationService.ts, conversationInvoke.ts</small></div>
+    <div class="down">Tauri command (invoke)</div>
+    <div class="box web"><b>Timeline shows the rows</b><small>conversationStore.svelte.ts, ConversationTimeline.svelte</small></div>
+    <div class="down">fed by an ordered stream from Rust</div>
+  </div>
+  <div class="col">
+    <h4><span class="tag rust">Rust</span> desktop backend (src-tauri/src)</h4>
+    <div class="box rust"><b>Conversation commands</b><small>agent_conversation/mod.rs, protocol.rs</small></div>
+    <div class="down">hands the prompt to</div>
+    <div class="box rust"><b>Runtime manager</b><small>agent_conversation/manager.rs: ordering, saving, start/stop of adapters</small></div>
+    <div class="down">talks JSON-RPC over stdin/stdout to</div>
+    <div class="box rust"><b>ACP client and adapter process</b><small>agent_conversation/providers/ (one sidecar per provider; binaries in src-tauri/adapters/)</small></div>
+    <div class="down">the adapter talks to Codex, Claude or Antigravity; replies come back as events</div>
+    <div class="box rust"><b>Normalize, then save</b><small>agent_conversation/normalization/ turns raw events into rows; core/src/session_store.rs writes SQLite</small></div>
+    <div class="down">sent to the web view on</div>
+    <div class="box rust"><b>Projection stream</b><small>projection_streams.rs (a Tauri channel, in order)</small></div>
+  </div>
+  <div class="col">
+    <h4><span class="tag remote">remote</span> and <span class="tag phone">phone</span></h4>
+    <div class="box remote"><b>Remote client</b><small>agent_conversation/remote/mod.rs opens an SSH tunnel to the machine</small></div>
+    <div class="down">WebSocket, frames from remote/wire.rs</div>
+    <div class="box remote"><b>Remote backend</b><small>same binary with --assembly-server; remote/server/ handles each request with its own manager, adapters and database</small></div>
+    <div class="box phone"><b>Phone app</b><small>mobile/lib (Flutter, Android)</small></div>
+    <div class="down">HTTP and WebSocket on /phone/v1, with a device token</div>
+    <div class="box phone"><b>Phone listener</b><small>agent_conversation/phone/: runs only when ASSEMBLY_PHONE_BIND is set; it cannot reach the desktop's full-control socket</small></div>
+  </div>
+</div>
+
+<h3>One message, start to finish</h3>
+<ol class="steps">
+  <li>You press Send. The composer hands the text and attachments to the conversation service, which calls a Rust command.</li>
+  <li>The Rust command gives the prompt to the runtime manager. If the session's adapter is not running, the manager starts it and resumes the provider's own session by its ID.</li>
+  <li>The manager sends the prompt to the adapter over standard input and output. The adapter talks to the provider.</li>
+  <li>Replies arrive as a stream of events (text, reasoning, tool calls, approvals). Normalization turns each one into a chat row, and the manager saves it to SQLite in order.</li>
+  <li>Each saved row is pushed to the web view on the projection stream. The conversation store updates and the timeline draws it.</li>
+  <li>For a session on a remote machine, steps 2 to 4 happen on that machine. The desktop sends the prompt over the WebSocket, and rows come back the same way and are saved on the desktop too.</li>
+  <li>When the turn and all its follow-up work are quiet, the adapter process is stopped. The next Send starts it again.</li>
+</ol>
+<p>The details of each step (IDs, suspend rules, how history comes back) are in <a href="../main-architecture-explained.html">main-architecture-explained.html</a>.</p>
+
+<h2 id="where">3. What lives where, and why</h2>
+<p>The refactor (TSK-1512) gave each feature one folder on each side: a Rust folder for its commands and native work, and a Svelte folder under <code>shell/</code> for its views, store and service. "Public entry files" are the files other features are expected to import.</p>
+
+<h3>Rust: <code>tauri-svelte-preview/src-tauri/src/</code></h3>
+<table>
+<tr><th>Path</th><th>What it owns</th><th>Why it is separate</th><th>Public entry files</th></tr>
+<tr><td>main.rs</td><td>App startup, the <code>--assembly-server</code> switch, Tauri command registration, window exit, generic process helpers, and some older git helpers.</td><td>The entry point. Step 15 took file discovery out; it is still 7,331 lines and held at that size.</td><td>main.rs</td></tr>
+<tr><td>agent_conversation/</td><td>Everything about a chat: commands, the runtime manager, attachments, messaging between agents, safe markdown, terminal handoff, the process reaper.</td><td>The core of the app. Its sub-folders below split out the parts that change for different reasons.</td><td>mod.rs, manager.rs, protocol.rs</td></tr>
+<tr><td>agent_conversation/providers/</td><td>The ACP client, starting and stopping adapter processes, sign-in, packaged adapters and adapter or CLI updates.</td><td>The only place where code may branch on Codex, Claude or Antigravity by name (the commit checks enforce this).</td><td>mod.rs, acp_client.rs, process.rs</td></tr>
+<tr><td>agent_conversation/normalization/</td><td>Turning raw adapter events into chat rows, including tool calls and patches.</td><td>Step 14 took parsing out of the manager, so the manager keeps only ordering, saving and lifecycle.</td><td>mod.rs, tools.rs</td></tr>
+<tr><td>agent_conversation/history/</td><td>Importing provider transcripts (Claude and Codex files on disk) and older saved sessions.</td><td>Step 5: one owner for reading transcripts, so phone, remote and UI code don't each write a reader.</td><td>mod.rs, transcript/mod.rs</td></tr>
+<tr><td>agent_conversation/remote/</td><td>Connecting to a remote machine: SSH tunnel, install flow, history download, workspace calls, the wire format and the remote server.</td><td>Steps 1 and 13. Only <code>wire.rs</code> defines what goes over the WebSocket, and only <code>server/</code> answers requests.</td><td>mod.rs, wire.rs, server/mod.rs</td></tr>
+<tr><td>agent_conversation/phone/</td><td>The phone listener: pairing, device tokens, phone routes and push notifications.</td><td>Step 6. Phone writes go through the same shared commands as the desktop; no SQL in phone handlers.</td><td>mod.rs, push.rs</td></tr>
+<tr><td>workflow/</td><td>The workflow engine (runs, steps, reviews, the dev pipeline) and its Tauri commands.</td><td>Step 3 joined the old <code>orchestration</code> and <code>commands/workflow</code> code into one place.</td><td>mod.rs, commands.rs, orchestration.rs</td></tr>
+<tr><td>files/</td><td>File discovery, search, reads and writes, and language servers (LSP).</td><td>Steps 7 and 15 took this out of <code>main.rs</code> and the old root files.</td><td>commands.rs, io.rs, types.rs, lsp.rs, discovery/mod.rs</td></tr>
+<tr><td>git/</td><td>Git status, diffs, branches, worktrees, GitHub and pull requests.</td><td>Step 8 joined four separate root files.</td><td>commands.rs, workspace.rs, pull_requests.rs</td></tr>
+<tr><td>terminal/</td><td>Terminal processes and their scrollback.</td><td>Step 9.</td><td>mod.rs, commands.rs</td></tr>
+<tr><td>browser/</td><td>The native browser tab and its page inspector script.</td><td>Step 10.</td><td>mod.rs</td></tr>
+<tr><td>commands/</td><td>Small leftover command groups: session scan, application, runtime stop, usage.</td><td>Thin wrappers that don't belong to one feature.</td><td>mod.rs</td></tr>
+<tr><td>helper/</td><td>One-shot helper-model calls (session names, inspection, review drafts) and their keys.</td><td>Calls the model APIs directly, not through an adapter.</td><td>mod.rs</td></tr>
+<tr><td>usage_*.rs, claude_quota.rs</td><td>Token and cost usage: reading provider files, indexing, remote usage, quota.</td><td>Not moved by the refactor; still flat files at the root.</td><td>usage_db.rs, usage_current.rs</td></tr>
+<tr><td>resources.rs, resources_disk.rs</td><td>The Resource Manager: memory, CPU and disk use, and stopping processes.</td><td>Not moved by the refactor.</td><td>resources.rs</td></tr>
+<tr><td>notion_tasks.rs, notion_oauth.rs</td><td>The Notion tasks panel and its sign-in.</td><td>Not moved by the refactor.</td><td>notion_tasks.rs</td></tr>
+<tr><td>projection_streams.rs</td><td>The two ordered high-volume streams to the web view (chat and terminal).</td><td>Shared by chat and terminal, owned by neither.</td><td>projection_streams.rs</td></tr>
+<tr><td>project_folders.rs, evidence.rs</td><td>Turning folders into projects; proof evidence records.</td><td>Not moved by the refactor.</td><td>same files</td></tr>
+</table>
+<p>Outside <code>src-tauri/src</code>: <code>core/</code> is the shared Rust library <code>mcb-core</code>. It holds the SQLite store (<code>core/src/session_store.rs</code>, with phone and evidence queries in <code>core/src/session_store/</code>) and the disk, process and session scanners (<code>core/src/scanners/</code>). <code>tauri-svelte-preview/src-tauri/adapters/</code> is where release adapter binaries are generated.</p>
+
+<h3>Frontend: <code>tauri-svelte-preview/src/lib/</code></h3>
+<table>
+<tr><th>Path</th><th>What it owns</th><th>Why it is separate</th><th>Public entry files</th></tr>
+<tr><td>../routes/+page.svelte</td><td>Puts the whole workbench together: rail, tabs, panels, conversation.</td><td>The one composition point; features don't compose each other.</td><td>+page.svelte</td></tr>
+<tr><td>shell/conversation/</td><td>The chat: store, service, reducer, timeline model, the surface, the composer, every timeline row, and first send (<code>newSession/</code>).</td><td>Step 2. Outside this folder only a short list of components may be imported; single row renderers stay inside.</td><td>ConversationSurface.svelte, conversationService.ts, conversationStore.svelte.ts, components/ConversationComposer.svelte, components/ConversationTimeline.svelte, components/PendingFirstMessage.svelte</td></tr>
+<tr><td>shell/messages/</td><td>Messages between agents: the panel view and the full Messages screen.</td><td>Step 4: one implementation for both places.</td><td>AgentMessages.svelte, MessagesScreen.svelte</td></tr>
+<tr><td>shell/history/</td><td>The History panel and session library.</td><td>Step 5.</td><td>sessionHistoryHost.ts, components/</td></tr>
+<tr><td>shell/workflows/</td><td>Workflow run views, the owner inbox and the run timeline.</td><td>Step 3.</td><td>workflowService.ts, workflowStore.svelte.ts, workflowTypes.ts, workflowTimeline.ts</td></tr>
+<tr><td>shell/files/</td><td>The Files explorer and the editor.</td><td>Step 7.</td><td>components/, editor/, explorer/</td></tr>
+<tr><td>shell/git/</td><td>Source Control, diffs, history graph, GitHub and pull requests.</td><td>Step 8.</td><td>gitService.ts, gitPanelStore.svelte.ts, components/</td></tr>
+<tr><td>shell/terminal/</td><td>The terminal view and the service that starts terminal processes.</td><td>Step 9. Other features don't import <code>ghosttyFactory</code> (Settings is the one declared exception).</td><td>WorkspaceTerminal.svelte, terminalService.ts</td></tr>
+<tr><td>shell/browser/</td><td>The browser panel, toolbar, annotations and their store.</td><td>Step 10. Annotation canvas and bounds code stay internal.</td><td>browserStore.svelte.ts, browserTypes.ts, browserBackend.ts, normalizeBrowserUrl.ts, components/</td></tr>
+<tr><td>shell/providers/</td><td>Provider install and update buttons and their services.</td><td>Step 11. Settings, the composer and Connections use these instead of their own copies.</td><td>ProviderUpdateControl.svelte, ProviderCliUpdateControl.svelte, providerUpdateService.svelte.ts</td></tr>
+<tr><td>shell/settings/</td><td>The Settings dialog, its store, and themes.</td><td>Step 12. Settings embeds connection and provider controls rather than copying them.</td><td>SettingsDialog.svelte, SettingsHost.svelte, settingsStore.svelte.ts</td></tr>
+<tr><td>shell/connections/</td><td>Remote machine connections in Settings.</td><td>Its own small feature.</td><td>RemoteConnections.svelte</td></tr>
+<tr><td>shell/controllers/</td><td>Startup, session selection, new-session and editor-session flows.</td><td>Code that coordinates several features at once.</td><td>shellStartup.ts, sessionSelectionController.svelte.ts</td></tr>
+<tr><td>shell/layout/, shell/panels/</td><td>Tabs, pane stacks, side-pane registry; the right-side panels (agents, context, run, tasks, worktrees).</td><td>The frame around the features.</td><td>layout/topTabs.svelte.ts, panels/</td></tr>
+<tr><td>shell/usage/, shell/resources/</td><td>Usage and cost views; the Resource Manager.</td><td>One feature each.</td><td>usageStore.svelte.ts, resourceStore.svelte.ts</td></tr>
+<tr><td>shell/markdown/, shell/components/</td><td>Shared code highlighting; shared shell widgets such as the working spinner (<code>components/feedback/</code>).</td><td>Used by several features, so they sit outside any one of them.</td><td>markdown/codeHighlight.ts, components/feedback/</td></tr>
+<tr><td>shell/assistance/, problems/, processes/, projects/, worktrees/, stacks/, extensions/</td><td>Smaller features: helper proposals, diagnostics, Playwright processes, projects, the worktree manager, run stacks, extension probes.</td><td>One folder each, as before the refactor.</td><td>each folder's store or service file</td></tr>
+<tr><td>components/</td><td>Generic UI pieces (buttons, dialogs, menus, <code>components/ui/</code>) and some older panels.</td><td>Shared by everything; no feature logic.</td><td>components/ui/</td></tr>
+<tr><td>stores/, server/, root <code>*.ts</code> files</td><td>Older stores and source/workspace helpers that predate <code>shell/</code>.</td><td>Not moved by the refactor.</td><td>as named</td></tr>
+</table>
+
+<h3>Scripts, docs and tools</h3>
+<table>
+<tr><th>Path</th><th>What it owns</th><th>Why it is separate</th><th>Entry files</th></tr>
+<tr><td>tauri-svelte-preview/scripts/</td><td>Commit checks, the async lifecycle scanner, the four-scenario check, dev and release launchers, adapter packaging, remote deploy, the review-bot waiter, and most frontend tests.</td><td>Tooling that runs beside the app, all TypeScript.</td><td>commitChecks.ts, scanSchedulers.ts, fourScenarios.ts, dev-app.sh, deployRemoteBackendDev.ts, prepareReleaseAdapters.ts, prBotReview.ts</td></tr>
+<tr><td>scripts/</td><td>Building and updating the Mac app.</td><td>Repository-level build helpers.</td><td>build-app.sh, update-dev-app.ts</td></tr>
+<tr><td>.githooks/</td><td>The pre-commit and commit-message hooks.</td><td>Turned on per clone with <code>git config core.hooksPath .githooks</code> (CONTRIBUTING.md).</td><td>pre-commit, commit-msg</td></tr>
+<tr><td>mobile/</td><td>The Android phone app: chat, files, inbox, machines, runs, source control, terminal.</td><td>A separate Flutter program.</td><td>mobile/lib/main.dart, mobile/lib/features/</td></tr>
+<tr><td>tools/workbox-test/</td><td>The Workbox Test container used for every remote test.</td><td>Test machine setup, not app code.</td><td>README.md, Dockerfile</td></tr>
+<tr><td>infrastructure/notion-oauth/</td><td>The Notion sign-in service.</td><td>Deployed separately.</td><td>wrangler.toml</td></tr>
+<tr><td>docs/</td><td>Operations guides, feature plans and older reference pages.</td><td>Only <code>main-architecture-explained.html</code> at the root is kept current for architecture.</td><td>docs/operations/four-scenario-check.md</td></tr>
+<tr><td>Sources/, Tests/, Package.swift</td><td>The original Swift command-bar app.</td><td>Not part of the Tauri app; last changed 2026-08-14.</td><td>Sources/MacCommandBar/</td></tr>
+</table>
+
+<h2 id="rules">4. Rules that keep it that way</h2>
+<h3>Boundary rules</h3>
+<p>These come from the TSK-1512 refactor order (its "Boundary rules" section). That plan was not committed to the repository; it is linked from the <a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512 task</a>. The plan is explicit that features are not fully independent: the composer uses provider settings, Git and the editor share markdown and diff renderers, and phone routes call desktop services on purpose. The rules name real public files instead of hiding dependencies behind new layers.</p>
+<table>
+<tr><th>Area</th><th>Rule</th></tr>
+<tr><td>Remote</td><td>Remote cache, install and workspace code live under <code>agent_conversation/remote/</code>. Only <code>remote/wire.rs</code> defines the frames; only <code>remote/server/</code> dispatches requests. Client and phone code import these, never copy them.</td></tr>
+<tr><td>Conversation</td><td>Chat rendering and first send live under <code>shell/conversation/</code>. Outside it, only the listed public components may be imported (surface, composer, timeline, message parts, tool part, message, attachment lightbox, pending first message). No index file re-exports everything.</td></tr>
+<tr><td>Workflows</td><td>Panels import the workflow service, store, types and timeline only.</td></tr>
+<tr><td>Messages</td><td>The agent panel and the full Messages screen use the same <code>shell/messages/AgentMessages.svelte</code>.</td></tr>
+<tr><td>History</td><td>Provider transcript readers exist only under <code>agent_conversation/history/</code>.</td></tr>
+<tr><td>Phone</td><td>Phone routes live only in <code>agent_conversation/phone/</code> and write through the shared commands. No SQL in phone handlers.</td></tr>
+<tr><td>Files, Git, Terminal, Browser</td><td>Each feature's internals stay in its folder; other code imports its public files. Generic <code>components/ui</code> stays shared. The older git helpers left in <code>main.rs</code> are a known exception.</td></tr>
+<tr><td>Providers</td><td>Provider install and update UI lives under <code>shell/providers/</code>. Provider-specific launch and sign-in behaviour stays in the Rust <code>providers/</code> folder and the packaging scripts. Provider names in labels, transcripts, quotas, tests and contracts are fine.</td></tr>
+<tr><td>Settings</td><td>Settings code uses the settings store and the theme and font services. No new direct storage writes outside the existing persistence bridge.</td></tr>
+<tr><td>Normalization</td><td>Raw adapter content is parsed only in <code>normalization/</code>; the manager owns ordering, saving and lifecycle. No UI code imports raw ACP or adapter launcher code.</td></tr>
+<tr><td>Files out of main</td><td>File discovery, read and write code has one definition under <code>files/</code>; it does not go back into app startup.</td></tr>
+</table>
+
+<h3>What the hooks check on every commit</h3>
+<p><code>.githooks/pre-commit</code> runs the async lifecycle scanner (<code>scanSchedulers.ts</code>) and then <code>tauri-svelte-preview/scripts/commitChecks.ts</code> on the staged files. <code>.githooks/commit-msg</code> checks the message and runs <code>commitChecks.ts</code> again for the fix-commit rule.</p>
+<table>
+<tr><th>Check</th><th>What is stopped</th></tr>
+<tr><td>File size</td><td>A staged <code>.rs</code>, <code>.ts</code> or <code>.svelte</code> file over 600 lines. Files already larger are listed in <code>tauri-svelte-preview/scripts/commitChecks.baseline.json</code> (89 files) and may not grow; when one shrinks, its baseline must be lowered in the same commit.</td></tr>
+<tr><td>Provider branches</td><td>A new <code>if</code>, <code>match</code> or <code>case</code> on "codex", "claude" or "antigravity" outside <code>agent_conversation/providers/</code> and tests. 26 files have a recorded allowance that may not grow (the largest is <code>manager.rs</code> with 32).</td></tr>
+<tr><td>Fix commits need a test</td><td>A commit whose subject starts with "fix" that changes no test and has no <code>No-test: &lt;reason&gt;</code> line.</td></tr>
+<tr><td>Removed locations</td><td>Recreating any of 15 old paths the refactor removed, such as <code>remote_history.rs</code>, <code>phone_api.rs</code>, <code>git_pr.rs</code>, <code>orchestration.rs</code>, <code>shell/newSession/</code> or <code>shell/components/conversation/</code>. The error names the new folder.</td></tr>
+<tr><td>Feature-internal imports</td><td>Importing a feature's internal file from outside its folder: the 16 timeline row components inside <code>shell/conversation/components/</code>, the browser annotation canvas and bounds files, and <code>terminal/ghosttyFactory</code>. Two consumers are declared exceptions: Settings for <code>ghosttyFactory</code> and <code>+page.svelte</code> for browser panel bounds.</td></tr>
+<tr><td>Message format</td><td>A <code>Co-Authored-By</code> line; a last line that is not <code>Committed-by: &lt;name&gt;</code>; on a <code>tsk-NNNN</code> branch, a missing <code>Task: TSK-NNNN &lt;Notion URL&gt;</code> line.</td></tr>
+<tr><td>Architecture page</td><td>A commit that neither stages <code>main-architecture-explained.html</code> nor says <code>Architecture: unchanged</code>.</td></tr>
+</table>
+<p><strong>Where provider-specific code may live:</strong> freely in <code>tauri-svelte-preview/src-tauri/src/agent_conversation/providers/</code>, in tests, and in the adapter packaging and launcher scripts. Everywhere else it is held at its recorded count, and new cases are stopped. The TSK-1508 audit (section 5) went through the remaining cases and either made them apply to every provider or added a comment explaining why.</p>
+
+<h2 id="changed">5. What changed 2026-10-18 to 2026-10-20</h2>
+<p>80 pull requests merged from 2026-10-18 00:00 UTC to the latest main (#264 to #343), from <code>gh pr list -R jcoble/mac-command-bar --state merged --limit 80</code>. Eleven more (#253 to #263, workflow helper work) merged on 2026-10-17 UTC and are not listed. The task link is the Notion page the PR body names; #270 names its task only in its branch.</p>
+
+<h3>Module refactor, TSK-1512 (15 PRs)</h3>
+<p>All fifteen steps are moves with no behaviour change: whole files moved, imports and paths updated, tests run before and after. They are listed in step order.</p>
+<table>
+<tr><th>PR</th><th>Title</th><th>What it means for you</th><th>Task</th></tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/315">#315</a></td>
+  <td>Move remote connection and history code into one remote folder</td>
+  <td>Step 1. Remote connection, history, install and workspace code now live in one remote folder.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/317">#317</a></td>
+  <td>Move the conversation view and composer into the conversation folder</td>
+  <td>Step 2. The conversation view, composer and first-send code moved into the conversation folder (44 files).</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/321">#321</a></td>
+  <td>Move workflow execution and its desktop controls into one workflow folder</td>
+  <td>Step 3. The workflow engine and its desktop controls each live in one workflow folder.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/323">#323</a></td>
+  <td>Move the agent messages view into the messages folder</td>
+  <td>Step 4. The agent panel and the full Messages screen use one messages view.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/325">#325</a></td>
+  <td>Move history browsing and transcript import into one history folder</td>
+  <td>Step 5. History browsing and provider transcript import moved into one history folder per side.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/326">#326</a></td>
+  <td>Move the phone listener and phone device queries into one phone folder</td>
+  <td>Step 6. The phone listener and its database queries moved into one phone folder.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/327">#327</a></td>
+  <td>Move Files, the editor and language-service code into one files folder</td>
+  <td>Step 7. Files, the editor and the language-server code moved into one files folder.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/329">#329</a></td>
+  <td>[TSK-1512] Move source control, diffs and pull requests into one git folder</td>
+  <td>Step 8. Source control, diffs and pull requests moved into one git folder per side.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/330">#330</a></td>
+  <td>[TSK-1512] Move the terminal service, view and commands into one terminal folder</td>
+  <td>Step 9. The terminal service, view and commands moved into one terminal folder per side.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/331">#331</a></td>
+  <td>[TSK-1512] Move the browser panel, annotations and inspector into one browser folder</td>
+  <td>Step 10. The browser panel, annotations and page inspector moved into one browser folder per side.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/332">#332</a></td>
+  <td>[TSK-1512] Move the provider update controls and services into one providers folder</td>
+  <td>Step 11. The provider update buttons and their services moved into one providers folder.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/333">#333</a></td>
+  <td>[TSK-1512] Move Settings, themes and the settings store into one settings folder</td>
+  <td>Step 12. Settings, themes and the settings store moved into one settings folder.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/335">#335</a></td>
+  <td>[TSK-1512] Split remote frame encoding and server dispatch out of the remote module</td>
+  <td>Step 13. Message framing for remote machines and the remote server&#x27;s request handling were split out of the big remote file; what goes over the wire is unchanged.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/338">#338</a></td>
+  <td>[TSK-1512] Move conversation event normalization out of the runtime manager</td>
+  <td>Step 14. Turning raw adapter events into chat rows moved out of the runtime manager into its own folder.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/336">#336</a></td>
+  <td>[TSK-1512] Move file discovery and file reads out of app startup into the files folder</td>
+  <td>Step 15. File discovery and file reads moved out of app startup (main.rs went from 9,304 to 7,331 lines).</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a></td>
+</tr>
+</table>
+
+<h3>Commit checks, TSK-1513 (2 PRs)</h3>
+<table>
+<tr><th>PR</th><th>Title</th><th>What it means for you</th><th>Task</th></tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/312">#312</a></td>
+  <td>fix(tooling): reject oversized source and untested fixes at commit time</td>
+  <td>Commits are now stopped for oversized source files, provider checks outside the providers folder, and fix commits with no test.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81248302e8cb1e708991">TSK-1513</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/339">#339</a></td>
+  <td>[TSK-1513] Check feature-boundary imports in the commit checks</td>
+  <td>The fourth check: commits that recreate a removed location, or import another feature&#x27;s internal files, are stopped.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81248302e8cb1e708991">TSK-1513</a></td>
+</tr>
+</table>
+
+<h3>Provider-difference audit, TSK-1508 (10 PRs)</h3>
+<table>
+<tr><th>PR</th><th>Title</th><th>What it means for you</th><th>Task</th></tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/319">#319</a></td>
+  <td>Make checkout changes follow one provider support check</td>
+  <td>Moving a session to another checkout follows one backend support check instead of five copies of a Codex-only rule.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d8143859fcacd8e745ad1">TSK-1508</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/322">#322</a></td>
+  <td>Reopen stopped external Claude sessions as chat and copy Antigravity resume commands</td>
+  <td>Stopped external Claude sessions reopen as chat, like Codex; for Antigravity you can copy a resume command.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d8143859fcacd8e745ad1">TSK-1508</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/324">#324</a></td>
+  <td>Let the Codex probe test pass when CODEX_CONFIG is inherited</td>
+  <td>A Codex test no longer fails when the shell already has CODEX_CONFIG set (as Assembly&#x27;s own helper sessions do).</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d8143859fcacd8e745ad1">TSK-1508</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/328">#328</a></td>
+  <td>[TSK-1508] Model and effort menus follow what the adapter offers</td>
+  <td>Model and effort menus show only what the running adapter offers; the app stopped adding its own choices.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d8143859fcacd8e745ad1">TSK-1508</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/334">#334</a></td>
+  <td>[TSK-1508] Update the phone config test for adapter-only model and effort lists</td>
+  <td>Fixes a phone test that still expected the app&#x27;s own Claude model and effort list after #328.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d8143859fcacd8e745ad1">TSK-1508</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/337">#337</a></td>
+  <td>[TSK-1508] Follow adapter permission modes and stage worker model and effort together</td>
+  <td>Permission menus and workflow workers follow the adapter&#x27;s live permission modes, and a worker&#x27;s model and effort are set together.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d8143859fcacd8e745ad1">TSK-1508</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/340">#340</a></td>
+  <td>[TSK-1508] Explain provider sign-in and cancel differences; recover Codex sessions with missing history</td>
+  <td>Comments now explain why sign-in and cancel differ by provider, and Codex sessions with missing history can recover.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d8143859fcacd8e745ad1">TSK-1508</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/341">#341</a></td>
+  <td>[TSK-1508] Read provider names one way and agree on history support</td>
+  <td>Provider names are read one way everywhere, and every part of the app agrees on which providers support history.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d8143859fcacd8e745ad1">TSK-1508</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/342">#342</a></td>
+  <td>[TSK-1508] Explain adapter extension and path gates</td>
+  <td>Comments explain each adapter extension and path rule, citing the adapter source; no behaviour change.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d8143859fcacd8e745ad1">TSK-1508</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/343">#343</a></td>
+  <td>TSK-1508: keep every provider in snapshots, count archived Codex sessions, explain usage and helper scope</td>
+  <td>Workspace snapshots keep every provider, archived Codex sessions count toward usage, and usage and helper limits are explained.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d8143859fcacd8e745ad1">TSK-1508</a></td>
+</tr>
+</table>
+
+<h3>Other (53 PRs)</h3>
+<p>Mostly the phone app (TSK-1416 and TSK-1502), workflow runs, remote history (TSK-1500) and smaller fixes.</p>
+<table>
+<tr><th>PR</th><th>Title</th><th>What it means for you</th><th>Task</th></tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/264">#264</a></td>
+  <td>Open chat button in a helper&#x27;s sub-view (TSK-1416)</td>
+  <td>A helper&#x27;s sub-view in the Agents panel has an Open chat button, so you can talk to the helper directly.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/265">#265</a></td>
+  <td>Stop workflow workers stalling on approvals (TSK-1416)</td>
+  <td>Workflow workers no longer stall when Codex&#x27;s approval checker rejects a reviewer&#x27;s verdict.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/266">#266</a></td>
+  <td>[TSK-1482] Files panel: create a file or folder at the project root</td>
+  <td>The Files panel can create a file or folder at the project root, including in an empty project.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d818196e1cad13fb7bb1c">TSK-1482</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/267">#267</a></td>
+  <td>[TSK-1481] Source Control: add a git remote, and fetch only when one exists</td>
+  <td>Source Control can add a git remote, and Fetch is offered only when a remote exists.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d8181bac7c5565bdac516">TSK-1481</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/268">#268</a></td>
+  <td>[TSK-1483] Source Control: initialize a repository in a folder that has none</td>
+  <td>Source Control can turn a plain folder into a git repository.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d8188af0de565c0601892">TSK-1483</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/269">#269</a></td>
+  <td>Tidy the Workflows run view so nothing runs off the edge (TSK-1416)</td>
+  <td>First tidy-up of the Workflows run view so long text wraps (later replaced by #274).</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/270">#270</a></td>
+  <td>Rail: crown for the main orchestrator, status icons with counts, Needs you rolls up (TSK-1479)</td>
+  <td>The rail shows a crown on the main orchestrator, small status icons with counts, and &quot;Needs you&quot; rolls up from helpers and workers.</td>
+  <td><a href="https://app.notion.com/p/3fc394b0689d810cbc83f90bd0262540">TSK-1479</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/271">#271</a></td>
+  <td>Chat: stop a split turn from crashing the chat list and leaking memory</td>
+  <td>Fixes a chat crash and memory climb (500 MB to 2 GB) caused by one turn appearing as two rows with the same key.</td>
+  <td><a href="https://app.notion.com/p/3eb394b0689d8169bbcee93e78a9f723">TSK-1299</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/272">#272</a></td>
+  <td>[TSK-1476] Messages: list plus reader in the panel and a full Messages screen</td>
+  <td>Messages gets a list and reader in the right panel, plus a full Messages screen with unread badges.</td>
+  <td><a href="https://app.notion.com/p/3fc394b0689d8157b05ae9587fd1e67b">TSK-1476</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/273">#273</a></td>
+  <td>Workflow PR step: keep the body under GitHub&#x27;s limit, and catch an uncommitted build (TSK-1416)</td>
+  <td>The workflow PR step keeps the PR description under GitHub&#x27;s size limit and catches a build that was never committed.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/274">#274</a></td>
+  <td>Redesign the Workflows run view: step strip, step details, clear states (TSK-1416)</td>
+  <td>A full redesign of the Workflows run view: a step strip, step details and clear states.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/275">#275</a></td>
+  <td>Read a workflow run&#x27;s full history for the run timeline (TSK-1416)</td>
+  <td>The backend reads a workflow run&#x27;s whole history (every attempt, answer and gate decision) in one query.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/276">#276</a></td>
+  <td>Convert remote chat markdown on the desktop, not on the remote</td>
+  <td>Remote chat markdown is converted once, on the desktop, when it is saved; the remote machine no longer does it.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d81df9396d928a2990278">TSK-1498</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/277">#277</a></td>
+  <td>Add the Assembly phone app shell: pairing, machines, three tabs (TSK-1416 Task 31)</td>
+  <td>The first piece of the Android phone app: pairing, a machine list and three tabs.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/278">#278</a></td>
+  <td>Start Claude workflow workers in Auto, and fail loudly if a mode is missing (TSK-1416)</td>
+  <td>Claude workflow workers start in Auto mode, and a run fails loudly if the mode it asks for is missing.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/279">#279</a></td>
+  <td>Phone listener, pairing codes and device tokens (TSK-1416 Task 27)</td>
+  <td>A separate phone-only listener with pairing codes and device tokens; the desktop&#x27;s full-control socket is never reachable through it.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/280">#280</a></td>
+  <td>Show a run timeline in the Workflows run view (TSK-1416)</td>
+  <td>The Workflows run view shows a timeline of every step attempt, check result and review round.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/281">#281</a></td>
+  <td>Desktop Pair phone card for remote machines (TSK-1416 Task 30)</td>
+  <td>A connected remote machine in Settings, Connections gets a Pair phone button with a QR code.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/282">#282</a></td>
+  <td>Phone endpoints: chat, runs, inbox and live updates (TSK-1416)</td>
+  <td>Phone endpoints for chat, runs, inbox and live updates. It merged into a side branch; #287 brought it to main.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/283">#283</a></td>
+  <td>Phone runs screens: list, run detail, pause/resume/stop (TSK-1416)</td>
+  <td>Phone runs screens with pause, resume and stop. It merged into a side branch; #288 brought it to main.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/284">#284</a></td>
+  <td>Phone chat: orchestrator conversation with live updates (TSK-1416)</td>
+  <td>Phone chat with the orchestrator, with live updates.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/285">#285</a></td>
+  <td>Phone push notifications for new inbox items (TSK-1416)</td>
+  <td>The backend sends a phone push notification for each new inbox item.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/286">#286</a></td>
+  <td>Review fixes for the run timeline and Pair phone panel (TSK-1416)</td>
+  <td>Review fixes for the run timeline and the Pair phone panel that missed their original PRs.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/287">#287</a></td>
+  <td>Phone endpoints on main (re-land of #282) (TSK-1416)</td>
+  <td>Brings the phone endpoints from #282 onto main.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/288">#288</a></td>
+  <td>Phone runs screens on main (re-land of #283) (TSK-1416)</td>
+  <td>Brings the phone runs screens from #283 onto main, with three review fixes.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/289">#289</a></td>
+  <td>Phone inbox with live refresh for runs and inbox (TSK-1416)</td>
+  <td>Phone inbox, with live refresh for runs and inbox.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/290">#290</a></td>
+  <td>Phone: retry a failed workflow step (TSK-1416)</td>
+  <td>Retry a failed workflow step from the phone, the same way the desktop&#x27;s Retry button does.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/291">#291</a></td>
+  <td>Messages screen makeover: grouped cards and a cleaner reader (TSK-1476)</td>
+  <td>A visual makeover of the Messages screen: grouped cards and a cleaner reader; behaviour unchanged.</td>
+  <td><a href="https://app.notion.com/p/3fc394b0689d8157b05ae9587fd1e67b">TSK-1476</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/292">#292</a></td>
+  <td>Phone push notifications: register, notify, tap to open (TSK-1416)</td>
+  <td>The phone registers for push notifications, shows them, and opens the right screen when one is tapped.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/293">#293</a></td>
+  <td>Phone: list and message any session</td>
+  <td>The phone can list and message any session on a machine, not just the orchestrator.</td>
+  <td><a href="https://app.notion.com/p/3f5394b0689d81e5b2aef3bb8bddfea8">TSK-1416</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/294">#294</a></td>
+  <td>Phone: open a tool call to see its output and diff</td>
+  <td>Tap a tool call on the phone to see its output and diff (reached main through #297).</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d813fb0b5d261a742aee6">TSK-1502</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/295">#295</a></td>
+  <td>Phone: see a session&#x27;s changed files and their diffs</td>
+  <td>The phone shows a session&#x27;s changed files and their diffs (reached main through #297).</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d813fb0b5d261a742aee6">TSK-1502</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/296">#296</a></td>
+  <td>Phone: change a session&#x27;s model and effort, and see context left</td>
+  <td>Change a session&#x27;s model and effort from the phone and see how much context is left (reached main through #297).</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d813fb0b5d261a742aee6">TSK-1502</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/297">#297</a></td>
+  <td>Phone: tool calls, changed files, and model picker (re-land #294-#296 on main)</td>
+  <td>Brings #294, #295 and #296 onto main; they had merged into stacked branches instead.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d813fb0b5d261a742aee6">TSK-1502</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/298">#298</a></td>
+  <td>Phone: chat reads like the Claude Code app</td>
+  <td>The phone chat reads like the Claude Code app: full-width replies, no bubbles. Phone only.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d813fb0b5d261a742aee6">TSK-1502</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/299">#299</a></td>
+  <td>Phone: browse, read and edit a session&#x27;s files</td>
+  <td>Browse, read and edit a session&#x27;s files from the phone, limited to that session&#x27;s folder.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d813fb0b5d261a742aee6">TSK-1502</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/300">#300</a></td>
+  <td>Phone: source control sheet (changes, commit, sync, branches, PRs)</td>
+  <td>Source Control on the phone: changes, commit, sync, branches and pull requests.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d813fb0b5d261a742aee6">TSK-1502</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/301">#301</a></td>
+  <td>Phone: a real terminal in each session (ghostty-web)</td>
+  <td>A real terminal in each session on the phone, drawn by the same ghostty-web as the desktop.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d813fb0b5d261a742aee6">TSK-1502</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/302">#302</a></td>
+  <td>Phone chat: don&#x27;t move the reader when new text arrives</td>
+  <td>The phone chat holds still while you scroll up to read, instead of jumping when new text arrives.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d813fb0b5d261a742aee6">TSK-1502</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/303">#303</a></td>
+  <td>Phone composer: attach images to a message</td>
+  <td>Attach images (PNG, JPEG, WebP or GIF, up to 10 MiB) to a message from the phone.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d813fb0b5d261a742aee6">TSK-1502</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/304">#304</a></td>
+  <td>Phone terminal: tap or Keyboard key opens the keyboard</td>
+  <td>Tapping the phone terminal, or its new Keyboard key, opens the keyboard.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d813fb0b5d261a742aee6">TSK-1502</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/305">#305</a></td>
+  <td>Phone push: &quot;Reply ready&quot; when a turn finishes in a session opened on the phone</td>
+  <td>The phone gets a &quot;Reply ready&quot; notification when a turn finishes in a session you opened there.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d813fb0b5d261a742aee6">TSK-1502</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/306">#306</a></td>
+  <td>Remote catch-up resumes from saved rows and replays quietly</td>
+  <td>On reconnect, remote sessions resume after the last saved row and replay quietly, so nothing is sent twice (TSK-1500 part 1 of 3).</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d81d59721fdac823dfad6">TSK-1500</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/307">#307</a></td>
+  <td>Save remote session activity once, so it survives an offline restart</td>
+  <td>A finished remote turn no longer shows as Working after an offline restart; its activity is saved in one place.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d81aba532dbf8ebe2fddf">TSK-1505</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/308">#308</a></td>
+  <td>Start the Codex settings probe without the Assembly tool approval</td>
+  <td>Codex sessions start on machines whose Codex config has no Assembly tool server, such as Workbox Test.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d817b9255fd5787955330">TSK-1506</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/309">#309</a></td>
+  <td>History: group by machine, label checkouts clearly, one-line rows</td>
+  <td>History groups sessions by machine, labels checkouts clearly, hides empty ones and uses one-line rows.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d8179b36ed6be880fd802">TSK-1507</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/310">#310</a></td>
+  <td>Download remote saved history newest first, with a progress bar</td>
+  <td>Remote saved history downloads newest first, in compressed chunks, with a progress bar (protocol 20).</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d81d59721fdac823dfad6">TSK-1500</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/311">#311</a></td>
+  <td>fix(workflows): answer the review bot and keep going past blockers</td>
+  <td>The dev pipeline answers the review bot itself, no longer needs required checks, and keeps going past one blocked requirement.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d814b9bc6e9719e80742b">TSK-1511</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/313">#313</a></td>
+  <td>Script the four-scenario check</td>
+  <td>The four-scenario proof (Claude and Codex, local and Workbox Test) is now a script that owns setup and teardown.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81a9bca3d640492411b1">TSK-1514</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/314">#314</a></td>
+  <td>fix(remote): Deploy from this checkout always rebuilds changed files</td>
+  <td>&quot;Deploy from this checkout&quot; always rebuilds changed files, so Workbox Test no longer keeps an old backend while reporting success.</td>
+  <td><a href="https://app.notion.com/p/3fd394b0689d81d58110c4f1b886a084">TSK-1495</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/316">#316</a></td>
+  <td>Show readable provider errors once</td>
+  <td>A provider error shows as one readable sentence, once, instead of raw JSON twice.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d81b1abdbe30659fee2f1">TSK-1510</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/318">#318</a></td>
+  <td>Keep dev machines when the published backend is older</td>
+  <td>In development builds, a machine can be kept and deployed to even when the published backend speaks an older protocol.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d811fae86c2065ee7c34f">TSK-1516</a></td>
+</tr>
+<tr>
+  <td><a href="https://github.com/jcoble/mac-command-bar/pull/320">#320</a></td>
+  <td>Count the pr-feedback prompt in the dev pipeline test</td>
+  <td>Fixes a workflow test that still expected nine prompts after the pr-feedback step was added.</td>
+  <td><a href="https://app.notion.com/p/3fe394b0689d814b9bc6e9719e80742b">TSK-1511</a></td>
+</tr>
+</table>
+
+<h2 id="know">6. Things you should know</h2>
+<h3>Open follow-ups</h3>
+<table>
+<tr><th>Task</th><th>What it is</th></tr>
+<tr><td><a href="https://app.notion.com/p/3fe394b0689d8190b1d3c309185b8c0d">TSK-1515</a></td><td>The GitHub to Notion sync does not close tasks when their PR merges. Waiting on you; until then, tasks have to be closed by hand.</td></tr>
+<tr><td><a href="https://app.notion.com/p/3fe394b0689d810b92a4fd08728a84a3">TSK-1517</a></td><td>A fresh install starts on an old Codex adapter, and settings-probe failures show up as failed sends instead of setup problems.</td></tr>
+<tr><td><a href="https://app.notion.com/p/3fe394b0689d819aa0c4f078411cfa9a">TSK-1521</a></td><td>Four Rust tests fail on Linux: one language-server test needs Roslyn installed, and three process tests only work on macOS. The language-server tests are also flaky when run in parallel.</td></tr>
+<tr><td><a href="https://app.notion.com/p/3fe394b0689d81089110ce7ab991be1e">TSK-1522</a></td><td>Unattended Antigravity workflow workers stall waiting for approval to use Assembly tools.</td></tr>
+<tr><td><a href="https://app.notion.com/p/3fe394b0689d81c58aa0c2a44637c114">TSK-1523</a></td><td>Offer the right sign-in when a Codex or Claude session needs authentication.</td></tr>
+<tr><td><a href="https://app.notion.com/p/3fe394b0689d8157a5ded6c077759e39">TSK-1524</a></td><td>Codex sub-agent sessions are found by polling; use Codex's own sub-agent events instead.</td></tr>
+<tr><td><a href="https://app.notion.com/p/3fe394b0689d8174bd53f47a3efe0aeb">TSK-1525</a></td><td>Let the helper use any installed provider, and keep Settings usable when a provider's CLI is missing.</td></tr>
+<tr><td><a href="https://app.notion.com/p/3eb394b0689d815a8944ebba74526257">TSK-1297</a></td><td>Make Antigravity a first-class provider everywhere. On hold.</td></tr>
+</table>
+
+<h3>Known limits</h3>
+<ul>
+  <li><strong>The old codebase-map docs are out of date.</strong> <code>docs/codebase-map/*.md</code> (six files) were last changed on 2026-10-07, before the refactor. Many of their paths no longer exist. They were left as they are; use this page and the architecture page instead.</li>
+  <li><strong>Some files are still very large.</strong> The size check stops them growing but does not shrink them: <code>agent_conversation/manager.rs</code> 16,013 lines, <code>core/src/session_store.rs</code> 8,345, <code>files/lsp.rs</code> 8,078, <code>main.rs</code> 7,331, <code>remote/mod.rs</code> 5,865, <code>workflow/mod.rs</code> 5,826 (all from the baseline file).</li>
+  <li><strong>Not everything moved.</strong> Usage, resources, Notion and some older frontend stores and helpers are still flat files, and <code>main.rs</code> still holds some git helpers. The plan lists these as deliberate limits, not unfinished steps.</li>
+  <li><strong>The refactor plan and module map are not in the repository.</strong> They were kept outside it as working notes, per <code>AGENTS.md</code>. The Notion task <a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512</a> is the record.</li>
+</ul>
+
+<h2 id="next">7. Where to look next</h2>
+<ul>
+  <li><a href="../main-architecture-explained.html">main-architecture-explained.html</a>: how the app works and why. The architecture source of truth.</li>
+  <li>The TSK-1512 module map: it was never committed to the repository, so there is no file to link here. It is referenced from the <a href="https://app.notion.com/p/3fe394b0689d81a39e97e8c4e27cfa96">TSK-1512 task</a>.</li>
+  <li><a href="operations/four-scenario-check.md">docs/operations/four-scenario-check.md</a>: how to prove a chat change for Claude and Codex, locally and on Workbox Test.</li>
+  <li><a href="../AGENTS.md">AGENTS.md</a>: the rules every agent working in this repository follows.</li>
+</ul>
+</main>
+</body>
+</html>
