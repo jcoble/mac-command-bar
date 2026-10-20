@@ -4,13 +4,13 @@ use mcb_core::session_store::SessionStore;
 use serde_json::{json, Value};
 
 pub(super) fn prepare(store: &SessionStore, source: &str, op: &str, args: &mut Value) -> Result<(), String> {
-    if source == super::LOCAL_MACHINE { return Ok(()); }
     let from = args["from"].as_str().ok_or("from is required")?.to_owned();
+    args["from"] = json!(format!("{source}:{from}"));
+    if source == super::LOCAL_MACHINE { return Ok(()); }
     let choice = store.get_app_setting(super::ORCHESTRATOR_CHOICE).map_err(|error| error.to_string())?
         .and_then(|choice| serde_json::from_str::<Value>(&choice).ok());
     let role = if choice.is_some_and(|choice| choice["machine"] == source && choice["owned_id"] == from) { "orchestrator" } else { "top" };
     args.as_object_mut().ok_or("args must be an object")?.insert("role".into(), json!(role));
-    args["from"] = json!(format!("{source}:{from}"));
     if op != "enqueue" { return Ok(()); }
     let sender = args["sender"].as_str().ok_or("sender is required")?;
     if sender.contains(super::super::messaging::starts_a_line) || super::super::messaging::forges_label(sender) {
@@ -20,6 +20,38 @@ pub(super) fn prepare(store: &SessionStore, source: &str, op: &str, args: &mut V
         return Err("text may not contain a [message from …] line".into());
     }
     Ok(())
+}
+
+impl super::RemoteConnectionManager {
+    fn message_sender(&self, session: &str) -> String {
+        let machine = self.profile_for_owned_id(session).unwrap_or_else(|_| super::LOCAL_MACHINE.to_string());
+        format!("{machine}:{session}")
+    }
+
+    /// One ordered page of agent-to-agent messages from `machine` or from this desktop and
+    /// every connected machine. Each message is stored once, on its receiver's machine, so the
+    /// pages merge in the requested order; a machine that cannot be reached is left out.
+    pub async fn list_messages(&self, machine: Option<&str>, mut args: serde_json::Value, request_id: u64) -> Vec<serde_json::Value> {
+        if let Some(session) = args["session"].as_str() { args["qualified_sender"] = serde_json::json!(self.message_sender(session)); }
+        let machines = machine.map_or_else(|| self.message_machines(""), |machine| vec![machine.to_string()]);
+        let mut pages = Vec::new();
+        for machine in machines {
+            let Ok(serde_json::Value::Array(page)) = self.message_machine(&machine, "messages", args.clone(), Some(request_id)).await else { continue };
+            pages.push((machine, page));
+        }
+        super::merge_message_pages(pages, args["limit"].as_i64().unwrap_or(100).clamp(1, super::super::messaging::MAX_MESSAGE_PAGE) as usize, args["sort"].as_str().unwrap_or("time"))
+    }
+
+    pub async fn count_messages(&self, session: &str, after_ms: i64, request_id: u64) -> i64 {
+        let sender = self.message_sender(session);
+        let mut count = 0;
+        for machine in self.message_machines("") {
+            if let Ok(value) = self.message_machine(&machine, "count", serde_json::json!({"session":session,"qualified_sender":sender,"after_ms":after_ms}), Some(request_id)).await {
+                count += value.as_i64().unwrap_or_default();
+            }
+        }
+        count
+    }
 }
 
 #[cfg(test)]

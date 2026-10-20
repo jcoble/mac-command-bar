@@ -1299,29 +1299,6 @@ impl RemoteConnectionManager {
         }
     }
 
-    /// One ordered page of agent-to-agent messages from `machine` or from this desktop and
-    /// every connected machine. Each message is stored once, on its receiver's machine, so the
-    /// pages merge in the requested order; a machine that cannot be reached is left out.
-    pub async fn list_messages(&self, machine: Option<&str>, args: serde_json::Value, request_id: u64) -> Vec<serde_json::Value> {
-        let machines = machine.map_or_else(|| self.message_machines(""), |machine| vec![machine.to_string()]);
-        let mut pages = Vec::new();
-        for machine in machines {
-            let Ok(serde_json::Value::Array(page)) = self.message_machine(&machine, "messages", args.clone(), Some(request_id)).await else { continue };
-            pages.push((machine, page));
-        }
-        merge_message_pages(pages, args["limit"].as_i64().unwrap_or(100).clamp(1, super::messaging::MAX_MESSAGE_PAGE) as usize, args["sort"].as_str().unwrap_or("time"))
-    }
-
-    pub async fn count_messages(&self, session: &str, after_ms: i64, request_id: u64) -> i64 {
-        let mut count = 0;
-        for machine in self.message_machines("") {
-            if let Ok(value) = self.message_machine(&machine, "count", serde_json::json!({"session":session,"after_ms":after_ms}), Some(request_id)).await {
-                count += value.as_i64().unwrap_or_default();
-            }
-        }
-        count
-    }
-
     /// Runs `work` until it ends or the desktop cancels `request_id`; a cancelled call gives `None`.
     pub(crate) async fn unless_cancelled<T>(&self, request_id: u64, work: impl std::future::Future<Output = T>) -> Option<T> {
         let mut cancellations = self.cancelled_requests.subscribe();
@@ -3750,6 +3727,7 @@ mod connection_tests {
         connections.client.lock().unwrap().clients.insert("workbox-test".into(), RemoteClient {
             requests: Some(requests), profile: Some(profile("workbox-test")), target_key: None, task: None, ready });
 
+        connections.remember("there", "workbox-test");
         // The remote session finds the desktop's session by its title, through the desktop.
         let there = MessagingEndpoint::start().unwrap();
         there.set_relay(state.relay.relay());
@@ -3767,6 +3745,10 @@ mod connection_tests {
         let there_handle = remote.store().directory_name("there").unwrap().unwrap().0;
         assert_eq!(sender, format!("workbox-test: {there_handle} · There"));
         assert_eq!(body, "hello from there");
+        let traffic = connections.list_messages(None, json!({"session":"there","limit":10}), 90).await;
+        assert_eq!(traffic.len(), 1);
+        assert_eq!(traffic[0]["fromOwnedId"], "workbox-test:there");
+        assert_eq!(connections.count_messages("there", 0, 91).await, 1);
         // These test machines run no agent, so delivery may already have failed it.
         let status = tool(&there, &there_token, json!({"name":"message_status","arguments":{"id":id}})).await;
         assert!(["queued", "delivered", "failed"].contains(&status["status"].as_str().unwrap()), "{status}");
@@ -3783,6 +3765,7 @@ mod connection_tests {
         let here_handle = desktop.store().directory_name("here").unwrap().unwrap().0;
         assert_eq!(sender, format!("{here_handle}@mac · Here"));
         assert_eq!(body, "hello back");
+        assert_eq!(connections.count_messages("here", 0, 92).await, 2);
         let status = tool(&here, &here_token, json!({"name":"message_status","arguments":{"id":reply_id}})).await;
         assert!(["queued", "delivered", "failed"].contains(&status["status"].as_str().unwrap()), "{status}");
 

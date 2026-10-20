@@ -60,13 +60,13 @@ pub fn answer(store: &SessionStore, manager: Option<&AgentRuntimeManager>, op: &
             let before = args["before_ms"].as_i64().zip(args["before_id"].as_str());
             let limit = args["limit"].as_i64().unwrap_or(100).clamp(1, MAX_MESSAGE_PAGE);
             serde_json::to_value(store.list_messages(&TrafficQuery {
-                run_id: args["run_id"].as_str(), session: args["session"].as_str(), before, limit,
+                run_id: args["run_id"].as_str(), session: args["session"].as_str(), qualified_sender: args["qualified_sender"].as_str(), before, limit,
                 status: args["status"].as_str(), search: args["search"].as_str(),
                 sort: args["sort"].as_str().unwrap_or("time"), before_key: args["before_key"].as_str(),
             })
                 .map_err(|error| error.to_string())?).map_err(|error| error.to_string())
         }
-        "count" => Ok(json!(store.count_messages(arg("session")?, args["after_ms"].as_i64().ok_or("after_ms is required")?)
+        "count" => Ok(json!(store.count_messages(arg("session")?, args["after_ms"].as_i64().ok_or("after_ms is required")?, args["qualified_sender"].as_str())
             .map_err(|error| error.to_string())?)),
         _ => Err(format!("Unknown messaging operation {op}")),
     }
