@@ -51,12 +51,13 @@ thorough. Find the real constraint first, then change only what the task needs.
    `pgrep | kill` and anything else that matches a name or path can hit your own agent (its command
    line holds the worktree path) or another lane's servers.
 2. **Touching the owner's data.** The real app data folder (holding `sessions.db`; on the Mac
-   `~/Library/Application Support/dev.blackcolours.MacCommandBarWebviewPreview`) and
+   `/Users/blackcolours/Library/Application Support/dev.blackcolours.MacCommandBarWebviewPreview`) and
    `~/.local/share/assembly` on any machine are in use. You may read or copy from them. Never open
    them read-write, start a server against them, or clean them up. Copy test data in; never symlink.
 3. **Connecting to the owner's machines.** Remote tests use only the "Workbox Test" container (SSH
-   alias `workbox-test`, see `tools/workbox-test/README.md`). Never connect a test app to "Agent
-   Workbox", "SD" or any other saved machine: its sessions land in the owner's session list.
+   alias `workbox-test`, see `tools/workbox-test/README.md`). **Install and connect** is fine from
+   the test app, against Workbox Test only. Never connect a test app to "Agent Workbox", "SD" or any
+   other saved machine: its sessions land in the owner's session list.
 4. **`git reset --hard`.** It has destroyed uncommitted work. Use `git stash push -m`,
    `git restore -- <path>` after reading its diff, or `git reset --soft HEAD~1`. Before anything that
    can discard changes, run `git status --short` and say what would be lost.
@@ -121,12 +122,15 @@ one next to it doesn't. Before calling work done, name which of these you covere
   is wired. No tests on component structure, layout, panels, menus, styling, colour tokens or
   contrast: the UI changes daily and those tests only get rewritten to match it.
 - A test that needs a sleep or polling to pass is wrong; wait on the event that marks completion.
-- **Before every PR, run the four-scenario check** (`docs/operations/four-scenario-check.md`):
-  Claude Code and Codex, each on a local session and on Workbox Test, in the running native app.
-  Report the four-row table with evidence. A scenario you can't run is reported as blocked with the
-  exact error, never skipped.
-- Browsers run headless at 1710x990 (confirm with `window.innerWidth`); the native app runs under
-  Xvfb at the same size. Save screenshots as `~/Workbox/screenshots/TSK-<id>-<what>-<before|after>.png`
+- **Every change gets the four-scenario check** (`docs/operations/four-scenario-check.md`), with
+  no exemption for changes that look small: Claude Code and Codex, each on a local session and on
+  Workbox Test. Several changes may share one run if it exercises each of them. Report the four-row
+  table with evidence; a scenario you can't run is reported blocked with the exact error.
+- That check and any UI proof use the real native app with real test data, driven the way a
+  person uses it. On Linux the app runs under Xvfb at 1710x990, driven with `assembly-native-ui`
+  (screenshots, clicks, keys); Codex may use its computer-use tool. A browser preview is not proof:
+  it has no app data. Use a headless browser at 1710x990 only for real web pages.
+- Save screenshots as `~/Workbox/screenshots/TSK-<id>-<what>-<before|after>.png`
   and run `evidence add <file> --task TSK-<id> --desc "<what it proves>"`; `evidence publish
   TSK-<id>` gives the Drive links for the PR and the task. Close every browser and app you opened.
 
@@ -182,6 +186,6 @@ one next to it doesn't. Before calling work done, name which of these you covere
   adding a second account. Leave out what the code already says: field lists, control flow, file
   catalogues, PR summaries. A local reason belongs in a comment next to the code.
 - Explain anything long with a self-contained HTML page (diagram, mockup, before and after).
-- `docs/operations/` holds maintainer procedures. Research notes, recon files and scratch stay
-  outside the worktree and out of commits.
+- `docs/operations/` holds maintainer procedures. Plans, recon notes and lane reports that are
+  committed go in `docs/plans/<YYYY-MM-DD>/`, never the repo root. Scratch stays out of the worktree.
 - Plain English in everything a person reads. Spell terms out; no invented shorthand.

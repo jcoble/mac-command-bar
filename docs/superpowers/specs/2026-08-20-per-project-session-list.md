@@ -4,7 +4,7 @@
 read only that project's sessions. Today a cache miss runs the full unscoped
 scan (every Codex rollout, every Claude project, cmux) and filters at the end.
 
-## Recon receipts (from recon-project-list.md, all verified)
+## Recon receipts (from docs/plans/2026-08-21/recon-project-list.md, all verified)
 
 - Cache-miss path: `HistoryPanel.svelte:174-186` → `sessionLibraryService.ts:120-128`
   (`refresh(keys)` — keys never reach the provider) → `+page.svelte:446-456` →

@@ -1,6 +1,6 @@
 # Four-scenario check
 
-Every change to the chat must be proved in the running native app for Claude Code and Codex, each on a local session and a remote session on Workbox Test. The script owns setup, isolation and teardown; you drive the app.
+Every change is proved this way, however small it looks: in the running native app with real test data, driven the way a person uses it, for Claude Code and Codex, each on a local session and a remote session on Workbox Test. Several changes may share one run if the run exercises each of them. A browser preview is not proof: it has no app data. The script owns setup, isolation and teardown; you drive the app.
 
 | # | Provider | Machine |
 |---|---|---|
@@ -28,13 +28,15 @@ Never point the app at `~/.local/share`, never use `--assembly-server`, and conn
 
 ## Driving the app
 
+On Linux the app runs under Xvfb and you drive it with `assembly-native-ui`. Codex may use its computer-use tool instead.
+
 ```
 DISPLAY=:<n> assembly-native-ui shot <file.png>
 DISPLAY=:<n> assembly-native-ui click <x> <y>
 DISPLAY=:<n> assembly-native-ui key <key> [Modifier]
 ```
 
-Open every screenshot after each action; do not assume a click worked. Fixtures: add a git repo with one commit as a local project; for remote, a folder on Workbox Test (Settings -> Connections lists Workbox Test; never click Install and connect). A remote backend older or newer than the app speaks another protocol: use the dev-only "Deploy from this checkout" for Workbox Test when the change touches the backend.
+Open every screenshot after each action; do not assume a click worked. Fixtures: add a git repo with one commit as a local project; for remote, a folder on Workbox Test (Settings -> Connections lists Workbox Test; **Install and connect** is fine from the test app, against Workbox Test only). A remote backend older or newer than the app speaks another protocol: use the dev-only "Deploy from this checkout" for Workbox Test when the change touches the backend.
 
 ## Steps per scenario
 
