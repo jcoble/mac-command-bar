@@ -155,6 +155,8 @@ one next to it doesn't. Before calling work done, name which of these you covere
   that PR, as `ALLOW_MERGE=1 gh pr merge <n> --merge`.
 - A PR is one request. UI changes need before and after screenshots; motion needs a short video.
   Evidence goes to Drive and is linked from the PR and the task; never commit screenshots.
+- End the PR body with the model and harness that did the work (for example `Model: Claude Opus ·
+  Harness: Claude Code`). Code, comments and commit messages don't name AI tools.
 - Looking after a PR means handling what is new since your last push: confirm each reported
   problem in the code, fix it if real, otherwise reply with why not.
 
