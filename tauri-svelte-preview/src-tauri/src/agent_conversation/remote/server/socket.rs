@@ -173,7 +173,7 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => {
                         // Replay only sessions known to this socket. A missing session's
-                        // next live event exposes a gap for the client's snapshot repair.
+                        // next live event skips past the client's copy, and the client asks for it.
                         let mut failed = false;
                         for owned_id in queued.keys().cloned().collect::<Vec<_>>() {
                             if let Err(error) = replay_session(&state, &outbound, &mut queued, &owned_id).await {
@@ -294,9 +294,10 @@ async fn serve_remote_socket(socket: WebSocket, state: ServerState) {
                 }
             }
             ClientFrame::Resume { cursors } => {
+                let named = cursors.keys().cloned().collect::<Vec<_>>();
                 queued.extend(cursors);
                 let mut failed = false;
-                for owned_id in queued.keys().cloned().collect::<Vec<_>>() {
+                for owned_id in named {
                     if let Err(error) = replay_session(&state, &outbound, &mut queued, &owned_id).await {
                         eprintln!("Remote resume replay failed: {error}");
                         failed = true;

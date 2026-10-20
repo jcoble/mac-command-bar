@@ -7,6 +7,7 @@ pub(crate) mod install_flow;
 mod workspace;
 pub(crate) mod server;
 pub(in crate::agent_conversation) mod wire;
+#[cfg(test)] mod live_gap_tests;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 #[cfg(debug_assertions)]
@@ -64,7 +65,7 @@ use super::protocol::{
 };
 use super::providers::ProviderRegistry;
 
-pub(super) const PROTOCOL_VERSION: u16 = 21;
+pub(super) const PROTOCOL_VERSION: u16 = 22;
 const MAX_WIRE_FRAME_BYTES: usize = 1024 * 1024;
 // Requests stay small; history pages can include one indivisible event beyond
 // their byte budget. Match the existing desktop WebSocket frame ceiling.
@@ -1060,8 +1061,7 @@ impl RemoteConnectionManager {
         newest: Option<AgentConversationEvent>) -> Result<(), String> {
         {
             let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let previous = history.through(profile, &snapshot.connection.owned_id)?;
-            history.snapshot(profile, history.epoch(profile), previous, &mut snapshot)?;
+            history.snapshot(profile, history.epoch(profile), None, &mut snapshot)?;
         }
 
         if let Some(event) = newest { self.history_event_sink(profile, true)(vec![event])?; }
@@ -1078,7 +1078,7 @@ impl RemoteConnectionManager {
             {
                 let history = history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 // A replaced connection must stop; a failed cache write must not.
-                // Snapshot catch-up refills any row the cache missed.
+                // The next pushed event then skips past the missed row, which asks for its replay.
                 history.check(&profile, epoch)?;
                 let mut by_session = BTreeMap::<String, Vec<usize>>::new();
                 for (index, event) in events.iter().enumerate() {
@@ -1634,14 +1634,13 @@ impl RemoteConnectionManager {
             self.ensure_history_download(&profile, &owned_id).await?;
             self.wait_history_download_ready(&profile, &owned_id, request_id, &mut cancellations).await?;
         }
-        let needs_repair = self.saved_history_needs_repair(&profile, &owned_id)?;
         let mut saved = self
             .history
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .read_selection_snapshot(&profile, &owned_id, max_bytes)?;
         if saved.as_ref().is_some_and(|snapshot| {
-            needs_repair || minimum_generation.is_some_and(|minimum| snapshot.connection.generation < minimum)
+            minimum_generation.is_some_and(|minimum| snapshot.connection.generation < minimum)
         }) && self.connection_state(&profile) == RemoteConnectionState::Connected
         {
             if !self
@@ -1689,9 +1688,6 @@ impl RemoteConnectionManager {
         if self.connection_state(&profile) == RemoteConnectionState::Connected {
             self.ensure_history_download(&profile, &source_owned_id).await?;
             self.wait_history_download_ready(&profile, &source_owned_id, request_id, &mut cancellations).await?;
-            if self.saved_history_needs_repair(&profile, &source_owned_id)? {
-                self.save_newer(&profile, &source_owned_id, request_id, false, None).await?;
-            }
         }
         let mut snapshot = self
             .history
@@ -1777,7 +1773,7 @@ impl RemoteConnectionManager {
         }
     }
 
-    /// Saves every server event newer than the Mac's confirmed copy, one page
+    /// Saves every server event newer than the Mac's saved copy, one page
     /// at a time. `publish` then sends only the newest saved event: an open
     /// transcript reads the rest from the Mac's copy, and replayed turns would
     /// otherwise look live. Answers false when the server has no such session.
@@ -1789,10 +1785,8 @@ impl RemoteConnectionManager {
         publish: bool,
         minimum_generation: Option<u64>,
     ) -> Result<bool, String> {
-        let (epoch, mut after) = {
-            let history = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            (history.epoch(profile), history.through(profile, owned_id)?)
-        };
+        let epoch = self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).epoch(profile);
+        let mut after = self.store.remote_saved_bounds(&RemoteHistory::key(profile, owned_id)).map_err(|e| e.to_string())?.1;
         let mut newest = None;
         loop {
             let saved = self.store.latest_seq(&RemoteHistory::key(profile, owned_id)).map_err(|e| e.to_string())?;
@@ -1870,15 +1864,6 @@ impl RemoteConnectionManager {
             progress: tokio::sync::watch::channel(progress).0 })
     }
 
-    fn saved_history_needs_repair(&self, profile: &str, owned: &str) -> Result<bool, String> {
-        let history = self.history.lock().unwrap();
-        if !history.download_state(profile, owned)?.is_some_and(|download| download.complete) { return Ok(false); }
-        let through = history.through(profile, owned)?;
-        drop(history);
-        let saved = self.store.latest_seq(&RemoteHistory::key(profile, owned)).map_err(|e| e.to_string())?;
-        Ok(through.is_some_and(|through| saved > through))
-    }
-
     async fn ensure_history_download(&self, profile: &str, owned_id: &str) -> Result<(), String> {
         if self.history.lock().unwrap().download_state(profile, owned_id)?.is_some_and(|state| state.complete) { return Ok(()); }
         let key = RemoteHistory::key(profile, owned_id);
@@ -1889,7 +1874,7 @@ impl RemoteConnectionManager {
         let sender = self.client.lock().unwrap().clients.get(profile).and_then(|client| client.requests.clone())
             .ok_or_else(|| format!("Remote machine {profile} is not connected"))?;
         self.history.lock().unwrap().prepare_download(profile, owned_id)?;
-        let before_sequence = self.store.remote_saved_minimum(&key).map_err(|e| e.to_string())?;
+        let before_sequence = self.store.remote_saved_bounds(&key).map_err(|e| e.to_string())?.0;
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
         let download = self.create_download(profile, owned_id, id)?;
         let progress = download.progress.borrow().clone();
@@ -1981,7 +1966,7 @@ impl RemoteConnectionManager {
         }
         let mut downloads = self.downloads.lock().unwrap();
         let Some(entry) = downloads.get_mut(&RemoteHistory::key(profile, owned)).filter(|entry| entry.request_id == Some(id)) else { return Ok(()); };
-        self.history.lock().unwrap().complete_download(profile, epoch, owned, low, high)?;
+        self.history.lock().unwrap().complete_download(profile, epoch, owned)?;
         entry.request_id = None;
         entry.progress.send_modify(|progress| { progress.phase = "complete".into(); progress.ready = true; progress.covered_bytes = progress.total_bytes; });
         let progress = entry.progress.borrow().clone(); drop(downloads); self.publish_download(progress); Ok(())
@@ -2462,9 +2447,6 @@ impl RemoteConnectionManager {
             )?;
         self.ensure_history_download(&profile, &server_child_owned_id).await?;
         self.wait_history_download_ready(&profile, &server_child_owned_id, request_id, &mut cancellations).await?;
-        if self.saved_history_needs_repair(&profile, &server_child_owned_id)? {
-            self.save_newer(&profile, &server_child_owned_id, request_id, false, None).await?;
-        }
         let page = self
             .history
             .lock()
@@ -3102,8 +3084,19 @@ async fn client_loop(
                             }
                         }
                         let count = events.len();
-                        let (quiet, live): (Vec<_>, Vec<_>) = events.into_iter()
+                        let (quiet, mut live): (Vec<_>, Vec<_>) = events.into_iter()
                             .partition(|event| replaying.contains_key(&event.owned_id));
+                        // A session waiting for a replay it asked for drops pushed events; the replay re-sends them in order.
+                        live.retain(|event| !resume_cursors.contains_key(&event.owned_id));
+                        let skipped = history_client.0.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .skipped(&history_client.1, &live).unwrap_or_else(|error| { eprintln!("Remote gap check failed: {error}"); BTreeMap::new() });
+                        if !skipped.is_empty() {
+                            eprintln!("Remote events skipped past the saved history of {} sessions; replaying them", skipped.len());
+                            live.retain(|event| !skipped.contains_key(&event.owned_id));
+                            cursors.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend(skipped.clone());
+                            resume_cursors.extend(skipped.clone());
+                            if send_client_frame(&mut socket, &ClientFrame::Resume { cursors: skipped }).await.is_err() { break 'connected; }
+                        }
                         for event in &quiet {
                             replaying.get_mut(&event.owned_id).unwrap().1 = Some(event.clone());
                         }
@@ -3154,21 +3147,7 @@ async fn client_loop(
                                         command: RemoteCommand::Snapshot { owned_id, request_id: id, after_sequence: None },
                                     }).await.is_err() { break 'connected; }
                                 }
-                                Ok(false) => {
-                                    match history_client.0.saved_history_needs_repair(&history_client.1, &owned_id) {
-                                        Ok(true) => {
-                                            let (manager, profile) = history_client.clone();
-                                            tokio::spawn(async move {
-                                                let id = manager.next_request_id.fetch_add(1, Ordering::Relaxed);
-                                                if let Err(error) = manager.save_newer(&profile, &owned_id, id, true, None).await {
-                                                    eprintln!("Remote live history repair failed: {error}");
-                                                }
-                                            });
-                                        }
-                                        Ok(false) => {}
-                                        Err(error) => { interruption = error; break 'connected; }
-                                    }
-                                }
+                                Ok(false) => {}
                                 Err(error) => { interruption = error; break 'connected; }
                             }
                         }
@@ -3201,7 +3180,7 @@ async fn client_loop(
                                         previous.progress.send_replace(download.progress.borrow().clone());
                                     } else { downloads.insert(key.clone(), download); }
                                 }
-                                let before_sequence = match history_client.0.store.remote_saved_minimum(&key) { Ok(cursor) => cursor, Err(error) => { interruption = error.to_string(); break 'connected; } };
+                                let before_sequence = match history_client.0.store.remote_saved_bounds(&key) { Ok(bounds) => bounds.0, Err(error) => { interruption = error.to_string(); break 'connected; } };
                                 if send_client_frame(&mut socket, &ClientFrame::Request { id, command: RemoteCommand::DownloadHistory { owned_id: owned, before_sequence } }).await.is_err() { break 'connected; }
                             }
                             status();
@@ -3390,7 +3369,7 @@ mod connection_tests {
         manager.receive_history_chunk("cache-test", restarted, "large-history", 300,
             encode_history_chunk(&[history_event(2), history_event(1)]).unwrap()).unwrap();
         manager.finish_history_download("cache-test", "large-history", restarted).await.unwrap();
-        assert_eq!(manager.store.remote_saved_minimum(&RemoteHistory::key("cache-test", "large-history")).unwrap(), Some(1));
+        assert_eq!(manager.store.remote_saved_bounds(&RemoteHistory::key("cache-test", "large-history")).unwrap().0, Some(1));
         assert!(manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().unwrap().complete);
     }
 
@@ -3433,23 +3412,6 @@ mod connection_tests {
         let result = tokio::time::timeout(Duration::from_millis(100), &mut read).await;
         read.abort();
         assert_eq!(result.expect("cancelled read must leave admission").unwrap().unwrap_err(), PAGE_CANCELLED);
-    }
-
-    #[tokio::test]
-    async fn completed_download_repairs_a_later_live_gap_on_open() {
-        let manager = download_manager();
-        let (id, mut requests) = begin_test_download(&manager, 100, Some(1), Some(1)).await;
-        manager.receive_history_chunk("cache-test", id, "large-history", 100, encode_history_chunk(&[history_event(1)]).unwrap()).unwrap();
-        manager.finish_history_download("cache-test", "large-history", id).await.unwrap();
-        manager.history_event_sink("cache-test", true)(vec![history_event(3)]).unwrap();
-        let reader = manager.clone();
-        let selection = tokio::spawn(async move { reader.selection_snapshot("large-history".into(), 71, 1024, None).await });
-        let ClientRequest::Execute { command, reply, .. } = tokio::time::timeout(Duration::from_millis(100), requests.recv()).await.expect("saved live gap needs catch-up").unwrap() else { panic!("expected snapshot repair"); };
-        assert!(matches!(command, RemoteCommand::Snapshot { after_sequence: Some(1), .. }));
-        reply.send(Ok(RemoteResponse::Snapshot(Some(history_snapshot(vec![history_event(2), history_event(3)], 3))))).unwrap();
-        assert!(selection.await.unwrap().unwrap().is_some());
-        assert_eq!(manager.history.lock().unwrap().through("cache-test", "large-history").unwrap(), Some(3));
-        assert!(requests.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -3573,8 +3535,8 @@ mod connection_tests {
     }
 
     #[test]
-    fn history_download_protocol_21_round_trips_compressed_chunks() {
-        assert_eq!(PROTOCOL_VERSION, 21);
+    fn history_download_protocol_22_round_trips_compressed_chunks() {
+        assert_eq!(PROTOCOL_VERSION, 22);
         let rows = vec![history_event(3), history_event(-2)];
         let encoded = encode_history_chunk(&rows).unwrap();
         assert_eq!(decode_history_chunk(&encoded).unwrap(), rows);
@@ -3650,7 +3612,7 @@ mod connection_tests {
         assert!(matches!(requests.recv().await.unwrap(), ClientRequest::Download { command: RemoteCommand::DownloadHistory { before_sequence: Some(2), .. }, .. }));
         assert_eq!(manager.saved_cursors("cache-test").unwrap()["large-history"], 3);
         manager.receive_history_chunk("cache-test", id, "large-history", 300, encode_history_chunk(&[history_event(1)]).unwrap()).unwrap();
-        assert_eq!(manager.store.remote_saved_minimum(&RemoteHistory::key("cache-test", "large-history")).unwrap(), Some(2));
+        assert_eq!(manager.store.remote_saved_bounds(&RemoteHistory::key("cache-test", "large-history")).unwrap().0, Some(2));
     }
 
     #[tokio::test]
@@ -3979,7 +3941,7 @@ mod connection_tests {
         AgentConversationEvent { sequence, ..large_history_event(32) }
     }
 
-    fn history_snapshot(events: Vec<AgentConversationEvent>, last_sequence: i64) -> AgentConversationSnapshot {
+    pub(super) fn history_snapshot(events: Vec<AgentConversationEvent>, last_sequence: i64) -> AgentConversationSnapshot {
         AgentConversationSnapshot {
             connection: AgentConversationConnection {
                 owned_id: "large-history".into(), provider: AgentConversationProvider::Codex, generation: 1,
@@ -3991,7 +3953,7 @@ mod connection_tests {
         }
     }
 
-    fn sequences(events: &[AgentConversationEvent]) -> Vec<i64> {
+    pub(super) fn sequences(events: &[AgentConversationEvent]) -> Vec<i64> {
         events.iter().map(|event| event.sequence).collect()
     }
 
@@ -4134,7 +4096,7 @@ mod connection_tests {
         assert!(requests.try_recv().is_err(), "confirmed start must not request the workbox again");
     }
 
-    fn large_history_event(bytes: usize) -> AgentConversationEvent {
+    pub(super) fn large_history_event(bytes: usize) -> AgentConversationEvent {
         AgentConversationEvent {
             runtime_state: None,
             owned_id: "large-history".into(),
@@ -4248,7 +4210,7 @@ mod connection_tests {
         (RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap(), "test".into())
     }
 
-    fn store() -> Arc<SessionStore> {
+    pub(super) fn store() -> Arc<SessionStore> {
         Arc::new(SessionStore::open_in_memory().unwrap())
     }
 
@@ -4934,7 +4896,7 @@ mod connection_tests {
 
     #[tokio::test]
     async fn readiness_requires_protocol_and_session_response() {
-        assert_eq!(PROTOCOL_VERSION, 21);
+        assert_eq!(PROTOCOL_VERSION, 22);
         for version in [PROTOCOL_VERSION - 1, PROTOCOL_VERSION, PROTOCOL_VERSION + 1] {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();

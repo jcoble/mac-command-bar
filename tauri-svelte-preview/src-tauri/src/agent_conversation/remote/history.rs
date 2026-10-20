@@ -8,7 +8,7 @@ use super::super::protocol::{
 };
 use mcb_core::session_store::{EventCoverage, EventRow, HistoryDownloadFacts, SessionRow, SessionStore};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 #[derive(Default, Serialize, Deserialize)]
@@ -25,8 +25,6 @@ struct Coverage {
     pending_permission: bool,
     #[serde(default)]
     pending_input: bool,
-    oldest: Option<i64>,
-    through: Option<i64>,
     start_complete: bool,
     #[serde(default)]
     has_earlier_transcript: bool,
@@ -108,7 +106,7 @@ mod tests {
         history.begin_download("p", 0, HistoryDownloadFacts {
             low_sequence: None, high_sequence: None, row_count: 0, total_bytes: 0, covered_bytes: 0,
         }, &mut metadata).unwrap();
-        history.complete_download("p", 0, "same-session-id", None, None).unwrap();
+        history.complete_download("p", 0, "same-session-id").unwrap();
         let saved = history.read_selection_snapshot("p", "same-session-id", 1024).unwrap().unwrap();
         assert_eq!(saved.page.events.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1]);
     }
@@ -129,7 +127,6 @@ mod tests {
         assert!(matches!(&rows[0].payload, AgentConversationPayload::AssistantMessage { blocks: Some(_), .. }));
         assert_eq!(store.list_events(&RemoteHistory::key("p", "same-session-id"), 0, 100).unwrap().len(), 2);
         assert_eq!(history.download_state("p", "same-session-id").unwrap().unwrap().covered_bytes, 200);
-        assert_eq!(history.through("p", "same-session-id").unwrap(), Some(3));
         assert!(!history.download_state("p", "same-session-id").unwrap().unwrap().complete);
     }
 
@@ -187,7 +184,7 @@ mod tests {
             expected.events
         );
         history.purge("a").unwrap();
-        assert!(history.through("a", "same-session-id").unwrap().is_none());
+        assert!(history.read_selection_snapshot("a", "same-session-id", 1024).unwrap().is_none());
         assert_eq!(
             history
                 .read_snapshot("b", 0, "same-session-id")
@@ -273,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_history_fills_gaps_without_claiming_unfetched_events() {
+    fn rows_past_a_hole_read_as_saved() {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
         history.snapshot("a", 0, None, &mut snapshot(10, 12)).unwrap();
         let mut saved_gap = event(15);
@@ -281,26 +278,8 @@ mod tests {
             *blocks = Some(Vec::new());
         }
         history.live_batch("a", 0, &mut [saved_gap.clone()]).unwrap();
-        assert_eq!(history.through("a", "same-session-id").unwrap(), Some(12));
-        // The saved row past the gap is not confirmed, so the Mac's copy ends at 12.
-        for cursor in [11, 12] {
-            let newer = history.read_page("a", "same-session-id", cursor, 1024, false).unwrap().unwrap();
-            assert_eq!(newer.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), (cursor + 1..=12).collect::<Vec<_>>());
-            assert!(!newer.has_more);
-        }
-        let mut catch_up = snapshot(13, 15);
-        if let AgentConversationPayload::AssistantMessage { blocks, .. } = &mut catch_up.events[2].payload {
-            *blocks = None;
-        }
-        history.snapshot("a", 0, Some(12), &mut catch_up).unwrap();
-        assert_eq!(catch_up.events[2], saved_gap);
-        assert_eq!(
-            history
-                .read_snapshot("a", 0, "same-session-id")
-                .unwrap()
-                .events,
-            (10..=14).map(event).chain([saved_gap]).collect::<Vec<_>>()
-        );
+        let newer = history.read_page("a", "same-session-id", 11, 1024, false).unwrap().unwrap();
+        assert_eq!(newer.events, vec![event(12), saved_gap]);
         let mut older = AgentConversationEventPage {
             events: (5..10).map(event).collect(),
             has_more: true,
@@ -436,9 +415,8 @@ mod tests {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
         let saved = snapshot(100, 102);
         history.write("a", "same-session-id", &Coverage {
-            connection: Some(saved.connection), oldest: Some(100), through: Some(102),
-            ..Default::default()
-        }, &mut [], 0).unwrap();
+            connection: Some(saved.connection), ..Default::default()
+        }, &mut []).unwrap();
         for (sequence, first_sequence) in [(100, 10), (101, 10), (102, 80)] {
             let mut wire = serde_json::to_value(event(sequence)).unwrap();
             wire["payload"] = serde_json::json!({
@@ -503,7 +481,6 @@ mod tests {
         history.live_batch("a", 0, &mut [event(2), event(3), event(4)]).unwrap();
         drop(history);
         let history = RemoteHistory::new(Arc::new(SessionStore::open(&path).unwrap()));
-        assert_eq!(history.through("a", "same-session-id").unwrap(), Some(4));
         assert_eq!(history.read_snapshot("a", 0, "same-session-id").unwrap().events,
             vec![event(1), event(2), event(3), event(4)]);
         drop(history);
@@ -511,19 +488,13 @@ mod tests {
     }
 
     #[test]
-    fn live_skips_events_already_covered() {
+    fn skipped_reports_only_sessions_past_their_saved_maximum() {
         let history = RemoteHistory::new(Arc::new(SessionStore::open_in_memory().unwrap()));
-        for sequence in 1..=3 {
-            history.live_batch("a", 0, &mut [event(sequence)]).unwrap();
-        }
-        history.snapshot("a", 0, Some(3), &mut snapshot(4, 3)).unwrap();
-        // A reconnect replays from the last applied cursor; the cache already has it.
-        let mut replayed = event(2);
-        replayed.timestamp_ms = 999;
-        history.live_batch("a", 0, &mut [replayed]).unwrap();
-        let cached = history.read_snapshot("a", 0, "same-session-id").unwrap();
-        assert_eq!(cached.events[1].sequence, 2);
-        assert_eq!(cached.events[1].timestamp_ms, 123);
+        history.snapshot("a", 0, None, &mut snapshot(1, 3)).unwrap();
+        assert!(history.skipped("a", &[event(4)]).unwrap().is_empty());
+        assert_eq!(history.skipped("a", &[event(6), event(7)]).unwrap(), BTreeMap::from([("same-session-id".to_string(), 3)]));
+        let unsaved = AgentConversationEvent { owned_id: "other".into(), ..event(9) };
+        assert!(history.skipped("a", &[unsaved]).unwrap().is_empty());
     }
 
     #[test]
@@ -671,6 +642,22 @@ impl RemoteHistory {
             .map(|_| physical)
     }
 
+    /// Sessions whose first event in this pushed batch skips past their saved maximum, with that maximum.
+    pub fn skipped(&self, profile: &str, events: &[AgentConversationEvent]) -> Result<BTreeMap<String, i64>, String> {
+        let mut first = BTreeMap::new();
+        for event in events { first.entry(event.owned_id.as_str()).or_insert(event.sequence); }
+        let mut skipped = BTreeMap::new();
+        for (owned, sequence) in first {
+            let (_, saved) = self.bounds(profile, owned)?;
+            if let Some(saved) = saved.filter(|saved| sequence > saved.saturating_add(1)) { skipped.insert(owned.to_string(), saved); }
+        }
+        Ok(skipped)
+    }
+
+    fn bounds(&self, profile: &str, owned: &str) -> Result<(Option<i64>, Option<i64>), String> {
+        self.store.remote_saved_bounds(&Self::key(profile, owned)).map_err(|e| e.to_string())
+    }
+
     fn coverage(&self, profile: &str, owned: &str) -> Result<Coverage, String> {
         let Some(row) = self
             .store
@@ -683,10 +670,6 @@ impl RemoteHistory {
             });
         };
         serde_json::from_str(&row.extra_json).map_err(|e| e.to_string())
-    }
-
-    pub fn through(&self, profile: &str, owned: &str) -> Result<Option<i64>, String> {
-        Ok(self.coverage(profile, owned)?.through)
     }
 
     pub fn forget_if_shrunk(&self, profile: &str, owned: &str, head: i64, saved: Option<i64>) -> Result<bool, String> {
@@ -707,7 +690,6 @@ impl RemoteHistory {
         owned: &str,
         coverage: &Coverage,
         events: &mut [AgentConversationEvent],
-        write_from: usize,
     ) -> Result<(), String> {
         let key = Self::key(profile, owned);
         let sequences: Vec<_> = events.iter().filter_map(|event| matches!(
@@ -730,9 +712,7 @@ impl RemoteHistory {
                 }
             }
         }
-        // Covered live events still need pieces for publication, but no cache write.
-        if write_from > 0 && write_from == events.len() { return Ok(()); }
-        let rows = events[write_from..]
+        let rows = events
             .iter()
             .map(|event| {
                 Ok(EventRow {
@@ -781,28 +761,13 @@ impl RemoteHistory {
     ) -> Result<(), String> {
         self.check(profile, epoch)?;
         let Some(owned) = events.first().map(|event| event.owned_id.clone()) else { return Ok(()); };
-        let mut coverage = self.coverage(profile, &owned)?;
-        let control_start = coverage.pending_sequence.or(coverage.through).unwrap_or(i64::MIN);
-        let start = events.iter().position(|event| !coverage.through.is_some_and(|through| event.sequence <= through));
-        let Some(start) = start else {
-            return self.write(profile, &owned, &coverage, events, events.len());
-        };
-        for event in &events[start..] {
-            if event.owned_id != owned {
-                return Err("remote history batch contains multiple sessions".into());
-            }
-            if coverage.through.is_none() {
-                coverage.oldest = Some(event.sequence);
-                coverage.through = Some(event.sequence);
-            } else if coverage.through.and_then(|seq| seq.checked_add(1)) == Some(event.sequence) {
-                coverage.through = Some(event.sequence);
-            }
+        if events.iter().any(|event| event.owned_id != owned) {
+            return Err("remote history batch contains multiple sessions".into());
         }
-        let confirmed = coverage.through.unwrap_or(i64::MIN);
-        for event in events
-            .iter()
-            .filter(|event| event.sequence > control_start && event.sequence <= confirmed)
-        {
+        let mut coverage = self.coverage(profile, &owned)?;
+        // Control state moves forward only, so a replayed duplicate can't revive a finished turn.
+        let control_start = coverage.pending_sequence.unwrap_or(i64::MIN);
+        for event in events.iter().filter(|event| event.sequence > control_start) {
             apply_pending_event(&mut coverage.pending_events, event);
             apply_active_turn(&mut coverage.active_turn_id, event);
             if let Some(state) = event.runtime_state {
@@ -815,10 +780,7 @@ impl RemoteHistory {
                 matches!(event.payload, AgentConversationPayload::UserInputRequested { .. }));
             coverage.pending_sequence = Some(event.sequence);
         }
-        coverage.pending_sequence.get_or_insert(confirmed);
-        // A gap is stored, but never advertised as covered. Snapshot catch-up
-        // fills it from the last confirmed sequence before reading it locally.
-        self.write(profile, &owned, &coverage, events, start)
+        self.write(profile, &owned, &coverage, events)
     }
 
     pub fn snapshot(
@@ -854,25 +816,13 @@ impl RemoteHistory {
                 else if snapshot.active_turn_id.is_some() { AgentRuntimeState::Working }
                 else { AgentRuntimeState::Ready });
         }
-        if let Some(first) = snapshot.events.first() {
-            coverage.oldest = Some(
-                coverage
-                    .oldest
-                    .map_or(first.sequence, |old| old.min(first.sequence)),
-            );
-        }
         let end = snapshot
             .events
             .last()
             .map(|event| event.sequence)
             .or(previous)
             .unwrap_or(snapshot.last_sequence);
-        // A session saved before its first event starts its copy just past
-        // that head, so its live events page locally and the copy checks the start.
-        coverage.oldest.get_or_insert(end.saturating_add(1));
-        // Only a page that reaches the advertised head may confirm the head.
-        coverage.through = Some(coverage.through.map_or(end, |old| old.max(end)));
-        self.write(profile, owned, &coverage, &mut snapshot.events, 0)?;
+        self.write(profile, owned, &coverage, &mut snapshot.events)?;
         Ok(end)
     }
 
@@ -885,8 +835,8 @@ impl RemoteHistory {
     ) -> Result<AgentConversationSnapshot, String> {
         self.check(profile, epoch)?;
         let coverage = self.coverage(profile, owned)?;
-        let through = coverage.through.unwrap_or(0);
-        let oldest = coverage.oldest.unwrap_or(i64::MIN);
+        let (low, high) = self.bounds(profile, owned)?;
+        let (through, oldest) = (high.unwrap_or(0), low.unwrap_or(i64::MIN));
         let page = self
             .store
             .list_events_before(
@@ -909,8 +859,8 @@ impl RemoteHistory {
         })
     }
 
-    /// The confirmed tail of a session opened here before, or None when the
-    /// Mac has never saved its connection details. Rows past a gap stay out.
+    /// The saved tail of a session opened here before, or None when the
+    /// Mac has never saved its connection details.
     #[cfg(test)]
     pub fn cached_snapshot(
         &self,
@@ -930,7 +880,7 @@ impl RemoteHistory {
     pub fn prepare_download(&self, profile: &str, owned: &str) -> Result<(), String> {
         let mut coverage = self.coverage(profile, owned)?;
         coverage.download.get_or_insert_with(Default::default).complete = false;
-        self.write(profile, owned, &coverage, &mut [], 0)
+        self.write(profile, owned, &coverage, &mut [])
     }
 
     pub fn begin_download(&self, profile: &str, epoch: u64, facts: HistoryDownloadFacts,
@@ -946,14 +896,8 @@ impl RemoteHistory {
             coverage.pending_events.clone_from(&snapshot.pending_events);
             coverage.active_turn_id.clone_from(&snapshot.active_turn_id);
         }
-        // Empty totals must not replace live coverage or use a newer metadata head.
-        if facts.low_sequence.is_none() && coverage.through.is_none() {
-            let head = facts.high_sequence.unwrap_or(0);
-            coverage.oldest = Some(head.saturating_add(1));
-            coverage.through = Some(head);
-        }
         coverage.download = Some(HistoryDownloadState { total_bytes: facts.total_bytes, covered_bytes: facts.covered_bytes, complete: false });
-        self.write(profile, owned, &coverage, &mut [], 0)
+        self.write(profile, owned, &coverage, &mut [])
     }
 
     pub fn download_chunk(&self, profile: &str, epoch: u64, owned: &str, covered_bytes: u64,
@@ -961,32 +905,19 @@ impl RemoteHistory {
         self.check(profile, epoch)?;
         let mut coverage = self.coverage(profile, owned)?;
         if let Some(download) = &mut coverage.download { download.covered_bytes = covered_bytes; }
-        // Inspect sequences only to extend adjacent coverage. Totals and paging stay in SQL.
-        for event in events.iter() {
-            if event.owned_id != owned { return Err("History chunk contains another session".into()); }
-            if coverage.through.is_none() || coverage.oldest > coverage.through {
-                coverage.oldest = Some(event.sequence);
-                coverage.through = Some(event.sequence);
-            } else {
-                if coverage.oldest.and_then(|seq| seq.checked_sub(1)) == Some(event.sequence) { coverage.oldest = Some(event.sequence); }
-                if coverage.through.and_then(|seq| seq.checked_add(1)) == Some(event.sequence) { coverage.through = Some(event.sequence); }
-            }
-        }
-        self.write(profile, owned, &coverage, events, 0)
+        if events.iter().any(|event| event.owned_id != owned) { return Err("History chunk contains another session".into()); }
+        self.write(profile, owned, &coverage, events)
     }
 
-    pub fn complete_download(&self, profile: &str, epoch: u64, owned: &str,
-        low: Option<i64>, high: Option<i64>) -> Result<(), String> {
+    pub fn complete_download(&self, profile: &str, epoch: u64, owned: &str) -> Result<(), String> {
         self.check(profile, epoch)?;
         let mut coverage = self.coverage(profile, owned)?;
         if let Some(download) = &mut coverage.download {
             download.complete = true;
             download.covered_bytes = download.total_bytes;
         }
-        if let Some(low) = low { coverage.oldest = Some(coverage.oldest.map_or(low, |saved| saved.min(low))); }
-        if let Some(high) = high { coverage.through = Some(coverage.through.map_or(high, |saved| saved.max(high))); }
         coverage.start_complete = true;
-        self.write(profile, owned, &coverage, &mut [], 0)
+        self.write(profile, owned, &coverage, &mut [])
     }
 
     pub fn read_selection_snapshot(
@@ -996,14 +927,9 @@ impl RemoteHistory {
         max_bytes: u32,
     ) -> Result<Option<AgentConversationSelectionSnapshot>, String> {
         let coverage = self.coverage(profile, owned)?;
-        let (Some(connection), Some(low), Some(high)) = (
-            coverage.connection.clone(),
-            coverage.oldest,
-            coverage.through,
-        ) else {
-            return Ok(None);
-        };
-        if low > high {
+        let Some(connection) = coverage.connection.clone() else { return Ok(None); };
+        let (Some(low), Some(high)) = self.bounds(profile, owned)? else {
+            let head = coverage.pending_sequence.unwrap_or(0);
             return Ok(Some(AgentConversationSelectionSnapshot {
                 connection,
                 suspended: coverage.suspended,
@@ -1016,16 +942,16 @@ impl RemoteHistory {
                     has_before: !coverage.start_complete,
                     has_earlier_transcript: coverage.has_earlier_transcript,
                     has_after: false,
-                    watermark: high,
+                    watermark: head,
                     transfer_bytes: 0,
                     oversized: false,
                     coverage: None,
                 },
                 pending_events: coverage.pending_events,
-                pending_sequence: coverage.pending_sequence.unwrap_or(high),
+                pending_sequence: head,
                 active_turn_id: coverage.active_turn_id,
             }));
-        }
+        };
         let page = self
             .store
             .list_items_before(
@@ -1081,10 +1007,7 @@ impl RemoteHistory {
         before: bool,
     ) -> Result<Option<AgentConversationItemPage>, String> {
         let coverage = self.coverage(profile, owned)?;
-        let (Some(low), Some(high)) = (coverage.oldest, coverage.through) else {
-            return Ok(None);
-        };
-        if low > high {
+        let (Some(low), Some(high)) = self.bounds(profile, owned)? else {
             return Ok(coverage.start_complete.then(|| AgentConversationItemPage {
                 items: Vec::new(),
                 events: Vec::new(),
@@ -1094,12 +1017,12 @@ impl RemoteHistory {
                 has_before: false,
                 has_earlier_transcript: coverage.has_earlier_transcript,
                 has_after: false,
-                watermark: high,
+                watermark: coverage.pending_sequence.unwrap_or(0),
                 transfer_bytes: 0,
                 oversized: false,
                 coverage: None,
             }));
-        }
+        };
         let start_complete = coverage.start_complete;
         let has_earlier_transcript = coverage.has_earlier_transcript;
         let event_coverage = Some(EventCoverage {
@@ -1159,10 +1082,9 @@ impl RemoteHistory {
         before: bool,
     ) -> Result<Option<AgentConversationEventPage>, String> {
         let coverage = self.coverage(profile, owned)?;
-        let (Some(oldest), Some(through)) = (coverage.oldest, coverage.through) else {
-            return Ok(None);
+        let (Some(oldest), Some(through)) = self.bounds(profile, owned)? else {
+            return Ok(coverage.start_complete.then(|| AgentConversationEventPage { events: Vec::new(), has_more: false }));
         };
-        // We only answer from a range proven continuous, not merely MAX(seq).
         if before
             && (cursor > through.saturating_add(1)
                 || (cursor <= oldest && !coverage.start_complete))
@@ -1171,7 +1093,6 @@ impl RemoteHistory {
             return Ok(None);
         }
         let key = Self::key(profile, owned);
-        // Rows saved past a gap are not confirmed: the page stops at the edge.
         let page = if before {
             self.store.list_events_before(&key, cursor, bytes, oldest)
         } else {
@@ -1189,7 +1110,7 @@ impl RemoteHistory {
         let mut coverage = self.coverage(profile, owned)?;
         coverage.start_complete = false;
         if let Some(download) = &mut coverage.download { download.complete = false; }
-        self.write(profile, owned, &coverage, &mut [], 0)
+        self.write(profile, owned, &coverage, &mut [])
     }
 
     #[cfg(test)]
@@ -1198,40 +1119,14 @@ impl RemoteHistory {
         profile: &str,
         epoch: u64,
         owned: &str,
-        cursor: i64,
+        _cursor: i64,
         before: bool,
         page: &mut AgentConversationEventPage,
     ) -> Result<(), String> {
         self.check(profile, epoch)?;
         let mut coverage = self.coverage(profile, owned)?;
-        let low = if before {
-            page.events.first().map_or(cursor, |e| e.sequence)
-        } else {
-            cursor.saturating_add(1)
-        };
-        let high = if before {
-            cursor.saturating_sub(1)
-        } else {
-            page.events.last().map_or(cursor, |e| e.sequence)
-        };
-        match (coverage.oldest, coverage.through) {
-            (Some(old), Some(end))
-                if low <= end.saturating_add(1) && high >= old.saturating_sub(1) =>
-            {
-                coverage.oldest = Some(old.min(low));
-                coverage.through = Some(end.max(high));
-                if before && !page.has_more {
-                    coverage.start_complete = true;
-                }
-            }
-            (None, _) => {
-                coverage.oldest = Some(low);
-                coverage.through = Some(high);
-                coverage.start_complete = before && !page.has_more;
-            }
-            _ => {} // Store disjoint data without pretending its missing gap exists.
-        }
-        self.write(profile, owned, &coverage, &mut page.events, 0)
+        if before && !page.has_more { coverage.start_complete = true; }
+        self.write(profile, owned, &coverage, &mut page.events)
     }
 }
 

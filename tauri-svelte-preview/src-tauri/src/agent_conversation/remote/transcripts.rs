@@ -107,7 +107,7 @@ mod tests {
         let (id, _requests) = begin_test_download(&manager, 100, Some(1), Some(1)).await;
         manager.receive_history_chunk("cache-test", id, "large-history", 100, encode_history_chunk(&[history_event(1)]).unwrap()).unwrap();
         manager.finish_history_download("cache-test", "large-history", id).await.unwrap();
-        let saved = || manager.store.remote_saved_minimum(&RemoteHistory::key("cache-test", "large-history")).unwrap();
+        let saved = || manager.store.remote_saved_bounds(&RemoteHistory::key("cache-test", "large-history")).unwrap().0;
         let listed = |numbered_after| [AgentConversationSessionRecord { numbered_after, ..session("large-history", "cache-test", 1) }];
         // A machine too old to say where its journal restarted keeps the copy.
         manager.replace_cached_profile_sessions("cache-test", &listed(None)).unwrap();
@@ -143,6 +143,6 @@ mod tests {
         manager.replace_cached_profile_sessions("cache-test", &listed(Some(3))).unwrap();
         // A chunk the old stream had already sent: its rows belong to the journal that was replaced.
         manager.receive_history_chunk("cache-test", id, "large-history", 50, encode_history_chunk(&[history_event(2)]).unwrap()).unwrap();
-        assert_eq!(manager.store.remote_saved_minimum(&RemoteHistory::key("cache-test", "large-history")).unwrap(), None);
+        assert_eq!(manager.store.remote_saved_bounds(&RemoteHistory::key("cache-test", "large-history")).unwrap().0, None);
     }
 }

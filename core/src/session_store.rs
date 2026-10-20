@@ -4006,10 +4006,10 @@ impl SessionStore {
         Ok(result)
     }
 
-    pub fn remote_saved_minimum(&self, cached_owned_id: &str) -> Result<Option<i64>> {
-        self.lock()?.query_row("SELECT MIN(seq) FROM events WHERE owned_id = ?1 AND kind = 'remote.cached'",
-            [cached_owned_id], |row| row.get(0))
-            .map_err(|error| StoreError::sqlite("could not read saved remote minimum", error))
+    pub fn remote_saved_bounds(&self, cached_owned_id: &str) -> Result<(Option<i64>, Option<i64>)> {
+        self.lock()?.query_row("SELECT (SELECT MIN(seq) FROM events WHERE owned_id = ?1 AND kind = 'remote.cached'), (SELECT MAX(seq) FROM events WHERE owned_id = ?1 AND kind = 'remote.cached')",
+            [cached_owned_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|error| StoreError::sqlite("could not read saved remote bounds", error))
     }
 
     pub fn remote_saved_row_count(&self, cached_owned_id: &str, low: Option<i64>, high: Option<i64>) -> Result<u64> {
@@ -5094,7 +5094,7 @@ mod tests {
         for seq in -4..=4 { store.append_event(&EventRow { kind: "remote.cached".into(), ..fixture_event("other", seq) }).unwrap(); }
         let gaps = store.remote_history_gaps("download", Some(-4), Some(4)).unwrap();
         assert_eq!(gaps.iter().map(|gap| (gap.first_sequence, gap.last_sequence)).collect::<Vec<_>>(), [(-4,-3), (0,1), (3,4)]);
-        assert_eq!(store.remote_saved_minimum("download").unwrap(), Some(-9));
+        assert_eq!(store.remote_saved_bounds("download").unwrap(), (Some(-9), Some(8)));
         store.append_event(&fixture_event("download", 0)).unwrap();
         assert_eq!(store.remote_saved_row_count("download", Some(-4), Some(4)).unwrap(), 3);
         assert_eq!(store.remote_saved_row_count("download", Some(-2), Some(2)).unwrap(), 3);
