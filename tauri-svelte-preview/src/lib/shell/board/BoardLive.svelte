@@ -80,7 +80,7 @@
 </script>
 
 {#snippet addNote(target: string)}
-  <HoverActions class="absolute top-1 right-1.5" label="Note actions">
+  <HoverActions class="flex-none" label="Note actions">
     <HoverActionButton label="Add note" size="xs" onclick={() => (adding = target)}><MessageSquarePlus /></HoverActionButton>
   </HoverActions>
 {/snippet}
@@ -96,10 +96,10 @@
 {#snippet sessionRow(session: OwnedSession)}
   {@const machine = sessionBoard(session)}
   {@const target = `session:${session.ownedId}`}
-  <div class="group relative">
+  <div class="group flex min-w-0 items-center gap-1 pr-1">
     <button
       type="button"
-      class="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/60 focus-visible:ring-3 focus-visible:ring-ring/50"
+      class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/60 focus-visible:ring-3 focus-visible:ring-ring/50"
       onclick={() => onOpenSession(session.ownedId)}
     >
       <span class="min-w-0 flex-1 truncate text-[13px] font-medium">{session.title}</span>
@@ -120,15 +120,15 @@
     {#if steps.length === 0 && sessions.length === 0}
       <p class="px-1 text-[13px] text-muted-foreground">Nothing is waiting for you.</p>
     {/if}
-    <ul class="flex flex-col gap-2">
+    <ul class="m-0 flex list-none flex-col p-0 gap-2">
       {#each steps as { machine, step } (`${machine}:${step.run_id}:${step.node_id}`)}
-        <li class={`${ROW} group relative`}>
-          {@render addNote(`step:${step.run_id}/${step.node_id}`)}
-          <span class="flex min-w-0 items-center gap-2 text-sm">
+        <li class={`${ROW} group`}>
+          <span class="flex min-w-0 items-center gap-2 text-[13px]">
             <span class="min-w-0 flex-1 truncate font-medium">
               {[notion ? step.task_key : null, step.workflow_name].filter(Boolean).join(' · ') || step.run_id}
             </span>
             <Chip tone="attention">{step.state === 'waiting-approval' ? 'Approval' : 'Answer'}</Chip>
+            {@render addNote(`step:${step.run_id}/${step.node_id}`)}
           </span>
           <span class="truncate text-[13px] text-muted-foreground">{step.node_id} · {machineName(machine === 'mac' ? 'local' : machine)}</span>
           {#if step.reason}<span class="line-clamp-3 text-[13px]" title={step.reason}>{step.reason}</span>{/if}
@@ -157,14 +157,14 @@
   {#if runs.length}
     <section class="flex min-w-0 flex-col gap-2">
       <h3 class={HEADING}>Workflow runs <span class="font-normal text-muted-foreground tabular-nums">{runs.length}</span></h3>
-      <ul class="flex flex-col gap-2">
+      <ul class="m-0 flex list-none flex-col p-0 gap-2">
         {#each runs as { machine, run } (`${machine}:${run.id}`)}
-          <li class={`${ROW} group relative`}>
-            {@render addNote(`run:${run.id}`)}
-            <span class="flex min-w-0 items-center gap-2 text-sm">
+          <li class={`${ROW} group`}>
+            <span class="flex min-w-0 items-center gap-2 text-[13px]">
               <span class="min-w-0 truncate font-medium">{run.name ?? run.id}</span>
               {#if notion && run.task_key}<span class="flex-none text-[13px] text-muted-foreground">{run.task_key}</span>{/if}
               <span class="ml-auto flex-none text-[13px] text-muted-foreground tabular-nums">{run.steps_done} / {run.steps_total}</span>
+              {@render addNote(`run:${run.id}`)}
             </span>
             <span class="truncate text-[13px] text-muted-foreground">
               {[run.current_step ? `Step ${run.current_step}` : null, run.state, run.round !== null ? `round ${run.round}` : null,
@@ -182,12 +182,12 @@
       <h3 class={HEADING}>Sessions <span class="font-normal text-muted-foreground tabular-nums">{machines.reduce((total, [, rows]) => total + rows.length, 0)}</span></h3>
       {#each machines as [machine, rows] (machine)}
         <h4 class="px-1 pt-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">{machine}</h4>
-        <ul class="flex flex-col">
+        <ul class="m-0 flex list-none flex-col p-0">
           {#each rows as { session, helpers } (session.ownedId)}
             <li>
               {@render sessionRow(session)}
               {#if helpers.length}
-                <ul class="ml-3 border-l border-border pl-2">
+                <ul class="my-0 ml-3 list-none border-l border-border pl-2">
                   {#each helpers as helper (helper.ownedId)}<li>{@render sessionRow(helper)}</li>{/each}
                 </ul>
               {/if}

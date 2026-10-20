@@ -140,7 +140,7 @@
         onclick={() => (toggled[entry.id] = !open)}
       >
         <ChevronRight class={cn('size-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} aria-hidden="true" />
-        <span class="min-w-0 flex-1 truncate text-sm font-semibold">{card.title}</span>
+        <span class="min-w-0 flex-1 truncate text-(length:--text-body) font-semibold">{card.title}</span>
         {#if notion && card.task_key}<span class="flex-none text-[13px] text-muted-foreground">{card.task_key}</span>{/if}
         <span class="flex-none text-[13px] text-muted-foreground">{when(card.updated_at_ms)}</span>
       </button>
@@ -151,9 +151,9 @@
           {#if card.steps.length}
             <section>
               <h4 class={LABEL}>What to do</h4>
-              <ol class="flex flex-col gap-1.5">
+              <ol class="m-0 flex list-none flex-col gap-1.5 p-0">
                 {#each card.steps as step, index (index)}
-                  <li class="flex gap-2 text-sm">
+                  <li class="flex gap-2 text-[13px]">
                     <span class="mt-px inline-flex size-5 flex-none items-center justify-center rounded-full bg-secondary text-xs tabular-nums">{index + 1}</span>
                     <span class="min-w-0">{step}</span>
                   </li>
@@ -164,7 +164,7 @@
           {#if card.note}
             <section>
               <h4 class={LABEL}>Note for you</h4>
-              <p class="text-sm whitespace-pre-wrap">{card.note}</p>
+              <p class="text-[13px] whitespace-pre-wrap">{card.note}</p>
             </section>
           {/if}
           <section class="flex flex-col gap-1.5">
@@ -197,7 +197,7 @@
               {/if}
             </dl>
           {/if}
-          <p class="text-[13px] text-muted-foreground">Written by {card.writer_name ?? card.written_by} · {machineLabel(entry.machine)}</p>
+          <p class="truncate text-[13px] text-muted-foreground">Written by {card.writer_name ?? card.written_by} · {machineLabel(entry.machine)}</p>
           <div class="flex flex-wrap gap-2">
             {#if card.state !== 'done'}
               <Button size="sm" variant="outline" disabled={busy} onclick={() => void act(entry, 'done')}><Check />Mark done</Button>
@@ -221,14 +221,14 @@
 
 <div class="flex min-h-0 min-w-0 flex-col gap-4 overflow-y-auto p-3" data-testid="board-cards">
   {#if entries.length === 0 && dropped.length === 0}
-    <p class="px-1 py-6 text-center text-sm text-muted-foreground">No cards yet. Agents post them with the <code>board_update</code> tool.</p>
+    <p class="px-1 py-6 text-center text-[13px] text-muted-foreground">No cards yet. Agents post them with the <code>board_update</code> tool.</p>
   {/if}
   {#each SECTIONS as section (section.state)}
     {@const list = inState(section.state)}
     {#if list.length}
       <section class="flex min-w-0 flex-col gap-2">
-        <h3 class={HEADING}>{@render heading(section.label, list.length, section.dot)}</h3>
-        <ul class="flex flex-col gap-2">
+        <h3 class={HEADING}>{@render heading(section.label, list.filter((entry) => !isDropped(entry)).length, section.dot)}</h3>
+        <ul class="m-0 flex list-none flex-col p-0 gap-2">
           {#each list as entry (entry.id)}{@render cardRow(entry)}{/each}
         </ul>
       </section>
@@ -244,14 +244,14 @@
             aria-expanded={doneOpen}
             onclick={() => (doneOpen = !doneOpen)}
           >
-            {@render heading('Done today', done.length, 'bg-(--color-good)')}
+            {@render heading('Done today', done.filter((entry) => !isDropped(entry)).length, 'bg-(--color-good)')}
             <ChevronRight class={cn('size-4 text-muted-foreground transition-transform', doneOpen && 'rotate-90')} aria-hidden="true" />
           </button>
         </h3>
         <Button size="xs" variant="ghost" disabled={busy} onclick={() => void clearDone()}>Clear</Button>
       </div>
       {#if doneOpen}
-        <ul class="flex flex-col gap-2">
+        <ul class="m-0 flex list-none flex-col p-0 gap-2">
           {#each done as entry (entry.id)}{@render cardRow(entry)}{/each}
         </ul>
       {/if}

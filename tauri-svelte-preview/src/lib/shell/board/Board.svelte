@@ -106,6 +106,7 @@
   side="bottom"
   align="end"
   collisionPadding={{ bottom: 36, right: 8, left: 8 }}
+  trapFocus={false}
   class="max-h-(--bits-popover-content-available-height) w-[min(900px,calc(100vw-16px))] gap-0 overflow-hidden p-0"
   data-testid="board"
 >
@@ -120,7 +121,7 @@
       {/each}
     </span>
   </header>
-  {#if actionError || loadError}<p role="alert" class="flex-none px-4 py-2 text-sm text-destructive">{actionError || loadError}</p>{/if}
+  {#if actionError || loadError}<p role="alert" class="flex-none px-4 py-2 text-[13px] text-destructive">{actionError || loadError}</p>{/if}
   <div class="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(0,320px)]">
     <BoardCards {boards} {notion} signal={shown.signal} onError={(text) => (actionError = text)} {onClose} onOpenSession={openSession} />
     <BoardLive {boards} {sessions} {notion} signal={shown.signal} onError={(text) => (actionError = text)} onOpenSession={openSession} />
