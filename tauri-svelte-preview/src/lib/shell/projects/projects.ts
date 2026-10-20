@@ -85,22 +85,24 @@ export function projectMachineLabel(
 
 /**
  * Whether the Add project path names a folder to create: its parent is the
- * listed folder and nothing of that name is listed there.
+ * listed folder and a direct check confirmed the path does not exist.
  */
 export function isNewFolderPath(
   path: string,
-  listing: { path: string; directories: readonly string[] } | null
+  listing: { path: string; directories: readonly string[] } | null,
+  pathExists: boolean
 ): boolean {
   const trimmed = path.trim().replace(/\/+$/, '');
   const slash = trimmed.lastIndexOf('/');
   const name = trimmed.slice(slash + 1);
   const parent = trimmed.slice(0, slash) || '/';
   return Boolean(listing) && slash >= 0 && parent === listing!.path
-    && name !== '' && name !== '.' && name !== '..' && !listing!.directories.includes(name);
+    && name !== '' && name !== '.' && name !== '..' && !pathExists;
 }
 
-/** A folder the right panel can show instead of the session's: a project's root or one of its other worktrees. */
-export type OtherProjectOption = { projectId: string; path: string; label: string; detail: string; worktree: boolean };
+/** A folder the right panel can show instead of the session's: a project's root or one of its other worktrees.
+ * `path` carries its machine; `folder` is the same folder as that machine names it. */
+export type OtherProjectOption = { projectId: string; path: string; folder: string; label: string; detail: string; worktree: boolean };
 
 const trimSlash = (path: string): string => path.replace(/\/+$/, '');
 
@@ -122,9 +124,9 @@ export function otherProjectGroups(
         const native = parseRemoteWorkspacePath(checkout.path)?.path ?? checkout.path;
         const folder = trimSlash(native).split('/').at(-1) ?? native;
         const branch = checkout.branch.trim();
-        return { projectId: project.id, path: checkout.path, label: branch ? `${folder} — ${branch}` : folder, detail: shortProjectPath(native), worktree: true };
+        return { projectId: project.id, path: checkout.path, folder: native, label: branch ? `${folder} — ${branch}` : folder, detail: shortProjectPath(native), worktree: true };
       });
-      return [{ projectId: project.id, path: root, label: project.title, detail: shortProjectPath(project.rootPath), worktree: false }, ...worktrees];
+      return [{ projectId: project.id, path: root, folder: project.rootPath, label: project.title, detail: shortProjectPath(project.rootPath), worktree: false }, ...worktrees];
     });
     return { machine, label: projectMachineLabel(machine, profiles), options };
   }).filter((group) => group.options.length > 0);

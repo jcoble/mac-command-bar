@@ -805,7 +805,7 @@ function toolKindOf(...values: unknown[]): ConversationToolKind {
 
 function toolKindForAgentItem(item: AgentItem): ConversationToolKind {
   const metadata = item.providerMetadata;
-  const explicit = toolKindOf(
+  const explicit = toolKindOf(item.type,
     metadata?.toolKind,
     metadata?.kind,
     metadata?.nativeType,
@@ -815,8 +815,6 @@ function toolKindForAgentItem(item: AgentItem): ConversationToolKind {
   if (explicit !== 'tool') return explicit;
   if (typeof metadata?.diff === 'string' && metadata.diff.trim()) return 'file-edit';
   switch (item.type) {
-    case 'command': return 'command';
-    case 'file-change': return 'file-edit';
     case 'web-search': return 'search';
     case 'image-view': return 'fetch';
     default: return 'tool';
@@ -829,8 +827,10 @@ function payloadHasFileChange(payload: StringRecord): boolean {
 }
 
 function toolKindForPayload(payload: StringRecord, payloadKind: string): ConversationToolKind {
+  const kind = toolKindOf(payload.toolKind, payload.nativeType, payload.category, payload.type, payload.kind, payload.name);
+  if (kind === 'command') return kind;
   if (payloadKind === 'turnDiff' || payloadHasFileChange(payload)) return 'file-edit';
-  return toolKindOf(payload.toolKind, payload.nativeType, payload.category, payload.type, payload.kind, payload.name);
+  return kind;
 }
 
 function toolTitleOf(value: unknown): string | null {

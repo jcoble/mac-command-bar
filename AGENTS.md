@@ -132,6 +132,16 @@ one next to it doesn't. Before calling work done, name which of these you covere
   no exemption for changes that look small: Claude Code and Codex, each on a local session and on
   Workbox Test. Several changes may share one run if it exercises each of them. Report the four-row
   table with evidence; a scenario you can't run is reported blocked with the exact error.
+  Each worktree has its own test-app run: `fourScenarios.ts start --worktree <path>` and
+  `stop --worktree <path>` use `~/assembly-proof/current-<folder name>-<path hash>` so equal
+  folder names in different locations stay separate. The hash uses the canonical worktree path. Without
+  `--worktree`, commands use the current directory's Git worktree. Different worktrees may run
+  together when more than 6 GB of RAM is available; starting the same worktree twice is refused.
+  Stopping one worktree leaves the others running.
+- The four scenarios only cover chat. A change the owner can see or use also gets a **feature
+  check**: open that feature in the test app seeded with real data (long names, many projects and
+  worktrees, large chats), use it as the task describes, screenshot it, look for anything cut off,
+  repeated or empty, and add a "Feature check" line with the Drive link to the PR.
 - That check and any UI proof use the real native app with real test data, driven the way a
   person uses it. On Linux the app runs under Xvfb at 1710x990, driven with `assembly-native-ui`
   (screenshots, clicks, keys); Codex may use its computer-use tool. A browser preview is not proof:
@@ -164,8 +174,11 @@ one next to it doesn't. Before calling work done, name which of these you covere
   a change-log row. The last line is `Committed-by: <who did it>`. No `Co-Authored-By` lines.
 - Subject in plain language, conventional style: `fix(chat): reopened sessions keep their order`.
   Body: what was wrong, then what changed. Read `git diff --cached` first; commit only your work.
-- Don't open a PR unless asked. Never merge on your own: a merge happens only when Jesse asks for
-  that PR, as `ALLOW_MERGE=1 gh pr merge <n> --merge`.
+- One task, one branch, one PR: each step is a commit on the task's branch. Merging a `tsk-<id>`
+  PR closes the task, so a PR opens when the task is complete or Jesse wants to test it.
+- Don't open a PR unless asked. Merge only with Jesse's permission, as `ALLOW_MERGE=1 gh pr merge
+  <n> --merge`, once checks pass and the review bot has nothing open. If he says "I merge" for a
+  PR, leave it to him.
 - A PR is one request. UI changes need before and after screenshots; motion needs a short video.
   Evidence goes to Drive and is linked from the PR and the task; never commit screenshots.
 - End the PR body with the model and harness that did the work (for example `Model: Claude Opus ·
@@ -182,6 +195,18 @@ one next to it doesn't. Before calling work done, name which of these you covere
 - **One way only.** A change is done when the old mechanism is deleted. No compatibility bridges,
   legacy fallbacks, flags that keep both alive, or half-migrated stores. If the old way can't go yet,
   the change isn't finished. When you find an old/new split, removing one side is part of your task.
+
+## Reaching Jesse
+
+- A question for Jesse, or a blocker you can't get around, goes on the Build Board right away
+  (`board_update`), with enough context to answer without reading the chat. No answer in 20
+  minutes: send a desktop notification. Still none 10 minutes later: send a phone notification.
+  Keep working on anything that isn't blocked.
+- Anything he needs to stay caught up (PR ready, check failed, blocker, change from plan, refused
+  action) goes on the board in the same turn. Mark questions answered when they are. Helpers
+  can't post; they tell their orchestrator.
+- Start agent lanes as Assembly helper sessions (`start_session`), never hidden `codex exec`. Send
+  review-bot findings back to the lane that built the PR until the bot is clean.
 
 ## Tasks, plans and docs
 

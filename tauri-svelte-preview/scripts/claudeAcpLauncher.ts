@@ -15,6 +15,7 @@
 //   G. Out of a turn, ExitPlanMode offers no "clear context" choice: a fresh
 //      context continues the open prompt, and there is none.
 // The release build compiles this file with bun (prepareReleaseAdapters.ts).
+import { privateMcpHeaders } from './claudeMcpHeaders.ts';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { agent as acpAgent, methods, ndJsonStream, type AgentContext } from '@agentclientprotocol/sdk';
@@ -130,7 +131,10 @@ function clampResultWindows(session: any) {
   };
 }
 
-const withRawTasks = (p: any) => ({ ...p, _meta: { ...p._meta, claudeCode: { ...p._meta?.claudeCode, emitRawSDKMessages: RAW_TASKS } } });
+const withRawTasks = (input: any) => {
+  const p = privateMcpHeaders(input);
+  return { ...p, _meta: { ...p._meta, claudeCode: { ...p._meta?.claudeCode, emitRawSDKMessages: RAW_TASKS } } };
+};
 const passThrough = { parse: (p: any) => p };
 const app = acpAgent({ name: 'claude-code-acp' })
   .onConnect((connection) => {
