@@ -381,9 +381,13 @@ impl MessagingEndpoint {
                 let _place = StartPlace::take(&self.starting_helpers, &owned_id, HELPER_LIMIT,
                     || store.unfinished_helpers_of(&owned_id).map_err(|error| error.to_string()),
                     "at most 3 unfinished helpers")?;
+                let folder = match args.get("folder") {
+                    None => None,
+                    Some(value) => Some(value.as_str().ok_or("folder must be an absolute path")?),
+                };
                 let model = args["model"].as_str().map(str::to_string);
                 let manager = manager.ok_or("Sessions cannot be started from here")?;
-                let helper = manager.start_helper(&owned_id, provider, model, name, prompt).await?;
+                let helper = manager.start_helper(&owned_id, provider, model, name, prompt, folder).await?;
                 let (handle, name) = store.directory_name(&helper).map_err(|error| error.to_string())?
                     .unwrap_or_else(|| (String::new(), name.to_string()));
                 Ok(json!({"content":[{"type":"text","text":json!({"handle":handle,"name":name,"owned_id":helper}).to_string()}]}))
@@ -489,9 +493,9 @@ impl MessagingEndpoint {
                  "inputSchema":{"type":"object","properties":{}}},
                 {"name":"send_message","description":OWNER_AUTHORITY.to_string() + " Send a message to an Assembly session you may reach (see list_sessions), addressed by its handle (such as brisk-heron), its name, or its owned id; add @machine (brisk-heron@workbox-test) for a session on another machine. A handle never changes when the session is renamed.",
                  "inputSchema":{"type":"object","properties":{"to":{"type":"string"},"text":{"type":"string"}},"required":["to","text"]}},
-                {"name":"start_session","description":"Start a Codex or Claude helper session in your project. It is listed with your agents, and its final reply is sent to you as a message when it finishes.",
+                {"name":"start_session","description":"Start a Codex or Claude helper session. It works in folder (an absolute path on your machine, such as a worktree) or, without one, in your folder. It is listed with your agents, and its final reply is sent to you as a message when it finishes.",
                  "inputSchema":{"type":"object","properties":{"provider":{"type":"string","enum":["codex","claude"]},
-                     "model":{"type":"string"},"prompt":{"type":"string"},"name":{"type":"string"}},"required":["provider","prompt","name"]}},
+                     "model":{"type":"string"},"prompt":{"type":"string"},"name":{"type":"string"},"folder":{"type":"string"}},"required":["provider","prompt","name"]}},
                 {"name":"workflow_format","description":"Read the reference for writing an Assembly workflow (.assembly/workflows/*.yml).",
                  "inputSchema":{"type":"object","properties":{}}},
                 {"name":"check_workflow","description":"Check a workflow file in your project, the same way starting it would. Returns ok, its steps and any warnings, or the first error.",
