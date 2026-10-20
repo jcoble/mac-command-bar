@@ -1111,16 +1111,12 @@
 				<!-- Developer diagnostic, dev builds only: compares the windowed tree with
 				     every row rendered. Icon-sized so the folder picker keeps its room. -->
 				{#if dev}
-					<Button
-						size="icon-sm"
-						variant="ghost"
-						aria-pressed={virtualized}
-						aria-label="Compare virtualized and all file-tree rows"
-						title="Virtualized rows (dev only)"
+					<IconButton
+						label={virtualized ? "Showing visible rows only (dev only). Click to show every row" : "Showing every row (dev only). Click to show visible rows only"}
 						onclick={() => (virtualized = !virtualized)}
 					>
 						<Rows3 class="size-[14px]" strokeWidth={2} aria-hidden="true" />
-					</Button>
+					</IconButton>
 				{/if}
 				<IconButton label="New file" disabled={!rootListed || readOnlyInspection} onclick={() => beginRootEntry("new-file")}>
 					<FilePlus class="size-[14px]" />
@@ -1129,7 +1125,7 @@
 					<FolderPlus class="size-[14px]" />
 				</IconButton>
 				<IconButton
-					label={sortDirection === "ascending" ? "Sort Z to A" : "Sort A to Z"}
+					label={sortDirection === "ascending" ? "Sorted A to Z. Click to sort Z to A" : "Sorted Z to A. Click to sort A to Z"}
 					onclick={() => (sortDirection = sortDirection === "ascending" ? "descending" : "ascending")}
 				>
 					{#if sortDirection === "ascending"}<ArrowDownAZ class="size-[14px]" />{:else}<ArrowUpZA class="size-[14px]" />{/if}
