@@ -448,7 +448,8 @@ function normalizeFileStates(
 }
 
 function canonicalWorkspacePath(value: string): string {
-  const path = value.trim().replaceAll('\\', '/');
+  const prefix = /^(?:assembly-remote:\/\/[^/]+|file:\/\/)(?=\/)/.exec(value.trim())?.[0] ?? ''; // A machine prefix is kept as is.
+  const path = value.trim().slice(prefix.length).replaceAll('\\', '/');
   if (!path) return '';
   const absolute = path.startsWith('/');
   const parts: string[] = [];
@@ -462,14 +463,13 @@ function canonicalWorkspacePath(value: string): string {
     parts.push(part);
   }
   const joined = parts.join('/');
-  if (!joined) return absolute ? '/' : '.';
-  return absolute ? `/${joined}` : joined;
+  if (!joined) return absolute ? `${prefix}/` : '.';
+  return absolute ? `${prefix}/${joined}` : joined;
 }
 
 function normalizeInspectionRoot(value: unknown): string | null {
   if (typeof value !== 'string') return null;
-  const root = canonicalWorkspacePath(value);
-  return root || null;
+  return canonicalWorkspacePath(value) || null;
 }
 
 function normalizeSourceControl(value: unknown): SessionSourceControlWorkspace | null {
