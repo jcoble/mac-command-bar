@@ -77,10 +77,13 @@ test('streamed_text_deltas_in_one_frame_reach_the_chat_as_one_update', async () 
   const usage = { nativeEvent: { ownedId: 'owner', provider: 'claude', generation: 1, sequence: 4, timestampMs: 4, turnId: 'turn-1', payload: { kind: 'usage', usedTokens: 10 } } } as never;
   const queue = [delta(1, 'a', 'One'), delta(2, 'a', ' two'), delta(3, 'a', ' three'), usage, delta(5, 'a', ' four')];
   const signal = new AbortController().signal;
-  const first = await takeStreamItem(queue, signal) as { nativeEvent: { sequence: number; payload: { delta: string } } };
+  const first = await takeStreamItem(queue, signal) as { nativeEvent: { sequence: number; timestampMs: number; payload: { itemId: string; delta: string } } };
   assert.equal(frames, 1);
   assert.equal(first.nativeEvent.payload.delta, 'One two three');
-  assert.equal(first.nativeEvent.sequence, 1);
+  assert.equal(first.nativeEvent.payload.itemId, 'a');
+  // The joined delta holds the text up to the last delta, so it carries that delta's place.
+  assert.equal(first.nativeEvent.sequence, 3);
+  assert.equal(first.nativeEvent.timestampMs, 3);
   assert.equal(await takeStreamItem(queue, signal), usage);
   const last = await takeStreamItem(queue, signal) as { nativeEvent: { payload: { delta: string } } };
   assert.equal(last.nativeEvent.payload.delta, ' four');

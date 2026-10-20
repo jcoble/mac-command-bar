@@ -323,12 +323,15 @@ export async function takeStreamItem<T extends object>(items: T[], signal: Abort
   if (!first) return items.shift();
   await nextFrame(signal);
   let text = '';
+  let last = first;
   for (let next = textDeltaOf(items[0]); next && next.payload.itemId === first.payload.itemId
     && next.turnId === first.turnId && next.generation === first.generation; next = textDeltaOf(items[0])) {
     text += next.payload.delta;
+    last = next;
     items.shift();
   }
-  return { nativeEvent: { ...first, payload: { ...first.payload, delta: text } } } as T;
+  // The joined text runs to the last delta, so it carries that delta's sequence and time.
+  return { nativeEvent: { ...first, sequence: last.sequence, timestampMs: last.timestampMs, payload: { ...first.payload, delta: text } } } as T;
 }
 
 /** Bounded history replay uses the same native-to-TanStack mapping as live events. */
