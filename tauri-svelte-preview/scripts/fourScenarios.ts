@@ -137,6 +137,8 @@ export function seedData(source: string, dataDir: string): void {
   const db = path.join(folder, 'sessions.db');
   fs.mkdirSync(folder, { recursive: true });
   run('sqlite3', ['-readonly', path.join(source, 'sessions.db'), `.backup '${db}'`]);
+  const attachments = path.join(source, 'conversation-attachments');
+  if (fs.existsSync(attachments)) fs.cpSync(attachments, path.join(folder, 'conversation-attachments'), { recursive: true });
   // phone_devices only exists once the app has created it.
   const phone = run('sqlite3', [db, "SELECT count(*) FROM sqlite_master WHERE name='phone_devices'"]).trim() === '1';
   run('sqlite3', [db, `PRAGMA foreign_keys=ON;
