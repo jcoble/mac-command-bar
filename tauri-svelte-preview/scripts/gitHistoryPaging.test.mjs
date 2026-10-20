@@ -312,21 +312,22 @@ function makeBackend({ total = 1000 } = {}) {
   const state = createGitPanelState();
   const git = createGitService({ backend, state });
 
-  git.activate('/plain-folder');
+  // Show the surface before a root is set so the first read is the awaitable
+  // refreshHistory; the test then waits on that read instead of a timer.
   git.ensureHistorySurface();
-  await settle();
+  git.activate('/plain-folder');
+  await git.refreshHistory();
   assert.equal(state.historyError, 'fatal: not a git repository');
   const afterFailure = reads();
 
+  // ensureHistorySurface starts any read synchronously, so the count is exact here.
   git.ensureHistorySurface();
   git.ensureHistorySurface();
   git.ensureHistorySurface();
-  await settle();
   assert.equal(reads(), afterFailure, 'later effect passes do not read a failed history again');
 
   backend.readHistory = working;
   await git.refreshHistory();
-  await settle();
   assert.equal(state.historyError, '');
   assert.equal(state.history.length, COMMIT_HISTORY_LIMIT, 'Refresh still reads again');
 }
