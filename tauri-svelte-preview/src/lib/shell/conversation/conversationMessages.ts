@@ -68,13 +68,21 @@ export function conversationMessageDisplayItem(message: UIMessage): Conversation
   }, Number(metadata.startedAtMs ?? 0));
 }
 
+// Messages are replaced, never changed in place, so an unchanged message keeps
+// its display item instead of rebuilding the whole history on every chunk.
+const displayItemsByMessage = new WeakMap<UIMessage, ConversationDisplayItem>();
+
 export function conversationDisplayItems(
   messages: readonly UIMessage[],
   previous: readonly ConversationDisplayItem[] = [],
   sentAttachments: Readonly<Record<string, readonly ConversationAttachment[]>> = {}
 ): ConversationDisplayItem[] {
   const rows = messages.map((message) => {
-    const item = conversationMessageDisplayItem(message);
+    let item = displayItemsByMessage.get(message);
+    if (!item) {
+      item = conversationMessageDisplayItem(message);
+      displayItemsByMessage.set(message, item);
+    }
     // A message still on its way carries its own screenshots until the backend's copy claims them.
     const attachments = item.kind === 'user'
       ? sentAttachments[item.itemId] ?? message.metadata?.attachments as readonly ConversationAttachment[] | undefined

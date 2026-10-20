@@ -48,4 +48,10 @@ test('a_text_delta_to_an_existing_message_sends_no_metadata_chunk_when_only_the_
   assert.equal(processor.getMessages()[0]?.parts[0]?.type === 'text' && processor.getMessages()[0].parts[0].content, 'Hello world');
 });
 
+test('unchanged_messages_keep_their_display_items', () => {
+  const first = conversationDisplayItems(items);
+  const second = conversationDisplayItems(items);
+  assert.ok(first.every((item, index) => item === second[index]));
+});
+
 console.log('conversation timeline identity tests passed');
