@@ -51,6 +51,8 @@
     machineLabel: string;
     /** The session's machine has not answered History's scan yet. */
     machineScanning?: boolean;
+    /** Its resume was refused: its own CLI or app is running it. */
+    runningElsewhere?: boolean;
     expanded: boolean;
     detail?: Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns' | 'messageCount' | 'startComplete'> | null;
     detailsLoading?: boolean;
@@ -69,6 +71,7 @@
     title,
     machineLabel,
     machineScanning = false,
+    runningElsewhere = false,
     expanded,
     detail = null,
     detailsLoading = false,
@@ -112,7 +115,7 @@
     return parts.length > 3 ? parts.slice(-3).join('/') : value;
   }
 
-  const actions = $derived(new Map(sessionHistoryActions(record, machineScanning).map((item) => [item.id, item])));
+  const actions = $derived(new Map(sessionHistoryActions(record, machineScanning, runningElsewhere).map((item) => [item.id, item])));
   const resume = $derived(actions.get('resume-assembly'));
   const can = (id: SessionHistoryActionId): boolean => actions.get(id)?.enabled ?? false;
 
@@ -317,7 +320,7 @@
     {/if}
 
     <div class="detail-actions">
-      {#if resume && (resume.enabled || machineScanning)}
+      {#if resume && (resume.enabled || machineScanning || runningElsewhere)}
         <Button
           size="xs"
           class="mr-1 rounded-full bg-[var(--color-good-bg)] px-3 font-semibold text-[var(--color-accent)]

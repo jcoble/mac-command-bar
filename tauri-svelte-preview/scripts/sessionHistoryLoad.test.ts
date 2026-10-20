@@ -154,6 +154,19 @@ run('a_row_the_rail_has_open_just_opens', () => {
   assert.equal(sessionTranscriptImport(open)?.transcriptPath, open.logPath);
 });
 
+run('a_session_running_outside_assembly_waits_until_it_stops', () => {
+  const row = record('elsewhere');
+  row.provider = 'claude';
+  row.logPath = '/tmp/elsewhere.jsonl';
+  const resume = sessionHistoryActions(row, false, true).find((candidate) => candidate.id === 'resume-assembly');
+  assert.deepEqual([resume?.enabled, resume?.disabledReason], [false, 'Running outside Assembly']);
+  // The refusal marks the row; History's next scan clears it, so a session stopped since can resume.
+  const panel = readFileSync(new URL('../src/lib/shell/history/components/HistoryPanel.svelte', import.meta.url), 'utf8');
+  assert.match(panel, /rail\.runningElsewhere = \[\.\.\.rail\.runningElsewhere, record\.key\]/);
+  const host = readFileSync(new URL('../src/lib/shell/history/sessionHistoryHost.ts', import.meta.url), 'utf8');
+  assert.match(host, /rail\.runningElsewhere = \[\]/);
+});
+
 const remoteScan = {
   provider: 'claude', id: 'native-1', title: 'Can you hear me', model: null, projectPath: '/home/me/dev/work/EdiPlatform',
   lastActivity: null, resumeCommands: [], logPath: '/home/me/.claude/projects/edi/native-1.jsonl', machine: 'box'

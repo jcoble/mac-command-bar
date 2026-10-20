@@ -14,6 +14,14 @@ pub(super) fn discover_path(id: &str) -> Result<Option<PathBuf>, String> {
     find(&home_dir()?.join(".claude/projects"), id)
 }
 
+/// Claude Code lists each live run, interactive or `-p`, as `~/.claude/sessions/<pid>.json` naming its session, and removes
+/// it on exit; a run that was killed leaves one naming a process that is gone.
+pub(super) fn running(home: &Path, id: &str) -> bool {
+    let records = fs::read_dir(home.join(".claude/sessions")).into_iter().flatten().flatten();
+    records.filter_map(|entry| serde_json::from_str::<Value>(&fs::read_to_string(entry.path()).ok()?).ok())
+        .any(|run| run["sessionId"] == id && run["pid"].as_i64().is_some_and(|pid| unsafe { libc::kill(pid as libc::pid_t, 0) } == 0))
+}
+
 pub(super) fn discover_child_path(
     parent_id: &str,
     child_id: &str,
@@ -374,6 +382,23 @@ fn find_child(parent: &Path, id: &str, child_id: &str) -> Result<Option<PathBuf>
 mod tests {
     use super::holds_a_turn_at;
     use std::path::PathBuf;
+
+    #[test]
+    fn a_session_claude_is_running_is_found_by_its_live_record() {
+        let home = std::env::temp_dir().join(format!("claude-running-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(home.join(".claude/sessions")).unwrap();
+        let record = |pid: u32| format!(r#"{{"pid":{pid},"sessionId":"S1","kind":"interactive"}}"#);
+        std::fs::write(home.join(".claude/sessions/1.json"), record(std::process::id())).unwrap();
+        assert!(super::running(&home, "S1"));
+        assert!(!super::running(&home, "S2"));
+        // A record left by a run that was killed names a process that is gone.
+        let mut gone = std::process::Command::new("true").spawn().unwrap();
+        let pid = gone.id();
+        gone.wait().unwrap();
+        std::fs::write(home.join(".claude/sessions/1.json"), record(pid)).unwrap();
+        assert!(!super::running(&home, "S1"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
 
     fn transcript(name: &str, lines: &[&str]) -> PathBuf {
         let path = std::env::temp_dir().join(format!(

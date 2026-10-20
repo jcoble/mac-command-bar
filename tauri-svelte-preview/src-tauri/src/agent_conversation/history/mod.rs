@@ -58,6 +58,9 @@ pub struct ImportedTail {
     pub trailing_bytes: Vec<u8>,
 }
 
+/// Messages arriving while a session is read in would be lost, so one its own CLI or app is running is refused.
+pub const RUNNING_ELSEWHERE: &str = "This session is still running outside Assembly. Stop it there, then resume it here.";
+
 /// Imports a transcript whole: names the session, then reads its newest page.
 ///
 /// Resuming through the front end does these two halves separately, so that the
@@ -101,6 +104,7 @@ pub fn import_session(
 #[allow(clippy::too_many_arguments)]
 pub fn begin_import_session(store: &SessionStore, provider: AgentConversationProvider, native_session_id: &str,
     path: &Path, cwd: &str, title: Option<String>, project_id: Option<String>, open: bool) -> Result<(String, bool), String> {
+    if !open && self::transcript::running_elsewhere(native_session_id) { return Err(RUNNING_ELSEWHERE.into()); }
     let metadata = path.metadata().map_err(|error| format!("Could not inspect transcript: {error}"))?;
     if let Some(mut row) = existing_import_session(store, provider, native_session_id)? {
         if row.project_id.is_none() && project_id.is_some() { row.project_id = project_id; store.upsert_session(&row).map_err(|error| error.to_string())?; }
@@ -127,12 +131,8 @@ pub fn begin_import_session(store: &SessionStore, provider: AgentConversationPro
     // When the transcript was last written is when the session was last active.
     // Reading the clock instead would sort a year-old conversation above today's
     // work for as long as it took the records to arrive, and then move it.
-    let last_activity_at_ms = metadata
-        .modified()
-        .ok()
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .and_then(|since| i64::try_from(since.as_millis()).ok())
-        .unwrap_or_else(now_millis);
+    let last_activity_at_ms = metadata.modified().ok().and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .and_then(|since| i64::try_from(since.as_millis()).ok()).unwrap_or_else(now_millis);
     let cursor = ImportCursor { transcript_path: path.to_string_lossy().into_owned(), cutoff_offset: metadata.len(),
         imported_length: Some(metadata.len()), ..ImportCursor::default() };
     let extra_json = merge_import_cursor(&super::manager::imported_session_extra(provider)?, &cursor)?;

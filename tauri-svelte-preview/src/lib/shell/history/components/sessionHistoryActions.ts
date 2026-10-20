@@ -123,9 +123,10 @@ function action(
 
 /**
  * The nine actions a session card offers, in the order a person sees them. `machineScanning` is true while the
- * record's machine has not answered History's scan: a remote session Assembly holds learns its transcript from it.
+ * record's machine has not answered History's scan (a remote session Assembly holds learns its transcript from it),
+ * and `runningElsewhere` once a resume was refused because its own CLI or app is still running it.
  */
-export function sessionHistoryActions(record: SessionLibraryRecord, machineScanning = false): SessionHistoryAction[] {
+export function sessionHistoryActions(record: SessionLibraryRecord, machineScanning = false, runningElsewhere = false): SessionHistoryAction[] {
   const hasLog = Boolean(record.logPath?.trim());
   const hasFolder = Boolean(record.canonicalCwd?.trim());
   // Resuming needs all four of the agent, the id it knew the session by, the
@@ -134,8 +135,8 @@ export function sessionHistoryActions(record: SessionLibraryRecord, machineScann
   // whose agent this app cannot read.
   const canResumeAssembly = sessionTranscriptImport(record) !== null;
   const resumeLabel = 'Resume as Assembly Session';
-  const waiting = machineScanning && Boolean(record.ownedId) && record.machine !== 'local';
-  const resumeReason = waiting ? 'Scanning…' : !record.nativeSessionId?.trim()
+  const waiting = (machineScanning && Boolean(record.ownedId) && record.machine !== 'local') || runningElsewhere;
+  const resumeReason = runningElsewhere ? 'Running outside Assembly' : waiting ? 'Scanning…' : !record.nativeSessionId?.trim()
     ? NO_SESSION_ID
     : !hasLog
       ? NO_TRANSCRIPT

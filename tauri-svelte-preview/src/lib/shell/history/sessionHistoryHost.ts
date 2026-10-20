@@ -38,6 +38,7 @@ async function listLocalProviderSessions(projectPath?: string): Promise<AgentSes
 async function listProviderSessions(projectPath?: string): Promise<AgentSession[]> {
   const machines = projectPath ? [] : Object.keys(rail.remoteConnections).filter((id) => rail.remoteConnections[id] === 'connected');
   rail.scanningMachines = [...new Set([...rail.scanningMachines, ...machines])];
+  rail.runningElsewhere = [];
   const remote = await Promise.all(machines.map(async (machine) => {
     try {
       return ((await listAgentSessionsFromTauri(machine)) ?? []).map((session) => ({ ...session, machine }));

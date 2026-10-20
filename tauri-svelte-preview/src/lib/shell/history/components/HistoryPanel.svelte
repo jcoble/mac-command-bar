@@ -476,8 +476,7 @@
    * the adapter is the whole runtime here.
    */
   async function resumeAsAssemblySession(record: SessionLibraryRecord): Promise<void> {
-    // Every row resumes through the import, on the machine whose transcript it is; a session
-    // already here comes back unchanged, and only opens, unless its transcript has grown.
+    // Every row resumes through the import on its own machine; one already here only opens unless its transcript grew.
     const request = sessionTranscriptImport(record);
     const remoteProfileId = record.machine === 'local' ? null : record.machine;
     let named: [string, boolean] | null = null;
@@ -485,6 +484,7 @@
       if (request) named = await beginAgentConversationImportFromTauri({ ...request, remoteProfileId });
     } catch (error) {
       rail.error = `Could not resume "${record.title}": ${describeError(error)}`;
+      if (rail.error.includes('still running outside Assembly')) { rail.runningElsewhere = [...rail.runningElsewhere, record.key]; return; }
     }
     if (record.ownedId && (!named || !named[1])) {
       await host.service.open(record);
@@ -555,7 +555,7 @@
    * action the record cannot support never becomes pressable in the first place.
    */
   async function runAction(record: SessionLibraryRecord, id: SessionHistoryActionId): Promise<void> {
-    const allowed = sessionHistoryActions(record, rail.scanningMachines.includes(record.machine)).find((action) => action.id === id);
+    const allowed = sessionHistoryActions(record, rail.scanningMachines.includes(record.machine), rail.runningElsewhere.includes(record.key)).find((action) => action.id === id);
     if (!allowed?.enabled) return;
 
     switch (id) {
@@ -693,7 +693,7 @@
       <SessionHistoryCard
         record={row.record}
         title={row.displayTitle}
-        machineLabel={projectMachineLabel(row.record.machine, rail.remoteProfiles)} machineScanning={rail.scanningMachines.includes(row.record.machine)}
+        machineLabel={projectMachineLabel(row.record.machine, rail.remoteProfiles)} machineScanning={rail.scanningMachines.includes(row.record.machine)} runningElsewhere={rail.runningElsewhere.includes(row.record.key)}
         expanded={expandedKey === row.record.key}
         {now}
         onToggle={() => toggleCard(row)}
