@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
+import { test } from 'node:test';
 import {
   type ConversationDisplayItem
 } from '../src/lib/shell/conversation/conversationTimeline.ts';
-import { conversationDisplayItems } from '../src/lib/shell/conversation/conversationMessages.ts';
-import type { UIMessage } from '@tanstack/ai/client';
+import { conversationChunksFromEvent, conversationDisplayItems, conversationMessagesAfterCustom } from '../src/lib/shell/conversation/conversationMessages.ts';
+import { EventType, StreamProcessor, type StreamChunk, type UIMessage } from '@tanstack/ai/client';
 
 const items: UIMessage[] = Array.from({ length: 2_000 }, (_, index) => ({
   id: `item-${index}`,
@@ -26,5 +27,25 @@ assert.equal(changed[0].itemId, 'item-1999');
 for (let index = 0; index < 1_999; index += 1) {
   assert.equal(after[index], before[index], `display item ${index} keeps object identity`);
 }
+
+test('a_text_delta_to_an_existing_message_sends_no_metadata_chunk_when_only_the_sequence_changed', () => {
+  const processor = new StreamProcessor();
+  const apply = (sequence: number, text: string): StreamChunk[] => {
+    const chunks = conversationChunksFromEvent(processor.getMessages(), {
+      type: 'content.delta', ownedId: 'owner', provider: 'codex', providerInstanceId: 'fixture',
+      generation: 1, sequence, timestampMs: sequence * 10, nativeSessionId: 'native', itemId: 'assistant-1',
+      payload: { kind: 'assistantDelta', itemId: 'assistant-1', text }, providerMetadata: {}
+    } as never);
+    for (const chunk of chunks) {
+      if (chunk.type === EventType.CUSTOM) processor.setMessages(conversationMessagesAfterCustom(processor.getMessages(), chunk.name, chunk.value));
+      else processor.processChunk(chunk);
+    }
+    return chunks;
+  };
+  apply(1, 'Hello');
+  const chunks = apply(2, ' world');
+  assert.equal(chunks.some((chunk) => chunk.type === EventType.CUSTOM && chunk.name === 'assembly:message-metadata'), false);
+  assert.equal(processor.getMessages()[0]?.parts[0]?.type === 'text' && processor.getMessages()[0].parts[0].content, 'Hello world');
+});
 
 console.log('conversation timeline identity tests passed');

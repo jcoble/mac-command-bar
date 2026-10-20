@@ -89,6 +89,16 @@ export function conversationHasRunningTool(messages: readonly UIMessage[]): bool
     && part.state !== 'complete' && part.state !== 'error'));
 }
 
+function sameMetadataExceptSequence(
+  left: Readonly<Record<string, AgentConfigValue>>,
+  right: Readonly<Record<string, AgentConfigValue>>
+): boolean {
+  const keys = Object.keys(right);
+  return keys.length === Object.keys(left).length && keys.every((key) => key === 'lastSequence'
+    || Object.is(left[key], right[key])
+    || (typeof right[key] === 'object' && JSON.stringify(left[key]) === JSON.stringify(right[key])));
+}
+
 function nativeCustomChunk(name: string, value: unknown): StreamChunk {
   return { type: EventType.CUSTOM, name, value } as StreamChunk;
 }
@@ -138,14 +148,18 @@ export function conversationChunksFromEvent(
   const text = item.content.map((part) => part.text).join('');
   const append = conversationEventAppendsItemContent(event);
   const display = displayItemFromAgentItem(item, event.timestampMs);
-  const chunks: StreamChunk[] = existing
-    ? [nativeCustomChunk('assembly:message-metadata', { itemId: item.id, metadata })]
-    : [{
+  // A streamed chunk usually moves only the sequence, which nothing reads from a
+  // message; sending it anyway updated the whole message list a second time.
+  const chunks: StreamChunk[] = !existing
+    ? [{
         type: EventType.TEXT_MESSAGE_START,
         messageId: item.id,
         role: item.type === 'user-message' ? 'user' : 'assistant',
         metadata
-      }];
+      }]
+    : sameMetadataExceptSequence(prior, metadata)
+      ? []
+      : [nativeCustomChunk('assembly:message-metadata', { itemId: item.id, metadata })];
   if (display.kind === 'tool') {
     const previousCall = existing?.parts.find((part) => part.type === 'tool-call');
     const previousOutput = previousCall?.output && typeof previousCall.output === 'object' ? previousCall.output as Record<string, AgentConfigValue> : {};
