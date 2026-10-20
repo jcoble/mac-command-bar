@@ -185,7 +185,7 @@
   // Work deferred to after the next render stops when the timeline unmounts. An effect
   // re-run must not cancel it: the send anchor's effect re-runs as it clears its request.
   const stop = new AbortController();
-  onDestroy(() => stop.abort());
+  onDestroy(() => { stop.abort(); cancelAnimationFrame(viewFrame); });
 
   $effect.pre(() => {
     const currentRows = rows;
@@ -548,23 +548,24 @@
     if (direction === 'older') follow = false;
     else if (direction === 'newer' && !hasNewer && atEnd()) { follow = true; onReturnToLatest?.(); }
     userDirection = null;
-    saveView();
-    if (direction) requestPage(direction === 'older');
     // Wheel events fire before the scroll they cause, so a gesture that coasts
     // onto the end of the loaded rows asks for nothing; ask once it lands there.
-    else requestPage(false);
+    scheduleViewWork(direction === 'older');
+  }
+  // Saving the place and asking for a page read the layout, so they run once a frame, after its
+  // scrolls; the frame's last event says which way to page.
+  let viewFrame = 0, frameOlder = false;
+  function scheduleViewWork(older: boolean): void {
+    frameOlder = older;
+    viewFrame ||= requestAnimationFrame(() => { viewFrame = 0; saveView(); requestPage(frameOlder); });
   }
   function handleWheel(event: WheelEvent): void {
     if (event.target instanceof Element && event.target.closest('[data-tool-scroll]')) return;
     anchoredSendItemId = null;
     userDirection = event.deltaY < 0 ? 'older' : 'newer';
-    if (event.deltaY < 0) {
-      follow = false;
-      saveView(); requestPage(true);
-    } else if (event.deltaY > 0) {
-      if (!hasNewer && atEnd()) { follow = true; onReturnToLatest?.(); }
-      saveView(); requestPage(false);
-    }
+    if (event.deltaY < 0) follow = false;
+    else if (event.deltaY > 0 && !hasNewer && atEnd()) { follow = true; onReturnToLatest?.(); }
+    if (event.deltaY) scheduleViewWork(event.deltaY < 0);
   }
 
   function readerInput(node: HTMLDivElement) {
@@ -597,8 +598,7 @@
       anchoredSendItemId = null;
       userDirection = older ? 'older' : 'newer';
       if (older) follow = false;
-      saveView();
-      requestPage(older);
+      scheduleViewWork(older);
     };
     node.addEventListener('pointerdown', pointerDown);
     node.addEventListener('touchstart', touchStart, { passive: true });
