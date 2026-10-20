@@ -78,9 +78,10 @@ impl RemoteConnectionManager {
 
 #[cfg(test)]
 mod tests {
-    use super::super::connection_tests::{begin_test_download, download_manager, history_event};
+    use super::super::connection_tests::{begin_test_download, download_manager, history_event, session};
     use super::super::{encode_history_chunk, ClientRequest};
     use super::*;
+    use crate::agent_conversation::protocol::AgentConversationSessionRecord;
 
     #[tokio::test]
     async fn a_rebuilt_import_drops_the_copy_saved_here() {
@@ -98,5 +99,21 @@ mod tests {
         reply.send(Ok(RemoteResponse::Sessions(Vec::new()))).unwrap();
         assert_eq!(import.await.unwrap().unwrap(), "large-history");
         assert!(manager.history.lock().unwrap().download_state("cache-test", "large-history").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_session_read_again_on_its_machine_drops_the_copy_another_mac_saved() {
+        let manager = download_manager();
+        let (id, _requests) = begin_test_download(&manager, 100, Some(1), Some(1)).await;
+        manager.receive_history_chunk("cache-test", id, "large-history", 100, encode_history_chunk(&[history_event(1)]).unwrap()).unwrap();
+        manager.finish_history_download("cache-test", "large-history", id).await.unwrap();
+        let saved = || manager.store.remote_saved_minimum(&RemoteHistory::key("cache-test", "large-history")).unwrap();
+        let listed = |numbered_after| [AgentConversationSessionRecord { numbered_after, ..session("large-history", "cache-test", 1) }];
+        // A machine too old to say where its journal restarted keeps the copy.
+        manager.replace_cached_profile_sessions("cache-test", &listed(None)).unwrap();
+        assert_eq!(saved(), Some(1));
+        // Another Mac read it again from its transcript there: the turns saved here would be shown twice.
+        manager.replace_cached_profile_sessions("cache-test", &listed(Some(3))).unwrap();
+        assert_eq!(saved(), None);
     }
 }

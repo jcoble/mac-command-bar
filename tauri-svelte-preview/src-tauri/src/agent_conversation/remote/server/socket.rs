@@ -532,6 +532,7 @@ mod tests {
             let case = format!("started_here={started_here} cli_turns={cli_turns}");
             let (again, rebuilt, sequences, texts) = import_again(&manager, &directory, &path).await;
             assert_eq!((again.as_str(), rebuilt), (owned_id.as_str(), true), "{case}: the same session, read again from its transcript");
+            assert!(manager.list_sessions().unwrap().iter().any(|row| row.owned_id == again && row.numbered_after == Some(3)), "{case}: listed with where it restarted");
             assert_eq!(texts, expected, "{case}");
             assert_eq!(sequences.len(), expected.len(), "{case}: {sequences:?}");
             assert!(sequences.windows(2).all(|pair| pair[1] == pair[0] - 1), "{case}: newest first without gaps {sequences:?}");

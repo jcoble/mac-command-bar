@@ -622,11 +622,16 @@ impl RemoteConnectionManager {
         profile_id: &str,
         sessions: &[AgentConversationSessionRecord],
     ) -> Result<(), String> {
-        let incoming_ids = sessions
-            .iter()
-            .map(|session| session.owned_id.as_str())
-            .collect::<std::collections::HashSet<_>>();
+        let incoming_ids = sessions.iter().map(|session| session.owned_id.as_str()).collect::<std::collections::HashSet<_>>();
         let mut next = self.cached_sessions();
+        // Read again from its transcript there, a session is numbered on above its old head: a copy saved here before
+        // that would show every turn twice. A server too old to say leaves the copy alone.
+        for session in sessions.iter().filter(|session| session.numbered_after.is_some()) {
+            if next.iter().any(|old| old.owned_id == session.owned_id && old.remote_profile_id.as_deref() == Some(profile_id)
+                && old.numbered_after != session.numbered_after) {
+                self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).forget(profile_id, &session.owned_id)?;
+            }
+        }
         next.retain(|session| {
             session.remote_profile_id.as_deref() != Some(profile_id)
                 && !incoming_ids.contains(session.owned_id.as_str())
@@ -636,17 +641,9 @@ impl RemoteConnectionManager {
             session.remote_profile_id = Some(profile_id.to_string());
             session
         }));
-        next.sort_by(|left, right| {
-            right
-                .last_activity_at_ms
-                .cmp(&left.last_activity_at_ms)
-                .then_with(|| left.owned_id.cmp(&right.owned_id))
-        });
+        next.sort_by(|left, right| right.last_activity_at_ms.cmp(&left.last_activity_at_ms).then_with(|| left.owned_id.cmp(&right.owned_id)));
         self.save_cached_sessions(next)?;
-        self.history
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .file_sessions(profile_id, sessions)?;
+        self.history.lock().unwrap_or_else(std::sync::PoisonError::into_inner).file_sessions(profile_id, sessions)?;
         let mut routing = self
             .remote_sessions
             .lock()
@@ -4261,7 +4258,7 @@ mod connection_tests {
         RemoteAssemblyProfile { id: id.into(), name: "Workbox".into(), ssh_target: "agent-workbox".into(), source_root: String::new(), default_cwd: String::new() }
     }
 
-    fn session(owned_id: &str, profile_id: &str, last_activity_at_ms: i64) -> AgentConversationSessionRecord {
+    pub(super) fn session(owned_id: &str, profile_id: &str, last_activity_at_ms: i64) -> AgentConversationSessionRecord {
         AgentConversationSessionRecord {
             owned_id: owned_id.into(), can_change_checkout: true,
             execution_environment: ExecutionEnvironment::Remote,
@@ -4292,7 +4289,7 @@ mod connection_tests {
             helper_of: None,
             run_id: None,
             run_label: None,
-            run_lead: None,
+            run_lead: None, numbered_after: None,
             meta: super::super::protocol::AgentConversationSessionMeta {
                 title: Some(format!("Session {owned_id}")),
                 ..Default::default()

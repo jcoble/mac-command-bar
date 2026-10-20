@@ -44,6 +44,7 @@ fn project_id_is_optional_on_ensure_and_present_on_records() {
         run_id: None,
         run_label: None,
         run_lead: None,
+        numbered_after: None,
         meta: AgentConversationSessionMeta::default(),
     };
     let value = serde_json::to_value(&record).unwrap();

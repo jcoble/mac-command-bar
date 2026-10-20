@@ -914,8 +914,7 @@ pub struct AgentConversationSessionRecord {
     /// record (a remote server never does), so protocol 13 is unchanged.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub project_group_key: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub project_group_label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")] pub project_group_label: String,
     /// When the owner marked this session as the main orchestrator; absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub orchestrator_marked_at_ms: Option<i64>,
@@ -925,11 +924,12 @@ pub struct AgentConversationSessionRecord {
     /// The workflow run this worker belongs to, and its `<task key> · <workflow name>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub run_label: Option<String>,
     /// The session that started this worker's run; absent when the owner started it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_lead: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub run_lead: Option<String>,
+    /// The head a session read again from its transcript numbered on from; absent until that happens. A desktop
+    /// whose copy was saved under another value drops it, and a server too old to send it leaves copies alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")] pub numbered_after: Option<i64>,
     #[serde(flatten)]
     pub meta: AgentConversationSessionMeta,
 }
