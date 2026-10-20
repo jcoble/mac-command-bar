@@ -7,8 +7,8 @@
   in the composer footer beside model, effort and approval; the machine sits in
   the row under the composer.
 
-  A project's session runs in the project's root folder; there is no branch or
-  worktree to pick. A root that is a bare repository has no files to work on,
+  A project's session runs in its root folder, or in the worktree it was opened
+  from; there is no branch or worktree to pick. A bare root has no files to work on,
   so the draft says so and will not send. No Assembly conversation is created
   here, and opening, switching or closing a draft only reads: the project list,
   folder listings and that one folder check. A
@@ -76,11 +76,11 @@
     onClose: () => void;
     /** The session the first send is starting, until the view switches to it. */
     startingOwnedId?: string | null;
-    /** Open in this project instead of the default one. */
-    projectId?: string | null;
+    /** Open in this project, and in `folder` of it when set (a worktree), instead of the default one. */
+    projectId?: string | null; folder?: string | null;
   }
 
-  let { stopSignal, onSend, onClose, startingOwnedId = null, projectId = null }: Props = $props();
+  let { stopSignal, onSend, onClose, startingOwnedId = null, projectId = null, folder = null }: Props = $props();
   /* While the first send starts its session, this composer is that session's:
      what is typed lands in its draft, so it is still there after the switch. */
   const starting = $derived(startingOwnedId ? conversationSessions[startingOwnedId] ?? null : null);
@@ -267,8 +267,8 @@
     folderMessage = null;
   }
 
-  /** The machine comes from the project. */
-  function selectProject(project: ProjectRecord): void {
+  /** The machine comes from the project; the session starts in `startFolder`, its root unless given. */
+  function selectProject(project: ProjectRecord, startFolder = project.rootPath): void {
     const remote = project.machine !== 'local';
     const machineChanged = project.machine !== draftMachine;
     clearFolderCheck();
@@ -276,13 +276,13 @@
       projectId: project.id,
       executionEnvironment: remote ? 'remote' : 'local',
       remoteProfileId: remote ? project.machine : null,
-      projectPath: project.rootPath,
+      projectPath: startFolder,
       // Set once the folder check answers, so nothing runs in a bare root meanwhile.
       cwd: '',
       rootProblem: ''
     });
     if (machineChanged) checkSelectedMachine();
-    void checkRoot(project.machine, project.rootPath);
+    void checkRoot(project.machine, startFolder);
   }
 
   /** A plain conversation on `machine`, started in that machine's home folder. */
@@ -432,7 +432,7 @@
     const presetId = projectId ?? defaultDraftProjectId(projects, rail.owned, rail.activeOwnedId);
     const preset = projects.find((project) => project.id === presetId) ?? null;
     hydrated = true;
-    if (preset) selectProject(preset);
+    if (preset) selectProject(preset, (preset.id === projectId && folder) || preset.rootPath);
     else void selectNoProject('local');
     if (!preset || preset.machine === 'local') checkSelectedMachine();
     composer?.focus();

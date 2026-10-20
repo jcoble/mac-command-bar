@@ -130,15 +130,20 @@ const project = (id: string, machine: string): ProjectRecord => ({
     [project('A', 'local'), project('B', 'workbox'), project('C', 'sd'), project('D', 'gone')],
     [{ id: 'workbox', name: 'Workbox Test' }, { id: 'sd', name: 'SD' }],
     { workbox: 'connected', sd: 'disconnected' },
-    { '/work/A': [{ path: '/work/A/', branch: 'main', isMain: true }, { path: '/work/A-wt', branch: 'feature', isMain: false }] }
+    {
+      '/work/A': [{ path: '/work/A/', branch: 'main', isMain: true }, { path: '/work/A-wt', branch: 'feature', isMain: false }],
+      'assembly-remote://workbox/work/B': [{ path: 'assembly-remote://workbox/work/B-wt', branch: 'fix', isMain: false }]
+    }
   );
+  // `folder` is the path on the option's own machine: where a new session there starts.
   assert.deepEqual(groups, [
     { machine: 'local', label: 'This Mac', options: [
-      { projectId: 'A', path: '/work/A', label: 'A', detail: '/work/A', worktree: false },
-      { projectId: 'A', path: '/work/A-wt', label: 'A-wt — feature', detail: '/work/A-wt', worktree: true }
+      { projectId: 'A', path: '/work/A', folder: '/work/A', label: 'A', detail: '/work/A', worktree: false },
+      { projectId: 'A', path: '/work/A-wt', folder: '/work/A-wt', label: 'A-wt — feature', detail: '/work/A-wt', worktree: true }
     ] },
     { machine: 'workbox', label: 'Workbox Test', options: [
-      { projectId: 'B', path: 'assembly-remote://workbox/work/B', label: 'B', detail: '/work/B', worktree: false }
+      { projectId: 'B', path: 'assembly-remote://workbox/work/B', folder: '/work/B', label: 'B', detail: '/work/B', worktree: false },
+      { projectId: 'B', path: 'assembly-remote://workbox/work/B-wt', folder: '/work/B-wt', label: 'B-wt — fix', detail: '/work/B-wt', worktree: true }
     ] }
   ]);
 }
