@@ -167,10 +167,11 @@
     if (activityLabel || hasBackgroundWork) result.push({ key: `activity:${result.at(-1)?.key ?? 'empty'}`, activity: true });
     return result;
   });
-  // A new key function makes the virtualizer rebuild every row position, so it gets one only when the row keys change.
+  // A new key function makes the virtualizer rebuild every row position, so these are replaced only when row keys
+  // change. Each pair reads its own rows: the virtualizer reads its old layout through the old pair while switching.
+  const rowFunctions = (rows: Row[]) => ({ key: (index: number) => rows[index].key, size: (index: number) => rows[index].run || rows[index].item?.kind === 'tool' ? 36 : 90 });
   let keyedRows: Row[] = [];
-  let rowKey = (index: number) => keyedRows[index].key;
-  const rowSize = (index: number) => keyedRows[index].run || keyedRows[index].item?.kind === 'tool' ? 36 : 90;
+  let rowFns = rowFunctions(keyedRows);
   const virtualizer = createVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: 0, getScrollElement: () => host, estimateSize: () => 90, overscan: 3,
     anchorTo: 'end', followOnAppend: false, scrollEndThreshold: -1
@@ -202,10 +203,9 @@
       const kept = anchor && !keys.has(String(anchor.key))
         ? $virtualizer.getVirtualItems().find((row) => row.end > top && keys.has(String(row.key)))
         : undefined;
-      if (currentRows.some((row, index) => row.key !== keyedRows[index]?.key)) rowKey = (index) => keyedRows[index].key;
-      keyedRows = currentRows;
+      if (currentRows.some((row, index) => row.key !== keyedRows[index]?.key)) rowFns = rowFunctions(keyedRows = currentRows);
       $virtualizer.setOptions({
-        count: currentRows.length, getScrollElement: () => element, getItemKey: rowKey, estimateSize: rowSize,
+        count: currentRows.length, getScrollElement: () => element, getItemKey: rowFns.key, estimateSize: rowFns.size,
         paddingStart: topInset, paddingEnd,
         followOnAppend: following ? 'smooth' : false,
         scrollEndThreshold: following ? 80 : -1
