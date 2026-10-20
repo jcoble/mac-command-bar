@@ -241,10 +241,17 @@
   </article>
 </section>
 
-<!-- A raw HTML <img> keeps its own attributes (width, height); a Markdown
-     image uses the library's image renderer. -->
+<!-- A raw HTML <img> keeps only its width and height; srcset, style and the
+     rest are dropped so the file cannot make the preview fetch other
+     addresses. A Markdown image uses the library's image renderer. -->
 {#snippet img(src: string, alt: string, title: string | undefined, attributes: Record<string, unknown> | undefined)}
-  {#if attributes}<img {...attributes} {src} {alt} />{:else}<Image href={src} text={alt} {title} />{/if}
+  {#if attributes}<img
+      {src}
+      {alt}
+      {title}
+      width={attributes.width as string | undefined}
+      height={attributes.height as string | undefined}
+    />{:else}<Image href={src} text={alt} {title} />{/if}
 {/snippet}
 
 {#snippet picture(href: string | undefined, alt: string, title: string | undefined, attributes?: Record<string, unknown>)}
