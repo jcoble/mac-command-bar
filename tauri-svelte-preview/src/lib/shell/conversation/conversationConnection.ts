@@ -424,9 +424,9 @@ function snapshotChunks(
     snapshot.connection.generation,
     messages.map((message) => message.id)
   );
-  if (pending?.receipt && snapshot.page.turns.some((turn) =>
+  if (pending?.receipt && (!snapshot.activeTurnId || snapshot.page.turns.some((turn) =>
     turn.turnId === pending.receipt?.turnId && turn.terminalState
-  )) {
+  ))) {
     push({
       type: EventType.RUN_FINISHED,
       threadId: selection.historyOwnedId,
