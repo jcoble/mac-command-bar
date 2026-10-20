@@ -616,24 +616,14 @@ impl AgentRuntimeManager {
         let existing = super::history::existing_import_session(&self.store, provider, native_session_id)?;
         let _lifecycle = match &existing { Some(row) => Some(self.lifecycle_guard(&row.owned_id).await?), None => None };
         let open = existing.is_some_and(|row| self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(&row.owned_id));
+        let _one_at_a_time = import_reading();
         super::history::begin_import_session(&self.store, provider, native_session_id, path, cwd, title, project_id, open)
     }
 
     /// Reads the newest page of an imported transcript into a session that has
     /// already been named, and returns how many records it gained.
-    pub fn finish_import_transcript_session(
-        &self,
-        owned_id: &str,
-        max_bytes: u64,
-        max_records: usize,
-    ) -> Result<usize, String> {
-        let count = super::history::finish_import_session(
-            &self.store,
-            owned_id,
-            max_bytes,
-            max_records,
-        )?;
-        Ok(count)
+    pub fn finish_import_transcript_session(&self, owned_id: &str, max_bytes: u64, max_records: usize) -> Result<usize, String> {
+        super::history::finish_import_session(&self.store, owned_id, max_bytes, max_records)
     }
 
     /// Hydrate the disposable runtime overlay only for an operation that needs
@@ -667,9 +657,7 @@ impl AgentRuntimeManager {
     }
 
     pub fn extend_imported_session(&self, owned_id: &str, max_bytes: u64, max_records: usize) -> Result<super::history::ExtendedImport, String> {
-        // Two downloads at once would each read the same older page in, numbered twice, so one reads at a time.
-        static EXTENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _one_at_a_time = EXTENDING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _one_at_a_time = import_reading();
         super::history::extend_session(&self.store, owned_id, max_bytes, max_records)
     }
 
@@ -5071,6 +5059,13 @@ fn connection_state_for_runtime_state(state: AgentRuntimeState) -> ConversationC
         AgentRuntimeState::Failed => ConversationConnectionState::Failed,
         _ => ConversationConnectionState::Disconnected,
     }
+}
+
+/// Older pages read into an import, and a session cleared to be read again, go one at a time: two downloads would read
+/// the same page in twice, and a page read across a clearing would land in the journal that replaced it.
+fn import_reading() -> std::sync::MutexGuard<'static, ()> {
+    static READING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    READING.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Rebuilds the disposable runtime overlay only when a mutating ACP operation

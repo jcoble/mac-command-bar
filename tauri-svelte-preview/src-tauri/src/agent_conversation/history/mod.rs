@@ -640,15 +640,11 @@ pub fn extend_session(
     // top of one asks this question and deserves an answer, not an error.
     let Some(cursor) = optional_import_cursor(&session.extra_json)? else { return Ok(ExtendedImport { added: 0, reached_start: true }) };
     if cursor.reached_start { return Ok(ExtendedImport { added: 0, reached_start: true }); }
+    // Named but its newest page not read yet: that read numbers the session, so older pages wait for it.
+    if cursor.imported_length == Some(cursor.cutoff_offset) { return Ok(ExtendedImport { added: 0, reached_start: false }); }
     let provider = self::transcript::parse_provider(&session.provider)?;
-    let native_session_id = session
-        .native_session_id
-        .clone()
-        .ok_or_else(|| "Imported session has no native session id".to_string())?;
-    let transcript_session_id = cursor
-        .parent_native_session_id
-        .as_deref()
-        .unwrap_or(&native_session_id);
+    let native_session_id = session.native_session_id.clone().ok_or_else(|| "Imported session has no native session id".to_string())?;
+    let transcript_session_id = cursor.parent_native_session_id.as_deref().unwrap_or(&native_session_id);
 
     // Keep reading back until there is something to show or the file runs out.
     // An empty window is not the beginning of a conversation, only a stretch of

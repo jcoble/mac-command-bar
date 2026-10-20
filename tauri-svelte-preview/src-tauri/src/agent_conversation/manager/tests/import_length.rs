@@ -71,23 +71,64 @@ async fn suspending_moves_the_saved_transcript_length_along() {
     assert_eq!(saved_length(&fixture), Some(grown));
 }
 
-#[test]
-fn two_readers_extending_one_import_at_once_read_each_page_once() {
+/// A transcript of `count` long turns, named for import (its newest page not read yet) by a manager of its own.
+fn named_import(count: usize) -> (std::path::PathBuf, std::path::PathBuf, AgentRuntimeManager, String) {
     let directory = std::env::temp_dir().join(format!("extend-at-once-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&directory).unwrap();
     let path = directory.join("rollout.jsonl");
     let meta = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"native\",\"cwd\":\"/work\",\"thread_source\":\"user\",\"source\":\"cli\"}}\n";
     let text = "x".repeat(20_000);
-    let turns = (1..=250).map(|index| format!("{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"id\":\"item-{index}\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"{text}\"}}]}}}}\n"));
+    let turns = (1..=count).map(|index| format!("{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"id\":\"item-{index}\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"{text}\"}}]}}}}\n"));
     fs::write(&path, std::iter::once(meta.to_string()).chain(turns).collect::<String>()).unwrap();
     let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &directory.join("sessions.db")).unwrap();
     let (owned_id, _) = crate::agent_conversation::history::begin_import_session(&manager.store, AgentConversationProvider::Codex,
         "native", &path, "/work", None, None, false).unwrap();
-    manager.finish_import_transcript_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES, crate::agent_conversation::IMPORT_MAX_RECORDS).unwrap();
+    (directory, path, manager, owned_id)
+}
+
+const PAGE: (u64, usize) = (crate::agent_conversation::IMPORT_MAX_BYTES, crate::agent_conversation::IMPORT_MAX_RECORDS);
+
+#[test]
+fn older_pages_wait_for_the_newest_page_of_a_named_import() {
+    let (directory, _, manager, owned_id) = named_import(3);
+    let early = manager.extend_imported_session(&owned_id, PAGE.0, PAGE.1).unwrap();
+    assert_eq!((early.added, early.reached_start), (0, false), "reading it is the newest page's job, which numbers it");
+    assert_eq!(manager.finish_import_transcript_session(&owned_id, PAGE.0, PAGE.1).unwrap(), 3);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn reading_a_session_again_waits_for_an_older_page_being_read_in() {
+    for _ in 0..5 {
+        let (directory, path, manager, owned_id) = named_import(250);
+        manager.finish_import_transcript_session(&owned_id, PAGE.0, PAGE.1).unwrap();
+        let mut grown = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        grown.write_all(b"{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"id\":\"item-251\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"cli\"}]}}\n").unwrap();
+        // One Mac reads an older page in while another reads the grown transcript again.
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let barrier = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            scope.spawn(|| { barrier.wait(); manager.extend_imported_session(&owned_id, PAGE.0, PAGE.1).unwrap(); });
+            scope.spawn(|| { barrier.wait();
+                let again = runtime.block_on(manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native", &path, "/work", None, None));
+                assert!(again.unwrap().1);
+                manager.finish_import_transcript_session(&owned_id, PAGE.0, PAGE.1).unwrap();
+            });
+        });
+        while !manager.extend_imported_session(&owned_id, PAGE.0, PAGE.1).unwrap().reached_start {}
+        assert_eq!(manager.store.history_download_facts(&owned_id, None).unwrap().row_count, 251, "every turn once");
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn two_readers_extending_one_import_at_once_read_each_page_once() {
+    let (directory, _, manager, owned_id) = named_import(250);
+    manager.finish_import_transcript_session(&owned_id, PAGE.0, PAGE.1).unwrap();
     // Two Macs downloading the same session each read older pages in as their saved rows run out.
     let barrier = std::sync::Barrier::new(2);
     std::thread::scope(|scope| for _ in 0..2 { scope.spawn(|| { barrier.wait();
-        while !manager.extend_imported_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES, crate::agent_conversation::IMPORT_MAX_RECORDS).unwrap().reached_start {}
+        while !manager.extend_imported_session(&owned_id, PAGE.0, PAGE.1).unwrap().reached_start {}
     }); });
     assert_eq!(manager.store.history_download_facts(&owned_id, None).unwrap().row_count, 250);
     fs::remove_dir_all(directory).unwrap();
