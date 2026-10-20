@@ -49,13 +49,14 @@ rm -rf "$HOME/.local/bin/assembly-adapters"
 
 token=$(sed -n 's/^ASSEMBLY_SERVER_TOKEN=//p' "$HOME/.config/assembly/server.env" 2>/dev/null || true)
 [ "\${#token}" -ge 32 ] || token=$(openssl rand -hex 32)
-cat >"$HOME/.config/assembly/.server.env.new" <<EOF
+# Created readable only by this user, so the token is never readable by others, even mid-install.
+(umask 077 && rm -f "$HOME/.config/assembly/.server.env.new" && cat >"$HOME/.config/assembly/.server.env.new" <<EOF
 ASSEMBLY_SERVER_BIND=127.0.0.1:7777
 ASSEMBLY_SERVER_TOKEN=$token
 ASSEMBLY_SERVER_DATA_DIR=$HOME/.local/share/assembly
 PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 EOF
-chmod 600 "$HOME/.config/assembly/.server.env.new"
+)
 mv "$HOME/.config/assembly/.server.env.new" "$HOME/.config/assembly/server.env"
 
 cat >"$HOME/.config/systemd/user/.assembly-remote.service.new" <<EOF
