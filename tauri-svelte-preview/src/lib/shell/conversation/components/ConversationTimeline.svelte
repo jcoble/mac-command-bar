@@ -702,7 +702,7 @@
   {#if download?.phase === 'error'}<p role="alert" class="px-2 py-2 text-sm text-muted-foreground">History download stopped: {download.error}</p>{/if}
   {#if loadingOlder}<p class="older-loading" data-testid="conversation-older-loading" role="status"><WorkingSpinner size={12} />Loading earlier messages</p>
   {:else if download?.ready && download.phase !== 'error'}<p class="older-loading" role="status"><span class="download-line">{download.phase === 'paused' ? 'History download paused · reconnecting' : `Downloading earlier messages · ${downloadPercent}%`}</span></p>{/if}
-  <div class="timeline-scroll" tabindex="0" data-testid="conversation-timeline-scroll" bind:this={host} bind:clientHeight={hostHeight} onscroll={handleScroll} onwheel={handleWheel} use:readerInput>
+  <div class="timeline-scroll" tabindex="0" data-testid="conversation-timeline-scroll" bind:this={host} bind:clientHeight={hostHeight} onscroll={handleScroll} onwheel={handleWheel} onmousedown={(event) => { if (event.target === event.currentTarget && event.offsetX < event.currentTarget.clientWidth) event.preventDefault(); }} use:readerInput>
     {#if renderedItems.length === 0}
       {#if pendingFirstMessage}<PendingFirstMessage text={pendingFirstMessage} seed={conversationId} />{:else}<p class="empty" data-testid="conversation-timeline-empty">{emptyText}</p>{/if}
     {/if}
