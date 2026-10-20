@@ -69,6 +69,11 @@ const allowedHits = new Set([
   // a frame later). The pending frame id is kept; a newer transition and dispose() cancel it.
   'src/lib/shell/layout/frame.ts:requestAnimationFrame:toolsFrame = requestAnimationFrame(() => {',
   'src/lib/shell/layout/frame.ts:cancelAnimationFrame:cancelAnimationFrame(toolsFrame);',
+  // TSK-1299: the same one-frame invalidation when the drawer changes the frame's width. The pending
+  // frame id is kept; the next layout and unmounting cancel it.
+  'src/lib/shell/components/ShellFrame.svelte:requestAnimationFrame:layoutRequest = requestAnimationFrame(() => {',
+  "src/lib/shell/components/ShellFrame.svelte:requestAnimationFrame:layoutRequest = requestAnimationFrame(() => (centerRegionSlot.style.visibility = ''));",
+  'src/lib/shell/components/ShellFrame.svelte:cancelAnimationFrame:cancelAnimationFrame(layoutRequest);',
   // TSK-1424 G: refresh after the panel renders visible; flushSync throws inside an effect. The effect's
   // controller aborts on hide or unmount and the refresh checks it after the tick.
   'src/lib/shell/files/components/FilesPanel.svelte:tick:import { onDestroy, tick, untrack } from "svelte";',
