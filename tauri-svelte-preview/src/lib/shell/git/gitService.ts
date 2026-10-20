@@ -292,10 +292,7 @@ export interface GitService {
   unstagePaths(paths: string[]): Promise<void>;
   /** Commit the staged changes using `state.commitMessage` unless one is given. */
   commit(message?: string): Promise<void>;
-  /**
-   * Rewrite the last commit with the staged changes. The panel asks first —
-   * amending a commit that is already pushed rewrites shared history.
-   */
+  /** Rewrite the last commit with the staged changes, then turn Amend off. */
   amendCommit(message?: string): Promise<void>;
   /**
    * Throw away the named files' changes. THE CALLER MUST HAVE ASKED FIRST:
@@ -745,9 +742,11 @@ export function createGitService(options: GitServiceOptions = {}): GitService {
 
     async amendCommit(message?: string): Promise<void> {
       const text = (message ?? state.commitMessage).trim();
-      const before = state.status;
-      await runAction('amend', (root) => backend.amend(root, text), { reloadHistory: true });
-      if (state.actionError === '' && state.status !== before) state.commitMessage = '';
+      const amended = await runAction('amend', (root) => backend.amend(root, text), { reloadHistory: true });
+      if (!amended) return;
+      state.commitMessage = '';
+      // Left on, the next commit would silently rewrite this one too.
+      state.amend = false;
     },
 
     async discardPaths(paths: string[]): Promise<void> {

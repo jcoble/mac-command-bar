@@ -328,7 +328,6 @@
   const busy = $derived(panel.actionBusy !== '');
   const files = $derived(panel.status?.files ?? []);
   const scopeAvailable = $derived(rootAvailable || readOnlyScope);
-  let amend = $state(false);
 
   /** Can this panel change what it is looking at? Both answers have a sentence. */
   const canChange = $derived(rootAvailable && canWrite && !readOnlyScope && !readOnlyReason);
@@ -510,7 +509,8 @@
   );
   const canStageAll = $derived(canChange && !busy && stageablePaths.length > 0);
   const canCommit = $derived(canChange && !busy && staged && panel.commitMessage.trim() !== '');
-  const canAmend = $derived(canChange && !busy && panel.commitMessage.trim() !== '');
+  // An empty box is a valid amend: git keeps the message the commit already has.
+  const canAmend = $derived(canChange && !busy);
   const canDiscardAll = $derived(canChange && !busy && files.length > 0);
 
   const stageHint = $derived.by(() => {
@@ -527,8 +527,8 @@
   const commitHint = $derived.by(() => {
     if (!canChange) return cannotChangeReason;
     if (busy) return 'Wait for the current source-control action to finish.';
-    if (amend) {
-      if (panel.commitMessage.trim() === '') return 'Type the amended commit message first.';
+    if (panel.amend) {
+      if (panel.commitMessage.trim() === '') return 'Rewrite the last commit and keep its message. Do not amend a commit that is already pushed.';
       return 'Rewrite the last commit. Do not amend a commit that is already pushed and shared.';
     }
     if (!staged) return 'Stage something first — a commit takes what is staged.';
@@ -542,7 +542,7 @@
   }
 
   function commit(): void {
-    if (amend) {
+    if (panel.amend) {
       if (!canAmend) return;
       void service.amendCommit();
       return;
@@ -809,7 +809,7 @@
               <Switch
                 size="sm"
                 disabled={!canChange}
-                bind:checked={amend}
+                bind:checked={panel.amend}
                 data-testid="source-control-amend-toggle"
               />
               Amend
@@ -826,13 +826,13 @@
             <!-- A commit that cannot run yet is a plain grey button, not a
                  dimmed green one. -->
             <Button
-              variant={(amend ? canAmend : canCommit) ? 'default' : 'secondary'}
+              variant={(panel.amend ? canAmend : canCommit) ? 'default' : 'secondary'}
               size="sm"
               class="flex-1 rounded-full"
-              disabled={amend ? !canAmend : !canCommit}
+              disabled={panel.amend ? !canAmend : !canCommit}
               title={commitHint}
               data-testid="source-control-commit"
-              onclick={commit}>{amend ? 'Amend' : 'Commit'}</Button
+              onclick={commit}>{panel.amend ? 'Amend' : 'Commit'}</Button
             >
           </div>
         {/if}

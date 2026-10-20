@@ -221,6 +221,23 @@ function makeService() {
   );
 }
 
+// ── Amend turns itself off once it has rewritten the commit ─────────────────
+{
+  const { backend, state, git } = makeService();
+  await settle();
+
+  state.amend = true;
+  await git.amendCommit();
+  assert.equal(state.amend, false, 'the next commit is a new one, not a second amend');
+
+  state.amend = true;
+  backend.amend = async () => {
+    throw new Error('There is no commit here yet, so there is nothing to amend');
+  };
+  await git.amendCommit();
+  assert.equal(state.amend, true, 'a failed amend leaves Amend on so the user can retry');
+}
+
 // ── pull and push, and the read-only scope the panel can point at ───────────
 {
   const { backend, state, git } = makeService();
