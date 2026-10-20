@@ -201,7 +201,7 @@ export function railRowStatuses(all: readonly OwnedSession[]): Map<string, RailR
     if (helperOf) {
       const parent = childrenOf(helperOf);
       parent.helperIds.add(`claude-child:${other.ownedId}`);
-      if (waits) parent.waiting.push(`helper ${name} ${asking(other)}`);
+      if (waits) parent.waiting.push(`helper session ${name} ${asking(other)}`);
       if (busy) parent.helpers += 1;
     }
     if (runLead) {

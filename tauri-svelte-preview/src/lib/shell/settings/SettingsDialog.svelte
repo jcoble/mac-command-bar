@@ -142,7 +142,7 @@
     { id: 'general', group: 'Application', label: 'General', icon: SlidersHorizontal },
     { id: 'connections', group: 'Application', label: 'Connections', icon: Server },
     { id: 'updates', group: 'Application', label: 'Updates', icon: Download },
-    { id: 'helper', group: 'Application', label: 'Helper model', icon: Sparkles }
+    { id: 'helper', group: 'Application', label: 'Utility model', icon: Sparkles }
   ];
 
   /**
@@ -485,7 +485,7 @@
   }
 
   /**
-   * The helper model's settings, as the app holds them. Not part of the store
+   * The utility model's settings, as the app holds them. Not part of the store
    * above: the app runs helper jobs itself, so vendor and model live in a file
    * it can read with no window open, and the key lives in the Keychain. This
    * screen is a view onto those, not a second copy of them.
@@ -600,7 +600,7 @@
     helperNote = 'Asking…';
     try {
       const result = await testHelperFromTauri();
-      helperNote = result?.message ?? 'The helper model only works in the desktop app.';
+      helperNote = result?.message ?? 'The utility model only works in the desktop app.';
     } catch (error) {
       helperNote = String(error);
     } finally {
@@ -1142,7 +1142,7 @@
   <SettingsSelect
     items={helperVendorItems}
     value={helper?.vendor ?? ''}
-    ariaLabel="Helper service"
+    ariaLabel="Utility model service"
     onChange={(value) => void chooseHelperVendor(value)}
   />
 {/snippet}
@@ -1151,7 +1151,7 @@
   <SettingsSelect
     items={helperRouteItems}
     value={helper?.route ?? 'cli'}
-    ariaLabel="Helper connection"
+    ariaLabel="Utility model connection"
     onChange={(value) => void chooseHelperRoute(value)}
   />
 {/snippet}
@@ -1160,7 +1160,7 @@
   <SettingsSelect
     items={helperModelItems}
     value={helper?.model ?? ''}
-    ariaLabel="Helper model"
+    ariaLabel="Utility model"
     onChange={(value) => void chooseHelperModel(value)}
   />
 {/snippet}
@@ -1175,7 +1175,7 @@
         autocomplete="off"
         spellcheck="false"
         placeholder={helper?.hasKey ? 'Replace the stored key' : 'Paste your key'}
-        aria-label="Helper API key"
+        aria-label="Utility model API key"
         class="h-7 flex-1"
       />
       <Button variant="secondary" size="sm" onclick={() => void saveHelperKey()}>Save</Button>

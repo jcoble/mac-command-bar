@@ -147,7 +147,7 @@
 <tr><td>terminal/</td><td>Terminal processes and their scrollback.</td><td>Step 9.</td><td>mod.rs, commands.rs</td></tr>
 <tr><td>browser/</td><td>The native browser tab and its page inspector script.</td><td>Step 10.</td><td>mod.rs</td></tr>
 <tr><td>commands/</td><td>Small leftover command groups: session scan, application, runtime stop, usage.</td><td>Thin wrappers that don't belong to one feature.</td><td>mod.rs</td></tr>
-<tr><td>helper/</td><td>One-shot helper-model calls (session names, inspection, review drafts) and their keys.</td><td>Calls the model APIs directly, not through an adapter.</td><td>mod.rs</td></tr>
+<tr><td>helper/</td><td>One-shot utility model calls (session names, inspection, review drafts) and their keys.</td><td>Calls the model APIs directly, not through an adapter.</td><td>mod.rs</td></tr>
 <tr><td>usage_*.rs, claude_quota.rs</td><td>Token and cost usage: reading provider files, indexing, remote usage, quota.</td><td>Not moved by the refactor; still flat files at the root.</td><td>usage_db.rs, usage_current.rs</td></tr>
 <tr><td>resources.rs, resources_disk.rs</td><td>The Resource Manager: memory, CPU and disk use, and stopping processes.</td><td>Not moved by the refactor.</td><td>resources.rs</td></tr>
 <tr><td>notion_tasks.rs, notion_oauth.rs</td><td>The Notion tasks panel and its sign-in.</td><td>Not moved by the refactor.</td><td>notion_tasks.rs</td></tr>

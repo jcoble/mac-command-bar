@@ -358,7 +358,7 @@
   {:else if rows.length === 0}
     <EmptyState
       title="No session agents yet"
-      body="When this thread spawns subagents or runs a workflow, they show up here with live status, activity, and token usage."
+      body="When this thread starts helper sessions or sub-agents, or runs a workflow, they show up here with live status, activity, and token usage."
       data-testid="agents-panel-empty"
     >
       {#snippet icon()}<Bot />{/snippet}

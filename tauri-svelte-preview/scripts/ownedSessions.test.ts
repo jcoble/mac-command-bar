@@ -370,7 +370,7 @@ const scanRecord = {
   ];
   const statuses = railRowStatuses(all);
   assert.deepEqual(statuses.get('lead'), {
-    waiting: ['helper ux-check is asking for approval', 'build in TSK-9 · Fix is waiting for an answer'],
+    waiting: ['helper session ux-check is asking for approval', 'build in TSK-9 · Fix is waiting for an answer'],
     background: 1,
     helpers: 2,
     runs: 1,

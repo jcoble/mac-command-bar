@@ -16,7 +16,7 @@
    * shows up in the sessions list like any other, so the work is watched rather
    * than taken on trust.
    *
-   * Inspect starts nothing. The panel asks the app's small helper model about
+   * Inspect starts nothing. The panel asks the app's small utility model about
    * the facts above and hands the answer back here, which is why it is the one
    * action with something to show under the buttons.
    *
