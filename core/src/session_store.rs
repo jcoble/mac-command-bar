@@ -2591,11 +2591,11 @@ impl SessionStore {
             .map_err(|error| StoreError::sqlite("could not match folders to projects", error))
     }
 
-    /// Folders the path rules left unmatched, matched to the oldest local
+    /// Folders the path rules left unmatched, matched to the oldest registered
     /// project whose root shares their git common directory. Both arguments
-    /// are JSON arrays of `[path, common_dir]`: the folders, and the local
-    /// project roots.
-    pub fn match_folders_by_common_dir(&self, folders_json: &str, roots_json: &str) -> Result<Vec<(String, String)>> {
+    /// are JSON arrays of `[path, common_dir]`: the folders, and the registered
+    /// project roots on the specified machine.
+    pub fn match_folders_by_common_dir(&self, folders_json: &str, roots_json: &str, machine: &str) -> Result<Vec<(String, String)>> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(
@@ -2604,7 +2604,7 @@ impl SessionStore {
                  SELECT folder, project_id FROM (
                     SELECT f.folder, (
                         SELECT p.id FROM projects p JOIN r ON r.root = p.root_path
-                        WHERE p.machine = 'local' AND r.common = f.common
+                        WHERE p.machine = ?3 AND r.common = f.common
                         ORDER BY p.created_at, p.id
                         LIMIT 1
                     ) AS project_id
@@ -2613,20 +2613,20 @@ impl SessionStore {
             )
             .map_err(|error| StoreError::sqlite("could not prepare the common-dir match", error))?;
         let rows = statement
-            .query_map([folders_json, roots_json], |row| Ok((row.get(0)?, row.get(1)?)))
+            .query_map(params![folders_json, roots_json, machine], |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|error| StoreError::sqlite("could not match folders by git common dir", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not match folders by git common dir", error))
     }
 
-    /// The root folders of this Mac's projects.
-    pub fn local_project_roots(&self) -> Result<Vec<String>> {
+    /// The registered project roots on one machine.
+    pub fn project_roots(&self, machine: &str) -> Result<Vec<String>> {
         let connection = self.lock()?;
         let mut statement = connection
-            .prepare("SELECT root_path FROM projects WHERE machine = 'local' ORDER BY created_at, id")
+            .prepare("SELECT root_path FROM projects WHERE machine = ?1 ORDER BY created_at, id")
             .map_err(|error| StoreError::sqlite("could not prepare the project roots", error))?;
         let rows = statement
-            .query_map([], |row| row.get(0))
+            .query_map([machine], |row| row.get(0))
             .map_err(|error| StoreError::sqlite("could not list the project roots", error))?;
         rows.collect::<rusqlite::Result<_>>()
             .map_err(|error| StoreError::sqlite("could not list the project roots", error))
@@ -5957,7 +5957,7 @@ mod tests {
             &serde_json::json!([["/work/wt/feature", "/work/repo/.git"], ["/tmp/x", "/tmp/x/.git"]]).to_string(),
             &serde_json::json!([
                 ["/work/wt/registered", "/work/repo/.git"], ["/work/repo", "/work/repo/.git"], ["/work/plain", "/work/plain/.git"]
-            ]).to_string(),
+            ]).to_string(), "local",
         ).unwrap();
         assert_eq!(by_common_dir, vec![("/work/wt/feature".to_owned(), "repo".to_owned())]);
 
