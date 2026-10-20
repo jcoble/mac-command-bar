@@ -275,9 +275,12 @@
 					</Badge>
 				{/if}
 				<span class="name">{group.label}</span>
-				<!-- A project lives on one machine, so its first session names it, as on the Projects screen. -->
-				{#if projectHeading && allSessions[0] && group.key !== "none" && !group.key.endsWith("::none")}
-					<Chip class="text-xs">{projectMachineLabel(allSessions[0].executionEnvironment === "remote" ? (allSessions[0].remoteProfileId ?? "") : "local", rail.remoteProfiles)}</Chip>
+				<!-- The machines its sessions are on, as on the Projects screen. A repository's
+				     copies on two machines share one heading, so it can name more than one. -->
+				{#if projectHeading && group.key !== "none" && !group.key.endsWith("::none")}
+					{#each [...new Set(allSessions.map((session) => projectMachineLabel(session.executionEnvironment === "remote" ? (session.remoteProfileId ?? "") : "local", rail.remoteProfiles)))].sort() as machine (machine)}
+						<Chip class="text-xs">{machine}</Chip>
+					{/each}
 				{/if}
 				<span data-testid="session-rail-section-count" class="count">{allSessions.length}</span>
 				{#if needsYouCount > 0}
