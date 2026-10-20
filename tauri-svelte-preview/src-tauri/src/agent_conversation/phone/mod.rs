@@ -1452,7 +1452,7 @@ mod tests {
     use futures_util::StreamExt;
     use serde_json::{json, Value};
     use std::time::Duration;
-
+    mod device_removal;
     const PHONE_URL: &str = "https://phone.example.ts.net:8778";
 
     async fn phone_server() -> (ServerState, String) {

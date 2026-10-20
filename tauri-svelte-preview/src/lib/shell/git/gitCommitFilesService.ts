@@ -40,9 +40,10 @@ import {
   resetGitCommitFilesState,
   type GitCommitFilesState
 } from './gitCommitFilesStore.svelte.ts';
-import { gitPanel, type GitSurfaceOwner } from './gitPanelStore.svelte.ts';
+import { describeGitError, gitPanel, type GitSurfaceOwner } from './gitPanelStore.svelte.ts';
 import { gitService } from './gitService.ts';
 import type { SourceGitDiff } from '../../tauriSource.ts';
+import { rail } from '../stores/sessionRailStore.svelte.ts';
 
 /** The part of the panel state a commit's diff is written into. */
 export interface CommitDiffTarget {
@@ -90,11 +91,6 @@ export interface GitCommitFilesService {
   clearSelection(): void;
   /** Re-materialize this surface's retained selection into the shared Diff. */
   restoreSelection(): Promise<void>;
-}
-
-function describeError(error: unknown, fallback: string): string {
-  const message = error instanceof Error ? error.message : String(error ?? '');
-  return message.trim() === '' ? fallback : message;
 }
 
 export function createGitCommitFilesService(
@@ -173,7 +169,7 @@ export function createGitCommitFilesService(
       Object.assign(entry, {
         files: [],
         loaded: false,
-        error: describeError(error, 'Could not read what this commit changed.')
+        error: describeGitError(error, 'Could not read what this commit changed.', rail.remoteProfiles)
       });
     } finally {
       if (stillCurrent()) entry.loading = false;
@@ -233,7 +229,7 @@ export function createGitCommitFilesService(
       panel.selectedDiff = diff;
     } catch (error) {
       if (!stillCurrent()) return;
-      panel.diffError = describeError(error, 'Could not read the changes for this file.');
+      panel.diffError = describeGitError(error, 'Could not read the changes for this file.', rail.remoteProfiles);
     } finally {
       if (stillCurrent()) panel.diffLoading = false;
     }

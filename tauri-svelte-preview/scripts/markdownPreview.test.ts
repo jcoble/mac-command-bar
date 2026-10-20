@@ -16,7 +16,8 @@ import {
   splitFrontmatter,
   taskCheckboxOffsets,
   toggleTaskAt,
-  toggleTaskCheckbox
+  toggleTaskCheckbox,
+  withoutFetchingAttributes
 } from '../src/lib/shell/files/components/editor/markdownPreview.ts';
 
 // --- which files are Markdown ---------------------------------------------
@@ -218,5 +219,19 @@ assert.equal(markdownImageTarget(doc, root, ''), null);
 assert.equal(markdownImageTarget(doc, root, undefined), null, 'the sanitizer removed an unsafe URL');
 assert.equal(markdownImageTarget(doc, root, 'data:image/png;base64,AAAA'), null);
 assert.equal(markdownImageTarget(doc, root, '#anchor'), null);
+
+// --- raw HTML attributes that would make the Preview fetch an address ----------
+
+assert.deepEqual(
+  withoutFetchingAttributes({ src: 'a.png', alt: 'logo', width: '40', align: 'right', srcset: 'http://127.0.0.1:7777/x 2x' }),
+  { src: 'a.png', alt: 'logo', width: '40', align: 'right' },
+  'an image keeps its size and alignment but not srcset'
+);
+assert.deepEqual(
+  withoutFetchingAttributes({ class: 'note', STYLE: 'background:url(http://192.168.1.1/)' }),
+  { class: 'note' },
+  'style goes from any tag, whatever its case'
+);
+assert.deepEqual(withoutFetchingAttributes({ colspan: '2', Background: 'http://10.0.0.1/x.png' }), { colspan: '2' }, 'a table cell loses background');
 
 console.log('markdownPreview: ok');

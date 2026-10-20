@@ -62,6 +62,16 @@ export function hydrateOwned(sessions: OwnedSession[]): void {
   rail.owned = sessions;
 }
 
+/** A machine's authoritative list after it connects replaces every row under that
+ * profile or the profile it replaced, and any remote row with an incoming owned id. */
+export function replaceConnectedRemoteRows(profileIds: readonly (string | null)[], sessions: OwnedSession[]): void {
+  const replaced = new Set(profileIds);
+  const incoming = new Set(sessions.map((session) => session.ownedId));
+  rail.owned = [...rail.owned.filter((session) =>
+    !replaced.has(session.remoteProfileId ?? '') &&
+    !(session.executionEnvironment === 'remote' && incoming.has(session.ownedId))), ...sessions];
+}
+
 export function addOwnedSession(session: OwnedSession): void {
   rail.owned = [...rail.owned, session];
 }
