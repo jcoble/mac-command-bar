@@ -27,8 +27,11 @@ impl AgentRuntimeManager {
                 { return Ok(false); }
                 let completed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
                 session.rail_meta.completed_at = Some(completed_at.clone());
-                record_payload_for_session_and_dispatch(session, &self.emitter,
-                    AgentConversationPayload::SessionCompleted { completed_at })?;
+                if let Err(error) = record_payload_for_session_and_dispatch(session, &self.emitter,
+                    AgentConversationPayload::SessionCompleted { completed_at }) {
+                    session.rail_meta.completed_at = None;
+                    return Err(error);
+                }
                 Ok(true)
             })();
             match result {

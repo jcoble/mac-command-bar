@@ -77,3 +77,31 @@ async fn helper_close_preserves_a_candidate_that_has_new_live_activity() {
     fixture.manager.close(&fixture.owned_id, fixture.generation).await.unwrap();
     fs::remove_dir_all(fixture.root).unwrap();
 }
+
+#[test]
+fn helper_close_restores_metadata_when_the_completion_write_fails() {
+    let root = temp_root();
+    let database = root.join("sessions.db");
+    let manager = AgentRuntimeManager::open(ProviderRegistry::default(), &database).unwrap();
+    let mut extra: Value = serde_json::from_str(&imported_session_extra(AgentConversationProvider::Codex).unwrap()).unwrap();
+    extra["helperOf"] = json!("parent");
+    manager.store.upsert_session(&SessionRow {
+        owned_id: "helper".into(), native_session_id: None, provider: "codex".into(),
+        model: None, effort: None, cwd: root.to_string_lossy().into_owned(), worktree: None,
+        branch: None, title: None, title_source: None, project: None, project_id: None,
+        state: "ready".into(), suspended: true, created_at_ms: 0, last_activity_at_ms: 0,
+        extra_json: extra.to_string(),
+    }).unwrap();
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection.execute_batch("CREATE TRIGGER reject_completion BEFORE INSERT ON events
+        WHEN json_extract(NEW.payload,'$.payload.kind')='sessionCompleted'
+        BEGIN SELECT RAISE(ABORT,'completion write rejected'); END;").unwrap();
+    assert_eq!(manager.close_finished_helpers(HELPER_CLOSE_AFTER_MS + 1).unwrap(), 0);
+    assert!(manager.sessions.lock().unwrap().get("helper").unwrap().rail_meta.completed_at.is_none());
+    assert!(manager.store.finished_helpers_due(HELPER_CLOSE_AFTER_MS + 1, HELPER_CLOSE_AFTER_MS).unwrap().contains(&"helper".into()));
+    connection.execute_batch("DROP TRIGGER reject_completion;").unwrap();
+    assert_eq!(manager.close_finished_helpers(HELPER_CLOSE_AFTER_MS + 1).unwrap(), 1);
+    drop(connection);
+    drop(manager);
+    fs::remove_dir_all(root).unwrap();
+}
