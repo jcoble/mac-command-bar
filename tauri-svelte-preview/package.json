@@ -104,6 +104,7 @@
     "test:git-commit-files": "node --experimental-strip-types scripts/gitCommitFiles.test.ts",
     "test:git-diff-timeout": "node --experimental-strip-types scripts/gitDiffTimeout.test.ts",
     "test:git-root-session-switch": "node --experimental-strip-types scripts/gitRootSessionSwitch.test.ts",
+    "test:offline-remote-selection": "node --experimental-strip-types scripts/offlineRemoteSelection.test.ts",
     "test:drawer-yield": "node --experimental-strip-types scripts/drawerYield.test.ts",
     "test:git-remote-machine-name": "node --experimental-strip-types scripts/gitRemoteMachineName.test.ts",
     "test:source-control-context-menu": "node --experimental-strip-types scripts/sourceControlContextMenu.test.ts",
