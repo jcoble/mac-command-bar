@@ -58,10 +58,10 @@
   }
 </script>
 
-<div class={cn('mx-3 mt-1 mb-2 flex flex-none flex-col gap-1', viewedRoot && 'rounded-lg bg-secondary p-1')}>
+<div class={cn('mx-3 mt-1 mb-2 flex min-w-0 flex-none flex-col gap-1', viewedRoot && 'rounded-lg bg-secondary p-1')}>
   <div class="flex min-w-0 items-center gap-1">
     <Popover.Root bind:open onOpenChange={(next) => { if (next) void loadWorktrees(); }}>
-      <Popover.Trigger class={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'min-w-0 justify-start text-[13px]')}>
+      <Popover.Trigger class={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'min-w-0 shrink justify-start text-[13px]')}>
         <FolderSearch class="size-[14px] text-muted-foreground" aria-hidden="true" />
         <span class="min-w-0 truncate">{viewedRoot ? `Viewing ${viewedName} on ${viewedMachine}` : 'Open another project'}</span>
       </Popover.Trigger>
@@ -92,18 +92,19 @@
         </Command.Root>
       </Popover.Content>
     </Popover.Root>
-    {#if viewedRoot}
-      <span class="flex-1"></span>
-      <Button size="sm" variant="ghost" class="text-[13px]" onclick={() => onView(null)}>Back to session</Button>
-    {/if}
   </div>
   {#if viewedRoot && readOnlyReason}
-    <div class="flex min-w-0 items-center gap-2 pr-1 pl-2 text-[13px] text-muted-foreground">
-      <Lock class="size-[14px] flex-none" aria-hidden="true" />
-      <span class="min-w-0 flex-1 truncate" title={readOnlyReason}>{readOnlyReason}</span>
-      {#if onNewSessionHere}
-        <Button size="sm" variant="outline" class="flex-none text-[13px]" onclick={newSessionHere}>New session here</Button>
+    <p class="flex min-w-0 items-start gap-2 px-2.5 text-[13px] text-muted-foreground">
+      <Lock class="mt-0.5 size-[14px] flex-none" aria-hidden="true" />
+      <span class="min-w-0">{readOnlyReason}</span>
+    </p>
+  {/if}
+  {#if viewedRoot}
+    <div class="flex min-w-0 flex-wrap items-center justify-end gap-1">
+      {#if readOnlyReason && onNewSessionHere}
+        <Button size="sm" variant="outline" class="text-[13px]" onclick={newSessionHere}>New session here</Button>
       {/if}
+      <Button size="sm" variant="ghost" class="text-[13px]" onclick={() => onView(null)}>Back to session</Button>
     </div>
   {/if}
 </div>
