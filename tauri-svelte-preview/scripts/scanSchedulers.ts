@@ -33,7 +33,7 @@ const endlessAnimationAllowedFiles = new Set([
   // motion; motion pending the owner's decision in TSK-1564.
   'src/lib/shell/components/feedback/WorkingSpinner.svelte'
 ]);
-const endlessAnimationPattern = /\banimation(?:-iteration-count)?\s*(?::|=\s*\{?\s*["'`]?)(?:[^;{}"'`<>]|(["'])[\w-]*\1)*?(?<![\w-])infinite(?![\w-])|\banimate-(?:spin|pulse|ping|bounce)\b/gi;
+const endlessAnimationPattern = /\banimation(?:-iteration-count)?(?:\|important)?\s*(?::|=\s*\{?\s*["'`]?)(?:[^;{}"'`<>]|(["'])[\w-]*\1)*?(?<![\w-])infinite(?![\w-])|\banimate-(?:spin|pulse|ping|bounce)\b/gi;
 
 const allowedHits = new Set([
   'src/lib/shell/components/UtilityStrip.svelte:setInterval:const refreshInterval = window.setInterval(() => {',
