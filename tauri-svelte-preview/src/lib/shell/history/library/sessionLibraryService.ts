@@ -28,7 +28,7 @@ export interface SessionLibrarySource {
   /** Explicit provider ACP `session/list` adapter; not called at construction. */
   listProviderSessions?(projectPath?: string): Promise<AgentSession[]>;
   /** Read one transcript when an expanded card needs its turn text. */
-  readProviderSessionDetails?(logPath: string): Promise<AgentSession[]>;
+  readProviderSessionDetails?(logPath: string, machine?: string): Promise<AgentSession[]>;
   readRemoteSavedSessionDetails?(profileId: string, ownedId: string, signal: AbortSignal): Promise<RemoteSavedSessionDetails | null>;
   /** Existing rail authority, read only when refresh is explicitly requested. */
   getOwnedSessions?(): readonly OwnedSession[];
@@ -135,7 +135,8 @@ export function createSessionLibraryService(
       const currentSelection = keys
         ? currentRecords.filter((record) => keys.has(record.key))
         : currentRecords;
-      const remote = currentSelection.length === 1 && currentSelection[0].machine !== 'local'
+      // A remote session saved here reads the saved copy; a transcript only found there is read there.
+      const remote = currentSelection.length === 1 && currentSelection[0].machine !== 'local' && currentSelection[0].ownedId
         ? currentSelection[0] : null;
       if (remote && options?.includeDetails) {
         const signal = options.signal;
@@ -158,7 +159,7 @@ export function createSessionLibraryService(
       if (!alreadyComplete && options?.includeDetails === true && keys?.size === 1) {
         const logPath = currentSelection[0]?.logPath;
         if (logPath && source.readProviderSessionDetails) {
-          provider = await source.readProviderSessionDetails(logPath);
+          provider = await source.readProviderSessionDetails(logPath, currentSelection[0].machine);
         }
       }
       if (!alreadyComplete && provider.length === 0 && source.listProviderSessions) {

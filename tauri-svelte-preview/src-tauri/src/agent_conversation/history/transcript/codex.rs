@@ -177,6 +177,14 @@ fn last_turn_ended(path: &Path) -> bool {
     }).unwrap_or(false)
 }
 
+/// Codex holds an exclusive lock on `~/.codex/thread-writer-locks/<thread id>.lock` while it writes the thread, the app and
+/// the CLI alike, so a lock taken at once means nothing is running it.
+pub(super) fn running(home: &Path, id: &str) -> bool {
+    use std::os::fd::AsRawFd;
+    File::open(home.join(".codex/thread-writer-locks").join(format!("{id}.lock")))
+        .is_ok_and(|lock| unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } != 0)
+}
+
 fn find(root: &Path, id: &str) -> Result<Option<PathBuf>, String> {
     let suffix = format!("{id}.jsonl");
     let mut pending = vec![root.to_path_buf()];
@@ -513,4 +521,21 @@ pub(super) fn project(value: &Value, line: &[u8]) -> Vec<ProjectedRecord> {
         _ => {}
     }
     records
+}
+
+#[cfg(test)]
+mod running_tests {
+    use std::os::fd::AsRawFd;
+
+    #[test]
+    fn a_thread_codex_is_writing_is_found_by_its_lock() {
+        let home = std::env::temp_dir().join(format!("codex-running-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(home.join(".codex/thread-writer-locks")).unwrap();
+        let lock = std::fs::File::create(home.join(".codex/thread-writer-locks/T1.lock")).unwrap();
+        assert!(!super::running(&home, "T1"), "a lock file nobody holds is left over");
+        assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        assert!(super::running(&home, "T1"));
+        assert!(!super::running(&home, "T2"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
 }

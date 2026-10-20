@@ -10,7 +10,7 @@
  * The rule the whole panel follows: an action is either backed by something
  * real or it is off with a plain-English reason. Nothing pretends.
  */
-import { hasTranscriptReader } from '../sessionHistoryViewModel.ts';
+import { hasTranscriptReader, runningRuntimeStates } from '../sessionHistoryViewModel.ts';
 import { normalizeProvider } from '../../ownedSessions.ts';
 import { resumeCommand } from '../../resumeCommand.ts';
 import type { AgentConversationTranscriptImport } from '../../../tauriSource.ts';
@@ -96,6 +96,8 @@ export function sessionTranscriptImport(
   const transcriptPath = record.logPath?.trim() ?? '';
   const cwd = record.canonicalCwd?.trim() ?? '';
   if (!provider || !nativeSessionId || !transcriptPath || !cwd) return null;
+  // A session whose agent is running here is only selected: reading it again needs it closed first.
+  if (record.ownedId && record.runtimeState && runningRuntimeStates.has(record.runtimeState)) return null;
   // The name travels with the import so the DATABASE gets it. Setting it on the
   // rail row after the fact looked right until the next reload, when the rail
   // read the row back and found no title on it.
@@ -119,8 +121,12 @@ function action(
   };
 }
 
-/** The nine actions a session card offers, in the order a person sees them. */
-export function sessionHistoryActions(record: SessionLibraryRecord): SessionHistoryAction[] {
+/**
+ * The nine actions a session card offers, in the order a person sees them. `machineScanning` is true while the
+ * record's machine, this Mac included, has not answered History's scan (a session Assembly holds learns its transcript from it),
+ * and `runningElsewhere` once a resume was refused because its own CLI or app is still running it.
+ */
+export function sessionHistoryActions(record: SessionLibraryRecord, machineScanning = false, runningElsewhere = false): SessionHistoryAction[] {
   const hasLog = Boolean(record.logPath?.trim());
   const hasFolder = Boolean(record.canonicalCwd?.trim());
   // Resuming needs all four of the agent, the id it knew the session by, the
@@ -128,8 +134,9 @@ export function sessionHistoryActions(record: SessionLibraryRecord): SessionHist
   // specific first — a row with no id at all is a different problem from a row
   // whose agent this app cannot read.
   const canResumeAssembly = sessionTranscriptImport(record) !== null;
-  const resumeLabel = record.ownedId ? 'Open Assembly Session' : 'Resume as Assembly Session';
-  const resumeReason = !record.nativeSessionId?.trim()
+  const resumeLabel = 'Resume here';
+  const waiting = (machineScanning && Boolean(record.ownedId)) || runningElsewhere;
+  const resumeReason = runningElsewhere ? 'Running outside Assembly' : waiting ? 'Scanning…' : !record.nativeSessionId?.trim()
     ? NO_SESSION_ID
     : !hasLog
       ? NO_TRANSCRIPT
@@ -138,7 +145,7 @@ export function sessionHistoryActions(record: SessionLibraryRecord): SessionHist
         : UNREADABLE_AGENT;
 
   const actions = [
-    action('resume-assembly', resumeLabel, Boolean(record.ownedId) || canResumeAssembly, resumeReason),
+    action('resume-assembly', resumeLabel, !waiting && (Boolean(record.ownedId) || canResumeAssembly), resumeReason),
     action('view-log', 'View Log', hasLog, NO_TRANSCRIPT),
     action(
       'copy-resume-command',

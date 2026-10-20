@@ -2263,6 +2263,7 @@ impl AgentRuntimeManager {
         }
         // An adapter that named an effort control owns the effort from now on.
         let adapter_offers_effort = !started.config.available_efforts.is_empty();
+        let started_new = expected_native_session_id.is_none();
         if let Some(expected_native_session_id) = expected_native_session_id {
             if started.native_session_id != expected_native_session_id {
                 let _ = self
@@ -2280,16 +2281,8 @@ impl AgentRuntimeManager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = lifecycle_session_mut(&mut sessions, owned_id, generation)?;
-        if session.state
-            != if was_suspended {
-                AgentRuntimeState::Suspended
-            } else {
-                AgentRuntimeState::Starting
-            }
-        {
-            return Err(
-                "Conversation lifecycle changed while activation was in progress".to_string(),
-            );
+        if session.state != if was_suspended { AgentRuntimeState::Suspended } else { AgentRuntimeState::Starting } {
+            return Err("Conversation lifecycle changed while activation was in progress".to_string());
         }
         session.capabilities = capabilities;
         if !started.commands.is_empty() {
@@ -2336,6 +2329,10 @@ impl AgentRuntimeManager {
         )?;
         let connection = session.connection.clone();
         drop(sessions);
+        if started_new {
+            let transcript = super::history::transcript::discover(provider, connection.native_session_id.as_deref().unwrap_or_default()).ok().flatten();
+            if let Err(error) = super::history::track_new_transcript(&self.store, owned_id, transcript.as_ref().map(|location| location.canonical_path.as_path())) { crate::debug_log::stderr_log!("Could not track the new transcript: {error}"); }
+        }
         if let Some(inbound) = inbound {
             spawn_inbound_pump(
                 self.clone(),

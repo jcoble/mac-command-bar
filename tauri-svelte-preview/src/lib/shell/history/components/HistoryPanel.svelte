@@ -476,20 +476,26 @@
    * the adapter is the whole runtime here.
    */
   async function resumeAsAssemblySession(record: SessionLibraryRecord): Promise<void> {
-    if (record.ownedId) {
+    // Every row resumes through the import on its own machine; one already here only opens unless its transcript grew.
+    const request = sessionTranscriptImport(record);
+    const remoteProfileId = record.machine === 'local' ? null : record.machine;
+    let named: [string, boolean] | null = null;
+    try {
+      if (request) named = await beginAgentConversationImportFromTauri({ ...request, remoteProfileId });
+    } catch (error) {
+      rail.error = `Could not resume "${record.title}": ${describeError(error)}`;
+      if (rail.error.includes('still running outside Assembly')) { rail.runningElsewhere = [...rail.runningElsewhere, record.key]; return; }
+    }
+    if (record.ownedId && (!named || !named[1])) {
       await host.service.open(record);
       showCenterTab('session');
       return;
     }
-    const request = sessionTranscriptImport(record);
-    if (!request) return;
+    if (!request || !named) return;
     try {
-      // Naming the session reads none of its transcript, so the rail, the title
-      // and the agent are all there straight away. The two slow halves — reading
-      // the records, and starting the agent — then run together below rather
-      // than one behind the other.
-      const ownedId = await beginAgentConversationImportFromTauri(request);
-      if (!ownedId) return;
+      // Naming read none of the transcript, so the rail, title and agent are there at once; the two
+      // slow halves, reading the records and starting the agent, run together below.
+      const [ownedId] = named;
       const stored = (await listAgentConversationSessionsFromTauri()) ?? [];
       const imported = stored.find((session) => session.ownedId === ownedId);
       if (!imported) {
@@ -497,43 +503,36 @@
         console.error('[resume]', rail.error);
         return;
       }
-      addOwnedSession(ownedSessionFromBackend(imported));
+      if (!rail.owned.some((session) => session.ownedId === ownedId)) addOwnedSession(ownedSessionFromBackend(imported));
       await host.service.open({ ...record, ownedId });
       // A session you asked to resume is one you want to look at, so bring it
       // forward the same way adopting a scanned session does.
       showCenterTab('session');
       const [transcript, conversation] = await Promise.allSettled([
-        finishAgentConversationImportFromTauri(ownedId),
+        // That machine has read the newest page already.
+        remoteProfileId ? Promise.resolve(0) : finishAgentConversationImportFromTauri(ownedId),
         ensureStructuredConversation({
           ownedId,
+          executionEnvironment: remoteProfileId ? 'remote' : 'local',
+          remoteProfileId,
           provider: request.provider,
           cwd: request.cwd,
           nativeSessionId: request.nativeSessionId,
           nativeSessionMode: 'resume'
         })
       ]);
-      // Both halves wrote to the same session and either could have landed last.
-      // Starting the agent reads the conversation back as part of its own work,
-      // and when that read wins the race it happens before the records exist.
-      // Reading it once more, after both are done, is what makes the transcript
-      // appear rather than an empty session under a correct title.
+      // Either half could land last, and starting the agent reads the conversation back as part of
+      // its work; reading it once more after both is what shows the transcript, not an empty session.
       await refreshSelectedConversationChat(ownedId);
-      // Either half can fail on its own and the other still has value. A
-      // transcript that would not load is a failed resume and is said so. An
-      // agent that would not start is not: the conversation is imported, on
-      // screen and readable, and the usual reason is that the folder it was
-      // recorded in has since been deleted. Throwing there put an error over a
-      // conversation that had loaded perfectly well.
+      // A transcript that would not load is a failed resume. An agent that would not start is not:
+      // the conversation is on screen and readable, and the usual reason is that its folder was deleted.
       if (transcript.status === 'rejected') throw transcript.reason;
       if (conversation.status === 'rejected') {
         rail.error = `"${record.title}" is open and readable, but its agent could not start: ${describeError(conversation.reason)}`;
         console.warn('[resume]', rail.error, conversation.reason);
       } else if (conversation.value) {
-        // Ensuring the conversation records it; it does not ask the agent
-        // anything. A session picked up from a transcript has never run, so the
-        // models, effort levels and approval policies the composer offers do not
-        // exist yet. This asks once and stops the adapter again, and what comes
-        // back is stored — every read after this is an ordinary read.
+        // A session picked up from a transcript has never run, so the models, efforts and approval
+        // policies the composer offers do not exist yet: this asks once, stores them, and stops the adapter.
         try {
           const warmed = await warmAgentConversationConfig(ownedId, conversation.value.generation);
           setConversationAgentConfigState(ownedId, warmed);
@@ -556,7 +555,7 @@
    * action the record cannot support never becomes pressable in the first place.
    */
   async function runAction(record: SessionLibraryRecord, id: SessionHistoryActionId): Promise<void> {
-    const allowed = sessionHistoryActions(record).find((action) => action.id === id);
+    const allowed = sessionHistoryActions(record, rail.scanningMachines.includes(record.machine), rail.runningElsewhere.includes(record.key)).find((action) => action.id === id);
     if (!allowed?.enabled) return;
 
     switch (id) {
@@ -694,7 +693,7 @@
       <SessionHistoryCard
         record={row.record}
         title={row.displayTitle}
-        machineLabel={projectMachineLabel(row.record.machine, rail.remoteProfiles)}
+        machineLabel={projectMachineLabel(row.record.machine, rail.remoteProfiles)} machineScanning={rail.scanningMachines.includes(row.record.machine)} runningElsewhere={rail.runningElsewhere.includes(row.record.key)}
         expanded={expandedKey === row.record.key}
         {now}
         onToggle={() => toggleCard(row)}

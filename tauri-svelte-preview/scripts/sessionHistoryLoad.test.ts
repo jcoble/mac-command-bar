@@ -10,7 +10,9 @@ import {
   type RepositoryCheckouts
 } from '../src/lib/shell/history/sessionHistoryLoad.ts';
 import { sessionHistoryActions, sessionTranscriptImport } from '../src/lib/shell/history/components/sessionHistoryActions.ts';
-import type { SessionLibraryRecord } from '../src/lib/shell/history/library/sessionLibraryModel.ts';
+import { buildSessionLibrary, type SessionLibraryRecord } from '../src/lib/shell/history/library/sessionLibraryModel.ts';
+import type { AgentSession } from '../src/lib/tauriSource.ts';
+import type { OwnedSession } from '../src/lib/shell/ownedSessions.ts';
 
 function record(key: string): SessionLibraryRecord {
   return {
@@ -99,16 +101,83 @@ run('everything_present_is_ready', () => {
   assert.deepEqual(outcome.checkouts, checkouts);
 });
 
-run('an_owned_history_row_opens_instead_of_importing_a_duplicate', () => {
+run('every_history_row_offers_resume_through_the_import', () => {
   const owned = record('owned-session');
   owned.source = 'owned';
   owned.ownedId = 'owned-session';
   owned.provider = 'codex';
   owned.logPath = '/tmp/provider-transcript.jsonl';
-  const action = sessionHistoryActions(owned).find((candidate) => candidate.id === 'resume-assembly');
+  const scanned = record('scanned-session');
+  scanned.provider = 'codex';
+  scanned.logPath = '/tmp/other-transcript.jsonl';
+  for (const row of [owned, scanned]) {
+    const action = sessionHistoryActions(row).find((candidate) => candidate.id === 'resume-assembly');
+    assert.equal(action?.label, 'Resume here');
+    assert.equal(action?.enabled, true);
+  }
+});
 
-  assert.equal(action?.label, 'Open Assembly Session');
-  assert.equal(action?.enabled, true);
+run('a_held_remote_row_waits_for_its_machine_scan', () => {
+  const held = record('held-remote');
+  held.source = 'owned';
+  held.ownedId = 'held-remote';
+  held.machine = 'box';
+  const waiting = sessionHistoryActions(held, true).find((candidate) => candidate.id === 'resume-assembly');
+  assert.equal(waiting?.enabled, false);
+  assert.equal(waiting?.disabledReason, 'Scanning…');
+  assert.equal(sessionHistoryActions(held, false).find((candidate) => candidate.id === 'resume-assembly')?.enabled, true);
+  // This Mac's scan gives its held rows their transcripts too, so they wait for it the same way.
+  held.machine = 'local';
+  assert.equal(sessionHistoryActions(held, true).find((candidate) => candidate.id === 'resume-assembly')?.enabled, false);
+});
+
+run('a_row_the_rail_has_open_just_opens', () => {
+  const open = record('open-session');
+  open.source = 'owned';
+  open.ownedId = 'open-session';
+  open.provider = 'claude';
+  open.logPath = '/tmp/open-transcript.jsonl';
+  // Reading it again would need it closed first, so a running session is only selected.
+  for (const runtimeState of ['ready', 'working', 'waiting-input'] as const) {
+    open.runtimeState = runtimeState;
+    assert.equal(sessionTranscriptImport(open), null, runtimeState);
+    assert.equal(sessionHistoryActions(open).find((action) => action.id === 'resume-assembly')?.enabled, true, runtimeState);
+  }
+  open.runtimeState = 'suspended';
+  assert.equal(sessionTranscriptImport(open)?.transcriptPath, open.logPath);
+});
+
+run('a_session_running_outside_assembly_waits_until_it_stops', () => {
+  const row = record('elsewhere');
+  row.provider = 'claude';
+  row.logPath = '/tmp/elsewhere.jsonl';
+  const resume = sessionHistoryActions(row, false, true).find((candidate) => candidate.id === 'resume-assembly');
+  assert.deepEqual([resume?.enabled, resume?.disabledReason], [false, 'Running outside Assembly']);
+});
+
+const remoteScan = {
+  provider: 'claude', id: 'native-1', title: 'Can you hear me', model: null, projectPath: '/home/me/dev/work/EdiPlatform',
+  lastActivity: null, resumeCommands: [], logPath: '/home/me/.claude/projects/edi/native-1.jsonl', machine: 'box'
+} as AgentSession;
+
+run('a_remote_scan_keeps_its_machine_and_can_be_imported', () => {
+  const [scanned] = buildSessionLibrary([], [remoteScan]);
+  assert.equal(scanned.machine, 'box');
+  assert.equal(sessionTranscriptImport(scanned)?.transcriptPath, remoteScan.logPath);
+});
+
+run('a_remote_owned_row_takes_its_scanned_transcript_and_keeps_resume', () => {
+  const owned = {
+    ownedId: 'owned-1', agent: 'claude', viaCmux: false, source: 'fresh', title: 'Can you hear me', projectGroupKey: 'none',
+    projectGroupLabel: 'No project', cwd: '/home/me/dev/work/EdiPlatform', resumeCommand: null, nativeSessionId: 'native-1',
+    ptySessionId: null, state: 'background', completedAt: null, settledAt: null, branch: null, taskId: null, pullRequest: null,
+    messageCount: null, latestTurnPreview: null, lastActivity: null, executionEnvironment: 'remote', remoteProfileId: 'box'
+  } as unknown as OwnedSession;
+  const records = buildSessionLibrary([owned], [remoteScan]);
+  assert.equal(records.length, 1);
+  assert.equal(records[0].ownedId, 'owned-1');
+  assert.equal(records[0].machine, 'box');
+  assert.equal(sessionTranscriptImport(records[0])?.transcriptPath, remoteScan.logPath);
 });
 
 run('project_and_detail_reads_have_independent_lifecycles', () => {
@@ -122,6 +191,13 @@ run('project_and_detail_reads_have_independent_lifecycles', () => {
   assert.match(panel, /function stopHistoryLoads[\s\S]*?historyLoadVersion \+= 1;[\s\S]*?loadingProjectKey = null;/);
   assert.match(panel, /async function loadCardDetails[\s\S]*?\+\+detailLoadVersion/);
   assert.doesNotMatch(panel, /\bloadVersion\b/);
+});
+
+run('a_rebuilt_resume_does_not_add_a_session_the_rail_already_holds', () => {
+  const panel = readFileSync(new URL('../src/lib/shell/history/components/HistoryPanel.svelte', import.meta.url), 'utf8');
+  const resume = panel.slice(panel.indexOf('async function resumeAsAssemblySession'), panel.indexOf('async function runAction'));
+  assert.match(resume, /if \(!rail\.owned\.some\(\(session\) => session\.ownedId === ownedId\)\) addOwnedSession\(/);
+  assert.equal(resume.match(/addOwnedSession\(/g)?.length, 1);
 });
 
 

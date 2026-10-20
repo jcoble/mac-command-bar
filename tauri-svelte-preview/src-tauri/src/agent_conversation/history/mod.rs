@@ -58,6 +58,9 @@ pub struct ImportedTail {
     pub trailing_bytes: Vec<u8>,
 }
 
+/// Messages arriving while a session is read in would be lost, so one its own CLI or app is running is refused.
+pub const RUNNING_ELSEWHERE: &str = "This session is still running outside Assembly. Stop it there, then resume it here.";
+
 /// Imports a transcript whole: names the session, then reads its newest page.
 ///
 /// Resuming through the front end does these two halves separately, so that the
@@ -101,6 +104,7 @@ pub fn import_session(
 #[allow(clippy::too_many_arguments)]
 pub fn begin_import_session(store: &SessionStore, provider: AgentConversationProvider, native_session_id: &str,
     path: &Path, cwd: &str, title: Option<String>, project_id: Option<String>, open: bool) -> Result<(String, bool), String> {
+    if !open && self::transcript::running_elsewhere(native_session_id) { return Err(RUNNING_ELSEWHERE.into()); }
     let metadata = path.metadata().map_err(|error| format!("Could not inspect transcript: {error}"))?;
     if let Some(mut row) = existing_import_session(store, provider, native_session_id)? {
         if row.project_id.is_none() && project_id.is_some() { row.project_id = project_id; store.upsert_session(&row).map_err(|error| error.to_string())?; }
@@ -127,12 +131,8 @@ pub fn begin_import_session(store: &SessionStore, provider: AgentConversationPro
     // When the transcript was last written is when the session was last active.
     // Reading the clock instead would sort a year-old conversation above today's
     // work for as long as it took the records to arrive, and then move it.
-    let last_activity_at_ms = metadata
-        .modified()
-        .ok()
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .and_then(|since| i64::try_from(since.as_millis()).ok())
-        .unwrap_or_else(now_millis);
+    let last_activity_at_ms = metadata.modified().ok().and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .and_then(|since| i64::try_from(since.as_millis()).ok()).unwrap_or_else(now_millis);
     let cursor = ImportCursor { transcript_path: path.to_string_lossy().into_owned(), cutoff_offset: metadata.len(),
         imported_length: Some(metadata.len()), ..ImportCursor::default() };
     let extra_json = merge_import_cursor(&super::manager::imported_session_extra(provider)?, &cursor)?;
@@ -180,10 +180,24 @@ pub fn existing_import_session(store: &SessionStore, provider: AgentConversation
 /// makes the next import read them and stops the following until it has.
 pub fn follow_imported_length(store: &SessionStore, owned_id: &str, starting: bool) -> Result<(), String> {
     let Some(mut row) = store.get_session(owned_id).map_err(|error| error.to_string())? else { return Ok(()) };
-    let Some(cursor) = optional_import_cursor(&row.extra_json)?.filter(|cursor| cursor.imported_length.is_some()) else { return Ok(()) };
+    let Some(mut cursor) = optional_import_cursor(&row.extra_json)?.filter(|cursor| cursor.imported_length.is_some()) else { return Ok(()) };
+    // A session tracked from its start learns where its transcript is once its agent has written it.
+    if cursor.transcript_path.is_empty() { cursor.transcript_path = row.native_session_id.as_deref().map(|id| self::transcript::parse_provider(&row.provider).and_then(|provider| self::transcript::discover(provider, id)))
+        .transpose()?.flatten().map(|location| location.canonical_path.to_string_lossy().into_owned()).unwrap_or_default(); }
     let Ok(metadata) = std::fs::metadata(&cursor.transcript_path) else { return Ok(()) };
     if starting && cursor.imported_length.is_some_and(|length| metadata.len() <= length) { return Ok(()); }
     row.extra_json = merge_import_cursor(&row.extra_json, &ImportCursor { imported_length: (!starting).then_some(metadata.len()), ..cursor })?;
+    store.upsert_session(&row).map_err(|error| error.to_string())
+}
+
+/// A session Assembly starts is tracked from then: its transcript's length is saved (nothing until its agent writes the
+/// file), so History reads it again only for turns taken elsewhere. Sessions from before this are never guessed at.
+pub fn track_new_transcript(store: &SessionStore, owned_id: &str, transcript: Option<&Path>) -> Result<(), String> {
+    let Some(mut row) = store.get_session(owned_id).map_err(|error| error.to_string())? else { return Ok(()) };
+    if optional_import_cursor(&row.extra_json)?.is_some() { return Ok(()); }
+    let cursor = ImportCursor { transcript_path: transcript.map(|path| path.to_string_lossy().into_owned()).unwrap_or_default(), reached_start: true,
+        imported_length: Some(transcript.and_then(|path| path.metadata().ok()).map_or(0, |metadata| metadata.len())), ..ImportCursor::default() };
+    row.extra_json = merge_import_cursor(&row.extra_json, &cursor)?;
     store.upsert_session(&row).map_err(|error| error.to_string())
 }
 
@@ -522,30 +536,12 @@ pub fn finish_import_session(
     // Reopening a session that already holds its transcript reads nothing. The
     // page this would fetch is the one already stored, and writing it again
     // would put every message in twice.
-    if store
-        .has_display_events(owned_id)
-        .map_err(|error| error.to_string())?
-    {
-        return Ok(0);
-    }
-    let mut session = store
-        .get_session(owned_id)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "Imported session was not found".to_string())?;
+    if store.has_display_events(owned_id).map_err(|error| error.to_string())? { return Ok(0); }
+    let mut session = store.get_session(owned_id).map_err(|error| error.to_string())?.ok_or_else(|| "Imported session was not found".to_string())?;
     let cursor = import_cursor(&session.extra_json)?;
     let provider = self::transcript::parse_provider(&session.provider)?;
-    let native_session_id = session
-        .native_session_id
-        .clone()
-        .ok_or_else(|| "Imported session has no native session id".to_string())?;
-    let tail = read_tail(
-        provider,
-        &native_session_id,
-        Path::new(&cursor.transcript_path),
-        cursor.cutoff_offset,
-        max_bytes,
-        max_records,
-    )?;
+    let native_session_id = session.native_session_id.clone().ok_or_else(|| "Imported session has no native session id".to_string())?;
+    let tail = read_tail(provider, &native_session_id, Path::new(&cursor.transcript_path), cursor.cutoff_offset, max_bytes, max_records)?;
     // What this conversation actually ran on. Asking the agent is no use: an
     // adapter reports what it OFFERS, and Claude's answers "default" — true of a
     // session about to start, and wrong for one being picked up, which ran on

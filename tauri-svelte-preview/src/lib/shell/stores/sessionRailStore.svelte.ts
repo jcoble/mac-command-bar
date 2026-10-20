@@ -36,6 +36,10 @@ export const rail = $state<{
   remoteConnections: Record<string, RemoteConnectionState>;
   /** The saved remote machines, so a row can name the machine it runs on. */
   remoteProfiles: RemoteAssemblyProfile[];
+  /** Connected machines whose History scan has not answered yet. */
+  scanningMachines: string[];
+  /** History rows whose resume was refused because their own CLI or app is running them. */
+  runningElsewhere: string[];
 }>({
   owned: [],
   available: [],
@@ -43,7 +47,9 @@ export const rail = $state<{
   scanning: false,
   error: null,
   remoteConnections: {},
-  remoteProfiles: []
+  remoteProfiles: [],
+  scanningMachines: [],
+  runningElsewhere: []
 });
 
 /** One machine's state, keyed by the profile id a remote session carries. */

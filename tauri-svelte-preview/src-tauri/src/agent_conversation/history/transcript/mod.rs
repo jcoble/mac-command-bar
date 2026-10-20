@@ -69,10 +69,12 @@ pub fn parse_provider(value: &str) -> Result<AgentConversationProvider, String> 
     }
 }
 
-pub fn discover(
-    provider: AgentConversationProvider,
-    native_session_id: &str,
-) -> Result<Option<TranscriptLocation>, String> {
+/// Whether the agent's own CLI or app is running this session now (two writers); ids are unique across agents, so both are asked.
+pub fn running_elsewhere(id: &str) -> bool {
+    home_dir().is_ok_and(|home| claude::running(&home, id) || codex::running(&home, id))
+}
+
+pub fn discover(provider: AgentConversationProvider, native_session_id: &str) -> Result<Option<TranscriptLocation>, String> {
     let id = safe_session_id(native_session_id)?;
     let path = match provider {
         AgentConversationProvider::Codex => codex::discover_path(&id),
@@ -227,9 +229,7 @@ pub fn safe_session_id(value: &str) -> Result<String, String> {
 }
 
 pub fn home_dir() -> Result<PathBuf, String> {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| "HOME is unavailable".to_string())
+    std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| "HOME is unavailable".to_string())
 }
 
 pub fn read_snapshot_text(path: &Path) -> Result<(String, bool), String> {

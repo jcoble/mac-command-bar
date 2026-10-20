@@ -19,7 +19,6 @@
   import FileCode2 from '@lucide/svelte/icons/file-code-2';
   import FileText from '@lucide/svelte/icons/file-text';
   import FolderOpen from '@lucide/svelte/icons/folder-open';
-  import Play from '@lucide/svelte/icons/play';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import Trash2 from '@lucide/svelte/icons/trash-2';
 
@@ -50,6 +49,10 @@
     title: string;
     /** The name of the machine the session ran on. */
     machineLabel: string;
+    /** The session's machine has not answered History's scan yet. */
+    machineScanning?: boolean;
+    /** Its resume was refused: its own CLI or app is running it. */
+    runningElsewhere?: boolean;
     expanded: boolean;
     detail?: Pick<SessionLibraryRecord, 'firstPrompt' | 'latestTurns' | 'messageCount' | 'startComplete'> | null;
     detailsLoading?: boolean;
@@ -67,6 +70,8 @@
     record,
     title,
     machineLabel,
+    machineScanning = false,
+    runningElsewhere = false,
     expanded,
     detail = null,
     detailsLoading = false,
@@ -110,7 +115,8 @@
     return parts.length > 3 ? parts.slice(-3).join('/') : value;
   }
 
-  const actions = $derived(new Map(sessionHistoryActions(record).map((item) => [item.id, item])));
+  const actions = $derived(new Map(sessionHistoryActions(record, machineScanning, runningElsewhere).map((item) => [item.id, item])));
+  const resume = $derived(actions.get('resume-assembly'));
   const can = (id: SessionHistoryActionId): boolean => actions.get(id)?.enabled ?? false;
 
   const agent = $derived(normalizeProvider(record.provider));
@@ -314,14 +320,15 @@
     {/if}
 
     <div class="detail-actions">
-      {#if can('resume-assembly')}
+      {#if resume && (resume.enabled || machineScanning || runningElsewhere)}
         <Button
           size="xs"
           class="mr-1 rounded-full bg-[var(--color-good-bg)] px-3 font-semibold text-[var(--color-accent)]
                  hover:bg-[color-mix(in_srgb,var(--color-accent)_20%,transparent)]"
+          disabled={!resume.enabled}
           onclick={() => onAction('resume-assembly')}
         >
-          {#if record.ownedId}<Play aria-hidden="true" /> Open{:else}<RotateCcw aria-hidden="true" /> Resume{/if}
+          <RotateCcw aria-hidden="true" /> {resume.enabled ? resume.label : resume.disabledReason}
         </Button>
       {/if}
       {#if can('copy-resume-command')}
@@ -380,6 +387,7 @@
         </IconButton>
       {/if}
     </div>
+    {#if runningElsewhere}<p class="detail-note">This session is still running outside Assembly. Stop it there, then resume it here.</p>{/if}
   </div>
 {/if}
 

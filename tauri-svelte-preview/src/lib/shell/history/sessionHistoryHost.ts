@@ -23,7 +23,7 @@ export interface SessionHistoryHostHandle {
   release(): void;
 }
 
-async function listProviderSessions(projectPath?: string): Promise<AgentSession[]> {
+async function listLocalProviderSessions(projectPath?: string): Promise<AgentSession[]> {
   try {
     const nativeSessions = projectPath
       ? await listAgentSessionsForProjectFromTauri(projectPath)
@@ -32,6 +32,30 @@ async function listProviderSessions(projectPath?: string): Promise<AgentSession[
   } catch {
     return (await listAgentSessionsFromLocalBridge()) ?? [];
   }
+}
+
+/** This Mac's scan, and for the whole list each connected machine's own scan, labelled with that machine. With
+ * `publish`, each machine's rows go out as soon as they are read, so a slow machine (its scan may wait 15 s) never holds
+ * the others back, and `publish` ends that machine's wait; without it, the waits end once every machine has answered. */
+async function listProviderSessions(projectPath?: string, publish?: (machine: string, rows: AgentSession[]) => void): Promise<AgentSession[]> {
+  const machines = projectPath ? [] : Object.keys(rail.remoteConnections).filter((id) => rail.remoteConnections[id] === 'connected');
+  rail.scanningMachines = [...new Set([...rail.scanningMachines, 'local', ...machines])];
+  rail.runningElsewhere = [];
+  const remote = Promise.all(machines.map(async (machine) => {
+    let rows: AgentSession[] = [];
+    try {
+      rows = ((await listAgentSessionsFromTauri(machine)) ?? []).map((session) => ({ ...session, machine }));
+    } catch (error) {
+      console.warn(`[history] could not scan ${machine}`, error);
+    }
+    publish?.(machine, rows);
+    return rows;
+  }));
+  const local = await listLocalProviderSessions(projectPath);
+  publish?.('local', local);
+  const rows = [...local, ...(await remote).flat()];
+  if (!publish) rail.scanningMachines = rail.scanningMachines.filter((id) => id !== 'local' && !machines.includes(id));
+  return rows;
 }
 
 /** Own the History panel's scanner and action bridge for the primary shell. */
@@ -43,8 +67,9 @@ export function registerSessionHistoryHost(options: SessionHistoryHostOptions): 
       getAvailableSessions: () => rail.available,
       listProviderSessions,
       readRemoteSavedSessionDetails: readRemoteSavedSessionDetailsFromTauri,
-      readProviderSessionDetails: async (logPath) =>
-        (await readAgentSessionDetailsFromTauri(logPath)) ?? []
+      readProviderSessionDetails: async (logPath, machine = 'local') => machine === 'local'
+        ? (await readAgentSessionDetailsFromTauri(logPath)) ?? []
+        : ((await readAgentSessionDetailsFromTauri(logPath, machine)) ?? []).map((session) => ({ ...session, machine }))
     },
     {
       onOpen: async (record: SessionLibraryRecord) => {
@@ -62,10 +87,18 @@ export function registerSessionHistoryHost(options: SessionHistoryHostOptions): 
     const scanGeneration = ++generation;
     rail.scanning = true;
     try {
-      const sessions = await listProviderSessions();
-      if (stopSignal?.aborted || scanGeneration !== generation) return;
+      const current = (): boolean => !stopSignal?.aborted && scanGeneration === generation;
+      // Each machine's rows replace its own as they arrive, and only then may its rows resume: a held row learns its
+      // transcript from this scan, and resuming it against the previous one would skip the checks that need it.
+      const sessions = await listProviderSessions(undefined, (machine, rows) => {
+        if (!current()) return;
+        setAvailable([...rail.available.filter((session) => (session.machine ?? 'local') !== machine), ...rows]);
+        rail.scanningMachines = rail.scanningMachines.filter((id) => id !== machine);
+      });
+      if (!current()) return;
       setAvailable(sessions);
     } finally {
+      if (scanGeneration === generation) rail.scanningMachines = [];
       if (!stopSignal?.aborted && scanGeneration === generation) rail.scanning = false;
     }
   }

@@ -216,11 +216,12 @@ export function providerSessionLibraryRecord(
 ): SessionLibraryRecord {
   const provider = canonicalProvider(session.provider);
   const cwd = canonicalCwd(session.projectPath);
-  const identity = sessionIdentityKey({ provider, nativeSessionId: session.id, cwd });
+  const machine = session.machine || 'local';
+  const identity = sessionIdentityKey({ machine, provider, nativeSessionId: session.id, cwd });
   return {
     key: `provider:${identity}`,
     source: 'provider',
-    machine: 'local',
+    machine,
     ownedId: null,
     provider,
     nativeSessionId: session.id || null,
