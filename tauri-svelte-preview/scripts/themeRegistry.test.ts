@@ -227,37 +227,20 @@ function readDeclarations(css: string): Map<string, string> {
   );
 }
 
-// ── Every theme carries the established terminal palette shape ────────────
+// ── Ghostty's terminal reads only #rrggbb ─────────────────────────────────
 //
-// The terminal has always been painted in Dracula's colors, in both shells.
-// Houston therefore keeps exactly those colors: picking Houston must not
-// repaint a terminal that has looked this way since before themes existed.
+// Foreground, background, cursor and the 16 ANSI colours go into Ghostty's
+// WASM terminal through parseColorToHex, which reads #hex and rgb() only; any
+// other form becomes black. selectionBackground is only a canvas fill, so it
+// may be the theme's rgba() highlighter.
 {
   const source = read(GHOSTTY_FACTORY_PATH);
   assert.match(source, /theme:\s*\{ \.\.\.currentTheme\(\)\.terminal \}/);
-  const live = getTheme('dracula').terminal;
-  const expected = {
-    background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f2',
-    cursorAccent: '#282a36', selectionBackground: '#ff79c6', black: '#000000',
-    red: '#ff5555', green: '#50fa7b', yellow: '#f1fa8c', blue: '#bd93f9',
-    magenta: '#ff79c6', cyan: '#8be9fd', white: '#bbbbbb', brightBlack: '#555555',
-    brightRed: '#ff5555', brightGreen: '#50fa7b', brightYellow: '#f1fa8c',
-    brightBlue: '#caa9fa', brightMagenta: '#ff79c6', brightCyan: '#8be9fd',
-    brightWhite: '#ffffff'
-  };
-  assert.deepEqual(live, expected, 'Dracula’s established terminal palette has drifted');
-
   for (const theme of THEMES) {
-    assert.deepEqual(
-      Object.keys(theme.terminal).sort(),
-      Object.keys(live).sort(),
-      `${theme.id}'s terminal colors name a different set of slots than Dracula`
-    );
-    assert.deepEqual(
-      theme.terminal,
-      expected,
-      `${theme.id}'s terminal colors have drifted from the established palette`
-    );
+    for (const [slot, value] of Object.entries(theme.terminal)) {
+      if (slot === 'selectionBackground') continue;
+      assert.match(value, /^#[0-9a-f]{6}$/i, `${theme.id} terminal.${slot} is ${value}; Ghostty's WASM terminal reads only #rrggbb and draws any other form as black`);
+    }
   }
 }
 
