@@ -695,7 +695,7 @@
     {/snippet}
 
     <span class="min-w-0" title={describeGitBranchTitle(panel.status)}>
-      <BranchMenu {panel} {service} canWrite={canChange} readOnlyReason={cannotChangeReason} />
+      <BranchMenu {panel} {service} canWrite={canChange} readOnlyReason={cannotChangeReason} {onUseSessionCheckout} />
     </span>
   </PanelHeader>
 

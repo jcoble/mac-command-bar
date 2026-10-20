@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 
 import {
   branchNameProblem,
+  branchWorktreeRoot,
   canCreateBranch,
   describeBranchRow,
   describeCurrentBranch,
@@ -17,9 +18,9 @@ import {
 } from '../src/lib/shell/git/components/branchPicker.ts';
 
 const branches = [
-  { name: 'main', isCurrent: true, upstream: 'origin/main', subject: 'latest work' },
-  { name: 'tsk-808-git-panel', isCurrent: false, upstream: '', subject: 'wire the panel' },
-  { name: 'spike/colors', isCurrent: false, upstream: 'origin/spike/colors', subject: '' }
+  { name: 'main', isCurrent: true, upstream: 'origin/main', worktreePath: '/repo', subject: 'latest work' },
+  { name: 'tsk-808-git-panel', isCurrent: false, upstream: '', worktreePath: '/worktrees/tsk-808', subject: 'wire the panel' },
+  { name: 'spike/colors', isCurrent: false, upstream: 'origin/spike/colors', worktreePath: '', subject: '' }
 ];
 
 assert.equal(filterBranches(branches, '').length, 3);
@@ -34,6 +35,15 @@ assert.equal(filterBranches(branches, 'nothing').length, 0);
 assert.equal(describeBranchRow(branches[0]), 'tracks origin/main · latest work');
 assert.equal(describeBranchRow(branches[1]), 'no remote branch · wire the panel');
 assert.equal(describeBranchRow(branches[2]), 'tracks origin/spike/colors');
+
+// A branch checked out in another worktree is reached by moving the session there, on the session's machine.
+assert.equal(branchWorktreeRoot(branches[1], '/repo'), '/worktrees/tsk-808');
+assert.equal(
+  branchWorktreeRoot(branches[1], 'assembly-remote://workbox/repo'),
+  'assembly-remote://workbox/worktrees/tsk-808'
+);
+assert.equal(branchWorktreeRoot(branches[0], '/repo'), null, 'the current branch is already here');
+assert.equal(branchWorktreeRoot(branches[2], '/repo'), null, 'a branch with no worktree is checked out here');
 
 assert.equal(describeCurrentBranch(null), 'no branch checked out');
 assert.equal(describeCurrentBranch('  '), 'no branch checked out');
