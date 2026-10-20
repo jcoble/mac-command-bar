@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import type { OwnedSession } from '../src/lib/shell/ownedSessions.ts';
 import { hydrateOwned, rail, replaceConnectedRemoteRows } from '../src/lib/shell/stores/sessionRailStore.svelte.ts';
 
-// Regression 03a10064b: after a machine connects, a row left from a removed
-// or recreated profile with the same owned id must not stay as a duplicate.
-// 882f6c3b7 and 578efbd98 connect without that rule; all three paths share it now.
+// Regression 03a10064b: after a machine connects in Settings -> Connections, a
+// row left from a removed or recreated profile with the same owned id must not
+// stay as a duplicate. replaceConnectedRemoteRows is that rule moved out of
+// RemoteConnections.svelte unchanged so it can be tested.
 const row = (ownedId: string, remoteProfileId: string | null = null) =>
   ({ ownedId, title: ownedId, executionEnvironment: remoteProfileId ? 'remote' : 'local', remoteProfileId }) as unknown as OwnedSession;
 const shown = () => rail.owned.map((s) => `${s.ownedId}@${s.remoteProfileId ?? 'local'}`);

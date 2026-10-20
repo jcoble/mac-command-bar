@@ -6,7 +6,7 @@ import { projectRegistry } from '../projects/projectRegistry.svelte.ts';
 import {
 	ACTIVE_OWNED_SESSION_SETTING_KEY,
 	rail,
-	replaceConnectedRemoteRows,
+	hydrateOwned,
 	setActiveOwned
 } from '../stores/sessionRailStore.svelte';
 import { SessionSelectionLayers, type SessionSelectionOwner } from '../sessionSelectionLayers.svelte';
@@ -170,7 +170,9 @@ export class SessionSelectionController {
 				if (!attempt.signal.aborted) this.selectionError = message;
 			});
 			if (attempt.signal.aborted) return null;
-			replaceConnectedRemoteRows([result.profile.id, result.replacedProfileId], result.sessions.map(ownedSessionFromBackend));
+			const replaced = new Set([result.profile.id, result.replacedProfileId]);
+			hydrateOwned([...rail.owned.filter((session) => !replaced.has(session.remoteProfileId ?? '')),
+				...result.sessions.map(ownedSessionFromBackend)]);
 			return result.profile.id;
 		} catch (error) {
 			if (!attempt.signal.aborted) this.selectionError = `Could not connect. ${error instanceof Error ? error.message : typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error)}`;
