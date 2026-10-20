@@ -120,10 +120,10 @@ canvas {
 }
 
 /* ------------------------------------------------------------------
- * Text selection — translucent accent, derived from the token.
+ * Text selection — a highlighter color each theme sets.
  * ------------------------------------------------------------------ */
 ::selection {
-  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  background: var(--color-text-selection);
   color: var(--color-text);
 }
 

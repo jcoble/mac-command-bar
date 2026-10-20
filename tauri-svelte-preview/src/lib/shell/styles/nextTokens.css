@@ -149,6 +149,8 @@
   --shadow-thumb: 0 1px 4px rgba(0, 0, 0, 0.3);
   --shadow-thumb-sm: 0 1px 3px rgba(0, 0, 0, 0.26);
   --color-scrim: rgba(0, 0, 0, 0.6);
+  /* Selected text: a highlighter pink that stands out from every surface. */
+  --color-text-selection: rgba(255, 56, 152, 0.6);
 
   /* Shape — 4 for tree rows, 6 for tabs and rows, 8 for panels and cards,
      12 for the composer and popovers, plus the capsule every control,
