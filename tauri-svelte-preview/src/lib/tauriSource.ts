@@ -1136,7 +1136,7 @@ export type HelperRoute = 'cli' | 'api';
 /** What Settings needs to draw the Helper section. The model lists come from
  *  the backend so that the ids live in one place. */
 export type HelperSettingsView = {
-  vendor: HelperVendor;
+  vendor: HelperVendor | null;
   model: string;
   route: HelperRoute;
   hasKey: boolean;
@@ -1157,7 +1157,7 @@ export async function readHelperSettingsFromTauri(): Promise<HelperSettingsView 
 }
 
 export async function writeHelperSettingsFromTauri(
-  settings: { vendor: HelperVendor; model: string; route: HelperRoute }
+  settings: { vendor: HelperVendor | null; model: string; route: HelperRoute }
 ): Promise<void> {
   if (!isTauriRuntime()) return;
   const { invoke } = await import('./workspaceInvoke.ts');
