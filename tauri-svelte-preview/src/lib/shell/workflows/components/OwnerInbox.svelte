@@ -10,11 +10,8 @@
   import { Chip } from '$lib/components/ui/chip/index.js';
   import { EmptyState } from '$lib/components/ui/empty-state/index.js';
   import { ScrollArea } from '$lib/components/ui/scroll-area/index.js';
-  import { sessionRowJump } from '$lib/shell/components/sessionRowJump.ts';
-  import { adoptSession } from '$lib/shell/conversation/conversationService.ts';
   import type { OwnedSession } from '$lib/shell/ownedSessions.ts';
-  import { answerWorkflowPause, approveWorkflowGate } from '$lib/shell/workflows/workflowService.ts';
-  import { workflowMachine } from '$lib/shell/workflows/workflowTypes.ts';
+  import { answerInboxStep, openInboxSession, waitingOn, type InboxDecision } from '$lib/shell/workflows/ownerInboxActions.ts';
   import { listOwnerInboxFromTauri, type OwnerInboxStep } from '$lib/tauriSource.ts';
 
   interface Props {
@@ -32,8 +29,6 @@
   let error = $state('');
   let loader: AbortController | null = null;
   // Lives while the inbox is shown; an action that finishes after it closes changes nothing.
-  // The owner's decision itself is not cancelled: stopping it partway on the other machine
-  // could leave a gate approved with its next step never started.
   let shown: AbortController | null = null;
   // A newer click, or the view going away, makes a slow session lookup stale.
   let opening = 0;
@@ -77,19 +72,13 @@
     if (!signal.aborted) loading = false;
   }
 
-  async function act(label: string, step: OwnerInboxStep, decision: 'approve' | 'another-round' | 'accept' | 'stop'): Promise<void> {
+  async function act(label: string, step: OwnerInboxStep, decision: InboxDecision): Promise<void> {
     const signal = shown?.signal;
     if (!signal) return;
-    const machine = workflowMachine(step.machine);
-    const idempotencyKey = `agents:inbox:${crypto.randomUUID()}`;
     busy = true;
     error = '';
     try {
-      if (decision === 'approve') {
-        await approveWorkflowGate({ runId: step.runId, nodeId: step.nodeId, approval: { approved: true }, idempotencyKey }, machine);
-      } else {
-        await answerWorkflowPause({ runId: step.runId, nodeId: step.nodeId, decision, reply: null, idempotencyKey }, machine);
-      }
+      await answerInboxStep(step, decision);
       if (signal.aborted) return;
       start();
     } catch (cause) {
@@ -107,19 +96,10 @@
     const signal = shown?.signal;
     if (!signal) return;
     try {
-      const adopted = await adoptSession(ownedId, signal);
-      if (attempt !== opening) return;
-      if (!adopted) throw new Error('That session is not available yet.');
-      await sessionRowJump(ownedId, 'session');
+      await openInboxSession(ownedId, signal, () => attempt === opening);
     } catch (cause) {
       if (attempt === opening) error = `Could not open session: ${message(cause)}`;
     }
-  }
-
-  function waitingOn(session: OwnedSession): string {
-    if (session.pendingPermission) return 'Waiting for permission';
-    if (session.runtimeState === 'waiting-approval') return 'Waiting for approval';
-    return 'Waiting for your answer';
   }
 </script>
 
