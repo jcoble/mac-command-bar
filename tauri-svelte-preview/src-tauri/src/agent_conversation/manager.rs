@@ -2412,15 +2412,15 @@ impl AgentRuntimeManager {
                 let session = current_session(&sessions, owned_id, generation)?;
                 (session.provider, session.cwd.clone())
             };
-            if authentication::required(provider, error) {
+            if authentication::required(error) {
                 // Register cancellation before releasing the session guard. Stop
                 // checks both before and after acquiring it, covering either order.
                 let mut attempt = self.authentications.begin(owned_id, generation)?;
                 let manifest = self.providers.manifest(provider)?;
                 drop(lifecycle);
-                let authenticated = attempt.authenticate(&manifest, Path::new(&cwd)).await;
+                let authenticated = attempt.authenticate(&manifest, provider, Path::new(&cwd)).await;
                 lifecycle = self.lifecycle_guard(owned_id).await?;
-                if attempt.was_cancelled() { return Err("Antigravity sign-in cancelled".into()); }
+                if attempt.was_cancelled() { return Err("Sign-in cancelled".into()); }
                 authenticated?;
                 drop(attempt);
                 self.activate_locked(owned_id, generation).await
@@ -7337,7 +7337,7 @@ async fn handle_ordered_session_event(
                         &emitter,
                         AgentConversationPayload::Error {
                             code,
-                            message,
+                            message: authentication::explain(session.provider, message),
                             recoverable: true,
                         },
                     ) {
