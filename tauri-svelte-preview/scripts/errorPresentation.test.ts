@@ -109,6 +109,11 @@ const mappedCases = [
     name: 'authentication prompt from the adapter',
     raw: 'acp-error: Please run /login before continuing',
     summary: 'This agent requires sign-in before it can continue.'
+  },
+  {
+    name: 'sign-in instruction from the backend',
+    raw: 'Claude needs you to sign in. Sign in with the Claude CLI where this session runs, then send again.',
+    summary: 'Claude needs you to sign in. Sign in with the Claude CLI where this session runs, then send again.'
   }
 ];
 

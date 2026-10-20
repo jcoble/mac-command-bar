@@ -502,7 +502,7 @@ pub struct AcpClient {
     sessions: Arc<Mutex<HashMap<SessionId, AcpSessionState>>>,
     primary_session_id: Option<SessionId>,
     provider: Option<AgentConversationProvider>,
-    personal_authentication: bool,
+    sign_in_method: Option<String>,
     mcp_http: bool,
 }
 
@@ -538,7 +538,7 @@ impl AcpClient {
             sessions,
             primary_session_id: None,
             provider: None,
-            personal_authentication: false,
+            sign_in_method: None,
             mcp_http: false,
         })
     }
@@ -582,8 +582,7 @@ impl AcpClient {
         }
         let result = self.request("initialize", &request).await?;
         self.mcp_http = bool_at(&result, &["agentCapabilities", "mcpCapabilities", "http"]);
-        self.personal_authentication = result.get("authMethods").and_then(Value::as_array)
-            .is_some_and(|methods| methods.iter().any(|method| method.get("id").and_then(Value::as_str) == Some("oauth-personal")));
+        self.sign_in_method = super::authentication::sign_in_method(&result);
         let implementation = result.get("agentInfo").or_else(|| result.get("agent_info"));
         let capabilities = AgentCapabilities {
             revision: 1,
@@ -655,14 +654,12 @@ impl AcpClient {
         self.provider = Some(provider);
         Ok(capabilities)
     }
-    // Antigravity 1.2.1 initialize advertises oauth-personal; Claude advertises none, Codex api-key/chat-gpt (TSK-1508 receipts).
-    pub(crate) async fn authenticate_personal(&mut self) -> Result<(), AgentRuntimeError> {
-        self.initialize(AgentConversationProvider::Antigravity).await?;
-        if !self.personal_authentication {
-            return Err(AgentRuntimeError::new("authentication-unavailable", "This Antigravity adapter does not advertise Google personal sign-in"));
-        }
-        self.request("authenticate", &json!({"methodId":"oauth-personal"})).await?;
-        Ok(())
+    // Signs in with the method this adapter advertised (authentication::sign_in_method); false when it offers none.
+    pub(crate) async fn authenticate(&mut self, provider: AgentConversationProvider) -> Result<bool, AgentRuntimeError> {
+        self.initialize(provider).await?;
+        let Some(method) = self.sign_in_method.clone() else { return Ok(false) };
+        self.request("authenticate", &json!({"methodId": method})).await?;
+        Ok(true)
     }
 
     pub async fn new_session(
@@ -1681,7 +1678,7 @@ while IFS= read -r line; do
   case "$line" in
 	  *'"method":"initialize"'*)
 	    if [ "$fixture" = "auth" ] || [ "$fixture" = "auth_wait" ]; then
-          printf '{{"jsonrpc":"2.0","id":%s,"result":{{"authMethods":[{{"id":"oauth-personal","name":"Google"}}],"agentCapabilities":{{}},"agentInfo":{{"name":"antigravity-acp","version":"1.2.1"}}}}}}\n' "$id"
+          printf '{{"jsonrpc":"2.0","id":%s,"result":{{"authMethods":[{{"id":"api-key","name":"API Key","_meta":{{"api-key":{{"provider":"openai"}}}}}},{{"id":"chat-gpt","name":"ChatGPT"}}],"agentCapabilities":{{}},"agentInfo":{{"name":"codex-acp","version":"2.2.2"}}}}}}\n' "$id"
         elif [ "$fixture" = "mcp_http" ]; then
           printf '{{"jsonrpc":"2.0","id":%s,"result":{{"agentCapabilities":{{"mcpCapabilities":{{"http":true}}}}}}}}\n' "$id"
         elif [ "$fixture" = "multiplex" ]; then
