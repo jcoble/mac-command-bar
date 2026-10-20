@@ -112,7 +112,7 @@ run('every_history_row_offers_resume_through_the_import', () => {
   scanned.logPath = '/tmp/other-transcript.jsonl';
   for (const row of [owned, scanned]) {
     const action = sessionHistoryActions(row).find((candidate) => candidate.id === 'resume-assembly');
-    assert.equal(action?.label, 'Resume as Assembly Session');
+    assert.equal(action?.label, 'Resume here');
     assert.equal(action?.enabled, true);
   }
 });

@@ -134,7 +134,7 @@ export function sessionHistoryActions(record: SessionLibraryRecord, machineScann
   // specific first — a row with no id at all is a different problem from a row
   // whose agent this app cannot read.
   const canResumeAssembly = sessionTranscriptImport(record) !== null;
-  const resumeLabel = 'Resume as Assembly Session';
+  const resumeLabel = 'Resume here';
   const waiting = (machineScanning && Boolean(record.ownedId) && record.machine !== 'local') || runningElsewhere;
   const resumeReason = runningElsewhere ? 'Running outside Assembly' : waiting ? 'Scanning…' : !record.nativeSessionId?.trim()
     ? NO_SESSION_ID
