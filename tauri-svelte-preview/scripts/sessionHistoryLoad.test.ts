@@ -126,8 +126,9 @@ run('a_held_remote_row_waits_for_its_machine_scan', () => {
   assert.equal(waiting?.enabled, false);
   assert.equal(waiting?.disabledReason, 'Scanning…');
   assert.equal(sessionHistoryActions(held, false).find((candidate) => candidate.id === 'resume-assembly')?.enabled, true);
+  // This Mac's scan gives its held rows their transcripts too, so they wait for it the same way.
   held.machine = 'local';
-  assert.equal(sessionHistoryActions(held, true).find((candidate) => candidate.id === 'resume-assembly')?.enabled, true);
+  assert.equal(sessionHistoryActions(held, true).find((candidate) => candidate.id === 'resume-assembly')?.enabled, false);
 });
 
 run('a_row_the_rail_has_open_just_opens', () => {

@@ -39,7 +39,7 @@ async function listLocalProviderSessions(projectPath?: string): Promise<AgentSes
  * the others back, and `publish` ends that machine's wait; without it, the waits end once every machine has answered. */
 async function listProviderSessions(projectPath?: string, publish?: (machine: string, rows: AgentSession[]) => void): Promise<AgentSession[]> {
   const machines = projectPath ? [] : Object.keys(rail.remoteConnections).filter((id) => rail.remoteConnections[id] === 'connected');
-  rail.scanningMachines = [...new Set([...rail.scanningMachines, ...machines])];
+  rail.scanningMachines = [...new Set([...rail.scanningMachines, 'local', ...machines])];
   rail.runningElsewhere = [];
   const remote = Promise.all(machines.map(async (machine) => {
     let rows: AgentSession[] = [];
@@ -54,7 +54,7 @@ async function listProviderSessions(projectPath?: string, publish?: (machine: st
   const local = await listLocalProviderSessions(projectPath);
   publish?.('local', local);
   const rows = [...local, ...(await remote).flat()];
-  if (!publish) rail.scanningMachines = rail.scanningMachines.filter((id) => !machines.includes(id));
+  if (!publish) rail.scanningMachines = rail.scanningMachines.filter((id) => id !== 'local' && !machines.includes(id));
   return rows;
 }
 
