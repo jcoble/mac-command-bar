@@ -70,7 +70,7 @@ pub fn import_session(
     max_bytes: u64,
     max_records: usize,
 ) -> Result<String, String> {
-    let owned_id = begin_import_session(store, provider, native_session_id, path, cwd, title)?;
+    let (owned_id, _) = begin_import_session(store, provider, native_session_id, path, cwd, title, false)?;
     finish_import_session(store, &owned_id, max_bytes, max_records)?;
     Ok(owned_id)
 }
@@ -99,7 +99,8 @@ pub fn begin_import_session(
     path: &Path,
     cwd: &str,
     title: Option<String>,
-) -> Result<String, String> {
+    open: bool,
+) -> Result<(String, bool), String> {
     // Resuming the same past session twice reopens the one already imported.
     // Minting a second row for it produced two sessions holding one
     // conversation, and because only one of them had been through a runtime and
@@ -117,31 +118,26 @@ pub fn begin_import_session(
         .metadata()
         .map_err(|error| format!("Could not inspect transcript: {error}"))?;
     if let Some(mut row) = existing {
-        // The row is reused, but its cursor may not have survived. Saving a
-        // session rewrites `extra_json` from the fields the runtime knows about,
-        // and the import cursor is not one of them, so any session that has been
-        // through a runtime since it was imported comes back without one. Then
-        // reading its transcript failed outright with "Session has no import
-        // cursor" and the resume showed an error instead of a conversation.
-        //
-        // Put one back when it is missing. Starting at the end of the file is
-        // where a first import starts too, so a session that also lost its
-        // records simply reads its newest page again.
-        if import_cursor(&row.extra_json).is_err() {
-            row.extra_json = merge_import_cursor(
-                &row.extra_json,
-                &ImportCursor {
-                    transcript_path: path.to_string_lossy().into_owned(),
-                    cutoff_offset: metadata.len(),
-                    reached_start: false,
-                    ..ImportCursor::default()
-                },
-            )?;
-            store
-                .upsert_session(&row)
-                .map_err(|error| error.to_string())?;
+        // A transcript written well after the session's last activity holds turns
+        // taken outside Assembly. It is the whole conversation, so the session is
+        // read from it again: its own events would only repeat the older turns.
+        let written_ms = metadata.modified().ok().and_then(|at| at.duration_since(UNIX_EPOCH).ok()).map_or(0, |since| since.as_millis());
+        let rebuild = written_ms > u128::try_from(row.last_activity_at_ms.saturating_add(60_000)).unwrap_or(0);
+        if rebuild && open {
+            return Err("Close this session before importing the turns taken outside Assembly.".into());
         }
-        return Ok(row.owned_id);
+        if rebuild {
+            store.enforce_event_cap(&row.owned_id, 0).map_err(|error| error.to_string())?;
+        }
+        // A session holding its turns without a cursor, as one started here does, has nothing older to read.
+        if rebuild || optional_import_cursor(&row.extra_json)?.is_none() {
+            let fully_read = !rebuild && store.has_display_events(&row.owned_id).map_err(|error| error.to_string())?;
+            let cursor = ImportCursor { transcript_path: path.to_string_lossy().into_owned(),
+                cutoff_offset: if fully_read { 0 } else { metadata.len() }, reached_start: fully_read, ..ImportCursor::default() };
+            row.extra_json = merge_import_cursor(&row.extra_json, &cursor)?;
+            store.upsert_session(&row).map_err(|error| error.to_string())?;
+        }
+        return Ok((row.owned_id, rebuild));
     }
     let owned_id = Uuid::new_v4().to_string();
     // When the transcript was last written is when the session was last active.
@@ -191,7 +187,7 @@ pub fn begin_import_session(
     store
         .upsert_session(&session)
         .map_err(|error| error.to_string())?;
-    Ok(owned_id)
+    Ok((owned_id, false))
 }
 
 pub fn ensure_child_import(
@@ -1286,8 +1282,8 @@ mod tests {
         let store = SessionStore::open_in_memory().unwrap();
         let parent_owned_id = begin_import_session(
             &store, fixture_provider(), "parent", &fixture.path,
-            "/tmp/project", None,
-        ).unwrap();
+            "/tmp/project", None, false,
+        ).unwrap().0;
         let child_owned_id = serde_json::to_string(&("child", &parent_owned_id, "child-1")).unwrap();
         let mut child = store.get_session(&parent_owned_id).unwrap().unwrap();
         child.owned_id = child_owned_id.clone();
@@ -1311,8 +1307,9 @@ mod tests {
             &fixture.path,
             "/tmp/project",
             None,
+            false,
         )
-        .unwrap();
+        .unwrap().0;
 
         let child_owned_id = ensure_child_import(
             &store,
@@ -1354,8 +1351,8 @@ mod tests {
         let db_path = std::env::temp_dir().join(format!("mcb-child-store-{}.sqlite", Uuid::new_v4()));
         let store = SessionStore::open(&db_path).unwrap();
         let parent_owned_id = begin_import_session(
-            &store, fixture_provider(), "parent", &fixture.path, "/tmp/project", None,
-        ).unwrap();
+            &store, fixture_provider(), "parent", &fixture.path, "/tmp/project", None, false,
+        ).unwrap().0;
         let child_owned_id = serde_json::to_string(&("child", &parent_owned_id, "child")).unwrap();
         let mut child = store.get_session(&parent_owned_id).unwrap().unwrap();
         child.owned_id = child_owned_id.clone();

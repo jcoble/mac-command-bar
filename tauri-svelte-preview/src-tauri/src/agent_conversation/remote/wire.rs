@@ -161,6 +161,8 @@ pub(in crate::agent_conversation) enum RemoteResponse {
     Strings(Vec<String>),
     Bool(bool),
     ImportProgress { added: usize, reached_start: bool },
+    /// The session a transcript was named as; `rebuilt` when its saved turns were cleared to be read again.
+    Imported { owned_id: String, rebuilt: bool },
     SendReceipt(AgentConversationSendReceipt),
     Workflow(serde_json::Value),
     Messaging(serde_json::Value),

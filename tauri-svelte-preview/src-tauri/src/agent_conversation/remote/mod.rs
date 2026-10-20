@@ -3604,13 +3604,13 @@ mod connection_tests {
         assert!(next_outbound_frame(&mut outbound, &mut chunks).await.is_none());
     }
 
-    fn download_manager() -> RemoteConnectionManager {
+    pub(super) fn download_manager() -> RemoteConnectionManager {
         let manager = RemoteConnectionManager::from_environment(Arc::new(|_| {}), Arc::new(|_| {}), store()).unwrap();
         manager.remember("large-history", "cache-test");
         manager
     }
 
-    async fn begin_test_download(manager: &RemoteConnectionManager, total: u64, low: Option<i64>, high: Option<i64>) -> (u64, mpsc::Receiver<ClientRequest>) {
+    pub(super) async fn begin_test_download(manager: &RemoteConnectionManager, total: u64, low: Option<i64>, high: Option<i64>) -> (u64, mpsc::Receiver<ClientRequest>) {
         let mut requests = connect(manager);
         manager.ensure_history_download("cache-test", "large-history").await.unwrap();
         assert!(!manager.download_watch("cache-test", "large-history").unwrap().borrow().ready, "placeholder is not authoritative zero-byte history");
@@ -3980,7 +3980,7 @@ mod connection_tests {
         assert_eq!(*delivered.lock().unwrap(), vec![event]);
     }
 
-    fn history_event(sequence: i64) -> AgentConversationEvent {
+    pub(super) fn history_event(sequence: i64) -> AgentConversationEvent {
         AgentConversationEvent { sequence, ..large_history_event(32) }
     }
 

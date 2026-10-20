@@ -401,7 +401,7 @@ mod tests {
         let path = transcript(&directory, 250, 20_000);
         let length = std::fs::metadata(&path).unwrap().len();
         let manager = manager(&directory);
-        let owned_id = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
+        let (owned_id, _) = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
             &path, &directory.to_string_lossy(), None).unwrap();
         manager.finish_import_transcript_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES,
             crate::agent_conversation::IMPORT_MAX_RECORDS).unwrap();
@@ -429,7 +429,7 @@ mod tests {
         std::fs::create_dir(&directory).unwrap();
         let path = transcript(&directory, 3, 100);
         let manager = manager(&directory);
-        let owned_id = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
+        let (owned_id, _) = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
             &path, &directory.to_string_lossy(), None).unwrap();
         manager.finish_import_transcript_session(&owned_id, crate::agent_conversation::IMPORT_MAX_BYTES,
             crate::agent_conversation::IMPORT_MAX_RECORDS).unwrap();
@@ -453,7 +453,7 @@ mod tests {
         let path = transcript(&directory, 3, 100);
         let manager = manager(&directory);
         let cwd = directory.to_string_lossy().into_owned();
-        let RemoteResponse::OptionalString(Some(owned_id)) = super::super::execute_remote_command(&manager, &directory,
+        let RemoteResponse::Imported { owned_id, .. } = super::super::execute_remote_command(&manager, &directory,
             RemoteCommand::BeginImport { provider: AgentConversationProvider::Codex, native_session_id: "native".into(),
                 transcript_path: path.to_string_lossy().into(), cwd: cwd.clone(), title: Some("Past".into()), project_id: Some("p1".into()) },
             Arc::new(|_| {})).await.unwrap() else { panic!("wrong begin response") };
@@ -468,5 +468,68 @@ mod tests {
         assert!(!found.is_empty());
         assert!(found.iter().all(|record| record.log_path.as_deref() == Some(path.to_string_lossy().as_ref())));
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// Imports `path` again over the wire and downloads it: the session, whether it was rebuilt, its sequences and each row's text, newest first.
+    async fn import_again(manager: AgentRuntimeManager, directory: &std::path::Path, path: &std::path::Path) -> (String, bool, Vec<i64>, Vec<String>) {
+        let RemoteResponse::Imported { owned_id, rebuilt } = super::super::execute_remote_command(&manager, directory,
+            RemoteCommand::BeginImport { provider: AgentConversationProvider::Codex, native_session_id: "native".into(),
+                transcript_path: path.to_string_lossy().into(), cwd: directory.to_string_lossy().into(), title: None, project_id: None },
+            Arc::new(|_| {})).await.unwrap() else { panic!("wrong begin response") };
+        let store = manager.store_handle();
+        let state = server_state(manager, directory.to_path_buf(), Arc::from("test")).unwrap();
+        let (_, _, _, sequences) = download(state, owned_id.clone()).await;
+        let (low, high) = (*sequences.iter().min().unwrap(), *sequences.iter().max().unwrap());
+        let texts = store.history_download_rows(&owned_id, low, high, None, 1 << 30, 0).unwrap().events.iter()
+            .map(|row| ["cli 4", "cli 5"].into_iter().find(|text| row.payload_json.contains(text)).unwrap_or("old").to_string()).collect();
+        (owned_id, rebuilt, sequences, texts)
+    }
+
+    #[tokio::test]
+    async fn importing_again_brings_in_turns_taken_outside_assembly_once() {
+        use mcb_core::session_store::EventRow;
+        const BYTES: u64 = crate::agent_conversation::IMPORT_MAX_BYTES;
+        const RECORDS: usize = crate::agent_conversation::IMPORT_MAX_RECORDS;
+        for (started_here, cli_turns) in [(false, true), (true, true), (true, false)] {
+            let directory = std::env::temp_dir().join(format!("import-again-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&directory).unwrap();
+            let path = transcript(&directory, 3, 100);
+            let manager = manager(&directory);
+            let store = manager.store_handle();
+            let (mut owned_id, _) = manager.begin_import_transcript_session(AgentConversationProvider::Codex, "native",
+                &path, &directory.to_string_lossy(), None).unwrap();
+            manager.finish_import_transcript_session(&owned_id, BYTES, RECORDS).unwrap();
+            manager.extend_imported_session(&owned_id, BYTES, RECORDS).unwrap();
+            if started_here {
+                // The same three turns in a session Assembly started, which has no import cursor.
+                let rows = store.history_download_rows(&owned_id, 1, 3, None, 1 << 30, 0).unwrap().events;
+                let mut row = store.get_session(&owned_id).unwrap().unwrap();
+                store.delete_session(&owned_id).unwrap();
+                row.owned_id = "started-here".into();
+                row.extra_json = crate::agent_conversation::manager::imported_session_extra(AgentConversationProvider::Codex).unwrap();
+                store.upsert_session(&row).unwrap();
+                for event in rows { store.append_event(&EventRow { owned_id: row.owned_id.clone(), ..event }).unwrap(); }
+                owned_id = row.owned_id;
+            }
+            let mut expected = vec!["old"; 3];
+            if cli_turns {
+                let mut text = std::fs::read_to_string(&path).unwrap();
+                for index in 4..=5 {
+                    text.push_str(&format!("{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"id\":\"item-{index}\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"cli {index}\"}}]}}}}\n"));
+                }
+                std::fs::write(&path, text).unwrap();
+                // Written well after the session's last activity, as the CLI turns were.
+                std::fs::File::options().write(true).open(&path).unwrap()
+                    .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(600)).unwrap();
+                expected = vec!["cli 5", "cli 4", "old", "old", "old"];
+            }
+            let (again, rebuilt, sequences, texts) = import_again(manager, &directory, &path).await;
+            let case = format!("started_here={started_here} cli_turns={cli_turns}");
+            assert_eq!((again, rebuilt), (owned_id, cli_turns), "{case}: the same session, read again only when the CLI wrote to it");
+            assert_eq!(texts, expected, "{case}");
+            assert_eq!(sequences.len(), expected.len(), "{case}: {sequences:?}");
+            assert!(sequences.windows(2).all(|pair| pair[1] == pair[0] - 1), "{case}: newest first without gaps {sequences:?}");
+            std::fs::remove_dir_all(directory).unwrap();
+        }
     }
 }

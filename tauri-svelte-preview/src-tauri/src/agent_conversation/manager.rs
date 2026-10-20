@@ -610,23 +610,13 @@ impl AgentRuntimeManager {
     #[allow(clippy::too_many_arguments)]
     /// Names an imported session without reading a single record of it, so the
     /// rail has something to show while the transcript is still being read.
-    pub fn begin_import_transcript_session(
-        &self,
-        provider: AgentConversationProvider,
-        native_session_id: &str,
-        path: &Path,
-        cwd: &str,
-        title: Option<String>,
-    ) -> Result<String, String> {
-        let owned_id = super::history::begin_import_session(
-            &self.store,
-            provider,
-            native_session_id,
-            path,
-            cwd,
-            title,
-        )?;
-        Ok(owned_id)
+    /// Also answers whether a session already here was cleared to be read again
+    /// from a transcript holding turns taken outside Assembly.
+    pub fn begin_import_transcript_session(&self, provider: AgentConversationProvider, native_session_id: &str,
+        path: &Path, cwd: &str, title: Option<String>) -> Result<(String, bool), String> {
+        let open = self.sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).values()
+            .any(|session| session.native_session_id.as_deref() == Some(native_session_id));
+        super::history::begin_import_session(&self.store, provider, native_session_id, path, cwd, title, open)
     }
 
     /// Reads the newest page of an imported transcript into a session that has
